@@ -195,6 +195,39 @@ test('MANUAL: create, content change, rename, move, and delete dispatch right aw
   );
 });
 
+test('MANUAL: directory rename dispatches folder and child file changes', async () => {
+  const { manager, dispatched, syncRoot } = setup();
+  const docDir = path.join(syncRoot, 'doc');
+  await fsp.mkdir(docDir, { recursive: true });
+  await fsp.writeFile(path.join(docDir, 'note.txt'), 'hello');
+  markFullSyncSeen(manager, 'c-manual-dir-rename', syncRoot);
+
+  await manager.start({
+    connectorId: 'c-manual-dir-rename',
+    connectorName: 'Manual Directory Rename',
+    rootPath: syncRoot,
+    apiBaseUrl: API_BASE,
+    accessToken: TOKEN,
+    syncStrategy: 'MANUAL',
+  });
+  await sleep(1000);
+
+  await fsp.rename(docDir, path.join(syncRoot, 'docs'));
+  await sleep(3500);
+
+  await manager.stop('c-manual-dir-rename');
+
+  const events = flattenEvents(dispatched, { resetBeforeApply: false });
+  assert.ok(
+    events.some((e) => e.type === 'DIR_RENAMED' && e.oldPath === 'doc' && e.path === 'docs' && e.isDirectory),
+    `expected DIR_RENAMED doc -> docs, got ${JSON.stringify(events)}`,
+  );
+  assert.ok(
+    events.some((e) => e.type === 'RENAMED' && e.oldPath === 'doc/note.txt' && e.path === 'docs/note.txt'),
+    `expected child RENAMED doc/note.txt -> docs/note.txt, got ${JSON.stringify(events)}`,
+  );
+});
+
 test('SCHEDULED: file create is held until tick fires', async () => {
   const { manager, dispatched, syncRoot } = setup();
   await manager.start({

@@ -8,6 +8,7 @@ import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi.exceptions import HTTPException
 
@@ -57,6 +58,7 @@ def _make_connector() -> JiraDataCenterConnector:
     dep.on_new_app_roles = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
+    dep.get_all_app_users = AsyncMock(return_value=[])
 
     dsp = MagicMock()
     cs = MagicMock()
@@ -958,13 +960,9 @@ async def test_fetch_users_parses_values_wrapper():
 
 
 @pytest.mark.asyncio
-async def test_fetch_application_roles_cache_and_ok():
+async def test_fetch_application_roles_ok():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    cached = {"jira-software": [{"groupId": "g", "name": "U"}]}
-    conn._app_roles_cache = cached
-    assert await conn._fetch_application_roles_to_groups_mapping() is cached
-    del conn._app_roles_cache
 
     ok = MagicMock()
     ok.status = HttpStatusCode.OK.value
@@ -978,15 +976,12 @@ async def test_fetch_application_roles_cache_and_ok():
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         m = await conn._fetch_application_roles_to_groups_mapping()
     assert "k" in m and m["k"][0]["groupId"] == "g2"
-    assert conn._app_roles_cache == m
 
 
 @pytest.mark.asyncio
 async def test_fetch_application_roles_non_ok_returns_empty():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    if hasattr(conn, "_app_roles_cache"):
-        del conn._app_roles_cache
     bad = MagicMock()
     bad.status = 403
     bad.text = MagicMock(return_value="nope")
@@ -994,6 +989,7 @@ async def test_fetch_application_roles_non_ok_returns_empty():
     ds.get_all_application_roles_v2 = AsyncMock(return_value=bad)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         assert await conn._fetch_application_roles_to_groups_mapping() == {}
+    assert conn._app_roles_forbidden is True
 
 
 def _perm_resp():
@@ -1251,7 +1247,7 @@ async def test_sync_user_groups_batches_groups_and_maps_members():
             conn,
             "_fetch_group_members",
             new_callable=AsyncMock,
-            return_value=["member@example.com", "missing@example.com"],
+            return_value=["acc", "missing-key"],
         ):
             mmap = await conn._sync_user_groups([u])
     conn.data_entities_processor.on_new_user_groups.assert_awaited()
@@ -1868,8 +1864,8 @@ async def test_fetch_project_permission_scheme_extra_holder_branches():
     ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         perms = await conn._fetch_project_permission_scheme("P", {})
-    org_perms = [p for p in perms if p.entity_type == EntityType.ORG]
-    assert any(p.external_id == "no-map-key" for p in org_perms)
+    # "no-map-key" is unresolvable and _app_roles_forbidden is False, so it's skipped (no ORG over-grant)
+    assert not any(p.external_id == "no-map-key" for p in perms)
     assert not any(p.entity_type == EntityType.USER for p in perms)
 
 
@@ -2246,7 +2242,6 @@ async def test_fetch_users_skips_inactive_and_missing_email():
 async def test_fetch_application_roles_json_raises_returns_empty():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    conn.__dict__.pop("_app_roles_cache", None)
     ok = MagicMock()
     ok.status = HttpStatusCode.OK.value
     ok.json = MagicMock(side_effect=ValueError("bad json"))
@@ -2428,16 +2423,16 @@ async def test_fetch_group_members_list_payload_pages():
     conn.data_source = MagicMock()
     r1 = MagicMock()
     r1.status = HttpStatusCode.OK.value
-    r1.json = MagicMock(return_value=[{"emailAddress": "a@a"}])
+    r1.json = MagicMock(return_value=[{"key": "k1", "emailAddress": "a@a"}])
     r2 = MagicMock()
     r2.status = HttpStatusCode.OK.value
-    r2.json = MagicMock(return_value=[{"emailAddress": "b@b"}])
+    r2.json = MagicMock(return_value=[{"key": "k2", "emailAddress": "b@b"}])
     ds = MagicMock()
     ds.get_users_from_group_v2 = AsyncMock(side_effect=[r1, r2])
     with patch("app.connectors.sources.atlassian.jira_data_center.connector.GROUP_MEMBER_PAGE_SIZE", 1):
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            emails = await conn._fetch_group_members("g1", "G")
-    assert emails == ["a@a", "b@b"]
+            keys = await conn._fetch_group_members("g1", "G")
+    assert keys == ["k1", "k2"]
 
 
 @pytest.mark.asyncio
@@ -3022,7 +3017,7 @@ def test_adf_to_text_media_in_nested_list_without_cache():
 async def test_fetch_users_paginates_two_pages():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    page1 = [{"accountId": "a", "emailAddress": "a@a", "active": True}] * 50
+    page1 = [{"accountId": f"a{i}", "emailAddress": f"a{i}@a", "active": True} for i in range(50)]
     page2 = [{"accountId": "b", "emailAddress": "b@b", "active": True}]
     r1 = MagicMock()
     r1.status = HttpStatusCode.OK.value
@@ -3036,6 +3031,119 @@ async def test_fetch_users_paginates_two_pages():
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             users = await conn._fetch_users()
     assert len(users) == 51
+
+
+@pytest.mark.asyncio
+async def test_fetch_users_db_cache_resolves_hidden_email_user():
+    """Phase 3B: cached AppUser from prior sync resolves user without visible email."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    cached_user = MagicMock()
+    cached_user.source_user_id = "k1"
+    cached_user.email = "cached@example.com"
+    conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[cached_user])
+
+    batch = [
+        {"key": "k1", "active": True},
+        {"key": "k2", "emailAddress": "visible@example.com", "active": True},
+    ]
+    ok = MagicMock()
+    ok.status = HttpStatusCode.OK.value
+    ok.json = MagicMock(return_value=batch)
+    empty = MagicMock()
+    empty.status = HttpStatusCode.OK.value
+    empty.json = MagicMock(return_value=[])
+    ds = MagicMock()
+    ds.get_user_search_v2 = AsyncMock(side_effect=[ok, empty])
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        users = await conn._fetch_users()
+    emails = {u.email for u in users}
+    assert "cached@example.com" in emails
+    assert "visible@example.com" in emails
+    assert len(users) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_users_reverse_lookup_resolves_hidden_email():
+    """Phase 5: reverse lookup resolves a user with hidden email via PipesHub directory."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+    pipeshub_user = MagicMock()
+    pipeshub_user.email = "hidden@example.com"
+    conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[pipeshub_user])
+
+    bulk_batch = [
+        {"key": "k1", "emailAddress": "visible@example.com", "active": True},
+        {"key": "k2", "active": True},
+    ]
+    ok_bulk = MagicMock()
+    ok_bulk.status = HttpStatusCode.OK.value
+    ok_bulk.json = MagicMock(return_value=bulk_batch)
+
+    reverse_resp = MagicMock()
+    reverse_resp.status = HttpStatusCode.OK.value
+    reverse_resp.json = MagicMock(return_value=[{"key": "k2", "displayName": "Hidden User", "active": True}])
+
+    ds = MagicMock()
+    # Bulk returns 2 items < USER_PAGE_SIZE so it breaks after 1st call; then reverse lookup
+    ds.get_user_search_v2 = AsyncMock(side_effect=[ok_bulk, reverse_resp])
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        users = await conn._fetch_users()
+    emails = {u.email for u in users}
+    assert "hidden@example.com" in emails
+    assert "visible@example.com" in emails
+    assert len(users) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_users_reverse_lookup_skipped_when_no_gaps():
+    """Phase 5 not triggered when all users have visible email."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+    pipeshub_user = MagicMock()
+    pipeshub_user.email = "visible@example.com"
+    conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[pipeshub_user])
+
+    batch = [{"key": "k1", "emailAddress": "visible@example.com", "active": True}]
+    ok = MagicMock()
+    ok.status = HttpStatusCode.OK.value
+    ok.json = MagicMock(return_value=batch)
+    ds = MagicMock()
+    # Bulk returns 1 item < USER_PAGE_SIZE, breaks after 1 call; no reverse lookup needed
+    ds.get_user_search_v2 = AsyncMock(side_effect=[ok])
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        users = await conn._fetch_users()
+    assert len(users) == 1
+    assert ds.get_user_search_v2.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_private_email_users_api_failure_graceful():
+    """_resolve_private_email_users handles API failure without crashing."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+    pipeshub_user = MagicMock()
+    pipeshub_user.email = "user@example.com"
+    conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[pipeshub_user])
+
+    batch = [{"key": "k1", "active": True}]
+    ok = MagicMock()
+    ok.status = HttpStatusCode.OK.value
+    ok.json = MagicMock(return_value=batch)
+
+    fail_resp = MagicMock()
+    fail_resp.status = 500
+    fail_resp.text = MagicMock(return_value="error")
+
+    ds = MagicMock()
+    # Bulk returns 1 item < USER_PAGE_SIZE, breaks after 1 call; then reverse lookup fails
+    ds.get_user_search_v2 = AsyncMock(side_effect=[ok, fail_resp])
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        users = await conn._fetch_users()
+    assert len(users) == 0
 
 
 @pytest.mark.asyncio
@@ -3585,3 +3693,491 @@ async def test_fetch_project_permission_scheme_outer_exception():
     conn.data_source = MagicMock()
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, side_effect=OSError("net")):
         assert await conn._fetch_project_permission_scheme("P", {}) == []
+
+
+# ===========================================================================
+# Helpers shared by the patch-fix tests below
+# ===========================================================================
+
+
+def _ok_resp(data=None) -> MagicMock:
+    r = MagicMock()
+    r.status = HttpStatusCode.OK.value
+    r.json = MagicMock(return_value=data if data is not None else {})
+    r.text = MagicMock(return_value="")
+    r.bytes = MagicMock(return_value=b"bytes")
+    return r
+
+
+def _err_resp(status: int, body: str = "error") -> MagicMock:
+    r = MagicMock()
+    r.status = status
+    r.json = MagicMock(return_value={})
+    r.text = MagicMock(return_value=body)
+    return r
+
+
+# ===========================================================================
+# Patch fix 1: _fetch_groups — 404 from /group/bulk triggers picker fallback
+# ===========================================================================
+
+
+class TestFetchGroups404Fallback:
+
+    @pytest.mark.asyncio
+    async def test_404_delegates_to_picker(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.bulk_get_groups_v2 = AsyncMock(return_value=_err_resp(HttpStatusCode.NOT_FOUND.value, "<html>404</html>"))
+        expected = [{"name": "devs", "groupId": "devs"}]
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch.object(conn, "_fetch_groups_via_picker", new_callable=AsyncMock, return_value=expected) as pm:
+                result = await conn._fetch_groups()
+        pm.assert_awaited_once()
+        assert result == expected
+
+    @pytest.mark.asyncio
+    async def test_non_404_error_does_not_call_picker(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.bulk_get_groups_v2 = AsyncMock(return_value=_err_resp(500, "Internal error"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch.object(conn, "_fetch_groups_via_picker", new_callable=AsyncMock) as pm:
+                result = await conn._fetch_groups()
+        pm.assert_not_awaited()
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_ok_does_not_call_picker(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.bulk_get_groups_v2 = AsyncMock(return_value=_ok_resp({"values": [{"name": "a", "groupId": "1"}], "isLast": True}))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch.object(conn, "_fetch_groups_via_picker", new_callable=AsyncMock) as pm:
+                result = await conn._fetch_groups()
+        pm.assert_not_awaited()
+        assert len(result) == 1
+
+
+# ===========================================================================
+# Patch fix 2: _fetch_groups_via_picker
+# ===========================================================================
+
+
+class TestFetchGroupsViaPicker:
+
+    @pytest.mark.asyncio
+    async def test_happy_path_returns_groups(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+
+        def side_effect(**kwargs):
+            if kwargs.get("query", "") == "":
+                return _ok_resp({"groups": [{"name": "alpha", "groupId": "g-alpha"}, {"name": "beta", "groupId": "g-beta"}]})
+            return _ok_resp({"groups": []})
+
+        ds.groups_picker_get_v2 = AsyncMock(side_effect=side_effect)
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            groups = await conn._fetch_groups_via_picker()
+        names = [g["name"] for g in groups]
+        assert "alpha" in names
+        assert "beta" in names
+
+    @pytest.mark.asyncio
+    async def test_deduplicates_groups_across_prefix_sweeps(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({"groups": [{"name": "devs", "groupId": "devs"}]}))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            groups = await conn._fetch_groups_via_picker()
+        assert len(groups) == 1
+
+    @pytest.mark.asyncio
+    async def test_non_ok_query_skips_and_continues(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+
+        def side_effect(**kwargs):
+            if kwargs.get("query", "") == "":
+                return _err_resp(403, "Forbidden")
+            if kwargs.get("query") == "a":
+                return _ok_resp({"groups": [{"name": "admins", "groupId": "admins"}]})
+            return _ok_resp({"groups": []})
+
+        ds.groups_picker_get_v2 = AsyncMock(side_effect=side_effect)
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            groups = await conn._fetch_groups_via_picker()
+        assert any(g["name"] == "admins" for g in groups)
+
+    @pytest.mark.asyncio
+    async def test_transport_exception_on_one_prefix_does_not_abort(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        call_count = 0
+
+        def side_effect(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise httpx.RemoteProtocolError("disconnected")
+            return _ok_resp({"groups": [{"name": "team", "groupId": "team"}]})
+
+        ds.groups_picker_get_v2 = AsyncMock(side_effect=side_effect)
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            groups = await conn._fetch_groups_via_picker()
+        assert any(g["name"] == "team" for g in groups)
+
+    @pytest.mark.asyncio
+    async def test_raises_when_data_source_not_initialized(self):
+        conn = _make_connector()
+        conn.data_source = None
+        with pytest.raises(ValueError, match="not initialized"):
+            await conn._fetch_groups_via_picker()
+
+    @pytest.mark.asyncio
+    async def test_normalizes_group_without_group_id_uses_name(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({"groups": [{"name": "no-id-group"}]}))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            groups = await conn._fetch_groups_via_picker()
+        match = next(g for g in groups if g["name"] == "no-id-group")
+        assert match["groupId"] == "no-id-group"
+
+    @pytest.mark.asyncio
+    async def test_short_circuits_when_empty_query_returns_full_set(self):
+        """``total`` reported by the server equals what we received => no prefix sweep."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({
+            "groups": [{"name": "alpha"}, {"name": "beta"}, {"name": "gamma"}],
+            "total": 3,
+        }))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            groups = await conn._fetch_groups_via_picker()
+        assert len(groups) == 3
+        # Empty query only — must not iterate the alphanumeric prefix sweep.
+        assert ds.groups_picker_get_v2.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_short_circuit_does_not_fire_when_total_exceeds_returned(self):
+        """If server caps results below ``total``, the prefix sweep must still run."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+
+        def side_effect(**kwargs):
+            if kwargs.get("query", "") == "":
+                return _ok_resp({
+                    "groups": [{"name": "alpha"}],
+                    "total": 50,
+                })
+            return _ok_resp({"groups": []})
+
+        ds.groups_picker_get_v2 = AsyncMock(side_effect=side_effect)
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await conn._fetch_groups_via_picker()
+        assert ds.groups_picker_get_v2.await_count > 1
+
+    @pytest.mark.asyncio
+    async def test_converges_after_consecutive_empty_prefixes(self):
+        """Sweep bails out after 5 consecutive prefixes return 0 new groups."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({
+            "groups": [{"name": "shared"}],
+        }))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            groups = await conn._fetch_groups_via_picker()
+        assert len(groups) == 1
+        # 1 empty-query call + 5 prefix calls that each contribute 0 new groups.
+        assert ds.groups_picker_get_v2.await_count == 6
+
+
+# ===========================================================================
+# Patch fix 3: _fallback_permissions_for_forbidden_scheme
+# ===========================================================================
+
+
+class TestFallbackPermissionsForForbiddenSchemeDC:
+
+    def test_returns_user_permission_when_email_set(self):
+        conn = _make_connector()
+        conn.creator_email = "owner@example.com"
+        result = conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
+        assert len(result) == 1
+        assert result[0].entity_type == EntityType.USER
+        assert result[0].email == "owner@example.com"
+        assert result[0].type == PermissionType.READ
+
+    def test_returns_empty_when_no_email(self):
+        conn = _make_connector()
+        conn.creator_email = None
+        assert conn._fallback_permissions_for_forbidden_scheme("PROJ", 401, "permission scheme") == []
+
+    def test_works_for_both_401_and_403(self):
+        conn = _make_connector()
+        conn.creator_email = "e@x.com"
+        for status in (401, 403):
+            result = conn._fallback_permissions_for_forbidden_scheme("P", status, "grants")
+            assert len(result) == 1
+            assert result[0].entity_type == EntityType.USER
+
+
+# ===========================================================================
+# Patch fix 4: _fetch_project_permission_scheme — 401/403 branches
+# ===========================================================================
+
+
+class TestFetchProjectPermissionScheme401403DC:
+
+    @pytest.mark.asyncio
+    async def test_scheme_401_returns_fallback_with_email(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.creator_email = "admin@example.com"
+        ds = MagicMock()
+        ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=_err_resp(401, "Unauthorized"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            perms = await conn._fetch_project_permission_scheme("PROJ", {})
+        assert len(perms) == 1
+        assert perms[0].entity_type == EntityType.USER
+        assert perms[0].email == "admin@example.com"
+
+    @pytest.mark.asyncio
+    async def test_scheme_403_returns_fallback_with_email(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.creator_email = "admin@example.com"
+        ds = MagicMock()
+        ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=_err_resp(403, '{"errorMessages":["You cannot edit..."]}'))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            perms = await conn._fetch_project_permission_scheme("PROJ", {})
+        assert len(perms) == 1
+        assert perms[0].email == "admin@example.com"
+
+    @pytest.mark.asyncio
+    async def test_scheme_401_no_email_returns_empty(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.creator_email = None
+        ds = MagicMock()
+        ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=_err_resp(401, "Unauthorized"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            assert await conn._fetch_project_permission_scheme("PROJ", {}) == []
+
+    @pytest.mark.asyncio
+    async def test_scheme_500_does_not_call_fallback(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.creator_email = "admin@example.com"
+        ds = MagicMock()
+        ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=_err_resp(500, "Server error"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch.object(conn, "_fallback_permissions_for_forbidden_scheme") as fm:
+                assert await conn._fetch_project_permission_scheme("PROJ", {}) == []
+        fm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_grants_403_returns_fallback(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.creator_email = "admin@example.com"
+        ds = MagicMock()
+        ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=_ok_resp({"id": 7}))
+        ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=_err_resp(403, "Forbidden"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            perms = await conn._fetch_project_permission_scheme("PROJ", {})
+        assert len(perms) == 1
+        assert perms[0].email == "admin@example.com"
+
+    @pytest.mark.asyncio
+    async def test_grants_401_returns_fallback(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.creator_email = "admin@example.com"
+        ds = MagicMock()
+        ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=_ok_resp({"id": 3}))
+        ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=_err_resp(401, "Unauthorized"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            perms = await conn._fetch_project_permission_scheme("PROJ", {})
+        assert len(perms) == 1
+        assert perms[0].email == "admin@example.com"
+
+    @pytest.mark.asyncio
+    async def test_grants_500_does_not_call_fallback(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.creator_email = "admin@example.com"
+        ds = MagicMock()
+        ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=_ok_resp({"id": 5}))
+        ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=_err_resp(500, "Server error"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch.object(conn, "_fallback_permissions_for_forbidden_scheme") as fm:
+                assert await conn._fetch_project_permission_scheme("PROJ", {}) == []
+        fm.assert_not_called()
+
+
+# ===========================================================================
+# Patch fix 5: _get_issue_with_retry
+# ===========================================================================
+
+
+class TestGetIssueWithRetryDC:
+
+    @pytest.mark.asyncio
+    async def test_happy_path_first_attempt(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ok = _ok_resp({"key": "P-1", "fields": {}})
+        ds = MagicMock()
+        ds.get_issue_v2 = AsyncMock(return_value=ok)
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            resp = await conn._get_issue_with_retry("10001", fields=["summary"])
+        assert resp.status == HttpStatusCode.OK.value
+        ds.get_issue_v2.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_retries_on_remote_protocol_error_then_succeeds(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ok = _ok_resp({"key": "P-1", "fields": {}})
+        ds = MagicMock()
+        ds.get_issue_v2 = AsyncMock(side_effect=[httpx.RemoteProtocolError("Server disconnected without sending a response."), ok])
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                resp = await conn._get_issue_with_retry("10001", fields=["summary"])
+        assert resp.status == HttpStatusCode.OK.value
+        assert ds.get_issue_v2.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retries_on_read_error(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ok = _ok_resp({"key": "P-1", "fields": {}})
+        ds = MagicMock()
+        ds.get_issue_v2 = AsyncMock(side_effect=[httpx.ReadError("EOF"), ok])
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                resp = await conn._get_issue_with_retry("10001", fields=["summary"])
+        assert resp.status == HttpStatusCode.OK.value
+
+    @pytest.mark.asyncio
+    async def test_exhausts_retries_and_raises(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.get_issue_v2 = AsyncMock(side_effect=httpx.RemoteProtocolError("disconnected"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                with pytest.raises(Exception, match="after 3 attempts"):
+                    await conn._get_issue_with_retry("10001", fields=["summary"], max_attempts=3)
+        assert ds.get_issue_v2.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_non_transport_error_not_retried(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.get_issue_v2 = AsyncMock(side_effect=ValueError("unexpected"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with pytest.raises(ValueError, match="unexpected"):
+                await conn._get_issue_with_retry("10001", fields=["summary"])
+        ds.get_issue_v2.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_backoff_sleep_called_between_retries(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ok = _ok_resp({"key": "P-1", "fields": {}})
+        ds = MagicMock()
+        ds.get_issue_v2 = AsyncMock(side_effect=[httpx.ConnectError("refused"), ok])
+        sleep_calls: list[float] = []
+
+        async def capture(delay: float) -> None:
+            sleep_calls.append(delay)
+
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", side_effect=capture):
+                await conn._get_issue_with_retry("10001", fields=["summary"])
+        assert len(sleep_calls) == 1
+        assert sleep_calls[0] == pytest.approx(0.5)
+
+    @pytest.mark.asyncio
+    async def test_process_issue_blockgroups_uses_retry_internally(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.site_url = "https://jira.example"
+        issue_data = {"key": "PROJ-1", "fields": {"summary": "T", "description": None, "attachment": [], "comment": {}}}
+        ok = _ok_resp(issue_data)
+        ds = MagicMock()
+        ds.get_issue_v2 = AsyncMock(side_effect=[httpx.RemoteProtocolError("gone"), ok])
+        tx = MagicMock()
+        inner = MagicMock()
+        inner.get_record_by_external_id = AsyncMock(return_value=None)
+        tx.__aenter__ = AsyncMock(return_value=inner)
+        tx.__aexit__ = AsyncMock(return_value=None)
+        conn.data_store_provider.transaction = MagicMock(return_value=tx)
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                result = await conn._process_issue_blockgroups_for_streaming(_ticket_record())
+        assert isinstance(result, bytes)
+        assert ds.get_issue_v2.await_count == 2
+
+
+# ===========================================================================
+# Patch fix 6: stream_record FILE — 404 propagates as HTTPException(404)
+# ===========================================================================
+
+
+class TestStreamRecordFile404DC:
+
+    @pytest.mark.asyncio
+    async def test_404_raises_http_exception(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.get_attachment_content_v2 = AsyncMock(return_value=_err_resp(404, "Not Found"))
+        with patch.object(conn, "init", new_callable=AsyncMock):
+            with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+                with pytest.raises(HTTPException) as exc_info:
+                    await conn.stream_record(_file_record())
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_500_raises_http_exception_with_upstream_status(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.get_attachment_content_v2 = AsyncMock(return_value=_err_resp(500, "err"))
+        with patch.object(conn, "init", new_callable=AsyncMock):
+            with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+                with pytest.raises(HTTPException) as exc_info:
+                    await conn.stream_record(_file_record())
+        assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_http_exception_not_swallowed_by_outer_handler(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.get_attachment_content_v2 = AsyncMock(return_value=_err_resp(404, "gone"))
+        with patch.object(conn, "init", new_callable=AsyncMock):
+            with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+                try:
+                    await conn.stream_record(_file_record())
+                    pytest.fail("Expected HTTPException")
+                except HTTPException as exc:
+                    assert exc.status_code == 404
+                except Exception:
+                    pytest.fail("HTTPException was swallowed by the outer handler")

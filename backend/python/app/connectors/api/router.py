@@ -62,6 +62,7 @@ from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
+from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.sources.local_fs.connector import LocalFsConnector
 from app.connectors.sources.local_fs.file_events import (
     _normalize_connector_type_value,
@@ -703,14 +704,18 @@ async def stream_record_internal(
                 detail="The connector for this document no longer exists or was deleted. The document cannot be streamed.",
             )
 
-        connector_display_name = connector_instance.get("name", "connector")
-
-        connector_obj: BaseConnector = container.connectors_map.get(connector_id)
-        if not connector_obj:
-            raise HTTPException(
-                status_code=HttpStatusCode.CONFLICT.value,
-                detail=f"The connector '{connector_display_name}' is currently disabled. Enable it from Connector Settings and try again.",
-            )
+        connector_registry: ConnectorRegistry = request.app.state.connector_registry
+        connector_obj = await _get_streaming_connector(
+            container=container,
+            connector_id=connector_id,
+            connector_instance=connector_instance,
+            connector_registry=connector_registry,
+            graph_provider=graph_provider,
+            user_id=payload.get("userId", ""),
+            org_id=effective_org_id,
+            is_admin=True,
+            logger=logger,
+        )
 
         if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
             return await connector_obj.stream_record(record, payload.get("userId"))
@@ -789,17 +794,21 @@ async def download_file(
                 detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
             )
 
-        connector_display_name = connector_instance.get("name", "connector")
-
         # Handle KB separately - fetch from storage service
         container: ConnectorAppContainer = request.app.container
+        connector_registry: ConnectorRegistry = request.app.state.connector_registry
         try:
-            connector_obj: BaseConnector = container.connectors_map.get(connector_id)
-            if not connector_obj:
-                raise HTTPException(
-                    status_code=HttpStatusCode.CONFLICT.value,
-                    detail=f"The connector '{connector_display_name}' is currently disabled. Enable it from Connector Settings and try again.",
-                )
+            connector_obj = await _get_streaming_connector(
+                container=container,
+                connector_id=connector_id,
+                connector_instance=connector_instance,
+                connector_registry=connector_registry,
+                graph_provider=graph_provider,
+                user_id=user_id,
+                org_id=org_id,
+                is_admin=False,
+                logger=logger,
+            )
 
             if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
                 buffer = await connector_obj.stream_record(record, user_id)
@@ -891,19 +900,24 @@ async def stream_record(
                 detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
             )
 
-        connector_display_name = connector_instance.get("name", "connector")
-
         container: ConnectorAppContainer = request.app.container
+        connector_registry: ConnectorRegistry = request.app.state.connector_registry
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
 
         try:
             logger.info("Stream Record called at router")
             logger.info(f"Connector: {connector_name} connector_id: {connector_id}")
-            connector_obj: BaseConnector = container.connectors_map.get(connector_id)
-            if not connector_obj:
-                raise HTTPException(
-                    status_code=HttpStatusCode.CONFLICT.value,
-                    detail=f"The connector '{connector_display_name}' is currently disabled. Enable it from Connector Settings and try again.",
-                )
+            connector_obj = await _get_streaming_connector(
+                container=container,
+                connector_id=connector_id,
+                connector_instance=connector_instance,
+                connector_registry=connector_registry,
+                graph_provider=graph_provider,
+                user_id=user_id,
+                org_id=org_id,
+                is_admin=is_admin,
+                logger=logger,
+            )
 
             # Get the buffer from connector (without passing convertTo)
             if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
@@ -1405,6 +1419,22 @@ async def delete_record(
             detail=f"Internal server error while deleting record: {str(e)}"
         ) from e
 
+def _parse_reindex_body(request_body: dict | None) -> tuple[int, list[str] | None]:
+    """Parse depth and optional statusFilters from a reindex request body."""
+    if not request_body:
+        return 0, None
+    depth = request_body.get("depth", 0)
+    raw_filters = request_body.get("statusFilters")
+    if raw_filters is None:
+        return depth, None
+    if not isinstance(raw_filters, list) or not all(isinstance(s, str) for s in raw_filters):
+        raise HTTPException(
+            status_code=400,
+            detail="statusFilters must be an array of strings",
+        )
+    return depth, raw_filters if raw_filters else None
+
+
 @router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked_for_record)])
 @inject
 async def reindex_single_record(
@@ -1427,22 +1457,25 @@ async def reindex_single_record(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        # Parse optional depth from request body (0 = only this record; 100/full from all-records tree)
-        depth = 0
+        request_body: dict | None = None
         try:
             request_body = await request.json()
-            depth = request_body.get("depth", 0)
         except (json.JSONDecodeError, TypeError):
-            depth = 0
+            request_body = None
+        depth, status_filters = _parse_reindex_body(request_body)
 
-        logger.info(f"🔄 Attempting to reindex record {record_id} with depth {depth}")
+        logger.info(
+            f"🔄 Attempting to reindex record {record_id} with depth {depth}, "
+            f"status_filters={status_filters}"
+        )
 
         result = await graph_provider.reindex_single_record(
             record_id=record_id,
             user_id=user_id,
             org_id=org_id,
             depth=depth,
-            request=request
+            request=request,
+            status_filters=status_filters,
         )
 
         if result["success"]:
@@ -1525,16 +1558,17 @@ async def reindex_record_group(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        # Parse optional depth from request body
-        depth = 0  # Default to 0 (only direct records)
+        request_body: dict | None = None
         try:
             request_body = await request.json()
-            depth = request_body.get("depth", 0)
         except json.JSONDecodeError:
-            # No body or invalid JSON - use default depth
-            depth = 0
+            request_body = None
+        depth, status_filters = _parse_reindex_body(request_body)
 
-        logger.info(f"🔄 Attempting to reindex record group {record_group_id} with depth {depth}")
+        logger.info(
+            f"🔄 Attempting to reindex record group {record_group_id} with depth {depth}, "
+            f"status_filters={status_filters}"
+        )
 
         # Get record group data and validate permissions (does not publish events)
         result = await graph_provider.reindex_record_group_records(
@@ -1566,8 +1600,10 @@ async def reindex_record_group(
                 "recordGroupId": record_group_id,
                 "depth": depth,
                 "connectorId": connector_id,
-                "userKey": user_key
+                "userKey": user_key,
             }
+            if status_filters:
+                payload["statusFilters"] = status_filters
 
             # Publish event directly using KafkaService
             timestamp = get_epoch_timestamp_in_ms()
@@ -2084,17 +2120,28 @@ async def get_connector_instances(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
     search: str | None = Query(None, description="Search by instance name/type/group"),
+    is_authenticated: bool | None = Query(None, alias="isAuthenticated", description="Filter by authentication status"),
+    is_active: bool | None = Query(None, alias="isActive", description="Filter by active status"),
+    connector_type: str | None = Query(None, alias="connectorType", description="Filter by exact connector type (e.g. 'Confluence')"),
 ) -> dict[str, Any]:
     """
     Get all configured connector instances.
 
     This endpoint returns actual configured instances with their status.
+    The response intentionally omits the full connector schema (auth fields,
+    sync config, filter definitions) — use ``GET /registry/{type}/schema``
+    to retrieve that detail when needed.
 
     Args:
         request: FastAPI request object
 
-    Returns:
-        Dictionary with success status and list of connector instances
+    Query parameters:
+        scope: personal | team
+        page / limit: pagination
+        search: full-text search across name, type, appGroup
+        isAuthenticated: true → only authenticated instances; false → only unauthenticated
+        isActive: true → only active instances; false → only inactive
+        connectorType: exact connector type string (e.g. 'Confluence')
     """
     connector_registry = request.app.state.connector_registry
     container = request.app.container
@@ -2126,7 +2173,10 @@ async def get_connector_instances(
             scope=scope,
             page=page,
             limit=limit,
-            search=search
+            search=search,
+            is_authenticated=is_authenticated,
+            is_active=is_active,
+            connector_type=connector_type,
         )
 
         return {
@@ -2420,6 +2470,24 @@ async def _handle_oauth_config_creation(
     )
 
 
+def _apply_confluence_optional_jira_scope(
+    connector_type: str,
+    auth_config: dict[str, Any],
+    scopes: list[str],
+) -> list[str]:
+    """Add or remove read:jira-user based on Confluence Cloud includeJiraScope."""
+    normalized = (connector_type or "").replace(" ", "").upper()
+    if normalized != Connectors.CONFLUENCE.value:
+        return scopes
+    jira_scope = "read:jira-user"
+    enabled = include_jira_scope_enabled(auth_config.get("includeJiraScope"))
+    if enabled:
+        if jira_scope in scopes:
+            return scopes
+        return [*scopes, jira_scope]
+    return [scope for scope in scopes if scope != jira_scope]
+
+
 async def _prepare_connector_config(
     config: dict[str, Any],
     connector_type: str,
@@ -2539,7 +2607,12 @@ async def _prepare_connector_config(
             authorize_url = registry_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, "")
             token_url = registry_oauth_config.get(AuthFieldKeys.TOKEN_URL, "")
 
-        scopes = registry_oauth_config.get("scopes", [])
+        scopes = _apply_confluence_optional_jira_scope(
+            connector_type,
+            auth_config_clean,
+            list(registry_oauth_config.get("scopes", [])),
+        )
+
         redirect_uri = selected_auth_schema.get(AuthFieldKeys.REDIRECT_URI, "")
         if redirect_uri:
             if base_url:
@@ -3955,7 +4028,11 @@ async def update_connector_instance_config(
                     authorize_url = registry_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, "")
                     token_url = registry_oauth_config.get(AuthFieldKeys.TOKEN_URL, "")
 
-                scopes = registry_oauth_config.get("scopes", [])
+                scopes = _apply_confluence_optional_jira_scope(
+                    connector_type,
+                    new_config.get(OAuthConfigKeys.AUTH, {}),
+                    list(registry_oauth_config.get("scopes", [])),
+                )
 
                 auth_schemas = auth_metadata.get("schemas", {})
                 selected_auth_schema = auth_schemas.get(auth_type, {}) if auth_schemas else {}
@@ -4568,6 +4645,13 @@ async def _build_oauth_flow_config(
 
         oauth_flow_config[AuthFieldKeys.AUTHORIZE_URL] = _apply_tenant_to_microsoft_oauth_url(base_authorize_url, tenant_id)
         oauth_flow_config[AuthFieldKeys.TOKEN_URL] = _apply_tenant_to_microsoft_oauth_url(base_token_url, tenant_id)
+
+    raw_scopes = oauth_flow_config.get("scopes") or []
+    if not isinstance(raw_scopes, list):
+        raw_scopes = list(raw_scopes) if raw_scopes else []
+    oauth_flow_config["scopes"] = _apply_confluence_optional_jira_scope(
+        connector_type, auth_config, raw_scopes
+    )
 
     return oauth_flow_config
 
@@ -5692,6 +5776,73 @@ async def save_connector_instance_filters(
         ) from e
 
 
+async def _get_streaming_connector(
+    container: ConnectorAppContainer,
+    connector_id: str,
+    connector_instance: dict[str, Any],
+    connector_registry: ConnectorRegistry,
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    org_id: str,
+    *,
+    is_admin: bool,
+    logger: logging.Logger,
+) -> BaseConnector:
+    """Return a connector from memory, or lazy-initialize it when sync is enabled."""
+    connector_display_name = connector_instance.get("name", "connector")
+    # Look up exclusively via connectors_map — the DI-provider key pattern
+    # ({connector_id}_connector) is not used for the streaming paths.
+    connector_obj: BaseConnector | None = None
+    if hasattr(container, "connectors_map"):
+        connector_obj = container.connectors_map.get(connector_id)
+    if connector_obj:
+        return connector_obj
+
+    if not connector_instance.get("isActive", False):
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=(
+                f"The connector '{connector_display_name}' is currently disabled. "
+                "Enable it from Connector Settings and try again."
+            ),
+        )
+
+    connector_type = connector_instance.get("type", "")
+    if not connector_type:
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail=(
+                "The connector for this record no longer exists or was deleted. "
+                "The record cannot be streamed."
+            ),
+        )
+
+    logger.info(
+        "Connector %s not in memory — lazy-initializing for streaming",
+        connector_id,
+    )
+    connector_obj = await _ensure_connector_initialized(
+        container=container,
+        connector_id=connector_id,
+        connector_type=connector_type,
+        connector_registry=connector_registry,
+        graph_provider=graph_provider,
+        user_id=user_id,
+        org_id=org_id,
+        is_admin=is_admin,
+        logger=logger,
+    )
+    if not connector_obj:
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=(
+                f"The connector '{connector_display_name}' is currently disabled. "
+                "Enable it from Connector Settings and try again."
+            ),
+        )
+    return connector_obj
+
+
 async def _ensure_connector_initialized(
     container: ConnectorAppContainer,
     connector_id: str,
@@ -6362,6 +6513,11 @@ async def get_connector_schema(
 
         raw_schema = metadata.get(ConnectorRequestKeys.CONFIG, {})
         cleaned_schema = _clean_schema_for_response(raw_schema)
+
+        # documentationLinks is stripped from the config blob in _build_connector_info
+        # (to avoid duplication with the top-level field it promotes it to).
+        # Re-inject it here so the schema endpoint exposes it for the frontend.
+        cleaned_schema['documentationLinks'] = metadata.get('documentationLinks', [])
 
         return {
             "success": True,

@@ -41,6 +41,7 @@ export function expandWatchEventsForReplay(
   const expanded: WatchEvent[] = [];
   for (const event of events) {
     if (!event.isDirectory) { expanded.push(event); continue; }
+    expanded.push(event);
     if (event.type === 'DIR_DELETED') {
       for (const relPath of listFilesUnderPrefix(files, event.path)) {
         expanded.push({ type: 'DELETED', path: relPath, timestamp: event.timestamp, isDirectory: false });

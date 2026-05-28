@@ -1,4 +1,4 @@
-replicaCount: 3  # High Availability: 3 replicas for fault tolerance
+replicaCount: 2
 
 # Global configuration
 global:
@@ -138,10 +138,10 @@ ingress:
 resources:
   limits:
     cpu: 8
-    memory: 8Gi
+    memory: 16Gi
   requests:
     cpu: 4
-    memory: 4Gi
+    memory: 8Gi
   # For small clusters (e.g. kind), use lower requests so the pod can schedule: --set resources.requests.cpu=500m --set resources.requests.memory=1Gi
 
 # Additional volumes for app deployment
@@ -172,7 +172,7 @@ affinity: {}
 # Pod Disruption Budget for High Availability
 podDisruptionBudget:
   enabled: true
-  minAvailable: 1  # Ensure at least 1 pod is always available during voluntary disruptions
+  minAvailable: 1
   # maxUnavailable: 1  # Alternative: allow max 1 pod to be unavailable
 
 # Network Policy for pod-to-pod communication control
@@ -228,8 +228,8 @@ healthCheck:
 
 autoscaling:
   enabled: true
-  minReplicas: 3  # Minimum 3 for High Availability
-  maxReplicas: 10  # Scale up to 10 pods based on load
+  minReplicas: 2
+  maxReplicas: 6  # Scale up to 6 pods based on load
   targetCPUUtilizationPercentage: 70  # Scale when CPU > 70%
   targetMemoryUtilizationPercentage: 80  # Scale when Memory > 80%
   # ⚠️  CRITICAL: Metrics Server is REQUIRED for autoscaling!
@@ -287,9 +287,9 @@ config:
 secretKey: "" # Fill
 
 mongodb:
-  architecture: replicaset  # Required for replicaCount > 1; bitnami default is "standalone"
-  replicaSetName: rs0  # Replica set name; passed into MONGO_URI as replicaSet=<name>
-  replicaCount: 3  # MongoDB Replica Set: 3 nodes for quorum (2 out of 3)
+  architecture: replicaset
+  replicaSetName: rs0
+  replicaCount: 2  # 2 data nodes + 1 arbiter = quorum with less storage than 3 full copies
   # Note: REPLICA_SET_AVAILABLE for the app is derived from mongodb.architecture
   # in templates/deployment.yaml. Do not add a separate flag here.
   tls:
@@ -310,7 +310,7 @@ mongodb:
     enabled: true
     storageClass: "" # Fill
   arbiter:
-    enabled: true  # Enable arbiter for MongoDB replica set quorum
+    enabled: true  # Provides the quorum vote without storing a full data copy
   podSecurityContext:
     enabled: true
     runAsNonRoot: true
@@ -324,11 +324,11 @@ mongodb:
       - ALL
 
 redis:
-  architecture: replication  # master-replica architecture
+  architecture: replication  # 1 master + 1 replica for minimal read failover
   master:
-    count: 1  # 1 master
+    count: 1
   replica:
-    replicaCount: 2  # 2 read replicas for HA reads
+    replicaCount: 1
   # Sentinel is disabled by default because the app client is not Sentinel-aware
   # and connects to <release>-redis-master directly. Enabling Sentinel without
   # a Sentinel-aware client will cause stale connections after a failover.
@@ -414,7 +414,7 @@ messageBroker:
   redisStreamsMaxLen: "10000"
 
 zookeeper:
-  replicaCount: 3  # Zookeeper ensemble: 3 nodes for quorum (2 out of 3)
+  replicaCount: 3  # Minimum odd number for ZK quorum — 2 nodes cannot elect a leader
   image:
     repository: confluentinc/cp-zookeeper
     tag: 7.9.0
@@ -443,17 +443,17 @@ zookeeper:
       - ALL
 
 kafka:
-  replicaCount: 3  # Kafka cluster: 3 brokers for HA and fault tolerance
+  replicaCount: 2  # 2 brokers: one can die without data loss (RF=2, minISR=1)
   image:
     repository: confluentinc/cp-kafka
     tag: 7.9.0
     pullPolicy: IfNotPresent
   config:
-    offsetsTopicReplicationFactor: "3"  # Replicate data across 3 brokers
-    transactionStateLogMinIsr: "2"  # Minimum in-sync replicas: 2 out of 3
-    transactionStateLogReplicationFactor: "3"  # Transaction log replicated to 3 brokers
-    defaultReplicationFactor: "3"  # Default replication factor for new topics
-    minInsyncReplicas: "2"  # Minimum in-sync replicas required for writes
+    offsetsTopicReplicationFactor: "2"
+    transactionStateLogMinIsr: "1"
+    transactionStateLogReplicationFactor: "2"
+    defaultReplicationFactor: "2"
+    minInsyncReplicas: "1"
     groupInitialRebalanceDelayMs: "0"
     logRetentionHours: "24"
     numNetworkThreads: "3"
@@ -480,7 +480,7 @@ kafka:
       - ALL
 
 qdrant:
-  replicaCount: 3  # Qdrant cluster: 3 nodes for distributed vector search
+  replicaCount: 2  # 2 nodes: one can fail while the other keeps serving
   image:
     repository: qdrant/qdrant
     tag: v1.15
@@ -493,11 +493,22 @@ qdrant:
     storageClass: "" # Fill
   resources:
     limits:
-      cpu: 1000m
-      memory: 1Gi
+      cpu: 2000m
+      memory: 4Gi
     requests:
-      cpu: 500m
-      memory: 512Mi
+      cpu: 1000m
+      memory: 2Gi
+  # Performance tuning — mirrors docker-compose.prod.yml settings.
+  # QDRANT__SERVICE__API_KEY is injected separately from the secret; do not duplicate it here.
+  env:
+    QDRANT__SERVICE__MAX_REQUEST_SIZE_MB: "64"
+    QDRANT__SERVICE__GRPC_PORT: "6334"
+    QDRANT__SERVICE__HTTP_PORT: "6333"
+    QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS: "0"  # 0 = use all available CPUs
+    QDRANT__STORAGE__OPTIMIZERS__DEFAULT_SEGMENT_NUMBER: "8"
+    QDRANT__STORAGE__OPTIMIZERS__MEMMAP_THRESHOLD: "50000"
+    QDRANT__STORAGE__WAL__WAL_CAPACITY_MB: "256"
+    QDRANT__CLUSTER__CONSENSUS__MAX_MESSAGE_QUEUE_SIZE: "1000"
   # The default qdrant/qdrant image runs as root. fsGroup alone is safe — it
   # chowns the volume so that if the unprivileged image variant is used, it can
   # still write. We do NOT force runAsUser/runAsNonRoot here because that would
@@ -540,10 +551,10 @@ neo4j:
   resources:
     limits:
       cpu: 2000m
-      memory: 2Gi
+      memory: 4Gi
     requests:
       cpu: 1000m
-      memory: 1Gi
+      memory: 2Gi
   podSecurityContext:
     runAsUser: 1000
     fsGroup: 1000
@@ -556,11 +567,11 @@ neo4j:
     capabilities:
       drop:
       - ALL
-  # Optional: apoc plugin and memory tuning. Values below fit small clusters (e.g. kind with 2Gi limit).
-  # Increase for production (e.g. heap 2G, pagecache 512m when node has 4Gi+).
+  # apoc plugin and memory tuning for production (4Gi K8s limit).
+  # heap (2g) + pagecache (1g) + JVM overhead (~500m) fits within 4Gi limit.
   env:
     NEO4J_PLUGINS: '["apoc"]'
     NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
-    NEO4J_dbms_memory_heap_initial__size: 256m
-    NEO4J_dbms_memory_heap_max__size: 512m
-    NEO4J_dbms_memory_pagecache_size: 256m
+    NEO4J_dbms_memory_heap_initial__size: 512m
+    NEO4J_dbms_memory_heap_max__size: 2g
+    NEO4J_dbms_memory_pagecache_size: 1g

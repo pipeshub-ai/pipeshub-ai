@@ -2462,7 +2462,7 @@ PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise
    - *Implicit:* uses service-specific nouns — **"tickets/issues/bugs/epics/stories/sprints/backlog"** → Jira; **"pages/spaces/wiki"** → Confluence; **"emails/inbox"** → Gmail; **"messages/channels/DMs"** → Slack
    → Use the matching service tool. **If that service is ALSO indexed (see DUAL-SOURCE APPS), add retrieval in parallel.**
 6. **Short follow-up trigger after established topic+source?** ("give data", "show me", "go ahead", "yes", "do it", "continue") → Check conversation context for the most recent topic and source, then search that source for that topic. Do NOT set `can_answer_directly: true`.
-7. **User references an EXTERNAL WEBSITE or URL?** (mentions a public website by name — Wikipedia, Stack Overflow, GitHub docs, MDN, Medium, Reddit, any "*.com/org/io" domain, or includes a URL like "https://...") → Use `fetch_url` (if a specific URL is given) or `web_search` (to find the page first).
+{web_search_decision_rule}
 
 **Image Generation Rule:** Only plan `image_generator.generate_image` when the user's request contains an **explicit** instruction to create a new image from a description (e.g. "generate / create / draw / render / paint / design an image/logo/illustration of ..."). Do not use it for:
 
@@ -2516,17 +2516,7 @@ Examples of retrieval queries:
   - `messages` / `channels` / `DMs` → **Slack** search tool
 - Tool description matches the user's request
 
-**Use WEB TOOLS (`web_search` / `fetch_url`) when:**
-- User mentions a **specific external/public website** by name (Wikipedia, Stack Overflow, GitHub, MDN, Reddit, Medium, any public site)
-- User provides or references a **URL** (https://...)
-- User asks to summarize, read, or get content from an **external page/site/article**
-- User wants information that is explicitly **from the web** or **from a specific public source**
-- Query is about **general/public knowledge** unlikely to exist in internal org documents — e.g. product reviews, consumer recommendations, health/medical info, market comparisons, "best X", travel, recipes, public news, scientific research, technology comparisons
-- Query asks for **recommendations, rankings, or comparisons** of products, services, or brands (e.g. "best probiotic supplement", "top laptops 2026", "cheapest flight to X")
-- Query requires **current/real-time data** — prices, availability, weather, sports scores, stock prices, release dates
-
-**⚠️ IMPORTANT — web_search + retrieval in parallel:** When a query could have BOTH internal AND external relevance, plan BOTH `retrieval.search_internal_knowledge` AND `web_search` in parallel.
-
+{web_search_tools_guidance}
 **Use RETRIEVAL when:**
 - User wants **INFORMATION ABOUT** a topic/person/concept (e.g., "what is X", "tell me about Y", "who is Z")
 - User wants **DOCUMENTATION** or **KNOWLEDGE** (e.g., "how to X", "best practices for Y")
@@ -4011,6 +4001,29 @@ async def planner_node(
     zoom_guidance = ZOOM_GUIDANCE if _has_zoom_tools(state) else ""
     salesforce_guidance = SALESFORCE_GUIDANCE if _has_salesforce_tools(state) else ""
     sharepoint_guidance = SHAREPOINT_GUIDANCE if _has_sharepoint_tools(state) else ""
+    has_web_search = bool(state.get("web_search_config"))
+    web_search_decision_rule = (
+        "7. **User references an EXTERNAL WEBSITE or URL?** (mentions a public website by name — "
+        "Wikipedia, Stack Overflow, GitHub docs, MDN, Medium, Reddit, any \"*.com/org/io\" domain, "
+        "or includes a URL like \"https://...\") → Use `fetch_url` (if a specific URL is given) "
+        "or `web_search` (to find the page first)."
+    ) if has_web_search else ""
+    web_search_tools_guidance = (
+        "**Use WEB TOOLS (`web_search` / `fetch_url`) when:**\n"
+        "- User mentions a **specific external/public website** by name (Wikipedia, Stack Overflow, GitHub, MDN, Reddit, Medium, any public site)\n"
+        "- User provides or references a **URL** (https://...)\n"
+        "- User asks to summarize, read, or get content from an **external page/site/article**\n"
+        "- User wants information that is explicitly **from the web** or **from a specific public source**\n"
+        "- Query is about **general/public knowledge** unlikely to exist in internal org documents — "
+        "e.g. product reviews, consumer recommendations, health/medical info, market comparisons, "
+        "\"best X\", travel, recipes, public news, scientific research, technology comparisons\n"
+        "- Query asks for **recommendations, rankings, or comparisons** of products, services, or brands "
+        "(e.g. \"best probiotic supplement\", \"top laptops 2026\", \"cheapest flight to X\")\n"
+        "- Query requires **current/real-time data** — prices, availability, weather, sports scores, stock prices, release dates\n"
+        "\n"
+        "**⚠️ IMPORTANT — web_search + retrieval in parallel:** When a query could have BOTH internal AND external relevance, "
+        "plan BOTH `retrieval.search_internal_knowledge` AND `web_search` in parallel.\n"
+    ) if has_web_search else ""
 
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
@@ -4026,7 +4039,9 @@ async def planner_node(
         redshift_guidance=redshift_guidance,
         zoom_guidance=zoom_guidance,
         salesforce_guidance=salesforce_guidance,
-        sharepoint_guidance=sharepoint_guidance
+        sharepoint_guidance=sharepoint_guidance,
+        web_search_decision_rule=web_search_decision_rule,
+        web_search_tools_guidance=web_search_tools_guidance,
     )
 
     # Add capability summary so LLM can answer "what can you do?" questions
@@ -4037,7 +4052,6 @@ async def planner_node(
     agent_tools = state.get("tools", []) or []
     has_user_tools = bool(agent_tools)
     has_knowledge = state.get("has_knowledge", False)
-    has_web_search = bool(state.get("web_search_config"))
 
     if not has_knowledge:
         web_search_note = ""
@@ -6822,7 +6836,7 @@ async def respond_node(
                 f"({len(virtual_record_map)} records available, "
             )
 
-        # Add web tools (fetch_url always, web_search if configured)
+        # Add web tools when agent has web search configured in the builder
         has_web_search_tool = False
         try:
             from app.modules.agents.qna.tool_system import _create_web_tools
@@ -8666,18 +8680,29 @@ as a degraded fallback only used when one of the rules below explicitly applies.
 ### When to use ONLY retrieval (no service tools):
 - The agent has no service tool that matches the query's domain.
 - Cross-service summaries where no single live API would have the full picture.
-
+"""
+        if has_web_search:
+            base_prompt += """
 ### When to use `web_search`:
 - Current/changing public info (news, prices, weather, software versions, regulations) or "latest"/"current" requests.
 - When you suspect internal knowledge is incomplete on a public-knowledge question — combine with retrieval.
-
+"""
+        base_prompt += """
 ### How to merge hybrid results:
-1. Call the appropriate tools (retrieval + service API + web_search as needed) — IN PARALLEL where possible.
+1. Call the appropriate tools (retrieval + service API"""
+        if has_web_search:
+            base_prompt += " + web_search as needed"
+        base_prompt += """) — IN PARALLEL where possible.
 2. Present a unified answer combining insights from all sources.
 3. For internal knowledge (retrieval): cite as [source](ref1) using the Citation ID from the context blocks.
-4. For web search/fetch_url results: cite as [source](URL/citation id) using the URL/citation id.
-5. Clearly attribute live API data (e.g., "According to your Outlook calendar..." or "From Confluence...").
 """
+        if has_web_search:
+            base_prompt += (
+                "4. For web search/fetch_url results: cite as [source](URL/citation id) using the URL/citation id.\n"
+                "5. Clearly attribute live API data (e.g., \"According to your Outlook calendar...\" or \"From Confluence...\").\n"
+            )
+        else:
+            base_prompt += "4. Clearly attribute live API data (e.g., \"According to your Outlook calendar...\" or \"From Confluence...\").\n"
 
     elif has_service_tools and not has_knowledge:
         base_prompt += """

@@ -43,6 +43,7 @@ import {
   mergeChildrenIntoTree,
   categorizeNode,
   buildConnectorAppSidebarTree,
+  treeHasNodeWithId,
 } from './utils/tree-builder';
 import {
   getSourceDisplay,
@@ -64,6 +65,7 @@ import {
 } from './url-params';
 import { getIsAllRecordsMode, buildNavUrl as buildCleanNavUrl } from './utils/nav';
 import { FOLDER_REINDEX_DEPTH, SIDEBAR_PAGINATION_PAGE_SIZE } from './constants';
+import { sidebarNodeChildrenMetaFromResponse } from './utils/sidebar-child-pagination-meta';
 import { refreshKbTree } from './utils/refresh-kb-tree';
 import { getReindexSuccessTitle } from './utils/reindex-label';
 import { getCollectionsHubBootstrapFromToken } from './utils/collections-hub-app';
@@ -1067,9 +1069,12 @@ function KnowledgeBasePageContent() {
       setCreateFolderContext({ type: 'collection' });
       setIsCreateFolderDialogOpen(true);
     } else {
-      const { type, nodeId, nodeName, nodeType, rootKbId } = pendingSidebarAction;
+      const { type, nodeId, nodeName, nodeType, rootKbId, statusFilters } = pendingSidebarAction;
       if (type === 'reindex') {
-        handleReindexClick({ id: nodeId, name: nodeName, nodeType } as KnowledgeHubNode);
+        handleReindexClick(
+          { id: nodeId, name: nodeName, nodeType } as KnowledgeHubNode,
+          statusFilters
+        );
       } else if (type === 'delete') {
         setItemToDelete({ id: nodeId, name: nodeName, nodeType, rootKbId });
         setIsDeleteDialogOpen(true);
@@ -1199,6 +1204,93 @@ function KnowledgeBasePageContent() {
     [isAllRecordsMode, setAllRecordsSearchQuery, setSearchQuery]
   );
 
+  const refreshAllRecordsSidebarForCurrentRoute = useCallback(async () => {
+    if (!isAllRecordsMode) return;
+
+    const nodeType = searchParams.get('nodeType') as NodeType | null;
+    const nodeId = searchParams.get('nodeId');
+    if (!nodeType || !nodeId) return;
+
+    try {
+      const response = await KnowledgeHubApi.getNodeChildren(nodeType, nodeId, {
+        onlyContainers: true,
+        page: 1,
+        limit: SIDEBAR_PAGINATION_PAGE_SIZE,
+        include: 'counts',
+        sortBy: 'name',
+        sortOrder: 'asc',
+      });
+
+      const foldersCount =
+        response.counts?.items?.find((x) => x.label === 'folders')?.count ?? response.items.length;
+      const effectiveHasChildFolders = foldersCount > 0;
+      const state = useKnowledgeBaseStore.getState();
+      const selectedApp = nodeType === 'app' ? state.appNodes.find((app) => app.id === nodeId) : null;
+
+      if (selectedApp) {
+        state.cacheAppChildren(selectedApp.id, response.items);
+        const p = response.pagination;
+        state.setAppChildPagination(
+          selectedApp.id,
+          p
+            ? {
+                hasNext: p.hasNext,
+                nextPage: p.hasNext ? p.page + 1 : p.page,
+              }
+            : { hasNext: false, nextPage: 1 }
+        );
+
+        if (isKbCollectionsHubApp(selectedApp)) {
+          state.setNodes(response.items);
+          state.setCategorizedNodes(categorizeNodes(response.items, `apps/${selectedApp.id}`));
+          state.reMergeCachedChildrenIntoTree();
+        } else {
+          state.addNodes(response.items);
+          state.setConnectorAppTree(
+            selectedApp.id,
+            buildConnectorAppSidebarTree(selectedApp.id, response.items)
+          );
+        }
+        return;
+      }
+
+      state.cacheNodeChildren(nodeId, response.items);
+      state.setNodeChildrenPagination(
+        nodeId,
+        sidebarNodeChildrenMetaFromResponse(
+          response.pagination,
+          response.items.length,
+          SIDEBAR_PAGINATION_PAGE_SIZE,
+          nodeType
+        )
+      );
+      state.addNodes(response.items);
+
+      const latest = useKnowledgeBaseStore.getState();
+      if (latest.categorizedNodes) {
+        const parentNode = latest.nodes.find((n) => n.id === nodeId);
+        if (parentNode) {
+          const section = categorizeNode(parentNode);
+          const updatedTree = mergeChildrenIntoTree(
+            latest.categorizedNodes[section],
+            nodeId,
+            response.items,
+            effectiveHasChildFolders
+          );
+          latest.setCategorizedNodes({ ...latest.categorizedNodes, [section]: updatedTree });
+        }
+      }
+
+      for (const [appId, tree] of Array.from(latest.connectorAppTrees.entries())) {
+        if (!treeHasNodeWithId(tree, nodeId)) continue;
+        latest.mergeConnectorAppTreeChildren(appId, nodeId, response.items, effectiveHasChildFolders);
+        break;
+      }
+    } catch (error) {
+      console.error('Failed to refresh all-records sidebar for current route', { nodeId, error });
+    }
+  }, [isAllRecordsMode, searchParams]);
+
   // Refetch main table for current route context (shared by handleRefresh and refreshData)
   const refetchMainTableForCurrentRoute = useCallback(async () => {
     if (isAllRecordsMode) {
@@ -1227,10 +1319,11 @@ function KnowledgeBasePageContent() {
     setIsRefreshing(true);
     try {
       await refetchMainTableForCurrentRoute();
+      await refreshAllRecordsSidebarForCurrentRoute();
     } finally {
       setIsRefreshing(false);
     }
-  }, [refetchMainTableForCurrentRoute, setIsRefreshing]);
+  }, [refetchMainTableForCurrentRoute, refreshAllRecordsSidebarForCurrentRoute, setIsRefreshing]);
 
   // Refresh orchestrator: Syncs sidebar and content area after mutations (delete, create, etc.)
   const refreshData = useCallback(async () => {
@@ -2002,7 +2095,10 @@ function KnowledgeBasePageContent() {
   );
 
   // Handle reindex - directly reindexes the item with loading/success/error toasts
-  const handleReindexClick = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem) => {
+  const handleReindexClick = useCallback(async (
+    item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem,
+    statusFilters?: string[]
+  ) => {
 
     const toastId = toast.loading('Re-indexing...', {
       icon: 'lap_timer',
@@ -2013,13 +2109,13 @@ function KnowledgeBasePageContent() {
 
       if (nodeType === 'recordGroup') {
         // RecordGroups are connector-app folders — use record-group endpoint
-        await KnowledgeBaseApi.reindexRecordGroup(item.id);
+        await KnowledgeBaseApi.reindexRecordGroup(item.id, statusFilters);
       } else if (nodeType === 'folder') {
         // KB folders — reindex all children
-        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
+        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH, statusFilters);
       } else {
         // Regular records — include children in reindex
-        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
+        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH, statusFilters);
       }
 
       toast.update(toastId, {
@@ -2047,7 +2143,7 @@ function KnowledgeBasePageContent() {
           icon: 'refresh',
           onClick: () => {
             toast.dismiss(toastId);
-            handleReindexClick(item);
+            handleReindexClick(item, statusFilters);
           },
         },
       });

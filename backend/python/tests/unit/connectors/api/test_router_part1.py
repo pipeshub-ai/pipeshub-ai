@@ -2769,7 +2769,7 @@ class TestStreamRecordInternal:
         gp.get_record_by_id = AsyncMock(return_value=record)
         gp.get_document = AsyncMock(side_effect=[
             {"_key": "org-1"},  # org
-            {"_key": "conn-1", "name": "My Drive"},  # connector instance
+            {"_key": "conn-1", "name": "My Drive", "isActive": False},  # connector instance
         ])
 
         config_service = AsyncMock()
@@ -2900,7 +2900,7 @@ class TestDownloadFile:
         gp = AsyncMock()
         gp.get_document = AsyncMock(side_effect=[
             {"_key": "org-1"},  # org
-            {"_key": "conn-1", "type": "googledrive", "name": "Drive"},  # connector instance
+            {"_key": "conn-1", "type": "googledrive", "name": "Drive", "isActive": False},  # connector instance
         ])
         gp.get_record_by_id = AsyncMock(return_value=record)
 
@@ -2925,7 +2925,7 @@ class TestDownloadFile:
         gp = AsyncMock()
         gp.get_document = AsyncMock(side_effect=[
             {"_key": "org-1"},  # org
-            {"_key": "conn-1", "type": "slack", "name": "My Slack"},  # connector instance
+            {"_key": "conn-1", "type": "slack", "name": "My Slack", "isActive": True},  # connector instance
         ])
         gp.get_record_by_id = AsyncMock(return_value=record)
 
@@ -3022,7 +3022,7 @@ class TestStreamRecord:
         gp = AsyncMock()
         gp.get_document = AsyncMock(side_effect=[
             {"_key": "org-1"},  # org
-            {"_key": "conn-1", "name": "Drive"},  # connector instance
+            {"_key": "conn-1", "name": "Drive", "isActive": True},  # connector instance
         ])
         gp.get_record_by_id = AsyncMock(return_value=record)
         gp.check_record_access_with_details = AsyncMock(return_value={"hasAccess": True})

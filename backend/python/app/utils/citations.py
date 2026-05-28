@@ -226,26 +226,6 @@ def _clean_duplicate_citation_links(
     text = _CONSECUTIVE_MD_LINKS_RE.sub(_consecutive_links_replacer, text)
     return text
 
-
-CITATION_WORD_LIMIT = 4
-
-_CITATION_LABEL_RE = re.compile(
-    r'^(?:source|src|ref|reference|link|cite|citation)\s*\.?\s*\d*$',
-    re.IGNORECASE,
-)
-
-
-def _is_citation_label(text: str) -> bool:
-    """Return True if the link text is a generic citation label (e.g. 'source', '3'),
-    not descriptive content like a title or name."""
-    text = text.strip()
-    if not text:
-        return True
-    if re.match(r'^\d+$', text):
-        return True
-    return bool(_CITATION_LABEL_RE.match(text))
-
-
 @dataclass
 class ChatDocCitation:
     content: str
@@ -319,25 +299,21 @@ def _renumber_citation_links(
     ref_to_url: dict[str, str] | None = None,
 ) -> str:
     """
-    Replace citation numbers in markdown links with their new sequential numbers.
+    Replace citation markdown links with sequential ``[N](url)`` badges.
     Resolves tiny refs to full URLs in the output so the frontend receives full URLs.
     Processes matches in reverse order to preserve string positions.
 
-    Links whose text is a generic citation label ("source", a bare number, etc.)
-    are renumbered as ``[N](url)``.  Links with descriptive text (e.g. a title
-    or name) keep their display text and only have the URL resolved, so the
-    frontend renders them as normal hyperlinks rather than citation badges.
+    All matched links — whether their text is a generic label ("source") or
+    descriptive ("India - Wikipedia") — are replaced with ``[N](url)`` so the
+    frontend can render them as numbered citation chips.  The original link text
+    is discarded because the citation metadata already stores the title/content.
     """
     for match in reversed(md_matches):
         raw_target = match.group(2).strip()
         full_url = _resolve_ref(raw_target, ref_to_url)
         new_num = url_to_citation_num.get(full_url)
         if new_num is not None:
-            link_text = match.group(1)
-            if _is_citation_label(link_text):
-                replacement = f"[{new_num}]({full_url})"
-            else:
-                replacement = f"[{link_text}]({full_url})"
+            replacement = f"[{new_num}]({full_url})"
             text = text[:match.start()] + replacement + text[match.end():]
     return text
 
@@ -350,11 +326,58 @@ def _extract_block_index_from_url(url: str) -> int | None:
     return None
 
 def _extract_record_id_from_url(url: str) -> str | None:
-    """Extract recordId from a block web URL like /record/abc123/preview#blockIndex=5"""
+    """Extract recordId from block preview or record landing URLs."""
     m = re.search(r'/record/([^/]+)/preview', url)
     if m:
         return m.group(1)
+    m = re.search(r'/record/([^/?#]+)', url)
+    if m:
+        return m.group(1)
     return None
+
+
+def _find_record_by_id(
+    record_id: str,
+    records: list[dict[str, Any]],
+    virtual_record_id_to_result: dict[str, dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    
+    if virtual_record_id_to_result:
+        for rec in virtual_record_id_to_result.values():
+            if rec and rec.get("id") == record_id:
+                return rec
+    for r in records:
+        if r.get("id") == record_id:
+            return r
+    return None
+
+
+def _append_record_page_citation(
+    record: dict[str, Any],
+    url: str,
+    new_citations: list[dict[str, Any]],
+    url_to_citation_num: dict[str, int],
+    citation_num: int,
+) -> int:
+    """Build citation metadata for /record/{id} (header / landing page), not a specific block."""
+    snippet = (record.get("semantic_metadata") or {}).get("summary") or record.get("record_name") or "Record"
+    if not isinstance(snippet, str):
+        snippet = _safe_stringify_content(value=snippet)
+    snippet = snippet.strip() or (record.get("record_name") or "Record")
+    display_content = snippet
+    meta = get_enhanced_metadata(
+        record,
+        None,
+        {"webUrl": url, "blockText": display_content, },
+    )
+    new_citations.append({
+        "content": display_content,
+        "chunkIndex": citation_num,
+        "metadata": meta,
+        "citationType": "vectordb|document",
+    })
+    url_to_citation_num[url] = citation_num
+    return citation_num + 1
 
 
 def _find_web_record_by_url(
@@ -610,10 +633,24 @@ def _normalize_markdown_link_citations(
             url_to_citation_num[url] = new_citation_num
             new_citation_num += 1
         else:
-            # Try matching by record_id + block_index extracted from URL
+            # Try matching by record_id + block_index extracted from URL,
+            # or record landing URL /record/{id} (record-level / header citation).
             record_id = _extract_record_id_from_url(url)
             block_index = _extract_block_index_from_url(url)
-            if record_id is not None and block_index is not None:
+            if record_id is not None and block_index is None:
+                rec = _find_record_by_id(record_id, records, virtual_record_id_to_result)
+                if rec and url not in url_to_citation_num:
+                    new_citation_num = _append_record_page_citation(
+                        rec, url, new_citations, url_to_citation_num, new_citation_num
+                    )
+                elif not rec:
+                    logger.warning(
+                        "🔎 [KB-CITE] normalize(chat): DROPPED record-page citation | url=%s record_id=%s records_len=%d vrid_map_len=%d",
+                        url, record_id,
+                        len(records) if records else 0,
+                        len(virtual_record_id_to_result) if virtual_record_id_to_result else 0,
+                    )
+            elif record_id is not None and block_index is not None:
                 _matched = False
                 for r in records:
                     if r.get("id") == record_id:
@@ -806,7 +843,20 @@ def _normalize_markdown_link_citations_for_agent(
         else:
             record_id = _extract_record_id_from_url(url)
             block_index = _extract_block_index_from_url(url)
-            if record_id is not None and block_index is not None:
+            if record_id is not None and block_index is None:
+                rec = _find_record_by_id(record_id, records, virtual_record_id_to_result)
+                if rec and url not in url_to_citation_num:
+                    new_citation_num = _append_record_page_citation(
+                        rec, url, new_citations, url_to_citation_num, new_citation_num
+                    )
+                elif not rec:
+                    logger.warning(
+                        "🔎 [KB-CITE] normalize(agent): DROPPED record-page citation | url=%s record_id=%s records_len=%d vrid_map_len=%d",
+                        url, record_id,
+                        len(records) if records else 0,
+                        len(virtual_record_id_to_result) if virtual_record_id_to_result else 0,
+                    )
+            elif record_id is not None and block_index is not None:
                 # Search in records from tool calls
                 for r in records:
                     if r.get("id") == record_id:

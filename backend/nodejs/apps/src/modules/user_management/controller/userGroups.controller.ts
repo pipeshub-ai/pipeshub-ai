@@ -41,8 +41,9 @@ export class UserGroupController {
     if (!type) {
       throw new BadRequestError('type(Type of the Group) is required');
     }
-    if (name === 'admin' || type === 'admin') {
-      throw new BadRequestError('this type of group cannot be created');
+    const reserved = ['admin', 'everyone', 'standard']
+    if (reserved.includes(name) || reserved.includes(type)) {
+      throw new BadRequestError('Group name or type "admin", "everyone", or "standard" cannot be created');
     }
 
     if (!groupTypes.find((groupType) => groupType === type)) {

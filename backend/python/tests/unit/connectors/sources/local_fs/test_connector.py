@@ -73,7 +73,7 @@ if "etcd3" not in sys.modules:
 import aiohttp  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
-from app.config.constants.arangodb import Connectors, ProgressStatus  # noqa: E402
+from app.config.constants.arangodb import Connectors, MimeTypes, ProgressStatus  # noqa: E402
 from app.config.constants.http_status_code import HttpStatusCode  # noqa: E402
 from app.connectors.core.registry.filters import (  # noqa: E402
     BooleanOperator,
@@ -148,6 +148,20 @@ class TestLocalFsConnectorHelpers:
             folder_connector._external_record_id_for_rel_path(nfc)
             == folder_connector._external_record_id_for_rel_path(nfd)
         )
+
+    def test_folder_record_uses_file_record_type_with_folder_flag(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        folder_record, _permissions = folder_connector._build_folder_record(
+            "docs",
+            tmp_path,
+            folder_connector._record_group_external_id(),
+            1234,
+        )
+
+        assert folder_record.record_type == RecordType.FILE
+        assert folder_record.is_file is False
+        assert folder_record.mime_type == MimeTypes.FOLDER.value
 
     def test_extract_storage_document_id_top_level_id(self):
         assert (
@@ -432,7 +446,7 @@ class TestLocalFsConnectorAsync:
             await folder_connector.apply_file_event_batch([])
         assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
-    async def test_apply_file_event_batch_rejects_directory_event(
+    async def test_apply_file_event_batch_upserts_directory_event(
         self, folder_connector: LocalFsConnector, tmp_path: Path
     ):
         folder_connector.config_service.get_config = AsyncMock(
@@ -457,6 +471,7 @@ class TestLocalFsConnectorAsync:
         ):
             folder_connector.data_entities_processor.on_new_app_users = AsyncMock()
             folder_connector.data_entities_processor.on_new_record_groups = AsyncMock()
+            folder_connector.data_entities_processor.on_new_records = AsyncMock()
             ev = LocalFsFileEvent(
                 type="CREATED",
                 path="x",
@@ -465,9 +480,16 @@ class TestLocalFsConnectorAsync:
                 size=1,
                 isDirectory=True,
             )
-            with pytest.raises(HTTPException) as ei:
-                await folder_connector.apply_file_event_batch([ev])
-            assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
+            stats = await folder_connector.apply_file_event_batch([ev])
+
+        assert stats.processed == 0
+        folder_connector.data_entities_processor.on_new_records.assert_awaited_once()
+        records = folder_connector.data_entities_processor.on_new_records.await_args.args[0]
+        folder_record, permissions = records[0]
+        assert folder_record.local_fs_relative_path == "x"
+        assert folder_record.is_file is False
+        assert folder_record.mime_type == MimeTypes.FOLDER.value
+        assert permissions[0].external_id == user.id
 
     async def test_stream_record_returns_bytes(
         self, folder_connector: LocalFsConnector, tmp_path: Path
@@ -747,11 +769,66 @@ class TestLocalFsConnectorAsync:
         assert stats.processed == 1
         folder_connector.data_entities_processor.on_new_records.assert_awaited_once()
         records = folder_connector.data_entities_processor.on_new_records.await_args.args[0]
-        record, permissions = records[0]
+        folder_record, _folder_permissions = records[0]
+        record, permissions = records[1]
+        assert folder_record.local_fs_relative_path == "notes"
+        assert folder_record.is_file is False
+        assert folder_record.mime_type == MimeTypes.FOLDER.value
+        assert record.parent_external_record_id == folder_connector._external_record_id_for_rel_path("notes")
         assert record.path == f"{LOCAL_FS_STORAGE_PATH_PREFIX}doc-123"
         assert record.record_name == "a.txt"
         assert record.external_revision_id == "2d119f1cd272958a492a144af600b9dc36531f73027b34073967345b027021b1"
         assert permissions[0].type == PermissionType.OWNER
+
+    async def test_apply_uploaded_file_event_batch_emits_parent_folders(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={"sync": {"customValues": {SYNC_ROOT_PATH_KEY: str(tmp_path / "desktop-only")}}}
+        )
+        user = User(email="u@x.com", id="u1", org_id="org-1")
+        txn = MagicMock()
+        txn.__aenter__ = AsyncMock(return_value=txn)
+        txn.__aexit__ = AsyncMock(return_value=None)
+        txn.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
+        txn.get_user_by_user_id = AsyncMock(return_value=user)
+        txn.get_record_by_external_id = AsyncMock(return_value=None)
+        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
+        folder_connector._upload_storage_file = AsyncMock(return_value="doc-123")
+
+        with patch(
+            "app.connectors.sources.local_fs.connector.load_connector_filters",
+            new=AsyncMock(return_value=(FilterCollection(filters=[]), FilterCollection(filters=[]))),
+        ):
+            folder_connector.data_entities_processor.on_new_app_users = AsyncMock()
+            folder_connector.data_entities_processor.on_new_record_groups = AsyncMock()
+            folder_connector.data_entities_processor.on_new_records = AsyncMock()
+            stats = await folder_connector.apply_uploaded_file_event_batch(
+                [
+                    LocalFsFileEvent(
+                        type="CREATED",
+                        path="notes/projects/a.txt",
+                        timestamp=1000,
+                        size=12,
+                        isDirectory=False,
+                        contentField="file_0",
+                        sha256=hashlib.sha256(b"hello upload").hexdigest(),
+                        mimeType="text/plain",
+                    )
+                ],
+                {"file_0": b"hello upload"},
+            )
+
+        assert stats.processed == 1
+        records = folder_connector.data_entities_processor.on_new_records.await_args.args[0]
+        emitted = {record.local_fs_relative_path: record for record, _perms in records}
+        assert emitted["notes"].is_file is False
+        assert emitted["notes"].mime_type == MimeTypes.FOLDER.value
+        assert emitted["notes"].parent_external_record_id is None
+        assert emitted["notes/projects"].is_file is False
+        assert emitted["notes/projects"].parent_external_record_id == folder_connector._external_record_id_for_rel_path("notes")
+        assert emitted["notes/projects/a.txt"].parent_external_record_id == folder_connector._external_record_id_for_rel_path("notes/projects")
+        assert emitted["notes/projects/a.txt"].parent_record_type == RecordType.FILE
 
     async def test_apply_uploaded_delete_removes_storage_document_and_record(
         self, folder_connector: LocalFsConnector, tmp_path: Path
@@ -2337,6 +2414,45 @@ class TestRunSync:
         # Owner must be cleared from instance state.
         assert folder_connector._owner_user_for_permissions is None
 
+    async def test_full_sync_emits_parent_folders_and_links_nested_files(
+        self, folder_connector, tmp_path
+    ):
+        (tmp_path / "empty").mkdir()
+        nested_dir = tmp_path / "docs" / "plans"
+        nested_dir.mkdir(parents=True)
+        nested_file = nested_dir / "roadmap.txt"
+        nested_file.write_text("ship", encoding="utf-8")
+
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path), "batchSize": "10"}}
+        )
+        owner = User(email="o@x.com", id="owner-1", org_id="org-1")
+        folder_connector._resolve_owner_user = AsyncMock(return_value=owner)
+        folder_connector._reset_existing_records = AsyncMock(return_value=0)
+        folder_connector.data_entities_processor.on_new_app_users = AsyncMock()
+        folder_connector.data_entities_processor.on_new_record_groups = AsyncMock()
+        folder_connector.data_entities_processor.on_new_records = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.local_fs.connector.load_connector_filters",
+            new=AsyncMock(
+                return_value=(FilterCollection(filters=[]), FilterCollection(filters=[]))
+            ),
+        ):
+            await folder_connector.run_sync()
+
+        records = folder_connector.data_entities_processor.on_new_records.await_args.args[0]
+        emitted = {record.local_fs_relative_path: record for record, _perms in records}
+        assert emitted["empty"].is_file is False
+        assert emitted["empty"].mime_type == MimeTypes.FOLDER.value
+        assert emitted["docs"].is_file is False
+        assert emitted["docs"].mime_type == MimeTypes.FOLDER.value
+        assert emitted["docs"].parent_external_record_id is None
+        assert emitted["docs/plans"].is_file is False
+        assert emitted["docs/plans"].parent_external_record_id == folder_connector._external_record_id_for_rel_path("docs")
+        assert emitted["docs/plans/roadmap.txt"].parent_external_record_id == folder_connector._external_record_id_for_rel_path("docs/plans")
+        assert emitted["docs/plans/roadmap.txt"].parent_record_type == RecordType.FILE
+
     async def test_exception_propagates_and_clears_owner(
         self, folder_connector, tmp_path
     ):
@@ -2698,6 +2814,41 @@ class TestApplyFileEventBatchBranches:
         folder_connector.data_entities_processor.on_new_records.assert_awaited()
         folder_connector._delete_external_ids.assert_awaited()
 
+    async def test_uploaded_directory_rename_upserts_new_folder_then_deletes_old(
+        self, folder_connector, tmp_path
+    ):
+        owner = await self._setup(folder_connector, tmp_path)
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={"sync": {"customValues": {SYNC_ROOT_PATH_KEY: str(tmp_path / "desktop-only")}}}
+        )
+
+        stats = await folder_connector.apply_uploaded_file_event_batch(
+            [
+                LocalFsFileEvent(
+                    type="DIR_RENAMED",
+                    path="docs",
+                    oldPath="doc",
+                    timestamp=1,
+                    isDirectory=True,
+                )
+            ],
+            {},
+        )
+
+        assert stats.processed == 0
+        assert stats.deleted == 1
+        folder_connector.data_entities_processor.on_new_records.assert_awaited_once()
+        records = folder_connector.data_entities_processor.on_new_records.await_args.args[0]
+        folder_record, perms = records[0]
+        assert folder_record.local_fs_relative_path == "docs"
+        assert folder_record.is_file is False
+        assert folder_record.mime_type == MimeTypes.FOLDER.value
+        assert perms[0].external_id == owner.id
+        folder_connector._delete_external_ids.assert_awaited_once_with(
+            [folder_connector._external_record_id_for_rel_path("doc")],
+            owner.id,
+        )
+
 
 # --------------------------------------------------------------------------- #
 # stream_record — local-file fallback path                                    #
@@ -2855,6 +3006,28 @@ class TestEnsureOwnerAndRecordGroup:
             await folder_connector._ensure_owner_and_record_group(tmp_path)
         assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
         assert "owner" in str(ei.value.detail).lower()
+
+    async def test_record_group_name_uses_sync_root_folder_name(
+        self, folder_connector, tmp_path: Path
+    ) -> None:
+        owner = User(email="owner@example.com", id="owner-1", org_id="org-1")
+        folder_connector._resolve_owner_user = AsyncMock(return_value=owner)
+        folder_connector.data_entities_processor.on_new_app_users = AsyncMock()
+        folder_connector.data_entities_processor.on_new_record_groups = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.local_fs.connector.load_connector_filters",
+            new=AsyncMock(
+                return_value=(FilterCollection(filters=[]), FilterCollection(filters=[]))
+            ),
+        ):
+            await folder_connector._ensure_owner_and_record_group(tmp_path)
+
+        folder_connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        payload = folder_connector.data_entities_processor.on_new_record_groups.await_args.args[0]
+        record_group = payload[0][0]
+        assert record_group.name == tmp_path.name
+        assert "Local FS" not in record_group.name
 
 
 # --------------------------------------------------------------------------- #
@@ -3086,7 +3259,7 @@ class TestApplyUploadedFileEventBatchValidation:
         )
         folder_connector._bulk_get_records_by_external_ids = AsyncMock(return_value={})
 
-    async def test_directory_event_raises_in_processing_loop(
+    async def test_directory_event_upserts_folder_in_processing_loop(
         self, folder_connector, tmp_path, monkeypatch
     ) -> None:
         await self._base_setup(folder_connector, tmp_path)
@@ -3101,11 +3274,18 @@ class TestApplyUploadedFileEventBatchValidation:
             isDirectory=True,
             contentField="f1",
         )
-        with pytest.raises(HTTPException) as ei:
-            await folder_connector.apply_uploaded_file_event_batch(
-                [ev], {"f1": b"x"}
-            )
-        assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        stats = await folder_connector.apply_uploaded_file_event_batch(
+            [ev], {"f1": b"x"}
+        )
+
+        assert stats.processed == 0
+        folder_connector.data_entities_processor.on_new_records.assert_awaited_once()
+        records = folder_connector.data_entities_processor.on_new_records.await_args.args[0]
+        folder_record, permissions = records[0]
+        assert folder_record.local_fs_relative_path == "dir_placeholder"
+        assert folder_record.is_file is False
+        assert folder_record.mime_type == MimeTypes.FOLDER.value
+        assert permissions[0].external_id == "u1"
 
     async def test_unsupported_event_type_raises(
         self, folder_connector, tmp_path, monkeypatch

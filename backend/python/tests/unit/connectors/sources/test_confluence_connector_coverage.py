@@ -935,8 +935,9 @@ class TestFetchGroupMembers:
             "size": 2,
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        emails = await c._fetch_group_members("g1", "Group 1")
+        emails, account_ids = await c._fetch_group_members("g1", "Group 1")
         assert emails == ["a@t.com"]
+        assert account_ids == []
 
     @pytest.mark.asyncio
     async def test_api_failure(self):
@@ -944,15 +945,17 @@ class TestFetchGroupMembers:
         mock_ds = MagicMock()
         mock_ds.get_group_members = AsyncMock(return_value=_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        emails = await c._fetch_group_members("g1", "G")
+        emails, account_ids = await c._fetch_group_members("g1", "G")
         assert emails == []
+        assert account_ids == []
 
     @pytest.mark.asyncio
     async def test_exception_returns_empty(self):
         c = _conn()
         c._get_fresh_datasource = AsyncMock(side_effect=Exception("fail"))
-        emails = await c._fetch_group_members("g1", "G")
+        emails, account_ids = await c._fetch_group_members("g1", "G")
         assert emails == []
+        assert account_ids == []
 
 
 # ===========================================================================
@@ -1748,12 +1751,14 @@ class TestRunSync:
         space.short_name = "TEST"
         space.name = "Test Space"
         c._sync_spaces = AsyncMock(return_value=[space])
+        c._sync_folders = AsyncMock()
         c._sync_content = AsyncMock()
         c._sync_permission_changes_from_audit_log = AsyncMock()
 
         await c.run_sync()
         c._sync_users.assert_awaited_once()
         c._sync_user_groups.assert_awaited_once()
+        c._sync_folders.assert_awaited_once_with("TEST")
         assert c._sync_content.await_count == 2  # pages + blogposts
 
 

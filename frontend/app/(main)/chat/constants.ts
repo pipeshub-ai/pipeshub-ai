@@ -183,3 +183,7 @@ export const SIDEBAR_AGENT_CONVERSATIONS_PAGE_SIZE = 10;
 
 /** Page size for GET /api/v1/agents/:id/conversations in the More panel (infinite scroll). */
 export const AGENT_CONVERSATIONS_PAGE_SIZE = 20;
+
+/** Number of messages fetched per page when loading a conversation (initial load and
+ *  "load older messages" infinite scroll). Must match the backend's default limit. */
+export const CONVERSATION_MESSAGES_PAGE_SIZE = 20;

@@ -255,8 +255,14 @@ function KnowledgeBaseSidebarSlotContent() {
   );
 
   const handleSidebarReindex = useCallback(
-    (nodeId: string, nodeType: NodeType, name: string) => {
-      setPendingSidebarAction({ type: 'reindex', nodeId, nodeName: name, nodeType });
+    (nodeId: string, nodeType: NodeType, name: string, statusFilters?: string[]) => {
+      setPendingSidebarAction({
+        type: 'reindex',
+        nodeId,
+        nodeName: name,
+        nodeType,
+        statusFilters,
+      });
     },
     [setPendingSidebarAction]
   );
@@ -312,16 +318,6 @@ function KnowledgeBaseSidebarSlotContent() {
     setPendingSidebarAction({ type: 'create-collection' });
   }, [setPendingSidebarAction]);
 
-  const filteredAppNodes = useMemo(
-    () =>
-      appNodes.filter((app) => {
-        if (loadingAppIds.has(app.id)) return true;
-        const children = appChildrenCache.get(app.id);
-        return children != null && children.length > 0;
-      }),
-    [appNodes, appChildrenCache, loadingAppIds]
-  );
-
   return (
     <KnowledgeBaseSidebar
       pageViewMode={pageViewMode}
@@ -334,7 +330,7 @@ function KnowledgeBaseSidebarSlotContent() {
       onNodeSelect={handleNodeSelect}
       isLoadingNodes={isSidebarTreeLoading || isAutoExpanding}
       loadingNodeIds={loadingNodeIds}
-      appNodes={filteredAppNodes}
+      appNodes={appNodes}
       appChildrenCache={appChildrenCache}
       connectorAppTrees={connectorAppTrees}
       loadingAppIds={loadingAppIds}

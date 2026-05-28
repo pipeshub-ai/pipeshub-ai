@@ -1,23 +1,22 @@
 'use client';
 
-import React, { useState, useLayoutEffect } from 'react';
+import React, { useState, useLayoutEffect, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, Heading, Button } from '@radix-ui/themes';
+import { ELECTRON_SERVER_URL_NAVIGATION_EVENT } from '@/lib/store/auth-store';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import {
   isElectron,
-  setApiBaseUrl,
-  hasStoredApiBaseUrl,
-  hasServerUrlSetupAck,
-  setServerUrlSetupAck,
-  migrateLegacyServerUrlConfirmation,
+  setSessionApiBaseUrl,
+  shouldSkipElectronServerUrlSetup,
 } from '@/lib/electron';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 
 /**
- * ServerUrlGuard — wraps the app in Electron until the user has confirmed a
- * server URL (durable ack in localStorage). Survives cold restarts; cleared on
- * explicit workspace logout so the URL step can be shown again.
+ * ServerUrlGuard — wraps the app in Electron until the user connects a server URL.
+ * Connect saves a draft (localStorage) for pre-fill on reopen; login ack is set
+ * only after successful sign-in. Without ack, quit + reopen shows this screen
+ * again with the last URL pre-filled.
  *
  * On web this component is transparent (renders children immediately).
  */
@@ -40,9 +39,18 @@ export function ServerUrlGuard({ children }: { children: React.ReactNode }) {
       setNeedsSetup(false);
       return;
     }
-    migrateLegacyServerUrlConfirmation();
-    const skip = hasStoredApiBaseUrl() && hasServerUrlSetupAck();
-    setNeedsSetup(!skip);
+    setNeedsSetup(!shouldSkipElectronServerUrlSetup());
+  }, []);
+
+  // Workspace logout clears the ack but keeps the last URL — re-show this screen
+  // without remounting the layout (useLayoutEffect above only runs once).
+  useEffect(() => {
+    if (!isElectron()) return;
+    const onWorkspaceLogout = () => setNeedsSetup(true);
+    window.addEventListener(ELECTRON_SERVER_URL_NAVIGATION_EVENT, onWorkspaceLogout);
+    return () => {
+      window.removeEventListener(ELECTRON_SERVER_URL_NAVIGATION_EVENT, onWorkspaceLogout);
+    };
   }, []);
 
   if (needsSetup === null) return <LoadingScreen />;
@@ -86,8 +94,7 @@ function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
       return;
     }
 
-    setApiBaseUrl(trimmed);
-    setServerUrlSetupAck();
+    setSessionApiBaseUrl(trimmed);
     onComplete();
   };
 
@@ -113,7 +120,6 @@ function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
       >
         {/* Logo / header */}
         <Flex direction="column" align="center" gap="3" style={{ marginBottom: 'var(--space-6)' }}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/logo/pipes-hub.svg"
             alt="PipesHub"

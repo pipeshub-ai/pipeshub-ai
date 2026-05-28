@@ -24,7 +24,9 @@
   },
   "chatStream": {
     "thinkingFallback": "Pensando…",
-    "refiningResponse": "Refinando la respuesta…"
+    "refiningResponse": "Refinando la respuesta…",
+    "copyCode": "Copiar",
+    "copiedCode": "Copiado"
   },
   "uploadProgress": {
     "uploadFailedDefault": "Error al subir",
@@ -364,6 +366,9 @@
   },
   "menu": {
     "reindex": "Reindexar",
+    "reindexAll": "Reindexar todo",
+    "reindexFailed": "Reindexar fallidos",
+    "reindexManual": "Reindexar manual",
     "rename": "Renombrar",
     "delete": "Eliminar"
   },
@@ -1393,7 +1398,6 @@
       "dataCollectionReason3": "To manage your subscription to newsletters or other updates",
       "dataCollectionReason4": "For security and fraud prevention purposes",
       "dataCollectionReason5": "To personalize your user experience",
-      "dataCollectionReason6": "To enhance and improve our products and services",
       "manageSubtitle": "Manage your company profile",
       "editLogoAria": "Edit organization logo",
       "toasts": {
@@ -1556,17 +1560,51 @@
         "startSync": "Start Syncing Now"
       },
       "syncSaveConfirm": {
-        "title": "Start sync process?",
-        "manualMessage": "You have enabled Manual indexing for this connector. Records will be synced but won't be searchable by AI until you index them. You can select which records to index manually from All records. Do you want to proceed?",
-        "wideSyncMessage": "This process could sync a large number of records. Are you sure you want to start the sync? Consider adding filters through the Filters section to reduce the number of records to sync.",
-        "confirm": "Start sync",
-        "cancel": "Cancel"
+        "title": "¿Iniciar proceso de sincronización?",
+        "manualMessage": "Ha habilitado la indexación manual para este conector. Los registros se sincronizarán pero no serán buscables por IA hasta que los indexe. Puede seleccionar qué registros indexar manualmente desde Todos los registros. ¿Desea continuar?",
+        "wideSyncMessage": "Este proceso podría sincronizar una gran cantidad de registros. ¿Está seguro de que desea iniciar la sincronización? Considere añadir filtros a través de la sección Filtros para reducir el número de registros a sincronizar.",
+        "confirm": "Confirmar",
+        "cancel": "Cancelar"
+      },
+      "disableFirstDialog": {
+        "title": "El conector está actualmente habilitado",
+        "message": "{{name}} está actualmente habilitado. Para {{action}}, se deshabilitará automáticamente primero. ¿Desea continuar?",
+        "messageNoName": "Este conector está actualmente habilitado. Para {{action}}, se deshabilitará automáticamente primero. ¿Desea continuar?",
+        "proceed": "Deshabilitar y continuar",
+        "proceeding": "Deshabilitando...",
+        "cancel": "Cancelar",
+        "errorTitle": "Error al deshabilitar el conector",
+        "errorFallback": "No se pudo deshabilitar el conector. Por favor, inténtelo de nuevo.",
+        "actions": {
+          "removeInstance": "eliminar esta instancia del conector",
+          "saveConfig": "guardar los cambios de configuración"
+        }
+      },
+      "adminAccessDialog": {
+        "title": "Se requiere acceso de administrador",
+        "question": "¿Tiene acceso de administrador en {{appGroup}}? El conector de equipo requiere privilegios de administrador en la aplicación nativa para registrar aplicaciones OAuth y sincronizar datos de toda la organización.",
+        "yesContinue": "Sí, continuar con la configuración",
+        "noNotAdmin": "No, no soy administrador",
+        "redirectTitle": "Use el conector personal en su lugar",
+        "redirectMessage": "El conector de equipo {{connectorName}} requiere acceso de administrador en su instancia de {{appGroup}}. Utilice el conector personal de {{appGroup}} para sincronizar su propia cuenta.",
+        "goToPersonal": "Ir a {{appGroup}} Personal",
+        "cancel": "Cerrar"
+      },
+      "removeInstanceDialog": {
+        "title": "¿Eliminar instancia del conector?",
+        "description": "¿Está seguro de que desea eliminar {{name}}? Esta acción no se puede deshacer.",
+        "cancel": "Cancelar",
+        "confirm": "Eliminar conector",
+        "alreadyRemovingTitle": "Ya se está eliminando",
+        "alreadyRemovingDescription": "Este conector ya está siendo eliminado.",
+        "successTitle": "Conector eliminado",
+        "errorTitle": "Error al eliminar el conector"
       },
       "selectRecords": {
-        "title": "Select Records",
-        "loading": "Loading records…",
-        "emptyState": "No records available",
-        "addRecords": "Add Records"
+        "title": "Seleccionar registros",
+        "loading": "Cargando registros…",
+        "emptyState": "No hay registros disponibles",
+        "addRecords": "Agregar registros"
       },
       "authTab": {
         "methodLabel": "Authentication Method",
@@ -2505,5 +2543,10 @@
       "showPassword": "Mostrar contraseña",
       "hidePassword": "Ocultar contraseña"
     }
+  },
+  "healthGate": {
+    "title": "No se puede conectar al servidor",
+    "description": "El servidor no está disponible en este momento. Es posible que se esté iniciando o en mantenimiento. Estamos intentando reconectar.",
+    "contactAdmin": "Si el problema persiste, comuníquese con su administrador de PipesHub."
   }
 }

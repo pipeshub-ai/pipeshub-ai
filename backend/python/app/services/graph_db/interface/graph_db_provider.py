@@ -1005,6 +1005,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         request: Optional["Request"] = None,
         depth: int = 0,
+        status_filters: list[str] | None = None,
     ) -> dict:
         """
         Validate and prepare reindex for a single record (permission checks, reset status).
@@ -1016,6 +1017,8 @@ class IGraphDBProvider(ABC):
             org_id: Organization ID
             request: Optional request (for signature compatibility)
             depth: Depth for children (0 = only this record)
+            status_filters: Optional indexingStatus values; included in sync-events payload
+                        for the consumer to filter matched records (parent/children queries).
 
         Returns:
             Dict: success, recordId, recordName, connector, userRole; or error code/reason
@@ -1176,7 +1179,8 @@ class IGraphDBProvider(ABC):
         user_key: str | None = None,
         limit: int | None = None,
         offset: int = 0,
-        transaction: str | None = None
+        transaction: str | None = None,
+        status_filters: list[str] | None = None,
     ) -> list['Record']:
         """
         Get all records belonging to a record group up to a specified depth.
@@ -1199,6 +1203,8 @@ class IGraphDBProvider(ABC):
             limit (Optional[int]): Maximum number of records to return (for pagination)
             offset (int): Number of records to skip (for pagination)
             transaction (Optional[str]): Optional transaction ID
+            status_filters (Optional[List[str]]): When set, only records with
+                        indexingStatus in this list are returned.
 
         Returns:
             List[Record]: List of properly typed Record instances. Origin is not
@@ -1217,7 +1223,8 @@ class IGraphDBProvider(ABC):
         user_key: str | None = None,
         limit: int | None = None,
         offset: int = 0,
-        transaction: str | None = None
+        transaction: str | None = None,
+        status_filters: list[str] | None = None,
     ) -> list['Record']:
         """
         Get all child records of a parent record (folder) up to a specified depth.
@@ -1236,6 +1243,8 @@ class IGraphDBProvider(ABC):
             limit (Optional[int]): Maximum number of records to return (for pagination)
             offset (int): Number of records to skip (for pagination)
             transaction (Optional[str]): Optional transaction ID
+            status_filters (Optional[List[str]]): When set, only records with
+                        indexingStatus in this list are returned.
 
         Returns:
             List[Record]: List of properly typed Record instances
@@ -3058,10 +3067,13 @@ class IGraphDBProvider(ABC):
         exclude_kb: bool = True,
         kb_connector_type: str | None = None,
         is_admin: bool = False,
+        is_authenticated: bool | None = None,
+        is_active: bool | None = None,
+        connector_type_filter: str | None = None,
         transaction: str | None = None,
-    ) -> tuple[list[dict], int, dict[str, int]]:
+    ) -> tuple[list[dict], int]:
         """
-        Get filtered connector instances with pagination and scope counts.
+        Get filtered connector instances with pagination.
 
         Args:
             collection: Collection name (e.g., "apps")
@@ -3074,14 +3086,19 @@ class IGraphDBProvider(ABC):
             limit: Maximum number of items to return
             exclude_kb: Whether to exclude KB connector
             kb_connector_type: KB connector type to exclude
-            is_admin: Whether user is admin (affects team scope access)
+            is_admin: When True the caller sees all team-scoped connectors in the
+                org regardless of edge membership.  When False only connectors
+                reachable via the user's ``userAppRelation`` edge (direct or
+                through team ``PERMISSION`` edges) are returned.
+            is_authenticated: Optional filter on isAuthenticated field
+            is_active: Optional filter on isActive field
+            connector_type_filter: Optional exact match on connector type field
             transaction: Optional transaction ID
 
         Returns:
-            Tuple[List[Dict], int, Dict[str, int]]:
+            Tuple of (documents, total_count):
                 - List of connector documents
-                - Total count
-                - Scope counts dict with "personal" and "team" keys
+                - Total count of matching documents
         """
         pass
 

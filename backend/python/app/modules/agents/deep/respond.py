@@ -375,14 +375,16 @@ async def _deep_respond_impl(
    
     
 
-    fetch_url_tool = create_fetch_url_tool(ref_mapper=state.get("citation_ref_mapper"))
-    tools.append(fetch_url_tool)
-    
     web_search_provider_config = state.get("web_search_config")
     has_web_search_tool = False
     if web_search_provider_config:
+        if state.get("citation_ref_mapper") is None:
+            from app.utils.chat_helpers import CitationRefMapper as _CitationRefMapper
+            state["citation_ref_mapper"] = _CitationRefMapper()
         web_search_tool = create_web_search_tool(config=web_search_provider_config)
         tools.append(web_search_tool)
+        fetch_url_tool = create_fetch_url_tool(ref_mapper=state.get("citation_ref_mapper"))
+        tools.append(fetch_url_tool)
         has_web_search_tool = True
 
     if has_web_search_tool and messages:
@@ -666,8 +668,8 @@ async def _build_simple_retrieval_messages(
         "CITATION RULES:\n"
         "- **Limit citations to the most relevant blocks.** Do NOT cite every sentence — only cite the most important, non-obvious, or specific factual claims.\n"
         "- For internal knowledge blocks: each block has a 'Citation ID' (e.g., ref1, ref2) — use it exactly for citations: [source](ref1).\n"
-        "- For web search/fetch_url results: cite using the url/citation id.\n"
-        "- Use EXACTLY the Citation ID or URL shown in the context. Do NOT invent or modify them.\n"
+        + ("- For web search/fetch_url results: use [source](citation_id) where citation_id is the exact 'url/Citation ID' shown in the context (e.g., [source](https://ref278.xyz)).\n" if state.get("web_search_config") else "")
+        + "- Use EXACTLY the Citation ID or URL shown in the context. Do NOT invent or modify them.\n"
         "- If you cannot find the Citation ID or URL for a claim, omit the citation rather than guessing.\n\n"
         "DATE/TIME FORMATTING:\n"
         "- Render dates/times in human-readable form using the **Time zone** from the Time context (e.g., 'April 28, 2026 at 3:45 PM IST'). "

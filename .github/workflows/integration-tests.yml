@@ -67,7 +67,7 @@ jobs:
   integration-tests:
     if: ${{ github.event_name != 'pull_request_target' || !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     # Schedule uses a separate environment so daily runs are not blocked by
     # deployment protection on `integration-test-dev`. Create
@@ -80,12 +80,52 @@ jobs:
     env:
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
       DOCKER_BUILDKIT: "1"
+      PIPESHUB_TEST_ENV: local
+      PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+      PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+      TEST_NEO4J_URI: ${{ secrets.TEST_NEO4J_URI }}
+      TEST_NEO4J_USERNAME: ${{ secrets.TEST_NEO4J_USERNAME }}
+      TEST_NEO4J_PASSWORD: ${{ secrets.TEST_NEO4J_PASSWORD }}
+      TEST_NEO4J_DATABASE: ${{ secrets.TEST_NEO4J_DATABASE }}
+      S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+      S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+      S3_REGION: ${{ secrets.S3_REGION }}
+      S3_BUCKET: ${{ secrets.S3_BUCKET }}
+      GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
+      AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
+      AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
+      TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+      TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
+      CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
+      CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
+      CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
+      SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
+      SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
+      SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
+      SHAREPOINT_TEST_CLIENT_ID: ${{ secrets.SHAREPOINT_TEST_CLIENT_ID }}
+      SHAREPOINT_TEST_SHAREPOINT_DOMAIN: ${{ secrets.SHAREPOINT_TEST_SHAREPOINT_DOMAIN }}
+      SHAREPOINT_TEST_CERTIFICATE_FILE: ${{ secrets.SHAREPOINT_TEST_CERTIFICATE_FILE_CONTENT }}
+      SHAREPOINT_TEST_PRIVATE_KEY_FILE: ${{ secrets.SHAREPOINT_TEST_PRIVATE_KEY_FILE_CONTENT }}
+      JIRA_TEST_BASE_URL: ${{ secrets.JIRA_TEST_BASE_URL }}
+      JIRA_TEST_EMAIL: ${{ secrets.JIRA_TEST_EMAIL }}
+      JIRA_TEST_API_TOKEN: ${{ secrets.JIRA_TEST_API_TOKEN }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend deps and Playwright browsers
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install chromium --with-deps
 
       # App Dockerfile uses these as FROM stages; pulling first warms the local
       # cache so compose build does not rebuild Dockerfile.base on every run.
@@ -155,64 +195,65 @@ jobs:
 
       - name: 'Neo4j: Create organization and admin user'
         if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
-        env:
-          BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
-          ADMIN_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
-          ADMIN_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
         run: |
           echo "Creating organization..."
-          curl -sf "${BASE_URL}/api/v1/org" \
+          curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
             -H "Content-Type: application/json" \
             -d '{
               "accountType": "business",
               "adminFullName": "Integration Test Admin",
-              "contactEmail": "'"${ADMIN_EMAIL}"'",
-              "password": "'"${ADMIN_PASSWORD}"'",
-              "confirmPassword": "'"${ADMIN_PASSWORD}"'",
+              "contactEmail": "'"${PIPESHUB_TEST_USER_EMAIL}"'",
+              "password": "'"${PIPESHUB_TEST_USER_PASSWORD}"'",
+              "confirmPassword": "'"${PIPESHUB_TEST_USER_PASSWORD}"'",
               "registeredName": "Integration Test Org",
               "shortName": "INTTEST"
             }'
           echo ""
           echo "Organization created successfully!"
 
+      - name: 'Neo4j: Skip onboarding'
+        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
+        run: |
+          HEADERS=$(mktemp)
+          curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
+            -H "Content-Type: application/json" \
+            -d "{\"email\": \"${PIPESHUB_TEST_USER_EMAIL}\"}" \
+            -D "${HEADERS}" -o /dev/null
+          SESSION_TOKEN=$(grep -i "x-session-token:" "${HEADERS}" | tr -d '\r' | awk '{print $2}')
+          rm -f "${HEADERS}"
+
+          ACCESS_TOKEN=$(curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
+            -H "Content-Type: application/json" \
+            -H "x-session-token: ${SESSION_TOKEN}" \
+            -d "{\"method\": \"password\", \"credentials\": {\"password\": \"${PIPESHUB_TEST_USER_PASSWORD}\"}, \"email\": \"${PIPESHUB_TEST_USER_EMAIL}\"}" \
+            | jq -r '.accessToken')
+
+          curl -sf -X PUT "${PIPESHUB_BASE_URL}/api/v1/org/onboarding-status" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            -d '{"status": "configured"}'
+          echo ""
+          echo "Onboarding marked as configured!"
+
       - name: 'Neo4j: Run integration tests'
         if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
         working-directory: integration-tests
-        env:
-          PIPESHUB_TEST_ENV: local
-          PIPESHUB_BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
-          PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
-          PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
-          TEST_NEO4J_URI: ${{ secrets.TEST_NEO4J_URI }}
-          TEST_NEO4J_USERNAME: ${{ secrets.TEST_NEO4J_USERNAME }}
-          TEST_NEO4J_PASSWORD: ${{ secrets.TEST_NEO4J_PASSWORD }}
-          TEST_NEO4J_DATABASE: ${{ secrets.TEST_NEO4J_DATABASE }}
-          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
-          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
-          S3_REGION: ${{ secrets.S3_REGION }}
-          S3_BUCKET: ${{ secrets.S3_BUCKET }}
-          GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
-          AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
-          AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
-          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
-          TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
-          CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
-          CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
-          CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
-          SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
-          SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
-          SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
-          SHAREPOINT_TEST_CLIENT_ID: ${{ secrets.SHAREPOINT_TEST_CLIENT_ID }}
-          SHAREPOINT_TEST_SHAREPOINT_DOMAIN: ${{ secrets.SHAREPOINT_TEST_SHAREPOINT_DOMAIN }}
-          SHAREPOINT_TEST_CERTIFICATE_FILE: ${{ secrets.SHAREPOINT_TEST_CERTIFICATE_FILE_CONTENT }}
-          SHAREPOINT_TEST_PRIVATE_KEY_FILE: ${{ secrets.SHAREPOINT_TEST_PRIVATE_KEY_FILE_CONTENT }}
-          JIRA_TEST_BASE_URL: ${{ secrets.JIRA_TEST_BASE_URL }}
-          JIRA_TEST_EMAIL: ${{ secrets.JIRA_TEST_EMAIL }}
-          JIRA_TEST_API_TOKEN: ${{ secrets.JIRA_TEST_API_TOKEN }}
         run: |
           source .venv/bin/activate
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
           pytest -m "$MARKERS" -v --tb=short --junitxml=reports/neo4j-results.xml 2>&1
+
+      - name: 'Neo4j: Run Playwright e2e tests'
+        if: always() && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
+        working-directory: frontend
+        env:
+          CI: 'true'
+          PLAYWRIGHT_NO_SERVER: 'true'
+          BASE_URL: http://localhost:3000
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:3000
+          TEST_USER_EMAIL: ${{ env.PIPESHUB_TEST_USER_EMAIL }}
+          TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
+        run: npm run test:e2e 2>&1
 
       - name: 'Neo4j: Dump docker logs'
         if: always() && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
@@ -268,53 +309,65 @@ jobs:
 
       - name: 'ArangoDB: Create organization and admin user'
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
-        env:
-          BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
-          ADMIN_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
-          ADMIN_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
         run: |
           echo "Creating organization..."
-          curl -sf "${BASE_URL}/api/v1/org" \
+          curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
             -H "Content-Type: application/json" \
             -d '{
               "accountType": "business",
               "adminFullName": "Integration Test Admin",
-              "contactEmail": "'"${ADMIN_EMAIL}"'",
-              "password": "'"${ADMIN_PASSWORD}"'",
-              "confirmPassword": "'"${ADMIN_PASSWORD}"'",
+              "contactEmail": "'"${PIPESHUB_TEST_USER_EMAIL}"'",
+              "password": "'"${PIPESHUB_TEST_USER_PASSWORD}"'",
+              "confirmPassword": "'"${PIPESHUB_TEST_USER_PASSWORD}"'",
               "registeredName": "Integration Test Org",
               "shortName": "INTTEST"
             }'
           echo ""
           echo "Organization created successfully!"
 
+      - name: 'ArangoDB: Skip onboarding'
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        run: |
+          HEADERS=$(mktemp)
+          curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
+            -H "Content-Type: application/json" \
+            -d "{\"email\": \"${PIPESHUB_TEST_USER_EMAIL}\"}" \
+            -D "${HEADERS}" -o /dev/null
+          SESSION_TOKEN=$(grep -i "x-session-token:" "${HEADERS}" | tr -d '\r' | awk '{print $2}')
+          rm -f "${HEADERS}"
+
+          ACCESS_TOKEN=$(curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
+            -H "Content-Type: application/json" \
+            -H "x-session-token: ${SESSION_TOKEN}" \
+            -d "{\"method\": \"password\", \"credentials\": {\"password\": \"${PIPESHUB_TEST_USER_PASSWORD}\"}, \"email\": \"${PIPESHUB_TEST_USER_EMAIL}\"}" \
+            | jq -r '.accessToken')
+
+          curl -sf -X PUT "${PIPESHUB_BASE_URL}/api/v1/org/onboarding-status" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            -d '{"status": "configured"}'
+          echo ""
+          echo "Onboarding marked as configured!"
+
       - name: 'ArangoDB: Run integration tests'
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
         working-directory: integration-tests
-        env:
-          PIPESHUB_TEST_ENV: local
-          PIPESHUB_BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
-          PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
-          PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
-          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
-          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
-          S3_REGION: ${{ secrets.S3_REGION }}
-          S3_BUCKET: ${{ secrets.S3_BUCKET }}
-          GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
-          AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
-          AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
-          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
-          TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
-          CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
-          CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
-          CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
-          JIRA_TEST_BASE_URL: ${{ secrets.JIRA_TEST_BASE_URL }}
-          JIRA_TEST_EMAIL: ${{ secrets.JIRA_TEST_EMAIL }}
-          JIRA_TEST_API_TOKEN: ${{ secrets.JIRA_TEST_API_TOKEN }}
         run: |
           source .venv/bin/activate
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
           pytest -m "$MARKERS" -v --tb=short --junitxml=reports/arango-results.xml 2>&1
+
+      - name: 'ArangoDB: Run Playwright e2e tests'
+        if: always() && env.GRAPH_DB == 'arango'
+        working-directory: frontend
+        env:
+          CI: 'true'
+          PLAYWRIGHT_NO_SERVER: 'true'
+          BASE_URL: http://localhost:3000
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:3000
+          TEST_USER_EMAIL: ${{ env.PIPESHUB_TEST_USER_EMAIL }}
+          TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
+        run: npm run test:e2e 2>&1
 
       - name: 'ArangoDB: Dump docker logs'
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
@@ -393,12 +446,48 @@ jobs:
             PR_FIELD_TEXT=""
           fi
 
+          # Parse Playwright JUnit XML
+          PW_TESTS=0
+          PW_PASSED=0
+          PW_FAILED=0
+          PW_ERRORS=0
+          PW_SKIPPED=0
+          if [ -f "../frontend/test-results/playwright-junit.xml" ]; then
+            pw_tests=$(grep -oP 'tests="\K[0-9]+' "../frontend/test-results/playwright-junit.xml" | head -1)
+            pw_failures=$(grep -oP 'failures="\K[0-9]+' "../frontend/test-results/playwright-junit.xml" | head -1)
+            pw_errors=$(grep -oP 'errors="\K[0-9]+' "../frontend/test-results/playwright-junit.xml" | head -1)
+            pw_skipped=$(grep -oP 'skipped="\K[0-9]+' "../frontend/test-results/playwright-junit.xml" | head -1)
+            PW_TESTS=${pw_tests:-0}
+            PW_FAILED=${pw_failures:-0}
+            PW_ERRORS=${pw_errors:-0}
+            PW_SKIPPED=${pw_skipped:-0}
+            PW_PASSED=$((PW_TESTS - PW_FAILED - PW_ERRORS - PW_SKIPPED))
+          fi
+          if [ "$PW_TESTS" -gt 0 ]; then
+            PW_PASS_RATE=$(( (PW_PASSED * 100) / PW_TESTS ))
+          else
+            PW_PASS_RATE=0
+          fi
+
+          # Overall health: green only when both suites are fully passing
+          OVERALL_OK=true
+          if [ "$TOTAL_FAILED" -gt 0 ] || [ "$TOTAL_ERRORS" -gt 0 ] || [ "$PW_FAILED" -gt 0 ] || [ "$PW_ERRORS" -gt 0 ]; then
+            OVERALL_OK=false
+          fi
+
           echo "TOTAL_TESTS=$TOTAL_TESTS" >> "$GITHUB_OUTPUT"
           echo "TOTAL_PASSED=$TOTAL_PASSED" >> "$GITHUB_OUTPUT"
           echo "TOTAL_FAILED=$TOTAL_FAILED" >> "$GITHUB_OUTPUT"
           echo "TOTAL_ERRORS=$TOTAL_ERRORS" >> "$GITHUB_OUTPUT"
           echo "TOTAL_SKIPPED=$TOTAL_SKIPPED" >> "$GITHUB_OUTPUT"
           echo "PASS_RATE=$PASS_RATE" >> "$GITHUB_OUTPUT"
+          echo "PW_TESTS=$PW_TESTS" >> "$GITHUB_OUTPUT"
+          echo "PW_PASSED=$PW_PASSED" >> "$GITHUB_OUTPUT"
+          echo "PW_FAILED=$PW_FAILED" >> "$GITHUB_OUTPUT"
+          echo "PW_ERRORS=$PW_ERRORS" >> "$GITHUB_OUTPUT"
+          echo "PW_SKIPPED=$PW_SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "PW_PASS_RATE=$PW_PASS_RATE" >> "$GITHUB_OUTPUT"
+          echo "OVERALL_OK=$OVERALL_OK" >> "$GITHUB_OUTPUT"
           echo "TRIGGER_LABEL=$TRIGGER_LABEL" >> "$GITHUB_OUTPUT"
           echo "AUTHOR=$AUTHOR" >> "$GITHUB_OUTPUT"
           echo "BACKENDS_RUN=$BACKENDS_RUN" >> "$GITHUB_OUTPUT"
@@ -410,6 +499,12 @@ jobs:
             printf '%s\n' "$PR_FIELD_TEXT"
             echo "PR_FIELD_EOF"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Collect Playwright artifacts into reports
+        if: always()
+        run: |
+          mkdir -p integration-tests/reports/playwright
+          cp -r frontend/playwright-report integration-tests/reports/playwright/html-report 2>/dev/null || true
 
       - name: Zip reports folder
         if: always()
@@ -431,7 +526,7 @@ jobs:
                   "type": "header",
                   "text": {
                     "type": "plain_text",
-                    "text": "${{ steps.test-results.outputs.TOTAL_FAILED == '0' && steps.test-results.outputs.TOTAL_ERRORS == '0' && ':large_green_circle:' || ':red_circle:' }} Integration Tests — ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
+                    "text": "${{ steps.test-results.outputs.OVERALL_OK == 'true' && ':large_green_circle:' || ':red_circle:' }} Integration Tests — ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
                   }
                 },
                 {
@@ -448,14 +543,14 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "*Test Results*\n| Total | Passed | Failed | Errors | Skipped | Pass Rate |\n|---|---|---|---|---|---|\n| ${{ steps.test-results.outputs.TOTAL_TESTS }} | ${{ steps.test-results.outputs.TOTAL_PASSED }} :white_check_mark: | ${{ steps.test-results.outputs.TOTAL_FAILED }} :x: | ${{ steps.test-results.outputs.TOTAL_ERRORS }} :warning: | ${{ steps.test-results.outputs.TOTAL_SKIPPED }} :fast_forward: | ${{ steps.test-results.outputs.PASS_RATE }}% |"
+                    "text": "*Test Results*\n| Suite | Total | Passed | Failed | Errors | Skipped | Pass Rate |\n|---|---|---|---|---|---|---|\n| Backend (pytest) | ${{ steps.test-results.outputs.TOTAL_TESTS }} | ${{ steps.test-results.outputs.TOTAL_PASSED }} :white_check_mark: | ${{ steps.test-results.outputs.TOTAL_FAILED }} :x: | ${{ steps.test-results.outputs.TOTAL_ERRORS }} :warning: | ${{ steps.test-results.outputs.TOTAL_SKIPPED }} :fast_forward: | ${{ steps.test-results.outputs.PASS_RATE }}% |\n| Frontend (Playwright) | ${{ steps.test-results.outputs.PW_TESTS }} | ${{ steps.test-results.outputs.PW_PASSED }} :white_check_mark: | ${{ steps.test-results.outputs.PW_FAILED }} :x: | ${{ steps.test-results.outputs.PW_ERRORS }} :warning: | ${{ steps.test-results.outputs.PW_SKIPPED }} :fast_forward: | ${{ steps.test-results.outputs.PW_PASS_RATE }}% |"
                   }
                 },
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "${{ steps.test-results.outputs.TOTAL_FAILED == '0' && steps.test-results.outputs.TOTAL_ERRORS == '0' && ':tada: All tests passed!' || ':warning: Some tests failed or had errors. Check the workflow run for details.' }}"
+                    "text": "${{ steps.test-results.outputs.OVERALL_OK == 'true' && ':tada: All tests passed!' || ':warning: Some tests failed or had errors. Check the workflow run for details.' }}"
                   }
                 },
                 {
@@ -517,7 +612,7 @@ jobs:
             -d "$COMPLETE_PAYLOAD"
 
       - name: Send failed tests list to Slack thread
-        if: always() && (steps.test-results.outputs.TOTAL_FAILED != '0' || steps.test-results.outputs.TOTAL_ERRORS != '0')
+        if: always() && (steps.test-results.outputs.TOTAL_FAILED != '0' || steps.test-results.outputs.TOTAL_ERRORS != '0' || steps.test-results.outputs.PW_FAILED != '0' || steps.test-results.outputs.PW_ERRORS != '0')
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
@@ -541,7 +636,7 @@ jobs:
               sys.exit(0)
 
           names = []
-          for xml_path in ['reports/neo4j-results.xml', 'reports/arango-results.xml']:
+          for xml_path in ['reports/neo4j-results.xml', 'reports/arango-results.xml', 'reports/playwright/playwright-junit.xml']:
               if not os.path.exists(xml_path):
                   continue
               backend = os.path.basename(xml_path).replace('-results.xml', '')

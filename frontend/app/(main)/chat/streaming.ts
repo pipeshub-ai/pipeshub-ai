@@ -36,6 +36,7 @@ import {
   buildCitationMapsFromStreaming,
 } from './components/message-area/response-tabs/citations';
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
+import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 
 /** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
 function createPendingAssistantId(): string {
@@ -403,6 +404,32 @@ export async function streamMessageForSlot(
         // Build finalized messages from API response
         const finalMessages = loadHistoricalMessages(data.conversation.messages);
 
+        // Determine pagination for the "load older messages" feature.
+        // We don't get pagination metadata from the SSE event, so we preserve
+        // whatever was set by the initial fetchConversation (via page.tsx).
+        // If no previous state exists (brand-new conversation) we leave
+        // messagePagination null — a fresh load will set it correctly when
+        // the user next opens the conversation or reloads the page.
+        const prevPagination = useChatStore.getState().slots[slotId]?.messagePagination;
+        // The SSE event does not carry pagination metadata, so we cannot derive
+        // hasOlderMessages from it directly. Two sources of truth are combined:
+        //   1. prevPagination.hasOlderMessages — already confirmed by the initial
+        //      fetchConversation (stays true once set).
+        //   2. finalMessages.length >= 20 — heuristic: if the SSE response filled
+        //      a full page, the conversation likely has older messages. This handles
+        //      the case where the conversation crossed the page boundary in-session
+        //      (e.g. user sent the 21st message). It is safe to re-enable because
+        //      loadOlderMessagesForSlot now deduplicates before prepending, so the
+        //      duplicate-ID crash that originally motivated removing this heuristic
+        //      cannot occur again.
+        const newMsgPagination = prevPagination
+          ? {
+              currentPage: 1,
+              hasOlderMessages: prevPagination.hasOlderMessages || finalMessages.length >= CONVERSATION_MESSAGES_PAGE_SIZE,
+              isLoadingOlder: false,
+            }
+          : null;
+
         // De-prioritise the large `messages` replace so React can finish paint /
         // pointer handling first (smoother transition vs one blocking commit).
         startTransition(() => {
@@ -418,6 +445,7 @@ export async function streamMessageForSlot(
             hasLoaded: true,
             abortController: null,
             conversationModelInfo: data.conversation.modelInfo,
+            ...(newMsgPagination !== null ? { messagePagination: newMsgPagination } : {}),
             ...(isNewConversation ? { isOwner: true } : {}),
           });
         });
@@ -694,6 +722,13 @@ export async function streamRegenerateForSlot(
           modelInfo: detail.conversation.modelInfo,
           messages: detail.messages,
         });
+        const regenPagination = detail.pagination
+          ? {
+              currentPage: detail.pagination.page,
+              hasOlderMessages: detail.pagination.hasNextPage,
+              isLoadingOlder: false,
+            }
+          : undefined;
 
         useChatStore.getState().updateSlot(slotId, {
           isStreaming: false,
@@ -703,6 +738,7 @@ export async function streamRegenerateForSlot(
           streamingCitationMaps: null,
           messages: finalMessages,
           abortController: null,
+          ...(regenPagination ? { messagePagination: regenPagination } : {}),
           ...(postRegenModelInfo ? { conversationModelInfo: postRegenModelInfo } : {}),
         });
         debugLog.flush('regenerate-completed', { slotId, messageId });
@@ -834,4 +870,71 @@ export function cancelStreamForSlot(slotId: string): void {
     store.clearPendingConversation(slotId);
   }
   debugLog.flush('stream-cancelled', { slotId });
+}
+
+/**
+ * Load the next (older) page of messages for a slot and prepend them.
+ *
+ * Claude/ChatGPT-style infinite scroll: page 1 = most recent batch;
+ * each subsequent page returns an older batch. The MessageList calls this
+ * when the user scrolls near the top while `messagePagination.hasOlderMessages`.
+ */
+export async function loadOlderMessagesForSlot(slotId: string): Promise<void> {
+  const store = useChatStore.getState();
+  const slot = store.slots[slotId];
+  if (!slot || !slot.convId) return;
+
+  const pagination = slot.messagePagination;
+  if (!pagination?.hasOlderMessages || pagination.isLoadingOlder) return;
+
+  const nextPage = pagination.currentPage + 1;
+
+  // Mark loading so concurrent scroll events don't double-trigger
+  store.updateSlot(slotId, {
+    messagePagination: { ...pagination, isLoadingOlder: true },
+  });
+
+  try {
+    const detail = slot.threadAgentId
+      ? await AgentsApi.fetchAgentConversation(slot.threadAgentId, slot.convId, { page: nextPage })
+      : await ChatApi.fetchConversation(slot.convId, nextPage);
+
+    const olderMessages = loadHistoricalMessages(detail.messages);
+    const newPagination = {
+      currentPage: detail.pagination.page,
+      hasOlderMessages: detail.pagination.hasNextPage,
+      isLoadingOlder: false,
+    };
+
+    // Read the freshest slot state at write time to avoid stale closure
+    const freshSlot = useChatStore.getState().slots[slotId];
+    if (!freshSlot) return;
+
+    // Deduplicate: if the API returns messages whose IDs are already in the
+    // thread (e.g. because a previous SSE complete gave us all messages), drop
+    // them to prevent assistant-ui's MessageRepository from crashing with
+    // "same id already exists in parent tree".
+    const existingIds = new Set(freshSlot.messages.map((m) => m.id));
+    const uniqueOlderMessages = olderMessages.filter((m) => !existingIds.has(m.id));
+
+    if (uniqueOlderMessages.length === 0) {
+      // All "older" messages are already present → nothing new to prepend;
+      // mark pagination exhausted so we don't retry on the next scroll.
+      useChatStore.getState().updateSlot(slotId, {
+        messagePagination: { currentPage: nextPage, hasOlderMessages: false, isLoadingOlder: false },
+      });
+      return;
+    }
+
+    useChatStore.getState().updateSlot(slotId, {
+      // Prepend unique older messages before the existing messages
+      messages: [...uniqueOlderMessages, ...freshSlot.messages],
+      messagePagination: newPagination,
+    });
+  } catch (err) {
+    console.error('[streaming] Failed to load older messages for slot', slotId, err);
+    useChatStore.getState().updateSlot(slotId, {
+      messagePagination: { ...pagination, isLoadingOlder: false },
+    });
+  }
 }

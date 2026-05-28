@@ -25,7 +25,9 @@
   "chatStream": {
     "thinkingFallback": "Thinking…",
     "refiningResponse": "Refining response…",
-    "errorFallback": "An error occurred. Please try again."
+    "errorFallback": "An error occurred. Please try again.",
+    "copyCode": "Copy",
+    "copiedCode": "Copied"
   },
   "uploadProgress": {
     "uploadFailedDefault": "Upload failed",
@@ -365,6 +367,9 @@
   },
   "menu": {
     "reindex": "Re-index",
+    "reindexAll": "Re-index all",
+    "reindexFailed": "Re-index failed",
+    "reindexManual": "Re-index manual",
     "rename": "Rename",
     "delete": "Delete"
   },
@@ -1398,7 +1403,6 @@
       "dataCollectionReason3": "To manage your subscription to newsletters or other updates",
       "dataCollectionReason4": "For security and fraud prevention purposes",
       "dataCollectionReason5": "To personalize your user experience",
-      "dataCollectionReason6": "To enhance and improve our products and services",
       "manageSubtitle": "Manage your company profile",
       "editLogoAria": "Edit organization logo",
       "toasts": {
@@ -1564,8 +1568,42 @@
         "title": "Start sync process?",
         "manualMessage": "You have enabled Manual indexing for this connector. Records will be synced but won't be searchable by AI until you index them. You can select which records to index manually from All records. Do you want to proceed?",
         "wideSyncMessage": "This process could sync a large number of records. Are you sure you want to start the sync? Consider adding filters through the Filters section to reduce the number of records to sync.",
-        "confirm": "Start sync",
+        "confirm": "Confirm",
         "cancel": "Cancel"
+      },
+      "disableFirstDialog": {
+        "title": "Connector is currently enabled",
+        "message": "{{name}} is currently enabled. To {{action}}, it will be automatically disabled first. Do you want to proceed?",
+        "messageNoName": "This connector is currently enabled. To {{action}}, it will be automatically disabled first. Do you want to proceed?",
+        "proceed": "Disable & Proceed",
+        "proceeding": "Disabling...",
+        "cancel": "Cancel",
+        "errorTitle": "Failed to disable connector",
+        "errorFallback": "Failed to disable connector. Please try again.",
+        "actions": {
+          "removeInstance": "remove this connector instance",
+          "saveConfig": "save configuration changes"
+        }
+      },
+      "adminAccessDialog": {
+        "title": "Admin access required",
+        "question": "Do you have admin access in {{appGroup}}? The team connector requires admin privileges in the native app to register OAuth applications and sync organization-wide data.",
+        "yesContinue": "Yes, continue setup",
+        "noNotAdmin": "No, I'm not an admin",
+        "redirectTitle": "Use the personal connector instead",
+        "redirectMessage": "The team {{connectorName}} connector requires admin access in your {{appGroup}} instance. Please use the {{appGroup}} Personal connector to sync your own account instead.",
+        "goToPersonal": "Go to {{appGroup}} Personal",
+        "cancel": "Close"
+      },
+      "removeInstanceDialog": {
+        "title": "Remove connector instance?",
+        "description": "Are you sure you want to delete {{name}}? This cannot be undone.",
+        "cancel": "Cancel",
+        "confirm": "Remove connector",
+        "alreadyRemovingTitle": "Already being removed",
+        "alreadyRemovingDescription": "This connector is already being removed.",
+        "successTitle": "Connector removed",
+        "errorTitle": "Failed to remove connector"
       },
       "selectRecords": {
         "title": "Select Records",
@@ -2514,5 +2552,10 @@
       "showPassword": "Show password",
       "hidePassword": "Hide password"
     }
+  },
+  "healthGate": {
+    "title": "Unable to Connect to Server",
+    "description": "The server is currently unreachable. It may be starting up or undergoing maintenance. We're trying to reconnect.",
+    "contactAdmin": "If this persists, please contact your PipesHub administrator."
   }
 }

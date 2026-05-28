@@ -1791,6 +1791,7 @@ components:
     # ==================== USER MANAGEMENT SCHEMAS ====================
     User:
       type: object
+      additionalProperties: false
       description: User account in an organization
       properties:
         _id:
@@ -1824,7 +1825,7 @@ components:
         mobile:
           type: string
           description: Mobile number (10-15 digits with optional +)
-          pattern: '^\+?[0-9]{10,15}$'
+          pattern: '^$|^\+?[0-9]{10,15}$'
         hasLoggedIn:
           type: boolean
           description: Whether user has logged in at least once
@@ -1860,12 +1861,107 @@ components:
           format: date-time
           description: Last update timestamp (ISO 8601)
       required:
-        - email
+        - _id
         - orgId
+
+    UpdateUserResponse:
+      type: object
+      additionalProperties: false
+      description: Response returned by the updateUser endpoint — all User fields plus operation metadata
+      required:
+        - _id
+        - orgId
+        - meta
+      properties:
+        _id:
+          type: string
+          format: ObjectId
+          description: Unique user identifier (MongoDB ObjectId)
+        slug:
+          type: string
+          description: Unique slug for the user
+        orgId:
+          type: string
+          format: ObjectId
+          description: Organization ID the user belongs to
+        fullName:
+          type: string
+          description: Full name of the user
+          minLength: 1
+        firstName:
+          type: string
+          description: First name
+        lastName:
+          type: string
+          description: Last name
+        middleName:
+          type: string
+          description: Middle name
+        email:
+          type: string
+          format: email
+          description: Email address (unique, lowercase)
+        mobile:
+          type: string
+          description: Mobile number (10-15 digits with optional +)
+          pattern: '^$|^\+?[0-9]{10,15}$'
+        hasLoggedIn:
+          type: boolean
+          description: Whether user has logged in at least once
+          default: false
+        designation:
+          type: string
+          description: Job title/designation
+        address:
+          $ref: '#/components/schemas/Address'
+        dataCollectionConsent:
+          type: boolean
+          description: Whether user has consented to data collection
+        isDeleted:
+          type: boolean
+          description: Soft delete flag
+          default: false
+        deletedBy:
+          type: string
+          description: ID of user who deleted this user
+        profilePicture:
+          type: string
+          nullable: true
+          description: Base64-encoded data URI of the user's display picture
+        __v:
+          type: integer
+          description: Document version (MongoDB)
+        createdAt:
+          type: string
+          format: date-time
+          description: Creation timestamp (ISO 8601)
+        updatedAt:
+          type: string
+          format: date-time
+          description: Last update timestamp (ISO 8601)
+        meta:
+          type: object
+          additionalProperties: false
+          description: Operation metadata
+          required:
+            - emailChangeMailStatus
+          properties:
+            emailChangeMailStatus:
+              type: string
+              enum:
+                - notNeeded
+                - sent
+                - failed
+              description: Result of sending the email-change verification mail
 
     Address:
       type: object
+      additionalProperties: false
       properties:
+        _id:
+          type: string
+          format: ObjectId
+          description: Optional address document id
         addressLine1:
           type: string
           description: Address line 1
@@ -1931,9 +2027,17 @@ components:
           format: date-time
           description: Last update timestamp (ISO 8601)
       required:
+        - _id
+        - slug
+        - registeredName
         - domain
         - contactEmail
         - accountType
+        - onBoardingStatus
+        - isDeleted
+        - createdAt
+        - updatedAt
+        - __v
 
     Team:
       type: object
@@ -2017,18 +2121,9 @@ components:
         users:
           type: array
           items:
-            type: object
-            properties:
-              _id:
-                type: string
-                format: ObjectId
-                description: MongoDB user ID
-              profilePicture:
-                type: string
-                nullable: true
-                description: Base64-encoded data URI of the user's display picture, or null if not set
-                example: "data:image/jpeg;base64,/9j/4AAQ..."
-          description: Array of user objects with profile pictures
+            type: string
+            format: ObjectId
+          description: Member user IDs (MongoDB ObjectId strings)
         isDeleted:
           type: boolean
           description: Soft delete flag
@@ -2038,17 +2133,24 @@ components:
           format: ObjectId
           description: ID of user who deleted this group
         createdAt:
-          type: integer
-          format: int64
-          description: Creation timestamp
+          type: string
+          format: date-time
+          description: Creation timestamp (ISO 8601)
         updatedAt:
-          type: integer
-          format: int64
-          description: Last update timestamp
+          type: string
+          format: date-time
+          description: Last update timestamp (ISO 8601)
       required:
         - type
         - name
         - orgId
+        - users
+        - isDeleted
+        - _id
+        - createdAt
+        - updatedAt
+        - slug
+        - __v
 
     # ==================== STORAGE SCHEMAS ====================
 
@@ -2557,6 +2659,87 @@ components:
               error:
                 type: string
 
+    IndexingStatusFilter:
+      type: string
+      description: |
+        Indexing status used to filter which records are included in a scoped
+        reindex (record or record-group). Omit `statusFilters` to reindex all
+        descendants regardless of status.
+      enum:
+        - NOT_STARTED
+        - QUEUED
+        - IN_PROGRESS
+        - COMPLETED
+        - FAILED
+        - FILE_TYPE_NOT_SUPPORTED
+        - AUTO_INDEX_OFF
+        - EMPTY
+
+    ReindexRecordRequestBody:
+      type: object
+      description: Optional body for single-record reindex.
+      properties:
+        depth:
+          type: integer
+          minimum: -1
+          maximum: 100
+          default: 0
+          description: |
+            Child traversal depth (`0` = record only; higher values include
+            descendants; `100` is used by clients for folder-like reindex).
+        force:
+          type: boolean
+          default: false
+          description: Force reindex even when the connector considers the record unchanged.
+        statusFilters:
+          type: array
+          items:
+            $ref: '#/components/schemas/IndexingStatusFilter'
+          description: |
+            When set, only records whose indexing status matches one of these
+            values are reindexed (applies to the record and its descendants per `depth`).
+
+    ReindexRecordGroupRequestBody:
+      type: object
+      description: Optional body for record-group (folder/KB container) reindex.
+      properties:
+        depth:
+          type: integer
+          minimum: -1
+          maximum: 100
+          default: 0
+          description: Depth of records under the record group to include.
+        force:
+          type: boolean
+          default: false
+          description: Force reindex for all matched records in the group.
+        statusFilters:
+          type: array
+          items:
+            $ref: '#/components/schemas/IndexingStatusFilter'
+          description: |
+            When set, only records matching these indexing statuses are reindexed.
+
+    ReindexFailedConnectorRequestBody:
+      type: object
+      required:
+        - app
+        - connectorId
+      properties:
+        app:
+          type: string
+          description: Connector app name (e.g. `KB`, `GOOGLE_DRIVE`).
+          example: "GOOGLE_DRIVE"
+        connectorId:
+          type: string
+          description: Connector instance ID.
+        statusFilters:
+          type: array
+          items:
+            $ref: '#/components/schemas/IndexingStatusFilter'
+          description: |
+            Statuses to reindex. Defaults to `FAILED` when omitted (connector-wide reindex).
+
     ConnectorStats:
       type: object
       description: Statistics for a connector's records
@@ -2671,7 +2854,7 @@ components:
         nodeType:
           type: string
           enum: [app, recordGroup, folder, record]
-          description: Type of the node.
+          description: Type of the node (app, recordGroup, folder, or record).
         parentId:
           type: string
           nullable: true
@@ -3098,7 +3281,7 @@ components:
           description: Display name of the filter node
         nodeType:
           type: string
-          description: Type of the node (e.g. app, kb)
+          description: Type of the node (e.g. app, recordGroup, folder, record)
         connector:
           type: string
           description: Connector identifier associated with this node
@@ -3218,10 +3401,12 @@ components:
           example: "GPT-4 Turbo"
         chatMode:
           type: string
+          enum:
+            - web_search
+            - internal_search
           description: |
             Chat mode affecting response behavior.
-            Different modes optimize for different use cases.
-          example: "balanced"
+          example: "internal_search"
         timezone:
           type: string
           minLength: 1
@@ -3488,6 +3673,9 @@ components:
           description: Friendly display name of the model
         chatMode:
           type: string
+          enum:
+            - web_search
+            - internal_search
           description: Chat mode for this message
         timezone:
           type: string
@@ -3767,10 +3955,11 @@ components:
                   `siteId` for a SharePoint document).
         attachments:
           type: array
-          description: Files or media attached to this message
+          description: |
+            Files uploaded for this message turn (see
+            `POST /conversations/attachments/upload`).
           items:
-            type: object
-            additionalProperties: true
+            $ref: '#/components/schemas/ChatAttachmentRef'
         createdAt:
           type: string
           format: date-time
@@ -4396,6 +4585,9 @@ components:
         blockType:
           type: string
           nullable: true
+          description: |
+            Block type for this hit. Common values: `text`, `image`, `table_row`, `table`,
+            `record_summary` (whole-record semantic summary chunk — no block index).
         bounding_box:
           type: array
           nullable: true
@@ -4486,6 +4678,13 @@ components:
         isBlockGroup:
           type: boolean
           nullable: true
+        isRecordSummary:
+          type: boolean
+          nullable: true
+          description: |
+            Set to `true` by the indexing pipeline when this vector chunk represents a
+            whole-record semantic summary rather than an individual block. When true,
+            `blockIndex` is absent and `block_type` on the parent hit is `record_summary`.
         kbId:
           type: string
           nullable: true
@@ -4554,6 +4753,9 @@ components:
         block_type:
           type: string
           nullable: true
+          description: |
+            Block type for this hit. Common values: `text`, `image`, `table_row`, `table`,
+            `record_summary` (whole-record semantic summary — `block_index` is `null` for these hits).
         block_index:
           type: integer
           nullable: true
@@ -4870,6 +5072,9 @@ components:
         blockType:
           type: string
           nullable: true
+          description: |
+            Block type for this citation. Common values: `text`, `image`, `table_row`, `table`,
+            `record_summary` (whole-record semantic summary chunk).
         blockText:
           type: string
           nullable: true
@@ -5117,6 +5322,34 @@ components:
         Pagination block emitted by `buildPaginationMetadata` (utils.ts:417).
         `totalPages` is `Math.ceil(totalCount / limit)`, so an empty result
         has `totalPages: 0`, not `1`.
+      required:
+        - page
+        - limit
+        - totalCount
+        - totalPages
+        - hasNextPage
+        - hasPrevPage
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        totalCount:
+          type: integer
+        totalPages:
+          type: integer
+        hasNextPage:
+          type: boolean
+        hasPrevPage:
+          type: boolean
+
+    PaginationMetadata:
+      type: object
+      additionalProperties: false
+      description: |
+        Generic pagination block emitted by `buildPaginationMetadata` (utils.ts).
+        `totalPages` is `Math.ceil(totalCount / limit)`; an empty result yields
+        `totalPages: 0`, not `1`.
       required:
         - page
         - limit
@@ -6290,6 +6523,13 @@ components:
                 description: |
                   App-specific fields keyed by name (e.g. `key` for a Jira project,
                   `siteId` for a SharePoint document).
+        attachments:
+          type: array
+          description: |
+            Files uploaded for this message turn (see
+            `POST /agents/{agentKey}/conversations/attachments/upload`).
+          items:
+            $ref: '#/components/schemas/ChatAttachmentRef'
         modelInfo:
           $ref: '#/components/schemas/ConversationModelInfo'
         appliedFilters:
@@ -10991,34 +11231,50 @@ paths:
                   error:
                     type: string
 
+  /users/health:
+    get:
+      tags:
+        - Users
+      summary: Users module health check
+      description: Returns the health status of the users module. No authentication required.
+      operationId: getUsersHealth
+      security: []
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - status
+                  - timestamp
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - healthy
+                  timestamp:
+                    type: string
+                    format: date-time
+
   /users:
     get:
       tags:
         - Users
       summary: Get all users
       description: |
-        Retrieve a paginated list of all users in the organization.<br><br>
-        <b>Overview:</b><br>
-        This endpoint returns all active users in your organization. It's the primary endpoint for listing and displaying users in admin dashboards, user directories, and selection interfaces.<br><br>
-        <b>Response Data:</b><br>
-        <ul>
-        <li>User profile information (name, email, designation)</li>
-        <li>Account status (active, pending invitation, disabled)</li>
-        <li>Login history (hasLoggedIn flag)</li>
-        <li>Timestamps (createdAt, updatedAt)</li>
-        </ul>
-        <b>Privacy Controls:</b><br>
-        <ul>
-        <li>Email addresses may be masked based on organization settings</li>
-        <li>Sensitive fields (password, tokens) are never exposed</li>
-        <li>Deleted users are excluded from results</li>
-        </ul>
-        <b>Performance Notes:</b><br>
-        <ul>
-        <li>Results are cached for improved performance</li>
-        <li>For large organizations, consider using pagination</li>
-        <li>Use <code>/users/by-ids</code> for fetching specific users</li>
-        </ul>
+        Retrieve users in the organization. Behavior depends on query parameters:
+
+        **Default / paginated mode**: Returns enriched user objects with profile pictures, group
+        memberships, and blocked status, wrapped in a `{ users, pagination }` envelope. Defaults
+        to `page=1, limit=25` when no pagination params are supplied.
+
+        **Blocked users mode** (when `blocked=true`): Returns an array of blocked users with
+        basic profile fields only (no pagination envelope).
+
+        Deleted users are always excluded. Requires `user:read` OAuth scope.
       operationId: getAllUsers
       security:
         - bearerAuth: []
@@ -11027,7 +11283,7 @@ paths:
         - name: page
           in: query
           required: false
-          description: Page number for pagination (1-based)
+          description: Page number (1-based). Defaults to 1 when omitted.
           schema:
             type: integer
             minimum: 1
@@ -11035,65 +11291,157 @@ paths:
         - name: limit
           in: query
           required: false
-          description: Number of users per page
+          description: Number of users per page. Defaults to 25, capped at 100.
           schema:
             type: integer
             minimum: 1
             maximum: 100
-            default: 50
+            default: 25
         - name: search
           in: query
           required: false
-          description: Search users by name or email
+          description: Search users by name or email (case-insensitive regex).
+          schema:
+            type: string
+        - name: hasLoggedIn
+          in: query
+          required: false
+          description: Filter by login status (`true` or `false`).
+          schema:
+            type: boolean
+        - name: isBlocked
+          in: query
+          required: false
+          description: Filter by blocked status (`true` or `false`).
+          schema:
+            type: boolean
+        - name: groupIds
+          in: query
+          required: false
+          description: Comma-separated group IDs to filter users by group membership.
           schema:
             type: string
       responses:
         '200':
-          description: List of users retrieved successfully
+          description: Users retrieved successfully
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/User'
+                type: object
+                additionalProperties: false
+                required:
+                  - users
+                  - pagination
+                properties:
+                  users:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required:
+                        - id
+                        - userId
+                        - isActive
+                        - hasLoggedIn
+                        - isBlocked
+                        - role
+                        - groupCount
+                        - userGroups
+                      properties:
+                        id:
+                          type: string
+                          format: ObjectId
+                        userId:
+                          type: string
+                          format: ObjectId
+                        orgId:
+                          type: string
+                          format: ObjectId
+                        name:
+                          type: string
+                          description: User's fullName (may be absent if not set)
+                        email:
+                          type: string
+                          format: email
+                        isActive:
+                          type: boolean
+                          description: "`true` only when not blocked AND `hasLoggedIn: true`"
+                        hasLoggedIn:
+                          type: boolean
+                        isBlocked:
+                          type: boolean
+                        createdAtTimestamp:
+                          type: integer
+                          description: "Epoch milliseconds of `createdAt` (absent if field is null)"
+                        updatedAtTimestamp:
+                          type: integer
+                          description: "Epoch milliseconds of `updatedAt` (absent if field is null)"
+                        profilePicture:
+                          type: string
+                          description: "Base64 data URI (`data:image/jpeg;base64,...`). Absent when no picture uploaded."
+                        role:
+                          type: string
+                          enum: [Admin, Member]
+                        groupCount:
+                          type: integer
+                          description: Number of groups the user belongs to, excluding the `everyone` group
+                        userGroups:
+                          type: array
+                          items:
+                            type: object
+                            additionalProperties: false
+                            required:
+                              - _id
+                              - name
+                              - type
+                            properties:
+                              _id:
+                                type: string
+                                format: ObjectId
+                              name:
+                                type: string
+                              type:
+                                type: string
+                                enum: [admin, standard, everyone, custom]
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMetadata'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     post:
       tags:
         - Users
       summary: Create a new user
       description: |
-        Create a new user account in the organization and optionally send an invitation email.<br><br>
-        <b>Overview:</b><br>
-        This endpoint creates a new user account. The user will be added to the organization but won't have a password set until they complete the invitation flow or are assigned one by an admin.<br><br>
-        <b>Invitation Flow:</b><br>
-        <ol>
-        <li>Admin creates user with this endpoint</li>
-        <li>System generates invitation token</li>
-        <li>User receives invitation email (if sendInvite is true)</li>
-        <li>User clicks link and sets their password</li>
-        <li>User can now log in normally</li>
-        </ol>
-        <b>Validation Rules:</b><br>
-        <ul>
-        <li><code>fullName</code>: Required, 1-100 characters</li>
-        <li><code>email</code>: Required, valid email format, must be unique in org</li>
-        <li><code>mobile</code>: Optional, format: +[country][number] (10-15 digits)</li>
-        <li><code>designation</code>: Optional, job title or role</li>
-        </ul>
-        <b>Side Effects:</b><br>
-        <ul>
-        <li>User is automatically added to the "everyone" group</li>
-        <li>Invitation email sent if <code>sendInvite: true</code></li>
-        <li>User creation event published to event bus</li>
-        <li>Audit log entry created</li>
-        </ul>
-        <b>Authorization:</b><br>
-        Only organization administrators can create new users.
+        Create a new user account in the organization.
+
+        **Validation rules** (enforced by Zod — extra fields are stripped):
+
+        - `fullName`: Required, non-empty string
+        - `email`: Required, valid email format
+        - `mobile`: Optional, must match `^\+?[0-9]{10,15}$`
+        - `designation`: Optional string
+
+        **Side effects:**
+
+        - User is automatically added to the "everyone" group via `$addToSet`
+        - A `NewUserEvent` is published to the event bus
+
+        **Authorization:** Admin privileges required (`userAdminCheck` middleware).
       operationId: createUser
       security:
         - bearerAuth: []
+        - oauth2: [user:invite]
       requestBody:
         required: true
         description: "Request payload"
@@ -11101,66 +11449,67 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
+              required:
+                - fullName
+                - email
               properties:
                 fullName:
                   type: string
                   minLength: 1
-                  maxLength: 100
                   description: User's full display name
                   example: "John Smith"
                 email:
                   type: string
                   format: email
-                  description: User's email address (must be unique)
+                  description: User's email address
                   example: "john.smith@company.com"
                 mobile:
                   type: string
-                  pattern: '^\+?[0-9]{10,15}$'
-                  description: Mobile phone number with country code
+                  pattern: '^$|^\+?[0-9]{10,15}$'
+                  description: Mobile phone number with optional country code
                   example: "+15551234567"
                 designation:
                   type: string
                   description: Job title or designation
                   example: "Software Engineer"
-                sendInvite:
-                  type: boolean
-                  default: true
-                  description: Whether to send invitation email immediately
-              required:
-                - fullName
-                - email
       responses:
         '201':
           description: User created successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
-                    type: string
-                    example: "User created successfully"
-                  data:
-                    $ref: '#/components/schemas/User'
-                  inviteSent:
-                    type: boolean
-                    description: Whether invitation email was sent
+                $ref: '#/components/schemas/User'
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Missing required fields (fullName, email)</li>
-            <li>Invalid email format</li>
-            <li>Email already exists in organization</li>
-            <li>Invalid mobile number format</li>
-            </ul>
+            Invalid request. Possible reasons:
+
+            - Missing required fields (`fullName`, `email`)
+            - Invalid email format
+            - Invalid mobile number format
+            - Requester does not have admin privileges (`userAdminCheck`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
-        '403':
-          description: Forbidden - Admin privileges required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Account not found - `userId` or `orgId` missing from token (`userAdminCheck`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error (DB save failure or event publish failure)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/{id}:
     get:
@@ -11168,28 +11517,14 @@ paths:
         - Users
       summary: Get user by ID
       description: |
-        Retrieve detailed information about a specific user by their unique identifier.<br><br>
-        <b>Overview:</b><br>
-        This endpoint returns the complete user profile for the specified user ID. Use this to display user details in profiles, settings pages, or when you need full user information.<br><br>
-        <b>Response Data:</b><br>
-        <ul>
-        <li>Basic info: fullName, firstName, lastName, email</li>
-        <li>Contact: mobile, address</li>
-        <li>Professional: designation</li>
-        <li>Status: hasLoggedIn, isDeleted, accountStatus</li>
-        <li>Metadata: createdAt, updatedAt, createdBy</li>
-        </ul>
-        <b>Privacy Notes:</b><br>
-        <ul>
-        <li>Email may be masked for non-admin users based on org settings</li>
-        <li>Password and sensitive tokens are never returned</li>
-        <li>Display picture URL returned if set</li>
-        </ul>
-        <b>Related Endpoints:</b><br>
-        <ul>
-        <li><code>GET /users/{id}/email</code> - Get just the email (admin only)</li>
-        <li><code>GET /users/fetch/with-groups</code> - Get user with group memberships</li>
-        </ul>
+        Retrieve a specific user's profile by their MongoDB ObjectId.
+
+        The `id` path parameter is validated as a 24-character hex string. If the organization
+        or user does not exist (checked by `userExists` middleware), a `404` is returned before
+        the controller runs.
+
+        The email field may be omitted from the response if the `HIDE_EMAIL` environment variable
+        is set to `true`.
       operationId: getUserById
       security:
         - bearerAuth: []
@@ -11211,48 +11546,50 @@ paths:
               schema:
                 $ref: '#/components/schemas/User'
         '400':
-          description: Invalid user ID format
+          description: Invalid user ID format (Zod validation)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found or has been deleted
+          description: Organization or user not found (`userExists` middleware)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
         - Users
       summary: Update user
       description: |
-        Update user profile information. Users can update their own profile, admins can update any user.<br><br>
-        <b>Overview:</b><br>
-        This endpoint allows updating user profile fields. The scope of allowed updates depends on the requester's role and relationship to the user being updated.<br><br>
-        <b>Authorization Matrix:</b><br>
-        <ul>
-        <li><b>Self-update:</b> Users can update their own fullName, mobile, designation, address</li>
-        <li><b>Admin-update:</b> Admins can update any field for any user</li>
-        <li><b>Email changes:</b> Require admin privileges and trigger re-verification</li>
-        </ul>
-        <b>Updatable Fields:</b><br>
-        <ul>
-        <li><code>fullName</code>: Display name (also updates firstName/lastName if parsed)</li>
-        <li><code>firstName</code>: First name only</li>
-        <li><code>lastName</code>: Last name only</li>
-        <li><code>email</code>: Email address (admin only, triggers verification)</li>
-        <li><code>mobile</code>: Phone number with country code</li>
-        <li><code>designation</code>: Job title</li>
-        <li><code>address</code>: Full address object</li>
-        </ul>
-        <b>Validation Rules:</b><br>
-        <ul>
-        <li>Email must be unique within the organization</li>
-        <li>Mobile must match pattern: +[country][number]</li>
-        <li>Name fields: 1-100 characters</li>
-        </ul>
-        <b>Side Effects:</b><br>
-        <ul>
-        <li>User update event published to event bus</li>
-        <li>Audit log entry created for admin updates</li>
-        <li>Email change triggers verification email</li>
-        </ul>
+        Update user profile fields. The Zod schema uses `.strict()` mode, so any unknown
+        fields in the request body cause a `400` validation error.
+
+        **Updatable fields:** `fullName`, `firstName`, `lastName`, `middleName`, `email`,
+        `designation`, `mobile`, `address`, `dataCollectionConsent`, `hasLoggedIn`.
+
+        Restricted system fields (`_id`, `orgId`, `slug`, `__v`) cannot be updated and
+        cause a `400` if included.
+
+        **Email change:** When `email` is changed, a verification email is sent to the
+        new address. The response includes a `meta.emailChangeMailStatus` field:
+        `notNeeded` | `sent` | `failed`.
+
+        **Authorization:** Admin can update any user; non-admin can only update themselves
+        (`userAdminOrSelfCheck` middleware, throws `400` not `403`).
       operationId: updateUser
       security:
         - bearerAuth: []
@@ -11273,11 +11610,11 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 fullName:
                   type: string
                   minLength: 1
-                  maxLength: 100
                   description: Full display name
                   example: "John Smith"
                 firstName:
@@ -11288,15 +11625,19 @@ paths:
                   type: string
                   description: Last name only
                   example: "Smith"
+                middleName:
+                  type: string
+                  description: Middle name
+                  example: "Alan"
                 email:
                   type: string
                   format: email
-                  description: Email address (admin only)
+                  description: Email address (triggers verification email to new address)
                   example: "john.smith@company.com"
                 mobile:
                   type: string
-                  pattern: '^\+?[0-9]{10,15}$'
-                  description: Mobile phone with country code
+                  pattern: '^$|^\+?[0-9]{10,15}$'
+                  description: Mobile phone with optional country code
                   example: "+15551234567"
                 designation:
                   type: string
@@ -11304,74 +11645,72 @@ paths:
                   example: "Senior Software Engineer"
                 address:
                   $ref: '#/components/schemas/Address'
+                dataCollectionConsent:
+                  type: boolean
+                  description: User's data collection consent flag
+                hasLoggedIn:
+                  type: boolean
+                  description: Whether user has completed first login
       responses:
         '200':
           description: User updated successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
-                    type: string
-                    example: "User updated successfully"
-                  data:
-                    $ref: '#/components/schemas/User'
+                $ref: '#/components/schemas/UpdateUserResponse'
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Invalid field values</li>
-            <li>Email already exists</li>
-            <li>Invalid mobile format</li>
-            </ul>
+            Invalid request. Possible reasons:
+
+            - Unknown fields in request body (Zod strict mode)
+            - Invalid email format or mobile format
+            - No valid fields provided for update
+            - Restricted fields (`_id`, `orgId`, `slug`, `__v`) included
+            - Email already in use by another user
+            - Requester is not admin and is trying to update a different user
+          content:  
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
-        '403':
-          description: |
-            Forbidden. Possible reasons:<br>
-            <ul>
-            <li>Attempting to update another user without admin privileges</li>
-            <li>Attempting to update email without admin privileges</li>
-            </ul>
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found
+          description: |
+            Not found. Possible reasons:
+
+            - `userId` or `orgId` missing from token (`userAdminOrSelfCheck`)
+            - Organization or user not found (`userExists`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error (DB save or event publish failure)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
         - Users
       summary: Delete user
       description: |
-        Soft delete a user from the organization. The user account is deactivated but data is retained for audit purposes.<br><br>
-        <b>Overview:</b><br>
-        This endpoint performs a soft delete on a user account. The user is marked as deleted and can no longer access the system, but their data is retained for compliance and audit purposes.<br><br>
-        <b>What Happens on Delete:</b><br>
-        <ol>
-        <li>User's <code>isDeleted</code> flag is set to true</li>
-        <li>User's password is cleared</li>
-        <li>User is removed from all user groups</li>
-        <li>User's active sessions are invalidated</li>
-        <li>User deletion event is published</li>
-        </ol>
-        <b>Restrictions:</b><br>
-        <ul>
-        <li>Cannot delete organization admins (demote first)</li>
-        <li>Cannot delete the organization owner</li>
-        <li>Cannot delete yourself through this endpoint</li>
-        <li>Cannot delete already-deleted users</li>
-        </ul>
-        <b>Data Retention:</b><br>
-        <ul>
-        <li>User profile data is retained (soft delete)</li>
-        <li>User's documents and content remain with updated ownership</li>
-        <li>Audit logs are preserved</li>
-        <li>Data can be permanently purged by super admin if required</li>
-        </ul>
-        <b>Recovery:</b><br>
-        Deleted users can be restored by organization admins within a configurable retention period.
+        Soft-delete a user from the organization. Sets `isDeleted: true` and `hasLoggedIn: false`,
+        removes the user from all user groups, clears the hashed password, and publishes a
+        `DeleteUserEvent`.
+
+        **Restrictions:**
+
+        - Cannot delete a user who is in the `admin` group — demote them first
+        - The `userAdminCheck` middleware enforces that only org admins can call this endpoint
+
+        **Note:** There is no recovery mechanism via API — a deleted user can be re-invited via
+        `POST /users/bulk/invite`, which restores the account.
       operationId: deleteUser
       security:
         - bearerAuth: []
@@ -11387,46 +11726,51 @@ paths:
             example: "507f1f77bcf86cd799439011"
       responses:
         '200':
-          description: User deleted successfully
+          description: User soft-deleted successfully
           content:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - message
                 properties:
-                  success:
-                    type: boolean
-                    example: true
                   message:
                     type: string
                     example: "User deleted successfully"
-                  deletedUser:
-                    type: object
-                    properties:
-                      _id:
-                        type: string
-                      fullName:
-                        type: string
-                      email:
-                        type: string
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>User is already deleted</li>
-            <li>Invalid user ID format</li>
-            </ul>
+            Invalid request. Possible reasons:
+
+            - Invalid user ID format (Zod validation)
+            - Requester does not have admin privileges (`userAdminCheck`)
+            - Target user is in the admin group and cannot be deleted directly
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
-        '403':
-          description: |
-            Forbidden. Possible reasons:<br>
-            <ul>
-            <li>Admin privileges required</li>
-            <li>Cannot delete admin users</li>
-            <li>Cannot delete organization owner</li>
-            </ul>
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found
+          description: |
+            Not found. Possible reasons:
+
+            - `userId` or `orgId` missing from token (`userAdminCheck`)
+            - Organization or user not found (`userExists`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/{id}/email:
     get:
@@ -11434,27 +11778,17 @@ paths:
         - Users
       summary: Get user email by ID
       description: |
-        Retrieve the email address for a specific user. This is a dedicated endpoint for email lookup with proper access controls.<br><br>
-        <b>Overview:</b><br>
-        This endpoint provides direct access to a user's email address. It exists separately from the main user endpoint to allow granular permission control over email visibility.<br><br>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>Admin communication workflows</li>
-        <li>Invitation and notification systems</li>
-        <li>Email-based user lookup</li>
-        <li>Contact information export</li>
-        </ul>
-        <b>Privacy Considerations:</b><br>
-        <ul>
-        <li>Only organization admins can access this endpoint</li>
-        <li>Access is logged for audit purposes</li>
-        <li>Consider GDPR/privacy regulations when exposing emails</li>
-        </ul>
-        <b>Authorization:</b><br>
-        Requires admin privileges. Regular users should use the main user endpoint which may mask emails based on organization settings.
+        Retrieve the email address for a specific user. Requires admin privileges.
+
+        The `id` path parameter is validated as a 24-character hex string. The `userAdminCheck`
+        middleware runs before `userExists`, so missing token context returns `404` before the
+        admin check can throw `400`.
+
+        Returns `{ email }` for the matched user.
       operationId: getUserEmailById
       security:
         - bearerAuth: []
+        - oauth2: [user:read]
       parameters:
         - name: id
           in: path
@@ -11471,27 +11805,60 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - email
                 properties:
-                  success:
-                    type: boolean
-                    example: true
                   email:
                     type: string
                     format: email
                     example: "john.smith@company.com"
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - Invalid user ID format (Zod validation)
+            - Requester does not have admin privileges (`userAdminCheck`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
-        '403':
-          description: Forbidden - Admin privileges required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found
+          description: |
+            Not found. Possible reasons:
+
+            - `userId` or `orgId` missing from token (`userAdminCheck`)
+            - Organization or user not found (`userExists`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     patch:
       tags:
         - Users
       summary: Update user email
       description: |
-        Update the email address of a user.
+        Update the email address of a specific user. The new email is saved directly without a
+        uniqueness check. A `UpdateUserEvent` is published to the event bus.
+
+        Use `PUT /users/{id}` instead if you need the full update flow including email uniqueness
+        validation and verification email sending.
+
+        **Authorization:** Admin or the user themselves (`userAdminOrSelfCheck` — throws `400`
+        not `403` if not authorized).
       operationId: updateEmail
       security:
         - bearerAuth: []
@@ -11500,8 +11867,10 @@ paths:
         - name: id
           in: path
           required: true
+          description: User ID (24-character MongoDB ObjectId)
           schema:
             type: string
+            pattern: '^[a-fA-F0-9]{24}$'
       requestBody:
         required: true
         description: "Request payload"
@@ -11509,6 +11878,9 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
+              required:
+                - email
               properties:
                 email:
                   type: string
@@ -11516,10 +11888,42 @@ paths:
       responses:
         '200':
           description: Email updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - Invalid user ID format or invalid email format (Zod)
+            - Requester is not admin and is not the target user (`userAdminOrSelfCheck`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found
+          description: |
+            Not found. Possible reasons:
+
+            - `userId` or `orgId` missing from token (`userAdminOrSelfCheck`)
+            - Organization or user not found (`userExists`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/dp:
     put:
@@ -11527,34 +11931,23 @@ paths:
         - Users
       summary: Upload display picture
       description: |
-        Upload or update the display picture (avatar) for the authenticated user.<br><br>
-        <b>Overview:</b><br>
-        This endpoint allows users to upload their profile picture. The image is processed, resized, and stored for use throughout the application.<br><br>
-        <b>File Requirements:</b><br>
-        <ul>
-        <li><b>Allowed types:</b> PNG, JPEG, JPG, WebP, GIF</li>
-        <li><b>Maximum size:</b> 1MB (1,048,576 bytes)</li>
-        <li><b>Recommended dimensions:</b> 256x256 pixels or larger</li>
-        <li><b>Aspect ratio:</b> Square recommended (will be cropped to square)</li>
-        </ul>
-        <b>Image Processing:</b><br>
-        <ul>
-        <li>Images are automatically resized to standard dimensions</li>
-        <li>Converted to JPEG for consistency and smaller file size</li>
-        <li>Multiple sizes may be generated (thumbnail, standard, large)</li>
-        <li>Original is not preserved</li>
-        </ul>
-        <b>Side Effects:</b><br>
-        <ul>
-        <li>Previous display picture is replaced</li>
-        <li>Cached images are invalidated</li>
-        <li>CDN cache may take time to update</li>
-        </ul>
-        <b>Authorization:</b><br>
-        Users can only upload their own display picture. Admins cannot upload on behalf of other users.
+        Upload or replace the display picture for the authenticated user.
+
+        **File requirements** (enforced by `FileProcessorFactory` middleware):
+
+        - **Field name:** `file`
+        - **Allowed types:** PNG, JPEG, JPG, WebP, GIF
+        - **Maximum size:** 1 MB (1,048,576 bytes)
+
+        The image is compressed to JPEG by `sharp`. If the compressed image still exceeds 100 KB
+        after quality reduction, a `413` is returned.
+
+        The response is the compressed binary JPEG data (`Content-Type: image/jpeg`), not JSON.
+        The record is upserted in `UserDisplayPicture`.
       operationId: uploadUserDisplayPicture
       security:
         - bearerAuth: []
+        - oauth2: [user:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -11562,54 +11955,74 @@ paths:
           multipart/form-data:
             schema:
               type: object
+              additionalProperties: false
+              required:
+                - file
               properties:
                 file:
                   type: string
                   format: binary
-                  description: Image file (PNG, JPEG, WebP, or GIF, max 1MB)
-              required:
-                - file
+                  description: Image file (PNG, JPEG, WebP, or GIF, max 1 MB)
       responses:
         '201':
-          description: Display picture uploaded
+          description: Display picture uploaded and compressed successfully — binary JPEG returned
           content:
             image/jpeg:
               schema:
                 type: string
                 format: binary
         '400':
-          description: Invalid file type or size
+          description: |
+            Invalid request. Possible reasons:
+
+            - No file uploaded
+            - File type not allowed (must be PNG, JPEG, JPG, WebP, or GIF)
+            - File exceeds 1 MB limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Compressed image exceeds 100 KB after quality reduction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error (DB upsert or image processing failure)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
         - Users
       summary: Get display picture
       description: |
-        Retrieve the current user's display picture image.<br><br>
-        <b>Overview:</b><br>
-        This endpoint returns the user's profile picture as binary image data. Use this for displaying the user's avatar in the application.<br><br>
-        <b>Response Format:</b><br>
-        <ul>
-        <li>Returns raw image data (not JSON)</li>
-        <li>Content-Type header indicates image format (typically image/jpeg)</li>
-        <li>Suitable for use directly in &lt;img&gt; src or CSS background</li>
-        </ul>
-        <b>Caching:</b><br>
-        <ul>
-        <li>Response includes cache headers for browser caching</li>
-        <li>Use ETag for conditional requests</li>
-        <li>Cache invalidated when picture is updated</li>
-        </ul>
-        <b>Alternative:</b><br>
-        For signed URL access, use the user profile endpoint which returns a <code>displayPictureUrl</code> field.
+        Retrieve the authenticated user's display picture.
+
+        **When a display picture exists:** returns the raw binary image buffer with the stored
+        `Content-Type` header (typically `image/jpeg`).
+
+        **When no display picture is set:** returns `200` with a JSON body
+        `{ "errorMessage": "User pic not found" }` — not a `404`.
       operationId: getUserDisplayPicture
       security:
         - bearerAuth: []
+        - oauth2: [user:read]
       responses:
         '200':
-          description: Display picture retrieved successfully
+          description: |
+            Response varies:
+            - If picture exists: binary image data with appropriate `Content-Type`
+            - If no picture: `{ "errorMessage": "User pic not found" }`
           content:
             image/jpeg:
               schema:
@@ -11619,49 +12032,69 @@ paths:
               schema:
                 type: string
                 format: binary
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - errorMessage
+                properties:
+                  errorMessage:
+                    type: string
+                    example: "User pic not found"
         '401':
           description: Unauthorized - Valid bearer token required
-        '404':
-          description: No display picture set - User has not uploaded a profile picture
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
         - Users
       summary: Remove display picture
       description: |
-        Remove the current user's display picture and revert to default avatar.<br><br>
-        <b>Overview:</b><br>
-        This endpoint permanently removes the user's uploaded profile picture. After removal, the user will display a default avatar (typically initials or generic icon).<br><br>
-        <b>What Happens:</b><br>
-        <ul>
-        <li>Profile picture file is deleted from storage</li>
-        <li>User profile updated to remove picture reference</li>
-        <li>Cached images invalidated</li>
-        <li>Default avatar will be shown in UI</li>
-        </ul>
-        <b>Note:</b><br>
-        This action is immediate and irreversible. To restore a picture, user must upload a new one.
+        Remove the authenticated user's display picture by setting `pic` and `mimeType` to `null`
+        in the `UserDisplayPicture` document.
+
+        **When no display picture exists:** returns `200` with
+        `{ "errorMessage": "User display picture not found" }` — not a `404`.
+
+        **When a display picture exists:** nullifies the fields and returns the updated
+        `UserDisplayPicture` document.
       operationId: removeUserDisplayPicture
       security:
         - bearerAuth: []
+        - oauth2: [user:write]
       responses:
         '200':
-          description: Display picture removed successfully
+          description: |
+            Response varies:
+            - If picture existed: the updated `UserDisplayPicture` document (with `pic: null`)
+            - If no picture: `{ "errorMessage": "User display picture not found" }`
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
-                    type: string
-                    example: "Display picture removed successfully"
+                additionalProperties: true
         '401':
           description: Unauthorized - Valid bearer token required
-        '404':
-          description: No display picture to remove
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/bulk/invite:
     post:
@@ -11669,33 +12102,31 @@ paths:
         - Users
       summary: Bulk invite users
       description: |
-        Invite multiple users to the organization in a single operation. Ideal for onboarding entire teams at once.<br><br>
-        <b>Overview:</b><br>
-        This endpoint creates user accounts for multiple email addresses and sends invitation emails to all of them. It's the most efficient way to add multiple users to your organization.<br><br>
-        <b>Invitation Flow:</b><br>
-        <ol>
-        <li>Validate all email addresses</li>
-        <li>Check for existing accounts (skip duplicates)</li>
-        <li>Create user accounts for new emails</li>
-        <li>Restore any previously deleted accounts</li>
-        <li>Add users to specified groups (optional)</li>
-        <li>Send invitation emails to all new users</li>
-        </ol>
-        <b>Requirements:</b><br>
-        <ul>
-        <li><b>Account Type:</b> Business accounts only (not individual)</li>
-        <li><b>SMTP:</b> Email configuration must be set up</li>
-        <li><b>Authorization:</b> Admin privileges required</li>
-        </ul>
-        <b>Email Processing:</b><br>
-        <ul>
-        <li>Duplicate emails are automatically skipped</li>
-        <li>Invalid email formats are rejected</li>
-        <li>Existing users are not re-invited (use resend-invite)</li>
-        <li>Previously deleted users are restored</li>
-        </ul>
-        <b>Response Details:</b><br>
-        Response includes count of successful invites and any failures with reasons.
+        Invite multiple users to the organization by email. Handles three cases per email:
+
+        1. **New emails** — creates a `Users` document, publishes `NewUserEvent`, and sends an
+           invitation email.
+        2. **Previously deleted accounts** — restores the account (`isDeleted: false`) and sends a
+           re-invite email.
+        3. **Active accounts with `hasLoggedIn: false`** (pending, not blocked) — resends the
+           invitation email.
+        4. **Active accounts already logged in** — silently skipped; no error.
+
+        Optional `groupIds` adds new/restored users to the specified groups via `$addToSet`.
+
+        **Middleware chain:**
+
+        - `smtpConfigCheck` — verifies SMTP host/port/fromEmail are configured; throws `404` if
+          missing fields, `500` if config fetch fails.
+        - `userAdminCheck` — requires admin privileges; throws `400` if not admin, `404` if token
+          context is missing.
+        - `accountTypeCheck` — rejects `individual` account type; throws `400`.
+
+        If all provided emails already have active accounts, returns `200` with
+        `{ "errorMessage": "All provided emails already have active accounts" }`.
+
+        If mail sending fails for any email, the loop continues and the final response reflects
+        the mail service's HTTP status code.
       operationId: bulkInviteUsers
       security:
         - bearerAuth: []
@@ -11707,6 +12138,9 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
+              required:
+                - emails
               properties:
                 emails:
                   type: array
@@ -11714,77 +12148,71 @@ paths:
                     type: string
                     format: email
                   minItems: 1
-                  maxItems: 100
-                  description: Array of email addresses to invite (max 100)
+                  description: Array of email addresses to invite
                   example: ["user1@company.com", "user2@company.com"]
                 groupIds:
                   type: array
                   items:
                     type: string
                     pattern: '^[a-fA-F0-9]{24}$'
-                  description: Optional group IDs to add all invited users to
+                  description: Optional group IDs to add invited users to
                   example: ["507f1f77bcf86cd799439011"]
-                sendEmail:
-                  type: boolean
-                  default: true
-                  description: Whether to send invitation emails immediately
-              required:
-                - emails
       responses:
         '200':
-          description: Bulk invitation processed
+          description: Invitations processed (including all-skipped case)
           content:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 properties:
-                  success:
-                    type: boolean
-                    example: true
                   message:
                     type: string
-                    example: "Bulk invitation completed"
-                  invited:
-                    type: integer
-                    description: Number of successful invitations sent
-                    example: 8
-                  skipped:
-                    type: integer
-                    description: Number of existing users skipped
-                    example: 1
-                  failed:
-                    type: integer
-                    description: Number of failed invitations
-                    example: 1
-                  failures:
-                    type: array
-                    description: Details of failed invitations
-                    items:
-                      type: object
-                      properties:
-                        email:
-                          type: string
-                        reason:
-                          type: string
+                    example: "Invite sent successfully"
+                  errorMessage:
+                    type: string
+                    description: Present when all emails were already active
+                    example: "All provided emails already have active accounts"
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Empty emails array</li>
-            <li>Invalid email format in array</li>
-            <li>Exceeded maximum (100 emails)</li>
-            </ul>
+            Invalid request. Possible reasons:
+
+            - Missing or empty `emails` field
+            - Invalid email format in array
+            - Requester does not have admin privileges (`userAdminCheck`)
+            - Organization is an individual account (`accountTypeCheck`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
-        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
           description: |
-            Forbidden. Possible reasons:<br>
-            <ul>
-            <li>Admin privileges required</li>
-            <li>Business account required (individual accounts cannot bulk invite)</li>
-            </ul>
-        '503':
-          description: Email service unavailable - SMTP not configured
+            Not found. Possible reasons:
+
+            - SMTP configuration missing host, port, or fromEmail (`smtpConfigCheck`)
+            - `userId` or `orgId` missing from token (`userAdminCheck`)
+            - Organization not found (`accountTypeCheck`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Internal server error. Possible reasons:
+
+            - SMTP config fetch failed (`smtpConfigCheck`)
+            - Auth methods fetch failed
+            - User ID missing during invite processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/{id}/resend-invite:
     post:
@@ -11792,33 +12220,29 @@ paths:
         - Users
       summary: Resend user invite
       description: |
-        Resend the invitation email to a user who hasn't completed their account setup.<br><br>
-        <b>Overview:</b><br>
-        This endpoint resends the invitation email to a user who was previously invited but hasn't logged in yet. Useful when the original invitation email was lost, expired, or ended up in spam.<br><br>
-        <b>When to Use:</b><br>
-        <ul>
-        <li>User didn't receive original invitation</li>
-        <li>Invitation link expired</li>
-        <li>User forgot to complete setup</li>
-        <li>Email went to spam folder</li>
-        </ul>
-        <b>Requirements:</b><br>
-        <ul>
-        <li>User must exist in the system</li>
-        <li>User must NOT have logged in yet (hasLoggedIn: false)</li>
-        <li>SMTP configuration must be active</li>
-        <li>Admin privileges required</li>
-        </ul>
-        <b>What Happens:</b><br>
-        <ul>
-        <li>Generates a new invitation token</li>
-        <li>Invalidates any previous invitation links</li>
-        <li>Sends new invitation email</li>
-        <li>Resets invitation expiry timer</li>
-        </ul>
+        Resend the invitation email to a pending user who has not yet completed account setup
+        (`hasLoggedIn: false`).
+
+        **Middleware chain:**
+
+        - `smtpConfigCheck` — verifies SMTP is configured; throws `404` if fields missing,
+          `500` if config fetch fails.
+        - `userAdminCheck` — admin only; throws `400` if not admin, `404` if token context missing.
+        - `accountTypeCheck` — rejects individual account type; throws `400`.
+
+        **Controller behavior:**
+
+        - Throws `400` if `id` param is missing.
+        - Throws `401` if `req.user` is missing.
+        - Throws `401` (`UnauthorizedError`) if the target user is not found in the DB.
+        - Throws `400` if the user has already logged in (`hasLoggedIn: true`).
+        - Throws `500` if auth methods fetch or email sending fails.
+
+        Returns `{ message: 'Invite sent successfully' }` on success.
       operationId: resendUserInvite
       security:
         - bearerAuth: []
+        - oauth2: [user:invite]
       parameters:
         - name: id
           in: path
@@ -11835,63 +12259,76 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - message
                 properties:
-                  success:
-                    type: boolean
-                    example: true
                   message:
                     type: string
-                    example: "Invitation resent successfully"
-                  sentTo:
-                    type: string
-                    format: email
-                    description: Email address the invitation was sent to
+                    example: "Invite sent successfully"
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>User has already logged in (no longer pending)</li>
-            <li>User account is deleted</li>
-            </ul>
+            Invalid request. Possible reasons:
+
+            - Invalid user ID format (Zod)
+            - User has already logged in (`hasLoggedIn: true`)
+            - Requester does not have admin privileges (`userAdminCheck`)
+            - Organization is an individual account (`accountTypeCheck`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid bearer token required
-        '403':
-          description: Forbidden - Admin privileges required
+          description: |
+            Unauthorized. Possible reasons:
+
+            - Missing or invalid bearer token
+            - Target user not found in DB (controller throws `UnauthorizedError`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found
-        '503':
-          description: Email service unavailable - SMTP not configured
+          description: |
+            Not found. Possible reasons:
+
+            - SMTP configuration missing fields (`smtpConfigCheck`)
+            - `userId` or `orgId` missing from token (`userAdminCheck`)
+            - Organization not found (`accountTypeCheck`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Internal server error. Possible reasons:
+
+            - SMTP config fetch failed
+            - Auth methods fetch failed
+            - Email sending failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/graph/list:
     get:
       tags:
         - Users
-      summary: List users (paginated with graph data)
+      summary: List users (paginated, enriched)
       description: |
-        Retrieve a paginated list of users with enhanced search capabilities using the graph service.<br><br>
-        <b>Overview:</b><br>
-        This endpoint provides advanced user listing with full-text search, pagination, and optional relationship data from the knowledge graph. It's optimized for large organizations with thousands of users.<br><br>
-        <b>Search Capabilities:</b><br>
-        <ul>
-        <li>Full-text search across name and email</li>
-        <li>Fuzzy matching for typo tolerance</li>
-        <li>Results ranked by relevance</li>
-        </ul>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>User directory with search</li>
-        <li>Autocomplete user selection</li>
-        <li>Admin user management lists</li>
-        <li>User analytics dashboards</li>
-        </ul>
-        <b>Performance:</b><br>
-        <ul>
-        <li>Powered by graph database for fast queries</li>
-        <li>Supports pagination for large datasets</li>
-        <li>Results cached for repeated queries</li>
-        </ul>
-        <b>vs /users endpoint:</b><br>
-        Use this endpoint when you need advanced search or are dealing with large user bases. Use <code>/users</code> for simple full-list retrieval.
+        Retrieve a paginated list of users by proxying to the connector backend
+        (`/api/v1/entity/user/list`). The response from the connector is then enriched locally
+        with profile pictures, `hasLoggedIn` flags, group memberships, and role.
+
+        Only `page`, `limit`, and `search` are forwarded to the connector.
+
+        **Query validation** (Zod at route layer): `page` and `limit` must be positive integer
+        strings when provided; `limit` is capped at 100. The `search` parameter is additionally
+        validated in the controller for XSS, format specifiers, and a 1000-character maximum.
+
+        Returns the connector's response object directly (including any `users` and `pagination`
+        fields it provides), with each user entry enriched.
       operationId: listUsersGraph
       security:
         - bearerAuth: []
@@ -11899,14 +12336,16 @@ paths:
       parameters:
         - name: page
           in: query
-          description: Page number (1-based)
+          required: false
+          description: Page number (1-based). Must be a positive integer string when provided.
           schema:
             type: integer
             minimum: 1
             default: 1
         - name: limit
           in: query
-          description: Number of results per page
+          required: false
+          description: Number of results per page. Must be a positive integer string no greater than 100 when provided.
           schema:
             type: integer
             minimum: 1
@@ -11914,63 +12353,45 @@ paths:
             default: 10
         - name: search
           in: query
-          description: Search query (searches name and email)
+          required: false
+          description: Search query (max 1000 characters at controller layer, XSS-validated)
           schema:
             type: string
             maxLength: 1000
             example: "john"
-        - name: sortBy
-          in: query
-          description: Field to sort by
-          schema:
-            type: string
-            enum: [fullName, email, createdAt]
-            default: fullName
-        - name: sortOrder
-          in: query
-          description: Sort direction
-          schema:
-            type: string
-            enum: [asc, desc]
-            default: asc
       responses:
         '200':
-          description: Paginated list of users
+          description: Paginated list of enriched users from the connector backend
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/User'
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                        example: 1
-                      limit:
-                        type: integer
-                        example: 10
-                      total:
-                        type: integer
-                        example: 156
-                      totalPages:
-                        type: integer
-                        example: 16
-                  total:
-                    type: integer
-                  page:
-                    type: integer
-                  limit:
-                    type: integer
+                additionalProperties: true
+                description: Connector-defined response shape with users enriched locally
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - Invalid `page` or `limit` query parameters (Zod validation — non-numeric, negative, or limit > 100)
+            - `orgId` or `userId` missing from token
+            - Search parameter too long or contains XSS/format specifiers
+            - Connector returned a non-200 status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/{id}/unblock:
     put:
@@ -11978,29 +12399,20 @@ paths:
         - Users
       summary: Unblock a user in organization
       description: |
-        Unblock a previously blocked user within the authenticated administrator's organization.<br><br>
+        Unblock a previously blocked user. Sets `isBlocked: false` and resets
+        `wrongCredentialCount` to `0` on the user's `UserCredentials` document.
 
-        <b>Overview:</b><br>
-        This endpoint updates the user's credential record by setting <code>isBlocked</code> to <code>false</code> 
-        and resetting <code>wrongCredentialCount</code> to <code>0</code>.<br><br>
+        If the `UserCredentials` record is not found (user not blocked or doesn't exist in this
+        org), the controller throws a `BadRequestError` — returns `400`, not `404`.
 
-        <b>Authorization:</b><br>
-        <ul>
-        <li><b>Admin only:</b> Only organization administrators can unblock users</li>
-        <li>Requires a valid Bearer token</li>
-        </ul>
+        **Path validation:** `id` must be a 24-character hex MongoDB ObjectId (Zod at route layer).
 
-        <b>Validation & Conditions:</b><br>
-        <ul>
-        <li>User must belong to the same <code>orgId</code> as the authenticated admin</li>
-        <li>User must currently be blocked (<code>isBlocked: true</code>)</li>
-        <li>User must not be deleted (<code>isDeleted: false</code>)</li>
-        </ul>
-
-        <b>Note:</b> If the user is not blocked or does not exist in the organization, a 404 response is returned.
+        **Authorization:** `userAdminCheck` middleware — throws `400` if requester is not admin,
+        `404` if `userId`/`orgId` are missing from the token.
       operationId: unblockUser
       security:
         - bearerAuth: []
+        - oauth2: [user:write]
       parameters:
         - name: id
           in: path
@@ -12017,20 +12429,43 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - message
                 properties:
                   message:
                     type: string
                     example: "User unblocked successfully"
         '400':
-          description: User ID is required
+          description: |
+            Invalid request. Possible reasons:
+
+            - Invalid user ID format in path (Zod validation)
+            - `userId` or `orgId` missing from request context (controller check)
+            - Requester does not have admin privileges (`userAdminCheck`)
+            - User not found or not currently blocked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
-        '403':
-          description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found or not blocked
+          description: "`userId` or `orgId` missing from token (`userAdminCheck`)"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/fetch/with-groups:
     get:
@@ -12038,7 +12473,14 @@ paths:
         - Users
       summary: Get all users with groups
       description: |
-        Retrieve all users in the organization along with their group memberships.
+        Retrieve all non-deleted users in the organization along with their group memberships,
+        using a MongoDB aggregation pipeline.
+
+        Returns an array where each element contains: `_id`, `userId`, `orgId`, `fullName`,
+        `hasLoggedIn`, and `groups` (array of `{ name, type }` objects for non-deleted groups
+        in the same org).
+
+        Accessible by any authenticated user with `user:read` scope — no admin check.
       operationId: getAllUsersWithGroups
       security:
         - bearerAuth: []
@@ -12049,16 +12491,53 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  data:
-                    type: array
-                    items:
-                      type: object
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    _id:
+                      type: string
+                      format: ObjectId
+                    userId:
+                      type: string
+                    orgId:
+                      type: string
+                      format: ObjectId
+                    fullName:
+                      type: string
+                    hasLoggedIn:
+                      type: boolean
+                    groups:
+                      type: array
+                      items:
+                        type: object
+                        additionalProperties: false
+                        required:
+                          - name
+                          - type
+                        properties:
+                          name:
+                            type: string
+                          type:
+                            type: string
+                            enum:
+                              - admin
+                              - standard
+                              - everyone
+                              - custom
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/by-ids:
     post:
@@ -12066,7 +12545,13 @@ paths:
         - Users
       summary: Get users by IDs
       description: |
-        Retrieve multiple users by their IDs in a single request.
+        Retrieve multiple users by their MongoDB ObjectIds in a single request.
+
+        The request body field is `userIds` (not `ids`). The Zod schema validates each entry
+        as a 24-character hex string and requires at least one ID.
+
+        Returns a raw array of `User` documents for matching, non-deleted users within the
+        requester's organization.
       operationId: getUsersByIds
       security:
         - bearerAuth: []
@@ -12078,27 +12563,50 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
+              required:
+                - userIds
               properties:
-                ids:
+                userIds:
                   type: array
                   items:
                     type: string
+                    pattern: '^[a-fA-F0-9]{24}$'
+                  minItems: 1
+                  description: Array of MongoDB ObjectId strings
+                  example: ["507f1f77bcf86cd799439011", "507f1f77bcf86cd799439012"]
       responses:
         '200':
           description: Users retrieved successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  data:
-                    type: array
-                    items:
-                      type: object
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing `userIds` field
+            - `userIds` is empty (minItems: 1)
+            - Any ID is not a valid 24-character hex string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/{id}/fullname:
     patch:
@@ -12106,7 +12614,12 @@ paths:
         - Users
       summary: Update user full name
       description: |
-        Update the full name of a user.
+        Update the `fullName` field of a specific user. The value must be at least 1 character.
+
+        A `UpdateUserEvent` is published to the event bus on success.
+
+        **Authorization:** Admin or the user themselves (`userAdminOrSelfCheck` — throws `400`
+        not `403`).
       operationId: updateFullName
       security:
         - bearerAuth: []
@@ -12115,8 +12628,10 @@ paths:
         - name: id
           in: path
           required: true
+          description: User ID (24-character MongoDB ObjectId)
           schema:
             type: string
+            pattern: '^[a-fA-F0-9]{24}$'
       requestBody:
         required: true
         description: "Request payload"
@@ -12124,23 +12639,53 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
+              required:
+                - fullName
               properties:
                 fullName:
                   type: string
+                  minLength: 1
       responses:
         '200':
           description: Full name updated successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
+                $ref: '#/components/schemas/User'
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing or empty `fullName` (Zod)
+            - Invalid user ID format (Zod)
+            - Requester is not admin and is not the target user (`userAdminOrSelfCheck`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found
+          description: |
+            Not found. Possible reasons:
+
+            - `userId` or `orgId` missing from token (`userAdminOrSelfCheck`)
+            - Organization or user not found (`userExists`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
         # TODO: remove these three apis and replace it with changeName update only
   /users/{id}/firstName:
@@ -12149,7 +12694,12 @@ paths:
         - Users
       summary: Update user first name
       description: |
-        Update the first name of a user.
+        Update the `firstName` field of a specific user. The value must be at least 1 character.
+
+        A `UpdateUserEvent` is published to the event bus on success.
+
+        **Authorization:** Admin or the user themselves (`userAdminOrSelfCheck` — throws `400`
+        not `403`).
       operationId: updateFirstName
       security:
         - bearerAuth: []
@@ -12158,8 +12708,10 @@ paths:
         - name: id
           in: path
           required: true
+          description: User ID (24-character MongoDB ObjectId)
           schema:
             type: string
+            pattern: '^[a-fA-F0-9]{24}$'
       requestBody:
         required: true
         description: "Request payload"
@@ -12167,23 +12719,53 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
+              required:
+                - firstName
               properties:
                 firstName:
                   type: string
+                  minLength: 1
       responses:
         '200':
           description: First name updated successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
+                $ref: '#/components/schemas/User'
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing or empty `firstName` (Zod)
+            - Invalid user ID format (Zod)
+            - Requester is not admin and is not the target user (`userAdminOrSelfCheck`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found
+          description: |
+            Not found. Possible reasons:
+
+            - `userId` or `orgId` missing from token (`userAdminOrSelfCheck`)
+            - Organization or user not found (`userExists`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/{id}/lastName:
     patch:
@@ -12191,7 +12773,12 @@ paths:
         - Users
       summary: Update user last name
       description: |
-        Update the last name of a user.
+        Update the `lastName` field of a specific user. The value must be at least 1 character.
+
+        A `UpdateUserEvent` is published to the event bus on success.
+
+        **Authorization:** Admin or the user themselves (`userAdminOrSelfCheck` — throws `400`
+        not `403`).
       operationId: updateLastName
       security:
         - bearerAuth: []
@@ -12200,8 +12787,10 @@ paths:
         - name: id
           in: path
           required: true
+          description: User ID (24-character MongoDB ObjectId)
           schema:
             type: string
+            pattern: '^[a-fA-F0-9]{24}$'
       requestBody:
         required: true
         description: "Request payload"
@@ -12209,23 +12798,53 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
+              required:
+                - lastName
               properties:
                 lastName:
                   type: string
+                  minLength: 1
       responses:
         '200':
           description: Last name updated successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
+                $ref: '#/components/schemas/User'
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing or empty `lastName` (Zod)
+            - Invalid user ID format (Zod)
+            - Requester is not admin and is not the target user (`userAdminOrSelfCheck`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found
+          description: |
+            Not found. Possible reasons:
+
+            - `userId` or `orgId` missing from token (`userAdminOrSelfCheck`)
+            - Organization or user not found (`userExists`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/{id}/designation:
     patch:
@@ -12233,7 +12852,13 @@ paths:
         - Users
       summary: Update user designation
       description: |
-        Update the designation/title of a user.
+        Update the `designation` (job title) field of a specific user. The value must be at
+        least 1 character.
+
+        A `UpdateUserEvent` is published to the event bus on success.
+
+        **Authorization:** Admin or the user themselves (`userAdminOrSelfCheck` — throws `400`
+        not `403`).
       operationId: updateDesignation
       security:
         - bearerAuth: []
@@ -12242,8 +12867,10 @@ paths:
         - name: id
           in: path
           required: true
+          description: User ID (24-character MongoDB ObjectId)
           schema:
             type: string
+            pattern: '^[a-fA-F0-9]{24}$'
       requestBody:
         required: true
         description: "Request payload"
@@ -12251,31 +12878,66 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
+              required:
+                - designation
               properties:
                 designation:
                   type: string
+                  minLength: 1
       responses:
         '200':
           description: Designation updated successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
+                $ref: '#/components/schemas/User'
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing or empty `designation` (Zod)
+            - Invalid user ID format (Zod)
+            - Requester is not admin and is not the target user (`userAdminOrSelfCheck`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found
+          description: |
+            Not found. Possible reasons:
+
+            - `userId` or `orgId` missing from token (`userAdminOrSelfCheck`)
+            - Organization or user not found (`userExists`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/{id}/adminCheck:
     get:
       tags:
         - Users
-      summary: Check if user is admin
+      summary: Check if requester is admin
       description: |
-        Check whether the specified user has admin privileges. Returns 200 OK if the user is an admin.
+        Checks whether the **authenticated requester** has admin privileges in their organization.
+        The `{id}` path parameter is validated for ObjectId format but is not used to look up a
+        user — the check is performed on `req.user` (the token bearer), not on the target ID.
+
+        Returns `200` if the requester is an admin. Returns `400` if not (from `userAdminCheck`
+        which throws `BadRequestError`, not `ForbiddenError`).
       operationId: adminCheck
       security:
         - bearerAuth: []
@@ -12284,52 +12946,46 @@ paths:
         - name: id
           in: path
           required: true
+          description: User ID (validated for ObjectId format only; not checked against DB)
           schema:
             type: string
+            pattern: '^[a-fA-F0-9]{24}$'
       responses:
         '200':
-          description: User is an admin
+          description: Requester has admin access
           content:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - message
                 properties:
                   message:
                     type: string
-        '401':
-          description: Unauthorized
-        '403':
-          description: User is not an admin
-        '404':
-          description: User not found
+                    example: "User has admin access"
+        '400':
+          description: |
+            Invalid request. Possible reasons:
 
-  /users/teams/list:
-    get:
-      tags:
-        - Users
-      summary: Get user teams
-      description: |
-        Retrieve teams associated with the authenticated user.
-      operationId: getUserTeamsViaUsers
-      security:
-        - bearerAuth: []
-        - oauth2: [user:read]
-      responses:
-        '200':
-          description: User teams retrieved successfully
+            - Invalid user ID format (Zod)
+            - Requester does not have admin privileges (`userAdminCheck`)
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  data:
-                    type: array
-                    items:
-                      type: object
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: "`userId` or `orgId` missing from token (`userAdminCheck`)"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ==================== TEAMS ENDPOINTS ====================
   /teams:
@@ -13068,21 +13724,24 @@ paths:
         - Organizations
       summary: Check if organization exists
       description: |
-        Check if any organization has been created in the system. This is typically the first API call made during initial setup.<br><br>
-        <b>Overview:</b><br>
-        This public endpoint determines whether the system has been initialized with an organization. Used by the frontend to decide whether to show the setup wizard or the login screen.<br><br>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>First-time setup detection</li>
-        <li>Onboarding flow decisions</li>
-        <li>System initialization checks</li>
-        </ul>
-        <b>Response:</b><br>
-        <ul>
-        <li><code>exists: true</code> - Organization exists, show login</li>
-        <li><code>exists: false</code> - No organization, show setup wizard</li>
-        </ul>
-        <b>Note:</b> This endpoint requires no authentication and is publicly accessible.
+        Check if any organization has been created in the system. This is typically the first API call made during initial setup.
+
+        **Overview:**
+
+        This public endpoint determines whether the system has been initialized with an organization. Used by the frontend to decide whether to show the setup wizard or the login screen.
+
+        **Use Cases:**
+
+        - First-time setup detection
+        - Onboarding flow decisions
+        - System initialization checks
+
+        **Response:**
+
+        - `exists: true` — Organization exists, show login
+        - `exists: false` — No organization, show setup wizard
+
+        **Note:** This endpoint requires no authentication and is publicly accessible.
       operationId: checkOrgExists
       security: []
       responses:
@@ -13092,11 +13751,40 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 properties:
                   exists:
                     type: boolean
                     description: Whether an organization has been created
                     example: true
+
+  /org/health:
+    get:
+      tags:
+        - Organizations
+      summary: Organization module health check
+      description: Returns the health status of the organization module. No authentication required.
+      operationId: getOrgHealth
+      security: []
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - status
+                  - timestamp
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - healthy
+                  timestamp:
+                    type: string
+                    format: date-time
 
   /org:
     post:
@@ -13104,36 +13792,35 @@ paths:
         - Organizations
       summary: Create organization
       description: |
-        Create a new organization and its first admin user. This is the initial setup endpoint for new PipesHub installations.<br><br>
-        <b>Overview:</b><br>
-        This endpoint performs the complete initial setup of a PipesHub instance, including creating the organization entity and its first administrator account. Should only be called once during initial setup.<br><br>
-        <b>Setup Flow:</b><br>
-        <ol>
-        <li>Frontend calls <code>/org/exists</code> to check if setup is needed</li>
-        <li>If no organization exists, show setup wizard</li>
-        <li>Collect organization and admin details</li>
-        <li>Call this endpoint to create organization</li>
-        <li>User is automatically logged in as admin</li>
-        </ol>
-        <b>What Gets Created:</b><br>
-        <ul>
-        <li>Organization entity with provided details</li>
-        <li>Admin user account with provided credentials</li>
-        <li>Default user groups (admin, everyone)</li>
-        <li>Default system settings</li>
-        <li>Initial authentication configuration</li>
-        </ul>
-        <b>Account Types:</b><br>
-        <ul>
-        <li><code>individual</code>: Single-user account, limited team features</li>
-        <li><code>business</code>: Multi-user organization with full features</li>
-        </ul>
-        <b>Security:</b><br>
-        <ul>
-        <li>This endpoint only works if no organization exists</li>
-        <li>Password must meet security requirements</li>
-        <li>Email verification may be required based on config</li>
-        </ul>
+        Create a new organization and its first admin user. This is the initial setup endpoint for new PipesHub installations.
+
+        **Overview:**
+
+        This endpoint performs the complete initial setup of a PipesHub instance, including creating the organization entity and its first administrator account. Should only be called once during initial setup.
+
+        **Setup Flow:**
+
+        1. Frontend calls `/org/exists` to check if setup is needed
+        2. If no organization exists, show setup wizard
+        3. Collect organization and admin details
+        4. Call this endpoint to create organization
+
+        **What Gets Created:**
+
+        - Organization entity with provided details
+        - Admin user account with provided credentials
+        - Default user groups (admin, everyone, standard)
+        - Initial authentication configuration (password-based)
+
+        **Account Types:**
+
+        - `individual`: Single-user account, limited team features
+        - `business`: Multi-user organization with full features
+
+        **Security:**
+
+        - This endpoint only works if no organization exists
+        - Password must meet complexity requirements (min 8 characters, uppercase, lowercase, number, and special character)
       operationId: createOrganization
       security: []
       requestBody:
@@ -13143,6 +13830,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 accountType:
                   type: string
@@ -13178,66 +13866,61 @@ paths:
                 - adminFullName
                 - password
       responses:
-        '201':
+        '200':
           description: Organization created successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
-                    type: string
-                    example: "Organization created successfully"
-                  data:
-                    type: object
-                    properties:
-                      organization:
-                        $ref: '#/components/schemas/Organization'
-                      adminUser:
-                        $ref: '#/components/schemas/User'
-                      accessToken:
-                        type: string
-                        description: JWT token for immediate login
+                $ref: '#/components/schemas/Organization'
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Organization already exists</li>
-            <li>Invalid email format</li>
-            <li>Password too weak</li>
-            <li>Missing required fields</li>
-            </ul>
-        '409':
-          description: Conflict - Organization already exists in the system
+            Request validation failed. Possible reasons:
+
+            - Missing required fields (accountType, contactEmail, adminFullName, password)
+            - accountType is not one of: individual, business
+            - contactEmail is not a valid email address
+            - password is shorter than 8 characters
+            - registeredName is required when accountType is business
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Internal server error. Possible reasons:
+
+            - Organization already exists
+            - Password does not meet complexity requirements (requires uppercase, lowercase, number, and special character)
+            - Database save failure
+            - Event service error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
         - Organizations
       summary: Get current organization
       description: |
-        Retrieve details about the authenticated user's organization.<br><br>
-        <b>Overview:</b><br>
-        This endpoint returns complete information about the current user's organization, including profile data, settings, and configuration. Use this for organization profile pages and settings.<br><br>
-        <b>Response Includes:</b><br>
-        <ul>
-        <li>Organization profile (name, email, address)</li>
-        <li>Account type and billing status</li>
-        <li>Feature flags and limits</li>
-        <li>Branding settings (logo, colors)</li>
-        <li>Creation and modification timestamps</li>
-        </ul>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>Organization profile pages</li>
-        <li>Settings and configuration screens</li>
-        <li>Billing and subscription displays</li>
-        <li>White-label branding retrieval</li>
-        </ul>
-        <b>Note:</b><br>
-        All authenticated users can access this endpoint to view their organization's details.
+        Retrieve details about the authenticated user's organization.
+
+        **Overview:**
+
+        This endpoint returns the organization document for the current user's org, including profile data and configuration.
+
+        **Response Includes:**
+
+        - Organization profile (registeredName, shortName, contactEmail, domain)
+        - Account type
+        - Onboarding status
+        - Permanent address
+        - Creation and modification timestamps
+
+        **Use Cases:**
+
+        - Organization profile pages
+        - Settings and configuration screens
       operationId: getCurrentOrganization
       x-pipeshub-sdk: true
       security:
@@ -13252,42 +13935,54 @@ paths:
                 $ref: '#/components/schemas/Organization'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Organization not found - User's organization does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database query failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
         - Organizations
       summary: Update organization
       description: |
-        Update organization profile and settings information.<br><br>
-        <b>Overview:</b><br>
-        This endpoint allows administrators to update the organization's profile information, contact details, and address. Used in the organization settings section of the admin panel.<br><br>
-        <b>Updatable Fields:</b><br>
-        <ul>
-        <li><code>registeredName</code>: Official registered/legal name of the organization</li>
-        <li><code>shortName</code>: Short display name used in UI</li>
-        <li><code>phoneNumber</code>: Primary contact phone number</li>
-        <li><code>permanentAddress</code>: Full address object with street, city, state, country, postal code</li>
-        </ul>
-        <b>Restrictions:</b><br>
-        <ul>
-        <li>Only organization admins can perform updates</li>
-        <li>Contact email cannot be changed through this endpoint</li>
-        <li>Account type cannot be changed after creation</li>
-        </ul>
-        <b>Side Effects:</b><br>
-        <ul>
-        <li>Organization update event is published</li>
-        <li>Cached organization data is invalidated</li>
-        <li>Changes are reflected immediately across all services</li>
-        </ul>
-        <b>Validation:</b><br>
-        <ul>
-        <li>Phone number must be valid international format</li>
-        <li>Address fields have maximum length constraints</li>
-        <li>Names cannot be empty if provided</li>
-        </ul>
+        Update organization profile and settings information.
+
+        **Overview:**
+
+        This endpoint allows administrators to update the organization's profile information and contact details.
+
+        **Updatable Fields:**
+
+        - `contactEmail`: Primary contact email for the organization
+        - `registeredName`: Official registered/legal name of the organization
+        - `shortName`: Short display name used in UI
+        - `permanentAddress`: Full address object with street, city, state, country, postal code
+
+        **Request validation** (Zod at route layer): `contactEmail` must be a valid email when
+        provided; `registeredName`, `shortName`, and `permanentAddress` are optional. Address
+        sub-fields (`addressLine1`, `city`, `state`, `country`, `postCode`) are optional strings.
+        An empty JSON object `{}` is valid (no-op partial update).
+
+        **Restrictions:**
+
+        - Only organization admins can perform updates
+        - Account type cannot be changed after creation
+
+        **Side Effects:**
+
+        - Organization updated event is published
       operationId: updateOrganization
       security:
         - bearerAuth: []
@@ -13299,22 +13994,21 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
+                contactEmail:
+                  type: string
+                  format: email
+                  description: Primary contact email for the organization
+                  example: "admin@acme.com"
                 registeredName:
                   type: string
-                  maxLength: 200
                   description: Official registered/legal name
                   example: "Acme Corporation Inc."
                 shortName:
                   type: string
-                  maxLength: 50
                   description: Short display name for UI
                   example: "Acme Corp"
-                phoneNumber:
-                  type: string
-                  pattern: '^\+?[0-9]{10,15}$'
-                  description: Contact phone number (international format)
-                  example: "+15551234567"
                 permanentAddress:
                   $ref: '#/components/schemas/Address'
       responses:
@@ -13324,6 +14018,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 properties:
                   message:
                     type: string
@@ -13332,74 +14027,94 @@ paths:
                     $ref: '#/components/schemas/Organization'
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Invalid phone number format</li>
-            <li>Field exceeds maximum length</li>
-            <li>Invalid address structure</li>
-            </ul>
+            Invalid request. Possible reasons:
+
+            - Invalid request body (Zod validation — malformed `contactEmail`, wrong types, invalid `permanentAddress` shape)
+            - Requester does not have admin privileges (`userAdminCheck`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
-        '403':
-          description: Forbidden - Admin privileges required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Organization not found or user account not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
         - Organizations
       summary: Delete organization
       description: |
-        Permanently delete an organization and all associated data.<br><br>
-        <b>WARNING:</b> This action is <b>irreversible</b>.<br><br>
-        <b>Data Deleted:</b><br>
-        <ul>
-        <li>All user accounts in the organization</li>
-        <li>All teams and user groups</li>
-        <li>All documents and storage data</li>
-        <li>All configuration and settings</li>
-        </ul>
-        <b>Requirements:</b><br>
-        <ul>
-        <li>Must be the organization owner (super admin)</li>
-        <li>Must provide confirmation parameter</li>
-        <li>All active subscriptions must be cancelled first</li>
-        </ul>
+        Soft-delete the current organization by marking it as deleted.
+
+        **Note:** This is a soft delete — the organization record is retained in the
+        database with `isDeleted: true`. The organization is no longer accessible after
+        this operation.
+
+        **Requirements:**
+
+        - Must be authenticated
+        - Must be an organization admin
       operationId: deleteOrganization
       security:
         - bearerAuth: []
         - oauth2: [org:admin]
-      parameters:
-        - name: confirm
-          in: query
-          required: true
-          description: Must be "DELETE" to confirm deletion
-          schema:
-            type: string
-            enum: [DELETE]
       responses:
         '200':
-          description: Organization deleted successfully
+          description: Organization marked as deleted successfully
           content:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 properties:
-                  success:
-                    type: boolean
-                    example: true
                   message:
                     type: string
-                    example: "Organization and all associated data have been permanently deleted"
+                    example: "Organization marked as deleted successfully"
+                  data:
+                    $ref: '#/components/schemas/Organization'
         '400':
-          description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Missing or incorrect confirmation parameter</li>
-            <li>Active subscriptions exist</li>
-            </ul>
+          description: Requester does not have admin privileges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
-        '403':
-          description: Forbidden - Only organization owner can delete
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Resource not found. Possible reasons:
+
+            - Organization not found or already deleted
+            - Requester account not found (missing userId or orgId in token)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database save failure or event service error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /org/logo:
     put:
@@ -13407,25 +14122,22 @@ paths:
         - Organizations
       summary: Upload organization logo
       description: |
-        Upload or update the organization's logo image.<br><br>
-        <b>Supported Formats:</b><br>
-        <ul>
-        <li>PNG (recommended for transparency)</li>
-        <li>JPG/JPEG</li>
-        <li>SVG</li>
-        <li>WebP</li>
-        </ul>
-        <b>Requirements:</b><br>
-        <ul>
-        <li>Maximum file size: 5MB</li>
-        <li>Recommended dimensions: 256x256 pixels or higher</li>
-        <li>Square aspect ratio recommended</li>
-        </ul>
-        <b>Side Effects:</b><br>
-        <ul>
-        <li>Previous logo is replaced</li>
-        <li>Multiple sizes may be generated for different use cases</li>
-        </ul>
+        Upload or update the organization's logo image.
+
+        **Supported Formats:**
+
+        - PNG
+        - JPG/JPEG
+        - SVG
+        - WebP
+        - GIF
+
+        **Requirements:**
+
+        - Maximum file size: 2MB
+        - Must be an organization admin
+        - SVG files are validated — script tags, event handlers, javascript: protocols, and embedded iframes are rejected
+
       operationId: uploadOrganizationLogo
       security:
         - bearerAuth: []
@@ -13437,125 +14149,174 @@ paths:
           multipart/form-data:
             schema:
               type: object
+              additionalProperties: false
               properties:
-                logo:
+                file:
                   type: string
                   format: binary
                   description: Logo image file
               required:
-                - logo
+                - file
       responses:
-        '200':
+        '201':
           description: Logo uploaded successfully
           content:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - message
+                  - mimeType
                 properties:
-                  success:
-                    type: boolean
-                    example: true
-                  logoUrl:
+                  message:
                     type: string
-                    format: uri
-                    description: URL to access the uploaded logo
-                    example: "https://storage.pipeshub.com/org/507f1f77bcf86cd799439011/logo.png"
+                    example: "Logo updated successfully"
+                  mimeType:
+                    type: string
+                    enum:
+                      - image/jpeg
+                      - image/svg+xml
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>No file provided</li>
-            <li>Invalid file format</li>
-            <li>File too large</li>
-            </ul>
+            Invalid request. Possible reasons:
+
+            - No file provided
+            - File type not allowed (must be PNG, JPEG, WebP, GIF, or SVG)
+            - File exceeds 2MB size limit
+            - SVG contains dangerous content (script tags, event handlers, javascript: protocols, iframe/object/embed tags)
+            - Requester does not have admin privileges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
-        '403':
-          description: Forbidden - Admin privileges required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Requester account not found (missing userId or orgId in token)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database save failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
         - Organizations
       summary: Get organization logo
       description: |
-        Retrieve the organization's logo image or URL.<br><br>
-        <b>Response Formats:</b><br>
-        <ul>
-        <li>Returns a signed URL to access the logo</li>
-        <li>URL is valid for a limited time (typically 1 hour)</li>
-        </ul>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>Displaying logo in navigation/header</li>
-        <li>Email templates</li>
-        <li>White-label branding</li>
-        </ul>
+        Retrieve the organization's logo as a raw binary image.
+
+        Returns the image buffer directly with the appropriate `Content-Type` header
+        (`image/jpeg` or `image/svg+xml`). If no logo has been uploaded, responds with
+        `204 No Content`.
       operationId: getOrganizationLogo
       security:
         - bearerAuth: []
         - oauth2: [org:read]
       responses:
         '200':
-          description: Logo URL retrieved successfully
+          description: Logo image returned as binary data
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/svg+xml:
+              schema:
+                type: string
+                format: binary
+        '204':
+          description: No logo has been uploaded for this organization
+        '401':
+          description: Unauthorized - Valid bearer token required
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  hasLogo:
-                    type: boolean
-                    description: Whether organization has a custom logo
-                    example: true
-                  logoUrl:
-                    type: string
-                    format: uri
-                    description: Signed URL to access the logo (null if no logo)
-                    example: "https://storage.pipeshub.com/org/507f1f77bcf86cd799439011/logo.png?token=..."
-        '204':
-          description: No logo configured
-        '401':
-          description: Unauthorized - Valid authentication required
-        '404':
-          description: Organization not found
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database query failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
         - Organizations
       summary: Delete organization logo
       description: |
-        Remove the organization's custom logo.<br><br>
-        <b>Behavior:</b><br>
-        <ul>
-        <li>Logo file is permanently deleted from storage</li>
-        <li>Organization reverts to default/placeholder logo</li>
-        </ul>
+        Remove the organization's custom logo.
+
+        **Behavior:**
+
+        - Logo file is permanently deleted from storage
+        - Organization reverts to default/placeholder logo
       operationId: deleteOrganizationLogo
       security:
         - bearerAuth: []
-        - oauth2: [org:admin]
+        - oauth2: [org:write]
       responses:
         '200':
-          description: Logo deleted successfully
+          description: Logo removed — returns updated logo record
           content:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - logo
+                  - mimeType
+                  - _id
+                  - orgId
+                  - __v
                 properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
+                  logo:
+                    nullable: true
+                  mimeType:
+                    nullable: true
+                  _id:
                     type: string
-                    example: "Organization logo deleted successfully"
+                    format: ObjectId
+                  orgId:
+                    type: string
+                    format: ObjectId
+                  __v:
+                    type: integer
+        '400':
+          description: user is not an admin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
-        '403':
-          description: Forbidden - Admin privileges required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No logo exists to delete
+          description: Organisation logo not found or user account not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
 
   /org/onboarding-status:
     get:
@@ -13563,21 +14324,10 @@ paths:
         - Organizations
       summary: Get onboarding status
       description: |
-        Retrieve the organization's onboarding progress and status.<br><br>
-        <b>Response Details:</b><br>
-        <ul>
-        <li>Current onboarding step</li>
-        <li>Completion status of each step</li>
-        <li>Overall completion percentage</li>
-        </ul>
-        <b>Onboarding Steps:</b><br>
-        <ul>
-        <li>Organization profile setup</li>
-        <li>Admin account configuration</li>
-        <li>Invite team members</li>
-        <li>Connect integrations</li>
-        <li>Configure settings</li>
-        </ul>
+        Retrieve the organization's current onboarding status.
+
+        Returns a single status value indicating where the organization is in
+        the onboarding flow. Defaults to `notConfigured` if no status has been set.
       operationId: getOnboardingStatus
       security:
         - bearerAuth: []
@@ -13588,31 +14338,42 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - status
                 properties:
                   status:
                     type: string
                     enum: [configured, notConfigured, skipped]
                     description: Current onboarding status
         '401':
-          description: Unauthorized - Valid authentication required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Organization not found or has been deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database query failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
         - Organizations
       summary: Update onboarding status
       description: |
-        Update the organization's onboarding progress.<br><br>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>Mark a step as completed</li>
-        <li>Skip optional steps</li>
-        <li>Complete entire onboarding</li>
-        </ul>
-        <b>Behavior:</b><br>
-        <ul>
-        <li>Steps must be completed in order (unless skippable)</li>
-        <li>Completing all required steps marks onboarding as complete</li>
-        </ul>
+        Set the organization's onboarding status.
+
+        Accepts one of three values: `configured`, `notConfigured`, or `skipped`.
+        Only organization admins can update this field.
       operationId: updateOnboardingStatus
       security:
         - bearerAuth: []
@@ -13623,19 +14384,17 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
-                stepId:
+                status:
                   type: string
-                  description: ID of the step to update
-                  example: "invite_team"
-                action:
-                  type: string
-                  enum: [complete, skip]
-                  description: Action to perform on the step
-                  example: "complete"
+                  enum:
+                    - configured
+                    - notConfigured
+                    - skipped
+                  description: New onboarding status value
               required:
-                - stepId
-                - action
+                - status
       responses:
         '200':
           description: Onboarding status updated successfully
@@ -13643,31 +14402,52 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - message
+                  - status
                 properties:
-                  success:
-                    type: boolean
-                    example: true
                   message:
                     type: string
-                    example: "Step 'invite_team' marked as complete"
-                  isOnboardingComplete:
-                    type: boolean
-                    description: Whether all onboarding is now complete
-                    example: false
-                  nextStep:
+                    example: "Onboarding status updated successfully"
+                  status:
                     type: string
-                    description: Next step to complete (null if done)
-                    example: "connect_integrations"
+                    enum:
+                      - configured
+                      - notConfigured
+                      - skipped
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Invalid step ID</li>
-            <li>Step cannot be skipped (required)</li>
-            <li>Previous required steps not completed</li>
-            </ul>
+            Invalid request. Possible reasons:
+
+            - Missing or invalid status value (must be one of: configured, notConfigured, skipped)
+            - Requester does not have admin privileges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Resource not found. Possible reasons:
+
+            - Organization not found or has been deleted
+            - Requester account not found (missing userId or orgId in token)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database save failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ==================== USER GROUPS ENDPOINTS ====================
   /userGroups:
@@ -13676,28 +14456,24 @@ paths:
         - User Groups
       summary: Create user group
       description: |
-        Create a new user group within the organization.<br><br>
-        <b>Group Types:</b><br>
-        <ul>
-        <li><code>admin</code> - Administrative group with elevated privileges</li>
-        <li><code>standard</code> - Regular user group</li>
-        <li><code>everyone</code> - Automatically includes all organization users</li>
-        <li><code>custom</code> - Custom group with manual membership management</li>
-        </ul>
-        <b>Validation Rules:</b><br>
-        <ul>
-        <li>Group name must be unique within the organization</li>
-        <li>Group name is required and cannot be empty</li>
-        <li>Type must be one of the allowed values</li>
-        </ul>
-        <b>Side Effects:</b><br>
-        <ul>
-        <li>Creates a unique slug from the group name</li>
-        <li>Sets createdBy to the authenticated user</li>
-        </ul>
+        Create a new user group within the organization.
+
+        **Allowed Types:**
+
+        - `standard` - Regular user group
+        - `everyone` - Automatically includes all organization users
+        - `custom` - Custom group with manual membership management
+
+        **Note:** Groups of type `admin` cannot be created — it is a system group.
+
+        **Validation:**
+
+        - Both `name` and `type` are required
+        - `name` must be unique across non-deleted groups in the organization
       operationId: createUserGroup
       security:
         - bearerAuth: []
+        - oauth2: [usergroup:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -13705,6 +14481,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 name:
                   type: string
@@ -13712,13 +14489,9 @@ paths:
                   example: "Engineering Team"
                 type:
                   type: string
-                  enum: [admin, standard, everyone, custom]
-                  description: Group type determining behavior and privileges
-                  example: "standard"
-                description:
-                  type: string
-                  description: Optional description of the group's purpose
-                  example: "All engineering department members"
+                  enum: [standard, everyone, custom]
+                  description: Group type
+                  example: "custom"
               required:
                 - name
                 - type
@@ -13731,40 +14504,55 @@ paths:
                 $ref: '#/components/schemas/UserGroup'
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Missing required fields (name, type)</li>
-            <li>Invalid group type</li>
-            <li>Group name already exists</li>
-            </ul>
+            Invalid request. Possible reasons:
+
+            - Missing or empty `name` or `type`
+            - `type` is not one of: standard, everyone, custom
+            - Group name or type `admin` is not allowed
+            - A group with the same name already exists
+            - Requester does not have admin privileges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
-        '403':
-          description: Forbidden - Admin privileges required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Requester account not found (missing userId or orgId in token)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database save failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
         - User Groups
       summary: Get all user groups
       description: |
-        Retrieve all user groups in the organization.<br><br>
-        <b>Response Details:</b><br>
-        <ul>
-        <li>Returns all groups including admin, standard, everyone, and custom types</li>
-        <li>Groups are returned with their member counts</li>
-        <li>Soft-deleted groups are excluded by default</li>
-        <li>Each user in the <code>users</code> array is returned as an object with <code>_id</code> and <code>profilePicture</code> (base64 data URI or null)</li>
-        </ul>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>Populating group selection dropdowns</li>
-        <li>Managing group memberships</li>
-        <li>Access control configuration</li>
-        <li>Rendering user avatars in group member lists</li>
-        </ul>
+        Retrieve all user groups in the organization.
+
+        Returns paginated groups with their member counts (not member details).
+        Soft-deleted groups are excluded. Supports filtering by name and date range.
+
+        **Query Parameters:**
+
+        - `page` / `limit` — pagination (defaults: 1 / 25, max limit: 100)
+        - `search` — case-insensitive substring match on group name
+        - `createdAfter` / `createdBefore` — filter by creation date (ISO 8601)
       operationId: getAllUserGroups
       security:
         - bearerAuth: []
+        - oauth2: [usergroup:read]
       parameters:
         - name: page
           in: query
@@ -13789,6 +14577,20 @@ paths:
           description: Search groups by name (case-insensitive)
           schema:
             type: string
+        - name: createdAfter
+          in: query
+          required: false
+          description: Filter groups created on or after this date (ISO 8601)
+          schema:
+            type: string
+            format: date
+        - name: createdBefore
+          in: query
+          required: false
+          description: Filter groups created on or before this date (ISO 8601)
+          schema:
+            type: string
+            format: date
       responses:
         '200':
           description: Paginated list of user groups with user counts
@@ -13796,11 +14598,13 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 properties:
                   groups:
                     type: array
                     items:
                       type: object
+                      additionalProperties: false
                       properties:
                         _id:
                           type: string
@@ -13817,6 +14621,8 @@ paths:
                           description: Number of users in this group
                         slug:
                           type: string
+                        isDeleted:
+                          type: boolean
                         createdAt:
                           type: string
                           format: date-time
@@ -13825,6 +14631,7 @@ paths:
                           format: date-time
                   pagination:
                     type: object
+                    additionalProperties: false
                     properties:
                       page:
                         type: integer
@@ -13838,10 +14645,30 @@ paths:
                         type: boolean
                       hasPrevPage:
                         type: boolean
+        '400':
+          description: Requester does not have admin privileges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
-        '403':
-          description: Forbidden - Admin privileges required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Requester account not found (missing userId or orgId in token)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database query failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /userGroups/{groupId}:
     get:
@@ -13849,17 +14676,11 @@ paths:
         - User Groups
       summary: Get user group by ID
       description: |
-        Retrieve detailed information about a specific user group.<br><br>
-        <b>Response Includes:</b><br>
-        <ul>
-        <li>Group metadata (name, type, description)</li>
-        <li>Member count</li>
-        <li>Creation and modification timestamps</li>
-        <li>Creator information</li>
-        </ul>
+        Retrieve a specific user group by its ID. Accessible by any authenticated user.
       operationId: getUserGroupById
       security:
         - bearerAuth: []
+        - oauth2: [usergroup:read]
       parameters:
         - name: groupId
           in: path
@@ -13877,27 +14698,43 @@ paths:
               schema:
                 $ref: '#/components/schemas/UserGroup'
         '400':
-          description: Invalid group ID format
+          description: Invalid `groupId` format (must be a 24-character hex ObjectId)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: User group not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database query failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
         - User Groups
       summary: Update user group
       description: |
-        Update an existing user group's information.<br><br>
-        <b>Updatable Fields:</b><br>
-        <ul>
-        <li><code>name</code> - Display name (must remain unique)</li>
-        <li><code>description</code> - Group description</li>
-        </ul>
-        <b>Note:</b> Group type cannot be changed after creation.
+        Rename an existing user group.
+
+        Only the `name` field can be updated. Groups of type `admin` or `everyone`
+        cannot be renamed.
       operationId: updateUserGroup
       security:
         - bearerAuth: []
+        - oauth2: [usergroup:write]
       parameters:
         - name: groupId
           in: path
@@ -13914,15 +14751,14 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 name:
                   type: string
                   description: New display name for the group
                   example: "Engineering Team - Updated"
-                description:
-                  type: string
-                  description: Updated description
-                  example: "All engineering and DevOps members"
+              required:
+                - name
       responses:
         '200':
           description: User group updated successfully
@@ -13932,38 +14768,57 @@ paths:
                 $ref: '#/components/schemas/UserGroup'
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Invalid group ID format</li>
-            <li>Group name already exists</li>
-            </ul>
+            Invalid request. Possible reasons:
+
+            - Missing or empty `name`
+            - Invalid `groupId` format (must be a 24-character hex ObjectId)
+            - Requester does not have admin privileges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Admin privileges required
+          description: Forbidden - Groups of type `admin` or `everyone` cannot be renamed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User group not found
+          description: |
+            Resource not found. Possible reasons:
+
+            - User group not found or deleted
+            - Requester account not found (missing userId or orgId in token)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database save failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
         - User Groups
       summary: Delete user group
       description: |
-        Soft delete a user group.<br><br>
-        <b>Behavior:</b><br>
-        <ul>
-        <li>Group is marked as deleted (isDeleted: true)</li>
-        <li>Group members are not affected</li>
-        <li>Group can be restored by admin if needed</li>
-        </ul>
-        <b>Restrictions:</b><br>
-        <ul>
-        <li>Cannot delete system groups (admin, everyone)</li>
-        <li>Requires admin privileges</li>
-        </ul>
+        Soft-delete a user group by setting `isDeleted: true`.
+
+        **Restriction:** Only groups of type `custom` can be deleted. Attempting to
+        delete a group of any other type (`admin`, `everyone`, `standard`) returns 403.
       operationId: deleteUserGroup
       security:
         - bearerAuth: []
+        - oauth2: [usergroup:write]
       parameters:
         - name: groupId
           in: path
@@ -13975,27 +14830,49 @@ paths:
             example: "507f1f77bcf86cd799439011"
       responses:
         '200':
-          description: User group deleted successfully
+          description: User group soft-deleted successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
-                    type: string
-                    example: "User group deleted successfully"
+                $ref: '#/components/schemas/UserGroup'
         '400':
           description: |
-            Invalid request. Cannot delete system groups.
+            Invalid request. Possible reasons:
+
+            - Invalid `groupId` format (must be a 24-character hex ObjectId)
+            - Requester does not have admin privileges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Admin privileges required
+          description: Forbidden - Only custom groups can be deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User group not found
+          description: |
+            Resource not found. Possible reasons:
+
+            - User group not found or already deleted
+            - Requester account not found (missing userId or orgId in token)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database save failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /userGroups/add-users:
     post:
@@ -14003,22 +14880,18 @@ paths:
         - User Groups
       summary: Add users to group
       description: |
-        Add one or more users to a user group.<br><br>
-        <b>Behavior:</b><br>
-        <ul>
-        <li>Users already in the group are silently skipped</li>
-        <li>Invalid user IDs are reported in the response</li>
-        <li>Operation is atomic - all valid users are added together</li>
-        </ul>
-        <b>Validation:</b><br>
-        <ul>
-        <li>All user IDs must be valid MongoDB ObjectIds</li>
-        <li>Users must belong to the same organization</li>
-        <li>Group must exist and not be deleted</li>
-        </ul>
+        Add one or more users to one or more groups.
+
+        **Request validation** (Zod at route layer): `userIds` and `groupIds` are required
+        non-empty arrays; each entry must be a 24-character hex MongoDB ObjectId.
+
+        Uses `$addToSet` — users already in a group are silently skipped.
+        If none of the provided `groupIds` match active groups in the organization,
+        a 400 is returned.
       operationId: addUsersToGroup
       security:
         - bearerAuth: []
+        - oauth2: [usergroup:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -14026,56 +14899,68 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
-                groupId:
-                  type: string
-                  pattern: '^[a-fA-F0-9]{24}$'
-                  description: ID of the group to add users to
-                  example: "507f1f77bcf86cd799439011"
-                userIds:
+                groupIds:
                   type: array
+                  minItems: 1
                   items:
                     type: string
                     pattern: '^[a-fA-F0-9]{24}$'
-                  description: Array of user IDs to add to the group
-                  example: ["507f1f77bcf86cd799439012", "507f1f77bcf86cd799439013"]
+                  description: IDs of groups to add users to
+                userIds:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    pattern: '^[a-fA-F0-9]{24}$'
+                  description: User IDs to add
               required:
-                - groupId
+                - groupIds
                 - userIds
       responses:
         '200':
-          description: Users added to group successfully
+          description: Users added to groups successfully
           content:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - message
                 properties:
-                  success:
-                    type: boolean
-                    example: true
                   message:
                     type: string
-                    example: "2 users added to group successfully"
-                  addedCount:
-                    type: integer
-                    example: 2
-                  skippedCount:
-                    type: integer
-                    description: Number of users already in the group
-                    example: 0
+                    example: "Users added to groups successfully"
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Invalid group ID or user ID format</li>
-            <li>Empty userIds array</li>
-            </ul>
+            Invalid request. Possible reasons:
+
+            - Invalid request body (Zod validation — missing/empty `userIds` or `groupIds`, malformed ObjectIds)
+            - No matching groups found or updated
+            - Requester does not have admin privileges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
-        '403':
-          description: Forbidden - Admin privileges required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Group or one or more users not found
+          description: Requester account not found (missing userId or orgId in token)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database update failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /userGroups/remove-users:
     post:
@@ -14083,20 +14968,18 @@ paths:
         - User Groups
       summary: Remove users from group
       description: |
-        Remove one or more users from a user group.<br><br>
-        <b>Behavior:</b><br>
-        <ul>
-        <li>Users not in the group are silently skipped</li>
-        <li>Operation is atomic - all specified users are removed together</li>
-        </ul>
-        <b>Restrictions:</b><br>
-        <ul>
-        <li>Cannot remove users from "everyone" group type</li>
-        <li>Cannot remove the last admin from admin group</li>
-        </ul>
+        Remove one or more users from one or more groups.
+
+        **Request validation** (Zod at route layer): same as `POST /userGroups/add-users` —
+        `userIds` and `groupIds` required non-empty arrays of 24-character hex ObjectIds.
+
+        Uses `$pullAll` — users not in a group are silently skipped.
+        If none of the provided `groupIds` match active groups in the organization,
+        a 400 is returned.
       operationId: removeUsersFromGroup
       security:
         - bearerAuth: []
+        - oauth2: [usergroup:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -14104,53 +14987,66 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
-                groupId:
-                  type: string
-                  pattern: '^[a-fA-F0-9]{24}$'
-                  description: ID of the group to remove users from
-                  example: "507f1f77bcf86cd799439011"
-                userIds:
+                groupIds:
                   type: array
+                  minItems: 1
                   items:
                     type: string
                     pattern: '^[a-fA-F0-9]{24}$'
-                  description: Array of user IDs to remove from the group
-                  example: ["507f1f77bcf86cd799439012"]
+                userIds:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    pattern: '^[a-fA-F0-9]{24}$'
               required:
-                - groupId
+                - groupIds
                 - userIds
       responses:
         '200':
-          description: Users removed from group successfully
+          description: Users removed from groups successfully
           content:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - message
                 properties:
-                  success:
-                    type: boolean
-                    example: true
                   message:
                     type: string
-                    example: "1 user removed from group successfully"
-                  removedCount:
-                    type: integer
-                    example: 1
+                    example: "Users removed from groups successfully"
         '400':
           description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Invalid group ID or user ID format</li>
-            <li>Cannot remove from "everyone" group</li>
-            <li>Cannot remove last admin from admin group</li>
-            </ul>
+            Invalid request. Possible reasons:
+
+            - Invalid request body (Zod validation — missing/empty `userIds` or `groupIds`, malformed ObjectIds)
+            - No matching groups found or updated
+            - Requester does not have admin privileges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
-        '403':
-          description: Forbidden - Admin privileges required
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Group not found
+          description: Requester account not found (missing userId or orgId in token)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database update failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /userGroups/users/{userId}:
     get:
@@ -14158,21 +15054,17 @@ paths:
         - User Groups
       summary: Get groups for a user
       description: |
-        Retrieve all user groups that a specific user belongs to.<br><br>
-        <b>Response Details:</b><br>
-        <ul>
-        <li>Includes all group types (admin, standard, everyone, custom)</li>
-        <li>Returns group metadata for each membership</li>
-        </ul>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>Displaying user's group memberships in profile</li>
-        <li>Access control checks</li>
-        <li>Permission inheritance calculations</li>
-        </ul>
+        Retrieve all groups that a specific user belongs to. Returns an array of
+        group objects with `name` and `type` fields. Returns an empty array if the
+        user is not in any groups — no 404 is raised.
+
+        **Path validation:** `userId` must be a 24-character hex MongoDB ObjectId (Zod at route layer).
+
+        Accessible by any authenticated user (no admin check).
       operationId: getGroupsForUser
       security:
         - bearerAuth: []
+        - oauth2: [usergroup:read]
       parameters:
         - name: userId
           in: path
@@ -14184,25 +15076,49 @@ paths:
             example: "507f1f77bcf86cd799439012"
       responses:
         '200':
-          description: User's groups retrieved successfully
+          description: User's groups retrieved successfully (empty array if none)
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/UserGroup'
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required:
+                    - _id
+                    - name
+                    - type
+                  properties:
+                    _id:
+                      type: string
+                      format: ObjectId
+                    name:
+                      type: string
+                    type:
+                      type: string
+                      enum:
+                        - admin
+                        - standard
+                        - everyone
+                        - custom
         '400':
-          description: Invalid user ID format
+          description: Invalid `userId` path parameter (Zod validation)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
-        '404':
-          description: User not found
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database query failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /userGroups/{groupId}/users:
     get:
@@ -14210,12 +15126,10 @@ paths:
         - User Groups
       summary: Get users in group
       description: |
-        Retrieve paginated users that belong to a specific user group, with profile pictures.<br><br>
-        <b>Response Details:</b><br>
-        <ul>
-        <li>Returns user details (fullName, email) with profile picture data URIs</li>
-        <li>Supports pagination and search by name or email</li>
-        </ul>
+        Retrieve paginated users that belong to a specific user group, with profile pictures.
+
+        Returns user details (`fullName`, `email`) with profile picture data URIs.
+        Supports pagination and search by name or email. Accessible by any authenticated user.
       operationId: getUsersInGroup
       security:
         - bearerAuth: []
@@ -14255,11 +15169,13 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 properties:
                   users:
                     type: array
                     items:
                       type: object
+                      additionalProperties: false
                       properties:
                         _id:
                           type: string
@@ -14276,6 +15192,7 @@ paths:
                           description: Base64 data URI or null
                   pagination:
                     type: object
+                    additionalProperties: false
                     properties:
                       page:
                         type: integer
@@ -14290,9 +15207,29 @@ paths:
                       hasPrevPage:
                         type: boolean
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: Invalid `groupId` format (must be a 24-character hex ObjectId)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Group not found
+          description: User group not found or already deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database query failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /userGroups/stats/list:
     get:
@@ -14300,7 +15237,9 @@ paths:
         - User Groups
       summary: Get group statistics
       description: |
-        Retrieve statistics for all user groups including member counts.
+        Retrieve aggregated statistics for all non-deleted user groups in the
+        organization. Groups by group name and returns the group count, total user
+        count, and average users per group. Accessible by any authenticated user.
       operationId: getGroupStatistics
       security:
         - bearerAuth: []
@@ -14311,16 +15250,65 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  data:
-                    type: array
-                    items:
-                      type: object
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required:
+                    - _id
+                    - count
+                    - totalUsers
+                    - avgUsers
+                  properties:
+                    _id:
+                      type: string
+                      description: Group name (aggregation key)
+                    count:
+                      type: integer
+                    totalUsers:
+                      type: integer
+                    avgUsers:
+                      type: number
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Database aggregation failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /userGroups/health:
+    get:
+      tags:
+        - User Groups
+      summary: User groups module health check
+      description: Returns the health status of the user groups module. No authentication required.
+      operationId: getUserGroupsHealth
+      security: []
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - status
+                  - timestamp
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - healthy
+                  timestamp:
+                    type: string
+                    format: date-time
 
   /document/{documentId}/download:
     get:
@@ -16414,7 +17402,10 @@ paths:
         <b>Overview:</b><br>
         Reprocesses the record's content to update search indexes and AI embeddings. Useful after content changes or to fix indexing failures.<br><br>
         <b>Depth Parameter:</b><br>
-        Controls processing depth for complex documents (-1 for full depth, 0-100 for limited).
+        Controls processing depth for complex documents (-1 for full depth, 0-100 for limited).<br><br>
+        <b>Status filters:</b><br>
+        Optional `statusFilters` array limits reindex to records in matching indexing states
+        (e.g. `FAILED`, `AUTO_INDEX_OFF`).
       operationId: reindexRecord
       security:
         - bearerAuth: []
@@ -16430,14 +17421,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                depth:
-                  type: integer
-                  minimum: -1
-                  maximum: 100
-                  default: -1
-                  description: Processing depth (-1 for unlimited)
+              $ref: '#/components/schemas/ReindexRecordRequestBody'
       responses:
         '200':
           description: Reindexing triggered successfully
@@ -16456,7 +17440,8 @@ paths:
       description: |
         Trigger reindexing for all records in a folder or knowledge base.<br><br>
         <b>Overview:</b><br>
-        Batch reindex operation for entire containers. The recordGroupId can be a folder ID or KB ID.
+        Batch reindex operation for entire containers. The recordGroupId can be a folder ID or KB ID.<br><br>
+        Optional `statusFilters` limit which child records are queued (e.g. failed-only or manual-indexing).
       operationId: reindexRecordGroup
       security:
         - bearerAuth: []
@@ -16473,13 +17458,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                depth:
-                  type: integer
-                  minimum: -1
-                  maximum: 100
-                  default: -1
+              $ref: '#/components/schemas/ReindexRecordGroupRequestBody'
       responses:
         '200':
           description: Reindexing triggered for all records in group
@@ -16568,7 +17547,8 @@ paths:
         - Knowledge Bases
       summary: Reindex failed records for connector
       description: |
-        Trigger reindexing of records that previously failed to index for a specific connector.
+        Trigger reindexing for a connector instance, scoped by indexing status. When
+        `statusFilters` is omitted, only `FAILED` records are reindexed.
       operationId: reindexFailedRecords
       security:
         - bearerAuth: []
@@ -16579,10 +17559,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                connectorId:
-                  type: string
+              $ref: '#/components/schemas/ReindexFailedConnectorRequestBody'
       responses:
         '200':
           description: Reindex triggered successfully
@@ -16591,9 +17568,9 @@ paths:
               schema:
                 type: object
                 properties:
-                  message:
-                    type: string
-                    example: "Reindex of failed records triggered"
+                  reindexResponse:
+                    type: object
+                    description: Connector reindex job acknowledgement from the relation service.
         '401':
           description: Unauthorized
         '404':
@@ -19289,6 +20266,13 @@ paths:
                                   type: array
                                   items:
                                     $ref: '#/components/schemas/AppliedFilterNode'
+                            attachments:
+                              type: array
+                              description: |
+                                Files uploaded for this message turn (see
+                                `POST /conversations/attachments/upload`).
+                              items:
+                                $ref: '#/components/schemas/ChatAttachmentRef'
                             metadata:
                               type: object
                               additionalProperties: false
@@ -20079,6 +21063,13 @@ paths:
                                   type: array
                                   items:
                                     $ref: '#/components/schemas/AppliedFilterNode'
+                            attachments:
+                              type: array
+                              description: |
+                                Files uploaded for this message turn (see
+                                `POST /conversations/attachments/upload`).
+                              items:
+                                $ref: '#/components/schemas/ChatAttachmentRef'
                             metadata:
                               type: object
                               additionalProperties: false
@@ -23338,6 +24329,15 @@ paths:
       summary: Get agent conversation by ID
       description: |
         Returns the conversation with paginated/sorted messages and filter metadata.
+
+        **Message Pagination:**
+
+        Messages are paginated newest-first: `page=1` returns the most recent
+        batch. Increment `page` to load older batches (used by the infinite-scroll
+        "load older messages" feature).
+
+        - `page`: Page number (default: 1)
+        - `limit`: Messages per page (default: 20, max: 100)
       operationId: getAgentConversationById
       security:
         - bearerAuth: []
@@ -23356,20 +24356,33 @@ paths:
             format: objectId
         - name: page
           in: query
+          description: Page number for message pagination (1 = most recent batch)
           schema:
             type: integer
+            minimum: 1
+            default: 1
         - name: limit
           in: query
+          description: Number of messages per page
           schema:
             type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
         - name: sortBy
           in: query
+          description: Field to sort messages by
           schema:
             type: string
+            enum: [createdAt]
+            default: createdAt
         - name: sortOrder
           in: query
+          description: Sort direction
           schema:
             type: string
+            enum: [asc, desc]
+            default: desc
       responses:
         '200':
           description: Agent conversation detail
@@ -23676,9 +24689,11 @@ paths:
         - name: scope
           in: query
           required: false
-          description: Filter by scope (team or personal)
+          description: |
+            Filter by scope. Defaults to <code>team</code> when omitted.
           schema:
             $ref: '#/components/schemas/ConnectorScope'
+          default: team
         - name: page
           in: query
           schema:
@@ -23694,9 +24709,35 @@ paths:
             default: 20
         - name: search
           in: query
-          description: Search by instance name
+          description: Full-text search across instance name, type, and app group
           schema:
             type: string
+        - name: isAuthenticated
+          in: query
+          description: |
+            Filter by authentication status.
+            <code>true</code> returns only authenticated instances;
+            <code>false</code> returns only unauthenticated ones.
+            Omit to return all.
+          schema:
+            type: boolean
+        - name: isActive
+          in: query
+          description: |
+            Filter by active status.
+            <code>true</code> returns only active instances;
+            <code>false</code> returns only inactive ones.
+            Omit to return all.
+          schema:
+            type: boolean
+        - name: connectorType
+          in: query
+          description: |
+            Filter by exact connector type string (e.g. <code>Confluence</code>,
+            <code>GoogleDrive</code>). Case-sensitive.
+          schema:
+            type: string
+            minLength: 1
       responses:
         '200':
           description: Instances retrieved

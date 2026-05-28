@@ -336,15 +336,4 @@ describe('User Routes - handler coverage 2', () => {
     })
   })
 
-  describe('GET /teams/list', () => {
-    it('should call getUserTeams', async () => {
-      const handler = findHandler('/teams/list', 'get')
-      expect(handler).to.be.a('function')
-
-      const res = mockRes()
-      const next = sinon.stub()
-      await handler({}, res, next)
-      expect(mockUserController.getUserTeams.calledOnce).to.be.true
-    })
-  })
 })

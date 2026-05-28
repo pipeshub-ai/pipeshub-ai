@@ -468,9 +468,11 @@ function ConnectorFilterMultiSelect({
   const [options, setOptions] = useState<{ id: string; label: string }[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [emptyMessage, setEmptyMessage] = useState<string | undefined>(undefined);
   /** First page / search refetch — avoids empty list flashing “No results” (legacy autocomplete parity). */
   const [initialLoading, setInitialLoading] = useState(false);
-  const fetchingRef = useRef(false);
+  const appendFetchingRef = useRef(false);
+  const requestSeqRef = useRef(0);
   const cursorRef = useRef<string | undefined>(undefined);
   /** Last page fetched for page-based dynamic options (SharePoint, etc.); cursor APIs ignore updates here. */
   const pageRef = useRef(0);
@@ -478,12 +480,16 @@ function ConnectorFilterMultiSelect({
 
   const loadOptions = useCallback(
     async (append: boolean) => {
-      if (!connectorId || !isDynamic || fetchingRef.current) return;
-      fetchingRef.current = true;
+      if (!connectorId || !isDynamic) return;
+      if (append && appendFetchingRef.current) return;
+      const requestSeq = append ? requestSeqRef.current : requestSeqRef.current + 1;
+      if (!append) requestSeqRef.current = requestSeq;
+      if (append) appendFetchingRef.current = true;
       if (!append) {
         setInitialLoading(true);
         setOptions([]);
         setHasMore(false);
+        setEmptyMessage(undefined);
         pageRef.current = 0;
         cursorRef.current = undefined;
       }
@@ -524,9 +530,13 @@ function ConnectorFilterMultiSelect({
         }
 
         const res = await ConnectorsApi.getFilterFieldOptions(connectorId, field.name, params);
+        if (requestSeq !== requestSeqRef.current) return;
 
         const rows = res.options ?? [];
         cursorRef.current = res.cursor;
+        if (!append) {
+          setEmptyMessage(rows.length === 0 ? res.message : undefined);
+        }
 
         setOptions((prev) => {
           const merged = append ? dedupeAppend(prev, rows) : dedupeAppend([], rows);
@@ -544,14 +554,16 @@ function ConnectorFilterMultiSelect({
           pageRef.current = res.page || pageRef.current + 1;
         }
       } catch {
+        if (requestSeq !== requestSeqRef.current) return;
         if (!append) {
           setOptions([]);
           setHasMore(false);
+          setEmptyMessage(undefined);
         }
       } finally {
-        fetchingRef.current = false;
+        if (append) appendFetchingRef.current = false;
         setLoadingMore(false);
-        if (!append) setInitialLoading(false);
+        if (!append && requestSeq === requestSeqRef.current) setInitialLoading(false);
       }
     },
     // Refs are read inside but omitted from deps so this callback stays stable; adding them would churn consumers (handleSearch, handleLoadMore, handlePopoverOpen).
@@ -643,6 +655,7 @@ function ConnectorFilterMultiSelect({
       onLoadMore={handleLoadMore}
       isLoadingMore={loadingMore}
       hasMore={hasMore}
+      emptyMessage={emptyMessage}
       isLoadingOptions={initialLoading}
       onPopoverOpenChange={handlePopoverOpen}
       portalContainer={portalContainer}

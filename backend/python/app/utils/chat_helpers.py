@@ -65,6 +65,23 @@ def build_block_web_url(frontend_url: str, record_id: str, block_index: int) -> 
     return f"{base}/record/{record_id}/preview#blockIndex={block_index}"
 
 
+def build_record_page_web_url(frontend_url: str, record_id: str) -> str:
+    """Construct the record landing URL for metadata/header fields (Summary, Topics, etc.)."""
+    base = frontend_url.rstrip("/") if frontend_url else ""
+    if not base or not record_id:
+        return ""
+    return f"{base}/record/{record_id}"
+
+
+def flattened_result_sort_key(result: dict[str, Any]) -> tuple[str, int]:
+    """Sort flattened search results; None block_index (e.g. record summaries) sorts before block 0."""
+    block_index = result.get("block_index")
+    return (
+        result.get("virtual_record_id") or "",
+        -1 if block_index is None else block_index,
+    )
+
+
 
 
 def is_base64_image(s: str) -> bool:
@@ -739,6 +756,28 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
         meta = result.get("metadata")
 
+        if meta.get("isRecordSummary"):
+            chunk_id = f"{virtual_record_id}-record_summary"
+            if chunk_id in seen_chunks:
+                continue
+            seen_chunks.add(chunk_id)
+            record = virtual_record_id_to_result.get(virtual_record_id)
+            if record is None:
+                continue
+            content_text = result.get("content", "")
+            if not content_text:
+                continue
+            flattened_results.append({
+                "content": content_text,
+                "block_type": BlockType.RECORD_SUMMARY.value,
+                "virtual_record_id": virtual_record_id,
+                "block_index": None,
+                "metadata": get_enhanced_metadata(record=record,block=None, meta=meta),
+                "score": float(result.get("score", 0.0)),
+                "citationType": "vectordb|document",
+            })
+            continue
+
         if virtual_record_id not in adjacent_chunks:
             adjacent_chunks[virtual_record_id] = []
 
@@ -1091,16 +1130,16 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
     return flattened_results
 
-def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any],meta:dict[str, Any]) -> dict[str, Any]:
+def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:dict[str, Any]) -> dict[str, Any]:
         try:
             virtual_record_id = record.get("virtual_record_id", "")
-            block_type = block.get("type")
-            citation_metadata = block.get("citation_metadata")
+            block_type = block.get("type") if block else BlockType.RECORD_SUMMARY.value
+            citation_metadata = block.get("citation_metadata") if block else None
             if citation_metadata:
                 page_num =  citation_metadata.get("page_number",None)
             else:
                 page_num = None
-            data = block.get("data")
+            data = block.get("data") if block else None
             if data:
                 if block_type == GroupType.TABLE.value:
                     # Handle both dict and string data types
@@ -1146,7 +1185,7 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any],meta:dict[s
                     else:
                         block_num = [0]
                 else:
-                    block_num = [block.get("index", 0) + 1]
+                    block_num = [block.get("index", 0) + 1] if block else None
 
             preview_renderable = meta.get("previewRenderable")
             if preview_renderable is None:
@@ -1164,7 +1203,12 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any],meta:dict[s
             record_type = record.get("record_type", "")
             if hide_weburl and recordId:
                 web_url = f"/record/{recordId}"
-            elif web_url and origin != "UPLOAD" and record_type != RecordType.MAIL.value:
+            elif (
+                web_url 
+                and origin != "UPLOAD" 
+                and record_type != RecordType.MAIL.value 
+                and block_type != BlockType.RECORD_SUMMARY.value
+            ):
                 web_url = generate_text_fragment_url(web_url, block_text)
 
             enhanced_metadata = {
@@ -1179,7 +1223,7 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any],meta:dict[s
                         "connectorId": meta.get("connectorId") or record.get("connector_id", ""),
                         "blockText": block_text,
                         "blockType": str(block_type),
-                        "bounding_box": extract_bounding_boxes(block.get("citation_metadata")),
+                        "bounding_box": extract_bounding_boxes(block.get("citation_metadata")) if block else None,
                         "pageNum":[page_num],
                         "extension": extension,
                         "mimeType": mime_type,
@@ -1677,8 +1721,7 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
         context_metadata = record.get("context_metadata", "")
         content.append({
             "type": "text",
-            "text": f"""<record>\n{context_metadata}
-Record blocks (sorted):\n\n"""
+            "text": f"""<record>\n{context_metadata}\n\nRecord blocks (sorted):\n\n"""
         })
         # Process blocks
         block_containers = record.get("block_containers", {})
@@ -1956,6 +1999,9 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
                 record = virtual_record_id_to_result.get(vrid)
                 if not record:
                     continue
+                record_type = record.get("record_type")
+                if record_type != RecordType.SQL_TABLE.value:
+                    continue
                 record_content, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm)
                 if record_content:
                     message_content_array.extend(record_content)
@@ -1980,14 +2026,48 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
     seen_blocks = set()
     current_frontend_url = ""
     current_record_id = ""
+    # True so the first record's blocks get "Record blocks (sorted):"; later records reopen
+    # pending via the i > 0 branch before the next record's metadata.
+    pending_record_blocks_sorted_header = True
+    record_page_url_for_summary: str | None = None
+    summary_citation_insert_index: int | None = None
+    current_record_has_blocks = False
+
+    def insert_summary_citation_if_needed() -> None:
+        nonlocal record_page_url_for_summary, summary_citation_insert_index, current_record_has_blocks
+        if (
+            record_page_url_for_summary
+            and not current_record_has_blocks
+            and summary_citation_insert_index is not None
+        ):
+            overview_ref = ref_mapper.get_or_create_ref(record_page_url_for_summary)
+            content.insert(summary_citation_insert_index, {
+                "type": "text",
+                "text": (
+                    f"* Citation ID for summary: {overview_ref}\n"
+                ),
+            })
+        record_page_url_for_summary = None
+        summary_citation_insert_index = None
+        current_record_has_blocks = False
+
+    def prepend_record_blocks_sorted_header(text: str) -> str:
+        nonlocal pending_record_blocks_sorted_header
+        if pending_record_blocks_sorted_header:
+            pending_record_blocks_sorted_header = False
+            return f"Record blocks (sorted):\n{text}"
+        return text
+
     for i,result in enumerate(flattened_results):
         virtual_record_id = result.get("virtual_record_id")
         if virtual_record_id not in seen_virtual_record_ids:
             if i > 0:
+                insert_summary_citation_if_needed()
                 content.append({
                     "type": "text",
                     "text": "</record>"
                 })
+                pending_record_blocks_sorted_header = True
                 all_contents.append(content)
                 content = []
             seen_virtual_record_ids.add(virtual_record_id)
@@ -2006,7 +2086,11 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                 "type": "text",
                 "text": rendered_form
             })
-
+            record_page_url_for_summary = build_record_page_web_url(
+                current_frontend_url, current_record_id
+            ) or None
+            summary_citation_insert_index = len(content)
+            current_record_has_blocks = False
 
         result_id = f"{virtual_record_id}_{result.get('block_index')}"
         if result_id not in seen_blocks:
@@ -2019,9 +2103,12 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
             result["citation_ref"] = ref
             if block_type == BlockType.IMAGE.value:
                 if is_base64_image(result.get("content")) and is_multimodal_llm and not from_tool:
+                    current_record_has_blocks = True
                     content.append({
                         "type": "text",
-                        "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content:"
+                        "text": prepend_record_blocks_sorted_header(
+                            f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content:"
+                        ),
                     })
                     content.append({
                         "type": "image_url",
@@ -2030,9 +2117,12 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                 else:
                     if is_base64_image(result.get("content")):
                         continue
+                    current_record_has_blocks = True
                     content.append({
                         "type": "text",
-                        "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: image description\n* Block Content: {result.get('content')}\n\n"
+                        "text": prepend_record_blocks_sorted_header(
+                            f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: image description\n* Block Content: {result.get('content')}\n\n"
+                        ),
                     })
             elif block_type == GroupType.TABLE.value:
                 table_summary,child_results = result.get("content")
@@ -2050,14 +2140,18 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                     table_summary=table_summary,
                     table_rows=child_results,
                 )
+                current_record_has_blocks = True
                 content.append({
                     "type": "text",
-                    "text": f"{rendered_form}{fk_info}\n\n"
+                    "text": prepend_record_blocks_sorted_header(f"{rendered_form}{fk_info}\n\n"),
                 })
             elif block_type == BlockType.TEXT.value:
+                current_record_has_blocks = True
                 content.append({
                     "type": "text",
-                    "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
+                    "text": prepend_record_blocks_sorted_header(
+                        f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
+                    ),
                 })
             elif block_type in valid_group_labels:
                 block_group_index = result.get("block_group_index")
@@ -2074,9 +2168,10 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                     label=block_type,
                     blocks=group_blocks,
                 )
+                current_record_has_blocks = True
                 content.append({
                     "type": "text",
-                    "text": f"{rendered_form}\n\n"
+                    "text": prepend_record_blocks_sorted_header(f"{rendered_form}\n\n"),
                 })
             else:
                 continue
@@ -2084,6 +2179,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
             continue
 
     if content:
+        insert_summary_citation_if_needed()
         content.append({
             "type": "text",
             "text": "</record>"

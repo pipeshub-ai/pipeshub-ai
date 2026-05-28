@@ -2,9 +2,14 @@
 
 import { useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import { useTranslation } from 'react-i18next';
+import { Flex, Text, Heading } from '@radix-ui/themes';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import {
   useServicesHealthStore,
   selectBackgroundCheckFailed,
+  selectApiServerReachable,
   selectAppServices,
   selectInfraServices,
   selectInfraServiceNames,
@@ -18,6 +23,7 @@ import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 
 const CRITICAL_APP_SERVICES = new Set(['query', 'connector']);
 const NON_CRITICAL_TOAST_INTERVAL = 60 * 60 * 1000; // 1 hour
+const SERVER_RETRY_INTERVAL = 10000; // 10 seconds
 
 function classifyUnhealthyServices(
   appServices: AppServices | null,
@@ -50,16 +56,69 @@ function classifyUnhealthyServices(
   return { critical, nonCritical };
 }
 
+function BackendUnavailableScreen() {
+  const { t } = useTranslation();
+
+  return (
+    <Flex
+      align="center"
+      justify="center"
+      style={{
+        height: '100vh',
+        width: '100%',
+        backgroundColor: 'var(--olive-2)',
+      }}
+    >
+      <Flex
+        direction="column"
+        align="center"
+        gap="4"
+        style={{ maxWidth: 420, textAlign: 'center', padding: '0 24px' }}
+      >
+        <Flex
+          align="center"
+          justify="center"
+          style={{
+            width: 64,
+            height: 64,
+            borderRadius: 'var(--radius-3)',
+            backgroundColor: 'var(--amber-a3)',
+          }}
+        >
+          <MaterialIcon name="cloud_off" size={32} color="var(--amber-9)" />
+        </Flex>
+
+        <Heading size="5" style={{ color: 'var(--slate-12)' }}>
+          {t('healthGate.title')}
+        </Heading>
+
+        <Text size="2" style={{ color: 'var(--slate-10)', lineHeight: 1.6 }}>
+          {t('healthGate.description')}
+        </Text>
+
+        <Text size="2" style={{ color: 'var(--slate-10)', lineHeight: 1.6 }}>
+          {t('healthGate.contactAdmin')}
+        </Text>
+
+        <LottieLoader variant="loader" size={48} />
+      </Flex>
+    </Flex>
+  );
+}
+
 /**
- * Non-blocking health monitor for the authenticated app.
+ * Non-blocking health monitor for the authenticated app, with a blocking
+ * gate when the API server itself is unreachable.
  *
- * Starts a background poll (every 5 s) against the health endpoints.
- * When critical services (query, connector, infra) are unhealthy a
- * persistent warning toast is shown; non-critical services (indexing,
- * docling) trigger a separate auto-dismissing toast throttled to once
- * per hour.  Children are always rendered — individual pages use
- * `<ServiceGate>` to block when the specific services they need are
- * down.
+ * When the Node.js backend is completely down (all health endpoints fail),
+ * a full-page "Waiting for Server" screen is shown and a fast retry loop
+ * (every 10 s) attempts to reconnect.  Once the server responds, children
+ * are rendered and normal background polling (every 10 min) resumes.
+ *
+ * When the server IS reachable but some services are unhealthy, persistent
+ * or auto-dismissing toasts are shown while children render normally.
+ * Individual pages use `<ServiceGate>` to block when the specific services
+ * they need are down.
  */
 export function HealthGate({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -67,6 +126,8 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
 
   const startBackgroundPolling = useServicesHealthStore((s) => s.startBackgroundPolling);
   const stopBackgroundPolling = useServicesHealthStore((s) => s.stopBackgroundPolling);
+  const retryServerConnection = useServicesHealthStore((s) => s.retryServerConnection);
+  const apiServerReachable = useServicesHealthStore(selectApiServerReachable);
   const backgroundCheckFailed = useServicesHealthStore(selectBackgroundCheckFailed);
   const appServices = useServicesHealthStore(selectAppServices);
   const infraServices = useServicesHealthStore(selectInfraServices);
@@ -74,6 +135,8 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
 
   const criticalToastIdRef = useRef<string | null>(null);
   const lastNonCriticalToastRef = useRef<number>(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wasUnreachableRef = useRef(false);
 
   // ── Start background polling on mount ────────────────────────────────────
   useEffect(() => {
@@ -87,8 +150,54 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
     };
   }, [startBackgroundPolling, stopBackgroundPolling]);
 
+  // ── Refresh data on server recovery to clear stale state ────────────────
+  useEffect(() => {
+    if (!apiServerReachable) {
+      wasUnreachableRef.current = true;
+      return;
+    }
+    if (wasUnreachableRef.current) {
+      wasUnreachableRef.current = false;
+      router.refresh();
+    }
+  }, [apiServerReachable, router]);
+
+  // ── Fast retry when server is unreachable ────────────────────────────────
+  useEffect(() => {
+    if (apiServerReachable) {
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+      return;
+    }
+
+    const scheduleRetry = () => {
+      retryTimerRef.current = setTimeout(async () => {
+        await retryServerConnection();
+        scheduleRetry();
+      }, SERVER_RETRY_INTERVAL);
+    };
+    scheduleRetry();
+
+    return () => {
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+    };
+  }, [apiServerReachable, retryServerConnection]);
+
   // ── Show / update / dismiss toasts based on health status ────────────────
   useEffect(() => {
+    if (!apiServerReachable) {
+      if (criticalToastIdRef.current) {
+        toast.dismiss(criticalToastIdRef.current);
+        criticalToastIdRef.current = null;
+      }
+      return;
+    }
+
     if (!backgroundCheckFailed) {
       if (criticalToastIdRef.current) {
         toast.dismiss(criticalToastIdRef.current);
@@ -148,8 +257,11 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
         );
       }
     }
-  }, [backgroundCheckFailed, appServices, infraServices, infraServiceNames, isAdmin, router]);
+  }, [apiServerReachable, backgroundCheckFailed, appServices, infraServices, infraServiceNames, isAdmin, router]);
 
-  // Always render children — never block the app shell.
+  if (!apiServerReachable) {
+    return <BackendUnavailableScreen />;
+  }
+
   return <>{children}</>;
 }

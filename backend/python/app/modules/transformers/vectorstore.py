@@ -2,7 +2,7 @@ import asyncio
 import re
 import time
 import uuid
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import httpx
 import spacy
@@ -22,7 +22,8 @@ from app.exceptions.indexing_exceptions import (
     MetadataProcessingError,
     VectorStoreError,
 )
-from app.models.blocks import BlocksContainer
+from app.models.blocks import BlocksContainer, SemanticMetadata
+from app.models.entities import Record
 from app.modules.extraction.prompt_template import prompt_for_image_description
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -61,6 +62,7 @@ _DEFAULT_DOCUMENT_BATCH_SIZE = 50
 _DEFAULT_CONCURRENCY_LIMIT = 5
 # Small batch size for local/CPU embedding models to avoid memory/CPU thrashing
 _LOCAL_CPU_DOCUMENT_BATCH_SIZE = 3
+RECORD_SUMMARY_BLOCK_ID_SUFFIX = ":record_summary"
 
 class VectorStore(Transformer):
 
@@ -158,7 +160,6 @@ class VectorStore(Transformer):
         virtual_record_id = record.virtual_record_id
         block_containers = record.block_containers
         org_id = record.org_id
-        mime_type = record.mime_type
 
         block_ids_to_delete = None
         is_reconciliation = False
@@ -184,10 +185,61 @@ class VectorStore(Transformer):
             )
 
         return await self.index_documents(
-            block_containers, org_id, record_id, virtual_record_id, mime_type,
+            block_containers,
+            org_id,
+            record_id,
+            virtual_record_id,
             block_ids_to_delete=block_ids_to_delete,
             is_reconciliation=is_reconciliation,
+            record=record,
         )
+
+    @staticmethod
+    def record_summary_block_id(record_id: str) -> str:
+        return f"{record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"
+
+    @staticmethod
+    def _build_record_summary_document(
+        record_id: str,
+        virtual_record_id: str,
+        org_id: str,
+        semantic_metadata: SemanticMetadata,
+    ) -> Document | None:
+        summary = (semantic_metadata.summary or "").strip()
+        if not summary:
+            return None
+
+        metadata: dict = {
+            "virtualRecordId": virtual_record_id,
+            "blockId": VectorStore.record_summary_block_id(virtual_record_id),
+            "orgId": org_id,
+            "isBlockGroup": False,
+            "isBlock": False,
+            "isRecordSummary": True,
+        }
+
+        return Document(page_content=summary, metadata=metadata)
+
+    async def _refresh_record_summary_documents(
+        self,
+        documents_to_embed: list[Document | dict[str, Any]],
+        record: Record,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+    ) -> None:
+        semantic_metadata = getattr(record, "semantic_metadata", None)
+        if semantic_metadata is None:
+            return
+
+        summary_doc = self._build_record_summary_document(
+            record_id, virtual_record_id, org_id, semantic_metadata
+        )
+        if summary_doc is None:
+            return
+
+        documents_to_embed.append(summary_doc)
+        self.logger.info("✅ Added record summary document for embedding")
 
     @Language.component("custom_sentence_boundary")
     def custom_sentence_boundary(doc) -> Doc:
@@ -997,9 +1049,9 @@ class VectorStore(Transformer):
         org_id: str,
         record_id: str,
         virtual_record_id: str,
-        mime_type: str,
         block_ids_to_delete: Optional[set] = None,
         is_reconciliation: bool = False,
+        record: Optional[Record] = None,
     ) -> bool | None:
         try:
             is_multimodal_embedding = await self.get_embedding_model_instance()
@@ -1022,6 +1074,20 @@ class VectorStore(Transformer):
         block_groups = block_containers.block_groups
 
         try:
+            if block_ids_to_delete or is_reconciliation:
+                summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
+                await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id)
+
+                if record is not None:
+                    semantic_metadata = getattr(record, "semantic_metadata", None)
+                    if semantic_metadata:
+                        summary_doc = self._build_record_summary_document(
+                            record_id, virtual_record_id, org_id, semantic_metadata
+                        )
+                        if summary_doc:
+                            await self._process_document_chunks([summary_doc])
+                        
+
             if not blocks and not block_groups:
                 if block_ids_to_delete:
                     await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id)
@@ -1304,6 +1370,11 @@ class VectorStore(Transformer):
                                     "isBlockGroup": False,
                                 },
                             ))
+
+            if record is not None and not (is_reconciliation or block_ids_to_delete):
+                await self._refresh_record_summary_documents(
+                    documents_to_embed, record, org_id, record_id, virtual_record_id
+                )
 
             if not documents_to_embed:
                 self.logger.warning("⚠️ No documents to embed after filtering by block type")

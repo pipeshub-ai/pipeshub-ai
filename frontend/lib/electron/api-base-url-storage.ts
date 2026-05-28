@@ -1,61 +1,88 @@
 import { isElectron } from './is-electron';
 
-export const API_BASE_URL_STORAGE_KEY = 'PIPESHUB_API_BASE_URL';
+const API_BASE_URL_STORAGE_KEY = 'PIPESHUB_API_BASE_URL';
+const API_BASE_URL_SESSION_KEY = 'PIPESHUB_API_BASE_URL_SESSION';
 
-/** Set when the user completes the Electron server-URL screen; survives restarts. Cleared on explicit logout only. */
-export const SERVER_URL_ACK_STORAGE_KEY = 'PIPESHUB_SERVER_URL_ACK_V1';
+/** Set on successful login; survives restarts. Cleared on explicit workspace logout. */
+const SERVER_URL_LOGIN_ACK_KEY = 'PIPESHUB_SERVER_URL_LOGIN_ACK';
 
-const LEGACY_LAUNCH_CONFIRM_KEY = 'PIPESHUB_URL_CONFIRMED_LAUNCH_ID';
+function getStoredApiBaseUrl(): string | null {
+  if (typeof window === 'undefined') return null;
+  return window.localStorage.getItem(API_BASE_URL_STORAGE_KEY);
+}
 
-/**
- * Persist the API base URL chosen by the user (Electron flow).
- */
-export function setApiBaseUrl(url: string): void {
+function getSessionApiBaseUrl(): string | null {
+  if (typeof window === 'undefined') return null;
+  return window.sessionStorage.getItem(API_BASE_URL_SESSION_KEY);
+}
+
+export function setSessionApiBaseUrl(url: string): void {
+  if (typeof window === 'undefined') return;
+  window.sessionStorage.setItem(API_BASE_URL_SESSION_KEY, url);
+  // Draft for pre-fill on reopen; login ack is set only after successful login.
+  window.localStorage.setItem(API_BASE_URL_STORAGE_KEY, url);
+}
+
+function setApiBaseUrl(url: string): void {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(API_BASE_URL_STORAGE_KEY, url);
 }
 
-/**
- * Whether an API base URL has been configured in localStorage.
- * Only meaningful inside Electron — the web build does not consult localStorage.
- */
-export function hasStoredApiBaseUrl(): boolean {
-  if (!isElectron()) return false;
+function hasServerUrlSetupAck(): boolean {
   if (typeof window === 'undefined') return false;
-  return !!window.localStorage.getItem(API_BASE_URL_STORAGE_KEY);
+  return window.localStorage.getItem(SERVER_URL_LOGIN_ACK_KEY) === '1';
 }
 
-export function hasServerUrlSetupAck(): boolean {
-  if (typeof window === 'undefined') return false;
-  return window.localStorage.getItem(SERVER_URL_ACK_STORAGE_KEY) === '1';
-}
-
-export function setServerUrlSetupAck(): void {
+function setServerUrlSetupAck(): void {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(SERVER_URL_ACK_STORAGE_KEY, '1');
+  window.localStorage.setItem(SERVER_URL_LOGIN_ACK_KEY, '1');
 }
 
-/** Cleared when the user logs out from the workspace menu (Electron) so the server URL step shows again. */
-export function clearServerUrlSetupAck(): void {
+function clearSessionServerUrlState(): void {
   if (typeof window === 'undefined') return;
-  window.localStorage.removeItem(SERVER_URL_ACK_STORAGE_KEY);
-  window.localStorage.removeItem(LEGACY_LAUNCH_CONFIRM_KEY);
+  window.sessionStorage.removeItem(API_BASE_URL_SESSION_KEY);
 }
 
-/** Workspace logout (Electron): wipe saved server URL and ack so the add-URL screen is empty. */
+function clearServerUrlSetupAck(): void {
+  if (typeof window === 'undefined') return;
+  window.localStorage.removeItem(SERVER_URL_LOGIN_ACK_KEY);
+}
+
+/** Workspace logout (Electron): clear ack + session; keep last persisted URL for pre-fill. */
 export function clearElectronLogoutServerState(): void {
   if (typeof window === 'undefined') return;
-  window.localStorage.removeItem(API_BASE_URL_STORAGE_KEY);
   clearServerUrlSetupAck();
+  clearSessionServerUrlState();
 }
 
-/**
- * One-time migration from the old per-process launch-id confirmation to a durable ack.
- */
-export function migrateLegacyServerUrlConfirmation(): void {
-  if (typeof window === 'undefined' || !isElectron()) return;
-  if (hasServerUrlSetupAck()) return;
-  if (!hasStoredApiBaseUrl()) return;
-  setServerUrlSetupAck();
-  window.localStorage.removeItem(LEGACY_LAUNCH_CONFIRM_KEY);
+/** Session URL first (same-run Continue), then localStorage draft / post-login URL. */
+export function getElectronApiBaseUrl(): string {
+  return getSessionApiBaseUrl() ?? getStoredApiBaseUrl() ?? '';
+}
+
+export function shouldSkipElectronServerUrlSetup(): boolean {
+  if (!isElectron()) return true;
+  if (typeof window === 'undefined') return false;
+
+  // Same session after Connect — skip until the app quits.
+  if (getSessionApiBaseUrl()) return true;
+  // After login — skip until workspace logout.
+  return !!getStoredApiBaseUrl() && hasServerUrlSetupAck();
+}
+
+/** Promotes the draft URL to a logged-in session after successful login. */
+export function persistElectronServerUrlOnLogin(): void {
+  if (!isElectron() || typeof window === 'undefined') return;
+
+  const sessionUrl = getSessionApiBaseUrl();
+  if (sessionUrl) {
+    setApiBaseUrl(sessionUrl);
+    setServerUrlSetupAck();
+    clearSessionServerUrlState();
+    return;
+  }
+
+  if (getStoredApiBaseUrl()) {
+    setServerUrlSetupAck();
+  }
 }

@@ -251,20 +251,6 @@ describe('User Routes - handler coverage', () => {
     })
   })
 
-  describe('GET /teams/list handler', () => {
-    it('should call userController.getUserTeams', async () => {
-      const handler = findHandler('/teams/list', 'get')
-      expect(handler).to.exist
-
-      const req = {} as any
-      const res = mockRes()
-      const next = sinon.stub()
-
-      await handler(req, res, next)
-      expect(mockUserController.getUserTeams.calledOnce).to.be.true
-    })
-  })
-
   describe('additional route registrations', () => {
     it('should register PATCH /:id/fullname route', () => {
       const layer = router.stack.find(

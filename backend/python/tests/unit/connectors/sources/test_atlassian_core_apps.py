@@ -3,10 +3,11 @@
 from app.config.constants.arangodb import AppGroups, Connectors
 from app.connectors.sources.atlassian.core.apps import (
     ConfluenceApp,
-    JiraApp,
-    JiraDataCenterApp,
     ConfluenceDataCenterApp,
     JiraApp,
+    JiraCloudPersonalApp,
+    JiraDataCenterApp,
+    JiraDataCenterPersonalApp,
 )
 
 
@@ -31,8 +32,20 @@ class TestAtlassianApps:
         assert app.get_app_group_name() == AppGroups.ATLASSIAN
         assert app.get_connector_id() == "conn-2"
 
+    def test_jira_cloud_personal_app(self):
+        app = JiraCloudPersonalApp("conn-cloud-personal-1")
+        assert app.get_app_name() == Connectors.JIRA_PERSONAL
+        assert app.get_app_group_name() == AppGroups.ATLASSIAN
+        assert app.get_connector_id() == "conn-cloud-personal-1"
+
     def test_jira_data_center_app(self):
         app = JiraDataCenterApp("conn-dc-1")
         assert app.get_app_name() == Connectors.JIRA_DATA_CENTER
         assert app.get_app_group_name() == AppGroups.ATLASSIAN
         assert app.get_connector_id() == "conn-dc-1"
+
+    def test_jira_data_center_personal_app(self):
+        app = JiraDataCenterPersonalApp("conn-dc-personal-1")
+        assert app.get_app_name() == Connectors.JIRA_DATA_CENTER_PERSONAL
+        assert app.get_app_group_name() == AppGroups.ATLASSIAN
+        assert app.get_connector_id() == "conn-dc-personal-1"

@@ -3225,6 +3225,9 @@ class TestCheckAndFetchUpdatedAttachment:
         att.size = 2048
         connector._get_message_attachments_external = AsyncMock(return_value=[att])
         connector._extract_email_permissions = AsyncMock(return_value=[])
+        parent_mail = MagicMock()
+        parent_mail.id = "parent-mail-id"
+        connector._get_existing_record = AsyncMock(return_value=parent_mail)
 
         mock_attachment_record = _make_file_record()
         connector._create_attachment_record = AsyncMock(return_value=mock_attachment_record)
@@ -3956,40 +3959,6 @@ class TestExtractEmailFromRecipient:
 
 
 # ===========================================================================
-# _get_mime_type_enum
-# ===========================================================================
-
-
-class TestGetMimeTypeEnum:
-
-    def test_known_types(self):
-        connector = _make_connector()
-        assert connector._get_mime_type_enum("text/plain") == MimeTypes.PLAIN_TEXT
-        assert connector._get_mime_type_enum("text/html") == MimeTypes.HTML
-        assert connector._get_mime_type_enum("text/csv") == MimeTypes.CSV
-        assert connector._get_mime_type_enum("application/pdf") == MimeTypes.PDF
-        assert connector._get_mime_type_enum("application/msword") == MimeTypes.DOC
-        assert connector._get_mime_type_enum("application/vnd.openxmlformats-officedocument.wordprocessingml.document") == MimeTypes.DOCX
-        assert connector._get_mime_type_enum("application/vnd.ms-excel") == MimeTypes.XLS
-        assert connector._get_mime_type_enum("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") == MimeTypes.XLSX
-        assert connector._get_mime_type_enum("application/vnd.ms-powerpoint") == MimeTypes.PPT
-        assert connector._get_mime_type_enum("application/vnd.openxmlformats-officedocument.presentationml.presentation") == MimeTypes.PPTX
-
-    def test_unknown_type_returns_bin(self):
-        connector = _make_connector()
-        assert connector._get_mime_type_enum("application/octet-stream") == MimeTypes.BIN
-
-    def test_case_insensitive(self):
-        connector = _make_connector()
-        assert connector._get_mime_type_enum("TEXT/HTML") == MimeTypes.HTML
-
-
-# ===========================================================================
-# _parse_datetime
-# ===========================================================================
-
-
-# ===========================================================================
 # _format_datetime_string
 # ===========================================================================
 
@@ -4111,11 +4080,12 @@ class TestCreateAttachmentRecord:
         attachment.size = 5000
 
         result = await connector._create_attachment_record(
-            "org-1", attachment, "msg-1", "f1", None, "https://outlook.com/msg-1"
+            "org-1", attachment, "msg-1", "f1", "mail-record-id", None, "https://outlook.com/msg-1"
         )
 
         assert result is not None
         assert result.record_name == "report.pdf"
+        assert result.mime_type == "application/pdf"
         assert result.extension == "pdf"
         assert result.is_file is True
 
@@ -4128,7 +4098,7 @@ class TestCreateAttachmentRecord:
         attachment.content_type = None
 
         result = await connector._create_attachment_record(
-            "org-1", attachment, "msg-1", "f1"
+            "org-1", attachment, "msg-1", "f1", "mail-record-id"
         )
 
         assert result is None
@@ -4152,11 +4122,32 @@ class TestCreateAttachmentRecord:
         attachment.size = 3000
 
         result = await connector._create_attachment_record(
-            "org-1", attachment, "msg-1", "f1", existing, "https://outlook.com/msg-1"
+            "org-1", attachment, "msg-1", "f1", "mail-record-id", existing, "https://outlook.com/msg-1"
         )
 
         assert result.id == "existing-att-id"
         assert result.version == 3
+
+    @pytest.mark.asyncio
+    async def test_stores_raw_image_mime_type(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled = MagicMock(return_value=True)
+
+        attachment = MagicMock()
+        attachment.id = "att-image"
+        attachment.name = "logo.png"
+        attachment.content_type = "image/png"
+        attachment.last_modified_date_time = None
+        attachment.size = 1000
+
+        result = await connector._create_attachment_record(
+            "org-1", attachment, "msg-1", "f1", "mail-record-id", None, "https://outlook.com/msg-1"
+        )
+
+        assert result is not None
+        assert result.mime_type == "image/png"
+        assert result.extension == "png"
 
     @pytest.mark.asyncio
     async def test_indexing_filter_disabled(self):
@@ -4173,7 +4164,7 @@ class TestCreateAttachmentRecord:
         attachment.size = 100
 
         result = await connector._create_attachment_record(
-            "org-1", attachment, "msg-1", "f1", None, "https://outlook.com/msg-1"
+            "org-1", attachment, "msg-1", "f1", "mail-record-id", None, "https://outlook.com/msg-1"
         )
 
         assert result.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
@@ -4212,7 +4203,7 @@ class TestProcessEmailAttachmentsWithFolder:
         user = _make_user()
 
         updates = await connector._process_email_attachments_with_folder(
-            "org-1", user, msg, [], "f1", "Inbox"
+            "org-1", user, msg, [], "f1", "Inbox", "mail-record-id"
         )
 
         assert len(updates) == 1
@@ -4237,7 +4228,7 @@ class TestProcessEmailAttachmentsWithFolder:
         user = _make_user()
 
         updates = await connector._process_email_attachments_with_folder(
-            "org-1", user, msg, [], "f1", "Inbox"
+            "org-1", user, msg, [], "f1", "Inbox", "mail-record-id"
         )
 
         assert len(updates) == 0
@@ -4271,7 +4262,7 @@ class TestProcessEmailAttachmentsWithFolder:
         user = _make_user()
 
         updates = await connector._process_email_attachments_with_folder(
-            "org-1", user, msg, [], "f1", "Inbox"
+            "org-1", user, msg, [], "f1", "Inbox", "mail-record-id"
         )
 
         assert len(updates) == 1
@@ -4379,7 +4370,7 @@ class TestProcessGroupPostAttachments:
         post.conversation_thread_id = None
 
         result = await connector._process_group_post_attachments(
-            "org-1", group, MagicMock(), post, []
+            "org-1", group, MagicMock(), post, [], parent_post_record_id="post-record-id"
         )
         assert result == []
 
@@ -4398,7 +4389,7 @@ class TestProcessGroupPostAttachments:
         post.conversation_thread_id = "t1"
 
         result = await connector._process_group_post_attachments(
-            "org-1", group, MagicMock(), post, []
+            "org-1", group, MagicMock(), post, [], parent_post_record_id="post-record-id"
         )
         assert result == []
 
@@ -4428,9 +4419,12 @@ class TestProcessGroupPostAttachments:
         post.conversation_thread_id = "t1"
 
         result = await connector._process_group_post_attachments(
-            "org-1", group, MagicMock(), post, []
+            "org-1", group, MagicMock(), post, [], parent_post_record_id="post-record-id"
         )
         assert len(result) == 1
+        record, _ = result[0]
+        assert record.is_dependent_node is True
+        assert record.parent_node_id == "post-record-id"
 
     @pytest.mark.asyncio
     async def test_skips_attachment_without_content_type(self):
@@ -4456,7 +4450,7 @@ class TestProcessGroupPostAttachments:
         post.conversation_thread_id = "t1"
 
         result = await connector._process_group_post_attachments(
-            "org-1", group, MagicMock(), post, []
+            "org-1", group, MagicMock(), post, [], parent_post_record_id="post-record-id"
         )
         assert len(result) == 0
 
