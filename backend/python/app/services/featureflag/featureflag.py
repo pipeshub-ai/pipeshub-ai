@@ -4,7 +4,6 @@ Feature Flag Service Module
 A singleton service for managing feature flags with extensible architecture.
 
 Current Features:
-- Reads from .env file
 - Singleton pattern
 - Simple flag checking
 
@@ -21,16 +20,12 @@ Usage:
     is_enabled = FeatureFlagService.get_service().is_feature_enabled(CONFIG.ENABLE_WORKFLOW_BUILDER)
 """
 
-import os
 from logging import Logger
 from threading import Lock
 from typing import Optional
 
 from app.services.featureflag.interfaces.config import IConfigProvider
-from app.services.featureflag.provider.env import EnvFileProvider
 from app.services.featureflag.provider.etcd import EtcdProvider
-
-DEFAULT_ENV_PATH = '../../../.env'
 
 class FeatureFlagService:
     """
@@ -66,21 +61,6 @@ class FeatureFlagService:
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    # Default to EnvFileProvider if no provider specified
-                    if provider is None:
-                        # Get default .env path relative to this file
-                        # This file is at: backend/python/app/services/featureflag/featureflag.py
-                        # .env.template is at: backend/python/.env.template
-                        default_env_path = os.path.join(
-                            os.path.dirname(os.path.abspath(__file__)),
-                            DEFAULT_ENV_PATH
-                        )
-                        env_path = os.getenv(
-                            'FEATURE_FLAG_ENV_PATH',
-                            default_env_path
-                        )
-                        provider = EnvFileProvider(env_path)
-
                     cls._instance = cls(provider)
 
         return cls._instance

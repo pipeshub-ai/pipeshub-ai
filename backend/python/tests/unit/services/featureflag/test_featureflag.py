@@ -1,7 +1,6 @@
 """
 Tests for the feature flag system:
   - FeatureFlagService (singleton, is_feature_enabled, set_provider, init_with_etcd_provider)
-  - EnvFileProvider   (_load_env_file, _parse_bool, get_flag_value, refresh, missing file)
   - EtcdProvider      (refresh, get_flag_value, get_all_flags, error handling)
 """
 
@@ -13,7 +12,6 @@ import pytest
 
 from app.services.featureflag.featureflag import FeatureFlagService
 from app.services.featureflag.interfaces.config import IConfigProvider
-from app.services.featureflag.provider.env import EnvFileProvider
 from app.services.featureflag.provider.etcd import EtcdProvider
 
 
@@ -71,26 +69,6 @@ class TestFeatureFlagServiceSingleton:
     def test_lock_attribute_exists(self):
         """Thread safety: the class-level lock must exist."""
         assert hasattr(FeatureFlagService, "_lock")
-
-
-class TestFeatureFlagServiceDefaultProvider:
-    """When no provider is supplied, get_service() falls back to EnvFileProvider."""
-
-    @patch("app.services.featureflag.featureflag.EnvFileProvider")
-    def test_default_provider_is_env_file(self, MockEnvProvider):
-        mock_instance = MagicMock(spec=IConfigProvider)
-        MockEnvProvider.return_value = mock_instance
-        svc = FeatureFlagService.get_service()
-        MockEnvProvider.assert_called_once()
-        assert svc is not None
-
-    @patch("app.services.featureflag.featureflag.EnvFileProvider")
-    @patch.dict("os.environ", {"FEATURE_FLAG_ENV_PATH": "/custom/path/.env"})
-    def test_default_provider_respects_env_var(self, MockEnvProvider):
-        mock_instance = MagicMock(spec=IConfigProvider)
-        MockEnvProvider.return_value = mock_instance
-        FeatureFlagService.get_service()
-        MockEnvProvider.assert_called_once_with("/custom/path/.env")
 
 
 class TestIsFeatureEnabled:
@@ -177,145 +155,6 @@ class TestRefresh:
         svc = FeatureFlagService.get_service(provider=mock_provider)
         await svc.refresh()
         mock_provider.refresh.assert_awaited_once()
-
-
-# ===========================================================================
-# EnvFileProvider
-# ===========================================================================
-
-
-class TestEnvFileProviderLoadEnvFile:
-    """_load_env_file parsing logic."""
-
-    @patch("builtins.open", mock_open(read_data="ENABLE_FEATURE=true\nDISABLE_FEATURE=false\n"))
-    @patch("os.path.exists", return_value=True)
-    def test_reads_key_value_pairs(self, _):
-        provider = EnvFileProvider("/fake/.env")
-        assert provider.get_flag_value("ENABLE_FEATURE") is True
-        assert provider.get_flag_value("DISABLE_FEATURE") is False
-
-    @patch("builtins.open", mock_open(read_data="# comment\n\n  \nFLAG=1\n"))
-    @patch("os.path.exists", return_value=True)
-    def test_skips_comments_and_empty_lines(self, _):
-        provider = EnvFileProvider("/fake/.env")
-        assert provider.get_flag_value("FLAG") is True
-        # Only one flag should be loaded
-        assert provider._flags == {"FLAG": True}
-
-    @patch("builtins.open", mock_open(read_data="key_lower=yes\n"))
-    @patch("os.path.exists", return_value=True)
-    def test_normalises_keys_to_uppercase(self, _):
-        provider = EnvFileProvider("/fake/.env")
-        assert provider.get_flag_value("KEY_LOWER") is True
-
-    @patch("builtins.open", mock_open(read_data="MULTI=val=ue=extra\n"))
-    @patch("os.path.exists", return_value=True)
-    def test_split_on_first_equals_only(self, _):
-        provider = EnvFileProvider("/fake/.env")
-        # "val=ue=extra" is not a truthy value
-        assert provider.get_flag_value("MULTI") is False
-
-    @patch("builtins.open", mock_open(read_data="NO_EQUALS_LINE\nFLAG=on\n"))
-    @patch("os.path.exists", return_value=True)
-    def test_line_without_equals_is_ignored(self, _):
-        provider = EnvFileProvider("/fake/.env")
-        assert provider.get_flag_value("NO_EQUALS_LINE") is None
-        assert provider.get_flag_value("FLAG") is True
-
-
-class TestEnvFileProviderParseBool:
-    """_parse_bool handles all documented truthy/falsy values."""
-
-    @patch("builtins.open", mock_open(read_data=""))
-    @patch("os.path.exists", return_value=True)
-    def test_truthy_values(self, _):
-        provider = EnvFileProvider("/fake/.env")
-        for truthy in ("true", "1", "yes", "on", "enabled"):
-            assert provider._parse_bool(truthy) is True, f"Expected True for {truthy!r}"
-
-    @patch("builtins.open", mock_open(read_data=""))
-    @patch("os.path.exists", return_value=True)
-    def test_truthy_values_case_insensitive(self, _):
-        provider = EnvFileProvider("/fake/.env")
-        for truthy in ("True", "TRUE", "Yes", "YES", "On", "ON", "Enabled", "ENABLED"):
-            assert provider._parse_bool(truthy) is True, f"Expected True for {truthy!r}"
-
-    @patch("builtins.open", mock_open(read_data=""))
-    @patch("os.path.exists", return_value=True)
-    def test_falsy_values(self, _):
-        provider = EnvFileProvider("/fake/.env")
-        for falsy in ("false", "0", "no", "off", "disabled", "random", ""):
-            assert provider._parse_bool(falsy) is False, f"Expected False for {falsy!r}"
-
-
-class TestEnvFileProviderGetFlagValue:
-    """get_flag_value case-insensitive lookup."""
-
-    @patch("builtins.open", mock_open(read_data="MY_FLAG=true\n"))
-    @patch("os.path.exists", return_value=True)
-    def test_case_insensitive_lookup(self, _):
-        provider = EnvFileProvider("/fake/.env")
-        assert provider.get_flag_value("my_flag") is True
-        assert provider.get_flag_value("MY_FLAG") is True
-        assert provider.get_flag_value("My_Flag") is True
-
-    @patch("builtins.open", mock_open(read_data="MY_FLAG=true\n"))
-    @patch("os.path.exists", return_value=True)
-    def test_missing_flag_returns_none(self, _):
-        provider = EnvFileProvider("/fake/.env")
-        assert provider.get_flag_value("DOES_NOT_EXIST") is None
-
-
-class TestEnvFileProviderRefresh:
-    """refresh() reloads from file."""
-
-    @patch("os.path.exists", return_value=True)
-    def test_refresh_reloads_file(self, _):
-        initial_data = "FLAG=false\n"
-        updated_data = "FLAG=true\n"
-
-        m = mock_open(read_data=initial_data)
-        with patch("builtins.open", m):
-            provider = EnvFileProvider("/fake/.env")
-        assert provider.get_flag_value("FLAG") is False
-
-        m2 = mock_open(read_data=updated_data)
-        with patch("builtins.open", m2):
-            provider.refresh()
-        assert provider.get_flag_value("FLAG") is True
-
-    @patch("os.path.exists", return_value=True)
-    def test_refresh_clears_old_flags(self, _):
-        m = mock_open(read_data="OLD_FLAG=true\n")
-        with patch("builtins.open", m):
-            provider = EnvFileProvider("/fake/.env")
-        assert provider.get_flag_value("OLD_FLAG") is True
-
-        m2 = mock_open(read_data="NEW_FLAG=true\n")
-        with patch("builtins.open", m2):
-            provider.refresh()
-        assert provider.get_flag_value("OLD_FLAG") is None
-        assert provider.get_flag_value("NEW_FLAG") is True
-
-
-class TestEnvFileProviderMissingFile:
-    """Missing file should warn but not crash."""
-
-    @patch("os.path.exists", return_value=False)
-    def test_missing_file_logs_warning_and_has_empty_flags(self, _):
-        with patch("app.services.featureflag.provider.env.logger") as mock_logger:
-            provider = EnvFileProvider("/nonexistent/.env")
-            mock_logger.warning.assert_called_once()
-        assert provider._flags == {}
-        assert provider.get_flag_value("ANY") is None
-
-    @patch("os.path.exists", return_value=True)
-    def test_io_error_logs_error(self, _):
-        with patch("builtins.open", side_effect=IOError("disk error")):
-            with patch("app.services.featureflag.provider.env.logger") as mock_logger:
-                provider = EnvFileProvider("/fake/.env")
-                mock_logger.error.assert_called_once()
-        assert provider._flags == {}
 
 
 # ===========================================================================
