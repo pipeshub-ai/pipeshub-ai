@@ -15,65 +15,132 @@ Welcome to our open source project! We're excited that you're interested in cont
 
 ## Setting Up the Development Environment
 
-### System Dependencies
+### Prerequisites
 
-#### Linux
+**git** and **make** must be installed before proceeding:
+
+| OS | Command |
+|----|---------|
+| **Ubuntu 24.04 LTS** | `sudo apt-get install -y git make` |
+| **macOS** | `xcode-select --install` (installs git + make) |
+| **Windows 10/11** | Install [Git for Windows](https://git-scm.com/download/win) (includes Git Bash with make) |
+
+### 1. Install System Dependencies (`make install-os`)
+
 ```bash
-sudo apt update
-sudo apt install python3.12-venv
-sudo apt-get install libreoffice
+make install-os
 ```
 
-#### Mac
+This installs Docker, LibreOffice, and uv (Python 3.12 is downloaded automatically by uv).
+
+Or install manually per OS:
+
+#### Linux (Ubuntu 24.04 LTS)
+```bash
+sudo apt update
+sudo apt-get install -y git make curl libreoffice
+# Install Docker
+sudo apt-get install -y docker.io docker-compose-v2 || curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER
+# Install uv (downloads its own Python 3.12)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+#### macOS
 ```bash
 # Install Homebrew if not already installed
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-
 # Install required packages
-brew install python@3.12
 brew install libreoffice
+brew install --cask docker
+
+# Install uv (downloads its own Python 3.12)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-#### Windows
-```bash
-- Install Python 3.12
-- Consider using WSL2 for a Linux-like environment
+#### Windows 10 / 11
+
+Install [Git for Windows](https://git-scm.com/download/win) first (provides Git Bash with `git` and `make`).
+
+```powershell
+# Option 1: Use winget (built-in on Windows 10 1809+ / Windows 11)
+winget install Git.Git
+winget install LibreOffice.LibreOffice
+winget install Docker.DockerDesktop
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# Option 2: Use Chocolatey (https://chocolatey.org/install)
+choco install git make -y
+choco install libreoffice-fresh -y
+choco install docker-desktop -y
+
+# Option 3: Use WSL2 for a full Linux environment
+# Install WSL2, then run the Linux steps above
 ```
+
+Use **Git Bash** (included with Git for Windows) to run all Makefile targets on Windows.
+
+### 2. Verify Dependencies (`make doctor`)
+
+```bash
+make doctor
+```
+
+Checks that Docker, Node.js, uv, and other tools are correctly installed and accessible.
+
+### 3. Install Project Dependencies (`make install`)
+
+```bash
+make install
+```
+
+This:
+- Creates `.env` files from templates
+- Installs Node.js dependencies (`npm install`)
+- Creates a Python virtual environment and installs packages (`uv venv` + `uv pip install`)
+- Installs spaCy and NLTK language models
+- Installs frontend dependencies (`npm install`)
+
+### 4. Start Docker Containers (`make services`)
+
+```bash
+make services
+```
+
+Starts Redis, Qdrant, ArangoDB, and MongoDB containers required by the application.
+
+### 5. Run All Apps (`make start`)
+
+```bash
+make start
+```
+
+Verifies all containers are running, then starts all services (Node.js API, 4 Python services, frontend) using `npx concurrently`. Press **Ctrl+C** to stop all.
 
 ### Application Dependencies
+
+1. **Docker** — Install Docker Desktop (Windows/macOS) or Docker Engine (Linux)
+2. **Node.js** — v22.15.0 or later
+3. **Python 3.12** — Downloaded automatically by uv; no system install needed
+4. **uv** — Python package manager (installed by `make install-os`)
+5. **Optional:** MongoDB Compass or Studio 3T for inspecting MongoDB data
+
+### Starting Containers Manually
+
+Run `make services` to start everything at once, or start individual containers:
+
 ```bash
-1. **Docker** - Install Docker for your platform
-2. **Node.js** - Install Node.js(v22.15.0)
-3. **Python 3.12** - Install as shown above
-4. **Optional debugging tools:**
-   - MongoDB Compass or Studio 3T
-   - etcd-manager
+make docker-redis      # Redis on port 6379
+make docker-qdrant     # Qdrant on ports 6333, 6334
+make docker-arango     # ArangoDB on port 8529
+make docker-mongo      # MongoDB on port 27017
 ```
 
-### Starting Required Docker Containers
+**Neo4j (instead of ArangoDB):** PipesHub can use **Neo4j** as the graph database (`DATA_STORE=neo4j`) instead of ArangoDB.
 
-**Redis:**
-```bash
-docker run -d --name redis --restart always -p 6379:6379 redis:bookworm
-```
-
-**Qdrant:** (API Key must match with .env)
-```bash
-docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.13.6
-```
-
-**ArangoDB:** (Password must match with .env)
-```bash
-docker run -e ARANGO_ROOT_PASSWORD=your_password -p 8529:8529 --name arango --restart always -d arangodb:3.12.4
-```
-
-**Neo4j Desktop (instead of ArangoDB):** PipesHub can use **Neo4j** as the graph database (`DATA_STORE=neo4j`) instead of ArangoDB. This is useful if you prefer a local GUI and do not want the ArangoDB container.
-
-1. Install [Neo4j Desktop](https://neo4j.com/download/), create a **local DBMS**, set its password, and **Start** it.
-2. Leave the default Bolt listener on **localhost:7687** (or note the host/port shown in Desktop if you changed them).
-3. **Do not** start the ArangoDB Docker container above when using Neo4j.
-4. In `backend/.env` (the template you copy into `backend/nodejs/apps/.env` and `backend/python/.env`), set at least:
+1. Start Neo4j: `make docker-neo4j`
+2. In `backend/.env` (the template you copy into `backend/nodejs/apps/.env` and `backend/python/.env`), set:
    ```bash
    DATA_STORE=neo4j
    NEO4J_URI=bolt://localhost:7687
@@ -81,68 +148,49 @@ docker run -e ARANGO_ROOT_PASSWORD=your_password -p 8529:8529 --name arango --re
    NEO4J_PASSWORD=<same password as your DBMS>
    NEO4J_DATABASE=neo4j
    ```
-   The Python services read `DATA_STORE` and write `dataStoreType` into the KV store (etcd/Redis) on startup; the Node.js API uses that for health checks and treats `NEO4J_*` as the live Neo4j connection.
-5. Start the **connectors** Python service (`python -m app.connectors_main`) before or with the rest of the stack so deployment metadata stays consistent. If you already bootstrapped against ArangoDB on the same etcd data, reset etcd or the deployment key in KV store before switching graph backends to avoid mismatched state.
+   The Python services read `DATA_STORE` and write `dataStoreType` into the KV store (Redis) on startup; the Node.js API uses that for health checks.
+3. Start the **connectors** Python service (`make connectors`) before the rest of the stack so deployment metadata stays consistent.
 
-For a full stack in Docker with Neo4j instead of ArangoDB, see `docker-compose.build.neo4j.yml` in `deployment/docker-compose/` (documented in the repository `README.md`).
+For a full stack in Docker with Neo4j instead of ArangoDB, see `docker-compose.build.neo4j.yml` in `deployment/docker-compose/`.
 
-**MongoDB:** (Password must match with .env MONGO URI)
+### Running Services Manually
 
-Bash:
-```bash
-docker run -d --name mongodb --restart always -p 27017:27017 \
-  -e MONGO_INITDB_ROOT_USERNAME=admin \
-  -e MONGO_INITDB_ROOT_PASSWORD=password \
-  mongo:8.0.6
-```
+`make install && make services && make start` handles everything automatically. To run services individually:
 
-Powershell:
-```powershell
-docker run -d --name mongodb --restart always -p 27017:27017 `
-  -e MONGO_INITDB_ROOT_USERNAME=admin `
-  -e MONGO_INITDB_ROOT_PASSWORD=password `
-  mongo:8.0.6
-```
-
-### Starting Node.js Backend Service
+**Node.js Backend:**
 ```bash
 cd backend/nodejs/apps
-cp ../../env.template .env  # Create .env file from template
+cp ../../env.template .env
 npm install
 npm run dev
 ```
 
-### Starting Python Backend Services
+**Python Backend Services** (4 services, each in its own terminal):
 ```bash
 cd backend/python
 cp ../env.template .env
-# Create and activate virtual environment
-python3.12 -m venv venv
+uv venv venv --python 3.12
 source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -e .
-
-# Install additional language models
+uv pip install -e .
 python -m spacy download en_core_web_sm
 python -c "import nltk; nltk.download('punkt')"
 
-# Run each service in a separate terminal: First, cd backend/python and activate the existing virtual environment
+# Run each in a separate terminal:
 python -m app.connectors_main
 python -m app.indexing_main
 python -m app.query_main
 python -m app.docling_main
 ```
 
-### Setting Up Frontend
+**Frontend:**
 ```bash
 cd frontend
-cp env.template .env  # Modify port if Node.js backend uses a different one
+cp env.template .env
 npm install
-PORT=3001 npm run dev
+npm run dev
 ```
 
-Then open your browser to the displayed URL (typically `http://localhost:3001` when using `PORT=3001`; Next.js defaults to port 3000 if `PORT` is unset).
+Then open `http://localhost:3001` in your browser.
 
 ## Project Architecture
 
@@ -150,10 +198,11 @@ Our project consists of three main components:
 
 1. **Frontend**: Next.js application for the user interface
 2. **Node.js Backend**: Handles API requests, authentication, and business logic
-3. **Python Services**: Three microservices for:
+3. **Python Services**: Four microservices:
    - Connectors: Handles data source connections
    - Indexing: Manages document indexing and processing
    - Query: Processes search and retrieval requests
+   - Docling: Document parsing and extraction
 
 ## Contribution Workflow
 

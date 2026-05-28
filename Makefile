@@ -40,6 +40,8 @@ THIS_MAKEFILE := $(lastword $(MAKEFILE_LIST))
 ROOT_DIR := $(abspath $(dir $(THIS_MAKEFILE)))
 PYTHON_ENV_FILE := $(ROOT_DIR)/backend/python/.env
 
+DOCKER := $(shell docker info >/dev/null 2>&1 && echo docker || echo sudo docker)
+
 # Helper function to source .env file
 # This is used at the start of shell commands to load environment variables
 # Usage: $(LOAD_ENV) && your_command
@@ -52,48 +54,43 @@ LOAD_ENV = if [ -f $(PYTHON_ENV_FILE) ]; then set -a; . $(PYTHON_ENV_FILE); set 
 help: ## Show this help message
 	@echo "$(BLUE)PipesHub AI Setup Makefile$(NC)"
 	@echo ""
+	@echo "$(GREEN)Quick Start:$(NC)"
+	@echo "  1. make install-os  — Install Docker, LibreOffice, uv on your OS"
+	@echo "  2. make doctor      — Verify all dependencies are ready"
+	@echo "  3. make install     — Set up .env, npm, Python venv"
+	@echo "  4. make services    — Start Redis, Qdrant, ArangoDB, MongoDB containers"
+	@echo "  5. make start       — Run all apps (Ctrl+C stops all)"
+	@echo ""
 	@echo "$(GREEN)System Dependencies:$(NC)"
 	@echo "  make doctor               - Check all system dependencies for docker compose + local dev"
-	@echo "  make install              - Install project deps (interactive .env incl. etcd/Kafka; npm + Python venv + uv)"
-	@echo "  make install-os           - Install host OS packages (Linux/macOS/Windows hints; libreoffice, uv, etc.)"
-	@echo "  make install-deps-linux   - Install dependencies on Linux"
+	@echo "  make install-os           - Install host OS packages (Docker, LibreOffice, uv; Linux/macOS/Windows)"
+	@echo "  make install-deps-linux   - Install dependencies on Linux (Ubuntu 24.04 LTS)"
 	@echo "  make install-deps-mac     - Install dependencies on macOS"
-	@echo "  make install-deps-windows - Show Windows installation instructions"
+	@echo "  make install-deps-windows - Install dependencies on Windows 10/11"
 	@echo ""
 	@echo "$(GREEN)Docker Deployments:$(NC)"
 	@echo "  make dev-docker-menu      - Show development deployment commands"
 	@echo "  make prod-docker-menu     - Show production deployment commands"
 	@echo ""
 	@echo "$(GREEN)Local services (recommended):$(NC)"
-	@echo "  make services             - Start Redis, Qdrant, ArangoDB, MongoDB; etcd/Kafka from backend/python/.env (KV_STORE_TYPE, MESSAGE_BROKER) or SERVICES_WITH_* / prompts"
-	@echo "  make start                - Verify required Docker containers, then all apps via npx concurrently (start containers with: make services)"
-	@echo "  Env on make services: SERVICES_WITH_ETCD / SERVICES_WITH_KAFKA override .env (0=off, 1=on)"
+	@echo "  make services             - Start Redis, Qdrant, ArangoDB, MongoDB Docker containers"
+	@echo "  make start                - Verify containers, then all apps via npx concurrently (Ctrl+C stops all)"
 	@echo ""
-	@echo "$(GREEN)Individual Docker Containers (with etcd):$(NC)"
-	@echo "  make docker-all           - Start all Docker containers (includes etcd)"
+	@echo "$(GREEN)Individual Docker Containers:$(NC)"
+	@echo "  make docker-all           - Start all containers (redis, qdrant, arango, mongo, etcd, zookeeper, kafka)"
+	@echo "  make docker-all-no-etcd   - Start all containers except etcd"
+	@echo "  make docker-all-neo4j     - Start all containers with Neo4j (no ArangoDB/etcd)"
 	@echo "  make docker-redis         - Start Redis container"
 	@echo "  make docker-qdrant        - Start Qdrant container"
-	@echo "  make docker-etcd          - Start etcd container"
 	@echo "  make docker-arango        - Start ArangoDB container"
 	@echo "  make docker-mongo         - Start MongoDB container"
-	@echo "  make docker-zookeeper     - Start Zookeeper container"
-	@echo "  make docker-kafka         - Start Kafka container"
-	@echo "  make stop-containers      - Stop all containers (includes etcd)"
-	@echo "  make stop-and-clean-volumes - Stop containers and clean volumes"
-	@echo ""
-	@echo "$(GREEN)Docker Containers (without etcd - for Redis config store):$(NC)"
-	@echo "  make docker-all-no-etcd   - Start all containers except etcd"
-	@echo "  make docker-no-etcd       - Alias for docker-all-no-etcd"
-	@echo "  make stop-containers-no-etcd - Stop all containers except etcd"
-	@echo "  make stop-and-clean-volumes-no-etcd - Stop and clean (no etcd)"
-	@echo "  make clean-docker-no-etcd - Clean docker (no etcd)"
-	@echo ""
-	@echo "$(GREEN)Docker Containers (with Neo4j - replaces ArangoDB, no etcd):$(NC)"
 	@echo "  make docker-neo4j         - Start Neo4j container"
-	@echo "  make docker-all-neo4j     - Start all containers with Neo4j (no ArangoDB/etcd)"
-	@echo "  make stop-containers-neo4j - Stop all containers (Neo4j setup)"
-	@echo "  make stop-and-clean-volumes-neo4j - Stop and clean (Neo4j setup)"
-	@echo "  make clean-docker-neo4j   - Clean docker (Neo4j setup)"
+	@echo "  make docker-etcd          - Start etcd container (optional legacy)"
+	@echo "  make docker-zookeeper     - Start Zookeeper container (Kafka dependency)"
+	@echo "  make docker-kafka         - Start Kafka container (with Zookeeper)"
+	@echo "  make stop-containers      - Stop all containers"
+	@echo "  make stop-and-clean-volumes - Stop containers and clean volumes"
+	@echo "  make clean-docker         - Remove containers, prune volumes and images"
 	@echo ""
 	@echo "$(GREEN)Node.js Backend:$(NC)"
 	@echo "  make setup-nodejs         - Setup Node.js backend (install deps)"
@@ -227,46 +224,17 @@ install-broker-env:
 		grep -v "^$$_K=" "$$_F" > "$$_T" && mv "$$_T" "$$_F"; \
 		printf '%s=%s\n' "$$_K" "$$_V" >> "$$_F"; \
 	}; \
-	if [ ! -f "$$PY" ] || [ ! -f "$$NODE" ]; then \
-		echo "$(YELLOW)[install] Skipping etcd/Kafka prompts: missing backend .env file(s)$(NC)"; \
-		exit 0; \
-	fi; \
-	if [ ! -t 0 ]; then \
-		echo "$(YELLOW)[install] Non-interactive: edit KV_STORE_TYPE, MESSAGE_BROKER, COMPOSE_PROFILES, KAFKA_BROKERS in $$PY and $$NODE$(NC)"; \
-		exit 0; \
-	fi; \
-	echo ""; \
-	echo "$(BLUE)[install] etcd (KV store) & Kafka (message broker) — updates both backend .env files$(NC)"; \
-	printf "$(YELLOW)Use etcd for KV store (KV_STORE_TYPE=etcd)? [y/N] $(NC)"; read -r _etcd; \
-	case "$$_etcd" in [yY]|[yY][eE][sS]) KV=etcd;; *) KV=redis;; esac; \
-	if [ "$$KV" = etcd ]; then \
-		printf "$(YELLOW)ETCD_USERNAME (optional, Enter=skip): $(NC)"; read -r _eu; \
-		printf "$(YELLOW)ETCD_PASSWORD (optional, Enter=skip): $(NC)"; read -r _ep; \
-	fi; \
-	printf "$(YELLOW)Use Kafka for the message broker (MESSAGE_BROKER=kafka)? [y/N] $(NC)"; read -r _kafka; \
-	case "$$_kafka" in [yY]|[yY][eE][sS]) MB=kafka; CP=kafka;; *) MB=redis; CP=;; esac; \
-	KBROKER=localhost:9092; \
-	if [ "$$MB" = kafka ]; then \
-		printf "$(YELLOW)KAFKA_BROKERS [localhost:9092]: $(NC)"; read -r _kb; \
-		if [ -n "$$_kb" ]; then KBROKER="$$_kb"; fi; \
-	fi; \
 	for _f in "$$PY" "$$NODE"; do \
-		up "$$_f" KV_STORE_TYPE "$$KV"; \
-		up "$$_f" MESSAGE_BROKER "$$MB"; \
-		up "$$_f" COMPOSE_PROFILES "$$CP"; \
-		up "$$_f" KAFKA_BROKERS "$$KBROKER"; \
-		if [ "$$KV" = etcd ]; then \
-			if [ -n "$$_eu" ]; then up "$$_f" ETCD_USERNAME "$$_eu"; fi; \
-			if [ -n "$$_ep" ]; then up "$$_f" ETCD_PASSWORD "$$_ep"; fi; \
-		fi; \
+		up "$$_f" KV_STORE_TYPE "redis"; \
+		up "$$_f" MESSAGE_BROKER "redis"; \
 	done; \
-	echo "$(GREEN)[install] Updated KV_STORE_TYPE, MESSAGE_BROKER, COMPOSE_PROFILES, KAFKA_BROKERS (and optional ETCD creds) in both backend .env files$(NC)"
+	echo "$(GREEN)[install] KV_STORE_TYPE=redis, MESSAGE_BROKER=redis set in backend .env files$(NC)"
 
-install: install-nodejs install-python install-frontend install-broker-env ## Install project deps; interactive .env (etcd/Kafka); template only if missing
+install: install-nodejs install-python install-frontend ## Install project deps (.env templates, npm, Python venv + uv)
 	@echo "$(GREEN)================================================$(NC)"
 	@echo "$(GREEN)Project dependencies installed.$(NC)"
 	@echo "$(GREEN)================================================$(NC)"
-	@echo "$(YELLOW)Tip: make install-os for host packages (OCR, LibreOffice, …)$(NC)"
+	@echo "$(YELLOW)Next: make services && make start$(NC)"
 
 # ==============================================================================
 # Host OS dependency install
@@ -288,31 +256,59 @@ install-os: ## Install host OS packages for this platform (Linux / macOS / Windo
 		exit 1; \
 	fi
 
-install-deps-linux: ## Install system dependencies on Linux
+install-deps-linux: ## Install system dependencies on Linux (Ubuntu 24.04 LTS)
 	@echo "$(BLUE)Installing Linux dependencies...$(NC)"
-	sudo apt update
-	sudo apt-get install -y libreoffice
-	sudo apt install -y libmariadb-dev
+	@sudo apt update
+	@sudo apt-get install -y curl libreoffice
+	@sudo apt install -y libmariadb-dev
+	@echo "$(BLUE)Installing Docker...$(NC)"
+	@sudo apt-get install -y docker.io docker-compose-v2 || \
+		(curl -fsSL https://get.docker.com | sudo sh)
+	@sudo usermod -aG docker $$USER 2>/dev/null || true
+	@echo "$(YELLOW)NOTE: Log out and back in for Docker group membership to take effect.$(NC)"
 	@echo "$(BLUE)Installing uv package manager...$(NC)"
-	curl -LsSf https://astral.sh/uv/install.sh | sh
+	@curl -LsSf https://astral.sh/uv/install.sh | sh
 	@echo "$(GREEN)Linux dependencies installed successfully!$(NC)"
 
 install-deps-mac: ## Install system dependencies on macOS
 	@echo "$(BLUE)Installing macOS dependencies...$(NC)"
 	@echo "$(YELLOW)Installing Homebrew if not already installed...$(NC)"
 	@bash -c "$$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || echo "Homebrew already installed"
-	brew install python@3.12 || true
 	brew install libreoffice || true
 	brew install mariadb-connector-c || true
+	@echo "$(BLUE)Installing Docker...$(NC)"
+	brew install --cask docker || true
+	@echo "$(YELLOW)NOTE: Start Docker Desktop from Applications after installation.$(NC)"
 	@echo "$(BLUE)Installing uv package manager...$(NC)"
 	curl -LsSf https://astral.sh/uv/install.sh | sh
 	@echo "$(GREEN)macOS dependencies installed successfully!$(NC)"
 
-install-deps-windows: ## Show Windows installation instructions
-	@echo "$(YELLOW)Windows Installation Instructions:$(NC)"
-	@echo "1. Install Python 3.12 from python.org"
-	@echo "3. Consider using WSL2 for a Linux-like environment"
-	@echo "4. Run: make install-deps-linux in WSL2"
+install-deps-windows: ## Install system dependencies on Windows (via winget, choco, or manual)
+	@echo "$(BLUE)Installing Windows dependencies...$(NC)"
+	@HAS_WINGET=$$(command -v winget >/dev/null 2>&1 && echo 1 || echo 0); \
+	HAS_CHOCO=$$(command -v choco >/dev/null 2>&1 && echo 1 || echo 0); \
+	if [ "$$HAS_WINGET" = "1" ]; then \
+		echo "$(GREEN)Using winget package manager...$(NC)"; \
+		winget install LibreOffice.LibreOffice --accept-package-agreements --accept-source-agreements || true; \
+		winget install Docker.DockerDesktop --accept-package-agreements --accept-source-agreements || true; \
+	elif [ "$$HAS_CHOCO" = "1" ]; then \
+		echo "$(GREEN)Using Chocolatey package manager...$(NC)"; \
+		choco install libreoffice-fresh -y || true; \
+		choco install docker-desktop -y || true; \
+	else \
+		echo "$(YELLOW)No package manager found (winget / choco).$(NC)"; \
+		echo "$(YELLOW)Install manually:$(NC)"; \
+		echo "  LibreOffice:  https://www.libreoffice.org/download/"; \
+		echo "  Docker:       https://www.docker.com/products/docker-desktop/"; \
+	fi; \
+	@echo "$(YELLOW)NOTE: Start Docker Desktop after installation and complete first-time setup.$(NC)"; \
+	@echo "$(BLUE)Installing uv package manager...$(NC)"
+	@powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>/dev/null || \
+		curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null || \
+		echo "$(YELLOW)Could not install uv automatically. Install from: https://docs.astral.sh/uv/$(NC)"
+	@echo "$(GREEN)Windows dependencies installed successfully!$(NC)"
+	@echo "$(YELLOW)NOTE: Restart your terminal after installation for PATH changes to take effect.$(NC)"
+	@echo "$(YELLOW)For Git/SSH support, use Git Bash (included with Git for Windows) or WSL2.$(NC)"
 
 # ==============================================================================
 # Doctor: System Dependency Check
@@ -321,7 +317,7 @@ install-deps-windows: ## Show Windows installation instructions
 # docker-compose.build.neo4j.yml) and the local-dev targets in this Makefile
 # need on the host. Exits non-zero if any required dependency is missing.
 
-doctor: ## Check all system dependencies for docker compose + local dev
+doctor: ## Check all system dependencies for $(DOCKER) compose + local dev
 	@OS=$$(uname -s 2>/dev/null || echo Unknown); \
 	ARCH=$$(uname -m 2>/dev/null || echo unknown); \
 	PASS=0; WARN=0; FAIL=0; \
@@ -357,7 +353,7 @@ doctor: ## Check all system dependencies for docker compose + local dev
 	echo "$(BLUE)[1/4] Container runtime$(NC)"; \
 	if command -v docker >/dev/null 2>&1; then \
 		ok "docker" "$$(docker --version)"; \
-		if docker info >/dev/null 2>&1; then \
+		if $(DOCKER) info >/dev/null 2>&1; then \
 			ok "docker daemon" "running"; \
 		else \
 			fail "docker daemon" "not running (start Docker Desktop / dockerd)"; \
@@ -365,10 +361,10 @@ doctor: ## Check all system dependencies for docker compose + local dev
 	else \
 		fail "docker" "required to run docker-compose stack"; \
 	fi; \
-	if docker compose version >/dev/null 2>&1; then \
-		ok "docker compose v2" "$$(docker compose version --short 2>/dev/null)"; \
+	if $(DOCKER) compose version >/dev/null 2>&1; then \
+		ok "$(DOCKER) compose v2" "$$($(DOCKER) compose version --short 2>/dev/null)"; \
 	else \
-		fail "docker compose v2" "'docker compose' plugin required (legacy 'docker-compose' not enough)"; \
+		fail "$(DOCKER) compose v2" "'$(DOCKER) compose' plugin required (legacy 'docker-compose' not enough)"; \
 	fi; \
 	echo ""; \
 	echo "$(BLUE)[2/4] Core tooling$(NC)"; \
@@ -408,11 +404,6 @@ doctor: ## Check all system dependencies for docker compose + local dev
 	echo ""; \
 	echo "$(BLUE)[4/4] Document parsing (used by indexing / docling services)$(NC)"; \
 	check_optional libreoffice "needed for parsing Office docs (.docx, .pptx, .xlsx)"; \
-	check_optional tesseract   "needed for OCR on scanned PDFs"; \
-	check_optional ocrmypdf    "needed for the PDF OCR pipeline"; \
-	check_optional gs          "ghostscript: needed by ocrmypdf"; \
-	check_optional unpaper     "needed by ocrmypdf for page cleanup"; \
-	check_optional qpdf        "needed by ocrmypdf for PDF rewriting"; \
 	echo ""; \
 	echo "$(BLUE)===============================================$(NC)"; \
 	if [ "$$FAIL" -gt 0 ]; then \
@@ -437,12 +428,22 @@ docker-redis: ## Start Redis container (reads REDIS_PASSWORD from .env)
 	REDIS_PASSWORD=$${REDIS_PASSWORD:-}; \
 	if [ -n "$$REDIS_PASSWORD" ]; then \
 		echo "$(YELLOW)Using REDIS_PASSWORD from .env$(NC)"; \
-		docker run -d --name redis --restart always -p 6379:6379 \
-			redis:bookworm --requirepass "$$REDIS_PASSWORD" 2>/dev/null || echo "$(YELLOW)Redis container already exists or running$(NC)"; \
+		$(DOCKER) run -d --name redis --restart always -p 6379:6379 \
+			redis:bookworm --requirepass "$$REDIS_PASSWORD" 2>/dev/null || { \
+			if $(DOCKER) container inspect redis >/dev/null 2>&1; then \
+				echo "$(YELLOW)Redis container already exists$(NC)"; \
+			else \
+				echo "$(RED)Failed to start Redis container$(NC)"; exit 1; \
+			fi; }; \
 	else \
 		echo "$(YELLOW)No REDIS_PASSWORD set, starting Redis without authentication$(NC)"; \
-		docker run -d --name redis --restart always -p 6379:6379 \
-			redis:bookworm 2>/dev/null || echo "$(YELLOW)Redis container already exists or running$(NC)"; \
+		$(DOCKER) run -d --name redis --restart always -p 6379:6379 \
+			redis:bookworm 2>/dev/null || { \
+			if $(DOCKER) container inspect redis >/dev/null 2>&1; then \
+				echo "$(YELLOW)Redis container already exists$(NC)"; \
+			else \
+				echo "$(RED)Failed to start Redis container$(NC)"; exit 1; \
+			fi; }; \
 	fi
 	@echo "$(GREEN)Redis container started on port 6379$(NC)"
 
@@ -452,13 +453,23 @@ docker-qdrant: ## Start Qdrant container (reads QDRANT_API_KEY from .env)
 	QDRANT_API_KEY=$${QDRANT_API_KEY:-}; \
 	if [ -n "$$QDRANT_API_KEY" ]; then \
 		echo "$(YELLOW)Using QDRANT_API_KEY from .env$(NC)"; \
-		docker run -d --name qdrant --restart always -p 6333:6333 -p 6334:6334 \
+		$(DOCKER) run -d --name qdrant --restart always -p 6333:6333 -p 6334:6334 \
 			-e QDRANT__SERVICE__API_KEY="$$QDRANT_API_KEY" \
-			qdrant/qdrant:v1.13.6 2>/dev/null || echo "$(YELLOW)Qdrant container already exists or running$(NC)"; \
+			qdrant/qdrant:v1.13.6 2>/dev/null || { \
+			if $(DOCKER) container inspect qdrant >/dev/null 2>&1; then \
+				echo "$(YELLOW)Qdrant container already exists$(NC)"; \
+			else \
+				echo "$(RED)Failed to start Qdrant container$(NC)"; exit 1; \
+			fi; }; \
 	else \
 		echo "$(YELLOW)No QDRANT_API_KEY set, starting Qdrant without authentication$(NC)"; \
-		docker run -d --name qdrant --restart always -p 6333:6333 -p 6334:6334 \
-			qdrant/qdrant:v1.13.6 2>/dev/null || echo "$(YELLOW)Qdrant container already exists or running$(NC)"; \
+		$(DOCKER) run -d --name qdrant --restart always -p 6333:6333 -p 6334:6334 \
+			qdrant/qdrant:v1.13.6 2>/dev/null || { \
+			if $(DOCKER) container inspect qdrant >/dev/null 2>&1; then \
+				echo "$(YELLOW)Qdrant container already exists$(NC)"; \
+			else \
+				echo "$(RED)Failed to start Qdrant container$(NC)"; exit 1; \
+			fi; }; \
 	fi
 	@echo "$(GREEN)Qdrant container started on ports 6333, 6334$(NC)"
 
@@ -469,7 +480,7 @@ docker-etcd: ## Start etcd container (reads ETCD_USERNAME, ETCD_PASSWORD from .e
 	ETCD_PASSWORD=$${ETCD_PASSWORD:-}; \
 	if [ -n "$$ETCD_USERNAME" ] && [ -n "$$ETCD_PASSWORD" ]; then \
 		echo "$(YELLOW)Using ETCD_USERNAME and ETCD_PASSWORD from .env$(NC)"; \
-		docker run -d --name etcd-server --restart always \
+		$(DOCKER) run -d --name etcd-server --restart always \
 			-p 2379:2379 -p 2380:2380 \
 			-e ETCD_ROOT_PASSWORD="$$ETCD_PASSWORD" \
 			quay.io/coreos/etcd:v3.5.17 /usr/local/bin/etcd \
@@ -480,7 +491,7 @@ docker-etcd: ## Start etcd container (reads ETCD_USERNAME, ETCD_PASSWORD from .e
 			--listen-peer-urls http://0.0.0.0:2380 2>/dev/null || echo "$(YELLOW)etcd container already exists or running$(NC)"; \
 	else \
 		echo "$(YELLOW)No ETCD_USERNAME/ETCD_PASSWORD set, starting etcd without authentication$(NC)"; \
-		docker run -d --name etcd-server --restart always \
+		$(DOCKER) run -d --name etcd-server --restart always \
 			-p 2379:2379 -p 2380:2380 \
 			quay.io/coreos/etcd:v3.5.17 /usr/local/bin/etcd \
 			--name etcd0 \
@@ -496,9 +507,14 @@ docker-arango: ## Start ArangoDB container (reads ARANGO_PASSWORD from .env)
 	@$(LOAD_ENV); \
 	ARANGO_PASSWORD=$${ARANGO_PASSWORD:-your_password}; \
 	echo "$(YELLOW)Using ARANGO_PASSWORD from .env (or default)$(NC)"; \
-	docker run -d --name arango --restart always -p 8529:8529 \
+	$(DOCKER) run -d --name arango --restart always -p 8529:8529 \
 		-e ARANGO_ROOT_PASSWORD="$$ARANGO_PASSWORD" \
-		arangodb:3.12.4 2>/dev/null || echo "$(YELLOW)ArangoDB container already exists or running$(NC)"
+		arangodb:3.12.4 2>/dev/null || { \
+		if $(DOCKER) container inspect arango >/dev/null 2>&1; then \
+			echo "$(YELLOW)ArangoDB container already exists$(NC)"; \
+		else \
+			echo "$(RED)Failed to start ArangoDB container$(NC)"; exit 1; \
+		fi; }
 	@echo "$(GREEN)ArangoDB container started on port 8529$(NC)"
 	@echo "$(YELLOW)NOTE: Make sure ARANGO_PASSWORD in .env matches the container$(NC)"
 
@@ -509,12 +525,12 @@ docker-neo4j: ## Start Neo4j container (reads NEO4J_USERNAME, NEO4J_PASSWORD fro
 	NEO4J_PASSWORD=$${NEO4J_PASSWORD:-}; \
 	if [ -n "$$NEO4J_PASSWORD" ]; then \
 		echo "$(YELLOW)Using NEO4J_USERNAME and NEO4J_PASSWORD from .env$(NC)"; \
-		docker run -d --name neo4j --restart always -p 7474:7474 -p 7687:7687 \
+		$(DOCKER) run -d --name neo4j --restart always -p 7474:7474 -p 7687:7687 \
 			-e NEO4J_AUTH="$$NEO4J_USERNAME/$$NEO4J_PASSWORD" \
 			neo4j:5.26.2-community 2>/dev/null || echo "$(YELLOW)Neo4j container already exists or running$(NC)"; \
 	else \
 		echo "$(YELLOW)No NEO4J_PASSWORD set, starting Neo4j with authentication disabled$(NC)"; \
-		docker run -d --name neo4j --restart always -p 7474:7474 -p 7687:7687 \
+		$(DOCKER) run -d --name neo4j --restart always -p 7474:7474 -p 7687:7687 \
 			-e NEO4J_AUTH=none \
 			neo4j:5.26.2-community 2>/dev/null || echo "$(YELLOW)Neo4j container already exists or running$(NC)"; \
 	fi
@@ -530,15 +546,20 @@ docker-mongo: ## Start MongoDB container (reads MONGO_URI from .env to extract c
 	MONGO_PASSWORD=$${MONGO_PASSWORD:-password}; \
 	echo "$(YELLOW)Using MongoDB credentials from MONGO_URI in .env$(NC)"; \
 	echo "$(YELLOW)Username: $$MONGO_USERNAME$(NC)"; \
-	docker run -d --name mongodb --restart always -p 27017:27017 \
+	$(DOCKER) run -d --name mongodb --restart always -p 27017:27017 \
 		-e MONGO_INITDB_ROOT_USERNAME="$$MONGO_USERNAME" \
 		-e MONGO_INITDB_ROOT_PASSWORD="$$MONGO_PASSWORD" \
-		mongo:8.0.6 2>/dev/null || echo "$(YELLOW)MongoDB container already exists or running$(NC)"
+		mongo:8.0.6 2>/dev/null || { \
+		if $(DOCKER) container inspect mongodb >/dev/null 2>&1; then \
+			echo "$(YELLOW)MongoDB container already exists$(NC)"; \
+		else \
+			echo "$(RED)Failed to start MongoDB container$(NC)"; exit 1; \
+		fi; }
 	@echo "$(GREEN)MongoDB container started on port 27017$(NC)"
 
 docker-zookeeper: ## Start Zookeeper container
 	@echo "$(BLUE)Starting Zookeeper container...$(NC)"
-	@docker run -d --name zookeeper --restart always -p 2181:2181 \
+	@$(DOCKER) run -d --name zookeeper --restart always -p 2181:2181 \
 		-e ZOOKEEPER_CLIENT_PORT=2181 \
 		-e ZOOKEEPER_TICK_TIME=2000 \
 		confluentinc/cp-zookeeper:7.9.0 2>/dev/null || echo "$(YELLOW)Zookeeper container already exists or running$(NC)"
@@ -553,7 +574,7 @@ docker-kafka: docker-zookeeper ## Start Kafka container (reads KAFKA_SASL_* from
 	KAFKA_SASL_PASSWORD=$${KAFKA_SASL_PASSWORD:-}; \
 	if [ "$$KAFKA_SASL_ENABLED" = "true" ] && [ -n "$$KAFKA_SASL_USERNAME" ] && [ -n "$$KAFKA_SASL_PASSWORD" ]; then \
 		echo "$(YELLOW)Starting Kafka with SASL authentication$(NC)"; \
-		docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9092 \
+		$(DOCKER) run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9092 \
 			-e KAFKA_BROKER_ID=1 \
 			-e KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181 \
 			-e KAFKA_ADVERTISED_LISTENERS=SASL_PLAINTEXT://localhost:9092 \
@@ -567,7 +588,7 @@ docker-kafka: docker-zookeeper ## Start Kafka container (reads KAFKA_SASL_* from
 			confluentinc/cp-kafka:7.9.0 2>/dev/null || echo "$(YELLOW)Kafka container already exists or running$(NC)"; \
 	else \
 		echo "$(YELLOW)Starting Kafka without SASL (KAFKA_SASL_ENABLED not set or missing credentials)$(NC)"; \
-		docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9092 \
+		$(DOCKER) run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9092 \
 			-e KAFKA_BROKER_ID=1 \
 			-e KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181 \
 			-e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
@@ -582,61 +603,12 @@ docker-kafka: docker-zookeeper ## Start Kafka container (reads KAFKA_SASL_* from
 # Interactive stack: core + optional etcd / Kafka+Zookeeper
 # ==============================================================================
 
-services: ## Start Redis, Qdrant, ArangoDB, MongoDB; etcd/Kafka from backend/python/.env or SERVICES_WITH_* / prompts
+services: ## Start Redis, Qdrant, ArangoDB, MongoDB Docker containers
 	@echo "$(BLUE)PipesHub — local dependency containers$(NC)"
 	@echo "$(GREEN)Starting core stack: Redis, Qdrant, ArangoDB, MongoDB...$(NC)"
 	@$(MAKE) docker-redis docker-qdrant docker-arango docker-mongo
 	@echo ""
-	@echo "$(YELLOW)etcd / Kafka: read $(PYTHON_ENV_FILE) when present (KV_STORE_TYPE, MESSAGE_BROKER).$(NC)"
-	@echo "$(YELLOW)  SERVICES_WITH_ETCD=0|1 or SERVICES_WITH_KAFKA=0|1 overrides. If no .env, TTY prompts (else skip).$(NC)"
-	@echo ""
-	@ENV_PY="$(PYTHON_ENV_FILE)"; \
-	WITH_ETCD=""; WITH_KAFKA=""; \
-	if [ "$${SERVICES_WITH_ETCD:-}" = "1" ]; then WITH_ETCD=1; \
-	elif [ "$${SERVICES_WITH_ETCD:-}" = "0" ]; then WITH_ETCD=0; \
-	elif [ -f "$$ENV_PY" ]; then \
-		set -a; . "$$ENV_PY" 2>/dev/null || true; set +a; \
-		case "$${KV_STORE_TYPE:-redis}" in \
-			[Ee][Tt][Cc][Dd]) WITH_ETCD=1;; \
-			*) WITH_ETCD=0;; \
-		esac; \
-		echo "$(BLUE)Using .env: KV_STORE_TYPE=$$KV_STORE_TYPE etcd=$$WITH_ETCD$(NC)"; \
-	elif [ -t 0 ]; then \
-		printf "$(YELLOW)No $$ENV_PY — Start etcd v3? [y/N] $(NC)"; read -r _a; \
-		case "$$_a" in [yY]|[yY][eE][sS]) WITH_ETCD=1;; *) WITH_ETCD=0;; esac; \
-	else \
-		echo "$(YELLOW)No .env and not a TTY — skipping etcd (set SERVICES_WITH_ETCD=1).$(NC)"; \
-		WITH_ETCD=0; \
-	fi; \
-	if [ "$$WITH_ETCD" = "1" ]; then \
-		$(MAKE) docker-etcd; \
-	else \
-		echo "$(GREEN)Skipping etcd.$(NC)"; \
-	fi; \
-	echo ""; \
-	if [ "$${SERVICES_WITH_KAFKA:-}" = "1" ]; then WITH_KAFKA=1; \
-	elif [ "$${SERVICES_WITH_KAFKA:-}" = "0" ]; then WITH_KAFKA=0; \
-	elif [ -f "$$ENV_PY" ]; then \
-		set -a; . "$$ENV_PY" 2>/dev/null || true; set +a; \
-		case "$${MESSAGE_BROKER:-redis}" in \
-			[Kk][Aa][Ff][Kk][Aa]) WITH_KAFKA=1;; \
-			*) WITH_KAFKA=0;; \
-		esac; \
-		echo "$(BLUE)Using .env: MESSAGE_BROKER=$$MESSAGE_BROKER kafka=$$WITH_KAFKA$(NC)"; \
-	elif [ -t 0 ]; then \
-		printf "$(YELLOW)No $$ENV_PY — Start Kafka and Zookeeper? [y/N] $(NC)"; read -r _b; \
-		case "$$_b" in [yY]|[yY][eE][sS]) WITH_KAFKA=1;; *) WITH_KAFKA=0;; esac; \
-	else \
-		echo "$(YELLOW)No .env and not a TTY — skipping Kafka (set SERVICES_WITH_KAFKA=1).$(NC)"; \
-		WITH_KAFKA=0; \
-	fi; \
-	if [ "$$WITH_KAFKA" = "1" ]; then \
-		$(MAKE) docker-kafka; \
-	else \
-		echo "$(GREEN)Skipping Kafka and Zookeeper.$(NC)"; \
-	fi; \
-	echo ""; \
-	echo "$(GREEN)Services step finished. Check containers: docker ps$(NC)"
+	@echo "$(GREEN)Services step finished. Check containers: $(DOCKER) ps$(NC)"
 
 # ==============================================================================
 # One-terminal local dev (Makefile-only; includes docling)
@@ -645,31 +617,25 @@ services: ## Start Redis, Qdrant, ArangoDB, MongoDB; etcd/Kafka from backend/pyt
 start: ## Verify required Docker containers are running, then all apps via npx concurrently (Ctrl+C stops all)
 	@ROOT="$(ROOT_DIR)"; \
 	echo "$(BLUE)Preflight...$(NC)"; \
-	if ! docker info >/dev/null 2>&1; then echo "$(RED)Docker is not running.$(NC)"; exit 1; fi; \
+	if ! $(DOCKER) info >/dev/null 2>&1; then echo "$(RED)Docker is not running.$(NC)"; exit 1; fi; \
 	if [ ! -d "$$ROOT/backend/nodejs/apps/node_modules" ]; then echo "$(RED)Missing backend/nodejs/apps/node_modules. Run: make install$(NC)"; exit 1; fi; \
 	if [ ! -d "$$ROOT/frontend/node_modules" ]; then echo "$(RED)Missing frontend/node_modules. Run: make install$(NC)"; exit 1; fi; \
 	if ! command -v npx >/dev/null 2>&1; then echo "$(RED)npx not found (install Node.js / npm).$(NC)"; exit 1; fi; \
 	if ! command -v uv >/dev/null 2>&1; then echo "$(RED)uv not found in PATH. Run: make doctor$(NC)"; exit 1; fi; \
-	ENV_PY="$(PYTHON_ENV_FILE)"; \
 	REQ="redis qdrant arango mongodb"; \
-	if [ -f "$$ENV_PY" ]; then \
-		set -a; . "$$ENV_PY" 2>/dev/null || true; set +a; \
-		case "$${KV_STORE_TYPE:-redis}" in [Ee][Tt][Cc][Dd]) REQ="$$REQ etcd-server";; esac; \
-		case "$${MESSAGE_BROKER:-redis}" in [Kk][Aa][Ff][Kk][Aa]) REQ="$$REQ zookeeper kafka";; esac; \
-	fi; \
 	_BAD=0; \
 	_SHOWN=0; \
 	echo "$(BLUE)Checking Docker containers: $$REQ$(NC)"; \
 	for c in $$REQ; do \
-		if ! docker container inspect "$$c" >/dev/null 2>&1; then \
+		if ! $(DOCKER) container inspect "$$c" >/dev/null 2>&1; then \
 			if [ "$$_SHOWN" = "0" ]; then echo "$(RED)These required containers are not running:$(NC)"; _SHOWN=1; fi; \
 			echo "$(RED)  - $$c (not found — run: make services)$(NC)"; \
 			_BAD=1; \
 		else \
-			_R=$$(docker inspect --format '{{.State.Running}}' "$$c" 2>/dev/null); \
+			_R=$$($(DOCKER) inspect --format '{{.State.Running}}' "$$c" 2>/dev/null); \
 			if [ "$$_R" != "true" ]; then \
 				if [ "$$_SHOWN" = "0" ]; then echo "$(RED)These required containers are not running:$(NC)"; _SHOWN=1; fi; \
-				_ST=$$(docker inspect --format '{{.State.Status}}' "$$c" 2>/dev/null); \
+				_ST=$$($(DOCKER) inspect --format '{{.State.Status}}' "$$c" 2>/dev/null); \
 				echo "$(RED)  - $$c (status: $${_ST:-unknown} — run: make services)$(NC)"; \
 				_BAD=1; \
 			fi; \
@@ -703,28 +669,28 @@ start-containers: docker-all ## Alias for docker-all
 
 stop-containers: ## Stop all containers (includes etcd)
 	@echo "$(YELLOW)Stopping all containers...$(NC)"
-	@docker stop redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
+	@$(DOCKER) stop redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
 	@echo "$(GREEN)All containers stopped!$(NC)"
 
 stop-and-clean-volumes: ## Stop containers and clean volumes (includes etcd)
 	@echo "$(YELLOW)Stopping all containers...$(NC)"
-	@docker stop redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
+	@$(DOCKER) stop redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Removing containers...$(NC)"
-	@docker rm redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
+	@$(DOCKER) rm redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Pruning unused volumes...$(NC)"
-	@docker volume prune -f
+	@$(DOCKER) volume prune -f
 	@echo "$(GREEN)Containers stopped and volumes cleaned!$(NC)"
 
 clean-docker: ## Remove containers, prune volumes and images (includes etcd)
 	@echo "$(RED)Cleaning Docker...$(NC)"
 	@echo "$(YELLOW)Stopping all containers...$(NC)"
-	@docker stop redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
+	@$(DOCKER) stop redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Removing containers...$(NC)"
-	@docker rm redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
+	@$(DOCKER) rm redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Pruning unused volumes...$(NC)"
-	@docker volume prune -f
+	@$(DOCKER) volume prune -f
 	@echo "$(YELLOW)Pruning unused images...$(NC)"
-	@docker image prune -f
+	@$(DOCKER) image prune -f
 	@echo "$(GREEN)Docker cleanup complete!$(NC)"
 
 # ==============================================================================
@@ -742,28 +708,28 @@ start-containers-no-etcd: docker-all-no-etcd ## Alias for docker-all-no-etcd
 
 stop-containers-no-etcd: ## Stop all containers except etcd
 	@echo "$(YELLOW)Stopping containers (no etcd)...$(NC)"
-	@docker stop redis qdrant arango mongodb zookeeper kafka 2>/dev/null || true
+	@$(DOCKER) stop redis qdrant arango mongodb zookeeper kafka 2>/dev/null || true
 	@echo "$(GREEN)Containers stopped!$(NC)"
 
 stop-and-clean-volumes-no-etcd: ## Stop containers and clean volumes (no etcd)
 	@echo "$(YELLOW)Stopping containers (no etcd)...$(NC)"
-	@docker stop redis qdrant arango mongodb zookeeper kafka 2>/dev/null || true
+	@$(DOCKER) stop redis qdrant arango mongodb zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Removing containers...$(NC)"
-	@docker rm redis qdrant arango mongodb zookeeper kafka 2>/dev/null || true
+	@$(DOCKER) rm redis qdrant arango mongodb zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Pruning unused volumes...$(NC)"
-	@docker volume prune -f
+	@$(DOCKER) volume prune -f
 	@echo "$(GREEN)Containers stopped and volumes cleaned!$(NC)"
 
 clean-docker-no-etcd: ## Remove containers, prune volumes and images (no etcd)
 	@echo "$(RED)Cleaning Docker (no etcd)...$(NC)"
 	@echo "$(YELLOW)Stopping containers...$(NC)"
-	@docker stop redis qdrant arango mongodb zookeeper kafka 2>/dev/null || true
+	@$(DOCKER) stop redis qdrant arango mongodb zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Removing containers...$(NC)"
-	@docker rm redis qdrant arango mongodb zookeeper kafka 2>/dev/null || true
+	@$(DOCKER) rm redis qdrant arango mongodb zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Pruning unused volumes...$(NC)"
-	@docker volume prune -f
+	@$(DOCKER) volume prune -f
 	@echo "$(YELLOW)Pruning unused images...$(NC)"
-	@docker image prune -f
+	@$(DOCKER) image prune -f
 	@echo "$(GREEN)Docker cleanup complete!$(NC)"
 
 # ==============================================================================
@@ -781,28 +747,28 @@ start-containers-neo4j: docker-all-neo4j ## Alias for docker-all-neo4j
 
 stop-containers-neo4j: ## Stop all containers (Neo4j setup, no etcd)
 	@echo "$(YELLOW)Stopping containers (Neo4j setup)...$(NC)"
-	@docker stop redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
+	@$(DOCKER) stop redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
 	@echo "$(GREEN)Containers stopped!$(NC)"
 
 stop-and-clean-volumes-neo4j: ## Stop containers and clean volumes (Neo4j setup, no etcd)
 	@echo "$(YELLOW)Stopping containers (Neo4j setup)...$(NC)"
-	@docker stop redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
+	@$(DOCKER) stop redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Removing containers...$(NC)"
-	@docker rm redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
+	@$(DOCKER) rm redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Pruning unused volumes...$(NC)"
-	@docker volume prune -f
+	@$(DOCKER) volume prune -f
 	@echo "$(GREEN)Containers stopped and volumes cleaned!$(NC)"
 
 clean-docker-neo4j: ## Remove containers, prune volumes and images (Neo4j setup, no etcd)
 	@echo "$(RED)Cleaning Docker (Neo4j setup)...$(NC)"
 	@echo "$(YELLOW)Stopping containers...$(NC)"
-	@docker stop redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
+	@$(DOCKER) stop redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Removing containers...$(NC)"
-	@docker rm redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
+	@$(DOCKER) rm redis qdrant neo4j mongodb zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Pruning unused volumes...$(NC)"
-	@docker volume prune -f
+	@$(DOCKER) volume prune -f
 	@echo "$(YELLOW)Pruning unused images...$(NC)"
-	@docker image prune -f
+	@$(DOCKER) image prune -f
 	@echo "$(GREEN)Docker cleanup complete!$(NC)"
 
 # ==============================================================================
@@ -988,22 +954,22 @@ clean-all: ## Clean all setups with hard Docker cleanup
 	@echo "$(YELLOW)Removing frontend setup...$(NC)"
 	rm -rf $(ROOT_DIR)/frontend/node_modules
 	@echo "$(YELLOW)Stopping all containers...$(NC)"
-	@docker stop redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
+	@$(DOCKER) stop redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
 	@echo "$(YELLOW)Stopping docker-compose containers...$(NC)"
-	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai down -v 2>/dev/null || true
-	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.prod.yml -p pipeshub-ai down -v 2>/dev/null || true
+	@cd $(ROOT_DIR)/deployment/docker-compose && $(DOCKER) compose -f docker-compose.build.neo4j.yml -p pipeshub-ai down -v 2>/dev/null || true
+	@cd $(ROOT_DIR)/deployment/docker-compose && $(DOCKER) compose -f docker-compose.prod.yml -p pipeshub-ai down -v 2>/dev/null || true
 	@echo "$(YELLOW)Removing all containers...$(NC)"
-	@docker rm redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
-	@docker container prune -f
+	@$(DOCKER) rm redis qdrant etcd-server arango mongodb zookeeper kafka 2>/dev/null || true
+	@$(DOCKER) container prune -f
 	@echo "$(YELLOW)Removing all volumes...$(NC)"
-	@VOLUMES=$$(docker volume ls -q 2>/dev/null); \
+	@VOLUMES=$$($(DOCKER) volume ls -q 2>/dev/null); \
 	if [ ! -z "$$VOLUMES" ]; then \
-		echo "$$VOLUMES" | xargs docker volume rm 2>/dev/null || true; \
+		echo "$$VOLUMES" | xargs $(DOCKER) volume rm 2>/dev/null || true; \
 	fi
 	@echo "$(YELLOW)Pruning unused volumes...$(NC)"
-	@docker volume prune -f
+	@$(DOCKER) volume prune -f
 	@echo "$(YELLOW)Removing all images...$(NC)"
-	@docker image prune -f
+	@$(DOCKER) image prune -f
 	@echo "$(BLUE)Do you want to clean .env files? (y/N)$(NC)"
 	@read -p "> " answer && if [ "$$answer" = "y" ] || [ "$$answer" = "Y" ]; then \
 		rm -f $(ROOT_DIR)/backend/nodejs/apps/.env $(ROOT_DIR)/backend/python/.env $(ROOT_DIR)/frontend/.env; \
@@ -1200,23 +1166,23 @@ dev-docker-up: check-and-kill-ports ## Start development deployment with build
 	@echo "$(BLUE)Injecting build metadata...$(NC)"
 	@cd $(ROOT_DIR)/deployment/docker-compose && \
 		BUILD_COMMIT_ID=$$(git -C $(ROOT_DIR) rev-parse HEAD) \
-		docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai up --build -d
+		$(DOCKER) compose -f docker-compose.build.neo4j.yml -p pipeshub-ai up --build -d
 	@echo "$(GREEN)Development deployment started!$(NC)"
-	@echo "$(YELLOW)View logs with: cd deployment/docker-compose && docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai logs -f$(NC)"
+	@echo "$(YELLOW)View logs with: cd deployment/docker-compose && $(DOCKER) compose -f docker-compose.build.neo4j.yml -p pipeshub-ai logs -f$(NC)"
 
 dev-docker-down: ## Stop and remove development containers
 	@echo "$(YELLOW)Stopping development deployment...$(NC)"
-	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai down
+	@cd $(ROOT_DIR)/deployment/docker-compose && $(DOCKER) compose -f docker-compose.build.neo4j.yml -p pipeshub-ai down
 	@echo "$(GREEN)Development deployment stopped and removed!$(NC)"
 
 dev-docker-stop: ## Stop development containers only
 	@echo "$(YELLOW)Stopping development containers...$(NC)"
-	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai stop
+	@cd $(ROOT_DIR)/deployment/docker-compose && $(DOCKER) compose -f docker-compose.build.neo4j.yml -p pipeshub-ai stop
 	@echo "$(GREEN)Development containers stopped!$(NC)"
 
 dev-docker-clean: ## Stop and remove development containers
 	@echo "$(YELLOW)Stopping and removing development containers...$(NC)"
-	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.build.neo4j.yml-p pipeshub-ai down
+	@cd $(ROOT_DIR)/deployment/docker-compose && $(DOCKER) compose -f docker-compose.build.neo4j.yml-p pipeshub-ai down
 	@echo "$(GREEN)Development containers cleaned!$(NC)"
 
 dev-docker-hard-clean: ## Stop, remove containers and clean volumes
@@ -1226,7 +1192,7 @@ dev-docker-hard-clean: ## Stop, remove containers and clean volumes
 		exit 1; \
 	fi
 	@echo "$(YELLOW)Stopping and removing development containers with volumes...$(NC)"
-	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai down -v
+	@cd $(ROOT_DIR)/deployment/docker-compose && $(DOCKER) compose -f docker-compose.build.neo4j.yml -p pipeshub-ai down -v
 	@echo "$(GREEN)Development deployment and volumes cleaned!$(NC)"
 
 # ==============================================================================
@@ -1262,23 +1228,23 @@ prod-docker-up: check-and-kill-ports ## Start production deployment
 			exit 1; \
 		fi; \
 	fi
-	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
+	@cd $(ROOT_DIR)/deployment/docker-compose && $(DOCKER) compose -f docker-compose.prod.yml -p pipeshub-ai up -d
 	@echo "$(GREEN)Production deployment started!$(NC)"
-	@echo "$(YELLOW)View logs with: cd deployment/docker-compose && docker compose -f docker-compose.prod.yml -p pipeshub-ai logs -f$(NC)"
+	@echo "$(YELLOW)View logs with: cd deployment/docker-compose && $(DOCKER) compose -f docker-compose.prod.yml -p pipeshub-ai logs -f$(NC)"
 
 prod-docker-down: ## Stop and remove production containers
 	@echo "$(YELLOW)Stopping production deployment...$(NC)"
-	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.prod.yml -p pipeshub-ai down
+	@cd $(ROOT_DIR)/deployment/docker-compose && $(DOCKER) compose -f docker-compose.prod.yml -p pipeshub-ai down
 	@echo "$(GREEN)Production deployment stopped and removed!$(NC)"
 
 prod-docker-stop: ## Stop production containers only
 	@echo "$(YELLOW)Stopping production containers...$(NC)"
-	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.prod.yml -p pipeshub-ai stop
+	@cd $(ROOT_DIR)/deployment/docker-compose && $(DOCKER) compose -f docker-compose.prod.yml -p pipeshub-ai stop
 	@echo "$(GREEN)Production containers stopped!$(NC)"
 
 prod-docker-clean: ## Stop and remove production containers
 	@echo "$(YELLOW)Stopping and removing production containers...$(NC)"
-	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.prod.yml -p pipeshub-ai down
+	@cd $(ROOT_DIR)/deployment/docker-compose && $(DOCKER) compose -f docker-compose.prod.yml -p pipeshub-ai down
 	@echo "$(GREEN)Production containers cleaned!$(NC)"
 
 prod-docker-hard-clean: ## Stop, remove containers and clean volumes
@@ -1288,5 +1254,5 @@ prod-docker-hard-clean: ## Stop, remove containers and clean volumes
 		exit 1; \
 	fi
 	@echo "$(YELLOW)Stopping and removing production containers with volumes...$(NC)"
-	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.prod.yml -p pipeshub-ai down -v
+	@cd $(ROOT_DIR)/deployment/docker-compose && $(DOCKER) compose -f docker-compose.prod.yml -p pipeshub-ai down -v
 	@echo "$(GREEN)Production deployment and volumes cleaned!$(NC)"

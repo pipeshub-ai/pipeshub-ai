@@ -49,9 +49,10 @@ services:
       # Key-Value Store Configuration
       - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
 
-      # ETCD config
-      - ETCD_URL=http://etcd:2379
-      - ETCD_HOST=etcd
+      # ETCD config — etcd service was removed; uncomment and add the etcd
+      # service back to docker-compose.build.arango.yml if using KV_STORE_TYPE=etcd
+      # - ETCD_URL=http://etcd:2379
+      # - ETCD_HOST=etcd
       - ETCD_TIMEOUT=${ETCD_TIMEOUT:-5000}
 
       # ArangoDB config
@@ -318,8 +319,6 @@ volumes:
   redis_data:
     driver: local
   arango_data:
-    driver: local
-  etcd_data:
     driver: local
   qdrant_storage:
     driver: local
