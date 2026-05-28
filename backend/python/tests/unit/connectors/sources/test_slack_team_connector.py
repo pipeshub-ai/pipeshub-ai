@@ -5058,6 +5058,23 @@ class TestSlackTeamConnectorCoverageBoost:
             assert await c._fetch_channel_members("Cz") == []
         c.logger.warning.assert_called()
 
+    def test_to_channel_record_group_channel_updated_ms_not_doubled(self):
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        rg = c._to_channel_record_group(
+            {
+                "id": "C0B62PN63RA",
+                "name": "testing-slack-conn",
+                "created": 1779700655,
+                "updated": 1779700655779,
+            },
+        )
+        assert rg is not None
+        assert rg.hide_children is True
+        assert rg.source_created_at == 1779700655000
+        assert rg.source_updated_at == 1779700655779
+
     def test_to_channel_record_group_slackbot_and_mpim_fallback_name(self):
         from app.connectors.sources.slack.team.connector import SlackConnector
 

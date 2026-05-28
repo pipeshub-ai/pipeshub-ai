@@ -18,7 +18,7 @@ import unicodedata
 import uuid
 from collections import defaultdict
 from logging import Logger
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Dict
 
 from fastapi import Request
 from app.config.configuration_service import ConfigurationService
@@ -7359,6 +7359,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 CollectionNames.TICKETS.value,
                 CollectionNames.MEETINGS.value,
                 CollectionNames.LINKS.value,
+                CollectionNames.MESSAGES.value,
                 CollectionNames.PROJECTS.value,
                 CollectionNames.PULLREQUESTS.value,
                 CollectionNames.CODE_FILES.value,
@@ -14259,6 +14260,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         // Single inherit traversal from all seed recordGroups
         LET inherited_items = (
             FOR seed IN seed_rgs
+                FILTER seed.hideChildren != true
                 FOR inherited_node, edge IN 1..@inherit_max_depth INBOUND seed._id inheritPermissions
                     PRUNE inherited_node.orgId != @org_id
                     OPTIONS {{ bfs: true, uniqueVertices: "global" }}
@@ -16099,7 +16101,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET u = DOCUMENT("users", @user_key)
         FILTER u != null
 
-        LET child_rgs = rg.isInternal == true ? [] : (
+        LET child_rgs = (rg.isInternal == true OR rg.hideChildren == true) ? [] : (
             FOR edge IN belongsTo
                 FILTER edge._to == rg._id AND STARTS_WITH(edge._from, "recordGroups/")
                 LET node = DOCUMENT(edge._from)
@@ -16192,7 +16194,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET u = DOCUMENT("users", @user_key)
         FILTER u != null
 
-        LET direct_records = rg.isInternal == true ? [] : (
+        LET direct_records = (rg.isInternal == true OR rg.hideChildren == true) ? [] : (
             FOR edge IN belongsTo
                 FILTER edge._to == @rg_doc_id AND STARTS_WITH(edge._from, "records/")
                 LET record = DOCUMENT(edge._from)

@@ -191,6 +191,33 @@ qna_prompt_instructions_1 = """
     - If the tool returns `ok: false`, the record is not a Slack thread — do not retry, just answer from the blocks you already have.
     - Returned records share the same Record ID / Citation ID conventions as the records in the original context, so cite them the same way.
   </tool>
+
+  <tool>
+    You also have access to a tool called "fetch_slack_nearby_messages" that fetches live Slack channel messages via the Slack API: messages immediately before (`before`) or after (`after`) an ISO anchor timestamp, inclusive of the anchor timestamp. Use `limit` (default 5, max 50). To page further in the same direction, call again with `timestamp` set to `new_anchor_iso_timestamp` from the prior response.
+
+    **When to use fetch_slack_nearby_messages:**
+    - Use the tool when additional channel context is required to accurately handle the conversation.
+    - Use the tool when the available context is incomplete or insufficient to answer the user's query.
+
+    **When NOT to use:**
+    - The user wants the full thread or thread replies — use `fetch_slack_thread` instead.
+    - The provided blocks already contain enough nearby context.
+
+    **How to use:**
+    - timestamp: ISO-8601 anchor time. For indexed Slack records use `Start Message ID` / `End Message ID` from context (`before` → start, `after` → end).
+    - timezone: IANA timezone (e.g. `UTC`, `America/New_York`) only when timestamp has no offset.
+    - direction: `before` or `after`. Call twice if you need both directions.
+    - channel_id: Slack channel id from the record's external group metadata (SLACK_CHANNEL records only).
+    - connector_id: Connector ID from the indexed Slack record metadata (Message Details).
+    - limit: How many messages to fetch (default 5, max 50).
+    - reason: Brief explanation of why nearby context is needed.
+
+    **CRITICAL RULES:**
+    - Pass `connector_id` exactly as shown in the indexed Slack record metadata (Connector ID).
+    - Results come from Slack live API (`source: slack_api`); they do not have Citation IDs — summarize them in prose, do not cite as indexed records.
+    - Each returned message includes `timestamp` / `iso_timestamp` in UTC.
+    - One direction per call; use a second call with the other direction only when both windows are needed.
+  </tool>
 {% endif %}
 </tools>
 

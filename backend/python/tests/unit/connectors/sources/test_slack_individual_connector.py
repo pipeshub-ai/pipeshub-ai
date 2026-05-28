@@ -26,6 +26,7 @@ from app.connectors.core.registry.filters import (
     MultiselectOperator,
     SyncFilterKey,
 )
+from app.connectors.sources.slack.individual.connector import _numeric_epoch_to_ms
 from app.models.blocks import ChildRecord, ChildType
 from app.models.entities import FileRecord, MessageRecord, Record, RecordGroup, RecordType
 
@@ -594,6 +595,7 @@ class TestChannelHelpers:
             {"id": "C1", "name": "general", "topic": {"value": "t"}, "created": "100.0"}
         )
         assert rg is not None
+        assert rg.hide_children is True
 
         rg2 = c._to_channel_record_group(
             {"id": "D1", "is_im": True, "user": "USLACKBOT"}
@@ -2191,3 +2193,23 @@ class TestSlackIndividualThreadScan:
         ):
             await c2._sync_thread_growth()
         c2.logger.error.assert_called()
+
+
+class TestNumericEpochToMs:
+    """Slack channel created/updated timestamp normalization."""
+
+    def test_seconds_to_ms(self) -> None:
+        assert _numeric_epoch_to_ms(1779700655) == 1779700655000
+
+    def test_milliseconds_unchanged(self) -> None:
+        assert _numeric_epoch_to_ms(1779700655779) == 1779700655779
+
+    def test_slack_channel_pair(self) -> None:
+        created_ms = _numeric_epoch_to_ms(1779700655)
+        updated_ms = _numeric_epoch_to_ms(1779700655779)
+        assert created_ms == 1779700655000
+        assert updated_ms == 1779700655779
+        assert updated_ms > created_ms
+
+    def test_none(self) -> None:
+        assert _numeric_epoch_to_ms(None) is None

@@ -54,6 +54,7 @@ from app.utils.chat_helpers import (
 )
 from app.utils.fetch_full_record import create_fetch_full_record_tool
 from app.utils.execute_query import create_execute_query_tool, has_sql_connector_configured
+from app.utils.fetch_slack_nearby_messages import create_fetch_slack_nearby_messages_tool
 from app.utils.fetch_slack_thread import (
     create_fetch_slack_thread_tool,
     has_slack_connector_configured,
@@ -880,6 +881,9 @@ async def _generate_internal_search_stream(
                         blob_store=blob_store,
                         config_service=config_service,
                     ))
+                    deferred_tools.append(create_fetch_slack_nearby_messages_tool(
+                        config_service=config_service,
+                    ))
                 
 
                 tool_runtime_kwargs = {
@@ -939,6 +943,9 @@ async def _generate_internal_search_stream(
                         org_id=org_id,
                         graph_provider=graph_provider,
                         blob_store=blob_store,
+                        config_service=config_service,
+                    ))
+                    tools.append(create_fetch_slack_nearby_messages_tool(
                         config_service=config_service,
                     ))
                 messages, ref_mapper = await _build_chat_llm_messages(

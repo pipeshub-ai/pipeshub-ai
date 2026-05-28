@@ -1,6 +1,7 @@
 """Tests for entities module: Record, TicketRecord, ProjectRecord, FileRecord, MailRecord, LinkRecord, ProductRecord, DealRecord."""
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -3369,6 +3370,11 @@ def _make_msg(**overrides) -> MessageRecord:
     return MessageRecord(**_msg_base_args(**overrides))
 
 
+def _slack_ts_iso(ts: str) -> str:
+    dt = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
+
+
 class TestParseJsonField:
     """_parse_json_field module-level helper."""
 
@@ -3627,6 +3633,30 @@ class TestMessageRecordToLlmContext:
         assert "report.pdf" in _make_msg(
             attachments_metadata=[{"record_id": "r1", "name": "report.pdf"}]
         ).to_llm_context()
+
+    def test_start_and_end_message_ids_in_iso(self):
+        start_ts = "1700000000.000000"
+        end_ts = "1700000060.000000"
+        ctx = _make_msg(start_ts=start_ts, end_ts=end_ts).to_llm_context()
+        assert f"* Start Message ID: {_slack_ts_iso(start_ts)}" in ctx
+        assert f"* End Message ID: {_slack_ts_iso(end_ts)}" in ctx
+
+    def test_start_message_id_only(self):
+        start_ts = "1620000000.000100"
+        ctx = _make_msg(start_ts=start_ts).to_llm_context()
+        assert f"* Start Message ID: {_slack_ts_iso(start_ts)}" in ctx
+        assert "End Message ID" not in ctx
+
+    def test_end_message_id_only(self):
+        end_ts = "1620000300.000000"
+        ctx = _make_msg(end_ts=end_ts).to_llm_context()
+        assert f"* End Message ID: {_slack_ts_iso(end_ts)}" in ctx
+        assert "Start Message ID" not in ctx
+
+    def test_omits_message_ids_without_timestamps(self):
+        ctx = _make_msg().to_llm_context()
+        assert "Start Message ID" not in ctx
+        assert "End Message ID" not in ctx
 
     def test_no_optional_fields_no_crash(self):
         assert isinstance(_make_msg().to_llm_context(), str)
