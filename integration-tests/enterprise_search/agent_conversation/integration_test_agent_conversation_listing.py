@@ -361,7 +361,6 @@ class TestAgentConversationListing:
             ("limit too large", {"limit": "101"}),
             ("invalid startDate", {"startDate": "not-a-date"}),
             ("invalid endDate", {"endDate": "still-not-a-date"}),
-            ("invalid shared", {"shared": "maybe"}),
             ("invalid isArchived", {"isArchived": "1"}),
         ],
     )

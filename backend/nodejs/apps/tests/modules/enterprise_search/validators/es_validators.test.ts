@@ -27,6 +27,7 @@ import {
   agentAttachmentUploadSchema,
   agentAttachmentRecordIdParamsSchema,
   createAgentSchema,
+  listAgentsQuerySchema,
 } from '../../../../src/modules/enterprise_search/validators/es_validators'
 
 describe('enterprise_search/validators/es_validators', () => {
@@ -224,6 +225,40 @@ describe('enterprise_search/validators/es_validators', () => {
       }
       const result = conversationShareParamsSchema.safeParse(data)
       expect(result.success).to.be.false
+    })
+  })
+
+  describe('listAgentsQuerySchema', () => {
+    it('should apply documented defaults for omitted sort params', () => {
+      const result = listAgentsQuerySchema.safeParse({ query: {} })
+      expect(result.success).to.be.true
+      expect(result.data?.query).to.deep.equal({
+        page: 1,
+        limit: 20,
+        sort_by: 'updatedAtTimestamp',
+        sort_order: 'desc',
+      })
+    })
+
+    it('should accept and preserve all supported query params', () => {
+      const result = listAgentsQuerySchema.safeParse({
+        query: {
+          page: '2',
+          limit: '50',
+          search: ' roadmap ',
+          sort_by: ' createdAtTimestamp ',
+          sort_order: 'asc',
+        },
+      })
+
+      expect(result.success).to.be.true
+      expect(result.data?.query).to.deep.equal({
+        page: 2,
+        limit: 50,
+        search: 'roadmap',
+        sort_by: 'createdAtTimestamp',
+        sort_order: 'asc',
+      })
     })
   })
 

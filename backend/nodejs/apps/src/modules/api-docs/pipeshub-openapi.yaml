@@ -23988,7 +23988,7 @@ paths:
             type: string
             minLength: 1
             maxLength: 1000
-          description: Case-insensitive search across agent name, description, and tags.
+          description: Case-insensitive search across agent name, description, and tags. Leading/trailing whitespace is trimmed; blank-after-trim values are rejected.
         - in: query
           name: sort_by
           required: false
@@ -23997,7 +23997,7 @@ paths:
             minLength: 1
             maxLength: 100
             default: updatedAtTimestamp
-          description: Backend sort field. Common value is `updatedAtTimestamp`.
+          description: Backend sort field. Leading/trailing whitespace is trimmed. Common value is `updatedAtTimestamp`.
         - in: query
           name: sort_order
           required: false

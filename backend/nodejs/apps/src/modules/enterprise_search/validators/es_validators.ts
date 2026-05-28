@@ -417,8 +417,8 @@ export const listAgentsQuerySchema = z.object({
     page: pageSchema,
     limit: agentListLimitSchema,
     search: z.string().trim().min(1).max(1000).optional(),
-    sort_by: z.string().trim().min(1).max(100).optional(),
-    sort_order: z.enum(['asc', 'desc']).optional(),
+    sort_by: z.string().trim().min(1).max(100).optional().default('updatedAtTimestamp'),
+    sort_order: z.enum(['asc', 'desc']).optional().default('desc'),
   }),
 });
 
