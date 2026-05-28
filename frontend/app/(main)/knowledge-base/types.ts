@@ -104,6 +104,15 @@ export interface UploadFilePayload {
 // ============================================================================
 
 export type NodeType = 'kb' | 'app' | 'recordGroup' | 'folder' | 'record';
+
+/** Sidebar folder-tree reindex callback (id + type from the row that was clicked). */
+export type SidebarReindexHandler = (
+  nodeId: string,
+  nodeType: NodeType,
+  name: string,
+  statusFilters?: IndexingStatus[]
+) => void;
+
 export type NodeOrigin = 'COLLECTION' | 'CONNECTOR';
 export type PermissionRole = 'OWNER' | 'READER' | 'WRITER';
 export type RecordType = 'FILE' | 'WEBPAGE' | 'MESSAGE' | 'EMAIL' | 'TICKET';

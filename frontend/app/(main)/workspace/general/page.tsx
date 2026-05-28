@@ -528,7 +528,6 @@ export default function GeneralPage() {
                   t('workspace.general.dataCollectionReason3'),
                   t('workspace.general.dataCollectionReason4'),
                   t('workspace.general.dataCollectionReason5'),
-                  t('workspace.general.dataCollectionReason6'),
                 ].map((item) => (
                   <Flex key={item} align="start" gap="2">
                     <Box

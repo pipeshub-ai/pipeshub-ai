@@ -574,7 +574,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 session = await self.http_client._get_session()
                 async with session.put(url, json=payload) as resp:
                     if resp.status in (200, 201, 202):
-                        self.logger.info(
+                        self.logger.debug(
                             "Updated edge definition '%s': to=%s", edge_col, merged_to,
                         )
                     else:
@@ -1036,6 +1036,72 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to get user connector instances: {e}")
             return []
 
+    async def _get_user_accessible_team_app_keys(
+        self,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return the ``_key`` list of team-scoped apps this user may access.
+
+        Covers two access paths:
+
+        1. **Direct userAppRelation edge** — ``(users/{key}) -[userAppRelation]→ (apps/{key})``
+           where ``app.scope == 'team'``.  Handles connectors explicitly shared
+           with a specific user.
+
+        2. **Team-based edge** — ``(users/{key}) -[permission {type:'USER'}]→
+           (teams/{key}) -[userAppRelation]→ (apps/{key})``.
+           Handles the standard org-wide pattern:
+           * ``ensure_all_team_with_users`` creates the user→team ``permission``
+             edge (``type='USER'``).
+           * ``ensure_team_app_edge`` creates the ``teams/all_{org_id} →
+             userAppRelation → apps/{connector_id}`` edge when a team-scope
+             connector is configured.
+
+        Args:
+            user_id: External userId value (as stored in ``user.userId``), NOT
+                     the ArangoDB ``_key``.  The query resolves the ``_key``
+                     internally.
+            transaction: Optional ArangoDB transaction ID.
+
+        Returns:
+            List of app ``_key`` strings the user can access (empty list when
+            the user has no accessible team connectors).  Any DB error is
+            propagated to the caller so it is never silently swallowed.
+        """
+        query = f"""
+        LET user_doc = FIRST(
+            FOR u IN {CollectionNames.USERS.value}
+                FILTER u.userId == @user_id
+                LIMIT 1
+                RETURN u
+        )
+        FILTER user_doc != null
+        LET user_from = CONCAT("{CollectionNames.USERS.value}/", user_doc._key)
+        LET direct_keys = (
+            FOR app IN OUTBOUND user_from {CollectionNames.USER_APP_RELATION.value}
+                FILTER app.scope == @team_scope
+                RETURN app._key
+        )
+        LET team_keys = (
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._from == user_from
+                FILTER perm.type == "USER"
+                FILTER STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
+                FOR app IN OUTBOUND perm._to {CollectionNames.USER_APP_RELATION.value}
+                    FILTER app.scope == @team_scope
+                    RETURN app._key
+        )
+        FOR key IN UNION_DISTINCT(direct_keys, team_keys)
+            RETURN key
+        """
+        results = await self.execute_query(
+            query,
+            bind_vars={"user_id": user_id, "team_scope": "team"},
+            transaction=transaction,
+        )
+        return results or []
+
     async def get_filtered_connector_instances(
         self,
         collection: str,
@@ -1050,10 +1116,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
         exclude_kb: bool = True,
         kb_connector_type: str | None = None,
         is_admin: bool = False,
+        is_authenticated: bool | None = None,
+        is_active: bool | None = None,
+        connector_type_filter: str | None = None,
         transaction: str | None = None,
-    ) -> tuple[list[dict], int, dict[str, int]]:
-        """Get filtered connector instances with pagination and scope counts."""
+    ) -> tuple[list[dict], int]:
+        """Get filtered connector instances with pagination."""
         try:
+            # For non-admin team scope we pre-compute which team apps the user
+            # can actually see.  This is done once here so the same list can be
+            # reused for both the main query and the scope-count sub-query.
+            accessible_team_keys: list[str] | None = None
+
             # Build base query
             query = """
             FOR doc IN @@collection
@@ -1069,65 +1143,56 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars["kb_connector_type"] = kb_connector_type
 
             # Scope filter
+            # personal → only the caller's own personal connectors
+            # team (admin)     → all team-scoped connectors in the org
+            # team (non-admin) → only team connectors reachable via the user's
+            #                    userAppRelation / permission edges
             if scope == "personal":
-                query += " FILTER doc.scope == @scope\n"
-                query += " FILTER (doc.createdBy == @user_id)\n"
-                bind_vars["scope"] = scope
+                query += " FILTER doc.scope == @personal_scope\n"
+                query += " FILTER doc.createdBy == @user_id\n"
+                bind_vars["personal_scope"] = "personal"
                 bind_vars["user_id"] = user_id
             elif scope == "team":
-                query += " FILTER (doc.scope == @team_scope) OR (doc.createdBy == @user_id)\n"
+                query += " FILTER doc.scope == @team_scope\n"
                 bind_vars["team_scope"] = "team"
-                bind_vars["user_id"] = user_id
+                if not is_admin:
+                    accessible_team_keys = await self._get_user_accessible_team_app_keys(
+                        user_id, transaction
+                    )
+                    if not accessible_team_keys:
+                        self.logger.info(
+                            "No accessible team app keys found for user %s — "
+                            "edge data may be inconsistent (ensure_team_app_edge / "
+                            "ensure_all_team_with_users not yet run for this org).",
+                            user_id,
+                        )
+                    query += " FILTER doc._key IN @accessible_team_keys\n"
+                    bind_vars["accessible_team_keys"] = accessible_team_keys
 
             # Search filter
             if search:
                 query += " FILTER (LOWER(doc.name) LIKE @search) OR (LOWER(doc.type) LIKE @search) OR (LOWER(doc.appGroup) LIKE @search)\n"
                 bind_vars["search"] = f"%{search.lower()}%"
 
+            # is_authenticated filter
+            if is_authenticated is not None:
+                query += " FILTER doc.isAuthenticated == @is_authenticated\n"
+                bind_vars["is_authenticated"] = is_authenticated
+
+            # is_active filter
+            if is_active is not None:
+                query += " FILTER doc.isActive == @is_active\n"
+                bind_vars["is_active"] = is_active
+
+            # connector type filter
+            if connector_type_filter:
+                query += " FILTER doc.type == @connector_type_filter\n"
+                bind_vars["connector_type_filter"] = connector_type_filter
+
             # Count query
             count_query = query + " COLLECT WITH COUNT INTO total RETURN total"
             count_result = await self.execute_query(count_query, bind_vars=bind_vars, transaction=transaction)
             total_count = count_result[0] if count_result else 0
-
-            # Scope counts (personal and team)
-            scope_counts = {"personal": 0, "team": 0}
-
-            # Personal count
-            personal_count_query = """
-            FOR doc IN @@collection
-                FILTER doc._id != null
-                FILTER doc.scope == @personal_scope
-                FILTER doc.createdBy == @user_id
-                FILTER doc.isConfigured == true
-                COLLECT WITH COUNT INTO total
-                RETURN total
-            """
-            personal_bind_vars = {
-                "@collection": collection,
-                "personal_scope": "personal",
-                "user_id": user_id,
-            }
-            personal_result = await self.execute_query(personal_count_query, bind_vars=personal_bind_vars, transaction=transaction)
-            scope_counts["personal"] = personal_result[0] if personal_result else 0
-
-            # Team count (if admin or has team access)
-            if is_admin or scope == "team":
-                team_count_query = """
-                FOR doc IN @@collection
-                    FILTER doc._id != null
-                    FILTER doc.type != @kb_connector_type
-                    FILTER doc.scope == @team_scope
-                    FILTER doc.isConfigured == true
-                    COLLECT WITH COUNT INTO total
-                    RETURN total
-                """
-                team_bind_vars = {
-                    "@collection": collection,
-                    "kb_connector_type": kb_connector_type or "",
-                    "team_scope": "team",
-                }
-                team_result = await self.execute_query(team_count_query, bind_vars=team_bind_vars, transaction=transaction)
-                scope_counts["team"] = team_result[0] if team_result else 0
 
             # Main query with pagination
             query += " LIMIT @skip, @limit\n RETURN doc"
@@ -1136,11 +1201,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             documents = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction) or []
 
-            return documents, total_count, scope_counts
+            return documents, total_count
 
         except Exception as e:
             self.logger.error(f"Failed to get filtered connector instances: {e}")
-            return [], 0, {"personal": 0, "team": 0}
+            return [], 0
 
     async def reindex_record_group_records(
         self,
@@ -1518,6 +1583,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         request: Optional[Request] = None,
         depth: int = 0,
+        status_filters: list[str] | None = None,
     ) -> dict:
         """
         Reindex a single record with permission checks and event publishing.
@@ -1593,7 +1659,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             else:
                 return {"success": False, "code": 400, "reason": f"Unsupported record origin: {origin}"}
 
-            await self.reset_indexing_status_to_queued_for_record_ids([record_id])
 
             # Create event data for router to publish
             try:
@@ -1609,8 +1674,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         "depth": depth,
                         "connectorId": connector_id,
                         "connector": connector_for_event,
-                        "userKey": user_key
+                        "userKey": user_key,
                     }
+                    if status_filters:
+                        payload["statusFilters"] = status_filters
 
                     event_data = {
                         "eventType": event_type,
@@ -1629,6 +1696,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         "topic": "record-events",
                         "payload": payload
                     }
+                    await self.reset_indexing_status_to_queued_for_record_ids([record_id])
                 else:
                     # For connector records, use sync-events with connector reindex event
                     connector_for_event = connector_name.replace(" ", "").lower() if connector_name else "unknown"
@@ -1640,8 +1708,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         "depth": depth,
                         "connectorId": connector_id,
                         "connector": connector_for_event,  # Add connector field for consumer fallback
-                        "userKey": user_key
+                        "userKey": user_key,
                     }
+                    if status_filters:
+                        payload["statusFilters"] = status_filters
 
                     event_data = {
                         "eventType": event_type,
@@ -1788,7 +1858,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not edges:
                 return True
 
-            self.logger.info(f"🚀 Batch creating edges: {collection}")
+            self.logger.debug(f"🚀 Batch creating edges: {collection}")
 
             # Translate edges from generic format to ArangoDB format
             arango_edges = self._translate_edges_to_arango(edges)
@@ -1809,7 +1879,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 txn_id=transaction
             )
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Successfully created {len(results)} edges in collection '{collection}'."
             )
             return True
@@ -1841,7 +1911,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not edges:
                 return True
 
-            self.logger.info("🚀 Batch creating entity relation edges")
+            self.logger.debug("🚀 Batch creating entity relation edges")
 
             # Translate edges from generic format to ArangoDB format
             arango_edges = self._translate_edges_to_arango(edges)
@@ -1866,7 +1936,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 txn_id=transaction
             )
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Successfully created {len(results)} entity relation edges."
             )
             return True
@@ -1899,7 +1969,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not edges:
                 return True
 
-            self.logger.info("🚀 Batch upserting record relation edges")
+            self.logger.debug("🚀 Batch upserting record relation edges")
 
             arango_edges = self._translate_edges_to_arango(edges)
 
@@ -1922,7 +1992,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 txn_id=transaction
             )
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Successfully upserted {len(results)} record relation edges."
             )
             return True
@@ -2191,7 +2261,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> int:
         """Delete all edges connected to a node (both incoming and outgoing)"""
         try:
-            self.logger.info(f"🚀 Deleting all edges for node: {node_key} in collection: {collection}")
+            self.logger.debug(f"🚀 Deleting all edges for node: {node_key} in collection: {collection}")
 
             # Ensure node_key is in full ID format (collection/key)
             if "/" not in node_key:
@@ -2216,7 +2286,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             count = len(results) if results else 0
 
             if count > 0:
-                self.logger.info(f"✅ Successfully deleted {count} edges for node: {node_key}")
+                self.logger.debug(f"✅ Successfully deleted {count} edges for node: {node_key}")
             else:
                 self.logger.warning(f"⚠️ No edges found for node: {node_key}")
 
@@ -2278,7 +2348,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 f"⚠️ Failed to delete edges from {len(failed_collections)} collections: {failed_collections}"
             )
         else:
-            self.logger.info(f"✅ Deleted {total_deleted} total edges across all collections")
+            self.logger.debug(f"✅ Deleted {total_deleted} total edges across all collections")
 
         return (total_deleted, failed_collections)
 
@@ -3024,7 +3094,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Returns properly typed Record instances (FileRecord, MailRecord, etc.)
         """
         try:
-            self.logger.info(f"Retrieving records for connector {connector_id} with status filters: {status_filters}, limit: {limit}, offset: {offset}")
+            self.logger.debug(f"Retrieving records for connector {connector_id} with status filters: {status_filters}, limit: {limit}, offset: {offset}")
 
             limit_clause = "LIMIT @offset, @limit" if limit else ""
 
@@ -3106,7 +3176,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 )
                 typed_records.append(record)
 
-            self.logger.info(f"✅ Successfully retrieved {len(typed_records)} typed records for connector {connector_id}")
+            self.logger.debug(f"✅ Successfully retrieved {len(typed_records)} typed records for connector {connector_id}")
             return typed_records
 
         except Exception as e:
@@ -3122,7 +3192,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         user_key: str | None = None,
         limit: int | None = None,
         offset: int = 0,
-        transaction: str | None = None
+        transaction: str | None = None,
+        status_filters: list[str] | None = None,
     ) -> list[Record]:
         """
         Get all records belonging to a record group up to a specified depth.
@@ -3146,10 +3217,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             when they match connectorId/org/permission constraints.
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"Retrieving records for record group {record_group_id}, "
                 f"connector {connector_id}, org {org_id}, depth {depth}, "
-                f"user_key: {user_key}, limit: {limit}, offset: {offset}"
+                f"user_key: {user_key}, limit: {limit}, offset: {offset}, "
+                f"status_filters: {status_filters}"
             )
 
             # Validate depth - must be >= -1
@@ -3161,6 +3233,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Determine max traversal depth (use 100 as practical unlimited)
             # For depth=0, we set max_depth=0 so nested groups traversal returns nothing
             max_depth = 100 if depth == -1 else (0 if depth < 0 else depth)
+
+            status_filter_aql = ""
+            if status_filters:
+                status_filter_aql = "FILTER rec.indexingStatus IN @status_filters"
 
             # Handle limit/offset for pagination
             # Note: ArangoDB LIMIT syntax requires both offset and count: LIMIT offset, count
@@ -3185,6 +3261,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "org_id": org_id,
                 "max_depth": max_depth,
             }
+            if status_filters:
+                bind_vars["status_filters"] = status_filters
 
             # Match Neo4j: MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
             # WHERE typeDoc.isFile = true OR NOT typeDoc:File
@@ -3294,6 +3372,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER rec.connectorId == @connector_id
                             FILTER rec.isDeleted != true
                             FILTER rec.orgId == @org_id OR rec.orgId == null
+                            {status_filter_aql}
                             RETURN rec
                     )
                         {record_permission_filter}
@@ -3343,7 +3422,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 )
                 typed_records.append(record)
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Successfully retrieved {len(typed_records)} typed records "
                 f"for record group {record_group_id}, connector {connector_id}"
             )
@@ -3365,7 +3444,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         user_key: str | None = None,
         limit: int | None = None,
         offset: int = 0,
-        transaction: str | None = None
+        transaction: str | None = None,
+        status_filters: list[str] | None = None,
     ) -> list[Record]:
         """
         Get all child records of a parent record (folder) up to a specified depth.
@@ -3386,10 +3466,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             List[Record]: List of properly typed Record instances
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"Retrieving child records for parent {parent_record_id}, "
                 f"connector {connector_id}, org {org_id}, depth {depth}, "
-                f"user_key: {user_key}, limit: {limit}, offset: {offset}"
+                f"user_key: {user_key}, limit: {limit}, offset: {offset}, "
+                f"status_filters: {status_filters}"
             )
 
             # Validate depth - must be >= -1
@@ -3410,12 +3491,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Determine max traversal depth (use 100 as practical unlimited)
             max_depth = 100 if depth == -1 else depth
 
+            status_filter_aql = ""
+            if status_filters:
+                status_filter_aql = "FILTER v.indexingStatus IN @status_filters"
+
             bind_vars = {
                 "record_id": f"{CollectionNames.RECORDS.value}/{parent_record_id}",
                 "max_depth": max_depth,
                 "connector_id": connector_id,
                 "org_id": org_id,
             }
+            if status_filters:
+                bind_vars["status_filters"] = status_filters
 
             if limit is not None:
                 bind_vars["limit"] = limit
@@ -3453,6 +3540,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER v.connectorId == @connector_id
                 FILTER v.orgId == @org_id OR v.orgId == null
                 FILTER v.isDeleted != true
+                {status_filter_aql}
 
                 LET typedRecord = FIRST(
                     FOR rec IN 1..1 OUTBOUND v {CollectionNames.IS_OF_TYPE.value}
@@ -3487,7 +3575,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 )
                 typed_records.append(record)
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Successfully retrieved {len(typed_records)} typed records "
                 f"for parent record {parent_record_id} with depth {depth}"
             )
@@ -3678,7 +3766,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             Optional[Record]: TicketRecord if found, None otherwise
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 "🚀 Retrieving record for Jira issue key %s %s", connector_id, issue_key
             )
 
@@ -3709,7 +3797,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 record_dict = result.get("record")
                 ticket_doc = result.get("ticket")
 
-                self.logger.info(
+                self.logger.debug(
                     "✅ Successfully retrieved record for Jira issue key %s %s", connector_id, issue_key
                 )
 
@@ -3746,7 +3834,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             Optional[Record]: First non-LinkRecord found, None otherwise
         """
         try:
-            self.logger.info("🚀 Retrieving record by weburl: %s", weburl)
+            self.logger.debug("🚀 Retrieving record by weburl: %s", weburl)
 
             # Get all records with this weburl (not just one)
             query = f"""
@@ -3773,7 +3861,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         continue
 
                     # Return first non-LinkRecord found
-                    self.logger.info("✅ Successfully retrieved record by weburl: %s", weburl)
+                    self.logger.debug("✅ Successfully retrieved record by weburl: %s", weburl)
                     return Record.from_arango_base_record(record_data)
 
                 # All records were LinkRecords
@@ -3987,7 +4075,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             User object if found, None otherwise
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Retrieving user by source_id {source_user_id} for connector {connector_id}"
             )
 
@@ -4019,7 +4107,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             if results:
-                self.logger.info(f"✅ Successfully retrieved user by source_id {source_user_id}")
+                self.logger.debug(f"✅ Successfully retrieved user by source_id {source_user_id}")
                 user_data = self._translate_node_from_arango(results[0])
                 return User.from_arango_user(user_data)
             else:
@@ -4125,7 +4213,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             List[Dict]: List of user documents with their details
         """
         try:
-            self.logger.info("🚀 Fetching all users from database")
+            self.logger.debug("🚀 Fetching all users from database")
 
             query = f"""
                 FOR edge IN {CollectionNames.BELONGS_TO.value}
@@ -4142,7 +4230,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars={"org_id": org_id, "active": active}
             )
 
-            self.logger.info(f"✅ Successfully fetched {len(results)} users")
+            self.logger.debug(f"✅ Successfully fetched {len(results)} users")
             return results if results else []
 
         except Exception as e:
@@ -4167,7 +4255,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             AppUser object if found, None otherwise
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Retrieving user for email {email} and app {connector_id}"
             )
 
@@ -4210,7 +4298,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             if results and results[0]:
-                self.logger.info(f"✅ Successfully retrieved user for email {email} and app {connector_id}")
+                self.logger.debug(f"✅ Successfully retrieved user for email {email} and app {connector_id}")
                 user_data = self._translate_node_from_arango(results[0])
                 return AppUser.from_arango_user(user_data)
             else:
@@ -4238,7 +4326,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             List[Dict]: List of user documents with their details and sourceUserId
         """
         try:
-            self.logger.info(f"🚀 Fetching users connected to {connector_id} app")
+            self.logger.debug(f"🚀 Fetching users connected to {connector_id} app")
 
             query = f"""
                 // First find the app
@@ -4279,7 +4367,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }
             )
 
-            self.logger.info(f"✅ Successfully fetched {len(results)} users for {connector_id}")
+            self.logger.debug(f"✅ Successfully fetched {len(results)} users for {connector_id}")
             return results if results else []
 
         except Exception as e:
@@ -4342,7 +4430,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             List[AppUserGroup]: List of user group entities
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Retrieving user groups for connector {connector_id} and org {org_id}"
             )
 
@@ -4361,7 +4449,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             groupData = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
             groups = [AppUserGroup.from_arango_base_user_group(self._translate_node_from_arango(group_data_item)) for group_data_item in groupData]
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Successfully retrieved {len(groups)} user groups for connector {connector_id}"
             )
             return groups
@@ -4544,7 +4632,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     transaction=transaction
                 )
 
-            self.logger.info("✅ Successfully upserted records")
+            self.logger.debug("✅ Successfully upserted records")
             return True
 
         except Exception as e:
@@ -4711,7 +4799,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             List[Dict]: List of all documents in the collection
         """
         try:
-            self.logger.info(f"🚀 Getting all documents from collection: {collection}")
+            self.logger.debug(f"🚀 Getting all documents from collection: {collection}")
             query = """
             FOR doc IN @@collection
                 RETURN doc
@@ -4887,7 +4975,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             int: Number of records updated
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🔍 Finding QUEUED duplicate records for record {record_id}"
             )
 
@@ -4909,7 +4997,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 with contextlib.suppress(IndexError, StopIteration):
                     ref_record = results[0]
             if not ref_record:
-                self.logger.info(f"No record found for {record_id}, skipping queued duplicate update")
+                self.logger.debug(f"No record found for {record_id}, skipping queued duplicate update")
                 return 0
 
             md5_checksum = ref_record.get("md5Checksum")
@@ -4952,7 +5040,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             queued_records = list(results) if results else []
 
             if not queued_records:
-                self.logger.info("✅ No QUEUED duplicate records found")
+                self.logger.debug("✅ No QUEUED duplicate records found")
                 return 0
 
             self.logger.info(
@@ -4989,7 +5077,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Batch update all queued records
             await self.batch_upsert_nodes(updated_records, CollectionNames.RECORDS.value, transaction)
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Successfully updated {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
             )
 
@@ -5178,7 +5266,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not file_key:
                 raise ValueError("File ID is required")
 
-            self.logger.info(f"🚀 Getting parents for record {file_key}")
+            self.logger.debug(f"🚀 Getting parents for record {file_key}")
 
             query = f"""
             LET relations = (
@@ -5454,7 +5542,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "updatedAtTimestamp": ts,
                 }
                 await self.batch_upsert_nodes([team_node], CollectionNames.TEAMS.value)
-                self.logger.info(f"Created 'All' team for org {org_id}")
+                self.logger.debug(f"Created 'All' team for org {org_id}")
 
             # 2. Get all active users sorted by createdAtTimestamp ascending
             users = await self.get_users(org_id, active=True)
@@ -5463,16 +5551,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return
 
             users_sorted = sorted(users, key=lambda u: u.get("createdAtTimestamp", 0))
-            self.logger.info(f"📊 Found {len(users_sorted)} active users for org {org_id}")
+            self.logger.debug(f"📊 Found {len(users_sorted)} active users for org {org_id}")
 
             # 3. Get current team members to determine if team is empty
             team_with_users = await self.get_team_with_users(team_id=team_key, user_key=None)
             existing_member_count = len((team_with_users or {}).get("members", []))
             owner_assigned = existing_member_count > 0
 
-            self.logger.info(f"📊 All team for org {org_id}: existing_member_count={existing_member_count}, owner_assigned={owner_assigned}")
+            self.logger.debug(f"📊 All team for org {org_id}: existing_member_count={existing_member_count}, owner_assigned={owner_assigned}")
             if team_with_users and team_with_users.get("members"):
-                self.logger.info(
+                self.logger.debug(
                     "📊 Existing members: %s",
                     [
                         f"{m.get('userEmail') or '?'}:{m.get('role') or '?'}"
@@ -5497,7 +5585,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     continue
 
                 role = "OWNER" if not owner_assigned else "READER"
-                self.logger.info(f"📊 Assigning role {role} to user {user_key} (owner_assigned={owner_assigned})")
+                self.logger.debug(f"📊 Assigning role {role} to user {user_key} (owner_assigned={owner_assigned})")
 
                 if not owner_assigned:
                     owner_assigned = True
@@ -5507,7 +5595,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             CollectionNames.TEAMS.value,
                             {"createdBy": user_key, "updatedAtTimestamp": ts},
                         )
-                        self.logger.info(f"✅ Updated team createdBy to {user_key}")
+                        self.logger.debug(f"✅ Updated team createdBy to {user_key}")
                     except Exception as e:
                         self.logger.warning(f"Failed to update createdBy for team {team_key}: {e}")
 
@@ -5524,7 +5612,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 await self.batch_create_edges(
                     [permission_edge], CollectionNames.PERMISSION.value
                 )
-                self.logger.info(f"✅ Added user {user_key} to All team with role {role}")
+                self.logger.debug(f"✅ Added user {user_key} to All team with role {role}")
 
         except Exception as e:
             self.logger.error(f"ensure_all_team_with_users failed for org {org_id}: {e}", exc_info=True)
@@ -5556,7 +5644,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "updatedAtTimestamp": ts,
                 }
                 await self.batch_upsert_nodes([team_node], CollectionNames.TEAMS.value)
-                self.logger.info(f"Created 'All' team for org {org_id}")
+                self.logger.debug(f"Created 'All' team for org {org_id}")
 
             # 2. Check if this user already has a PERMISSION edge
             existing_edge = await self.get_edge(
@@ -5575,7 +5663,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             existing_member_count = len((team_with_users or {}).get("members", []))
             role = "OWNER" if existing_member_count == 0 else "READER"
 
-            self.logger.info(f"Assigning role {role} to user {user_key} (existing members: {existing_member_count})")
+            self.logger.debug(f"Assigning role {role} to user {user_key} (existing members: {existing_member_count})")
 
             # 4. If assigning first OWNER, update team.createdBy
             if role == "OWNER":
@@ -5585,7 +5673,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         CollectionNames.TEAMS.value,
                         {"createdBy": user_key, "updatedAtTimestamp": ts},
                     )
-                    self.logger.info(f"Updated team createdBy to {user_key}")
+                    self.logger.debug(f"Updated team createdBy to {user_key}")
                 except Exception as e:
                     self.logger.warning(f"Failed to update createdBy for team {team_key}: {e}")
 
@@ -5603,7 +5691,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             await self.batch_create_edges(
                 [permission_edge], CollectionNames.PERMISSION.value
             )
-            self.logger.info(f"Added user {user_key} to All team with role {role}")
+            self.logger.debug(f"Added user {user_key} to All team with role {role}")
 
         except Exception as e:
             self.logger.error(f"add_user_to_all_team failed for org {org_id}, user {user_key}: {e}", exc_info=True)
@@ -5908,7 +5996,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return {}
 
         try:
-            self.logger.info(f"🚀 Bulk getting Entity Keys for {len(emails)} emails")
+            self.logger.debug(f"🚀 Bulk getting Entity Keys for {len(emails)} emails")
 
             result_map = {}
 
@@ -5933,7 +6021,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         CollectionNames.USERS.value,
                         "USER"
                     )
-                self.logger.info(f"✅ Found {len(users)} users")
+                self.logger.debug(f"✅ Found {len(users)} users")
             except Exception as e:
                 self.logger.error(f"❌ Error querying users: {str(e)}")
 
@@ -5957,7 +6045,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             CollectionNames.GROUPS.value,
                             "GROUP"
                         )
-                    self.logger.info(f"✅ Found {len(groups)} groups")
+                    self.logger.debug(f"✅ Found {len(groups)} groups")
                 except Exception as e:
                     self.logger.error(f"❌ Error querying groups: {str(e)}")
 
@@ -5981,11 +6069,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             CollectionNames.PEOPLE.value,
                             "USER"
                         )
-                    self.logger.info(f"✅ Found {len(people)} people")
+                    self.logger.debug(f"✅ Found {len(people)} people")
                 except Exception as e:
                     self.logger.error(f"❌ Error querying people: {str(e)}")
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Bulk lookup complete: found {len(result_map)}/{len(unique_emails)} entities"
             )
 
@@ -6004,7 +6092,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> bool:
         """Store or update permission relationship with change detection."""
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Storing permission for file {file_key} and entity {entity_key}"
             )
 
@@ -6032,7 +6120,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             else:
                 edge_key = str(uuid.uuid4())
 
-            self.logger.info(f"Permission data is {permission_data}")
+            self.logger.debug(f"Permission data is {permission_data}")
 
             # Create edge document with proper formatting
             # Direction: User/Group/Org → Record (reversed from old direction)
@@ -6068,24 +6156,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
                 if not existing_edge:
                     # New permission - use batch_upsert_nodes which handles transactions properly
-                    self.logger.info(f"✅ Creating new permission edge: {edge_key}")
+                    self.logger.debug(f"✅ Creating new permission edge: {edge_key}")
                     await self.batch_upsert_nodes(
                         [edge],
                         collection=CollectionNames.PERMISSION.value,
                         transaction=transaction
                     )
-                    self.logger.info(f"✅ Created new permission edge: {edge_key}")
+                    self.logger.debug(f"✅ Created new permission edge: {edge_key}")
                 elif self._permission_needs_update(existing_edge, permission_data):
                     # Update existing permission
-                    self.logger.info(f"✅ Updating permission edge: {edge_key}")
+                    self.logger.debug(f"✅ Updating permission edge: {edge_key}")
                     await self.batch_upsert_nodes(
                         [edge],
                         collection=CollectionNames.PERMISSION.value,
                         transaction=transaction
                     )
-                    self.logger.info(f"✅ Updated permission edge: {edge_key}")
+                    self.logger.debug(f"✅ Updated permission edge: {edge_key}")
                 else:
-                    self.logger.info(
+                    self.logger.debug(
                         f"✅ No update needed for permission edge: {edge_key}"
                     )
 
@@ -6107,7 +6195,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     def _permission_needs_update(self, existing: dict, new: dict) -> bool:
         """Check if permission data needs to be updated"""
-        self.logger.info("🚀 Checking if permission data needs to be updated")
+        self.logger.debug("🚀 Checking if permission data needs to be updated")
         relevant_fields = ["role", "permissionDetails", "active"]
 
         for field in relevant_fields:
@@ -6117,13 +6205,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     if json.dumps(new[field], sort_keys=True) != json.dumps(
                         existing.get(field, {}), sort_keys=True
                     ):
-                        self.logger.info(f"✅ Permission data needs to be updated. Field {field}")
+                        self.logger.debug(f"✅ Permission data needs to be updated. Field {field}")
                         return True
                 elif new[field] != existing.get(field):
-                    self.logger.info(f"✅ Permission data needs to be updated. Field {field}")
+                    self.logger.debug(f"✅ Permission data needs to be updated. Field {field}")
                     return True
 
-        self.logger.info("✅ Permission data does not need to be updated")
+        self.logger.debug("✅ Permission data does not need to be updated")
         return False
 
     async def process_file_permissions(
@@ -6138,7 +6226,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Assumes all entities and files already exist in the database.
         """
         try:
-            self.logger.info(f"🚀 Processing permissions for file {file_key}")
+            self.logger.debug(f"🚀 Processing permissions for file {file_key}")
             timestamp = get_epoch_timestamp_in_ms()
 
             # Remove 'anyone' permission for this file if it exists
@@ -6153,16 +6241,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars={"file_key": file_key, "org_id": org_id},
                 txn_id=transaction
             )
-            self.logger.info(f"🗑️ Removed 'anyone' permission for file {file_key}")
+            self.logger.debug(f"🗑️ Removed 'anyone' permission for file {file_key}")
 
             existing_permissions = await self.get_file_permissions(
                 file_key, transaction=transaction
             )
-            self.logger.info(f"🚀 Existing permissions: {existing_permissions}")
+            self.logger.debug(f"🚀 Existing permissions: {existing_permissions}")
 
             # Get all permission IDs from new permissions
             new_permission_ids = list({p.get("id") for p in permissions_data})
-            self.logger.info(f"🚀 New permission IDs: {new_permission_ids}")
+            self.logger.debug(f"🚀 New permission IDs: {new_permission_ids}")
 
             # Find permissions that exist but are not in new permissions
             permissions_to_remove = [
@@ -6173,7 +6261,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Remove permissions that no longer exist
             if permissions_to_remove:
-                self.logger.info(
+                self.logger.debug(
                     f"🗑️ Removing {len(permissions_to_remove)} obsolete permissions"
                 )
                 for perm in permissions_to_remove:
@@ -6257,7 +6345,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                                     )
                                     continue
                             if entity_key != "anyone" and entity_key:
-                                self.logger.info(
+                                self.logger.debug(
                                     f"🚀 Storing permission for file {file_key} and entity {entity_key}: {new_perm}"
                                 )
                                 await self.store_permission(
@@ -6283,7 +6371,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             transaction=transaction
                         )
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Successfully processed all permissions for file {file_key}"
             )
             return True
@@ -6303,7 +6391,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> bool:
         """Delete a node and its edges from all edge collections (Records, Files)."""
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Deleting node {node_key} from collection Records, Files (hard_delete={hard_delete})"
             )
 
@@ -6343,7 +6431,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         "@edge_collection": edge_collection,
                     }
                     await self.http_client.execute_aql(edge_removal_query, bind_vars, txn_id=transaction)
-                    self.logger.info(
+                    self.logger.debug(
                         f"✅ Edges from {edge_collection} deleted for node {node_key}"
                     )
                 except Exception as e:
@@ -6386,7 +6474,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             result = await self.http_client.execute_aql(delete_query, bind_vars, txn_id=transaction)
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Node {node_key} and its edges {'hard' if hard_delete else 'soft'} deleted: {result}"
             )
             return True
@@ -6415,7 +6503,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             Dict: Result with success status and reason
         """
         try:
-            self.logger.info(f"🚀 Starting record deletion for {record_id} by user {user_id}")
+            self.logger.debug(f"🚀 Starting record deletion for {record_id} by user {user_id}")
 
             # Get record to determine connector type
             record = await self.http_client.get_document(
@@ -6476,7 +6564,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             transaction: Optional transaction ID
         """
         try:
-            self.logger.info(f"🗂️ Deleting record {external_id} from {connector_id}")
+            self.logger.debug(f"🗂️ Deleting record {external_id} from {connector_id}")
 
             # Get record
             record = await self.get_record_by_external_id(
@@ -6493,7 +6581,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Check if deletion was successful
             if deletion_result.get("success"):
-                self.logger.info(f"✅ Record {external_id} deleted from {connector_id}")
+                self.logger.debug(f"✅ Record {external_id} deleted from {connector_id}")
             else:
                 error_reason = deletion_result.get("reason", "Unknown error")
                 self.logger.error(f"❌ Failed to delete record {external_id}: {error_reason}")
@@ -6521,7 +6609,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             transaction: Optional transaction ID
         """
         try:
-            self.logger.info(f"🔄 Removing user access: {external_id} from {connector_id} for user {user_id}")
+            self.logger.debug(f"🔄 Removing user access: {external_id} from {connector_id} for user {user_id}")
 
             # Get record
             record = await self.get_record_by_external_id(
@@ -6554,9 +6642,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             removed_permissions = result if result else []
 
             if removed_permissions:
-                self.logger.info(f"✅ Removed {len(removed_permissions)} permission(s) for user {user_id} on record {record.id}")
+                self.logger.debug(f"✅ Removed {len(removed_permissions)} permission(s) for user {user_id} on record {record.id}")
             else:
-                self.logger.info(f"ℹ️ No permissions found for user {user_id} on record {record.id}")
+                self.logger.debug(f"ℹ️ No permissions found for user {user_id} on record {record.id}")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_id}: {str(e)}")
@@ -6642,7 +6730,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         result["all_node_ids"].extend([f"groups/{k}" for k in result["group_keys"]])
         result["all_node_ids"].append(f"apps/{connector_id}")
 
-        self.logger.info(
+        self.logger.debug(
             f"📊 Collected entities for connector {connector_id}: "
             f"records={len(result['record_keys'])}, "
             f"recordGroups={len(result['record_group_keys'])}, "
@@ -6804,7 +6892,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if failed_collections:
             self.logger.warning(f"⚠️ Failed to delete edges from {len(failed_collections)} collections: {failed_collections}")
         else:
-            self.logger.info(f"✅ Deleted {total_deleted} total edges across all collections for connector {connector_id}")
+            self.logger.debug(f"✅ Deleted {total_deleted} total edges across all collections for connector {connector_id}")
 
         return (total_deleted, failed_collections)
 
@@ -6905,7 +6993,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 f"Transaction will be rolled back."
             )
 
-        self.logger.info(f"✅ Deleted {total_deleted} isOfType target documents")
+        self.logger.debug(f"✅ Deleted {total_deleted} isOfType target documents")
         return (total_deleted, [])
 
     async def _delete_nodes_by_keys(self, transaction: str, keys: list[str], collection: str, batch_size: int = 5000) -> tuple[int, int]:
@@ -7024,7 +7112,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             collected = await self._collect_connector_entities(connector_id, transaction)
             node_ids = collected.get("all_node_ids") or []
             if not node_ids:
-                self.logger.info(f"No connector entities found for {connector_id}, nothing to delete")
+                self.logger.debug(f"No connector entities found for {connector_id}, nothing to delete")
                 return (0, True)
 
             sync_edge_collections = [
@@ -7042,7 +7130,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if failed:
                 self.logger.warning(f"Failed to delete edges from collections: {failed}")
                 return (deleted_count, False)
-            self.logger.info(f"Deleted {deleted_count} sync edges for connector {connector_id}")
+            self.logger.debug(f"Deleted {deleted_count} sync edges for connector {connector_id}")
             return (deleted_count, True)
         except Exception as e:
             self.logger.error(f"Error deleting connector sync edges for {connector_id}: {e}", exc_info=True)
@@ -7118,7 +7206,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # tens of thousands of nodes across multiple edge collections. Orphan edges
             # (edges pointing to deleted nodes) don't break data integrity and can be
             # cleaned up later if needed. The critical part is deleting nodes atomically.
-            self.logger.info(f"🗑️ Deleting edges for connector {connector_id} (non-transactional)")
+            self.logger.debug(f"🗑️ Deleting edges for connector {connector_id} (non-transactional)")
             deleted_edges, failed_edge_collections = await self._delete_edges_by_connector_id(
                 None,  # No transaction - run each query independently
                 connector_id,
@@ -7293,7 +7381,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if created_transaction:
                     await self.commit_transaction(transaction)
 
-                self.logger.info(
+                self.logger.debug(
                     f"✅ Connector instance {connector_id} deleted successfully. "
                     f"Records: {deleted_records}/{len(collected['record_keys'])}, "
                     f"RecordGroups: {deleted_rg}/{len(collected['record_group_keys'])}, "
@@ -7344,7 +7432,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> dict:
         """Delete a Knowledge Base record - handles uploads and KB-specific logic."""
         try:
-            self.logger.info(f"🗂️ Deleting Knowledge Base record {record_id}")
+            self.logger.debug(f"🗂️ Deleting Knowledge Base record {record_id}")
 
             # Get user
             user = await self.get_user_by_user_id(user_id)
@@ -7395,7 +7483,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> dict:
         """Delete a Google Drive record - handles Drive-specific permissions and logic."""
         try:
-            self.logger.info(f"🔌 Deleting Google Drive record {record_id}")
+            self.logger.debug(f"🔌 Deleting Google Drive record {record_id}")
 
             # Get user
             user = await self.get_user_by_user_id(user_id)
@@ -7437,7 +7525,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> dict:
         """Delete a Gmail record - handles Gmail-specific permissions and logic."""
         try:
-            self.logger.info(f"📧 Deleting Gmail record {record_id}")
+            self.logger.debug(f"📧 Deleting Gmail record {record_id}")
 
             # Get user
             user = await self.get_user_by_user_id(user_id)
@@ -7479,7 +7567,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> dict:
         """Delete an Outlook record - handles email and its attachments."""
         try:
-            self.logger.info(f"📧 Deleting Outlook record {record_id}")
+            self.logger.debug(f"📧 Deleting Outlook record {record_id}")
 
             # Get user
             user = await self.get_user_by_user_id(user_id)
@@ -7531,7 +7619,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Local FS connector don't 404 on a user/key vs. user/userId mismatch.
         """
         try:
-            self.logger.info(f"📁 Deleting Local FS record {record_id}")
+            self.logger.debug(f"📁 Deleting Local FS record {record_id}")
 
             user = await self.get_user_by_user_id(user_id)
             if not user:
@@ -7586,7 +7674,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             await self._delete_main_record(record_id, transaction)
 
-            self.logger.info(f"✅ Deleted Local FS record {record_id}")
+            self.logger.debug(f"✅ Deleted Local FS record {record_id}")
 
             try:
                 payload = await self._create_deleted_record_event_payload(record, file_record)
@@ -7672,7 +7760,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             Optional[str]: Internal file key if found, None otherwise
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Retrieving internal key for external file ID {external_file_id}"
             )
 
@@ -7689,7 +7777,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             if results:
-                self.logger.info(
+                self.logger.debug(
                     f"✅ Successfully retrieved internal key for external file ID {external_file_id}"
                 )
                 return results[0]
@@ -7721,7 +7809,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             Optional[str]: Internal key if found, None otherwise
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Retrieving internal key for external message ID {external_message_id}"
             )
 
@@ -7738,7 +7826,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             if results:
-                self.logger.info(
+                self.logger.debug(
                     f"✅ Successfully retrieved internal key for external message ID {external_message_id}"
                 )
                 return results[0]
@@ -7774,7 +7862,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             List[Dict]: List of related records with messageId, id/key, and relationshipType
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Getting related records for {record_id} with relation type {relation_type}"
             )
 
@@ -7796,12 +7884,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             if results:
-                self.logger.info(
+                self.logger.debug(
                     f"✅ Found {len(results)} related records for {record_id}"
                 )
                 return results
             else:
-                self.logger.info(
+                self.logger.debug(
                     f"ℹ️ No related records found for {record_id} with relation type {relation_type}"
                 )
                 return []
@@ -7830,7 +7918,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             Optional[str]: messageIdHeader value if found, None otherwise
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Getting messageIdHeader for record {record_key} in collection {collection}"
             )
 
@@ -7847,7 +7935,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             if results and results[0] is not None:
-                self.logger.info(
+                self.logger.debug(
                     f"✅ Found messageIdHeader for record {record_key}"
                 )
                 return results[0]
@@ -7883,7 +7971,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             List[str]: List of record keys (_key or id) matching the criteria
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Finding related mails with messageIdHeader {message_id_header}, excluding {exclude_key}"
             )
 
@@ -7904,12 +7992,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             if results:
-                self.logger.info(
+                self.logger.debug(
                     f"✅ Found {len(results)} related mails with messageIdHeader {message_id_header}"
                 )
                 return results
             else:
-                self.logger.info(
+                self.logger.debug(
                     f"ℹ️ No related mails found with messageIdHeader {message_id_header}"
                 )
                 return []
@@ -7940,7 +8028,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             bool: True if successful, False otherwise
         """
         try:
-            self.logger.info(f"🚀 Batch updating {len(node_ids)} nodes in {collection}")
+            self.logger.debug(f"🚀 Batch updating {len(node_ids)} nodes in {collection}")
 
             query = f"""
             FOR doc IN {collection}
@@ -7961,7 +8049,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             if results:
-                self.logger.info(f"✅ Successfully batch updated {len(results)} nodes")
+                self.logger.debug(f"✅ Successfully batch updated {len(results)} nodes")
                 return True
             else:
                 self.logger.warning("⚠️ No nodes were updated")
@@ -7994,7 +8082,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             int: Count of connector instances
         """
         try:
-            self.logger.info(f"🚀 Counting connector instances for scope {scope}")
+            self.logger.debug(f"🚀 Counting connector instances for scope {scope}")
 
             query = f"""
             FOR doc IN {collection}
@@ -8019,7 +8107,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             count = results[0] if results else 0
-            self.logger.info(f"✅ Found {count} connector instances for scope {scope}")
+            self.logger.debug(f"✅ Found {count} connector instances for scope {scope}")
             return count
 
         except Exception as e:
@@ -8052,7 +8140,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             bool: True if name is unique, False if already exists
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Checking name uniqueness for '{instance_name}' with scope {scope}"
             )
 
@@ -8098,7 +8186,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             existing = list(results) if results else []
             is_unique = len(existing) == 0
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Name uniqueness check: '{instance_name}' is {'unique' if is_unique else 'not unique'}"
             )
             return is_unique
@@ -8137,7 +8225,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             Tuple[List[Dict], int]: (List of connector instances, total count)
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Getting connector instances with filters: scope={scope}, search={search}, page={page}"
             )
 
@@ -8196,7 +8284,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             documents = list(results) if results else []
 
-            self.logger.info(f"✅ Found {len(documents)} connector instances (total: {total_count})")
+            self.logger.debug(f"✅ Found {len(documents)} connector instances (total: {total_count})")
             return documents, total_count
 
         except Exception as e:
@@ -8225,7 +8313,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             List[Dict]: List of connector instance documents
         """
         try:
-            self.logger.info(f"🚀 Getting connector instances for user {user_id}")
+            self.logger.debug(f"🚀 Getting connector instances for user {user_id}")
 
             query = f"""
             FOR doc IN {collection}
@@ -8250,7 +8338,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             documents = list(results) if results else []
-            self.logger.info(f"✅ Found {len(documents)} connector instances")
+            self.logger.debug(f"✅ Found {len(documents)} connector instances")
             return documents
 
         except Exception as e:
@@ -8315,7 +8403,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             Optional[Dict]: Updated relation document if successful, None otherwise
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Updating {service_type} sync state for user {user_email} to {state}"
             )
 
@@ -8356,7 +8444,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             result = results[0] if results else None
             if result:
-                self.logger.info(
+                self.logger.debug(
                     f"✅ Successfully updated {service_type} sync state for user {user_email} to {state}"
                 )
                 return result
@@ -8437,7 +8525,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> dict | None:
         """Store page token with user channel information."""
         try:
-            self.logger.info(
+            self.logger.debug(
                 """
             🚀 Storing page token:
 
@@ -8480,7 +8568,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }
             )
 
-            self.logger.info("✅ Page token stored successfully")
+            self.logger.debug("✅ Page token stored successfully")
             return results[0] if results else None
 
         except Exception as e:
@@ -8495,7 +8583,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> dict | None:
         """Get page token for specific channel."""
         try:
-            self.logger.info(
+            self.logger.debug(
                 """
             🔍 Getting page token for:
             - Channel: %s
@@ -8537,7 +8625,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             results = await self.http_client.execute_aql(query, bind_vars)
 
             if results:
-                self.logger.info("✅ Found token for channel")
+                self.logger.debug("✅ Found token for channel")
                 return results[0]
 
             self.logger.warning("⚠️ No token found for channel")
@@ -8709,7 +8797,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Construct ArangoDB-specific _from value
             from_key = f"{from_collection}/{from_id}"
 
-            self.logger.info(f"🚀 Deleting edges from {from_key} to groups/roles collection in {collection}")
+            self.logger.debug(f"🚀 Deleting edges from {from_key} to groups/roles collection in {collection}")
 
             query = """
             FOR edge IN @@collection
@@ -8731,7 +8819,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             count = len(results) if results else 0
 
             if count > 0:
-                self.logger.info(f"✅ Successfully deleted {count} edges from {from_key} to groups")
+                self.logger.debug(f"✅ Successfully deleted {count} edges from {from_key} to groups")
             else:
                 self.logger.warning(f"⚠️ No edges found from {from_key} to groups in collection: {collection}")
 
@@ -8766,7 +8854,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Construct ArangoDB-specific _from value
             from_key = f"{from_collection}/{from_id}"
 
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Deleting edges from {from_key} to {to_collection} collection in {edge_collection}"
             )
 
@@ -8791,7 +8879,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             count = len(results) if results else 0
 
             if count > 0:
-                self.logger.info(
+                self.logger.debug(
                     f"✅ Successfully deleted {count} edges from {from_key} to {to_collection}"
                 )
             else:
@@ -8827,11 +8915,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
         4. Delete the nodes themselves
         """
         if not keys:
-            self.logger.info("No keys provided for deletion. Skipping.")
+            self.logger.debug("No keys provided for deletion. Skipping.")
             return
 
         try:
-            self.logger.info(f"🚀 Starting deletion of nodes {keys} from '{collection}' and their edges in graph '{graph_name}'.")
+            self.logger.debug(f"🚀 Starting deletion of nodes {keys} from '{collection}' and their edges in graph '{graph_name}'.")
 
             # Step 1: Get all edge collections from the named graph definition
             graph_info = await self.http_client.get_graph(graph_name)
@@ -8858,7 +8946,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if not edge_collections:
                     self.logger.warning(f"⚠️ Graph '{graph_name}' has no edge collections defined.")
                 else:
-                    self.logger.info(f"🔎 Found {len(edge_collections)} edge collections in graph: {edge_collections}")
+                    self.logger.debug(f"🔎 Found {len(edge_collections)} edge collections in graph: {edge_collections}")
 
             # Step 2: Delete all edges connected to the target nodes
             # Construct the full node IDs to match against _from and _to fields
@@ -8885,12 +8973,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     # Log but continue with other edge collections
                     self.logger.warning(f"⚠️ Failed to delete edges from {edge_collection}: {str(e)}")
 
-            self.logger.info(f"🔥 Successfully ran edge cleanup for nodes: {keys}")
+            self.logger.debug(f"🔥 Successfully ran edge cleanup for nodes: {keys}")
 
             # Step 3: Delete the nodes themselves
             await self.delete_nodes(keys, collection, transaction)
 
-            self.logger.info(f"✅ Successfully deleted {len(keys)} nodes and their associated edges from '{collection}'")
+            self.logger.debug(f"✅ Successfully deleted {len(keys)} nodes and their associated edges from '{collection}'")
 
         except Exception as e:
             self.logger.error(f"❌ Delete nodes and edges failed: {str(e)}")
@@ -8969,7 +9057,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> str | None:
         """Check Google Drive specific permissions."""
         try:
-            self.logger.info(f"🔍 Checking Drive permissions for record {record_id} and user {user_key}")
+            self.logger.debug(f"🔍 Checking Drive permissions for record {record_id} and user {user_key}")
 
             drive_permission_query = """
             LET user_from = CONCAT('users/', @user_key)
@@ -9043,7 +9131,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> str | None:
         """Check Gmail specific permissions."""
         try:
-            self.logger.info(f"🔍 Checking Gmail permissions for record {record_id} and user {user_key}")
+            self.logger.debug(f"🔍 Checking Gmail permissions for record {record_id} and user {user_key}")
 
             gmail_permission_query = """
             LET user_from = CONCAT('users/', @user_key)
@@ -9113,7 +9201,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> dict | None:
         """Get KB context for a record."""
         try:
-            self.logger.info(f"🔍 Finding KB context for record {record_id}")
+            self.logger.debug(f"🔍 Finding KB context for record {record_id}")
 
             kb_query = """
             LET record_from = CONCAT('records/', @record_id)
@@ -9154,7 +9242,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> str | None:
         """Get user's permission on a KB. Returns highest role from direct and team-based access."""
         try:
-            self.logger.info(f"🔍 Checking permissions for user {user_id} on KB {kb_id}")
+            self.logger.debug(f"🔍 Checking permissions for user {user_id} on KB {kb_id}")
 
             role_priority = {
                 "OWNER": 4,
@@ -9226,7 +9314,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             role = result[0] if result else None
             if role:
-                self.logger.info(f"✅ Found permission: user {user_id} has role '{role}' on KB {kb_id}")
+                self.logger.debug(f"✅ Found permission: user {user_id} has role '{role}' on KB {kb_id}")
             return role
 
         except Exception as e:
@@ -9574,7 +9662,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "sortOrders": ["asc", "desc"]
             }
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Found {len(kbs)} knowledge bases out of {total_count} total (including team-based access)"
             )
             return kbs, total_count, available_filters
@@ -9857,7 +9945,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not result:
                 return {"success": False, "reason": "Knowledge base not found"}
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Retrieved KB children with folders_first pagination: "
                 f"{result['counts']['totalItems']} items"
             )
@@ -10139,7 +10227,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not result:
                 return {"success": False, "reason": "Folder not found"}
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Retrieved folder children with folders_first pagination: "
                 f"{result['counts']['totalItems']} items"
             )
@@ -10313,7 +10401,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.warning(f"⚠️ User {user_id} has no access to KB {kb_id}")
                 return None
             if result:
-                self.logger.info("✅ Knowledge base retrieved successfully")
+                self.logger.debug("✅ Knowledge base retrieved successfully")
             return result
         except Exception as e:
             self.logger.error(f"❌ Failed to get knowledge base: {str(e)}")
@@ -10344,7 +10432,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             result = results[0] if results else None
             if result:
-                self.logger.info("✅ Knowledge base updated successfully")
+                self.logger.debug("✅ Knowledge base updated successfully")
                 return True
             self.logger.warning("⚠️ Knowledge base not found")
             return False
@@ -10464,11 +10552,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 records_with_details = inventory.get("records_with_details", [])
                 all_record_keys = inventory.get("record_keys", [])
 
-                self.logger.info(f"folder_keys: {inventory.get('folder_keys', [])}")
-                self.logger.info(f"total_folders: {inventory.get('total_folders', 0)}")
+                self.logger.debug(f"folder_keys: {inventory.get('folder_keys', [])}")
+                self.logger.debug(f"total_folders: {inventory.get('total_folders', 0)}")
 
                 # Step 2: Delete ALL edges first (prevents foreign key issues)
-                self.logger.info("🗑️ Step 2: Deleting all edges...")
+                self.logger.debug("🗑️ Step 2: Deleting all edges...")
                 
                 # Delete record_relations edges
                 if all_record_keys:
@@ -10487,7 +10575,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         },
                         transaction=transaction,
                     )
-                    self.logger.info(f"✅ Deleted record_relations edges for {len(all_record_keys)} records")
+                    self.logger.debug(f"✅ Deleted record_relations edges for {len(all_record_keys)} records")
 
                 # Delete is_of_type edges
                 if all_record_keys:
@@ -10505,7 +10593,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         },
                         transaction=transaction,
                     )
-                    self.logger.info(f"✅ Deleted is_of_type edges for {len(all_record_keys)} records")
+                    self.logger.debug(f"✅ Deleted is_of_type edges for {len(all_record_keys)} records")
 
                 btk_delete = """
                 LET kb_id_full = CONCAT('recordGroups/', @kb_id)
@@ -10538,7 +10626,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     },
                     transaction=transaction,
                 )
-                self.logger.info(f"✅ Deleted belongs_to edges for KB {kb_id}")
+                self.logger.debug(f"✅ Deleted belongs_to edges for KB {kb_id}")
 
                 perm_delete = """
                 LET kb_id_full = CONCAT('recordGroups/', @kb_id)
@@ -10571,23 +10659,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     },
                     transaction=transaction,
                 )
-                self.logger.info(f"✅ Deleted permission edges for KB {kb_id}")
+                self.logger.debug(f"✅ Deleted permission edges for KB {kb_id}")
 
                 # Step 3: Delete all FILES documents (folders + files) using helper method
                 file_keys = inventory.get("file_keys", [])
                 if file_keys:
-                    self.logger.info(f"🗑️ Step 3: Deleting {len(file_keys)} FILES documents (folders + files)...")
+                    self.logger.debug(f"🗑️ Step 3: Deleting {len(file_keys)} FILES documents (folders + files)...")
                     await self.delete_nodes(file_keys, CollectionNames.FILES.value, transaction=transaction)
-                    self.logger.info(f"✅ Deleted {len(file_keys)} FILES documents")
+                    self.logger.debug(f"✅ Deleted {len(file_keys)} FILES documents")
 
                 # Step 4: Delete all RECORDS documents (folders + files) using helper method
                 if all_record_keys:
-                    self.logger.info(f"🗑️ Step 4: Deleting {len(all_record_keys)} RECORDS documents (folders + files)...")
+                    self.logger.debug(f"🗑️ Step 4: Deleting {len(all_record_keys)} RECORDS documents (folders + files)...")
                     await self.delete_nodes(all_record_keys, CollectionNames.RECORDS.value, transaction=transaction)
-                    self.logger.info(f"✅ Deleted {len(all_record_keys)} RECORDS documents")
+                    self.logger.debug(f"✅ Deleted {len(all_record_keys)} RECORDS documents")
 
                 # Step 5: Delete the KB document itself
-                self.logger.info(f"🗑️ Step 5: Deleting KB document {kb_id}...")
+                self.logger.debug(f"🗑️ Step 5: Deleting KB document {kb_id}...")
                 await self.execute_query(
                     "REMOVE @kb_id IN @@recordGroups_collection OPTIONS { ignoreErrors: true } RETURN OLD",
                     bind_vars={
@@ -10599,9 +10687,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
                 # Step 6: Commit transaction
                 if should_commit:
-                    self.logger.info("💾 Committing complete deletion transaction...")
+                    self.logger.debug("💾 Committing complete deletion transaction...")
                     await self.commit_transaction(transaction)
-                    self.logger.info("✅ Transaction committed successfully!")
+                    self.logger.debug("✅ Transaction committed successfully!")
 
                 # Step 7: Prepare event data for all deleted records (router will publish)
                 event_payloads = []
@@ -10633,7 +10721,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.error(f"❌ Database error during KB deletion: {str(db_error)}")
                 if should_commit and transaction:
                     await self.rollback_transaction(transaction)
-                    self.logger.info("🔄 Transaction aborted due to error")
+                    self.logger.debug("🔄 Transaction aborted due to error")
                 raise db_error
 
         except Exception as e:
@@ -10676,7 +10764,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         try:
             record_id = record_doc["_key"]
-            self.logger.info(f"🚀 Preparing NewRecordEvent for record_id: {record_id}")
+            self.logger.debug(f"🚀 Preparing NewRecordEvent for record_id: {record_id}")
 
             signed_url_route = (
                 f"{storage_url}/api/v1/document/internal/{record_doc['externalRecordId']}/download"
@@ -11804,7 +11892,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             """
             results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
             if results:
-                self.logger.info(f"✅ Removed {len(results)} permissions from KB {kb_id}")
+                self.logger.debug(f"✅ Removed {len(results)} permissions from KB {kb_id}")
                 return True
             self.logger.warning(f"⚠️ No permissions found to remove from KB {kb_id}")
             return False
@@ -11866,7 +11954,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> dict | None:
         """Optimistically update permissions for users and teams on a knowledge base"""
         try:
-            self.logger.info(f"🚀 Optimistic update: {len(user_ids or [])} users and {len(team_ids or [])} teams on KB {kb_id} to {new_role}")
+            self.logger.debug(f"🚀 Optimistic update: {len(user_ids or [])} users and {len(team_ids or [])} teams on KB {kb_id} to {new_role}")
 
             # Quick validation of inputs
             if not user_ids and not team_ids:
@@ -11964,7 +12052,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return {"success": False, "reason": "Query execution failed", "code": "500"}
 
             # Log the raw result for debugging
-            self.logger.info(f"🔍 Update query result: {result}")
+            self.logger.debug(f"🔍 Update query result: {result}")
 
             # Check for validation errors
             if result["validation_error"]:
@@ -11987,7 +12075,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }
                 # Teams don't have roles, so we don't update them
 
-            self.logger.info(f"✅ Optimistically updated {len(updated_permissions)} permissions for KB {kb_id}")
+            self.logger.debug(f"✅ Optimistically updated {len(updated_permissions)} permissions for KB {kb_id}")
 
             return {
                 "success": True,
@@ -12830,8 +12918,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Upload records to KB root or a folder. Full flow: validate, analyze structure, run transaction."""
         try:
             upload_type = "folder" if parent_folder_id else "KB root"
-            self.logger.info("🚀 Starting unified upload to %s in KB %s", upload_type, kb_id)
-            self.logger.info("📊 Processing %s files", len(files))
+            self.logger.debug("🚀 Starting unified upload to %s in KB %s", upload_type, kb_id)
+            self.logger.debug("📊 Processing %s files", len(files))
             validation_result = await self._validate_upload_context(
                 kb_id=kb_id,
                 user_id=user_id,
@@ -12841,7 +12929,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not validation_result.get("valid"):
                 return validation_result
             folder_analysis = self._analyze_upload_structure(files, validation_result)
-            self.logger.info("📁 Structure analysis: %s", folder_analysis.get("summary", {}))
+            self.logger.debug("📁 Structure analysis: %s", folder_analysis.get("summary", {}))
             result = await self._execute_upload_transaction(
                 kb_id=kb_id,
                 user_id=user_id,
@@ -12968,7 +13056,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Delete all attachments first
             for attachment_id in attachment_ids:
-                self.logger.info(f"Deleting attachment {attachment_id} of email {record_id}")
+                self.logger.debug(f"Deleting attachment {attachment_id} of email {record_id}")
                 await self._delete_outlook_edges(attachment_id, transaction)
                 await self._delete_file_record(attachment_id, transaction)
                 await self._delete_main_record(attachment_id, transaction)
@@ -12982,7 +13070,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Delete main record
             await self._delete_main_record(record_id, transaction)
 
-            self.logger.info(f"✅ Deleted Outlook record {record_id} with {len(attachment_ids)} attachments")
+            self.logger.debug(f"✅ Deleted Outlook record {record_id} with {len(attachment_ids)} attachments")
 
             return {
                 "success": True,
@@ -13185,7 +13273,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 total_deleted += deleted_count
 
                 if deleted_count > 0:
-                    self.logger.info(f"🗑️ Deleted {deleted_count} {strategy['description']} from {edge_collection}")
+                    self.logger.debug(f"🗑️ Deleted {deleted_count} {strategy['description']} from {edge_collection}")
                 else:
                     self.logger.debug(f"📝 No {strategy['description']} found in {edge_collection}")
 
@@ -13193,7 +13281,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.error(f"❌ Failed to delete edges from {edge_collection}: {str(e)}")
                 raise
 
-        self.logger.info(f"Total Drive edges deleted for record {record_id}: {total_deleted}")
+        self.logger.debug(f"Total Drive edges deleted for record {record_id}: {total_deleted}")
 
     async def _delete_drive_anyone_permissions(
         self,
@@ -13252,7 +13340,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.error(f"Failed to delete KB edges from {edge_collection}: {e}")
                 raise
 
-        self.logger.info(f"Total KB edges deleted for record {record_id}: {total_deleted}")
+        self.logger.debug(f"Total KB edges deleted for record {record_id}: {total_deleted}")
 
     async def _execute_gmail_record_deletion(
         self,
@@ -13284,7 +13372,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Delete all attachments first
             for attachment_id in attachment_ids:
-                self.logger.info(f"Deleting attachment {attachment_id} of email {record_id}")
+                self.logger.debug(f"Deleting attachment {attachment_id} of email {record_id}")
                 await self._delete_outlook_edges(attachment_id, transaction)
                 await self._delete_file_record(attachment_id, transaction)
                 await self._delete_main_record(attachment_id, transaction)
@@ -13303,7 +13391,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Delete main record
             await self._delete_main_record(record_id, transaction)
 
-            self.logger.info(f"✅ Deleted Gmail record {record_id} with {len(attachment_ids)} attachments")
+            self.logger.debug(f"✅ Deleted Gmail record {record_id} with {len(attachment_ids)} attachments")
 
             # Create event payload for router to publish
             try:
@@ -13368,7 +13456,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Delete main record
             await self._delete_main_record(record_id, transaction)
 
-            self.logger.info(f"✅ Deleted Drive record {record_id}")
+            self.logger.debug(f"✅ Deleted Drive record {record_id}")
 
             # Create event payload for router to publish
             try:
@@ -13427,7 +13515,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Delete main record
             await self._delete_main_record(record_id, transaction)
 
-            self.logger.info(f"✅ Deleted KB record {record_id}")
+            self.logger.debug(f"✅ Deleted KB record {record_id}")
 
             # Create event payload for router to publish
             try:
@@ -13531,7 +13619,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         result = await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction)
         elapsed = time.perf_counter() - start
-        self.logger.info(f"get_knowledge_hub_root_nodes finished in {elapsed * 1000} ms")
+        self.logger.debug(f"get_knowledge_hub_root_nodes finished in {elapsed * 1000} ms")
         return result[0] if result else {"nodes": [], "total": 0}
 
     async def get_knowledge_hub_children(
@@ -13576,7 +13664,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 only_containers=only_containers, transaction=transaction,
             )
             elapsed = time.perf_counter() - start
-            self.logger.info(f"get_knowledge_hub_children finished in {elapsed * 1000} ms")
+            self.logger.debug(f"get_knowledge_hub_children finished in {elapsed * 1000} ms")
             return result
 
         # Generate the sub-query based on parent type
@@ -13625,7 +13713,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         result = await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction)
         elapsed = time.perf_counter() - start
-        self.logger.info(f"get_knowledge_hub_children finished in {elapsed * 1000} ms")
+        self.logger.debug(f"get_knowledge_hub_children finished in {elapsed * 1000} ms")
         return result[0] if result else {"nodes": [], "total": 0}
 
     async def get_knowledge_hub_search(
@@ -14244,7 +14332,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             result = await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction)
             duration = time.perf_counter() - start
-            self.logger.info(f"Knowledge hub unified search completed in {duration:.3f}s")
+            self.logger.debug(f"Knowledge hub unified search completed in {duration:.3f}s")
             return result[0] if result else {"nodes": [], "total": 0}
         except Exception as e:
             self.logger.error(f"Error in knowledge hub unified search: {str(e)}")
@@ -14406,7 +14494,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         # Reverse to get root -> leaf order
         breadcrumbs.reverse()
         elapsed = time.perf_counter() - start
-        self.logger.info(f"get_knowledge_hub_breadcrumbs finished in {elapsed * 1000} ms")
+        self.logger.debug(f"get_knowledge_hub_breadcrumbs finished in {elapsed * 1000} ms")
         return breadcrumbs
 
     async def get_user_app_ids(
@@ -14517,12 +14605,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     txn_id=transaction,
                 )
                 elapsed = time.perf_counter() - start
-                self.logger.info(f"get_knowledge_hub_context_permissions finished in {elapsed * 1000} ms")
+                self.logger.debug(f"get_knowledge_hub_context_permissions finished in {elapsed * 1000} ms")
 
             if results and results[0]:
                 return results[0]
             elapsed = time.perf_counter() - start
-            self.logger.info(f"get_knowledge_hub_context_permissions finished in {elapsed * 1000} ms (empty)")
+            self.logger.debug(f"get_knowledge_hub_context_permissions finished in {elapsed * 1000} ms (empty)")
             return {
                 "role": "READER",
                 "canUpload": False,
@@ -14578,7 +14666,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         results = await self.http_client.execute_aql(query, bind_vars={"node_id": node_id, "folder_mime_types": folder_mime_types}, txn_id=transaction)
         elapsed = time.perf_counter() - start
-        self.logger.info(f"get_knowledge_hub_node_info finished in {elapsed * 1000} ms")
+        self.logger.debug(f"get_knowledge_hub_node_info finished in {elapsed * 1000} ms")
         return results[0] if results and results[0] else None
 
     async def get_knowledge_hub_parent_node(
@@ -14698,7 +14786,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             query, bind_vars={"node_id": node_id, "folder_mime_types": folder_mime_types}, txn_id=transaction
         )
         elapsed = time.perf_counter() - start
-        self.logger.info(f"get_knowledge_hub_parent_node finished in {elapsed * 1000} ms")
+        self.logger.debug(f"get_knowledge_hub_parent_node finished in {elapsed * 1000} ms")
         return results[0] if results and results[0] else None
 
     async def get_knowledge_hub_filter_options(
@@ -14711,7 +14799,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Get available filter options (connector Apps) for a user.
         Returns connector apps the user has access to. Excludes the Collection app (type='KB').
         """
-        self.logger.info(f"🔍 Getting filter options for user_key={user_key}, org_id={org_id}")
+        self.logger.debug(f"🔍 Getting filter options for user_key={user_key}, org_id={org_id}")
         start = time.perf_counter()
         try:
             apps_raw = await self.get_user_apps(user_key, transaction)
@@ -14728,7 +14816,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ]
             apps.sort(key=lambda a: (a.get("name") or "").lower())
             elapsed = time.perf_counter() - start
-            self.logger.info(f"get_knowledge_hub_filter_options finished in {elapsed * 1000} ms")
+            self.logger.debug(f"get_knowledge_hub_filter_options finished in {elapsed * 1000} ms")
             return {"apps": apps}
         except Exception as e:
             self.logger.exception(f"❌ Failed to get knowledge hub filter options: {str(e)}")
@@ -14754,7 +14842,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             Optional[Dict]: Record details with permissions if accessible, None otherwise
         """
         try:
-            self.logger.info(f"🚀 Checking record access for user {user_id}, record {record_id}")
+            self.logger.debug(f"🚀 Checking record access for user {user_id}, record {record_id}")
 
             # Get user document to verify user exists
             user = await self.get_user_by_user_id(user_id)
@@ -15211,7 +15299,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             Optional[str]: Account type (e.g., "INDIVIDUAL", "ENTERPRISE") or None
         """
         try:
-            self.logger.info(f"🚀 Getting account type for organization {org_id}")
+            self.logger.debug(f"🚀 Getting account type for organization {org_id}")
 
             if is_external:
                 external_filter = "FILTER org.isExternal == true"
@@ -15233,7 +15321,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             if results:
                 account_type = results[0]
-                self.logger.info(f"✅ Found account type: {account_type}")
+                self.logger.debug(f"✅ Found account type: {account_type}")
                 return account_type
             else:
                 self.logger.warning(f"⚠️ Organization not found: {org_id}")
@@ -15262,7 +15350,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         statuses = [s.value for s in ProgressStatus]
         try:
-            self.logger.info(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
+            self.logger.debug(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
 
             query = f"""
             LET app = DOCUMENT(CONCAT("apps/", @connector_id))
@@ -15308,7 +15396,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             rows = rows or []
             result = build_connector_stats_response(rows, statuses, org_id, connector_id)
 
-            self.logger.info(f"✅ Retrieved stats for connector {connector_id}")
+            self.logger.debug(f"✅ Retrieved stats for connector {connector_id}")
             return {
                 "success": True,
                 "data": result,
@@ -17064,7 +17152,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             List[Dict]: List of duplicate records that match the criteria
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🔍 Finding duplicate records with MD5: {md5_checksum}"
             )
 
@@ -17105,9 +17193,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             duplicate_records = [r for r in results if r is not None] if results else []
 
             if duplicate_records:
-                self.logger.info(f"✅ Found {len(duplicate_records)} duplicate record(s)")
-            else:
-                self.logger.info("✅ No duplicate records found")
+                self.logger.info(f"Found {len(duplicate_records)} duplicate record(s)")
 
             return duplicate_records
 
@@ -17132,7 +17218,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             Optional[dict]: The next queued record if found, None otherwise
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🔍 Finding next QUEUED duplicate record for record {record_id}"
             )
 
@@ -17155,7 +17241,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     ref_record = results[0]
 
             if not ref_record:
-                self.logger.info(f"No record found for {record_id}, skipping queued duplicate search")
+                self.logger.debug(f"No record found for {record_id}, skipping queued duplicate search")
                 return None
 
             md5_checksum = ref_record.get("md5Checksum")
@@ -17202,12 +17288,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     queued_record = results[0]
 
             if queued_record:
-                self.logger.info(
+                self.logger.debug(
                     f"✅ Found QUEUED duplicate record: {queued_record.get('_key')}"
                 )
                 return dict(queued_record)
 
-            self.logger.info("✅ No QUEUED duplicate record found")
+            self.logger.debug("✅ No QUEUED duplicate record found")
             return None
 
         except Exception as e:
@@ -17235,7 +17321,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             True if successful, False otherwise
         """
         try:
-            self.logger.info(f"🚀 Copying relationships from {source_key} to {target_key}")
+            self.logger.debug(f"🚀 Copying relationships from {source_key} to {target_key}")
 
             # Define collections to copy relationships from
             edge_collections = [
@@ -17277,11 +17363,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             txn_id=transaction
                         )
 
-                    self.logger.info(
+                    self.logger.debug(
                         f"✅ Copied {len(edges)} edges from {collection}"
                     )
 
-            self.logger.info(f"✅ Successfully copied all relationships from {source_key} to {target_key}")
+            self.logger.debug(f"✅ Successfully copied all relationships from {source_key} to {target_key}")
             return True
 
         except Exception as e:
@@ -17511,7 +17597,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if r and r.get("virtualRecordId") and r.get("recordId")
             } if results else {}
 
-            self.logger.info(
+            self.logger.debug(
                 f"Connector {connector_id}: found {len(virtual_id_to_record_id)} virtualRecordIds in {elapsed:.3f}s"
             )
             return virtual_id_to_record_id
@@ -17683,7 +17769,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if r and r.get("virtualRecordId") and r.get("recordId")
             } if results else {}
 
-            self.logger.info(
+            self.logger.debug(
                 f"KB query ({kb_filter_info}): found {len(virtual_id_to_record_id)} virtualRecordIds in {elapsed:.3f}s"
             )
             return virtual_id_to_record_id
@@ -17801,7 +17887,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             virtual_id_to_record_id[vid] = rid
 
             total_time = time.time() - start_time
-            self.logger.info(
+            self.logger.debug(
                 f"Found {len(virtual_id_to_record_id)} unique virtualRecordIds "
                 f"in {total_time:.3f}s"
             )
@@ -17876,7 +17962,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             List[str]: List of record keys that match the criteria
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 "🔍 Finding records with virtualRecordId: %s", virtual_record_id
             )
 
@@ -17905,7 +17991,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Extract record keys from results
             record_keys = [result for result in results if result]
 
-            self.logger.info(
+            self.logger.debug(
                 "✅ Found %d records with virtualRecordId %s",
                 len(record_keys),
                 virtual_record_id
@@ -19603,7 +19689,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.error(f"Failed to update agent {agent_id}")
                 return False
 
-            self.logger.info(f"Successfully updated agent {agent_id}")
+            self.logger.debug(f"Successfully updated agent {agent_id}")
             return True
 
         except Exception as e:
@@ -19647,7 +19733,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.error(f"Failed to delete agent {agent_id}")
                 return False
 
-            self.logger.info(f"Successfully deleted agent {agent_id}")
+            self.logger.debug(f"Successfully deleted agent {agent_id}")
             return True
 
         except Exception as e:
@@ -19866,7 +19952,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             agents_deleted = 1 if deleted_agents and len(deleted_agents) > 0 else 0
 
-            self.logger.info(
+            self.logger.debug(
                 f"Hard deleted agent {agent_id}: {agents_deleted} agent, "
                 f"{toolsets_deleted} toolsets, {tools_deleted} tools, "
                 f"{knowledge_deleted} knowledge, {edges_deleted} edges"
@@ -20078,7 +20164,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if deleted_agents:
                 agents_deleted = len(deleted_agents)
 
-            self.logger.info(
+            self.logger.debug(
                 f"Hard deleted {agents_deleted} agents, {toolsets_deleted} toolsets, "
                 f"{tools_deleted} tools, {knowledge_deleted} knowledge, and {edges_deleted} edges"
             )
@@ -20196,7 +20282,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             deleted_permissions = await self.execute_query(batch_delete_query, bind_vars=bind_vars, transaction=transaction)
 
             deleted_count = len(deleted_permissions) if deleted_permissions else 0
-            self.logger.info(f"Unshared agent {agent_id}: removed {deleted_count} permissions")
+            self.logger.debug(f"Unshared agent {agent_id}: removed {deleted_count} permissions")
 
             return {
                 "success": True,
@@ -20266,7 +20352,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             updated_users = sum(1 for perm in updated_permissions if perm.get("type") == "USER")
             updated_teams = sum(1 for perm in updated_permissions if perm.get("type") == "TEAM")
 
-            self.logger.info(f"Successfully updated {len(updated_permissions)} permissions for agent {agent_id} to role {role}")
+            self.logger.debug(f"Successfully updated {len(updated_permissions)} permissions for agent {agent_id} to role {role}")
 
             return {
                 "success": True,
@@ -20397,7 +20483,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "user_id": user_id,
             }
 
-            self.logger.info(f"Getting all agent templates accessible by user {user_id}")
+            self.logger.debug(f"Getting all agent templates accessible by user {user_id}")
             result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
             return result if result else []
 
@@ -20482,7 +20568,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "user_id": user_id,
             }
 
-            self.logger.info(f"Getting template {template_id} accessible by user {user_id}")
+            self.logger.debug(f"Getting template {template_id} accessible by user {user_id}")
             result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
 
             if not result or len(result) == 0 or result[0] is None:
@@ -20497,7 +20583,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def share_agent_template(self, template_id: str, user_id: str, user_ids: list[str] | None = None, team_ids: list[str] | None = None, transaction: str | None = None) -> bool | None:
         """Share an agent template with users"""
         try:
-            self.logger.info(f"Sharing agent template {template_id} with users {user_ids}")
+            self.logger.debug(f"Sharing agent template {template_id} with users {user_ids}")
 
             user_owner_access_query = f"""
             FOR perm IN {CollectionNames.PERMISSION.value}
@@ -20639,7 +20725,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.error(f"Failed to delete template {template_id}")
                 return False
 
-            self.logger.info(f"Successfully deleted template {template_id}")
+            self.logger.debug(f"Successfully deleted template {template_id}")
             return True
 
         except Exception as e:
@@ -20703,7 +20789,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.error(f"Failed to update template {template_id}")
                 return False
 
-            self.logger.info(f"Successfully updated template {template_id}")
+            self.logger.debug(f"Successfully updated template {template_id}")
             return True
 
         except Exception as e:

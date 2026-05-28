@@ -1,10 +1,11 @@
 """Additional unit tests for app.utils.streaming targeting uncovered branches."""
 
 import logging
+import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import ValidationError
 
 from app.utils.streaming import (
@@ -1498,6 +1499,458 @@ class TestStreamContentEmptyErrorBody:
         async def fake_coroutine():
             return "https://example.com"
 
+        # Use a non-awaitable object; a coroutine would emit RuntimeWarning when garbage-collected.
         with pytest.raises(TypeError, match="Expected signed_url to be a string"):
-            async for _ in stream_content(fake_coroutine()):
+            async for _ in stream_content(object()):
                 pass
+
+
+# ---------------------------------------------------------------------------
+# execute_tool_calls — web records, deferred tools, threshold empty results,
+# ContentHandler tool instructions
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteToolCallsWebAndDeferred:
+    """Cover lines 499, 622, 637–646, 726→734 (empty search), 749, 766–777."""
+
+    @pytest.mark.asyncio
+    async def test_web_search_tool_appends_web_records(self):
+        from app.utils.streaming import execute_tool_calls
+
+        mock_tool = MagicMock()
+        mock_tool.name = "web_search"
+        mock_tool.arun = AsyncMock(
+            return_value={
+                "ok": True,
+                "web_results": [{"title": "T", "link": "https://ex.com", "snippet": "snip"}],
+                "query": "q",
+            }
+        )
+
+        ai_msg = AIMessage(
+            content="",
+            tool_calls=[{"name": "web_search", "args": {}, "id": "c1"}],
+        )
+
+        async def mock_call_aiter(*args, **kwargs):
+            yield {"event": "tool_calls", "data": {"ai": ai_msg}}
+
+        with patch("app.utils.streaming.call_aiter_llm_stream", side_effect=mock_call_aiter), patch(
+            "app.utils.streaming.bind_tools_for_llm", return_value=MagicMock()
+        ):
+            complete = None
+            async for event in execute_tool_calls(
+                llm=MagicMock(),
+                messages=[HumanMessage(content="hi")],
+                tools=[mock_tool],
+                tool_runtime_kwargs={"config_service": AsyncMock()},
+                final_results=[],
+                virtual_record_id_to_result={},
+                blob_store=MagicMock(),
+                all_queries=["q"],
+                retrieval_service=AsyncMock(),
+                user_id="u1",
+                org_id="o1",
+                context_length=128000,
+            ):
+                if event.get("event") == "tool_execution_complete":
+                    complete = event
+
+        assert complete is not None
+        web = complete["data"].get("web_records", [])
+        assert any(r.get("source_type") == "web" for r in web)
+
+    @pytest.mark.asyncio
+    async def test_deferred_tool_as_list_attached_after_trigger(self):
+        from app.utils.streaming import execute_tool_calls
+
+        trigger_tool = MagicMock()
+        trigger_tool.name = "trigger_tool"
+        trigger_tool.arun = AsyncMock(
+            return_value={"ok": True, "result_type": "content", "content": "t"}
+        )
+
+        extra_tool = MagicMock()
+        extra_tool.name = "extra_tool"
+        extra_tool.arun = AsyncMock(
+            return_value={"ok": True, "result_type": "content", "content": "x"}
+        )
+
+        class SimpleChunk:
+            def __init__(self, content, tool_calls=None):
+                self.content = content
+                self.tool_calls = tool_calls or []
+
+            def __add__(self, other):
+                tc = (self.tool_calls or []) + (getattr(other, "tool_calls", None) or [])
+                return SimpleChunk(self.content + getattr(other, "content", ""), tc)
+
+        hop = {"n": 0}
+
+        async def mock_astream(messages, config=None):
+            hop["n"] += 1
+            if hop["n"] == 1:
+                yield SimpleChunk(
+                    "",
+                    tool_calls=[
+                        {"name": "trigger_tool", "args": {}, "id": "t1"},
+                    ],
+                )
+            else:
+                yield SimpleChunk("", tool_calls=[])
+
+        mock_llm = MagicMock()
+        mock_llm.bind_tools = MagicMock(side_effect=RuntimeError("no bind"))
+        mock_llm.astream = mock_astream
+
+        async for _ in execute_tool_calls(
+            llm=mock_llm,
+            messages=[HumanMessage(content="hi")],
+            tools=[trigger_tool],
+            tool_runtime_kwargs={"has_sql_connector": False},
+            final_results=[],
+            virtual_record_id_to_result={},
+            blob_store=MagicMock(),
+            all_queries=["q"],
+            retrieval_service=AsyncMock(),
+            user_id="u1",
+            org_id="o1",
+            context_length=100000,
+            defer_tool_until_called_name="trigger_tool",
+            deferred_tool=[extra_tool],
+        ):
+            pass
+
+        assert mock_llm.bind_tools.call_count >= 2
+        bound_tools = mock_llm.bind_tools.call_args_list[1][0][0]
+        assert {t.name for t in bound_tools} == {"trigger_tool", "extra_tool"}
+
+    @pytest.mark.asyncio
+    async def test_token_threshold_empty_search_results_skips_flatten(self):
+        from app.utils.streaming import execute_tool_calls
+
+        mock_tool = MagicMock()
+        mock_tool.name = "search"
+        mock_tool.arun = AsyncMock(
+            return_value={
+                "ok": True,
+                "records": [{"virtual_record_id": "vr1", "content": "test"}],
+                "record_count": 1,
+            }
+        )
+
+        ai_msg = AIMessage(
+            content="",
+            tool_calls=[{"name": "search", "args": {}, "id": "c1"}],
+        )
+
+        async def mock_call_aiter(*args, **kwargs):
+            yield {"event": "tool_calls", "data": {"ai": ai_msg}}
+
+        with patch("app.utils.streaming.call_aiter_llm_stream", side_effect=mock_call_aiter), patch(
+            "app.utils.streaming.bind_tools_for_llm", return_value=MagicMock()
+        ), patch(
+            "app.utils.streaming.record_to_message_content",
+            return_value=([{"type": "text", "text": "content"}], MagicMock()),
+        ), patch("app.utils.streaming.count_tokens", return_value=(100000, 50000)), patch(
+            "app.utils.streaming.get_vectorDb_limit", return_value=100
+        ):
+            mock_retrieval = AsyncMock()
+            mock_retrieval.search_with_filters = AsyncMock(
+                return_value={"searchResults": [], "status_code": 200}
+            )
+            flat = AsyncMock()
+            with patch("app.utils.streaming.get_flattened_results", new=flat):
+                events = []
+                async for event in execute_tool_calls(
+                    llm=MagicMock(),
+                    messages=[],
+                    tools=[mock_tool],
+                    tool_runtime_kwargs={},
+                    final_results=[],
+                    virtual_record_id_to_result={},
+                    blob_store=MagicMock(),
+                    all_queries=["q"],
+                    retrieval_service=mock_retrieval,
+                    user_id="u1",
+                    org_id="o1",
+                    context_length=128000,
+                ):
+                    events.append(event)
+            flat.assert_not_called()
+            assert any(e.get("event") == "tool_success" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_content_handler_appends_tool_instructions_to_human_message(self):
+        from app.utils.streaming import execute_tool_calls
+
+        mock_tool = MagicMock()
+        mock_tool.name = "execute_sql_query"
+        mock_tool.arun = AsyncMock(
+            return_value={
+                "ok": True,
+                "result_type": "content",
+                "content": "rows: 1",
+            }
+        )
+
+        class SimpleChunk:
+            def __init__(self, content, tool_calls=None):
+                self.content = content
+                self.tool_calls = tool_calls or []
+
+            def __add__(self, other):
+                tc = (self.tool_calls or []) + (getattr(other, "tool_calls", None) or [])
+                return SimpleChunk(self.content + getattr(other, "content", ""), tc)
+
+        hop = {"n": 0}
+
+        async def mock_astream(messages, config=None):
+            hop["n"] += 1
+            if hop["n"] == 1:
+                yield SimpleChunk(
+                    "",
+                    tool_calls=[
+                        {"name": "execute_sql_query", "args": {}, "id": "c1"},
+                    ],
+                )
+            else:
+                yield SimpleChunk("", tool_calls=[])
+
+        mock_llm = MagicMock()
+        mock_llm.bind_tools = MagicMock(side_effect=RuntimeError("no bind"))
+        mock_llm.astream = mock_astream
+
+        human = HumanMessage(content="Run a query")
+        messages = [human]
+        async for _ in execute_tool_calls(
+            llm=mock_llm,
+            messages=messages,
+            tools=[mock_tool],
+            tool_runtime_kwargs={"has_sql_connector": True},
+            final_results=[],
+            virtual_record_id_to_result={},
+            blob_store=MagicMock(),
+            all_queries=["q"],
+            retrieval_service=AsyncMock(),
+            user_id="u1",
+            org_id="o1",
+            context_length=100000,
+        ):
+            pass
+
+        hm_contents = [
+            m.content for m in messages if isinstance(m, HumanMessage) and isinstance(m.content, str)
+        ]
+        assert any("<tools>" in c for c in hm_contents)
+        assert any("execute_sql_query" in c for c in hm_contents)
+
+
+# ---------------------------------------------------------------------------
+# stream_llm_response_with_tools — early complete + conversation task markers
+# ---------------------------------------------------------------------------
+
+
+class TestStreamLlmResponseWithToolsEarlyComplete:
+    """Cover lines 1326–1329 (_append_task_markers on early complete)."""
+
+    @pytest.mark.asyncio
+    async def test_conversation_tasks_appended_on_early_complete(self):
+        from app.utils.streaming import stream_llm_response_with_tools
+
+        async def mock_execute(*args, **kwargs):
+            yield {
+                "event": "complete",
+                "data": {"answer": "done", "citations": [], "reason": None, "confidence": None},
+            }
+
+        task_row = {"fileName": "out.csv", "signedUrl": "https://bucket/out.csv"}
+
+        with patch("app.utils.streaming.execute_tool_calls", side_effect=mock_execute), patch(
+            "app.utils.conversation_tasks.await_and_collect_results",
+            new_callable=AsyncMock,
+            return_value=[task_row],
+        ):
+            events = []
+            async for event in stream_llm_response_with_tools(
+                llm=MagicMock(),
+                messages=[HumanMessage(content="hi")],
+                final_results=[],
+                all_queries=["q"],
+                retrieval_service=MagicMock(),
+                user_id="u1",
+                org_id="o1",
+                virtual_record_id_to_result={},
+                blob_store=MagicMock(),
+                is_multimodal_llm=False,
+                context_length=10000,
+                tools=[MagicMock()],
+                tool_runtime_kwargs={"config_service": MagicMock()},
+                conversation_id="conv-1",
+                mode="json",
+            ):
+                events.append(event)
+
+        done = next(e for e in events if e.get("event") == "complete")
+        assert "download_conversation_task[out.csv]" in (done["data"].get("answer") or "")
+
+
+# ---------------------------------------------------------------------------
+# call_aiter_llm_stream — dict token metadata emission (lines 1632–1636)
+# ---------------------------------------------------------------------------
+
+
+class TestCallAiterLlmStreamDictMetadata:
+    """When repeated dict snapshots add no safe answer progress, emit metadata."""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_dict_answer_yields_metadata(self):
+        from app.utils.streaming import call_aiter_llm_stream
+
+        snap = {"answer": "Hi"}
+
+        async def mock_aiter(llm, messages, parts=None):
+            yield snap
+            yield snap
+
+        with patch("app.utils.streaming.aiter_llm_stream", side_effect=mock_aiter), patch(
+            "app.utils.streaming.normalize_citations_and_chunks", return_value=("Hi", [])
+        ):
+            events = []
+            async for event in call_aiter_llm_stream(
+                llm=MagicMock(),
+                messages=[],
+                final_results=[],
+                records=[],
+                target_words_per_chunk=10,
+                original_llm=MagicMock(),
+            ):
+                events.append(event)
+
+        assert any(e.get("event") == "metadata" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# call_aiter_function — both mode branches
+# ---------------------------------------------------------------------------
+
+
+class TestCallAiterFunctionModeDispatch:
+    @pytest.mark.asyncio
+    async def test_json_mode_delegates_to_call_aiter_llm_stream(self):
+        from app.utils.streaming import call_aiter_function
+
+        async def fake_json_stream(*a, **k):
+            yield {"event": "complete", "data": {}}
+
+        with patch("app.utils.streaming.call_aiter_llm_stream", side_effect=fake_json_stream):
+            out = []
+            async for e in call_aiter_function(
+                MagicMock(),
+                [],
+                [],
+                mode="json",
+            ):
+                out.append(e)
+        assert out and out[0]["event"] == "complete"
+
+    @pytest.mark.asyncio
+    async def test_simple_mode_delegates_to_call_aiter_llm_stream_simple(self):
+        from app.utils.streaming import call_aiter_function
+
+        async def fake_simple_stream(*a, **k):
+            yield {"event": "complete", "data": {}}
+
+        with patch(
+            "app.utils.streaming.call_aiter_llm_stream_simple",
+            side_effect=fake_simple_stream,
+        ):
+            out = []
+            async for e in call_aiter_function(
+                MagicMock(),
+                [],
+                [],
+                mode="simple",
+            ):
+                out.append(e)
+        assert out and out[0]["event"] == "complete"
+
+
+# ---------------------------------------------------------------------------
+# call_aiter_llm_stream_simple — skip citation reflection when web_search
+# ---------------------------------------------------------------------------
+
+
+class TestCallAiterLlmStreamSimpleWebSearchSkipsReflection:
+    @pytest.mark.asyncio
+    async def test_no_reflection_when_chat_mode_web_search(self):
+        from app.utils.streaming import call_aiter_llm_stream_simple
+
+        async def mock_aiter(llm, messages, parts=None):
+            yield "bad [1](http://evil/x#blockIndex=0)"
+
+        with patch("app.utils.streaming.aiter_llm_stream", side_effect=mock_aiter), patch(
+            "app.utils.streaming.detect_hallucinated_citation_urls",
+            return_value=["http://evil/x#blockIndex=0"],
+        ), patch(
+            "app.utils.streaming.normalize_citations_and_chunks",
+            return_value=("normalized", []),
+        ):
+            events = []
+            async for event in call_aiter_llm_stream_simple(
+                llm=MagicMock(),
+                messages=[HumanMessage(content="q")],
+                final_results=[],
+                records=[],
+                target_words_per_chunk=10,
+                original_llm=MagicMock(),
+                chat_mode="web_search",
+            ):
+                events.append(event)
+
+        assert not any(e.get("event") == "restreaming" for e in events)
+        assert any(e.get("event") == "complete" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# Opik configure failure at import time (lines 68–71) via module reload
+# ---------------------------------------------------------------------------
+
+
+class TestOpikConfigureImportFailure:
+    def test_configure_exception_sets_tracer_none(self, monkeypatch):
+        import importlib
+        import sys
+
+        monkeypatch.setenv("OPIK_API_KEY", "test-key")
+        monkeypatch.setenv("OPIK_WORKSPACE", "test-ws")
+
+        opik_mod = types.ModuleType("opik")
+
+        def configure(**kwargs):
+            raise RuntimeError("opik unavailable")
+
+        opik_mod.configure = configure
+        integrations = types.ModuleType("opik.integrations")
+        langchain_int = types.ModuleType("opik.integrations.langchain")
+        langchain_int.OpikTracer = MagicMock()
+
+        sys.modules["opik"] = opik_mod
+        sys.modules["opik.integrations"] = integrations
+        sys.modules["opik.integrations.langchain"] = langchain_int
+
+        import app.utils.streaming as sm
+
+        importlib.reload(sm)
+        assert sm.opik_tracer is None
+
+        monkeypatch.delenv("OPIK_API_KEY", raising=False)
+        monkeypatch.delenv("OPIK_WORKSPACE", raising=False)
+        for key in (
+            "opik",
+            "opik.integrations",
+            "opik.integrations.langchain",
+        ):
+            sys.modules.pop(key, None)
+        importlib.reload(sm)

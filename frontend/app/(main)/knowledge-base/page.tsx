@@ -43,6 +43,7 @@ import {
   mergeChildrenIntoTree,
   categorizeNode,
   buildConnectorAppSidebarTree,
+  treeHasNodeWithId,
 } from './utils/tree-builder';
 import {
   getSourceDisplay,
@@ -64,9 +65,15 @@ import {
 } from './url-params';
 import { getIsAllRecordsMode, buildNavUrl as buildCleanNavUrl } from './utils/nav';
 import { FOLDER_REINDEX_DEPTH, SIDEBAR_PAGINATION_PAGE_SIZE } from './constants';
+import { sidebarNodeChildrenMetaFromResponse } from './utils/sidebar-child-pagination-meta';
 import { refreshKbTree } from './utils/refresh-kb-tree';
 import { getReindexSuccessTitle } from './utils/reindex-label';
 import { getCollectionsHubBootstrapFromToken } from './utils/collections-hub-app';
+import {
+  resolveHubNodeNotFoundNavigation,
+  resolvePostDeleteNavigation,
+  shouldSilentlyRecoverHubNotFound,
+} from './utils/post-delete-navigation';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { toast } from '@/lib/store/toast-store';
 import { FilePreviewSidebar, FilePreviewFullscreen } from '@/app/components/file-preview';
@@ -77,6 +84,7 @@ import {
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
+import { ErrorType, isProcessedError } from '@/lib/api/api-error';
 
 function KnowledgeBasePageContent() {
   const router = useRouter();
@@ -90,6 +98,9 @@ function KnowledgeBasePageContent() {
   const folderId = searchParams.get('folderId');
   const nodeId = searchParams.get('nodeId');
 
+  /** Suppress global Not Found toast for fetches racing a post-delete URL update */
+  const pendingSilentNotFoundNodeIdsRef = useRef(new Set<string>());
+
   const {
     // Collections mode state
     currentFolderId: storeFolderId,
@@ -101,6 +112,7 @@ function KnowledgeBasePageContent() {
     setCategorizedNodes,
     cacheNodeChildren,
     clearNodeCacheEntries,
+    purgeDeletedIdsFromSidebarChildrenCaches,
     tableData,
     isLoadingTableData,
     tableDataError,
@@ -249,6 +261,17 @@ function KnowledgeBasePageContent() {
   const firstCollectionId = firstCollectionNode?.id ?? null;
   const firstCollectionType = firstCollectionNode?.nodeType ?? null;
   const kbApp = useMemo(() => appNodes.find((node) => isKbCollectionsHubApp(node)) ?? null, [appNodes]);
+
+  /**
+   * Initial collections load defers table fetch until the sidebar tree can run.
+   * Must NOT flip on every categorizedNodes refresh (e.g. after delete) or we refetch
+   * with stale searchParams while the URL still points at a removed node → 404 loops.
+   */
+  const collectionsNavigationReady = useMemo(() => {
+    if (isAllRecordsMode) return true;
+    const isKbAppLoading = kbApp ? loadingAppIds.has(kbApp.id) : false;
+    return !(categorizedNodes === null && (isLoadingFlatCollections || isKbAppLoading));
+  }, [isAllRecordsMode, kbApp, categorizedNodes, isLoadingFlatCollections, loadingAppIds]);
 
   // Search bar state
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -741,11 +764,24 @@ function KnowledgeBasePageContent() {
           currentPagination
         );
 
+        const urlNodeIdForFetch =
+          searchParams.get('nodeId') ?? searchParams.get('folderId');
+        const tableSnapshot = useKnowledgeBaseStore.getState().tableData;
+        const suppressNotFoundToast = shouldSilentlyRecoverHubNotFound({
+          failedNodeId: nodeId,
+          urlNodeId: urlNodeIdForFetch,
+          tableData: tableSnapshot,
+          pendingSilentNotFoundNodeIds: pendingSilentNotFoundNodeIdsRef.current,
+        });
+
         const data = await KnowledgeHubApi.loadFolderData(
           nodeType as NodeType,
           nodeId,
-          params
+          params,
+          { suppressErrorToast: suppressNotFoundToast }
         );
+
+        pendingSilentNotFoundNodeIdsRef.current.delete(nodeId);
 
         setTableData(data);
 
@@ -867,10 +903,46 @@ function KnowledgeBasePageContent() {
           }
         }
 
+        useKnowledgeBaseStore.getState().reMergeCachedChildrenIntoTree();
+
       } catch (error) {
-        const status = (error as { statusCode?: number })?.statusCode;
+        const status = isProcessedError(error) ? error.statusCode : (error as { statusCode?: number })?.statusCode;
+        const isNotFound =
+          status === 404 || (isProcessedError(error) && error.type === ErrorType.NOT_FOUND);
         if (status === 403) {
           await handleAccessRevoked();
+        } else if (isNotFound) {
+          useKnowledgeBaseStore.getState().purgeDeletedIdsFromSidebarChildrenCaches([nodeId]);
+          const td = useKnowledgeBaseStore.getState().tableData;
+          const urlNodeId = searchParams.get('nodeId') ?? searchParams.get('folderId');
+          pendingSilentNotFoundNodeIdsRef.current.delete(nodeId);
+
+          const nav = resolveHubNodeNotFoundNavigation(nodeId, {
+            breadcrumbs: td?.breadcrumbs ?? null,
+            urlNodeId,
+            currentNodeId: td?.currentNode?.id ?? null,
+            parentNode: td?.parentNode ?? null,
+          });
+          if (nav.kind === 'navigate') {
+            clearTableData();
+            router.replace(
+              buildNavUrlFn(
+                { nodeType: nav.nodeType, nodeId: nav.nodeId },
+                isAllRecordsMode,
+                debouncedSearchQuery,
+                debouncedAllRecordsSearchQuery
+              )
+            );
+            await refreshKbTree();
+          } else {
+            // nav.kind === 'root' (or unreachable 'none' — resolveHubNodeNotFoundNavigation
+            // guarantees urlNodeId is at least failedNodeId so urlOrCurrentHit is always true).
+            clearTableData();
+            router.replace(
+              buildNavUrlFn({}, isAllRecordsMode, debouncedSearchQuery, debouncedAllRecordsSearchQuery)
+            );
+            await refreshKbTree();
+          }
         } else {
           console.error('Failed to fetch table data:', error);
           setTableDataError('Failed to load items. Please try again.');
@@ -892,6 +964,13 @@ function KnowledgeBasePageContent() {
       addNodes,
       setCategorizedNodes,
       handleAccessRevoked,
+      clearTableData,
+      refreshKbTree,
+      router,
+      searchParams,
+      isAllRecordsMode,
+      debouncedSearchQuery,
+      debouncedAllRecordsSearchQuery,
     ]
   );
 
@@ -908,11 +987,7 @@ function KnowledgeBasePageContent() {
   // which updates searchParams and triggers this effect to refetch with latest store values.
   useEffect(() => {
     if (isAllRecordsMode) return;
-
-    const isKbAppLoading = kbApp ? loadingAppIds.has(kbApp.id) : false;
-    const shouldDeferInitialSelection =
-      categorizedNodes === null && (isLoadingFlatCollections || isKbAppLoading);
-    if (shouldDeferInitialSelection) return;
+    if (!collectionsNavigationReady) return;
 
     const nodeType = searchParams.get('nodeType');
     const nodeId = searchParams.get('nodeId');
@@ -932,10 +1007,7 @@ function KnowledgeBasePageContent() {
     }
   }, [
     isAllRecordsMode,
-    categorizedNodes,
-    isLoadingFlatCollections,
-    loadingAppIds,
-    kbApp,
+    collectionsNavigationReady,
     searchParams,
     fetchTableData,
     clearTableData,
@@ -989,6 +1061,27 @@ function KnowledgeBasePageContent() {
   useEffect(() => {
     setCurrentViewMode(pageViewMode);
   }, [pageViewMode, setCurrentViewMode]);
+
+  // Bridge: consume pending sidebar actions (reindex/delete/create-collection) and open corresponding dialogs
+  useEffect(() => {
+    if (!pendingSidebarAction) return;
+    if (pendingSidebarAction.type === 'create-collection') {
+      setCreateFolderContext({ type: 'collection' });
+      setIsCreateFolderDialogOpen(true);
+    } else {
+      const { type, nodeId, nodeName, nodeType, rootKbId, statusFilters } = pendingSidebarAction;
+      if (type === 'reindex') {
+        handleReindexClick(
+          { id: nodeId, name: nodeName, nodeType } as KnowledgeHubNode,
+          statusFilters
+        );
+      } else if (type === 'delete') {
+        setItemToDelete({ id: nodeId, name: nodeName, nodeType, rootKbId });
+        setIsDeleteDialogOpen(true);
+      }
+    }
+    clearPendingSidebarAction();
+  }, [pendingSidebarAction, clearPendingSidebarAction]);
 
   // Clear search when switching between Collections and All Records modes
   // Skip initial mount to avoid clearing URL-hydrated search/pagination values
@@ -1115,6 +1208,93 @@ function KnowledgeBasePageContent() {
     [isAllRecordsMode, setAllRecordsSearchQuery, setSearchQuery]
   );
 
+  const refreshAllRecordsSidebarForCurrentRoute = useCallback(async () => {
+    if (!isAllRecordsMode) return;
+
+    const nodeType = searchParams.get('nodeType') as NodeType | null;
+    const nodeId = searchParams.get('nodeId');
+    if (!nodeType || !nodeId) return;
+
+    try {
+      const response = await KnowledgeHubApi.getNodeChildren(nodeType, nodeId, {
+        onlyContainers: true,
+        page: 1,
+        limit: SIDEBAR_PAGINATION_PAGE_SIZE,
+        include: 'counts',
+        sortBy: 'name',
+        sortOrder: 'asc',
+      });
+
+      const foldersCount =
+        response.counts?.items?.find((x) => x.label === 'folders')?.count ?? response.items.length;
+      const effectiveHasChildFolders = foldersCount > 0;
+      const state = useKnowledgeBaseStore.getState();
+      const selectedApp = nodeType === 'app' ? state.appNodes.find((app) => app.id === nodeId) : null;
+
+      if (selectedApp) {
+        state.cacheAppChildren(selectedApp.id, response.items);
+        const p = response.pagination;
+        state.setAppChildPagination(
+          selectedApp.id,
+          p
+            ? {
+                hasNext: p.hasNext,
+                nextPage: p.hasNext ? p.page + 1 : p.page,
+              }
+            : { hasNext: false, nextPage: 1 }
+        );
+
+        if (isKbCollectionsHubApp(selectedApp)) {
+          state.setNodes(response.items);
+          state.setCategorizedNodes(categorizeNodes(response.items, `apps/${selectedApp.id}`));
+          state.reMergeCachedChildrenIntoTree();
+        } else {
+          state.addNodes(response.items);
+          state.setConnectorAppTree(
+            selectedApp.id,
+            buildConnectorAppSidebarTree(selectedApp.id, response.items)
+          );
+        }
+        return;
+      }
+
+      state.cacheNodeChildren(nodeId, response.items);
+      state.setNodeChildrenPagination(
+        nodeId,
+        sidebarNodeChildrenMetaFromResponse(
+          response.pagination,
+          response.items.length,
+          SIDEBAR_PAGINATION_PAGE_SIZE,
+          nodeType
+        )
+      );
+      state.addNodes(response.items);
+
+      const latest = useKnowledgeBaseStore.getState();
+      if (latest.categorizedNodes) {
+        const parentNode = latest.nodes.find((n) => n.id === nodeId);
+        if (parentNode) {
+          const section = categorizeNode(parentNode);
+          const updatedTree = mergeChildrenIntoTree(
+            latest.categorizedNodes[section],
+            nodeId,
+            response.items,
+            effectiveHasChildFolders
+          );
+          latest.setCategorizedNodes({ ...latest.categorizedNodes, [section]: updatedTree });
+        }
+      }
+
+      for (const [appId, tree] of Array.from(latest.connectorAppTrees.entries())) {
+        if (!treeHasNodeWithId(tree, nodeId)) continue;
+        latest.mergeConnectorAppTreeChildren(appId, nodeId, response.items, effectiveHasChildFolders);
+        break;
+      }
+    } catch (error) {
+      console.error('Failed to refresh all-records sidebar for current route', { nodeId, error });
+    }
+  }, [isAllRecordsMode, searchParams]);
+
   // Refetch main table for current route context (shared by handleRefresh and refreshData)
   const refetchMainTableForCurrentRoute = useCallback(async () => {
     if (isAllRecordsMode) {
@@ -1143,10 +1323,11 @@ function KnowledgeBasePageContent() {
     setIsRefreshing(true);
     try {
       await refetchMainTableForCurrentRoute();
+      await refreshAllRecordsSidebarForCurrentRoute();
     } finally {
       setIsRefreshing(false);
     }
-  }, [refetchMainTableForCurrentRoute, setIsRefreshing]);
+  }, [refetchMainTableForCurrentRoute, refreshAllRecordsSidebarForCurrentRoute, setIsRefreshing]);
 
   // Refresh orchestrator: Syncs sidebar and content area after mutations (delete, create, etc.)
   const refreshData = useCallback(async () => {
@@ -1169,6 +1350,63 @@ function KnowledgeBasePageContent() {
 
     console.log('✅ Data refresh complete');
   }, [refetchMainTableForCurrentRoute]);
+
+  /** After deletes (or store-driven refresh with deleted ids), navigate to parent/root or full refresh. */
+  const refreshDataAfterDelete = useCallback(
+    async (deletedIds?: string[]) => {
+      if (isAllRecordsMode || !deletedIds?.length) {
+        await refreshData();
+        return;
+      }
+
+      for (const id of deletedIds) {
+        if (id) pendingSilentNotFoundNodeIdsRef.current.add(id);
+      }
+
+      // Purge deleted nodes from the sidebar cache. Runs synchronously before the first
+      // await, giving instant visual feedback. When called from store.deleteNode the store
+      // has already done an optimistic purge; this second call is idempotent (no-op).
+      // Needed here for direct-API callers (e.g. handleSidebarDeleteConfirm) that do NOT
+      // go through store.deleteNode.
+      purgeDeletedIdsFromSidebarChildrenCaches(deletedIds);
+
+      const snapshot = useKnowledgeBaseStore.getState().tableData;
+      const urlNodeId = searchParams.get('nodeId') ?? searchParams.get('folderId');
+      const nav = resolvePostDeleteNavigation({
+        deletedIds,
+        breadcrumbs: snapshot?.breadcrumbs ?? null,
+        urlNodeId,
+        currentNodeId: snapshot?.currentNode?.id ?? null,
+        parentNode: snapshot?.parentNode ?? null,
+      });
+
+      if (nav.kind === 'navigate') {
+        clearTableData();
+        // Navigate before sidebar refresh: refreshKbTree updates categorizedNodes and retriggers
+        // the URL→fetch effect while searchParams can still point at the deleted node → 404 loop.
+        router.replace(buildNavUrl({ nodeType: nav.nodeType, nodeId: nav.nodeId }));
+        await refreshKbTree();
+        return;
+      }
+      if (nav.kind === 'root') {
+        clearTableData();
+        router.replace(buildNavUrl({}));
+        await refreshKbTree();
+        return;
+      }
+      await refreshData();
+    },
+    [
+      isAllRecordsMode,
+      refreshData,
+      searchParams,
+      clearTableData,
+      refreshKbTree,
+      router,
+      buildNavUrl,
+      purgeDeletedIdsFromSidebarChildrenCaches,
+    ]
+  );
 
   // Handle create folder - context-aware
   const handleCreateFolder = useCallback(() => {
@@ -1861,7 +2099,10 @@ function KnowledgeBasePageContent() {
   );
 
   // Handle reindex - directly reindexes the item with loading/success/error toasts
-  const handleReindexClick = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem) => {
+  const handleReindexClick = useCallback(async (
+    item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem,
+    statusFilters?: string[]
+  ) => {
 
     const toastId = toast.loading('Re-indexing...', {
       icon: 'lap_timer',
@@ -1872,13 +2113,13 @@ function KnowledgeBasePageContent() {
 
       if (nodeType === 'recordGroup') {
         // RecordGroups are connector-app folders — use record-group endpoint
-        await KnowledgeBaseApi.reindexRecordGroup(item.id);
+        await KnowledgeBaseApi.reindexRecordGroup(item.id, statusFilters);
       } else if (nodeType === 'folder') {
         // KB folders — reindex all children
-        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
+        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH, statusFilters);
       } else {
         // Regular records — include children in reindex
-        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
+        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH, statusFilters);
       }
 
       toast.update(toastId, {
@@ -1906,7 +2147,7 @@ function KnowledgeBasePageContent() {
           icon: 'refresh',
           onClick: () => {
             toast.dismiss(toastId);
-            handleReindexClick(item);
+            handleReindexClick(item, statusFilters);
           },
         },
       });
@@ -2052,42 +2293,29 @@ function KnowledgeBasePageContent() {
   // Sidebar: Delete confirm handler
   const handleSidebarDeleteConfirm = useCallback(async () => {
     if (!itemToDelete) return;
+    const deletedId = itemToDelete.id;
+    const deletedNodeType = itemToDelete.nodeType;
     setIsDeleting(true);
     try {
       await KnowledgeBaseApi.deleteNode({
-        nodeId: itemToDelete.id,
-        nodeType: itemToDelete.nodeType,
+        nodeId: deletedId,
+        nodeType: deletedNodeType,
         rootKbId: itemToDelete.rootKbId,
       });
       toast.success(`"${itemToDelete.name}" deleted successfully`);
       setIsDeleteDialogOpen(false);
-
-      // If we deleted the collection we're currently viewing (or an ancestor), navigate away
-      // and only refresh the sidebar tree (skip content fetch for the now-deleted node)
-      const currentNodeId = searchParams.get('nodeId');
-      const currentBreadcrumbIds = tableData?.breadcrumbs?.map(b => b.id) ?? [];
-      const deletedCurrentView =
-        itemToDelete.id === currentNodeId ||
-        currentBreadcrumbIds.includes(itemToDelete.id);
-
       setItemToDelete(null);
-
-      if (deletedCurrentView) {
-        // Clear selectedNode immediately to prevent stale API calls
-        // (e.g. permissions fetch for the now-deleted node)
-        clearTableData();
-        await refreshKbTree();
-        router.push(buildNavUrl({}));
-      } else {
-        await refreshData();
-      }
+      await refreshDataAfterDelete([deletedId]);
     } catch (error: unknown) {
       const err = error as { response?: { data?: { message?: string } }; message?: string };
-      toast.error(err?.response?.data?.message || `Failed to delete ${itemToDelete.nodeType === 'folder' ? 'folder' : 'collection'}`);
+      toast.error(
+        err?.response?.data?.message ||
+          `Failed to delete ${deletedNodeType === 'folder' ? 'folder' : 'collection'}`
+      );
     } finally {
       setIsDeleting(false);
     }
-  }, [itemToDelete, refreshData, refreshKbTree, clearTableData, searchParams, tableData?.breadcrumbs, router, buildNavUrl]);
+  }, [itemToDelete, refreshDataAfterDelete]);
 
   // Handle create sub-folder from move dialog
   // ========================================
@@ -2157,12 +2385,12 @@ function KnowledgeBasePageContent() {
         };
       });
 
-      await bulkDeleteSelected(items, refreshData);
+      await bulkDeleteSelected(items, refreshDataAfterDelete);
       setIsBulkDeleteDialogOpen(false);
     } finally {
       setIsBulkDeleting(false);
     }
-  }, [selectedItemsArray, selectedKbId, bulkDeleteSelected, refreshData]);
+  }, [selectedItemsArray, selectedKbId, bulkDeleteSelected, refreshDataAfterDelete]);
 
   // Derive current title based on mode
   const currentTitle = useMemo(() => {
@@ -2301,7 +2529,7 @@ function KnowledgeBasePageContent() {
           onCreateFolder={isAllRecordsMode ? undefined : handleCreateFolder}
           onUpload={isAllRecordsMode ? undefined : handleUpload}
           onGoToCollection={handleGoToCollection}
-          refreshData={refreshData}
+          refreshData={refreshDataAfterDelete}
         />
 
         {/* Selection Action Bar - shows when items are selected.

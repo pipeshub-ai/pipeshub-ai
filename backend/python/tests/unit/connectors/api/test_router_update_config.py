@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.api.router import (
     download_file,
@@ -1088,27 +1088,27 @@ class TestStreamRecordInternalGoogleDrivePaths:
 
         record = _mock_record(connector_name=connector_name, org_id=record_org_id)
 
-        graph_provider = AsyncMock()
-        graph_provider.get_record_by_id = AsyncMock(return_value=record)
-
         org_doc = {"_key": "org-1", "name": "Test Org"} if org_found else None
-        graph_provider.get_document = AsyncMock(return_value=org_doc)
+        connector_instance = {
+            "name": "My Drive",
+            "type": "googledrive",
+            "isActive": True,
+        }
 
-        connector_instance = {"name": "My Drive", "type": "googledrive"}
-
-        # Second call to get_document returns the connector instance
         async def _get_doc(doc_id, collection):
-            if collection == "orgs":
+            if collection == CollectionNames.ORGS.value:
                 return org_doc
             return connector_instance
 
+        graph_provider = AsyncMock()
+        graph_provider.get_record_by_id = AsyncMock(return_value=record)
         graph_provider.get_document = AsyncMock(side_effect=_get_doc)
 
         connector_obj = AsyncMock()
         connector_obj.get_app_name = MagicMock(return_value=app_name)
         connector_obj.stream_record = AsyncMock(return_value=b"file-bytes")
 
-        container = MagicMock()
+        container = _ContainerStub()
         if has_connector_obj:
             container.connectors_map = {"conn-1": connector_obj}
         else:
@@ -1127,6 +1127,8 @@ class TestStreamRecordInternalGoogleDrivePaths:
         }.get(k, default)
         req.app = MagicMock()
         req.app.container = container
+        req.app.state = MagicMock()
+        req.app.state.connector_registry = MagicMock()
 
         return req, graph_provider, config_service, connector_obj
 
@@ -1192,7 +1194,7 @@ class TestStreamRecordInternalGoogleDrivePaths:
                     # Retry with record org_id returns the org
                     return {"_key": "record-org-id", "name": "Record Org"}
             # connector instance
-            return {"name": "My Conn", "type": "slack"}
+            return {"name": "My Conn", "type": "slack", "isActive": True}
 
         graph_provider.get_document = AsyncMock(side_effect=_get_doc)
 
@@ -1215,6 +1217,8 @@ class TestStreamRecordInternalGoogleDrivePaths:
         }.get(k, default)
         req.app = MagicMock()
         req.app.container = container
+        req.app.state = MagicMock()
+        req.app.state.connector_registry = MagicMock()
 
         result = await stream_record_internal(req, "rec-1", graph_provider, config_service)
 
@@ -1300,10 +1304,21 @@ class TestDownloadFileErrorPaths:
 
         record = _mock_record(connector_name=Connectors.GOOGLE_DRIVE)
 
+        org_doc = {"_key": "org-1", "name": "Test Org"}
+        connector_instance_doc = {
+            "_key": "conn-1",
+            "name": "My Drive",
+            "type": connector_type,
+            "isActive": True,
+        }
+
+        async def _get_doc(doc_id, collection):
+            if collection == CollectionNames.ORGS.value:
+                return org_doc
+            return connector_instance_doc
+
         graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(
-            return_value={"_key": "org-1", "name": "Test Org", "type": connector_type}
-        )
+        graph_provider.get_document = AsyncMock(side_effect=_get_doc)
         graph_provider.get_record_by_id = AsyncMock(return_value=record)
 
         connector_obj = AsyncMock()
@@ -1313,17 +1328,17 @@ class TestDownloadFileErrorPaths:
         else:
             connector_obj.stream_record = AsyncMock(return_value=b"file-data")
 
-        container = MagicMock()
+        container = _ContainerStub()
         if has_connector_obj:
-            container.connectors_map = MagicMock()
-            container.connectors_map.get = MagicMock(return_value=connector_obj)
+            container.connectors_map = {"conn-1": connector_obj}
         else:
-            container.connectors_map = MagicMock()
-            container.connectors_map.get = MagicMock(return_value=None)
+            container.connectors_map = {}
 
         req = MagicMock()
         req.app = MagicMock()
         req.app.container = container
+        req.app.state = MagicMock()
+        req.app.state.connector_registry = MagicMock()
 
         return req, handler, graph_provider, connector_obj
 

@@ -111,6 +111,10 @@ spec:
             - name: QDRANT__CLUSTER__P2P__PEERS
               value: "{{- range $i := until (int .Values.qdrant.replicaCount) }}{{ include "pipeshub-ai.fullname" $ }}-qdrant-{{ $i }}.{{ include "pipeshub-ai.fullname" $ }}-qdrant-headless.{{ $.Release.Namespace }}.svc.cluster.local:6335{{ if lt $i (sub (int $.Values.qdrant.replicaCount) 1) }},{{ end }}{{- end }}"
           {{- end }}
+          {{- range $k, $v := .Values.qdrant.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+          {{- end }}
           volumeMounts:
             - name: storage
               mountPath: /qdrant/storage

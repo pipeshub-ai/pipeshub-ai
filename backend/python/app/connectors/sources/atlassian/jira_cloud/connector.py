@@ -1,4 +1,5 @@
 """Jira Cloud Connector Implementation"""
+import asyncio
 import base64
 import re
 from collections import defaultdict
@@ -12,6 +13,8 @@ from typing import (
 from urllib.parse import quote
 from uuid import uuid4
 
+import httpx  # type: ignore
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
@@ -740,7 +743,7 @@ async def adf_to_text_with_images(
         ])
     ])\
     .with_info(
-        "Important: In order for users to get access to Jira data, each user needs to make their email visible in their Jira account settings. Users can do this by going to their Jira profile settings and switching email visibility to Public."
+        "Users with private email visibility on Jira are automatically resolved if they exist in your PipesHub directory or any other connected source. Setting email visibility to Public makes the initial sync faster."
         + "\n\n"
         + CONNECTOR_EMAIL_IDENTITY_INFO
     )\
@@ -840,6 +843,9 @@ class JiraConnector(BaseConnector):
         # Per-issue attachments cache to avoid repeated API calls
         self._issue_attachments_cache: dict[str, list[dict[str, Any]]] = {}
 
+        # Tracks whether /applicationrole returned 403 (non-admin user)
+        self._app_roles_forbidden: bool = False
+
     # ============================================================================
     # Initialization & Configuration
     # ============================================================================
@@ -907,6 +913,14 @@ class JiraConnector(BaseConnector):
                 self.cloud_id = picked.id
                 self.site_url = picked.url
                 self.logger.info("✅ Jira client initialized with OAuth authentication")
+
+            if self.created_by:
+                try:
+                    creator = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                    if creator and getattr(creator, "email", None):
+                        self.creator_email = creator.email
+                except Exception as e:
+                    self.logger.warning("Could not resolve creator email for created_by %s: %s", self.created_by, e)
 
             return True
 
@@ -1131,7 +1145,7 @@ class JiraConnector(BaseConnector):
                     else:
                         self.logger.info("🔍 Project keys filter is empty, will fetch no projects")
             # Fetch projects
-            projects, raw_projects = await self._fetch_projects(allowed_keys, project_keys_operator)
+            projects, raw_projects = await self._fetch_projects(allowed_keys, project_keys_operator, jira_users)
 
             # Sync project roles BEFORE RecordGroups
             project_keys_for_roles = [proj.short_name for proj, _ in projects]
@@ -1525,12 +1539,129 @@ class JiraConnector(BaseConnector):
 
     async def _fetch_users(self) -> list[AppUser]:
         """
-        Fetch all active Jira users using DataSource
+        Fetch and resolve all active Jira users using a two-pass strategy:
+        1. Bulk fetch from Jira (public-email users resolved directly)
+        2. Reverse lookup for private-email users using PipesHub directory emails
         """
 
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
+        # ====================================================================
+        # Phase 1: DB reads (0 API calls)
+        # ====================================================================
+        cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+        pipeshub_users = await self.data_entities_processor.get_all_active_users()
+
+        cached_account_id_to_email: dict[str, str] = {
+            u.source_user_id: u.email
+            for u in cached_app_users
+            if u.source_user_id and u.email
+        }
+
+        pipeshub_emails: set[str] = {
+            u.email.lower() for u in pipeshub_users if u.email
+        }
+
+        # ====================================================================
+        # Phase 2: Jira bulk fetch (1 paginated API call)
+        # ====================================================================
+        raw_jira_users = await self._fetch_all_jira_users_bulk()
+
+        all_active_account_ids: set[str] = set()
+        visible_email_map: dict[str, str] = {}  # email.lower() -> accountId
+        account_id_to_display: dict[str, str] = {}
+
+        for user in raw_jira_users:
+            account_type = user.get("accountType", "")
+            if account_type != "atlassian":
+                continue
+            if not user.get("active", True):
+                continue
+
+            account_id = user.get("accountId")
+            if not account_id:
+                continue
+
+            all_active_account_ids.add(account_id)
+            account_id_to_display[account_id] = user.get("displayName", "")
+
+            email = user.get("emailAddress")
+            if email:
+                visible_email_map[email.lower()] = account_id
+
+        self.logger.info(
+            f"👥 Jira bulk: {len(all_active_account_ids)} active atlassian users, "
+            f"{len(visible_email_map)} with visible email"
+        )
+
+        # ====================================================================
+        # Phase 3: Merge into resolved set (in-memory, 0 API calls)
+        # ====================================================================
+        resolved: dict[str, AppUser] = {}  # accountId -> AppUser
+
+        # 3A: Public-email users from bulk (freshest data)
+        for email_lower, account_id in visible_email_map.items():
+            resolved[account_id] = AppUser(
+                app_name=self.connector_name,
+                connector_id=self.connector_id,
+                source_user_id=account_id,
+                org_id=self.data_entities_processor.org_id,
+                email=email_lower,
+                full_name=account_id_to_display.get(account_id, email_lower),
+                is_active=True
+            )
+
+        # 3B: Valid cached users (prior syncs, still active in Jira)
+        for account_id, email in cached_account_id_to_email.items():
+            if account_id in all_active_account_ids and account_id not in resolved:
+                resolved[account_id] = AppUser(
+                    app_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    source_user_id=account_id,
+                    org_id=self.data_entities_processor.org_id,
+                    email=email,
+                    full_name=account_id_to_display.get(account_id, email),
+                    is_active=True
+                )
+
+        # ====================================================================
+        # Phase 4: Determine if reverse lookup is needed
+        # ====================================================================
+        unresolved_account_ids = all_active_account_ids - set(resolved.keys())
+        unresolved_count = len(unresolved_account_ids)
+
+        resolved_emails = {u.email.lower() for u in resolved.values()}
+        candidate_emails = pipeshub_emails - resolved_emails
+        candidate_count = len(candidate_emails)
+
+        self.logger.info(
+            f"👥 Resolution state: {len(resolved)} resolved, "
+            f"{unresolved_count} unresolved Jira users, "
+            f"{candidate_count} PipesHub candidate emails"
+        )
+
+        # ====================================================================
+        # Phase 5: Reverse lookup (always runs when there are gaps to fill)
+        # ====================================================================
+        if unresolved_count > 0 and candidate_count > 0:
+            new_found = await self._resolve_private_email_users(
+                candidate_emails, unresolved_account_ids, resolved
+            )
+            self.logger.info(
+                f"👥 Reverse lookup resolved {new_found} additional users"
+            )
+        elif unresolved_count == 0:
+            self.logger.info("👥 All Jira users resolved, no reverse lookup needed")
+
+        self.logger.info(f"👥 Total: {len(resolved)} Jira AppUsers resolved")
+        return list(resolved.values())
+
+    async def _fetch_all_jira_users_bulk(self) -> list[dict[str, Any]]:
+        """
+        Paginated fetch of all Jira users via /rest/api/3/users/search.
+        Returns raw user dicts (unfiltered).
+        """
         users: list[dict[str, Any]] = []
         start_at = 0
         max_results_per_request = USER_PAGE_SIZE
@@ -1566,49 +1697,107 @@ class JiraConnector(BaseConnector):
 
             start_at += max_results_per_request
 
-        app_users: list[AppUser] = []
+        return users
 
-        for user in users:
-            account_id = user.get("accountId")
+    async def _resolve_private_email_users(
+        self,
+        candidate_emails: set[str],
+        unresolved_account_ids: set[str],
+        resolved: dict[str, "AppUser"]
+    ) -> int:
+        """
+        Reverse-lookup PipesHub emails against Jira to resolve private-email users.
+        Uses bounded concurrency and early termination.
+        Returns the number of newly resolved users.
+        """
+        unresolved_count = len(unresolved_account_ids)
+        new_found = 0
+        semaphore = asyncio.Semaphore(10)
+        datasource = await self._get_fresh_datasource()
 
-            # Only include active users
-            if not user.get("active", True):
-                continue
+        async def try_resolve_email(email: str) -> Optional[tuple[str, str, str]]:
+            """Returns (accountId, email, displayName) if found, else None."""
+            async with semaphore:
+                try:
+                    response = await datasource.find_users(query=email, maxResults=50)
 
-            # Skip users without email address
-            email = user.get("emailAddress")
-            if not email:
-                continue
+                    if response.status != HttpStatusCode.OK.value:
+                        return None
 
-            app_user = AppUser(
-                app_name=Connectors.JIRA,
-                connector_id=self.connector_id,
-                source_user_id=account_id,
-                org_id=self.data_entities_processor.org_id,
-                email=email,
-                full_name=user.get("displayName", email),
-                is_active=user.get("active", True)
-            )
-            app_users.append(app_user)
+                    results = self._safe_json_parse(response, f"find_users({email})")
+                    if not results or not isinstance(results, list):
+                        return None
 
-        self.logger.info(f"👥 Fetched {len(app_users)} active users with emails")
-        return app_users
+                    user = results[0]
+                    if not user:
+                        return None
+                    account_id = user.get("accountId")
+                    if not account_id:
+                        return None
+                    display_name = user.get("displayName") or email
+                    return (account_id, email, display_name)
+                except Exception as e:
+                    self.logger.debug(f"⚠️ Reverse lookup failed for {email}: {e}")
+                    return None
+
+        # Process in batches to allow early termination
+        batch_size = 20
+        email_list = list(candidate_emails)
+
+        for i in range(0, len(email_list), batch_size):
+            if new_found >= unresolved_count:
+                break
+
+            batch = email_list[i:i + batch_size]
+            tasks = [try_resolve_email(email) for email in batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for result in results:
+                if isinstance(result, Exception) or result is None:
+                    continue
+                account_id, email, display_name = result
+                if account_id not in resolved:
+                    resolved[account_id] = AppUser(
+                        app_name=self.connector_name,
+                        connector_id=self.connector_id,
+                        source_user_id=account_id,
+                        org_id=self.data_entities_processor.org_id,
+                        email=email,
+                        full_name=display_name,
+                        is_active=True
+                    )
+                    new_found += 1
+
+            if new_found >= unresolved_count:
+                break
+
+        return new_found
 
     async def _fetch_application_roles_to_groups_mapping(self) -> dict[str, list[dict[str, str]]]:
         """
         Fetch all application roles and their associated groups.
+        Always fetches fresh data from the API so that group membership
+        changes in Jira are picked up on every sync.
         """
-        if hasattr(self, '_app_roles_cache') and self._app_roles_cache:
-            return self._app_roles_cache
-
         mapping: dict[str, list[dict[str, str]]] = {}
+        self._app_roles_forbidden = False
 
         try:
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_all_application_roles()
 
             if response.status != HttpStatusCode.OK.value:
-                self.logger.warning(f"⚠️ Failed to fetch application roles: {response.text()}")
+                if response.status == HttpStatusCode.FORBIDDEN.value:
+                    self._app_roles_forbidden = True
+                    self.logger.warning(
+                        "⚠️ Application roles API returned 403 — configuring user is not a Jira admin. "
+                        "Projects whose permission scheme uses applicationRole holders will "
+                        "grant the configuring user direct access instead."
+                    )
+                else:
+                    self.logger.warning(
+                        "⚠️ Failed to fetch application roles (HTTP %s)", response.status
+                    )
                 return {}
 
             roles_data = response.json()
@@ -1625,8 +1814,6 @@ class JiraConnector(BaseConnector):
                     ]
                     self.logger.debug(f"ApplicationRole '{role_key}' → {len(mapping[role_key])} groups")
 
-            # Cache the result
-            self._app_roles_cache = mapping
             self.logger.info(f"🔐 Fetched {len(mapping)} application roles with group mappings")
 
         except Exception as e:
@@ -1634,10 +1821,46 @@ class JiraConnector(BaseConnector):
 
         return mapping
 
+    def _fallback_permissions_for_forbidden_scheme(
+        self,
+        project_key: str,
+        status: int,
+        stage: str,
+    ) -> list[Permission]:
+        """Build a single-user BROWSE permission for the configuring user when
+        the permission-scheme endpoints return 401/403 for this project.
+
+        Mirrors the ``_app_roles_forbidden`` fallback in
+        ``_fetch_application_roles_to_groups_mapping``: rather than indexing
+        the project with no ACLs (which would silently hide it from search
+        results across the org), give the configuring user direct READ access
+        so they can still discover their own data.
+        """
+        if self.creator_email:
+            self.logger.warning(
+                "⚠️ %s for %s returned %s — configuring user lacks Administer "
+                "Projects. Granting configuring user '%s' direct BROWSE access "
+                "instead of dropping all ACLs for this project.",
+                stage, project_key, status, self.creator_email,
+            )
+            return [Permission(
+                entity_type=EntityType.USER,
+                email=self.creator_email,
+                type=PermissionType.READ,
+            )]
+
+        self.logger.warning(
+            "⚠️ %s for %s returned %s and no configuring user email resolved — "
+            "project will be indexed with no BROWSE permissions.",
+            stage, project_key, status,
+        )
+        return []
+
     async def _fetch_project_permission_scheme(
         self,
         project_key: str,
-        app_roles_mapping: dict[str, list[dict[str, str]]] = None
+        app_roles_mapping: dict[str, list[dict[str, str]]] = None,
+        user_by_account_id: dict[str, "AppUser"] = None
     ) -> list[Permission]:
         """
         Fetch permission holders for a project from its Permission Scheme.
@@ -1665,6 +1888,15 @@ class JiraConnector(BaseConnector):
             )
 
             if scheme_response.status != HttpStatusCode.OK.value:
+                if scheme_response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value,
+                    HttpStatusCode.FORBIDDEN.value,
+                ):
+                    return self._fallback_permissions_for_forbidden_scheme(
+                        project_key=project_key,
+                        status=scheme_response.status,
+                        stage="permission scheme",
+                    )
                 self.logger.warning(f"⚠️ Failed to fetch permission scheme for {project_key}: {scheme_response.text()}")
                 return []
 
@@ -1678,6 +1910,15 @@ class JiraConnector(BaseConnector):
             )
 
             if grants_response.status != HttpStatusCode.OK.value:
+                if grants_response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value,
+                    HttpStatusCode.FORBIDDEN.value,
+                ):
+                    return self._fallback_permissions_for_forbidden_scheme(
+                        project_key=project_key,
+                        status=grants_response.status,
+                        stage=f"permission grants (scheme {scheme_id})",
+                    )
                 self.logger.warning(f"⚠️ Failed to fetch permission grants for scheme {scheme_id}: {grants_response.text()}")
                 return []
 
@@ -1723,7 +1964,6 @@ class JiraConnector(BaseConnector):
                         for group_info in role_groups:
                             group_id = group_info.get("groupId")
                             if group_id:
-                                # Avoid duplicate if this group was already added directly
                                 group_key = f"group:{group_id}"
                                 if group_key not in seen_holders:
                                     seen_holders.add(group_key)
@@ -1732,27 +1972,53 @@ class JiraConnector(BaseConnector):
                                         external_id=group_id,
                                         type=PermissionType.READ
                                     ))
-                    else:
-                        # Fallback: No mapping found or no role_key - treat as org-level handle any logged in user condition
-                        fallback_name = role_key or "all_licensed_users"
+                    elif not role_key:
+                        # Bare applicationRole (no parameter) = "any licensed user"
                         permissions.append(Permission(
                             entity_type=EntityType.ORG,
-                            external_id=fallback_name,
+                            external_id="all_licensed_users",
                             type=PermissionType.READ
                         ))
+                    elif self._app_roles_forbidden and self.creator_email:
+                        # API returned 403 — can't resolve role to groups,
+                        # grant only the configuring user instead of over-granting to ORG
+                        user_key = f"user:{self.creator_email.lower()}"
+                        if user_key not in seen_holders:
+                            seen_holders.add(user_key)
+                            permissions.append(Permission(
+                                entity_type=EntityType.USER,
+                                email=self.creator_email,
+                                type=PermissionType.READ,
+                            ))
+                            self.logger.info(
+                                "applicationRole '%s' unresolvable (403) — granting configuring user '%s' direct access on %s",
+                                role_key, self.creator_email, project_key
+                            )
+                    else:
+                        self.logger.warning(
+                            "Cannot resolve applicationRole '%s' for project %s — skipping",
+                            role_key, project_key
+                        )
 
                 elif holder_type == "user" and holder_param:
-                    # Specific user has access
+                    # holder_param is the accountId; resolve via AppUser map first, fall back to email
                     user_data = holder.get("user", {})
                     user_email = user_data.get("emailAddress")
-                    if user_email:
+
+                    resolved_email = None
+                    if user_by_account_id and holder_param in user_by_account_id:
+                        resolved_email = user_by_account_id[holder_param].email
+                    elif user_email:
+                        resolved_email = user_email
+
+                    if resolved_email:
                         permissions.append(Permission(
                             entity_type=EntityType.USER,
-                            email=user_email,
+                            email=resolved_email,
                             type=PermissionType.READ
                         ))
                     else:
-                        self.logger.warning(f"⚠️  {project_key}: User permission skipped - no email for accountId '{holder_param}'")
+                        self.logger.debug(f"  {project_key}: User permission skipped - cannot resolve accountId '{holder_param}'")
 
                 elif holder_type == "anyone":
                     # All authenticated users have access handle public condition
@@ -1817,8 +2083,8 @@ class JiraConnector(BaseConnector):
 
             self.logger.info(f"👥 Found {len(groups)} groups. Fetching members...")
 
-            # Create email -> AppUser lookup for efficient matching
-            user_by_email = {user.email.lower(): user for user in jira_users if user.email}
+            # Create accountId -> AppUser lookup (accountId is always present in group member responses)
+            user_by_account_id = {user.source_user_id: user for user in jira_users if user.source_user_id}
 
             user_groups_batch = []
             # Mapping: group_id -> members, group_name -> members (for role actor lookup)
@@ -1836,7 +2102,7 @@ class JiraConnector(BaseConnector):
 
                     # Create AppUserGroup (always create, even if no members)
                     user_group = AppUserGroup(
-                        app_name=Connectors.JIRA,
+                        app_name=self.connector_name,
                         connector_id=self.connector_id,
                         source_user_group_id=group_id,
                         name=group_name,
@@ -1844,18 +2110,26 @@ class JiraConnector(BaseConnector):
                         description=f"Jira user group: {group_name}"
                     )
 
-                    # Fetch members for this group
-                    member_emails = await self._fetch_group_members(group_id, group_name)
+                    # Fetch member accountIds for this group
+                    member_account_ids = await self._fetch_group_members(group_id, group_name)
 
-                    # Map member emails to AppUser objects
+                    # Map member accountIds to AppUser objects
                     app_users = []
-                    if member_emails:
-                        for email in member_emails:
-                            user = user_by_email.get(email.lower())
+                    skipped_members = 0
+                    if member_account_ids:
+                        for account_id in member_account_ids:
+                            user = user_by_account_id.get(account_id)
                             if user:
                                 app_users.append(user)
                             else:
-                                self.logger.warning(f"⚠️️ Member email {email} not found in synced users")
+                                skipped_members += 1
+
+                    if skipped_members:
+                        self.logger.debug(
+                            "Group %s: %s member(s) skipped (no AppUser; private email or not in PipesHub)",
+                            group_name,
+                            skipped_members,
+                        )
 
                     # Store mapping by both group_id and group_name for flexible lookup
                     groups_members_map[group_id] = app_users
@@ -1867,7 +2141,7 @@ class JiraConnector(BaseConnector):
                     if app_users:
                         self.logger.debug(f"Group {group_name}: {len(app_users)} members")
                     else:
-                        self.logger.debug(f"Group {group_name}: no members with email")
+                        self.logger.debug(f"Group {group_name}: no resolved members")
 
                 except Exception as group_error:
                     self.logger.error(f"❌ Failed to process group {group.get('name')}: {group_error}")
@@ -1937,11 +2211,12 @@ class JiraConnector(BaseConnector):
     async def _fetch_group_members(self, group_id: str, group_name: str) -> list[str]:
         """
         Fetch all members of a Jira group.
+        Returns list of accountIds (always present in response, unlike emailAddress).
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
-        member_emails: list[str] = []
+        member_account_ids: list[str] = []
         start_at = 0
         max_results = GROUP_MEMBER_PAGE_SIZE
 
@@ -1965,11 +2240,10 @@ class JiraConnector(BaseConnector):
                 if not batch_members:
                     break
 
-                # Extract emails from members
                 for member in batch_members:
-                    email = member.get("emailAddress")
-                    if email:
-                        member_emails.append(email)
+                    account_id = member.get("accountId")
+                    if account_id:
+                        member_account_ids.append(account_id)
 
                 # Check pagination
                 is_last = members_data.get("isLast", False)
@@ -1978,7 +2252,6 @@ class JiraConnector(BaseConnector):
 
                 start_at += len(batch_members)
 
-                # Also break if we got less than requested
                 if len(batch_members) < max_results:
                     break
 
@@ -1986,7 +2259,7 @@ class JiraConnector(BaseConnector):
                 self.logger.error(f"❌ Error fetching members for group {group_name}: {e}")
                 break
 
-        return member_emails
+        return member_account_ids
 
     async def _sync_project_roles(
         self,
@@ -2070,7 +2343,7 @@ class JiraConnector(BaseConnector):
 
                         # Build AppRole with external_id matching Permission format
                         app_role = AppRole(
-                            app_name=Connectors.JIRA,
+                            app_name=self.connector_name,
                             connector_id=self.connector_id,
                             source_role_id=f"{project_key}_{role_id}",
                             name=f"{project_key} - {role_name_display}",
@@ -2188,7 +2461,7 @@ class JiraConnector(BaseConnector):
                 project_updated = project.get("updatedAt")
 
                 app_role = AppRole(
-                    app_name=Connectors.JIRA,
+                    app_name=self.connector_name,
                     connector_id=self.connector_id,
                     source_role_id=f"{project_key}_projectLead",
                     name=f"{project_key} - Project Lead",
@@ -2234,35 +2507,47 @@ class JiraConnector(BaseConnector):
     # Project Management
     # ============================================================================
 
-    async def _fetch_projects(
+    async def _list_projects_with_filter(
         self,
         project_keys: Optional[list[str]] = None,
-        project_keys_operator: Optional[FilterOperatorType] = None
-    ) -> tuple[list[tuple[RecordGroup, list[Permission]]], list[dict[str, Any]]]:
-        """
-        Fetch projects using DataSource. Returns (record_groups, raw_projects).
+        project_keys_operator: Optional[FilterOperatorType] = None,
+    ) -> list[dict[str, Any]]:
+        """Paginate through ``search_projects`` and apply the project-key filter.
 
-        Args:
-            project_keys: Optional list of project keys to include/exclude
-            project_keys_operator: Optional filter operator (IN or NOT_IN)
+        Returns the raw project dicts as Jira sends them (``id``, ``key``,
+        ``name``, ``description``, ``url`` …) — permission resolution / record
+        group construction is the caller's responsibility.
+
+        Filter semantics:
+          * ``project_keys=None`` or ``[]``: fetch every visible project.
+          * ``project_keys=[…]`` with ``IN`` (default): use the server-side
+            ``keys=`` filter so we only round-trip the matching pages.
+          * ``project_keys=[…]`` with ``NOT_IN``: server has no exclusion
+            filter, so we fetch everything and exclude client-side.
+
+        Extracted from ``_fetch_projects`` so the personal-scope subclass can
+        reuse the listing without inheriting the application-role and
+        permission-scheme calls that follow it in the workspace flow.
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
         projects: list[dict[str, Any]] = []
 
-        # Determine if we're excluding projects (NOT_IN operator)
         is_exclude = False
         if project_keys_operator:
-            operator_value = project_keys_operator.value if hasattr(project_keys_operator, 'value') else str(project_keys_operator)
+            operator_value = (
+                project_keys_operator.value
+                if hasattr(project_keys_operator, "value")
+                else str(project_keys_operator)
+            )
             is_exclude = operator_value == "not_in"
 
-        # If list has values, handle based on operator; otherwise fetch all
         if project_keys:
-            # List has values - handle IN/NOT_IN
             if is_exclude:
-                # NOT_IN with non-empty list: Fetch all projects, then filter out excluded ones
-                self.logger.info(f"📁 Fetching all projects, excluding: {project_keys}")
+                self.logger.info(
+                    f"📁 Fetching all projects, excluding: {project_keys}"
+                )
 
                 all_projects: list[dict[str, Any]] = []
                 start_at = 0
@@ -2288,25 +2573,23 @@ class JiraConnector(BaseConnector):
 
                     all_projects.extend(batch_projects)
 
-                    # Move to next page
                     start_at += len(batch_projects)
 
-                    # Check if we've reached the end
                     total = projects_batch.get("total", 0)
                     is_last = projects_batch.get("isLast", False)
 
                     if is_last or (total > 0 and start_at >= total):
                         break
 
-                # Filter out excluded project keys
                 excluded_keys_set = set(project_keys)
                 for project in all_projects:
                     project_key = project.get("key")
                     if project_key and project_key not in excluded_keys_set:
                         projects.append(project)
             else:
-                # IN (default) with non-empty list: Use Jira's built-in keys parameter (optimized)
-                self.logger.info(f"📁 Fetching specific projects using keys filter: {project_keys}")
+                self.logger.info(
+                    f"📁 Fetching specific projects using keys filter: {project_keys}"
+                )
                 start_at = 0
 
                 while True:
@@ -2314,7 +2597,7 @@ class JiraConnector(BaseConnector):
                     response = await datasource.search_projects(
                         maxResults=DEFAULT_MAX_RESULTS,
                         startAt=start_at,
-                        keys=project_keys,  # Jira API built-in filter (like Linear's {"id": {"in": ...}})
+                        keys=project_keys,
                         expand=["description", "url", "permissions", "issueTypes", "lead"]
                     )
 
@@ -2331,10 +2614,8 @@ class JiraConnector(BaseConnector):
 
                     projects.extend(batch_projects)
 
-                    # Move to next page
                     start_at += len(batch_projects)
 
-                    # Check if we've reached the end
                     total = projects_batch.get("total", 0)
                     is_last = projects_batch.get("isLast", False)
 
@@ -2342,7 +2623,6 @@ class JiraConnector(BaseConnector):
                         break
 
         else:
-            # No filter or empty list - fetch all projects
             self.logger.info("📁 Fetching all projects")
             start_at = 0
 
@@ -2367,18 +2647,42 @@ class JiraConnector(BaseConnector):
 
                 projects.extend(batch_projects)
 
-                # Move to next page
                 start_at += len(batch_projects)
 
-                # Check if we've reached the end
                 total = projects_batch.get("total", 0)
                 is_last = projects_batch.get("isLast", False)
 
                 if is_last or (total > 0 and start_at >= total):
                     break
 
+        return projects
+
+    async def _fetch_projects(
+        self,
+        project_keys: Optional[list[str]] = None,
+        project_keys_operator: Optional[FilterOperatorType] = None,
+        jira_users: Optional[list["AppUser"]] = None
+    ) -> tuple[list[tuple[RecordGroup, list[Permission]]], list[dict[str, Any]]]:
+        """
+        Fetch projects using DataSource. Returns (record_groups, raw_projects).
+
+        Args:
+            project_keys: Optional list of project keys to include/exclude
+            project_keys_operator: Optional filter operator (IN or NOT_IN)
+        """
+        projects = await self._list_projects_with_filter(
+            project_keys, project_keys_operator
+        )
+
         # Fetch application roles → groups mapping once (cached)
         app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
+
+        # Build accountId -> AppUser lookup for permission scheme resolution
+        perm_user_by_account_id: dict[str, AppUser] = {}
+        if jira_users:
+            perm_user_by_account_id = {
+                u.source_user_id: u for u in jira_users if u.source_user_id
+            }
 
         record_groups: list[tuple[RecordGroup, list[Permission]]] = []
         for project in projects:
@@ -2397,7 +2701,7 @@ class JiraConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 external_group_id=project_id,
                 connector_id=self.connector_id,
-                connector_name=Connectors.JIRA,
+                connector_name=self.connector_name,
                 name=project_name,
                 short_name=project_key,
                 group_type=RecordGroupType.PROJECT,
@@ -2406,7 +2710,9 @@ class JiraConnector(BaseConnector):
             )
 
             # This determines which groups/users can access the project
-            project_permissions = await self._fetch_project_permission_scheme(project_key, app_roles_mapping)
+            project_permissions = await self._fetch_project_permission_scheme(
+                project_key, app_roles_mapping, perm_user_by_account_id
+            )
 
             record_groups.append((record_group, project_permissions))
 
@@ -3047,7 +3353,7 @@ class JiraConnector(BaseConnector):
                 record_name=issue_name,
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.JIRA,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 record_group_type=record_group_type,
                 external_record_group_id=external_record_group_id,
@@ -3826,6 +4132,53 @@ class JiraConnector(BaseConnector):
 
         return attachment_children_map
 
+    async def _get_issue_with_retry(
+        self,
+        issue_id: str,
+        fields: list[str],
+        expand: list[str] | None = None,
+        max_attempts: int = 3,
+    ) -> Any:
+        """Fetch a Jira issue, retrying on transient httpx transport errors.
+
+        Targeted at the failure mode where the httpx connection pool reuses a
+        socket that the LB/proxy in front of Jira has already half-closed past
+        its idle timeout, raising ``RemoteProtocolError`` before any response is
+        received. GETs are idempotent, so retrying with backoff is safe; httpx
+        evicts the broken connection on failure, so the retry hits a fresh socket.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(max_attempts):
+            try:
+                datasource = await self._get_fresh_datasource()
+                return await datasource.get_issue(
+                    issueIdOrKey=issue_id,
+                    fields=fields,
+                    expand=expand,
+                )
+            except (
+                httpx.RemoteProtocolError,
+                httpx.ReadError,
+                httpx.WriteError,
+                httpx.ConnectError,
+                httpx.PoolTimeout,
+                httpx.ReadTimeout,
+            ) as e:
+                last_exc = e
+                if attempt == max_attempts - 1:
+                    break
+                backoff = 0.5 * (2 ** attempt)  # 0.5s, 1.0s, ...
+                self.logger.warning(
+                    "Transient transport error fetching issue %s "
+                    "(attempt %s/%s): %s — retrying in %.1fs",
+                    issue_id, attempt + 1, max_attempts, e, backoff,
+                )
+                await asyncio.sleep(backoff)
+
+        raise Exception(
+            f"Failed to fetch issue {issue_id} after {max_attempts} attempts: {last_exc}"
+        ) from last_exc
+
     async def _process_issue_blockgroups_for_streaming(self, record: Record) -> bytes:
         """
         Process issue BlockGroups for streaming by creating BlocksContainer on-demand.
@@ -3848,13 +4201,14 @@ class JiraConnector(BaseConnector):
         """
         issue_id = record.external_record_id
 
-        datasource = await self._get_fresh_datasource()
-
-        # Fetch issue with comments
-        response = await datasource.get_issue(
-            issueIdOrKey=issue_id,
+        # Fetch issue with comments. The httpx pool occasionally hands out a
+        # keep-alive socket that the LB/proxy has already half-closed, raising
+        # ``RemoteProtocolError`` ("Server disconnected without sending a response")
+        # before any HTTP response is received. Retry via ``_get_issue_with_retry``.
+        response = await self._get_issue_with_retry(
+            issue_id=issue_id,
             fields=["summary", "description", "attachment", "comment"],
-            expand=["comments"]
+            expand=["comments"],
         )
 
         if response.status != HttpStatusCode.OK.value:
@@ -4118,7 +4472,7 @@ class JiraConnector(BaseConnector):
             external_revision_id=str(created_at) if created_at else None,
             parent_external_record_id=parent_issue_id,
             parent_record_type=RecordType.TICKET,
-            connector_name=Connectors.JIRA,
+            connector_name=self.connector_name,
             connector_id=self.connector_id,
             origin=OriginTypes.CONNECTOR,
             version=version,
@@ -4290,7 +4644,13 @@ class JiraConnector(BaseConnector):
                 )
 
                 if response.status != HttpStatusCode.OK.value:
-                    raise Exception(f"Failed to fetch attachment content: {response.text()}")
+                    detail = f"Failed to fetch attachment content: {response.text()}"
+                    if response.status == HttpStatusCode.NOT_FOUND.value:
+                        self.logger.warning(
+                            f"Attachment {attachment_id} not found at source "
+                            f"(record {record.external_record_id}) — likely deleted in Jira"
+                        )
+                    raise HTTPException(status_code=response.status, detail=detail)
 
                 # Stream the attachment content
                 async def generate_attachment() -> AsyncGenerator[bytes, None]:
@@ -4321,8 +4681,13 @@ class JiraConnector(BaseConnector):
                 )
 
             else:
-                raise ValueError(f"Unsupported record type for streaming: {record.record_type}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail=f"Unsupported record type for streaming: {record.record_type}",
+                )
 
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"Error streaming record {record.external_record_id} ({record.record_type}): {e}")
             raise
@@ -4478,7 +4843,7 @@ class JiraConnector(BaseConnector):
                 if account_id and email:
                     user_by_account_id[account_id] = AppUser(
                         id="",
-                        app_name=Connectors.JIRA,
+                        app_name=self.connector_name,
                         connector_id=self.connector_id,
                         email=email,
                         full_name=user_obj.get("displayName") or email,
@@ -4513,7 +4878,7 @@ class JiraConnector(BaseConnector):
                 record_name=issue_data["issue_name"],
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.JIRA,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 record_group_type=record.record_group_type if hasattr(record, 'record_group_type') else RecordGroupType.PROJECT,
                 external_record_group_id=record.external_record_group_id if hasattr(record, 'external_record_group_id') else project_id,

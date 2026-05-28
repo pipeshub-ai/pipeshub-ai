@@ -56,6 +56,20 @@ export interface SharedWithEntry {
   _id: string;
 }
 
+/**
+ * Pagination metadata returned by the conversation detail API.
+ * `hasNextPage` means there are older message batches to load;
+ * the API sorts messages newest-first so page 1 = most recent.
+ */
+export interface ConversationPagination {
+  page: number;
+  limit: number;
+  totalCount: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+}
+
 export interface ConversationApiResponse {
   _id: string;
   userId: string;
@@ -675,6 +689,17 @@ export interface ChatSlot {
 
   /** AbortController for the in-flight SSE stream (if any). */
   abortController: AbortController | null;
+
+  /**
+   * Tracks message pagination for the "load older messages" flow.
+   * null = not yet set (happens after first successful load).
+   * hasOlderMessages mirrors the API `hasNextPage` (next page = older batch).
+   */
+  messagePagination: {
+    currentPage: number;
+    hasOlderMessages: boolean;
+    isLoadingOlder: boolean;
+  } | null;
 
   /** Epoch ms of last interaction — used for LRU eviction. */
   lastAccessedAt: number;

@@ -130,6 +130,7 @@ class TestConfluenceRunSync:
             connector._sync_user_groups = AsyncMock()
             rg = _space_rg()
             connector._sync_spaces = AsyncMock(return_value=[rg])
+            connector._sync_folders = AsyncMock()
             connector._sync_content = AsyncMock()
             connector._sync_permission_changes_from_audit_log = AsyncMock()
 
@@ -138,6 +139,7 @@ class TestConfluenceRunSync:
             connector._sync_users.assert_awaited_once()
             connector._sync_user_groups.assert_awaited_once()
             connector._sync_spaces.assert_awaited_once()
+            connector._sync_folders.assert_awaited_once_with("DEV")
             # For each space: pages + blogposts
             assert connector._sync_content.await_count == 2
             connector._sync_permission_changes_from_audit_log.assert_awaited_once()
@@ -157,10 +159,12 @@ class TestConfluenceRunSync:
             connector._sync_users = AsyncMock()
             connector._sync_user_groups = AsyncMock()
             connector._sync_spaces = AsyncMock(return_value=[_space_rg("S1"), _space_rg("S2")])
+            connector._sync_folders = AsyncMock()
             connector._sync_content = AsyncMock()
             connector._sync_permission_changes_from_audit_log = AsyncMock()
 
             await connector.run_sync()
+            assert connector._sync_folders.await_count == 2
             # 2 spaces * 2 types (page + blogpost) = 4
             assert connector._sync_content.await_count == 4
 
@@ -263,9 +267,9 @@ class TestSyncUserGroups:
             "size": 1,
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
-        connector._fetch_group_members = AsyncMock(return_value=["u@x.com"])
+        connector._fetch_group_members = AsyncMock(return_value=(["u@x.com"], []))
         connector._transform_to_user_group = MagicMock(return_value=MagicMock())
-        connector._get_app_users_by_emails = AsyncMock(return_value=[])
+        connector._resolve_group_app_users = AsyncMock(return_value=[])
 
         await connector._sync_user_groups()
         connector.data_entities_processor.on_new_user_groups.assert_awaited()
@@ -304,9 +308,9 @@ class TestSyncUserGroups:
         ds = MagicMock()
         ds.get_groups = AsyncMock(side_effect=mock_get_groups)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
-        connector._fetch_group_members = AsyncMock(return_value=[])
+        connector._fetch_group_members = AsyncMock(return_value=([], []))
         connector._transform_to_user_group = MagicMock(return_value=MagicMock())
-        connector._get_app_users_by_emails = AsyncMock(return_value=[])
+        connector._resolve_group_app_users = AsyncMock(return_value=[])
 
         await connector._sync_user_groups()
         assert call_count == 2

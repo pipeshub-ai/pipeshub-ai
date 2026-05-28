@@ -83,7 +83,6 @@ export const KnowledgeHubApi = {
           limit: DEFAULT_PAGE_SIZE,
           include: 'counts',
         },
-        suppressErrorToast: true,
       }
     );
 
@@ -128,7 +127,8 @@ export const KnowledgeHubApi = {
   async loadFolderData(
     nodeType: NodeType,
     nodeId: string,
-    params?: Partial<KnowledgeHubQueryParams>
+    params?: Partial<KnowledgeHubQueryParams>,
+    options?: { suppressErrorToast?: boolean }
   ) {
     const { data } = await apiClient.get<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes/${nodeType}/${nodeId}`,
@@ -140,6 +140,7 @@ export const KnowledgeHubApi = {
           // Data area: Never use onlyContainers (we need both folders AND files)
           ...params,
         },
+        ...(options?.suppressErrorToast ? { suppressErrorToast: true } : {}),
       }
     );
     return data;
@@ -663,16 +664,35 @@ export const KnowledgeBaseApi = {
 
   // Reindex item (works for both records and folders)
   // depth=0 for single record, depth=100 for folder (reindex all children)
-  async reindexItem(recordId: string, depth: number = 0) {
-    const { data } = await apiClient.post<Record<string, unknown>>(`${BASE_URL}/reindex/record/${recordId}`, { depth }, { suppressErrorToast: true });
+  async reindexItem(
+    recordId: string,
+    depth: number = 0,
+    statusFilters?: string[]
+  ) {
+    const body: { depth: number; statusFilters?: string[] } = { depth };
+    if (statusFilters?.length) {
+      body.statusFilters = statusFilters;
+    }
+    const { data } = await apiClient.post<Record<string, unknown>>(
+      `${BASE_URL}/reindex/record/${recordId}`,
+      body,
+      { suppressErrorToast: true }
+    );
     return data;
   },
 
   // Reindex record group (folders inside app nodes like Sharepoint, OneDrive)
-  async reindexRecordGroup(recordGroupId: string) {
+  async reindexRecordGroup(recordGroupId: string, statusFilters?: string[]) {
+    const body: { force: boolean; depth: number; statusFilters?: string[] } = {
+      force: false,
+      depth: 100,
+    };
+    if (statusFilters?.length) {
+      body.statusFilters = statusFilters;
+    }
     const { data } = await apiClient.post<Record<string, unknown>>(
       `${BASE_URL}/reindex/record-group/${recordGroupId}`,
-      { force: false, depth: 100 },
+      body,
       { suppressErrorToast: true }
     );
     return data;

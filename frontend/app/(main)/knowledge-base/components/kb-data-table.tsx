@@ -53,7 +53,7 @@ interface KbDataTableProps {
   onItemClick: (item: TableItem) => void;
   onPreview?: (item: TableItem) => void;
   onRename?: (item: TableItem, newName: string) => Promise<void>;
-  onReindex?: (item: TableItem) => void;
+  onReindex?: (item: TableItem, statusFilters?: string[]) => void;
   onReplace?: (item: TableItem) => void;
   onMove?: (item: TableItem) => void;
   onDelete?: (item: TableItem) => void;
@@ -61,7 +61,7 @@ interface KbDataTableProps {
   onCreateFolder?: () => void;
   onUpload?: () => void;
   onGoToCollection?: () => void;
-  refreshData?: () => Promise<void>;
+  refreshData?: (deletedIds?: string[]) => Promise<void>;
 }
 
 export function KbDataTable({

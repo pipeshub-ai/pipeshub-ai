@@ -266,7 +266,7 @@ export function AuthenticateTab() {
         <Flex direction="column" gap="2" style={{ width: '100%', minWidth: 0 }}>
           <Flex direction="column" gap="1">
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              Redirect URL
+              {t('workspace.connectors.authTab.redirectCallbackUrlLabel')}
             </Text>
             <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
               {t('workspace.connectors.authTab.redirectUrlDescription')}
@@ -301,7 +301,7 @@ export function AuthenticateTab() {
             >
               <code>{callbackUrl}</code>
             </Box>
-            <Tooltip content="Copy redirect URL">
+            <Tooltip content={t('workspace.connectors.authTab.copyRedirectCallbackUrl')}>
               <IconButton
                 type="button"
                 size="1"
@@ -309,14 +309,14 @@ export function AuthenticateTab() {
                 color="gray"
                 radius="full"
                 style={{ flexShrink: 0, cursor: 'pointer' }}
-                aria-label="Copy redirect URL"
+                aria-label={t('workspace.connectors.authTab.copyRedirectCallbackUrl')}
                 onClick={async () => {
                   try {
                     await navigator.clipboard.writeText(callbackUrl);
                     addToast({
                       variant: 'success',
-                      title: 'Redirect URL copied',
-                      description: "Add it to your identity provider's allowed redirect list.",
+                      title: t('workspace.connectors.authTab.redirectCallbackUrlCopied'),
+                      description: t('workspace.connectors.authTab.redirectCallbackUrlCopiedDescription'),
                       duration: 2500,
                     });
                   } catch {

@@ -13,6 +13,7 @@ import type {
   KnowledgeHubNode,
   EnhancedFolderTreeNode,
   NodeType,
+  SidebarReindexHandler,
 } from '../types';
 import { KB_SECTION_HEADER_MARGIN_BOTTOM } from '@/app/components/sidebar/constants';
 import { SidebarListShimmerRows } from './sidebar-list-shimmer';
@@ -60,7 +61,7 @@ interface AppSectionProps {
   connectorTree?: EnhancedFolderTreeNode[];
 
   // Meatball menu actions
-  onReindex?: (nodeId: string) => void;
+  onReindex?: SidebarReindexHandler;
   onRename?: (nodeId: string, newName: string) => Promise<void>;
   onDelete?: (nodeId: string) => void;
 

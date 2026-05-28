@@ -27,6 +27,7 @@ import type {
   MoreConnectorLink,
   ConnectorType,
   KnowledgeHubNode,
+  SidebarReindexHandler,
 } from '../types';
 
 // ========================================
@@ -64,7 +65,7 @@ interface KBSidebarProps {
   onNavigateBack?: () => void;
 
   // Sidebar item action handlers
-  onSidebarReindex?: (nodeId: string) => void;
+  onSidebarReindex?: SidebarReindexHandler;
   onSidebarRename?: (nodeId: string, newName: string) => Promise<void>;
   onSidebarDelete?: (nodeId: string) => void;
 

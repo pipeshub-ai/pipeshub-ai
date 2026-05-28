@@ -42,6 +42,7 @@ def _make_deps():
     dep.on_new_app_roles = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
+    dep.get_all_app_users = AsyncMock(return_value=[])
 
     dsp = MagicMock()
     cs = MagicMock()
@@ -85,6 +86,14 @@ class TestJiraDcConnectorFactoryRegistry:
         cls = ConnectorFactory.get_connector_class("jiradatacenter")
         assert cls is JiraDataCenterConnector
 
+    def test_factory_resolves_jiradatacenterpersonal(self) -> None:
+        from app.connectors.sources.atlassian.jira_data_center_personal.connector import (
+            JiraDataCenterPersonalConnector,
+        )
+
+        cls = ConnectorFactory.get_connector_class("jiradatacenterpersonal")
+        assert cls is JiraDataCenterPersonalConnector
+
     def test_factory_case_insensitive(self) -> None:
         assert ConnectorFactory.get_connector_class("JiraDataCenter") is JiraDataCenterConnector
 
@@ -92,6 +101,7 @@ class TestJiraDcConnectorFactoryRegistry:
         names = ConnectorFactory.list_connectors()
         assert "jiradatacenter" in names
         assert names["jiradatacenter"] is JiraDataCenterConnector
+        assert "jiradatacenterpersonal" in names
 
 
 class TestJiraDataCenterApp:

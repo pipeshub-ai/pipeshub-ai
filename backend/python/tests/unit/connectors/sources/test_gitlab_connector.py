@@ -51,7 +51,7 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
 )
-from app.models.permission import EntityType, PermissionType
+from app.models.permission import EntityType, Permission, PermissionType
 
 
 def _make_connector() -> GitLabConnector:
@@ -1418,12 +1418,22 @@ class TestGitlabConnectorSyncUsers:
         # Execute
         await connector._sync_users()
 
-        # Verify
+        # Verify — unscoped path streams via ``iterator=True`` so the
+        # operator gets per-page progress logs on large EE tenants.
+        # ``min_access_level=10`` keeps the sweep restricted to Guest+
+        # member groups; widening to ``all_available=True`` would pull
+        # in every internal/public group on the instance and leak
+        # unrelated members into the AppUser table.
         mock_data_source.list_groups.assert_called_once_with(
-            min_access_level=10, get_all=True
+            min_access_level=10, per_page=100, iterator=True
         )
         mock_data_source.list_projects.assert_called_once_with(
-            membership=True, get_all=True
+            membership=True,
+            pagination="keyset",
+            order_by="id",
+            sort="asc",
+            per_page=100,
+            iterator=True,
         )
         assert mock_data_source.list_group_members_all.call_count == 2
         assert mock_data_source.list_project_members_all.call_count == 2
@@ -1973,7 +1983,11 @@ class TestGitlabConnectorSyncUsers:
 
     @pytest.mark.asyncio
     async def test_sync_users_both_groups_and_projects_fail(self) -> None:
-        """Test sync when both groups and projects fetch fail."""
+        """When both the groups and projects calls fail we have no source
+        of truth for membership; the sync must abort rather than persist
+        an empty member set (which would silently mark users inactive on
+        the next reconciliation pass).
+        """
         connector = _make_connector()
 
         groups_response = MagicMock()
@@ -1984,7 +1998,6 @@ class TestGitlabConnectorSyncUsers:
         projects_response.success = False
         projects_response.error = "Projects API error"
 
-        # Setup data source
         mock_data_source = MagicMock()
         mock_data_source.list_groups = MagicMock(return_value=groups_response)
         mock_data_source.list_projects = MagicMock(return_value=projects_response)
@@ -1992,12 +2005,473 @@ class TestGitlabConnectorSyncUsers:
         connector.data_source = mock_data_source
         connector._sync_users_from_projects_groups = AsyncMock()
 
-        # Execute
+        with pytest.raises(RuntimeError, match="both list_groups and list_projects failed"):
+            await connector._sync_users()
+
+        # The downstream persistence step must not be called when we abort.
+        connector._sync_users_from_projects_groups.assert_not_called()
+        assert connector.logger.error.call_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_sync_users_scoped_by_group_filter_skips_full_tenant_scan(
+        self,
+    ) -> None:
+        """When GROUP_IDS IN sync filter is set, user sync must walk only
+        the configured groups and must NOT issue an unscoped
+        ``list_groups``/``list_projects`` sweep. The unscoped sweep is what
+        makes ``_sync_users`` look hung after "Starting sync of Gitlab
+        users" on large EE tenants (RingCentral repro).
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+
+        mock_member = MagicMock()
+        mock_member.id = 1
+        mock_member.username = "user1"
+        mock_member.name = "User One"
+        mock_member.public_email = "user1@example.com"
+
+        members_response = MagicMock()
+        members_response.success = True
+        members_response.data = [mock_member]
+
+        mock_data_source = MagicMock()
+        mock_data_source.list_group_members_all = MagicMock(
+            return_value=members_response
+        )
+        # These MUST NOT be called when scoped.
+        mock_data_source.list_groups = MagicMock()
+        mock_data_source.list_projects = MagicMock()
+        connector.data_source = mock_data_source
+        connector._sync_users_from_projects_groups = AsyncMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/eng", "org/data"],
+                FilterOperator.IN,
+            )
+        )
+
         await connector._sync_users()
 
-        # Verify - should be called with empty dict
-        connector._sync_users_from_projects_groups.assert_called_once_with({})
-        assert connector.logger.error.call_count >= 1
+        assert mock_data_source.list_group_members_all.call_count == 2
+        mock_data_source.list_groups.assert_not_called()
+        mock_data_source.list_projects.assert_not_called()
+        connector._sync_users_from_projects_groups.assert_called_once()
+        passed_members = connector._sync_users_from_projects_groups.call_args[0][0]
+        assert 1 in passed_members
+
+    @pytest.mark.asyncio
+    async def test_sync_users_scoped_raises_when_every_target_fails(self) -> None:
+        """Scoped sync must still refuse to persist an empty member set when
+        every configured target fails to enumerate — otherwise the next
+        reconciliation pass would tombstone active users.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+
+        fail = MagicMock()
+        fail.success = False
+        fail.error = "permission denied"
+
+        mock_data_source = MagicMock()
+        mock_data_source.list_group_members_all = MagicMock(return_value=fail)
+        connector.data_source = mock_data_source
+        connector._sync_users_from_projects_groups = AsyncMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS, ["org/eng"], FilterOperator.IN
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="every configured group/project"):
+            await connector._sync_users()
+        connector._sync_users_from_projects_groups.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_paged_list_emits_progress_and_returns_full_data(self) -> None:
+        """``_paged_list`` must materialize the iterator and log at least
+        one INFO progress line so a slow-but-progressing scan does not
+        look hung to the operator.
+        """
+        connector = _make_connector()
+
+        groups = [MagicMock(id=i) for i in range(3)]
+        groups_response = MagicMock()
+        groups_response.success = True
+        groups_response.data = iter(groups)
+        groups_response.error = None
+
+        mock_data_source = MagicMock()
+        mock_data_source.list_groups = MagicMock(return_value=groups_response)
+        connector.data_source = mock_data_source
+
+        res = await connector._paged_list(
+            mock_data_source.list_groups,
+            min_access_level=10,
+            progress_label="list_groups test",
+            progress_every=1,
+        )
+
+        assert res.success is True
+        assert [g.id for g in res.data] == [0, 1, 2]
+        mock_data_source.list_groups.assert_called_once_with(
+            iterator=True, min_access_level=10
+        )
+        info_msgs = [str(c.args[0]) for c in connector.logger.info.call_args_list]
+        assert any("list_groups test" in m for m in info_msgs), info_msgs
+
+
+class TestGitlabResolveUserSyncScope:
+    """Coverage for ``_resolve_user_sync_scope`` across all filter modes.
+
+    The fix this class guards: NOT_IN filters used to silently fall
+    through to ``_sync_users_unscoped`` (which walks every visible
+    group + project, ignoring the exclusion list), reintroducing the
+    "stuck after 'Starting sync of Gitlab users'" hang the IN-only
+    scoping was meant to eliminate.
+    """
+
+    def _ok(self, data):
+        r = MagicMock()
+        r.success = True
+        r.data = data
+        r.error = None
+        return r
+
+    def _err(self, message="boom"):
+        r = MagicMock()
+        r.success = False
+        r.data = None
+        r.error = message
+        return r
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_sync_filters(self) -> None:
+        connector = _make_connector()
+        connector.sync_filters = None
+        connector.data_source = MagicMock()
+
+        assert await connector._resolve_user_sync_scope() is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_only_datetime_filter_is_set(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.sync_filters = _make_filter_collection(
+            _datetime_filter(
+                SyncFilterKey.MODIFIED,
+                1_700_000_000_000,
+                None,
+                FilterOperator.IS_AFTER,
+            )
+        )
+
+        assert await connector._resolve_user_sync_scope() is None
+
+    @pytest.mark.asyncio
+    async def test_group_ids_in_returns_configured_paths_without_listing(
+        self,
+    ) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        # MUST NOT issue tenant-wide listings when IN-scoped.
+        connector.data_source.list_groups = MagicMock()
+        connector.data_source.list_projects = MagicMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/eng", "org/data"],
+                FilterOperator.IN,
+            )
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        assert result == (["org/eng", "org/data"], [])
+        connector.data_source.list_groups.assert_not_called()
+        connector.data_source.list_projects.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_group_ids_not_in_walks_visible_minus_excluded(self) -> None:
+        """The core regression fix: NOT_IN must materialise the visible
+        groups once and walk members of the surviving set — not fall
+        through to the full-tenant ``_sync_users_unscoped`` sweep.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        g_keep = MagicMock(); g_keep.full_path = "org/data"
+        g_drop = MagicMock(); g_drop.full_path = "org/legacy"
+        # Subgroup under an excluded prefix must also be dropped.
+        g_drop_sub = MagicMock(); g_drop_sub.full_path = "org/legacy/old"
+        connector.data_source.list_groups = MagicMock(
+            return_value=self._ok([g_keep, g_drop, g_drop_sub])
+        )
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/legacy"],
+                FilterOperator.NOT_IN,
+            )
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        assert result == (["org/data"], [])
+        connector.data_source.list_groups.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_group_ids_not_in_returns_empty_targets_on_list_failure(
+        self,
+    ) -> None:
+        """When the candidate-set materialisation fails we return an
+        empty scope so the caller's "every target failed" guard fires
+        instead of silently tombstoning users via the next reconcile.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(return_value=self._err())
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/legacy"],
+                FilterOperator.NOT_IN,
+            )
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        assert result == ([], [])
+        connector.logger.error.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_project_ids_in_returns_configured_paths_without_listing(
+        self,
+    ) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock()
+        connector.data_source.list_projects = MagicMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["org/repo-a", "org/repo-b"],
+                FilterOperator.IN,
+            )
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        assert result == ([], ["org/repo-a", "org/repo-b"])
+        connector.data_source.list_groups.assert_not_called()
+        connector.data_source.list_projects.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_project_ids_not_in_walks_visible_minus_excluded(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        p_keep = MagicMock()
+        p_keep.path_with_namespace = "org/keep"
+        p_keep.namespace = MagicMock(full_path="org")
+        p_drop = MagicMock()
+        p_drop.path_with_namespace = "org/drop"
+        p_drop.namespace = MagicMock(full_path="org")
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([p_keep, p_drop])
+        )
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["org/drop"],
+                FilterOperator.NOT_IN,
+            )
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        assert result == ([], ["org/keep"])
+
+    @pytest.mark.asyncio
+    async def test_project_ids_not_in_with_group_ids_not_in_drops_subgroup_projects(
+        self,
+    ) -> None:
+        """PROJECT_IDS NOT_IN + GROUP_IDS NOT_IN: the project listing
+        must also drop projects whose namespace is under any excluded
+        group prefix, so the user walk stays consistent with the
+        project walk.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        # Surviving group listing (org/keep only).
+        g_keep = MagicMock(); g_keep.full_path = "org/keep"
+        connector.data_source.list_groups = MagicMock(
+            return_value=self._ok([g_keep])
+        )
+
+        p_keep = MagicMock()
+        p_keep.path_with_namespace = "org/keep/repo"
+        p_keep.namespace = MagicMock(full_path="org/keep")
+        p_drop_explicit = MagicMock()
+        p_drop_explicit.path_with_namespace = "org/keep/drop-me"
+        p_drop_explicit.namespace = MagicMock(full_path="org/keep")
+        p_drop_subgroup = MagicMock()
+        p_drop_subgroup.path_with_namespace = "org/legacy/old"
+        p_drop_subgroup.namespace = MagicMock(full_path="org/legacy")
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([p_keep, p_drop_explicit, p_drop_subgroup])
+        )
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/legacy"],
+                FilterOperator.NOT_IN,
+            ),
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["org/keep/drop-me"],
+                FilterOperator.NOT_IN,
+            ),
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        group_targets, project_targets = result
+        assert group_targets == ["org/keep"]
+        assert project_targets == ["org/keep/repo"]
+
+    @pytest.mark.asyncio
+    async def test_project_in_short_circuits_group_in(self) -> None:
+        """``PROJECT_IDS IN`` is authoritative: when both filters are set,
+        the user walk only targets the listed projects. The group filter
+        is treated as picker scope only — walking its members would
+        manufacture ``AppUser`` rows for users with no synced records,
+        because ``_resolve_projects_with_filters`` itself only syncs the
+        listed projects.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock()
+        connector.data_source.list_projects = MagicMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS, ["org/eng"], FilterOperator.IN,
+            ),
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["org/special/repo"],
+                FilterOperator.IN,
+            ),
+        )
+
+        result = await connector._resolve_user_sync_scope()
+
+        # Group filter dropped: project filter wins.
+        assert result == ([], ["org/special/repo"])
+        connector.data_source.list_groups.assert_not_called()
+        connector.data_source.list_projects.assert_not_called()
+
+
+class TestGitlabSyncUsersNotInIntegration:
+    """End-to-end check: ``_sync_users`` under NOT_IN walks the
+    materialised-minus-excluded set instead of the unscoped sweep.
+    """
+
+    def _ok(self, data):
+        r = MagicMock()
+        r.success = True
+        r.data = data
+        r.error = None
+        return r
+
+    @pytest.mark.asyncio
+    async def test_group_ids_not_in_walks_only_surviving_groups(self) -> None:
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        g_keep = MagicMock(); g_keep.full_path = "org/data"
+        g_drop = MagicMock(); g_drop.full_path = "org/legacy"
+        connector.data_source.list_groups = MagicMock(
+            return_value=self._ok([g_keep, g_drop])
+        )
+        # Members enumerator MUST only be called for surviving groups.
+        member = MagicMock(id=42, name="A", public_email="a@example.com")
+        connector.data_source.list_group_members_all = MagicMock(
+            return_value=self._ok([member])
+        )
+        connector._sync_users_from_projects_groups = AsyncMock()
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS,
+                ["org/legacy"],
+                FilterOperator.NOT_IN,
+            )
+        )
+
+        await connector._sync_users()
+
+        # Exactly one members enumeration — for org/data only.
+        connector.data_source.list_group_members_all.assert_called_once_with(
+            group_id="org/data", get_all=True
+        )
+        # list_groups called once (to materialise the surviving set).
+        assert connector.data_source.list_groups.call_count == 1
+        connector._sync_users_from_projects_groups.assert_awaited_once()
 
 
 class TestGitlabConnectorEnrichMembers:
@@ -2769,6 +3243,89 @@ class TestGitlabConnectorSyncAllProject:
 
 
 class TestGitlabConnectorBuildCodeFileRecords:
+    @pytest.fixture(autouse=True)
+    def _default_code_file_timestamps(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Avoid live GitLab calls when unit-testing record construction."""
+
+        async def _batch(
+            _self: GitLabConnector,
+            _project_id: int,
+            _project_path: str,
+            file_paths: list[str],
+        ) -> dict[str, tuple[int | None, int | None]]:
+            stamp = (1_700_000_000_000, 1_700_000_100_000)
+            return {path: stamp for path in file_paths}
+
+        monkeypatch.setattr(
+            GitLabConnector, "_fetch_code_file_timestamps_batch", _batch
+        )
+
+    @pytest.mark.asyncio
+    async def test_code_file_source_timestamps_from_commit_history(
+        self,
+    ) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        connector._ds_call = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                data={
+                    "newest_committed_date": "2024-06-01T10:00:00+00:00",
+                    "oldest_committed_date": "2024-01-01T00:00:00Z",
+                    "commit_count": 2,
+                },
+            )
+        )
+
+        created_ms, updated_ms = await connector._code_file_source_timestamps(
+            123, "group/project", "README.md"
+        )
+
+        from app.utils.time_conversion import parse_timestamp
+
+        assert updated_ms == parse_timestamp("2024-06-01T10:00:00+00:00")
+        assert created_ms == parse_timestamp("2024-01-01T00:00:00Z")
+
+    @pytest.mark.asyncio
+    async def test_code_file_source_timestamps_returns_none_when_history_unavailable(
+        self,
+    ) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._ds_call = AsyncMock(
+            return_value=MagicMock(success=False, error="history unavailable")
+        )
+
+        created_ms, updated_ms = await connector._code_file_source_timestamps(
+            123, "group/project", "README.md"
+        )
+
+        assert created_ms is None
+        assert updated_ms is None
+
+    @pytest.mark.asyncio
+    async def test_code_file_source_timestamps_rest_omits_head_ref(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._ds_call = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                data={
+                    "newest_committed_date": "2024-06-01T10:00:00+00:00",
+                    "oldest_committed_date": "2024-01-01T00:00:00Z",
+                    "commit_count": 2,
+                },
+            )
+        )
+
+        await connector._code_file_source_timestamps(
+            123, "group/project", "README.md", ref="HEAD"
+        )
+
+        connector._ds_call.assert_awaited_once()
+        assert connector._ds_call.await_args.kwargs["ref_name"] is None
+
     @pytest.mark.asyncio
     async def test_build_code_file_records_success_single_file(self) -> None:
         """Test building code file records with a single file."""
@@ -2796,6 +3353,14 @@ class TestGitlabConnectorBuildCodeFileRecords:
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector._process_new_records = AsyncMock()
+        connector._fetch_code_file_timestamps_batch = AsyncMock(
+            return_value={
+                "src/main.py": (
+                    1_700_000_000_000,
+                    1_700_000_100_000,
+                )
+            }
+        )
 
         # Execute
         await connector.build_code_file_records(code_file_list, 123, "project-path")
@@ -2819,6 +3384,8 @@ class TestGitlabConnectorBuildCodeFileRecords:
         assert code_file.weburl == "https://gitlab.com/project/src/main.py"
         assert code_file.external_record_group_id == "123-code-repository"
         assert code_file.mime_type == MimeTypes.PLAIN_TEXT.value
+        assert code_file.source_created_at == 1_700_000_000_000
+        assert code_file.source_updated_at == 1_700_000_100_000
 
     @pytest.mark.asyncio
     async def test_build_code_file_records_multiple_files(self) -> None:
@@ -3810,9 +4377,14 @@ class TestGitlabConnectorSyncProjects:
         # Execute
         await connector._sync_projects()
 
-        # Verify
+        # Verify — _resolve_projects_with_filters now streams via iterator=True.
         mock_data_source.list_projects.assert_called_once_with(
-            membership=True, get_all=True
+            membership=True,
+            pagination="keyset",
+            order_by="id",
+            sort="asc",
+            per_page=100,
+            iterator=True,
         )
         connector._sync_project_members_as_pseudo.assert_called_once_with(mock_project)
         connector._fetch_issues_batched.assert_called_once_with(101)
@@ -4033,8 +4605,9 @@ class TestGitlabConnectorSyncProjects:
         )
 
     @pytest.mark.asyncio
-    async def test_sync_projects_sync_pseudo_raises_propagates(self) -> None:
-        """Test that exception from _sync_project_members_as_pseudo propagates."""
+    async def test_sync_projects_sync_pseudo_raises_is_isolated(self) -> None:
+        """Exception from _sync_project_members_as_pseudo is caught; remaining
+        steps on the same project still run."""
         connector = _make_connector()
 
         mock_project = MagicMock()
@@ -4056,20 +4629,17 @@ class TestGitlabConnectorSyncProjects:
         connector._fetch_prs_batched = AsyncMock()
         connector._sync_repo_main = AsyncMock()
 
-        # Execute and expect exception
-        with pytest.raises(Exception) as exc_info:
-            await connector._sync_projects()
+        # Must not propagate — the loop catches and logs per-step exceptions.
+        await connector._sync_projects()
 
-        assert "Pseudo sync failed" in str(exc_info.value)
-
-        # Subsequent methods should not be called
-        connector._fetch_issues_batched.assert_not_called()
-        connector._fetch_prs_batched.assert_not_called()
-        connector._sync_repo_main.assert_not_called()
+        # Remaining steps on the same project still ran.
+        connector._fetch_issues_batched.assert_called_once_with(101)
+        connector._fetch_prs_batched.assert_called_once_with(101)
+        connector._sync_repo_main.assert_called_once_with(101, "group/project")
 
     @pytest.mark.asyncio
-    async def test_sync_projects_fetch_issues_raises_propagates(self) -> None:
-        """Test that exception from _fetch_issues_batched propagates."""
+    async def test_sync_projects_fetch_issues_raises_is_isolated(self) -> None:
+        """Exception from _fetch_issues_batched is caught; MRs and code still run."""
         connector = _make_connector()
 
         mock_project = MagicMock()
@@ -4091,16 +4661,15 @@ class TestGitlabConnectorSyncProjects:
         connector._fetch_prs_batched = AsyncMock()
         connector._sync_repo_main = AsyncMock()
 
-        with pytest.raises(Exception) as exc_info:
-            await connector._sync_projects()
+        await connector._sync_projects()
 
-        assert "Issues fetch failed" in str(exc_info.value)
-        connector._fetch_prs_batched.assert_not_called()
-        connector._sync_repo_main.assert_not_called()
+        # MRs and code must still be attempted on the same project.
+        connector._fetch_prs_batched.assert_called_once_with(101)
+        connector._sync_repo_main.assert_called_once_with(101, "group/project")
 
     @pytest.mark.asyncio
-    async def test_sync_projects_fetch_prs_raises_propagates(self) -> None:
-        """Test that exception from _fetch_prs_batched propagates."""
+    async def test_sync_projects_fetch_prs_raises_is_isolated(self) -> None:
+        """Exception from _fetch_prs_batched is caught; code sync still runs."""
         connector = _make_connector()
 
         mock_project = MagicMock()
@@ -4122,15 +4691,13 @@ class TestGitlabConnectorSyncProjects:
         )
         connector._sync_repo_main = AsyncMock()
 
-        with pytest.raises(Exception) as exc_info:
-            await connector._sync_projects()
+        await connector._sync_projects()
 
-        assert "PRs fetch failed" in str(exc_info.value)
-        connector._sync_repo_main.assert_not_called()
+        connector._sync_repo_main.assert_called_once_with(101, "group/project")
 
     @pytest.mark.asyncio
-    async def test_sync_projects_sync_repo_raises_propagates(self) -> None:
-        """Test that exception from _sync_repo_main propagates."""
+    async def test_sync_projects_sync_repo_raises_is_isolated(self) -> None:
+        """Exception from _sync_repo_main is caught; sync completes without propagating."""
         connector = _make_connector()
 
         mock_project = MagicMock()
@@ -4150,14 +4717,17 @@ class TestGitlabConnectorSyncProjects:
         connector._fetch_prs_batched = AsyncMock()
         connector._sync_repo_main = AsyncMock(side_effect=Exception("Repo sync failed"))
 
-        with pytest.raises(Exception) as exc_info:
-            await connector._sync_projects()
+        # Must not propagate.
+        await connector._sync_projects()
 
-        assert "Repo sync failed" in str(exc_info.value)
+        # All earlier steps completed.
+        connector._sync_project_members_as_pseudo.assert_called_once()
+        connector._fetch_issues_batched.assert_called_once_with(101)
+        connector._fetch_prs_batched.assert_called_once_with(101)
 
     @pytest.mark.asyncio
-    async def test_sync_projects_first_project_fails_stops_remaining(self) -> None:
-        """Test that failure on first project stops processing remaining projects."""
+    async def test_sync_projects_first_project_fails_continues_to_next(self) -> None:
+        """Failure on every step of project 1 must not block project 2."""
         connector = _make_connector()
 
         mock_project1 = MagicMock()
@@ -4176,7 +4746,6 @@ class TestGitlabConnectorSyncProjects:
         mock_data_source.list_projects = MagicMock(return_value=mock_projects_res)
         connector.data_source = mock_data_source
 
-        # Fail on the first project's pseudo sync
         connector._sync_project_members_as_pseudo = AsyncMock(
             side_effect=Exception("Fail on project one")
         )
@@ -4184,12 +4753,16 @@ class TestGitlabConnectorSyncProjects:
         connector._fetch_prs_batched = AsyncMock()
         connector._sync_repo_main = AsyncMock()
 
-        with pytest.raises(Exception, match="Fail on project one"):
-            await connector._sync_projects()
+        # Must not raise — both projects are processed.
+        await connector._sync_projects()
 
-        # Only one call attempted - second project never reached
-        assert connector._sync_project_members_as_pseudo.call_count == 1
-        connector._fetch_issues_batched.assert_not_called()
+        # Called once per project (two projects total).
+        assert connector._sync_project_members_as_pseudo.call_count == 2
+        # Issues/PRs/code are still attempted for both projects despite the
+        # members step failing.
+        assert connector._fetch_issues_batched.call_count == 2
+        assert connector._fetch_prs_batched.call_count == 2
+        assert connector._sync_repo_main.call_count == 2
 
 
 class TestGitlabConnectorSyncProjectMembersAsPseudo:
@@ -5291,15 +5864,22 @@ class TestFetchIssuesBatched:
         return res
 
     @pytest.mark.asyncio
-    async def test_raises_when_list_issues_fails(self) -> None:
-        """An exception is raised when data_source.list_issues reports failure."""
+    async def test_logs_error_and_returns_when_list_issues_fails(self) -> None:
+        """When data_source.list_issues reports failure the method logs the error
+        and returns without raising, so other per-project steps still run."""
         connector = self._setup_connector()
         connector.data_source.list_issues = MagicMock(
             return_value=self._make_issues_res(success=False, data=None)
         )
 
-        with pytest.raises(Exception, match="Error in fetching issues"):
-            await connector._fetch_issues_batched(project_id=1)
+        # Must not raise — failure is logged and the method returns early.
+        await connector._fetch_issues_batched(project_id=1)
+
+        connector._build_issue_records.assert_not_called()
+        connector._process_new_records.assert_not_called()
+        connector.logger.error.assert_called_once()
+        error_msg = connector.logger.error.call_args[0][0]
+        assert "1" in error_msg  # project_id present in log
 
     @pytest.mark.asyncio
     async def test_returns_early_when_no_issues(self) -> None:
@@ -6561,13 +7141,60 @@ class TestReindexRecords:
     """Unit tests for reindex_records."""
 
     @pytest.mark.asyncio
-    async def test_returns_none(self) -> None:
-        """Method returns None (stub implementation)."""
+    async def test_empty_records_is_noop(self) -> None:
+        """Empty input must short-circuit before touching the data source."""
         connector = _make_connector()
 
-        result = await connector.reindex_records()
+        result = await connector.reindex_records([])
 
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_folder_records_are_skipped(self) -> None:
+        """Folder records (RecordType.FILE without ``extension``) are
+        skeleton tree nodes with no streamable content. Reindexing them
+        causes ``stream_record`` → GitLab 404 ("record not found"), so
+        they must be filtered out before ``reindex_existing_records``
+        is called. Attachments (RecordType.FILE *with* ``extension``)
+        and code files (RecordType.CODE_FILE, no extension field) must
+        still be reindexed.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.reindex_existing_records = AsyncMock()
+        connector.data_entities_processor.on_new_records = AsyncMock()
+        connector._refresh_token_if_needed = AsyncMock()
+        connector._check_and_fetch_updated_record_for_reindex = AsyncMock(
+            return_value=None
+        )
+
+        folder = MagicMock(spec=Record)
+        folder.id = "folder-1"
+        folder.record_type = RecordType.FILE
+        folder.extension = None
+
+        attachment = MagicMock(spec=Record)
+        attachment.id = "attachment-1"
+        attachment.record_type = RecordType.FILE
+        attachment.extension = "pdf"
+
+        code_file = MagicMock(spec=Record)
+        code_file.id = "code-1"
+        code_file.record_type = RecordType.CODE_FILE
+        # CodeFileRecord has no ``extension`` attribute at all; emulate
+        # via spec=Record (no extension) — the extension guard must
+        # not apply to non-FILE record types.
+
+        await connector.reindex_records([folder, attachment, code_file])
+
+        connector.data_entities_processor.reindex_existing_records.assert_awaited_once()
+        republished = (
+            connector.data_entities_processor.reindex_existing_records.await_args[0][0]
+        )
+        republished_ids = {r.id for r in republished}
+        assert republished_ids == {"attachment-1", "code-1"}, (
+            f"Expected only attachment + code file to reindex, got {republished_ids}"
+        )
 
 
 class TestRunIncrementalSync:
@@ -12181,13 +12808,22 @@ class TestGitlabEnsureGroupRecordGroups:
 class TestGitlabResolveProjectsWithFilters:
     """Coverage for _resolve_projects_with_filters across all filter branches."""
 
-    def _project(self, pid: int, path: str, namespace_path: str | None = None):
+    def _project(
+        self,
+        pid: int,
+        path: str,
+        namespace_path: str | None = None,
+        *,
+        namespace_kind: str | None = None,
+    ):
         p = MagicMock()
         p.id = pid
         p.path_with_namespace = path
         if namespace_path is not None:
             ns = MagicMock()
             ns.full_path = namespace_path
+            if namespace_kind is not None:
+                ns.kind = namespace_kind
             p.namespace = ns
         else:
             p.namespace = None
@@ -12221,7 +12857,12 @@ class TestGitlabResolveProjectsWithFilters:
 
         assert {p.id for p in result} == {1, 2}
         connector.data_source.list_projects.assert_called_once_with(
-            membership=True, get_all=True
+            membership=True,
+            pagination="keyset",
+            order_by="id",
+            sort="asc",
+            per_page=100,
+            iterator=True,
         )
 
     @pytest.mark.asyncio
@@ -12341,7 +12982,9 @@ class TestGitlabResolveProjectsWithFilters:
         proj2 = self._project(11, "org/eng/fe")
         proj1_dup = self._project(10, "org/eng/be")  # duplicate id across groups
 
-        def fake_list_group_projects(group_path, include_subgroups, get_all):
+        # _paged_list adds iterator=True to the call; accept anything to
+        # tolerate that without coupling the test to the helper's internals.
+        def fake_list_group_projects(group_path, *args, **kwargs):
             if group_path == "org/eng":
                 return self._ok([proj1, proj2])
             if group_path == "org/data":
@@ -12362,9 +13005,17 @@ class TestGitlabResolveProjectsWithFilters:
         result = await connector._resolve_projects_with_filters()
 
         assert {p.id for p in result} == {10, 11}
-        connector._ensure_gitlab_group_record_groups.assert_awaited_once_with(
-            ["org/eng", "org/data"]
-        )
+        # ``candidate_projects`` is now threaded through so the group-record-
+        # groups builder can derive permissions from the post-filter project
+        # universe when ``list_group_members_all`` returns 403/empty (EE
+        # Auditor / direct-project-membership fallback path).
+        connector._ensure_gitlab_group_record_groups.assert_awaited_once()
+        call_args = connector._ensure_gitlab_group_record_groups.await_args
+        assert call_args.args == (["org/eng", "org/data"],)
+        assert "candidate_projects" in call_args.kwargs
+        assert {
+            p.id for p in call_args.kwargs["candidate_projects"]
+        } == {10, 11}
         assert connector._gitlab_included_group_paths == ["org/eng", "org/data"]
 
     @pytest.mark.asyncio
@@ -12403,10 +13054,219 @@ class TestGitlabResolveProjectsWithFilters:
         result = await connector._resolve_projects_with_filters()
 
         assert [p.id for p in result] == [2]
-        connector._ensure_gitlab_group_record_groups.assert_awaited_once_with(
-            ["org/data"]
-        )
+        connector._ensure_gitlab_group_record_groups.assert_awaited_once()
+        call_args = connector._ensure_gitlab_group_record_groups.await_args
+        assert call_args.args == (["org/data"],)
+        assert [
+            p.id for p in call_args.kwargs["candidate_projects"]
+        ] == [2]
         assert connector._gitlab_included_group_paths == ["org/data"]
+
+    @pytest.mark.asyncio
+    async def test_project_ids_in_builds_parent_group_hierarchy(self) -> None:
+        """PROJECT_IDS IN must materialise parent group RecordGroups so
+        each project node is reachable in the browse-view drilldown.
+        Previously the IN branch returned without calling
+        ``_ensure_gitlab_group_record_groups`` and left
+        ``parent_external_group_id=None`` on every project RG.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._ensure_gitlab_group_record_groups = AsyncMock()
+
+        proj_a = self._project(1, "org/eng/repo-a", namespace_path="org/eng")
+        proj_b = self._project(2, "org/eng/repo-b", namespace_path="org/eng")
+        proj_c = self._project(3, "org/data/repo-c", namespace_path="org/data")
+        mapping = {
+            "org/eng/repo-a": proj_a,
+            "org/eng/repo-b": proj_b,
+            "org/data/repo-c": proj_c,
+        }
+
+        def fake_get_project(path):
+            r = MagicMock()
+            r.success = path in mapping
+            r.data = mapping.get(path)
+            r.error = None if r.success else "missing"
+            return r
+
+        connector.data_source.get_project = MagicMock(side_effect=fake_get_project)
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["org/eng/repo-a", "org/eng/repo-b", "org/data/repo-c"],
+                FilterOperator.IN,
+            )
+        )
+
+        result = await connector._resolve_projects_with_filters()
+
+        assert {p.id for p in result} == {1, 2, 3}
+        connector._ensure_gitlab_group_record_groups.assert_awaited_once()
+        call_args = connector._ensure_gitlab_group_record_groups.await_args
+        assert call_args.args == (["org/eng", "org/data"],)
+        assert {
+            p.id for p in call_args.kwargs["candidate_projects"]
+        } == {1, 2, 3}
+        assert connector._gitlab_included_group_paths == ["org/eng", "org/data"]
+
+    @pytest.mark.asyncio
+    async def test_project_ids_in_skips_user_namespace_for_group_hierarchy(
+        self,
+    ) -> None:
+        """Personal repos live under a user namespace; groups.get(username) 404s."""
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._ensure_gitlab_group_record_groups = AsyncMock()
+
+        personal = self._project(
+            82295002,
+            "rishabh109/pipeshub-ai",
+            namespace_path="rishabh109",
+            namespace_kind="user",
+        )
+        connector.data_source.get_project = MagicMock(
+            return_value=self._ok(personal)
+        )
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["rishabh109/pipeshub-ai"],
+                FilterOperator.IN,
+            )
+        )
+
+        result = await connector._resolve_projects_with_filters()
+
+        assert len(result) == 1
+        connector._ensure_gitlab_group_record_groups.assert_not_called()
+        assert connector._gitlab_included_group_paths is None
+
+    @pytest.mark.asyncio
+    async def test_project_ids_in_short_circuits_group_ids_in(self) -> None:
+        """When both ``GROUP_IDS IN`` and ``PROJECT_IDS IN`` are set,
+        only the listed projects sync. The group filter is treated as
+        picker scope (already applied on /filter-options via
+        ``contextGroupPath``); widening sync to every project under the
+        group on top of the explicit project list silently syncs
+        siblings the operator never selected — the bug reported by
+        operators who saw ``testg/repo2`` show up after picking only
+        ``testg/repo1`` under group ``testg``.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._ensure_gitlab_group_record_groups = AsyncMock()
+
+        proj_explicit = self._project(
+            20, "testg/repo1", namespace_path="testg"
+        )
+
+        def fake_list_group_projects(*args, **kwargs):  # noqa: ARG001
+            # Must not be called: group expansion is short-circuited
+            # when PROJECT_IDS IN is set.
+            raise AssertionError(
+                "list_group_projects should not be called when "
+                "PROJECT_IDS IN is authoritative"
+            )
+
+        def fake_get_project(path):
+            r = MagicMock()
+            r.success = path == "testg/repo1"
+            r.data = proj_explicit if r.success else None
+            r.error = None if r.success else "missing"
+            return r
+
+        connector.data_source.list_group_projects = MagicMock(
+            side_effect=fake_list_group_projects
+        )
+        connector.data_source.get_project = MagicMock(side_effect=fake_get_project)
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS, ["testg"], FilterOperator.IN,
+            ),
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["testg/repo1"],
+                FilterOperator.IN,
+            ),
+        )
+
+        result = await connector._resolve_projects_with_filters()
+
+        # Only the explicitly-listed project synced; sibling testg/repo2
+        # (had it existed in the group) would NOT be pulled in.
+        assert {p.id for p in result} == {20}
+        connector.data_source.list_group_projects.assert_not_called()
+        # Parent hierarchy still seeded from grp_in paths + the
+        # candidate's namespace (so the RecordGroup link survives).
+        connector._ensure_gitlab_group_record_groups.assert_awaited_once()
+        call_args = connector._ensure_gitlab_group_record_groups.await_args
+        assert call_args.args == (["testg"],)
+        assert {p.id for p in call_args.kwargs["candidate_projects"]} == {20}
+
+    @pytest.mark.asyncio
+    async def test_project_ids_in_combined_with_group_ids_not_in(self) -> None:
+        """Explicit projects must still be subject to GROUP_IDS NOT_IN
+        exclusions when both are configured. Without this, NOT_IN
+        could be bypassed by listing the excluded project in PROJECT_IDS IN.
+        """
+        from app.connectors.core.registry.filters import (
+            FilterOperator,
+            SyncFilterKey,
+        )
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._ensure_gitlab_group_record_groups = AsyncMock()
+
+        proj_keep = self._project(
+            1, "vendor/lib", namespace_path="vendor"
+        )
+        proj_excluded = self._project(
+            2, "org/legacy/repo", namespace_path="org/legacy"
+        )
+
+        def fake_get_project(path):
+            r = MagicMock()
+            mapping = {"vendor/lib": proj_keep, "org/legacy/repo": proj_excluded}
+            r.success = path in mapping
+            r.data = mapping.get(path)
+            r.error = None if r.success else "missing"
+            return r
+
+        connector.data_source.get_project = MagicMock(
+            side_effect=fake_get_project
+        )
+        connector.sync_filters = _make_filter_collection(
+            _multiselect_filter(
+                SyncFilterKey.GROUP_IDS, ["org/legacy"], FilterOperator.NOT_IN,
+            ),
+            _multiselect_filter(
+                SyncFilterKey.PROJECT_IDS,
+                ["vendor/lib", "org/legacy/repo"],
+                FilterOperator.IN,
+            ),
+        )
+
+        result = await connector._resolve_projects_with_filters()
+
+        # org/legacy/repo dropped because its namespace is under an excluded prefix.
+        assert {p.id for p in result} == {1}
 
 
 class TestGitlabSyncProjectsIndexingFilters:
@@ -12745,7 +13605,8 @@ class TestGitlabGroupFilterOptions:
         connector = _make_connector()
         connector.data_source = MagicMock()
         groups = []
-        for i in range(5):
+        # Overfetch is per_page + 1 = 4; return 4 to assert has_more=True path.
+        for i in range(4):
             g = MagicMock()
             g.full_path = f"org/g{i}"
             g.name = f"Group {i}"
@@ -12759,6 +13620,17 @@ class TestGitlabGroupFilterOptions:
         assert resp.options[0].id == "org/g0"
         assert resp.has_more is True
         assert resp.page == 1 and resp.limit == 3
+        connector.data_source.list_groups.assert_called_once()
+        kwargs = connector.data_source.list_groups.call_args.kwargs
+        assert kwargs["page"] == 1
+        assert kwargs["per_page"] == 4
+        assert kwargs["get_all"] is False
+        # Picker uses ``min_access_level=10`` (Guest+ membership) — we
+        # intentionally do NOT pass ``all_available=True`` because it
+        # would pollute the dropdown with every public/internal group
+        # the caller can technically read.
+        assert kwargs["min_access_level"] == 10
+        assert "all_available" not in kwargs
 
     @pytest.mark.asyncio
     async def test_returns_last_page_with_has_more_false(self) -> None:
@@ -12795,6 +13667,138 @@ class TestGitlabGroupFilterOptions:
 
         assert resp.success is False
         assert resp.message == "permission denied"
+
+    @pytest.mark.asyncio
+    async def test_clamps_per_page_to_gitlab_max(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(return_value=self._ok([]))
+
+        # Any non-empty search goes through the bounded local-filter path
+        # (page=1, per_page=GitLab max) so that namespace-path matches and
+        # case variations on self-managed EE are caught client-side.  The
+        # caller-supplied page number is ignored while a search is active —
+        # pagination semantics don't carry over to client-filtered results.
+        await connector._gitlab_group_filter_options(
+            page=2, limit=500, search="foobar"
+        )
+
+        kwargs = connector.data_source.list_groups.call_args.kwargs
+        # per_page clamped to GitLab max (100).
+        assert kwargs["per_page"] == 100
+        # Any search: always fetch from page 1 for local filtering.
+        assert kwargs["page"] == 1
+        assert kwargs["search"] == "foobar"
+
+    @pytest.mark.asyncio
+    async def test_drops_order_by_when_search_is_set(self) -> None:
+        """Regression: passing ``order_by=path`` together with ``search``
+        on /groups silently returns ``[]`` on many self-managed EE
+        deployments — the picker dropdown shows the unfiltered list but
+        becomes empty as soon as the user types. Drop ``order_by`` and
+        ``sort`` whenever search is set so GitLab's own default (which
+        is similarity-based when search is provided) is used.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(return_value=self._ok([]))
+
+        await connector._gitlab_group_filter_options(
+            page=1, limit=20, search="abc"
+        )
+
+        kwargs = connector.data_source.list_groups.call_args.kwargs
+        assert kwargs["search"] == "abc"
+        assert "order_by" not in kwargs
+        assert "sort" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_keeps_order_by_when_no_search(self) -> None:
+        """Without a search term we still want stable path-ordering so
+        the unfiltered picker pages deterministically.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(return_value=self._ok([]))
+
+        await connector._gitlab_group_filter_options(
+            page=1, limit=20, search=None
+        )
+
+        kwargs = connector.data_source.list_groups.call_args.kwargs
+        assert kwargs.get("order_by") == "path"
+        assert kwargs.get("sort") == "asc"
+
+    @pytest.mark.asyncio
+    async def test_short_search_filters_client_side(self) -> None:
+        """Short searches are rejected before calling GitLab.
+
+        GitLab's REST ``search=`` parameter switches to substring match only
+        at >= 3 characters. Fetching unfiltered pages for 1-2 character
+        searches is too expensive on large tenants, so the backend returns an
+        empty result until the user types a useful query.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock()
+
+        resp = await connector._gitlab_group_filter_options(
+            page=1, limit=20, search="p"
+        )
+
+        connector.data_source.list_groups.assert_not_called()
+        assert resp.success is True
+        assert resp.options == []
+        assert resp.has_more is False
+        assert "at least 3" in (resp.message or "")
+
+    @pytest.mark.asyncio
+    async def test_short_search_matches_case_insensitive(self) -> None:
+        """Local substring match must be case-insensitive once the query is long enough — the picker
+        UX expects ``P`` and ``p`` to both find ``Pipeshub``.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        g = MagicMock(); g.full_path = "PipesHub"; g.name = "PipesHub"
+        connector.data_source.list_groups = MagicMock(
+            return_value=self._ok([g])
+        )
+
+        resp = await connector._gitlab_group_filter_options(
+            page=1, limit=20, search="pip"
+        )
+
+        assert [opt.id for opt in resp.options] == ["PipesHub"]
+
+    @pytest.mark.asyncio
+    async def test_short_search_scans_beyond_first_gitlab_page(self) -> None:
+        """Search must page through GitLab instead of
+        filtering just the first 100 groups.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        first_page = [
+            MagicMock(full_path=f"other-{i}", name=f"Other {i}")
+            for i in range(100)
+        ]
+        target = MagicMock(full_path="pipeshub-ai", name="pipeshub-ai")
+
+        def fake_list_groups(**kwargs):
+            page = kwargs["page"]
+            if page == 1:
+                return self._ok(first_page)
+            if page == 2:
+                return self._ok([target])
+            return self._ok([])
+
+        connector.data_source.list_groups = MagicMock(side_effect=fake_list_groups)
+
+        resp = await connector._gitlab_group_filter_options(
+            page=1, limit=20, search="pip"
+        )
+
+        assert [opt.id for opt in resp.options] == ["pipeshub-ai"]
+        assert connector.data_source.list_groups.call_count == 2
 
 
 class TestGitlabProjectFilterOptions:
@@ -12838,8 +13842,244 @@ class TestGitlabProjectFilterOptions:
 
         assert resp.success is True
         assert {opt.id for opt in resp.options} == {"a/p", "b/p"}
-        connector.data_source.list_projects.assert_called_once_with(
-            search=None, membership=True, get_all=True
+        kwargs = connector.data_source.list_projects.call_args.kwargs
+        assert kwargs["search"] is None
+        # Picker now uses ``min_access_level=10`` instead of ``membership=True``
+        # because some GitLab versions silently drop Guest-level (access
+        # level 10) projects from ``membership=True`` listings, hiding repos
+        # the caller can read but is not directly a member of beyond Guest.
+        assert kwargs["min_access_level"] == 10
+        assert "membership" not in kwargs
+        assert kwargs["get_all"] is False
+        # Server-side page fetch with +1 overfetch for has_more detection.
+        assert kwargs["page"] == 1
+        assert kwargs["per_page"] == 21
+        # ``simple=True`` keeps the GitLab payload small (picker only needs
+        # id + path + name fields).
+        assert kwargs["simple"] is True
+
+    @pytest.mark.asyncio
+    async def test_default_path_signals_has_more_when_overfetch_full(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+
+        # limit=3 → per_page=4 overfetch; return 4 to trigger has_more.
+        projects = [self._project(i, f"ns/p{i}") for i in range(4)]
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok(projects)
+        )
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=3, search=None
+        )
+
+        assert resp.success is True
+        assert resp.has_more is True
+        assert len(resp.options) == 3
+
+    @pytest.mark.asyncio
+    async def test_default_path_drops_order_by_when_search_is_set(self) -> None:
+        """Regression: ``/projects?search=…&order_by=path`` silently
+        returns ``[]`` on many self-managed EE deployments. Drop
+        ``order_by``/``sort`` whenever search is set so GitLab uses its
+        own (similarity-based) default for searched listings.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([])
+        )
+
+        await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="abc"
+        )
+
+        kwargs = connector.data_source.list_projects.call_args.kwargs
+        assert kwargs["search"] == "abc"
+        assert "order_by" not in kwargs
+        assert "sort" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_scope_paths_never_passes_search_to_api(self) -> None:
+        """``list_group_projects search=`` only matches project *names*, so
+        typing a group-name fragment (e.g. "eng") would silently return
+        nothing even though every project in ``org/eng`` is relevant.
+        The scoped-groups path never forwards the search term to the API;
+        it always fetches a bounded page and filters locally against
+        ``path_with_namespace`` instead.  ``order_by=path`` is always set
+        because there is no search term going to the API.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = ["org/eng"]
+        connector._request_filter_context_exclude_group_paths = None
+
+        captured: list[dict[str, object]] = []
+
+        def fake(group_path, **kwargs):
+            captured.append(kwargs)
+            return self._ok([])
+
+        connector.data_source.list_group_projects = MagicMock(side_effect=fake)
+
+        await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="abc"
+        )
+
+        assert captured, "list_group_projects should have been called"
+        kwargs = captured[0]
+        assert "search" not in kwargs
+        assert kwargs.get("order_by") == "path"
+        assert kwargs.get("sort") == "asc"
+        assert kwargs["per_page"] == 100
+
+    @pytest.mark.asyncio
+    async def test_default_path_short_search_filters_client_side(self) -> None:
+        """Short project searches are rejected before calling GitLab."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+        connector.data_source.list_projects = MagicMock()
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="p"
+        )
+
+        connector.data_source.list_projects.assert_not_called()
+        assert resp.success is True
+        assert resp.options == []
+        assert resp.has_more is False
+        assert "at least 3" in (resp.message or "")
+
+    @pytest.mark.asyncio
+    async def test_default_path_short_search_scans_beyond_first_gitlab_page(
+        self,
+    ) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+
+        first_page = [self._project(i, f"org/other-{i}") for i in range(100)]
+        target = self._project(101, "org/pipeshub-ai")
+
+        def fake_list_projects(**kwargs):
+            page = kwargs["page"]
+            if page == 1:
+                return self._ok(first_page)
+            if page == 2:
+                return self._ok([target])
+            return self._ok([])
+
+        connector.data_source.list_projects = MagicMock(side_effect=fake_list_projects)
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="pip"
+        )
+
+        assert {opt.id for opt in resp.options} == {"org/pipeshub-ai"}
+        assert connector.data_source.list_projects.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_default_path_search_scan_is_bounded(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+
+        non_matches = [self._project(i, f"org/other-{i}") for i in range(100)]
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok(non_matches)
+        )
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="pip"
+        )
+
+        assert resp.success is True
+        assert resp.options == []
+        assert resp.has_more is False
+        assert (
+            connector.data_source.list_projects.call_count
+            == GitLabConnector._FILTER_OPTIONS_MAX_SCAN_PAGES
+        )
+
+    @pytest.mark.asyncio
+    async def test_scope_paths_short_search_filters_client_side(self) -> None:
+        """Same threshold behaviour on the scoped-groups path: short
+        queries return before calling ``list_group_projects``.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = ["org/eng"]
+        connector._request_filter_context_exclude_group_paths = None
+        connector.data_source.list_group_projects = MagicMock()
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="p"
+        )
+
+        connector.data_source.list_group_projects.assert_not_called()
+        assert resp.success is True
+        assert resp.options == []
+        assert resp.has_more is False
+        assert "at least 3" in (resp.message or "")
+
+    @pytest.mark.asyncio
+    async def test_scope_paths_search_scans_beyond_first_gitlab_page(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = ["org/eng"]
+        connector._request_filter_context_exclude_group_paths = None
+
+        first_page = [self._project(i, f"org/eng/other-{i}") for i in range(100)]
+        target = self._project(101, "org/eng/pipeshub")
+
+        def fake(group_path, **kwargs):
+            page = kwargs["page"]
+            if page == 1:
+                return self._ok(first_page)
+            if page == 2:
+                return self._ok([target])
+            return self._ok([])
+
+        connector.data_source.list_group_projects = MagicMock(side_effect=fake)
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="pip"
+        )
+
+        assert {opt.id for opt in resp.options} == {"org/eng/pipeshub"}
+        assert connector.data_source.list_group_projects.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_scope_paths_search_scan_is_bounded(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = ["org/eng"]
+        connector._request_filter_context_exclude_group_paths = None
+
+        non_matches = [self._project(i, f"org/eng/other-{i}") for i in range(100)]
+        connector.data_source.list_group_projects = MagicMock(
+            return_value=self._ok(non_matches)
+        )
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="pip"
+        )
+
+        assert resp.success is True
+        assert resp.options == []
+        assert resp.has_more is False
+        assert (
+            connector.data_source.list_group_projects.call_count
+            == GitLabConnector._FILTER_OPTIONS_MAX_SCAN_PAGES
         )
 
     @pytest.mark.asyncio
@@ -12852,7 +14092,11 @@ class TestGitlabProjectFilterOptions:
         p2 = self._project(2, "org/eng/fe")
         p1_dup = self._project(1, "org/eng/be")
 
-        def fake(group_path, include_subgroups, search, get_all):
+        def fake(group_path, **kwargs):
+            assert kwargs["get_all"] is False
+            assert kwargs["page"] == 1
+            # per_page = limit + 1 = 21 (overfetch for has_more detection).
+            assert kwargs["per_page"] == 21
             if group_path == "org/eng":
                 return self._ok([p1, p2])
             if group_path == "org/data":
@@ -12869,6 +14113,8 @@ class TestGitlabProjectFilterOptions:
         # dedupe by id; order is sorted by path_with_namespace
         ids = [opt.id for opt in resp.options]
         assert set(ids) == {"org/eng/be", "org/eng/fe"}
+        # Two scoped groups → two parallel API calls.
+        assert connector.data_source.list_group_projects.call_count == 2
 
     @pytest.mark.asyncio
     async def test_exclude_paths_filters_owned_projects(self) -> None:
@@ -12909,3 +14155,1199 @@ class TestGitlabProjectFilterOptions:
 
         assert resp.success is False
         assert resp.message == "denied"
+
+    @pytest.mark.asyncio
+    async def test_default_path_passes_search_namespaces_when_search_set(self) -> None:
+        """``search_namespaces=True`` widens GitLab's project search to match
+        against the namespace/group path in addition to the project name.
+        Without it, typing a group name into the unscoped picker returns
+        nothing because the API only checks ``name`` by default.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([])
+        )
+
+        await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="mygroup"
+        )
+
+        kwargs = connector.data_source.list_projects.call_args.kwargs
+        assert kwargs["search"] == "mygroup"
+        assert kwargs.get("search_namespaces") is True
+
+    @pytest.mark.asyncio
+    async def test_default_path_no_search_namespaces_without_search(self) -> None:
+        """``search_namespaces`` must not be sent when there is no search term —
+        it is redundant and wastes server-side compute on the unfiltered browse."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([])
+        )
+
+        await connector._gitlab_project_filter_options(
+            page=1, limit=20, search=None
+        )
+
+        kwargs = connector.data_source.list_projects.call_args.kwargs
+        assert "search_namespaces" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_default_path_long_search_filters_client_side_by_namespace(
+        self,
+    ) -> None:
+        """Regression: for 3+ char searches the API's ``search=`` only matches
+        project names server-side; ``path_with_namespace`` matches (e.g. typing
+        a group name) were silently dropped. Local post-filter now runs for any
+        non-empty search so namespace-path matches are always surfaced.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._request_filter_context_group_paths = None
+        connector._request_filter_context_exclude_group_paths = None
+
+        # API returns a project whose *name* does not contain "mygroup" but
+        # whose *path_with_namespace* does — simulates the server returning
+        # namespace-matched results via search_namespaces=True, which we
+        # must not then strip in local filtering.
+        p_match = self._project(1, "mygroup/frontend", name="frontend")
+        p_no_match = self._project(2, "other-org/backend", name="backend")
+        connector.data_source.list_projects = MagicMock(
+            return_value=self._ok([p_match, p_no_match])
+        )
+
+        resp = await connector._gitlab_project_filter_options(
+            page=1, limit=20, search="mygroup"
+        )
+
+        assert {opt.id for opt in resp.options} == {"mygroup/frontend"}
+        assert resp.has_more is False
+
+
+class TestGitlabConnectorTimeoutAndCreatorFallback:
+    """Regression coverage for the timeout + creator-fallback patches.
+
+    The connector now caps each GitLab op with a wall-clock budget
+    (``_GITLAB_OP_DEFAULT_TIMEOUT_SECONDS``) and, when listings fail or
+    return nothing usable, falls back to creator-only permissions
+    (Jira parity) instead of either silently dropping ACLs or aborting
+    the whole sync. These tests exercise the new behaviour explicitly.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _passthrough_enrich(self, monkeypatch: Any) -> None:
+        """Skip ``_enrich_members_with_full_user`` for these tests.
+
+        Enrichment fans out per-member ``get_user`` calls whose
+        ``MagicMock`` responses would clobber our synthetic creator
+        row's ``public_email``. The tests assert on the dict-of-members
+        membership/access semantics, not on enrichment shape — same
+        pattern as ``TestGitlabConnectorSyncUsers``.
+        """
+
+        async def passthrough(
+            self: GitLabConnector, dict_member: dict[int, GroupMember]
+        ) -> dict[int, Any]:
+            return dict_member
+
+        monkeypatch.setattr(
+            GitLabConnector, "_enrich_members_with_full_user", passthrough
+        )
+
+    @pytest.mark.asyncio
+    async def test_ds_call_returns_failure_when_op_exceeds_wall_clock_budget(
+        self,
+    ) -> None:
+        """A ``get_all=True`` materialisation that blocks longer than the
+        budget must surface as ``success=False`` instead of leaving the
+        event loop pinned inside ``asyncio.to_thread``. This is the core
+        of the "stuck fetching users/groups" mitigation.
+        """
+        connector = _make_connector()
+
+        def hangs() -> Any:
+            # The op runs inside ``asyncio.to_thread``; ``time.sleep`` is
+            # the closest analogue to python-gitlab's internal pagination
+            # blocking on synchronous HTTP without checking back into
+            # asyncio. The thread is intentionally abandoned by
+            # ``asyncio.wait_for`` on timeout — we only care that the
+            # caller is unblocked promptly.
+            import time
+            time.sleep(5)
+            return MagicMock(success=True, data=[])
+
+        res = await connector._ds_call(hangs, _gitlab_timeout=0.05)
+
+        assert res.success is False
+        assert "timed out" in (res.error or "").lower()
+
+    @pytest.mark.asyncio
+    async def test_sync_users_scoped_falls_back_to_creator_when_every_target_fails(
+        self,
+    ) -> None:
+        """When every configured group/project member listing fails, prefer
+        creator-only access over aborting the sync (Jira parity).
+
+        The previous behaviour raised ``RuntimeError``; for a freshly
+        configured connector that meant zero AppUsers and the operator
+        could not see any of their own records.
+        """
+        connector = _make_connector()
+        # Stand in for what ``_resolve_creator_identity`` would set during init.
+        connector.creator_email = "owner@example.com"
+        connector._gitlab_user_id = 4242
+
+        fail = MagicMock()
+        fail.success = False
+        fail.error = "403 Forbidden"
+
+        connector.data_source = MagicMock()
+        connector.data_source.list_group_members_all = MagicMock(return_value=fail)
+        connector.data_source.list_project_members_all = MagicMock(return_value=fail)
+        # ``_paged_list`` for list_group_projects also has to fail / return
+        # nothing so the subgroup expansion does not accidentally succeed.
+        empty_iter = MagicMock()
+        empty_iter.success = True
+        empty_iter.data = iter([])
+        connector.data_source.list_group_projects = MagicMock(return_value=empty_iter)
+        connector._sync_users_from_projects_groups = AsyncMock()
+
+        await connector._sync_users_scoped(
+            group_paths=["org/eng"], project_paths=["org/eng/svc"]
+        )
+
+        # Creator was injected as a synthetic member so downstream gets at
+        # least the configuring user — not an empty dict that would
+        # tombstone every record on reconciliation.
+        call_args = connector._sync_users_from_projects_groups.call_args[0][0]
+        assert 4242 in call_args
+        injected = call_args[4242]
+        assert getattr(injected, "public_email", None) == "owner@example.com"
+
+    @pytest.mark.asyncio
+    async def test_sync_users_scoped_aborts_when_every_target_fails_and_no_creator(
+        self,
+    ) -> None:
+        """Without a resolved creator identity we must still abort —
+        silently writing zero permissions would tombstone every record
+        on reconciliation.
+        """
+        connector = _make_connector()
+        # ``creator_email`` is None by default on _make_connector.
+
+        fail = MagicMock()
+        fail.success = False
+        fail.error = "403 Forbidden"
+
+        connector.data_source = MagicMock()
+        connector.data_source.list_group_members_all = MagicMock(return_value=fail)
+        connector.data_source.list_project_members_all = MagicMock(return_value=fail)
+        empty_iter = MagicMock()
+        empty_iter.success = True
+        empty_iter.data = iter([])
+        connector.data_source.list_group_projects = MagicMock(return_value=empty_iter)
+
+        with pytest.raises(RuntimeError, match="no creator identity"):
+            await connector._sync_users_scoped(
+                group_paths=["org/eng"], project_paths=["org/eng/svc"]
+            )
+
+    @pytest.mark.asyncio
+    async def test_sync_project_members_falls_back_to_creator_on_listing_failure(
+        self,
+    ) -> None:
+        """Project member listing fails → build the four RecordGroups with
+        creator-only ACLs instead of returning empty (which used to make
+        the project invisible to every PipesHub user)."""
+        connector = _make_connector()
+        connector.creator_email = "owner@example.com"
+        connector._gitlab_user_id = 4242
+
+        mock_project = MagicMock(spec=Project)
+        mock_project.id = 101
+        mock_project.name = "test-project"
+        mock_project.path_with_namespace = "group/test-project"
+
+        fail = MagicMock()
+        fail.success = False
+        fail.error = "403 Forbidden"
+        connector.data_source = MagicMock()
+        connector.data_source.list_project_members_all = MagicMock(return_value=fail)
+
+        await connector._sync_project_members_as_pseudo(mock_project)
+
+        # Four RecordGroups with the same single-USER creator permission.
+        call_args = (
+            connector.data_entities_processor.on_new_record_groups.call_args[0][0]
+        )
+        assert len(call_args) == 4
+        for _rg, perms in call_args:
+            assert len(perms) == 1
+            assert perms[0].email == "owner@example.com"
+            assert perms[0].entity_type == EntityType.USER
+            assert perms[0].type == PermissionType.OWNER
+
+    @pytest.mark.asyncio
+    async def test_sync_project_members_falls_back_to_creator_when_listing_empty(
+        self,
+    ) -> None:
+        """``200 OK + []`` is GitLab's response for tokens below the role
+        required to enumerate members on a private project. Treat it
+        the same as a listing failure for fallback purposes — otherwise
+        the project record-groups would be created with no PERMISSION
+        edges and become silently invisible.
+        """
+        connector = _make_connector()
+        connector.creator_email = "owner@example.com"
+        connector._gitlab_user_id = 4242
+
+        mock_project = MagicMock(spec=Project)
+        mock_project.id = 101
+        mock_project.name = "test-project"
+        mock_project.path_with_namespace = "group/test-project"
+
+        empty = MagicMock()
+        empty.success = True
+        empty.data = []
+        connector.data_source = MagicMock()
+        connector.data_source.list_project_members_all = MagicMock(return_value=empty)
+
+        await connector._sync_project_members_as_pseudo(mock_project)
+
+        call_args = (
+            connector.data_entities_processor.on_new_record_groups.call_args[0][0]
+        )
+        assert len(call_args) == 4
+        for _rg, perms in call_args:
+            assert len(perms) == 1
+            assert perms[0].email == "owner@example.com"
+
+    @pytest.mark.asyncio
+    async def test_sync_project_members_keeps_max_access_level_on_dedup(
+        self,
+    ) -> None:
+        """When the same user appears twice in ``members/all`` (direct
+        project membership + inherited group membership), the merge must
+        keep the row with the *higher* access_level. The previous
+        ``dict[k] = v`` last-write-wins logic could downgrade a Maintainer
+        to a Developer purely on response ordering.
+        """
+        connector = _make_connector()
+
+        mock_project = MagicMock(spec=Project)
+        mock_project.id = 101
+        mock_project.name = "test-project"
+        mock_project.path_with_namespace = "group/test-project"
+
+        # Same id; Maintainer (direct) row appears before Developer
+        # (inherited) row — the buggy version would keep Developer.
+        m_direct = MagicMock()
+        m_direct.id = 1
+        m_direct.name = "Direct Maintainer"
+        m_direct.access_level = 40
+
+        m_inherited = MagicMock()
+        m_inherited.id = 1
+        m_inherited.name = "Inherited Developer"
+        m_inherited.access_level = 30
+
+        members_res = MagicMock()
+        members_res.success = True
+        members_res.data = [m_direct, m_inherited]
+
+        connector.data_source = MagicMock()
+        connector.data_source.list_project_members_all = MagicMock(
+            return_value=members_res
+        )
+
+        captured_member: dict[str, Any] = {}
+
+        async def capture(member: Any) -> Any:
+            captured_member["latest"] = member
+            return MagicMock()
+
+        connector._transform_restrictions_to_permisions = capture  # type: ignore[assignment]
+
+        await connector._sync_project_members_as_pseudo(mock_project)
+
+        # _transform_restrictions_to_permisions runs over the deduped
+        # dict_member — exactly one row survived, and it must be the
+        # higher (Maintainer, 40) one regardless of input order.
+        assert captured_member["latest"].access_level == 40
+
+    @pytest.mark.asyncio
+    async def test_sync_users_from_projects_groups_creator_bypass_when_public_email_missing(
+        self,
+    ) -> None:
+        """The configuring user's row almost never has ``public_email`` set
+        (GitLab default). Without the bypass they become a pseudo-group
+        keyed by their GitLab numeric id and the operator who configured
+        the sync can't see records they have access to on GitLab.
+        """
+        connector = _make_connector()
+        connector.creator_email = "owner@example.com"
+        connector._gitlab_user_id = 4242
+
+        creator_row = MagicMock()
+        creator_row.id = 4242
+        creator_row.username = "owner"
+        creator_row.name = "Owner"
+        creator_row.public_email = None  # default GitLab state
+        creator_row.email = None
+
+        other_row = MagicMock()
+        other_row.id = 9999
+        other_row.username = "someone"
+        other_row.name = "Someone Else"
+        other_row.public_email = "someone@example.com"
+        other_row.email = None
+
+        await connector._sync_users_from_projects_groups(
+            {4242: creator_row, 9999: other_row}
+        )
+
+        call_args = connector.data_entities_processor.on_new_app_users.call_args[0][0]
+        emails = sorted(u.email for u in call_args)
+        assert emails == ["owner@example.com", "someone@example.com"]
+        # The creator row must have been resolved to creator_email even
+        # though both ``public_email`` and ``email`` were missing.
+        creator_users = [u for u in call_args if u.source_user_id == "4242"]
+        assert len(creator_users) == 1
+        assert creator_users[0].email == "owner@example.com"
+
+    @pytest.mark.asyncio
+    async def test_ensure_group_record_groups_creates_creator_fallback_when_get_group_fails(
+        self,
+    ) -> None:
+        """``GET /groups/:id`` 403/404 must not skip the group RecordGroup —
+        child projects already reference ``parent_external_group_id=group_path``."""
+        connector = _make_connector()
+        connector.creator_email = "owner@example.com"
+        connector._gitlab_user_id = 4242
+
+        fail = MagicMock()
+        fail.success = False
+        fail.error = "403 Forbidden"
+        connector.data_source = MagicMock()
+        connector.data_source.get_group = MagicMock(return_value=fail)
+
+        await connector._ensure_gitlab_group_record_groups(["org/eng"])
+
+        connector.data_source.get_group.assert_called_once()
+        call_args = (
+            connector.data_entities_processor.on_new_record_groups.call_args[0][0]
+        )
+        assert len(call_args) == 1
+        group_rg, perms = call_args[0]
+        assert group_rg.external_group_id == "org/eng"
+        assert group_rg.name == "org/eng"
+        assert len(perms) == 1
+        assert perms[0].email == "owner@example.com"
+        assert perms[0].entity_type == EntityType.USER
+        assert perms[0].type == PermissionType.OWNER
+
+    @pytest.mark.asyncio
+    async def test_ensure_group_record_groups_skips_when_get_group_fails_and_no_creator(
+        self,
+    ) -> None:
+        """Without creator identity we cannot synthesize a group node."""
+        connector = _make_connector()
+
+        fail = MagicMock()
+        fail.success = False
+        fail.error = "403 Forbidden"
+        connector.data_source = MagicMock()
+        connector.data_source.get_group = MagicMock(return_value=fail)
+
+        await connector._ensure_gitlab_group_record_groups(["org/eng"])
+
+        connector.data_entities_processor.on_new_record_groups.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sync_users_scoped_falls_back_when_every_listing_returns_empty_success(
+        self,
+    ) -> None:
+        """``200 OK + []`` on every members listing is the EE-Auditor /
+        low-role case — must trigger creator injection like hard failures."""
+        connector = _make_connector()
+        connector.creator_email = "owner@example.com"
+        connector._gitlab_user_id = 4242
+
+        empty = MagicMock()
+        empty.success = True
+        empty.data = []
+
+        connector.data_source = MagicMock()
+        connector.data_source.list_group_members_all = MagicMock(return_value=empty)
+        connector.data_source.list_project_members_all = MagicMock(return_value=empty)
+        empty_iter = MagicMock()
+        empty_iter.success = True
+        empty_iter.data = iter([])
+        connector.data_source.list_group_projects = MagicMock(return_value=empty_iter)
+        connector._sync_users_from_projects_groups = AsyncMock()
+
+        await connector._sync_users_scoped(
+            group_paths=["org/eng"], project_paths=["org/eng/svc"]
+        )
+
+        call_args = connector._sync_users_from_projects_groups.call_args[0][0]
+        assert 4242 in call_args
+        assert getattr(call_args[4242], "public_email", None) == "owner@example.com"
+
+    @pytest.mark.asyncio
+    async def test_sync_users_scoped_always_injects_creator_even_when_other_members_found(
+        self,
+    ) -> None:
+        """Admin / EE-Auditor personas read everything via a user-level flag,
+        not a per-group membership row, so they will be systematically
+        absent from a successful group-members listing. Inject the
+        creator regardless of whether other members were discovered so
+        the operator never loses access to the records they configured
+        the sync for.
+        """
+        connector = _make_connector()
+        connector.creator_email = "auditor@example.com"
+        connector._gitlab_user_id = 4242
+
+        other = MagicMock()
+        other.id = 7
+        other.username = "someone"
+        other.name = "Someone Else"
+        other.public_email = "someone@example.com"
+        other.email = None
+        other.access_level = 30
+
+        ok = MagicMock()
+        ok.success = True
+        ok.data = [other]
+
+        connector.data_source = MagicMock()
+        connector.data_source.list_group_members_all = MagicMock(return_value=ok)
+        connector.data_source.list_project_members_all = MagicMock(return_value=ok)
+        empty_iter = MagicMock()
+        empty_iter.success = True
+        empty_iter.data = iter([])
+        connector.data_source.list_group_projects = MagicMock(return_value=empty_iter)
+        connector._sync_users_from_projects_groups = AsyncMock()
+
+        await connector._sync_users_scoped(
+            group_paths=["org/eng"], project_paths=["org/eng/svc"]
+        )
+
+        call_args = connector._sync_users_from_projects_groups.call_args[0][0]
+        assert 4242 in call_args  # creator injected
+        assert 7 in call_args  # real member preserved
+        assert getattr(call_args[4242], "public_email", None) == "auditor@example.com"
+
+    @pytest.mark.asyncio
+    async def test_sync_users_scoped_does_not_clobber_creator_when_in_listing(
+        self,
+    ) -> None:
+        """If the creator IS in the listing (with their real access_level),
+        the always-inject path must not overwrite the real row with the
+        OWNER-level stub. ``setdefault`` semantics preserve the upstream
+        row. Otherwise we would over-grant Reporter-level creators to
+        OWNER on every sync.
+        """
+        connector = _make_connector()
+        connector.creator_email = "reporter@example.com"
+        connector._gitlab_user_id = 4242
+
+        creator_row = MagicMock()
+        creator_row.id = 4242
+        creator_row.username = "reporter"
+        creator_row.name = "Reporter"
+        creator_row.public_email = "reporter@example.com"
+        creator_row.email = None
+        creator_row.access_level = 20  # Reporter
+
+        ok = MagicMock()
+        ok.success = True
+        ok.data = [creator_row]
+
+        connector.data_source = MagicMock()
+        connector.data_source.list_group_members_all = MagicMock(return_value=ok)
+        connector.data_source.list_project_members_all = MagicMock(return_value=ok)
+        empty_iter = MagicMock()
+        empty_iter.success = True
+        empty_iter.data = iter([])
+        connector.data_source.list_group_projects = MagicMock(return_value=empty_iter)
+        connector._sync_users_from_projects_groups = AsyncMock()
+
+        await connector._sync_users_scoped(
+            group_paths=["org/eng"], project_paths=["org/eng/svc"]
+        )
+
+        call_args = connector._sync_users_from_projects_groups.call_args[0][0]
+        assert 4242 in call_args
+        # Real row wins — access_level=20, NOT the OWNER-50 stub.
+        assert getattr(call_args[4242], "access_level", None) == 20
+
+    @pytest.mark.asyncio
+    async def test_sync_project_members_injects_creator_when_listing_succeeds_without_creator(
+        self,
+    ) -> None:
+        """Listing succeeds but does not include the creator (Admin /
+        Auditor case). Creator must still get a permission edge on
+        each of the four project ``RecordGroup`` nodes so they retain
+        visibility on the project's records."""
+        connector = _make_connector()
+        connector.creator_email = "auditor@example.com"
+        connector._gitlab_user_id = 4242
+
+        mock_project = MagicMock(spec=Project)
+        mock_project.id = 101
+        mock_project.name = "test-project"
+        mock_project.path_with_namespace = "group/test-project"
+
+        other = MagicMock()
+        other.id = 7
+        other.username = "someone"
+        other.name = "Someone Else"
+        other.public_email = "someone@example.com"
+        other.email = None
+        other.access_level = 40
+
+        ok = MagicMock()
+        ok.success = True
+        ok.data = [other]
+
+        connector.data_source = MagicMock()
+        connector.data_source.list_project_members_all = MagicMock(return_value=ok)
+
+        captured_members: list[Any] = []
+
+        async def capture(member: Any) -> Any:
+            captured_members.append(member)
+            perm = MagicMock(spec=Permission)
+            perm.email = getattr(member, "public_email", None) or getattr(
+                member, "email", None
+            )
+            perm.entity_type = EntityType.USER
+            return perm
+
+        connector._transform_restrictions_to_permisions = capture  # type: ignore[assignment]
+
+        await connector._sync_project_members_as_pseudo(mock_project)
+
+        emails = sorted(getattr(m, "public_email", None) for m in captured_members)
+        assert "auditor@example.com" in emails
+        assert "someone@example.com" in emails
+
+    @pytest.mark.asyncio
+    async def test_ensure_group_record_groups_includes_creator_when_members_succeed(
+        self,
+    ) -> None:
+        """Group-members listing returns a non-empty member set that does
+        NOT include the connector creator (Auditor case). The creator
+        must still appear in ``group_permissions`` so the top-level
+        group node remains visible in the browse tree for them.
+        """
+        connector = _make_connector()
+        connector.creator_email = "auditor@example.com"
+        connector._gitlab_user_id = 4242
+
+        connector.data_source = MagicMock()
+        group_obj = MagicMock()
+        group_obj.id = 42
+        group_obj.full_path = "org/eng"
+        group_obj.name = "Engineering"
+        group_obj.web_url = "https://gitlab.example.com/org/eng"
+        get_group_res = MagicMock()
+        get_group_res.success = True
+        get_group_res.data = group_obj
+        connector.data_source.get_group = MagicMock(return_value=get_group_res)
+
+        active_member = MagicMock()
+        active_member.access_level = 30
+        members_res = MagicMock()
+        members_res.success = True
+        members_res.data = [active_member]
+        members_res.error = None
+        connector.data_source.list_group_members_all = MagicMock(
+            return_value=members_res
+        )
+
+        async def fake_transform(member: Any) -> Permission:
+            return Permission(
+                entity_type=EntityType.USER,
+                email="someone@example.com",
+                type=PermissionType.READ,
+            )
+
+        connector._transform_restrictions_to_permisions = fake_transform  # type: ignore[assignment]
+
+        await connector._ensure_gitlab_group_record_groups(["org/eng"])
+
+        connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        args, _ = connector.data_entities_processor.on_new_record_groups.call_args
+        _rg, perms = args[0][0]
+        emails = sorted(p.email for p in perms)
+        assert "auditor@example.com" in emails  # creator always included
+        assert "someone@example.com" in emails  # real member preserved
+
+    @pytest.mark.asyncio
+    async def test_ensure_group_record_groups_does_not_double_add_creator_when_in_members(
+        self,
+    ) -> None:
+        """If the creator is already in the listing (because they ARE a
+        regular member of the group), the always-include logic must
+        dedup by email so the group node has exactly one creator
+        permission, not two."""
+        connector = _make_connector()
+        connector.creator_email = "owner@example.com"
+        connector._gitlab_user_id = 4242
+
+        connector.data_source = MagicMock()
+        group_obj = MagicMock()
+        group_obj.id = 42
+        group_obj.full_path = "org/eng"
+        group_obj.name = "Engineering"
+        group_obj.web_url = None
+        get_group_res = MagicMock()
+        get_group_res.success = True
+        get_group_res.data = group_obj
+        connector.data_source.get_group = MagicMock(return_value=get_group_res)
+
+        creator_member = MagicMock()
+        creator_member.access_level = 50
+        members_res = MagicMock()
+        members_res.success = True
+        members_res.data = [creator_member]
+        members_res.error = None
+        connector.data_source.list_group_members_all = MagicMock(
+            return_value=members_res
+        )
+
+        async def fake_transform(_member: Any) -> Permission:
+            return Permission(
+                entity_type=EntityType.USER,
+                email="owner@example.com",
+                type=PermissionType.OWNER,
+            )
+
+        connector._transform_restrictions_to_permisions = fake_transform  # type: ignore[assignment]
+
+        await connector._ensure_gitlab_group_record_groups(["org/eng"])
+
+        args, _ = connector.data_entities_processor.on_new_record_groups.call_args
+        _rg, perms = args[0][0]
+        creator_perms = [p for p in perms if p.email == "owner@example.com"]
+        assert len(creator_perms) == 1
+
+
+class TestGitlabListGroupsScopeKwargs:
+    """Coverage for the admin / EE-Auditor list_groups scope dispatch.
+
+    Background: GitLab exposes two orthogonal access dimensions —
+    per-group membership rows (which ``min_access_level`` filters on)
+    and user-level flags ``is_admin`` / ``is_auditor`` (which only the
+    ``all_available=True`` flag activates). Mixing them up either leaks
+    public/internal groups for regular users (the previous regression)
+    or returns an empty group list for Auditors (the gap before this
+    patch). These tests pin the dispatch behaviour.
+    """
+
+    def test_regular_user_uses_min_access_level(self) -> None:
+        connector = _make_connector()
+        # Both flags default to False on a fresh _make_connector().
+        assert connector._is_admin is False
+        assert connector._is_auditor is False
+
+        kwargs = connector._list_groups_scope_kwargs()
+
+        assert kwargs == {"min_access_level": 10}
+        assert "all_available" not in kwargs
+
+    def test_admin_user_uses_all_available(self) -> None:
+        connector = _make_connector()
+        connector._is_admin = True
+
+        kwargs = connector._list_groups_scope_kwargs()
+
+        assert kwargs == {"all_available": True}
+        # ``min_access_level`` must be absent — passing it alongside
+        # ``all_available`` is harmless per GitLab docs ("owned and
+        # min_access_level take precedence"), but for admins/auditors
+        # we explicitly do NOT want ``min_access_level`` to take
+        # precedence because their access is via user-flag, not
+        # membership row.
+        assert "min_access_level" not in kwargs
+
+    def test_auditor_user_uses_all_available(self) -> None:
+        connector = _make_connector()
+        connector._is_auditor = True
+
+        kwargs = connector._list_groups_scope_kwargs()
+
+        assert kwargs == {"all_available": True}
+        assert "min_access_level" not in kwargs
+
+    def test_admin_and_auditor_uses_all_available(self) -> None:
+        # An admin can also be flagged as auditor on EE; the flags are
+        # not mutually exclusive. Either flag alone is sufficient to
+        # widen the scope.
+        connector = _make_connector()
+        connector._is_admin = True
+        connector._is_auditor = True
+
+        kwargs = connector._list_groups_scope_kwargs()
+
+        assert kwargs == {"all_available": True}
+
+    @pytest.mark.asyncio
+    async def test_sync_users_unscoped_passes_all_available_for_admin(self) -> None:
+        """An admin sweep must use ``all_available=True`` so the
+        instance-wide groups they can read actually surface — otherwise
+        ``min_access_level=10`` collapses the result to whatever they
+        joined as a member, which on a self-managed instance is often
+        nothing (admins rarely need explicit membership).
+        """
+        connector = _make_connector()
+        connector._is_admin = True
+
+        mock_data_source = MagicMock()
+        empty_iter = MagicMock()
+        empty_iter.success = True
+        empty_iter.data = iter([])
+        mock_data_source.list_groups = MagicMock(return_value=empty_iter)
+        mock_data_source.list_projects = MagicMock(return_value=empty_iter)
+        connector.data_source = mock_data_source
+        connector._sync_users_from_projects_groups = AsyncMock()
+
+        await connector._sync_users()
+
+        kwargs = mock_data_source.list_groups.call_args.kwargs
+        assert kwargs.get("all_available") is True
+        assert "min_access_level" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_group_picker_passes_all_available_for_auditor(self) -> None:
+        """The picker dropdown must show an Auditor their role-accessible
+        groups, otherwise the group_ids filter UI is empty and the
+        operator can't actually scope the sync.
+        """
+        connector = _make_connector()
+        connector._is_auditor = True
+        connector.data_source = MagicMock()
+
+        g = MagicMock()
+        g.full_path = "org/eng"
+        g.name = "Engineering"
+        ok = MagicMock()
+        ok.success = True
+        ok.data = [g]
+        ok.error = None
+        connector.data_source.list_groups = MagicMock(return_value=ok)
+
+        await connector._gitlab_group_filter_options(page=1, limit=10, search=None)
+
+        kwargs = connector.data_source.list_groups.call_args.kwargs
+        assert kwargs.get("all_available") is True
+        assert "min_access_level" not in kwargs
+
+
+class TestGitlabResolveCreatorIdentityRoleFlags:
+    """``_resolve_creator_identity`` must populate ``_is_admin`` /
+    ``_is_auditor`` from the ``GET /user`` payload so the
+    scope-picker sees them on subsequent sync calls.
+
+    GitLab omits these attributes from the response entirely when the
+    caller does not have them — we rely on ``getattr(..., False)`` to
+    treat the missing case as "regular user".
+    """
+
+    @pytest.mark.asyncio
+    async def test_admin_flag_captured_from_get_user(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        me = MagicMock()
+        me.id = 4242
+        me.is_admin = True
+        # ``is_auditor`` deliberately absent — admins on CE/free don't
+        # have the attribute. ``getattr(..., False)`` should handle it.
+        del me.is_auditor
+
+        get_user_resp = MagicMock()
+        get_user_resp.success = True
+        get_user_resp.data = me
+        connector.data_source.get_user = MagicMock(return_value=get_user_resp)
+
+        await connector._resolve_creator_identity()
+
+        assert connector._is_admin is True
+        assert connector._is_auditor is False
+        assert connector._gitlab_user_id == 4242
+
+    @pytest.mark.asyncio
+    async def test_auditor_flag_captured_from_get_user(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        me = MagicMock()
+        me.id = 4242
+        me.is_admin = False
+        me.is_auditor = True  # EE Premium/Ultimate only
+
+        get_user_resp = MagicMock()
+        get_user_resp.success = True
+        get_user_resp.data = me
+        connector.data_source.get_user = MagicMock(return_value=get_user_resp)
+
+        await connector._resolve_creator_identity()
+
+        assert connector._is_admin is False
+        assert connector._is_auditor is True
+
+    @pytest.mark.asyncio
+    async def test_regular_user_when_flags_missing_from_response(self) -> None:
+        """Non-admins on CE see neither attribute in the response —
+        both flags must stay False, which keeps ``_list_groups_scope_kwargs``
+        on the safe ``min_access_level=10`` path.
+        """
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        me = MagicMock()
+        me.id = 4242
+        # Critical: simulate GitLab's CE response where neither flag
+        # is present in the JSON. ``MagicMock`` auto-creates attributes
+        # on access, so we must explicitly delete them.
+        del me.is_admin
+        del me.is_auditor
+
+        get_user_resp = MagicMock()
+        get_user_resp.success = True
+        get_user_resp.data = me
+        connector.data_source.get_user = MagicMock(return_value=get_user_resp)
+
+        await connector._resolve_creator_identity()
+
+        assert connector._is_admin is False
+        assert connector._is_auditor is False
+
+
+class TestGitlabListProjectsScopeKwargs:
+    """Coverage for the admin / EE-Auditor list_projects scope dispatch.
+
+    Parallel to ``TestGitlabListGroupsScopeKwargs`` but for the
+    projects endpoint, which has a different default-scope contract:
+    ``GET /projects`` defaults to "all visible projects" when no scope
+    flag is set, so admins/auditors get the empty-kwargs dispatch
+    (the dual of ``all_available=True`` on groups). ``membership=True``
+    is the right narrow default for regular members.
+    """
+
+    def test_regular_user_uses_membership_filter(self) -> None:
+        connector = _make_connector()
+        assert connector._is_admin is False
+        assert connector._is_auditor is False
+
+        kwargs = connector._list_projects_scope_kwargs()
+
+        assert kwargs == {"membership": True}
+
+    def test_admin_user_drops_scope_flag(self) -> None:
+        connector = _make_connector()
+        connector._is_admin = True
+
+        kwargs = connector._list_projects_scope_kwargs()
+
+        # No scope flag = GitLab default "all visible projects" — the
+        # only path that surfaces non-member projects to an admin via
+        # the is_admin user-flag.
+        assert kwargs == {}
+        assert "membership" not in kwargs
+        assert "min_access_level" not in kwargs
+
+    def test_auditor_user_drops_scope_flag(self) -> None:
+        connector = _make_connector()
+        connector._is_auditor = True
+
+        kwargs = connector._list_projects_scope_kwargs()
+
+        assert kwargs == {}
+        assert "membership" not in kwargs
+        assert "min_access_level" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_sync_users_unscoped_drops_membership_for_auditor(self) -> None:
+        """An Auditor sweep through ``_sync_users_unscoped`` must drop
+        ``membership=True`` on the PRIMARY call — otherwise it collapses
+        to ``[]`` because Auditors have no per-project access_level rows.
+
+        The wrapper also fires a documented ``membership=True`` fallback
+        when the primary returns empty (GitLab auditor known issue), so
+        we pin the FIRST call's kwargs rather than the most recent.
+        """
+        connector = _make_connector()
+        connector._is_auditor = True
+
+        mock_data_source = MagicMock()
+        # Each call needs its own iterator — ``iter([])`` is one-shot.
+        mock_data_source.list_groups = MagicMock(
+            side_effect=lambda *a, **kw: MagicMock(
+                success=True, data=iter([])
+            )
+        )
+        mock_data_source.list_projects = MagicMock(
+            side_effect=lambda *a, **kw: MagicMock(
+                success=True, data=iter([])
+            )
+        )
+        connector.data_source = mock_data_source
+        connector._sync_users_from_projects_groups = AsyncMock()
+
+        await connector._sync_users()
+
+        # First call uses the documented auditor scope (no membership).
+        primary_kwargs = mock_data_source.list_projects.call_args_list[0].kwargs
+        assert "membership" not in primary_kwargs
+        # Sanity: keyset pagination plumbing is still wired through.
+        assert primary_kwargs.get("pagination") == "keyset"
+        # Empty primary triggers the documented auditor fallback.
+        assert mock_data_source.list_projects.call_count >= 2
+        fallback_kwargs = mock_data_source.list_projects.call_args_list[-1].kwargs
+        assert fallback_kwargs.get("membership") is True
+        # Single actionable WARN was logged for this connector lifetime.
+        assert connector._auditor_fallback_warned is True
+
+    @pytest.mark.asyncio
+    async def test_resolve_projects_with_filters_drops_membership_for_admin(
+        self,
+    ) -> None:
+        """The no-filter path in ``_resolve_projects_with_filters`` is
+        the second project-listing site that previously hardcoded
+        ``membership=True``. An admin running the connector without
+        explicit group_ids / project_ids filters must still see the
+        instance's projects.
+        """
+        connector = _make_connector()
+        connector._is_admin = True
+
+        # No sync filters -> falls through to the unscoped branch.
+        connector.indexing_filters = None
+        connector.sync_filters = None
+
+        empty_iter = MagicMock()
+        empty_iter.success = True
+        empty_iter.data = iter([])
+        connector.data_source = MagicMock()
+        connector.data_source.list_projects = MagicMock(return_value=empty_iter)
+
+        await connector._resolve_projects_with_filters()
+
+        kwargs = connector.data_source.list_projects.call_args.kwargs
+        assert "membership" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_project_picker_drops_min_access_level_for_admin(self) -> None:
+        """Picker dropdown must drop ``min_access_level`` for admins —
+        otherwise the admin can't see any non-member project in the
+        picker UI and can't actually scope the sync against them.
+        """
+        connector = _make_connector()
+        connector._is_admin = True
+        connector.data_source = MagicMock()
+
+        p = MagicMock()
+        p.id = 7
+        p.path_with_namespace = "org/svc"
+        p.name = "svc"
+        ok = MagicMock()
+        ok.success = True
+        ok.data = [p]
+        ok.error = None
+        connector.data_source.list_projects = MagicMock(return_value=ok)
+
+        await connector._gitlab_project_filter_options(
+            page=1, limit=10, search=None
+        )
+
+        kwargs = connector.data_source.list_projects.call_args.kwargs
+        assert "min_access_level" not in kwargs
+        assert "membership" not in kwargs
+        # ``simple=True`` is the picker's payload-size optimisation;
+        # role flags should not affect that.
+        assert kwargs.get("simple") is True
+
+
+class TestGitlabAuditorFallback:
+    """Pin the documented GitLab auditor-known-issue fallbacks.
+
+    GitLab's docs state: "Due to a known issue, [auditor] users must
+    have the Reporter, Developer, Maintainer, or Owner role to perform
+    read-only tasks." So even though ``is_auditor`` is set on
+    ``/user``, ``list_groups(all_available=True)`` and ``list_projects``
+    (no scope) often return ``[]`` for a pure auditor. These tests
+    verify the connector falls back to membership-scoped listing on an
+    empty primary, so any group/project where the auditor was given an
+    explicit Reporter+ row still surfaces.
+    """
+
+    @pytest.mark.asyncio
+    async def test_groups_wrapper_falls_back_to_min_access_level_on_empty(
+        self,
+    ) -> None:
+        connector = _make_connector()
+        connector._is_auditor = True
+
+        connector.data_source = MagicMock()
+        # Each call gets a fresh empty iterator (``iter([])`` is one-shot).
+        connector.data_source.list_groups = MagicMock(
+            side_effect=lambda *a, **kw: MagicMock(
+                success=True, data=iter([])
+            )
+        )
+
+        res = await connector._paged_list_groups_with_role_fallback(
+            per_page=100, progress_label="test"
+        )
+
+        # Two calls: primary (all_available=True) then fallback
+        # (min_access_level=10).
+        assert connector.data_source.list_groups.call_count == 2
+        primary_kwargs = connector.data_source.list_groups.call_args_list[0].kwargs
+        fallback_kwargs = connector.data_source.list_groups.call_args_list[1].kwargs
+        assert primary_kwargs.get("all_available") is True
+        assert "min_access_level" not in primary_kwargs
+        assert fallback_kwargs.get("min_access_level") == 10
+        assert "all_available" not in fallback_kwargs
+        # Wrapper still returns a normal GitLabResponse on empty fallback.
+        assert res.success is True
+        assert connector._auditor_fallback_warned is True
+
+    @pytest.mark.asyncio
+    async def test_groups_wrapper_skips_fallback_when_primary_returns_data(
+        self,
+    ) -> None:
+        connector = _make_connector()
+        connector._is_auditor = True
+
+        g = MagicMock()
+        g.full_path = "org/eng"
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(
+            return_value=MagicMock(success=True, data=iter([g]))
+        )
+
+        res = await connector._paged_list_groups_with_role_fallback(
+            per_page=100, progress_label="test"
+        )
+
+        # Primary returned data — no fallback call, no WARN.
+        assert connector.data_source.list_groups.call_count == 1
+        assert res.success is True
+        assert res.data == [g]
+        assert connector._auditor_fallback_warned is False
+
+    @pytest.mark.asyncio
+    async def test_groups_wrapper_skips_fallback_when_not_auditor(self) -> None:
+        connector = _make_connector()
+        # Regular user — fallback must never fire even on empty primary.
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(
+            side_effect=lambda *a, **kw: MagicMock(
+                success=True, data=iter([])
+            )
+        )
+
+        res = await connector._paged_list_groups_with_role_fallback(
+            per_page=100, progress_label="test"
+        )
+
+        assert connector.data_source.list_groups.call_count == 1
+        assert res.success is True
+        assert connector._auditor_fallback_warned is False
+
+    @pytest.mark.asyncio
+    async def test_projects_wrapper_falls_back_to_membership_on_empty(
+        self,
+    ) -> None:
+        connector = _make_connector()
+        connector._is_auditor = True
+
+        connector.data_source = MagicMock()
+        connector.data_source.list_projects = MagicMock(
+            side_effect=lambda *a, **kw: MagicMock(
+                success=True, data=iter([])
+            )
+        )
+
+        res = await connector._paged_list_projects_with_role_fallback(
+            per_page=100, progress_label="test"
+        )
+
+        assert connector.data_source.list_projects.call_count == 2
+        primary_kwargs = connector.data_source.list_projects.call_args_list[0].kwargs
+        fallback_kwargs = connector.data_source.list_projects.call_args_list[1].kwargs
+        assert "membership" not in primary_kwargs
+        assert "min_access_level" not in primary_kwargs
+        assert fallback_kwargs.get("membership") is True
+        assert res.success is True
+        assert connector._auditor_fallback_warned is True
+
+    @pytest.mark.asyncio
+    async def test_warn_logged_only_once_across_multiple_fallbacks(self) -> None:
+        connector = _make_connector()
+        connector._is_auditor = True
+        connector.data_source = MagicMock()
+        connector.data_source.list_groups = MagicMock(
+            side_effect=lambda *a, **kw: MagicMock(
+                success=True, data=iter([])
+            )
+        )
+
+        await connector._paged_list_groups_with_role_fallback(
+            per_page=100, progress_label="t1"
+        )
+        await connector._paged_list_groups_with_role_fallback(
+            per_page=100, progress_label="t2"
+        )
+
+        # Two sweeps each produce primary + fallback, so 4 list_groups
+        # calls total. But the operator-facing WARN must only fire once.
+        warn_calls = [
+            c
+            for c in connector.logger.warning.call_args_list
+            if "auditor" in (c.args[0] if c.args else "").lower()
+        ]
+        assert len(warn_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_group_picker_falls_back_to_membership_on_empty(self) -> None:
+        connector = _make_connector()
+        connector._is_auditor = True
+        connector.data_source = MagicMock()
+
+        # Primary auditor scope (all_available=True) returns empty,
+        # fallback (min_access_level=10) finds the auditor's explicit
+        # Reporter+ group.
+        g = MagicMock()
+        g.full_path = "org/eng"
+        g.name = "Engineering"
+
+        def list_groups_responder(**kwargs: Any) -> MagicMock:
+            if kwargs.get("min_access_level") == 10:
+                return MagicMock(success=True, data=[g], error=None)
+            return MagicMock(success=True, data=[], error=None)
+
+        connector.data_source.list_groups = MagicMock(
+            side_effect=list_groups_responder
+        )
+
+        resp = await connector._gitlab_group_filter_options(
+            page=1, limit=10, search=None
+        )
+
+        assert connector.data_source.list_groups.call_count == 2
+        # Picker recovered with the fallback row.
+        assert [o.id for o in resp.options] == ["org/eng"]
+        assert connector._auditor_fallback_warned is True

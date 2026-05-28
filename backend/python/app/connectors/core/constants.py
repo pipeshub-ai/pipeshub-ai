@@ -110,3 +110,7 @@ CONNECTOR_EMAIL_IDENTITY_INFO = (
     "with the same address they use in the connected app, so only their own data and access "
     "rules apply. Different emails can mean missing content."
 )
+
+
+INTERNAL_CONNECTOR_GROUP_NAME = "ConnectorGroup"
+

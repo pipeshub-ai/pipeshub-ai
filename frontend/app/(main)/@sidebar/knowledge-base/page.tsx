@@ -254,23 +254,18 @@ function KnowledgeBaseSidebarSlotContent() {
     [router, isAllRecordsMode, closeOnMobile]
   );
 
-  const handleSidebarReindex = useCallback((nodeId: string) => {
-    const findNodeInfo = (): { name: string; nodeType?: NodeType } => {
-      const state = useKnowledgeBaseStore.getState();
-      const { node } = findNodeInCategorized(state.categorizedNodes, nodeId);
-      if (node) return { name: node.name, nodeType: node.nodeType };
-      const appNode = state.appNodes.find((n) => n.id === nodeId);
-      if (appNode) return { name: appNode.name, nodeType: appNode.nodeType };
-      const cacheEntries = Array.from(state.appChildrenCache.values());
-      for (const children of cacheEntries) {
-        const child = children.find((c) => c.id === nodeId);
-        if (child) return { name: child.name, nodeType: child.nodeType };
-      }
-      return { name: nodeId };
-    };
-    const nodeInfo = findNodeInfo();
-    setPendingSidebarAction({ type: 'reindex', nodeId, nodeName: nodeInfo.name, nodeType: nodeInfo.nodeType });
-  }, [setPendingSidebarAction]);
+  const handleSidebarReindex = useCallback(
+    (nodeId: string, nodeType: NodeType, name: string, statusFilters?: string[]) => {
+      setPendingSidebarAction({
+        type: 'reindex',
+        nodeId,
+        nodeName: name,
+        nodeType,
+        statusFilters,
+      });
+    },
+    [setPendingSidebarAction]
+  );
 
   const handleSidebarRename = useCallback(async (nodeId: string, newName: string) => {
     try {
@@ -323,16 +318,6 @@ function KnowledgeBaseSidebarSlotContent() {
     setPendingSidebarAction({ type: 'create-collection' });
   }, [setPendingSidebarAction]);
 
-  const filteredAppNodes = useMemo(
-    () =>
-      appNodes.filter((app) => {
-        if (loadingAppIds.has(app.id)) return true;
-        const children = appChildrenCache.get(app.id);
-        return children != null && children.length > 0;
-      }),
-    [appNodes, appChildrenCache, loadingAppIds]
-  );
-
   return (
     <KnowledgeBaseSidebar
       pageViewMode={pageViewMode}
@@ -345,7 +330,7 @@ function KnowledgeBaseSidebarSlotContent() {
       onNodeSelect={handleNodeSelect}
       isLoadingNodes={isSidebarTreeLoading || isAutoExpanding}
       loadingNodeIds={loadingNodeIds}
-      appNodes={filteredAppNodes}
+      appNodes={appNodes}
       appChildrenCache={appChildrenCache}
       connectorAppTrees={connectorAppTrees}
       loadingAppIds={loadingAppIds}

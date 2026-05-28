@@ -69,10 +69,10 @@ image:
   pullPolicy: IfNotPresent
 
 # ----- App scaling: HA with HPA -----
-replicaCount: 3
+replicaCount: 2
 autoscaling:
   enabled: true
-  minReplicas: 3
+  minReplicas: 2
   maxReplicas: 10
   targetCPUUtilizationPercentage: 70
   targetMemoryUtilizationPercentage: 80
@@ -162,6 +162,7 @@ config:
   allowedOrigins: ""           # MUST be set, e.g. "https://pipeshub.example.com"
   frontendPublicUrl: ""        # MUST be set, e.g. "https://pipeshub.example.com"
   # connectorPublicBackend: "https://pipeshub-connector.example.com"  # optional, OAuth only
+  # samlSpEntityId: "pipeshub"  # optional; set to match the Audience URI in your IdP when using SAML SSO
 
 # ----- MongoDB: 3-node replica set -----
 mongodb:
@@ -175,34 +176,64 @@ mongodb:
     rootUser: root
     # rootPassword + usernames/passwords/databases via --set or external secrets.
 
-# ----- Redis: master + 2 replicas, no Sentinel (client is not sentinel-aware) -----
+# ----- Redis: master + 1 replica, no Sentinel (client is not sentinel-aware) -----
 redis:
   architecture: replication
   master:
     count: 1
   replica:
-    replicaCount: 2
+    replicaCount: 1
   sentinel:
     enabled: false
   auth:
     enabled: true
     # password via --set or external secrets.
 
-# ----- Kafka + Zookeeper: 3 brokers / 3-node ensemble -----
+# ----- Kafka + Zookeeper: 2 brokers / 3-node ZK ensemble -----
+# Zookeeper stays at 3 — quorum requires an odd number; 2 nodes cannot elect a leader.
+# Kafka RF=2/minISR=1: one broker can fail without data loss.
 kafka:
-  replicaCount: 3
+  replicaCount: 2
+  config:
+    offsetsTopicReplicationFactor: "2"
+    transactionStateLogMinIsr: "1"
+    transactionStateLogReplicationFactor: "2"
+    defaultReplicationFactor: "2"
+    minInsyncReplicas: "1"
 zookeeper:
   replicaCount: 3
 
-# ----- Qdrant: 3 nodes (distributed) -----
+# ----- Qdrant: 2 nodes (distributed), production-sized -----
+# Performance env vars (MEMMAP_THRESHOLD, MAX_SEARCH_THREADS, segment count, etc.)
+# are inherited from values.yaml and apply unchanged.
 qdrant:
-  replicaCount: 3
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 1
+      memory: 4Gi
+    limits:
+      cpu: 2
+      memory: 8Gi
 
 # ----- Neo4j: Community edition runs a single replica (no Causal Clustering) -----
 # To run Neo4j HA, switch image.tag to an Enterprise variant and add clustering env.
+# Heap (4g) + pagecache (2g) + JVM overhead (~1g) ≈ 7g, fits within the 8Gi limit.
+# apoc plugin + security procedures keys are inherited from values.yaml.
 neo4j:
   enabled: true
   replicaCount: 1
+  resources:
+    requests:
+      cpu: 1
+      memory: 4Gi
+    limits:
+      cpu: 2
+      memory: 8Gi
+  env:
+    NEO4J_dbms_memory_heap_initial__size: 1g
+    NEO4J_dbms_memory_heap_max__size: 4g
+    NEO4J_dbms_memory_pagecache_size: 2g
 
 # ----- Monitoring + network policies are opt-in -----
 monitoring:

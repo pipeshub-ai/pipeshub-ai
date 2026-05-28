@@ -776,10 +776,6 @@ export const deleteChatAttachment =
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       const { recordId } = req.params as { recordId: string };
-      if (!recordId || !recordId.trim()) {
-        res.status(400).json({ error: 'recordId is required' });
-        return;
-      }
 
       // Use a raw fetch rather than AIServiceCommand.execute() because the
       // Python endpoint returns 204 No Content (empty body) and execute()

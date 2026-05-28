@@ -71,6 +71,9 @@ export interface AppConfig {
   oauthBackendUrl: string;
   mcpScopes: string[];
 
+  // SAML SP Entity ID (issuer sent in AuthnRequests)
+  samlIssuer: string;
+
   // Domain check config
   skipDomainCheck: boolean;
 
@@ -127,6 +130,9 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
     oauthIssuer: (await configService.initializeOAuthIssuer(), await configService.getOAuthIssuer()),
     oauthBackendUrl: await configService.getOAuthBackendUrl(),
     mcpScopes: await configService.getMcpScopes(),
+
+    // SAML SP Entity ID — falls back to FRONTEND_PUBLIC_URL, then 'pipeshub'
+    samlIssuer: process.env.SAML_SP_ENTITY_ID || process.env.FRONTEND_PUBLIC_URL || 'pipeshub',
 
     // Domain check config - when true, skip domain matching and use first available org
     skipDomainCheck: process.env.SKIP_DOMAIN_CHECK === 'true',

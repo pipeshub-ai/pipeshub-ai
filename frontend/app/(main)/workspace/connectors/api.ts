@@ -296,9 +296,15 @@ export const ConnectorsApi = {
       excludeContextGroupPath?: string[];
     }
   ): Promise<FilterOptionsResponse> {
+    // Filter-option lookups can hit very large upstreams (e.g. GitLab orgs
+    // with thousands of repos, Confluence with many spaces) and the global
+    // 90s axios timeout is not enough for cold-cache calls. Allow up to
+    // 5 minutes for this specific endpoint; the dropdown shows a loading
+    // spinner the whole time so the user is never blocked.
+    const FILTER_OPTIONS_TIMEOUT_MS = 5 * 60 * 1000;
     const { data } = await apiClient.get<FilterOptionsResponse>(
       `${BASE_URL}/${connectorId}/filters/${filterKey}/options`,
-      { params }
+      { params, timeout: FILTER_OPTIONS_TIMEOUT_MS }
     );
     return data;
   },

@@ -2,7 +2,10 @@ import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { isElectron } from '@/lib/electron';
-import { clearElectronLogoutServerState } from '@/lib/electron/api-base-url-storage';
+import {
+  clearElectronLogoutServerState,
+  persistElectronServerUrlOnLogin,
+} from '@/lib/electron/api-base-url-storage';
 
 export interface User {
   id: string;
@@ -69,6 +72,7 @@ export const useAuthStore = create<AuthStore>()(
       setTokens: (accessToken, refreshToken) => {
         writeAccessToken(accessToken);
         writeRefreshToken(refreshToken);
+        persistElectronServerUrlOnLogin();
         set((state) => {
           state.accessToken = accessToken;
           state.refreshToken = refreshToken;
@@ -176,8 +180,8 @@ export function logoutAndRedirect(): void {
 
 /**
  * Workspace menu logout: web → same as session-expiry logout; Electron → clear
- * saved server URL + ack, then route through ServerUrlGuard's add-URL screen
- * so the next session starts with a fresh URL choice.
+ * server URL ack (keep last URL for pre-fill), then route through ServerUrlGuard's
+ * add-URL screen so the user can confirm or change the server before signing in.
  */
 export function logoutFromWorkspaceMenu(): void {
   if (typeof window !== 'undefined' && isElectron()) {

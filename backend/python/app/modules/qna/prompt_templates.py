@@ -236,7 +236,6 @@ qna_prompt_context = """<record>
 {% if context_metadata %}
 {{ context_metadata }}
 {% endif %}
-Record blocks (sorted):
 """
 
 qna_prompt_with_retrieval_tool_second_part = """

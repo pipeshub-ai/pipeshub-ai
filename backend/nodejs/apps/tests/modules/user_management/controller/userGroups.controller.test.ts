@@ -101,7 +101,7 @@ describe('UserGroupController', () => {
         await controller.createUserGroup(req, res);
         expect.fail('Should have thrown an error');
       } catch (error: any) {
-        expect(error.message).to.equal('this type of group cannot be created');
+        expect(error.message).to.equal('Group name or type "admin", "everyone", or "standard" cannot be created');
       }
     });
 
@@ -112,7 +112,7 @@ describe('UserGroupController', () => {
         await controller.createUserGroup(req, res);
         expect.fail('Should have thrown an error');
       } catch (error: any) {
-        expect(error.message).to.equal('this type of group cannot be created');
+        expect(error.message).to.equal('Group name or type "admin", "everyone", or "standard" cannot be created');
       }
     });
 

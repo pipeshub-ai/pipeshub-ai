@@ -82,6 +82,7 @@ export type ConnectorType =
   | 'vector'
   | 'clickup'
   | 'redshift'
+  | 'lumos'
   // Generic / Fallback
   | 'web'
   | 'generic';
@@ -167,6 +168,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'vector': { svg: svg('vector'), fallback: 'data_array' },
   'clickup': { svg: svg('clickup'), fallback: 'task_alt' },
   'redshift': { svg: svg('redshift'), fallback: 'storage' },
+  'lumos': { svg: svg('lumos'), fallback: 'manage_accounts' },
   // Generic / Fallback
   'web': { svg: svg('web'), fallback: 'language' },
   'generic': { svg: svg('default'), fallback: 'extension' },
@@ -224,6 +226,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['web', 'web'],
   ['clickup', 'clickup'], ['click-up', 'clickup'],
   ['redshift', 'redshift'], ['red-shift', 'redshift'],
+  ['lumos', 'lumos'],
   ['kb', 'kb'],
   ['knowledge-base', 'knowledge-base'],
 ];

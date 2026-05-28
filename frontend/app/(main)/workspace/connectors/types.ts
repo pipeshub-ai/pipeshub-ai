@@ -27,6 +27,8 @@ export interface Connector {
   supportsRealtime: boolean;
   supportsSync: boolean;
   supportsAgent: boolean;
+  /** Documentation links promoted from config; present on list responses. */
+  documentationLinks?: DocumentationLink[];
   scope: string;
   /** Only present on active connectors. */
   isActive: boolean;
@@ -40,6 +42,11 @@ export interface Connector {
   updatedBy?: string;
   authType?: string;
   connectorInfo?: string | Record<string, unknown> | null;
+  /**
+   * @deprecated Full config schema is no longer included in list responses.
+   * Use `GET /registry/{type}/schema` to retrieve auth/sync/filter schemas.
+   * `documentationLinks` is now promoted to a top-level field.
+   */
   config?: Record<string, unknown>;
   /**
    * Transient operational status from the backend.
@@ -306,6 +313,11 @@ export interface ConnectorFiltersConfig {
   values?: Record<string, unknown>;
 }
 
+export interface ConnectorSchemaConfigFlags {
+  isAdminAccessRequired?: boolean;
+  personalConnectorType?: string | null;
+}
+
 export interface ConnectorSchemaResponse {
   success: boolean;
   schema: {
@@ -315,6 +327,8 @@ export interface ConnectorSchemaResponse {
     supportsAgent: boolean;
     documentationLinks: DocumentationLink[];
     hideConnector: boolean;
+    isAdminAccessRequired?: boolean;
+    personalConnectorType?: string | null;
     auth: ConnectorAuthConfig;
     sync: ConnectorSyncConfig;
     filters: ConnectorFiltersConfig;
@@ -357,6 +371,7 @@ export interface FilterOptionsResponse {
   limit: number;
   hasMore: boolean;
   cursor?: string;
+  message?: string;
 }
 
 // ========================================

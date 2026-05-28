@@ -21,6 +21,7 @@ import type {
   FolderTreeNode,
   NodeType,
   EnhancedFolderTreeNode,
+  SidebarReindexHandler,
 } from '../../types';
 
 // ========================================
@@ -38,7 +39,7 @@ export interface FolderTreeItemProps {
   onNodeExpand?: (nodeId: string, nodeType: NodeType) => Promise<void>;
   onNodeSelect?: (nodeType: string, nodeId: string) => void;
   sectionType?: 'shared' | 'private';
-  onReindex?: (nodeId: string) => void;
+  onReindex?: SidebarReindexHandler;
   onRename?: (nodeId: string, newName: string) => Promise<void>;
   onDelete?: (nodeId: string) => void;
   showRootLines?: boolean;
@@ -164,8 +165,26 @@ export function FolderTreeItem({
 
   // ---- Build meatball menu actions ----
 
+  const nodeType = enhancedNode.nodeType;
+  const canReindex =
+    !!onReindex && !!nodeType && nodeType !== 'app';
+
   const menuActions: (MenuAction | false)[] = [
-    { icon: 'refresh', label: t('menu.reindex'), onClick: () => onReindex?.(node.id) },
+    canReindex && {
+      icon: 'refresh',
+      label: t('menu.reindexAll'),
+      onClick: () => onReindex(node.id, nodeType, node.name),
+    },
+    canReindex && {
+      icon: 'error_outline',
+      label: t('menu.reindexFailed'),
+      onClick: () => onReindex(node.id, nodeType, node.name, ['FAILED']),
+    },
+    canReindex && {
+      icon: 'pause_circle_outline',
+      label: t('menu.reindexManual'),
+      onClick: () => onReindex(node.id, nodeType, node.name, ['AUTO_INDEX_OFF']),
+    },
     canEdit && !!onRename && { icon: 'edit', label: t('menu.rename'), onClick: handleRenameStart },
     canDelete && !!onDelete && {
       icon: 'delete',

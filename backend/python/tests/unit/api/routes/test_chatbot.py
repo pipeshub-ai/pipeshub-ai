@@ -1503,6 +1503,75 @@ class TestAskAI:
         assert exc.value.status_code == 503
 
 
+@pytest.mark.asyncio
+class TestCreateInternalSearchTool:
+    """Coverage for create_internal_search_tool merge + sort of flattened results."""
+
+    async def test_merges_into_final_results_and_sorts_by_flattened_key(self):
+        from app.api.routes.chatbot import create_internal_search_tool
+        from app.models.blocks import BlockType
+
+        retrieval = AsyncMock()
+        retrieval.search_with_filters = AsyncMock(
+            return_value={
+                "searchResults": [{"dummy": True}],
+                "virtual_to_record_map": {},
+                "status_code": 200,
+            }
+        )
+        blob_store = MagicMock()
+        virtual_record_id_to_result = {
+            "vr-1": {
+                "id": "rec-1",
+                "frontend_url": "http://app.example.com",
+                "context_metadata": "",
+                "block_containers": {"blocks": [], "block_groups": []},
+            },
+        }
+        graph_provider = MagicMock()
+        ref_mapper = MagicMock()
+        final_results = [
+            {"virtual_record_id": "vr-1", "block_index": 0, "content": "keep"},
+        ]
+        flattened = [
+            {"virtual_record_id": "vr-1", "block_index": 0, "content": "duplicate skipped"},
+            {"virtual_record_id": "vr-1", "block_index": 1, "content": "new"},
+            {
+                "virtual_record_id": "vr-1",
+                "block_index": None,
+                "block_type": BlockType.RECORD_SUMMARY.value,
+                "content": "overview",
+            },
+        ]
+
+        with patch("app.api.routes.chatbot.get_flattened_results", new_callable=AsyncMock) as gf:
+            with patch(
+                "app.api.routes.chatbot.enrich_virtual_record_id_to_result_with_fk_children",
+                new_callable=AsyncMock,
+            ):
+                with patch("app.api.routes.chatbot.build_message_content_array") as bmc:
+                    gf.return_value = flattened
+                    bmc.return_value = ([[{"type": "text", "text": "x"}]], ref_mapper)
+
+                    tool_fn = create_internal_search_tool(
+                        retrieval,
+                        "org-1",
+                        "user-1",
+                        10,
+                        None,
+                        blob_store,
+                        False,
+                        virtual_record_id_to_result,
+                        graph_provider,
+                        ref_mapper,
+                        final_results,
+                    )
+                    out = await tool_fn.ainvoke({"query": "q", "reason": "r"})
+
+        assert out == [{"type": "text", "text": "x"}]
+        assert len(final_results) == 3
+        keys = [(r["virtual_record_id"], r["block_index"]) for r in final_results]
+        assert keys == [("vr-1", None), ("vr-1", 0), ("vr-1", 1)]
 
 
 

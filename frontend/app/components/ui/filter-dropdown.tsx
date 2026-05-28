@@ -56,6 +56,8 @@ export interface FilterDropdownProps {
   isLoadingMore?: boolean;
   /** Whether there are more options to load */
   hasMore?: boolean;
+  /** Optional server-provided message for an empty result set. */
+  emptyMessage?: string;
   /**
    * First page / non-append fetch in progress (server-side `onSearch` / `onPopoverOpenChange`).
    * Avoids flashing “No results” before options arrive; optional banner when only prior selections exist.
@@ -129,6 +131,7 @@ export function FilterDropdown({
   onLoadMore,
   isLoadingMore = false,
   hasMore = false,
+  emptyMessage,
   isLoadingOptions = false,
   portalContainer,
   onPopoverOpenChange,
@@ -555,7 +558,7 @@ export function FilterDropdown({
           )}
           {filteredOptions.length === 0 && !isLoadingMore && !isLoadingOptions && (
             <Text size="2" style={{ color: 'var(--slate-9)', padding: '8px' }}>
-              No results found
+              {emptyMessage || 'No results found'}
             </Text>
           )}
         </Flex>

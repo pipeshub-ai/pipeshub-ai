@@ -671,7 +671,7 @@ describe('ConfigurationManager Controller', () => {
   // SSO Auth Config
   // -----------------------------------------------------------------------
   describe('getSsoAuthConfig', () => {
-    it('should return empty object when no config exists', async () => {
+    it('should return spEntityId when no config exists', async () => {
       const kvs = createMockKeyValueStore()
       const handler = getSsoAuthConfig(kvs)
       const req = createMockRequest()
@@ -681,7 +681,7 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.firstCall.args[0]).to.deep.equal({})
+      expect(res.json.firstCall.args[0]).to.deep.equal({ spEntityId: 'pipeshub' })
     })
   })
 

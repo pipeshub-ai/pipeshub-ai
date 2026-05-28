@@ -528,8 +528,9 @@ class TestFetchGroupMembers:
             "results": [{"email": "u@t.com", "displayName": "U"}], "size": 1,
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        emails = await c._fetch_group_members("g1", "devs")
+        emails, account_ids = await c._fetch_group_members("g1", "devs")
         assert "u@t.com" in emails
+        assert account_ids == []
 
     @pytest.mark.asyncio
     async def test_api_failure(self):
@@ -537,17 +538,42 @@ class TestFetchGroupMembers:
         mock_ds = MagicMock()
         mock_ds.get_group_members = AsyncMock(return_value=_resp(500, {}))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        assert await c._fetch_group_members("g1", "devs") == []
+        assert await c._fetch_group_members("g1", "devs") == ([], [])
 
     @pytest.mark.asyncio
-    async def test_skips_no_email(self):
+    async def test_collects_account_id_without_email(self):
         c = _c()
         mock_ds = MagicMock()
         mock_ds.get_group_members = AsyncMock(return_value=_resp(200, {
-            "results": [{"email": "", "displayName": "NoEmail"}], "size": 1,
+            "results": [{"email": "", "accountId": "acc-1", "displayName": "NoEmail"}],
+            "size": 1,
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        assert await c._fetch_group_members("g1", "devs") == []
+        emails, account_ids = await c._fetch_group_members("g1", "devs")
+        assert emails == []
+        assert account_ids == ["acc-1"]
+
+
+class TestResolveGroupAppUsers:
+    @pytest.mark.asyncio
+    async def test_resolve_by_source_id_when_email_missing(self):
+        c = _c()
+        c._get_app_users_by_emails = AsyncMock(return_value=[])
+        c._app_user_from_linked_source_id = AsyncMock(
+            return_value=AppUser(
+                app_name=Connectors.CONFLUENCE,
+                connector_id="conn-1",
+                source_user_id="acc-1",
+                org_id="org-1",
+                email="jane@corp.com",
+                full_name="Jane",
+                is_active=False,
+            )
+        )
+        result = await c._resolve_group_app_users([], ["acc-1"])
+        assert len(result) == 1
+        assert result[0].email == "jane@corp.com"
+        c._app_user_from_linked_source_id.assert_awaited_once_with("acc-1")
 
 
 class TestGetAppUsersByEmails:
@@ -959,3 +985,115 @@ class TestSyncSpacesIncludeFilter:
         mock_ds.get_spaces.assert_awaited_once()
         call_kwargs = mock_ds.get_spaces.call_args
         assert call_kwargs[1].get("keys") == ["ENG"]
+
+
+class TestLinkPlatformUsersViaJiraAuthGate:
+    @pytest.mark.asyncio
+    async def test_oauth_skips_when_include_jira_scope_disabled(self):
+        c = _c()
+        c.config_service.get_config = AsyncMock(return_value={
+            "auth": {"authType": "OAUTH", "includeJiraScope": False},
+        })
+        c._get_fresh_datasource = AsyncMock()
+
+        await c._link_platform_users_via_jira()
+
+        c._get_fresh_datasource.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_oauth_skips_when_include_jira_scope_no_string(self):
+        c = _c()
+        c.config_service.get_config = AsyncMock(return_value={
+            "auth": {"authType": "OAUTH", "includeJiraScope": "no"},
+        })
+        c._get_fresh_datasource = AsyncMock()
+
+        await c._link_platform_users_via_jira()
+
+        c._get_fresh_datasource.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_oauth_runs_when_include_jira_scope_yes_string(self):
+        c = _c()
+        c.config_service.get_config = AsyncMock(return_value={
+            "auth": {"authType": "OAUTH", "includeJiraScope": "yes"},
+        })
+        mock_ds = MagicMock()
+        mock_ds.find_user_account_id_by_email = AsyncMock(return_value=None)
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await c._link_platform_users_via_jira()
+
+        c._get_fresh_datasource.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_api_token_runs_without_include_jira_scope(self):
+        c = _c()
+        c.config_service.get_config = AsyncMock(return_value={
+            "auth": {"authType": "API_TOKEN", "email": "a@b.com", "apiToken": "tok"},
+        })
+        mock_ds = MagicMock()
+        mock_ds.find_user_account_id_by_email = AsyncMock(return_value=None)
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await c._link_platform_users_via_jira()
+
+        c._get_fresh_datasource.assert_awaited_once()
+
+
+class TestApplyConfluenceOptionalJiraScope:
+    def test_appends_jira_scope_when_yes_string(self) -> None:
+        from app.connectors.api.router import _apply_confluence_optional_jira_scope
+
+        scopes = ["offline_access", "read:page:confluence"]
+        result = _apply_confluence_optional_jira_scope(
+            Connectors.CONFLUENCE.value,
+            {"includeJiraScope": "yes"},
+            scopes,
+        )
+        assert "read:jira-user" in result
+
+    def test_skips_jira_scope_when_no_string(self) -> None:
+        from app.connectors.api.router import _apply_confluence_optional_jira_scope
+
+        scopes = ["offline_access", "read:page:confluence"]
+        result = _apply_confluence_optional_jira_scope(
+            Connectors.CONFLUENCE.value,
+            {"includeJiraScope": "no"},
+            scopes,
+        )
+        assert "read:jira-user" not in result
+
+    def test_legacy_bool_false_skips_jira_scope(self) -> None:
+        from app.connectors.api.router import _apply_confluence_optional_jira_scope
+
+        scopes = ["read:page:confluence"]
+        result = _apply_confluence_optional_jira_scope(
+            Connectors.CONFLUENCE.value,
+            {"includeJiraScope": False},
+            scopes,
+        )
+        assert "read:jira-user" not in result
+
+    def test_strips_jira_scope_when_opted_out_after_previous_yes(self) -> None:
+        from app.connectors.api.router import _apply_confluence_optional_jira_scope
+
+        scopes = ["offline_access", "read:page:confluence", "read:jira-user"]
+        result = _apply_confluence_optional_jira_scope(
+            Connectors.CONFLUENCE.value,
+            {"includeJiraScope": "no"},
+            scopes,
+        )
+        assert "read:jira-user" not in result
+        assert "read:page:confluence" in result
+
+    def test_legacy_bool_true_appends_jira_scope(self) -> None:
+        from app.connectors.api.router import _apply_confluence_optional_jira_scope
+
+        scopes = ["read:page:confluence"]
+        result = _apply_confluence_optional_jira_scope(
+            Connectors.CONFLUENCE.value,
+            {"includeJiraScope": True},
+            scopes,
+        )
+        assert "read:jira-user" in result

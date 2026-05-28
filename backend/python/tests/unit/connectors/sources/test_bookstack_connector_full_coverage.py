@@ -1877,3 +1877,478 @@ class TestParseBookstackPermissionsAllUsersEdgeCases:
         perms = connector._parse_bookstack_permissions_all_users(users)
         assert len(perms) == 1
         assert perms[0].type == PermissionType.READ
+
+
+class TestBookStackCoverageGaps:
+    """Target remaining uncovered lines in bookstack/connector.py."""
+
+    @pytest.mark.asyncio
+    async def test_user_create_detail_without_name_triggers_parse_warning(self, connector):
+        await connector._handle_user_create_event([{"detail": "(5)"}], [])
+
+    @pytest.mark.asyncio
+    async def test_user_upsert_unparseable_event(self, connector):
+        connector._handle_user_create_event = AsyncMock()
+        await connector._handle_user_upsert_event([{}], [])
+        connector._handle_user_create_event.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_user_upsert_role_missing_id(self, connector):
+        connector._handle_user_create_event = AsyncMock()
+        connector.data_source = AsyncMock()
+        connector.data_source.get_user = AsyncMock(return_value=_make_response(
+            data={
+                "id": 5,
+                "email": "u@test.com",
+                "roles": [{"display_name": "OrphanRole"}],
+            }
+        ))
+        connector._handle_role_create_event = AsyncMock()
+        users = [
+            AppUser(
+                app_name=Connectors.BOOKSTACK,
+                connector_id="bs-1",
+                source_user_id="5",
+                email="u@test.com",
+                full_name="User",
+                is_active=True,
+            )
+        ]
+        await connector._handle_user_upsert_event([{"detail": "(5) User"}], users)
+        connector._handle_role_create_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fetch_all_roles_empty_data_page(self, connector):
+        connector.data_source = AsyncMock()
+        connector.data_source.list_roles = AsyncMock(
+            return_value=_make_response(data={"data": [], "total": 0})
+        )
+        assert await connector._fetch_all_roles() == []
+
+    @pytest.mark.asyncio
+    async def test_fetch_all_users_list_failure(self, connector):
+        connector.data_source = AsyncMock()
+        connector.data_source.list_users = AsyncMock(
+            return_value=_make_response(success=False, error="list failed")
+        )
+        assert await connector._fetch_all_users_with_details() == []
+
+    @pytest.mark.asyncio
+    async def test_fetch_all_users_pagination(self, connector):
+        connector.batch_size = 1
+        connector.data_source = AsyncMock()
+        connector.data_source.list_users = AsyncMock(side_effect=[
+            _make_response(data={"data": [{"id": 1}], "total": 2}),
+            _make_response(data={"data": [{"id": 2}], "total": 2}),
+        ])
+        connector.data_source.get_user = AsyncMock(
+            return_value=_make_response(data={"id": 1, "name": "U", "email": "u@test.com"})
+        )
+        result = await connector._fetch_all_users_with_details()
+        assert len(result) == 2
+
+    @pytest.mark.asyncio
+    async def test_sync_content_book_not_in_filter(self, connector):
+        mock_op = MagicMock()
+        mock_op.value = "not_in"
+        connector._get_book_id_filter = MagicMock(return_value=({2}, mock_op))
+        list_method = AsyncMock(return_value=_make_response(
+            data={"data": [{"id": 1, "name": "Keep"}, {"id": 2, "name": "Drop"}], "total": 2}
+        ))
+        connector._create_record_group_with_permissions = AsyncMock(return_value=(MagicMock(), []))
+        result = await connector._sync_content_type_as_record_group("book", list_method, {})
+        assert result == {1}
+
+    @pytest.mark.asyncio
+    async def test_sync_content_type_pagination(self, connector):
+        connector.batch_size = 1
+        connector._get_book_id_filter = MagicMock(return_value=(None, None))
+        list_method = AsyncMock(side_effect=[
+            _make_response(data={"data": [{"id": 1, "name": "B1"}], "total": 2}),
+            _make_response(data={"data": [{"id": 2, "name": "B2"}], "total": 2}),
+        ])
+        connector._create_record_group_with_permissions = AsyncMock(return_value=(MagicMock(), []))
+        result = await connector._sync_content_type_as_record_group("book", list_method, {})
+        assert result == {1, 2}
+
+    @pytest.mark.asyncio
+    async def test_sync_record_groups_all_audit_event_types(self, connector):
+        connector.data_source = AsyncMock()
+        connector.data_source.list_audit_log = AsyncMock(side_effect=[
+            _make_response(data={"data": []}),
+            _make_response(data={"data": [{"detail": "(1) UpdatedBook"}]}),
+            _make_response(data={"data": [{"detail": "(2) DeletedBook"}]}),
+            _make_response(data={"data": [{"detail": "(3) PermBook", "loggable_type": "book"}]}),
+        ])
+        connector._handle_record_group_create_event = AsyncMock()
+        connector._handle_record_group_delete_event = AsyncMock()
+        await connector._sync_record_groups_events("book", {}, "2025-01-01T00:00:00Z")
+        assert connector._handle_record_group_create_event.await_count == 2
+        connector._handle_record_group_delete_event.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_record_group_create_book_not_in_excluded(
+        self, connector, mock_data_entities_processor
+    ):
+        mock_op = MagicMock()
+        mock_op.value = "not_in"
+        event = {"detail": "(99) Excluded"}
+        await connector._handle_record_group_create_event(
+            event, "book", {}, book_ids={99}, book_ids_operator=mock_op
+        )
+        mock_data_entities_processor.on_new_record_groups.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_record_group_create_chapter_not_in_excluded(
+        self, connector, mock_data_entities_processor
+    ):
+        mock_op = MagicMock()
+        mock_op.value = "not_in"
+        connector.data_source = AsyncMock()
+        connector.data_source.get_chapter = AsyncMock(return_value=_make_response(
+            data={"id": 5, "name": "Ch1", "book_id": 10, "description": ""}
+        ))
+        await connector._handle_record_group_create_event(
+            {"detail": "(5) Ch1"}, "chapter", {}, book_ids={10}, book_ids_operator=mock_op
+        )
+        mock_data_entities_processor.on_new_record_groups.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_record_group_create_chapter_sets_parent(
+        self, connector, mock_data_entities_processor
+    ):
+        connector.data_source = AsyncMock()
+        connector.data_source.get_chapter = AsyncMock(return_value=_make_response(
+            data={"id": 5, "name": "Ch1", "book_id": 10, "description": ""}
+        ))
+        connector._create_record_group_with_permissions = AsyncMock(return_value=(MagicMock(), []))
+        await connector._handle_record_group_create_event({"detail": "(5) Ch1"}, "chapter", {})
+        connector._create_record_group_with_permissions.assert_awaited_once()
+        assert connector._create_record_group_with_permissions.call_args.kwargs[
+            "parent_external_id"
+        ] == "book/10"
+
+    @pytest.mark.asyncio
+    async def test_sync_records_full_json_decode_error(self, connector, mock_data_entities_processor):
+        connector.data_source = AsyncMock()
+        connector._get_book_id_filter = MagicMock(return_value=(None, None))
+        connector._get_date_filters = MagicMock(return_value=(None, None, None, None))
+        connector._build_date_filter_params = MagicMock(return_value=None)
+        connector.data_source.list_pages = AsyncMock(
+            return_value=_make_response(data={"content": "not-valid-json"})
+        )
+        await connector._sync_records_full({}, [])
+        mock_data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_records_full_not_in_book_filter(
+        self, connector, mock_data_entities_processor
+    ):
+        mock_op = MagicMock()
+        mock_op.value = "not_in"
+        connector._get_book_id_filter = MagicMock(return_value=({20}, mock_op))
+        connector._get_date_filters = MagicMock(return_value=(None, None, None, None))
+        connector._build_date_filter_params = MagicMock(return_value=None)
+        connector.data_source = AsyncMock()
+        connector.data_source.list_pages = AsyncMock(side_effect=[
+            _make_page_list_response(
+                [{"id": 1, "name": "P1", "book_id": 10}, {"id": 2, "name": "P2", "book_id": 20}],
+                total=2,
+            ),
+            _make_page_list_response([], total=2),
+        ])
+        mock_update = RecordUpdate(
+            record=MagicMock(indexing_status=None),
+            is_new=True,
+            is_updated=False,
+            is_deleted=False,
+            metadata_changed=False,
+            content_changed=False,
+            permissions_changed=False,
+            new_permissions=[],
+        )
+        connector._process_bookstack_page = AsyncMock(return_value=mock_update)
+        await connector._sync_records_full({}, [])
+        assert connector._process_bookstack_page.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_sync_records_full_indexing_disabled(
+        self, connector, mock_data_entities_processor
+    ):
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled = MagicMock(return_value=False)
+        connector._get_book_id_filter = MagicMock(return_value=(None, None))
+        connector._get_date_filters = MagicMock(return_value=(None, None, None, None))
+        connector._build_date_filter_params = MagicMock(return_value=None)
+        connector.data_source = AsyncMock()
+        connector.data_source.list_pages = AsyncMock(side_effect=[
+            _make_page_list_response([{"id": 1, "name": "P1", "book_id": 10}], total=1),
+            _make_page_list_response([], total=1),
+        ])
+        record = MagicMock(indexing_status=None)
+        mock_update = RecordUpdate(
+            record=record,
+            is_new=True,
+            is_updated=False,
+            is_deleted=False,
+            metadata_changed=False,
+            content_changed=False,
+            permissions_changed=False,
+            new_permissions=[],
+        )
+        connector._process_bookstack_page = AsyncMock(return_value=mock_update)
+        await connector._sync_records_full({}, [])
+        assert record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+    @pytest.mark.asyncio
+    async def test_sync_records_full_batch_flush_and_pagination(
+        self, connector, mock_data_entities_processor
+    ):
+        connector.batch_size = 2
+        connector._get_book_id_filter = MagicMock(return_value=(None, None))
+        connector._get_date_filters = MagicMock(return_value=(None, None, None, None))
+        connector._build_date_filter_params = MagicMock(return_value=None)
+        connector.data_source = AsyncMock()
+        pages = [{"id": i, "name": f"P{i}", "book_id": 10} for i in range(1, 4)]
+        connector.data_source.list_pages = AsyncMock(side_effect=[
+            _make_page_list_response(pages, total=3),
+            _make_page_list_response([], total=3),
+        ])
+        mock_update = RecordUpdate(
+            record=MagicMock(indexing_status=None),
+            is_new=True,
+            is_updated=False,
+            is_deleted=False,
+            metadata_changed=False,
+            content_changed=False,
+            permissions_changed=False,
+            new_permissions=[],
+        )
+        connector._process_bookstack_page = AsyncMock(return_value=mock_update)
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await connector._sync_records_full({}, [])
+        assert mock_data_entities_processor.on_new_records.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_process_bookstack_page_chapter_parent_and_permissions(
+        self, connector, mock_data_store_provider
+    ):
+        connector.data_source = AsyncMock()
+        connector.data_source.get_content_permissions = AsyncMock(
+            return_value=_make_response(data={
+                "owner": None,
+                "role_permissions": [],
+                "fallback_permissions": {},
+            })
+        )
+        connector._parse_bookstack_permissions = AsyncMock(return_value=[MagicMock()])
+        existing = MagicMock()
+        existing.id = "rec-1"
+        existing.record_name = "Same"
+        existing.external_revision_id = "3"
+        existing.version = 1
+        mock_data_store_provider._mock_tx.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
+        page = {
+            "id": 42,
+            "name": "Same",
+            "book_id": 1,
+            "chapter_id": 2,
+            "book_slug": "book",
+            "slug": "page",
+            "revision_count": 3,
+            "created_at": "2024-06-01T10:00:00Z",
+            "updated_at": "2024-06-01T12:00:00Z",
+        }
+        result = await connector._process_bookstack_page(page, {}, [])
+        assert result is not None
+        assert result.record.external_record_group_id == "chapter/2"
+        assert result.permissions_changed is True
+
+    @pytest.mark.asyncio
+    async def test_handle_record_updates_updated_paths(
+        self, connector, mock_data_entities_processor
+    ):
+        update = RecordUpdate(
+            record=MagicMock(record_name="Updated"),
+            is_new=False,
+            is_updated=True,
+            is_deleted=False,
+            metadata_changed=True,
+            content_changed=True,
+            permissions_changed=True,
+            new_permissions=[MagicMock()],
+        )
+        await connector._handle_record_updates(update)
+        mock_data_entities_processor.on_record_metadata_update.assert_awaited_once()
+        mock_data_entities_processor.on_record_content_update.assert_awaited_once()
+        mock_data_entities_processor.on_updated_record_permissions.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sync_records_incremental_all_event_types(self, connector):
+        connector.data_source = AsyncMock()
+        connector._get_book_id_filter = MagicMock(return_value=(None, None))
+        connector._get_date_filters = MagicMock(return_value=(None, None, None, None))
+        connector._handle_page_upsert_event = AsyncMock()
+        connector.data_source.list_audit_log = AsyncMock(side_effect=[
+            _make_response(data={"data": []}),
+            _make_response(data={"data": [{"detail": "(1) Updated"}]}),
+            _make_response(data={"data": [{"detail": "(2) Perm", "loggable_type": "page"}]}),
+            _make_response(data={"data": [{"detail": "(3) Deleted"}]}),
+            _make_response(data={"data": [{"detail": "(4) Moved"}]}),
+        ])
+        await connector._sync_records_incremental("2025-01-01T00:00:00Z", {}, [])
+        assert connector._handle_page_upsert_event.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_page_upsert_empty_list_json_error_not_in_indexing_off(
+        self, connector, mock_data_entities_processor
+    ):
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled = MagicMock(return_value=False)
+        connector.data_source = AsyncMock()
+        connector._pass_date_filters = MagicMock(return_value=True)
+        connector._process_bookstack_page = AsyncMock()
+        connector._handle_record_updates = AsyncMock()
+        mock_op = MagicMock()
+        mock_op.value = "not_in"
+
+        connector.data_source.list_pages = AsyncMock(
+            return_value=_make_page_list_response([])
+        )
+        await connector._handle_page_upsert_event({"detail": "(1) Empty"}, {}, [])
+        mock_data_entities_processor.on_new_records.assert_not_awaited()
+
+        connector.data_source.list_pages = AsyncMock(
+            return_value=_make_response(data={"content": "{bad json"})
+        )
+        await connector._handle_page_upsert_event({"detail": "(2) BadJson"}, {}, [])
+        mock_data_entities_processor.on_new_records.assert_not_awaited()
+
+        page_data = {"id": 3, "name": "Blocked", "book_id": 99}
+        connector.data_source.list_pages = AsyncMock(
+            return_value=_make_page_list_response([page_data])
+        )
+        await connector._handle_page_upsert_event(
+            {"detail": "(3) Blocked"}, {}, [], book_ids={99}, book_ids_operator=mock_op
+        )
+        mock_data_entities_processor.on_new_records.assert_not_awaited()
+
+        page_data = {"id": 4, "name": "NewOff", "book_id": 10}
+        connector.data_source.list_pages = AsyncMock(
+            return_value=_make_page_list_response([page_data])
+        )
+        record = MagicMock(indexing_status=None, record_name="NewOff")
+        connector._process_bookstack_page = AsyncMock(return_value=RecordUpdate(
+            record=record,
+            is_new=True,
+            is_updated=False,
+            is_deleted=False,
+            metadata_changed=False,
+            content_changed=False,
+            permissions_changed=False,
+            new_permissions=[],
+        ))
+        await connector._handle_page_upsert_event({"detail": "(4) NewOff"}, {}, [])
+        assert record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+        mock_data_entities_processor.on_new_records.assert_awaited_once()
+
+        connector._process_bookstack_page = AsyncMock(return_value=RecordUpdate(
+            record=MagicMock(record_name="Upd"),
+            is_new=False,
+            is_updated=True,
+            is_deleted=False,
+            metadata_changed=True,
+            content_changed=False,
+            permissions_changed=False,
+            new_permissions=[],
+        ))
+        connector.data_source.list_pages = AsyncMock(
+            return_value=_make_page_list_response([{"id": 5, "name": "Upd", "book_id": 10}])
+        )
+        await connector._handle_page_upsert_event({"detail": "(5) Upd"}, {}, [])
+        connector._handle_record_updates.assert_awaited_once()
+
+    def test_get_date_filters_modified_and_created(self, connector):
+        modified_filter = MagicMock()
+        modified_filter.is_empty.return_value = False
+        modified_filter.get_datetime_iso.return_value = (
+            "2025-01-01T00:00:00+00:00",
+            "2025-06-01T00:00:00+00:00",
+        )
+        created_filter = MagicMock()
+        created_filter.is_empty.return_value = False
+        created_filter.get_datetime_iso.return_value = (
+            "2025-02-01T00:00:00+00:00",
+            "2025-12-31T00:00:00+00:00",
+        )
+        connector.sync_filters = MagicMock()
+        connector.sync_filters.get.side_effect = lambda key: {
+            SyncFilterKey.MODIFIED: modified_filter,
+            SyncFilterKey.CREATED: created_filter,
+        }.get(key)
+        modified_after, modified_before, created_after, created_before = connector._get_date_filters()
+        assert modified_after is not None
+        assert modified_before is not None
+        assert created_after is not None
+        assert created_before is not None
+
+    @pytest.mark.asyncio
+    async def test_run_incremental_sync_error_propagates(self, connector):
+        connector.run_sync = AsyncMock(side_effect=RuntimeError("sync failed"))
+        with pytest.raises(RuntimeError, match="sync failed"):
+            await connector.run_incremental_sync()
+
+    @pytest.mark.asyncio
+    async def test_check_and_fetch_empty_content_and_json_error(self, connector):
+        record = MagicMock()
+        record.id = "r1"
+        record.external_record_id = "page/42"
+        connector.data_source = AsyncMock()
+
+        connector.data_source.list_pages = AsyncMock(
+            return_value=_make_response(data={"content": None})
+        )
+        assert await connector._check_and_fetch_updated_record("org1", record, {}, []) is None
+
+        connector.data_source.list_pages = AsyncMock(
+            return_value=_make_response(data={"content": "not-json"})
+        )
+        assert await connector._check_and_fetch_updated_record("org1", record, {}, []) is None
+
+    def test_get_book_id_filter_not_in_logs(self, connector):
+        mock_filter = MagicMock()
+        mock_filter.is_empty.return_value = False
+        mock_filter.get_value.return_value = ["7"]
+        mock_filter.get_operator.return_value = MagicMock(value="not_in")
+        connector.sync_filters = MagicMock()
+        connector.sync_filters.get.side_effect = (
+            lambda key: mock_filter if key == SyncFilterKey.BOOK_IDS else None
+        )
+        book_ids, operator = connector._get_book_id_filter()
+        assert book_ids == {7}
+        assert operator.value == "not_in"
+
+    @pytest.mark.asyncio
+    async def test_create_connector_factory(
+        self, mock_logger, mock_data_store_provider, mock_config_service
+    ):
+        with patch("app.connectors.sources.bookstack.connector.BookStackApp"):
+            with patch(
+                "app.connectors.sources.bookstack.connector.DataSourceEntitiesProcessor"
+            ) as mock_proc_cls:
+                mock_proc = MagicMock()
+                mock_proc.initialize = AsyncMock()
+                mock_proc_cls.return_value = mock_proc
+                result = await BookStackConnector.create_connector(
+                    mock_logger,
+                    mock_data_store_provider,
+                    mock_config_service,
+                    "bs-factory-1",
+                    "personal",
+                    "creator-1",
+                )
+        assert isinstance(result, BookStackConnector)
+        assert result.connector_id == "bs-factory-1"
+        mock_proc.initialize.assert_awaited_once()

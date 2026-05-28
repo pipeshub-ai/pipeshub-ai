@@ -72,6 +72,8 @@ class TestConnectorConfigBuilder:
         assert config["supportsSync"] is True
         assert config["supportsAgent"] is True
         assert config["hideConnector"] is False
+        assert config["isAdminAccessRequired"] is False
+        assert config["personalConnectorType"] is None
         assert config["documentationLinks"] == []
         assert config["auth"]["supportedAuthTypes"] == ["OAUTH"]
         assert config["sync"]["supportedStrategies"] == ["MANUAL"]
@@ -98,6 +100,15 @@ class TestConnectorConfigBuilder:
     def test_with_hide_connector(self):
         config = ConnectorConfigBuilder().with_hide_connector(True).build()
         assert config["hideConnector"] is True
+
+    def test_with_admin_access_required(self):
+        config = (
+            ConnectorConfigBuilder()
+            .with_admin_access_required(True, personal_connector_type="gitlabpersonal")
+            .build()
+        )
+        assert config["isAdminAccessRequired"] is True
+        assert config["personalConnectorType"] == "gitlabpersonal"
 
     def test_add_documentation_link(self):
         link = DocumentationLink(title="Guide", url="https://docs.test.com", doc_type="setup")

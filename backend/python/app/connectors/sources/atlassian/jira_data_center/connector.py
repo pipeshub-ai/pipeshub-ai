@@ -1,6 +1,7 @@
 """Jira Data Center connector — sync stack aligned with Jira Cloud;
 """
 
+import asyncio
 import base64
 import re
 from collections import defaultdict
@@ -11,6 +12,8 @@ from typing import Any, Optional
 from urllib.parse import quote
 from uuid import uuid4
 
+import httpx  # type: ignore
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
@@ -844,7 +847,9 @@ async def jira_storage_text_to_markdown_with_images(
         ]
     )
     .with_info(
-        "Important: In order for users to get access to Jira data, each user needs to make their email visible in their Jira profile settings. Users can do this by going to their Jira profile settings and switching email visibility to Public."
+        "Users with private email visibility on Jira Data Center are automatically resolved "
+        "if they exist in your PipesHub directory or any other connected source. "
+        "Setting email visibility to Public makes the initial sync faster."
         + "\n\n"
         + CONNECTOR_EMAIL_IDENTITY_INFO
     )
@@ -951,6 +956,9 @@ class JiraDataCenterConnector(BaseConnector):
         self.value_mapper = ValueMapper()
         self._issue_attachments_cache: dict[str, list[dict[str, Any]]] = {}
 
+        # Tracks whether /applicationrole returned 403 (non-admin user)
+        self._app_roles_forbidden: bool = False
+
     async def init(self) -> bool:
         try:
             config_path = OAUTH_JIRA_CONFIG_PATH.format(connector_id=self.connector_id)
@@ -998,6 +1006,15 @@ class JiraDataCenterConnector(BaseConnector):
                 self.connector_id,
                 auth_type,
             )
+
+            if self.created_by:
+                try:
+                    creator = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                    if creator and getattr(creator, "email", None):
+                        self.creator_email = creator.email
+                except Exception as e:
+                    self.logger.warning("Could not resolve creator email for created_by %s: %s", self.created_by, e)
+
             return True
         except Exception as e:
             self.logger.error("Failed to initialize Jira Data Center connector: %s", e, exc_info=True)
@@ -1178,7 +1195,7 @@ class JiraDataCenterConnector(BaseConnector):
                         allowed_keys = None
                         self.logger.info("🔍 Project keys filter is empty — syncing all visible projects (DC)")
             # Fetch projects
-            projects, raw_projects = await self._fetch_projects(allowed_keys, project_keys_operator)
+            projects, raw_projects = await self._fetch_projects(allowed_keys, project_keys_operator, jira_users)
 
             # Sync project roles BEFORE RecordGroups
             project_keys_for_roles = [proj.short_name for proj, _ in projects]
@@ -1272,27 +1289,135 @@ class JiraDataCenterConnector(BaseConnector):
 
     async def _fetch_users(self) -> list[AppUser]:
         """
-        Fetch active Jira users via Data Center ``GET /rest/api/2/user/search``.
+        Fetch and resolve all active Jira DC users using a two-pass strategy:
+        1. Bulk fetch from Jira (visible-email users resolved directly)
+        2. Reverse lookup for hidden-email users using PipesHub directory emails
 
-        DC does not use Cloud ``GET /rest/api/3/users/search``. The v2 user search requires the
-        ``username`` query parameter (Cloud's ``query`` parameter is rejected by most DC builds);
-        ``username="."`` is the usual Server/DC pattern to enumerate active users with
-        ``startAt`` / ``maxResults`` pagination.
-
-        See https://developer.atlassian.com/server/jira/platform/rest/v11003/api-group-user/
+        DC uses ``GET /rest/api/2/user/search`` with ``username`` parameter.
+        Identifier is ``key`` (immutable) falling back to ``name``.
         """
+
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
+        # ====================================================================
+        # Phase 1: DB reads (0 API calls)
+        # ====================================================================
+        cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+        pipeshub_users = await self.data_entities_processor.get_all_active_users()
+
+        cached_key_to_email: dict[str, str] = {
+            u.source_user_id: u.email
+            for u in cached_app_users
+            if u.source_user_id and u.email
+        }
+
+        pipeshub_emails: set[str] = {
+            u.email.lower() for u in pipeshub_users if u.email
+        }
+
+        # ====================================================================
+        # Phase 2: DC bulk fetch (paginated API call)
+        # ====================================================================
+        raw_jira_users = await self._fetch_all_jira_users_bulk()
+
+        all_active_user_keys: set[str] = set()
+        visible_email_map: dict[str, str] = {}  # email.lower() -> user_key
+        key_to_display: dict[str, str] = {}
+
+        for user in raw_jira_users:
+            if not user.get("active", True):
+                continue
+
+            user_key = user.get("accountId") or user.get("key") or user.get("name")
+            if not user_key:
+                continue
+
+            all_active_user_keys.add(user_key)
+            key_to_display[user_key] = user.get("displayName", "")
+
+            email = user.get("emailAddress")
+            if email:
+                visible_email_map[email.lower()] = user_key
+
+        self.logger.info(
+            f"👥 Jira DC bulk: {len(all_active_user_keys)} active users, "
+            f"{len(visible_email_map)} with visible email"
+        )
+
+        # ====================================================================
+        # Phase 3: Merge into resolved set (in-memory, 0 API calls)
+        # ====================================================================
+        resolved: dict[str, AppUser] = {}  # user_key -> AppUser
+
+        # 3A: Visible-email users from bulk (freshest data)
+        for email_lower, user_key in visible_email_map.items():
+            resolved[user_key] = AppUser(
+                app_name=self.connector_name,
+                connector_id=self.connector_id,
+                source_user_id=user_key,
+                org_id=self.data_entities_processor.org_id,
+                email=email_lower,
+                full_name=key_to_display.get(user_key, email_lower),
+                is_active=True
+            )
+
+        # 3B: Valid cached users (prior syncs, still active in Jira)
+        for user_key, email in cached_key_to_email.items():
+            if user_key in all_active_user_keys and user_key not in resolved:
+                resolved[user_key] = AppUser(
+                    app_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    source_user_id=user_key,
+                    org_id=self.data_entities_processor.org_id,
+                    email=email,
+                    full_name=key_to_display.get(user_key, email),
+                    is_active=True
+                )
+
+        # ====================================================================
+        # Phase 4: Determine if reverse lookup is needed
+        # ====================================================================
+        unresolved_user_keys = all_active_user_keys - set(resolved.keys())
+        unresolved_count = len(unresolved_user_keys)
+
+        resolved_emails = {u.email.lower() for u in resolved.values()}
+        candidate_emails = pipeshub_emails - resolved_emails
+        candidate_count = len(candidate_emails)
+
+        self.logger.info(
+            f"👥 Resolution state: {len(resolved)} resolved, "
+            f"{unresolved_count} unresolved Jira users, "
+            f"{candidate_count} PipesHub candidate emails"
+        )
+
+        # ====================================================================
+        # Phase 5: Reverse lookup (only when there are gaps to fill)
+        # ====================================================================
+        if unresolved_count > 0 and candidate_count > 0:
+            new_found = await self._resolve_private_email_users(
+                candidate_emails, unresolved_user_keys, resolved
+            )
+            self.logger.info(
+                f"👥 Reverse lookup resolved {new_found} additional users"
+            )
+        elif unresolved_count == 0:
+            self.logger.info("👥 All Jira DC users resolved, no reverse lookup needed")
+
+        self.logger.info(f"👥 Total: {len(resolved)} Jira DC AppUsers resolved")
+        return list(resolved.values())
+
+    async def _fetch_all_jira_users_bulk(self) -> list[dict[str, Any]]:
+        """
+        Paginated fetch of all Jira DC users via GET /rest/api/2/user/search.
+        Returns raw user dicts (unfiltered).
+        """
         users: list[dict[str, Any]] = []
         start_at = 0
         max_results_per_request = USER_PAGE_SIZE
 
         while True:
             datasource = await self._get_fresh_datasource()
-            # DC's /rest/api/2/user/search expects ``username`` (Server/DC param). The Cloud
-            # v3 ``query`` parameter is only accepted on some newer DC builds, and older
-            # versions reject it with HTTP 400 ("The username query parameter was not provided").
             response = await datasource.get_user_search_v2(
                 username=".",
                 includeInactive=False,
@@ -1323,55 +1448,111 @@ class JiraDataCenterConnector(BaseConnector):
 
             start_at += max_results_per_request
 
-        app_users: list[AppUser] = []
+        return users
 
-        for user in users:
-            # DC may expose accountId (newer) or key/name (legacy)
-            account_id = user.get("accountId") or user.get("key") or user.get("name")
-            if not account_id:
-                continue
+    async def _resolve_private_email_users(
+        self,
+        candidate_emails: set[str],
+        unresolved_user_keys: set[str],
+        resolved: dict[str, "AppUser"]
+    ) -> int:
+        """
+        Reverse-lookup PipesHub emails against Jira DC to resolve hidden-email users.
+        Uses GET /rest/api/2/user/search?username=<email> for each candidate.
+        Bounded concurrency and early termination.
+        Returns the number of newly resolved users.
+        """
+        unresolved_count = len(unresolved_user_keys)
+        new_found = 0
+        semaphore = asyncio.Semaphore(10)
+        datasource = await self._get_fresh_datasource()
 
-            # Only include active users
-            if not user.get("active", True):
-                continue
+        async def try_resolve_email(email: str) -> Optional[tuple[str, str, str]]:
+            """Returns (user_key, email, displayName) if found, else None."""
+            async with semaphore:
+                try:
+                    response = await datasource.get_user_search_v2(
+                        username=email,
+                        maxResults=50,
+                    )
 
-            # Skip users without email address
-            email = user.get("emailAddress")
-            if not email:
-                continue
+                    if response.status != HttpStatusCode.OK.value:
+                        return None
 
-            app_user = AppUser(
-                app_name=Connectors.JIRA_DATA_CENTER,
-                connector_id=self.connector_id,
-                source_user_id=account_id,
-                org_id=self.data_entities_processor.org_id,
-                email=email,
-                full_name=user.get("displayName", email),
-                is_active=user.get("active", True)
-            )
-            app_users.append(app_user)
+                    results = self._safe_json_parse(response, f"user_search({email})")
+                    if not results or not isinstance(results, list):
+                        return None
 
-        self.logger.info(
-            f"👥 Fetched {len(app_users)} active users with emails (DC GET /rest/api/2/user/search, username=.)"
-        )
-        return app_users
+                    user = results[0]
+                    if not user:
+                        return None
+                    user_key = user.get("accountId") or user.get("key") or user.get("name")
+                    if not user_key:
+                        return None
+                    display_name = user.get("displayName") or email
+                    return (user_key, email, display_name)
+                except Exception as e:
+                    self.logger.debug(f"⚠️ Reverse lookup failed for {email}: {e}")
+                    return None
+
+        batch_size = 20
+        email_list = list(candidate_emails)
+
+        for i in range(0, len(email_list), batch_size):
+            if new_found >= unresolved_count:
+                break
+
+            batch = email_list[i:i + batch_size]
+            tasks = [try_resolve_email(email) for email in batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for result in results:
+                if isinstance(result, Exception) or result is None:
+                    continue
+                user_key, email, display_name = result
+                if user_key not in resolved:
+                    resolved[user_key] = AppUser(
+                        app_name=self.connector_name,
+                        connector_id=self.connector_id,
+                        source_user_id=user_key,
+                        org_id=self.data_entities_processor.org_id,
+                        email=email,
+                        full_name=display_name,
+                        is_active=True
+                    )
+                    new_found += 1
+
+            if new_found >= unresolved_count:
+                break
+
+        return new_found
 
     async def _fetch_application_roles_to_groups_mapping(self) -> dict[str, list[dict[str, str]]]:
         """
         Fetch all application roles and their associated groups via
         ``GET /rest/api/2/applicationrole`` (Data Center).
+        Always fetches fresh data from the API so that group membership
+        changes in Jira are picked up on every sync.
         """
-        if hasattr(self, '_app_roles_cache') and self._app_roles_cache:
-            return self._app_roles_cache
-
         mapping: dict[str, list[dict[str, str]]] = {}
+        self._app_roles_forbidden = False
 
         try:
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_all_application_roles_v2()
 
             if response.status != HttpStatusCode.OK.value:
-                self.logger.warning(f"⚠️ Failed to fetch application roles: {response.text()}")
+                if response.status == HttpStatusCode.FORBIDDEN.value:
+                    self._app_roles_forbidden = True
+                    self.logger.warning(
+                        "⚠️ Application roles API returned 403 — configuring user is not a Jira admin. "
+                        "Projects whose permission scheme uses applicationRole holders will "
+                        "grant the configuring user direct access instead."
+                    )
+                else:
+                    self.logger.warning(
+                        "⚠️ Failed to fetch application roles (HTTP %s)", response.status
+                    )
                 return {}
 
             roles_data = response.json()
@@ -1400,8 +1581,6 @@ class JiraDataCenterConnector(BaseConnector):
                         mapping[role_key] = normalized
                         self.logger.debug(f"ApplicationRole '{role_key}' → {len(normalized)} groups")
 
-            # Cache the result
-            self._app_roles_cache = mapping
             self.logger.info(f"🔐 Fetched {len(mapping)} application roles with group mappings")
 
         except Exception as e:
@@ -1409,10 +1588,46 @@ class JiraDataCenterConnector(BaseConnector):
 
         return mapping
 
+    def _fallback_permissions_for_forbidden_scheme(
+        self,
+        project_key: str,
+        status: int,
+        stage: str,
+    ) -> list[Permission]:
+        """Build a single-user BROWSE permission for the configuring user when
+        the permission-scheme endpoints return 401/403 for this project.
+
+        Mirrors the ``_app_roles_forbidden`` fallback in
+        ``_fetch_application_roles_to_groups_mapping``: rather than indexing
+        the project with no ACLs (which would silently hide it from search
+        results across the org), give the configuring user direct READ access
+        so they can still discover their own data.
+        """
+        if self.creator_email:
+            self.logger.warning(
+                "⚠️ %s for %s returned %s — configuring user lacks Administer "
+                "Projects. Granting configuring user '%s' direct BROWSE access "
+                "instead of dropping all ACLs for this project.",
+                stage, project_key, status, self.creator_email,
+            )
+            return [Permission(
+                entity_type=EntityType.USER,
+                email=self.creator_email,
+                type=PermissionType.READ,
+            )]
+
+        self.logger.warning(
+            "⚠️ %s for %s returned %s and no configuring user email resolved — "
+            "project will be indexed with no BROWSE permissions.",
+            stage, project_key, status,
+        )
+        return []
+
     async def _fetch_project_permission_scheme(
         self,
         project_key: str,
-        app_roles_mapping: dict[str, list[dict[str, str]]] = None
+        app_roles_mapping: dict[str, list[dict[str, str]]] = None,
+        user_by_key: dict[str, "AppUser"] = None
     ) -> list[Permission]:
         """
         Fetch permission holders for a project from its Permission Scheme (Data Center).
@@ -1444,6 +1659,24 @@ class JiraDataCenterConnector(BaseConnector):
             )
 
             if scheme_response.status != HttpStatusCode.OK.value:
+                # ``GET /project/{key}/permissionscheme`` requires *Administer
+                # Projects* (or global *Administer Jira*). Non-admin sync users
+                # get a 401/403 with ``"You cannot edit the configuration of
+                # this project."`` — same shape as the applicationroles 403
+                # handled in ``_fetch_application_roles_to_groups_mapping``.
+                # Mirror that fallback: rather than silently dropping all
+                # BROWSE holders (which leaves the project indexed with empty
+                # ACLs), grant the configuring user direct BROWSE so they can
+                # at least see their own project content.
+                if scheme_response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value,
+                    HttpStatusCode.FORBIDDEN.value,
+                ):
+                    return self._fallback_permissions_for_forbidden_scheme(
+                        project_key=project_key,
+                        status=scheme_response.status,
+                        stage="permission scheme",
+                    )
                 self.logger.warning(f"⚠️ Failed to fetch permission scheme for {project_key}: {scheme_response.text()}")
                 return []
 
@@ -1457,6 +1690,18 @@ class JiraDataCenterConnector(BaseConnector):
             )
 
             if grants_response.status != HttpStatusCode.OK.value:
+                # Same admin-only gating applies to the grants endpoint; apply
+                # the same fallback so a partial admin (can read scheme name
+                # but not grants) doesn't yield empty ACLs either.
+                if grants_response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value,
+                    HttpStatusCode.FORBIDDEN.value,
+                ):
+                    return self._fallback_permissions_for_forbidden_scheme(
+                        project_key=project_key,
+                        status=grants_response.status,
+                        stage=f"permission grants (scheme {scheme_id})",
+                    )
                 self.logger.warning(f"⚠️ Failed to fetch permission grants for scheme {scheme_id}: {grants_response.text()}")
                 return []
 
@@ -1515,27 +1760,53 @@ class JiraDataCenterConnector(BaseConnector):
                                         external_id=group_key_value,
                                         type=PermissionType.READ
                                     ))
-                    else:
-                        # Fallback: No mapping found or no role_key - treat as org-level handle any logged in user condition
-                        fallback_name = role_key or "all_licensed_users"
+                    elif not role_key:
+                        # Bare applicationRole (no parameter) = "any licensed user"
                         permissions.append(Permission(
                             entity_type=EntityType.ORG,
-                            external_id=fallback_name,
+                            external_id="all_licensed_users",
                             type=PermissionType.READ
                         ))
+                    elif self._app_roles_forbidden and self.creator_email:
+                        # API returned 403 — can't resolve role to groups,
+                        # grant only the configuring user instead of over-granting to ORG
+                        user_key = f"user:{self.creator_email.lower()}"
+                        if user_key not in seen_holders:
+                            seen_holders.add(user_key)
+                            permissions.append(Permission(
+                                entity_type=EntityType.USER,
+                                email=self.creator_email,
+                                type=PermissionType.READ,
+                            ))
+                            self.logger.info(
+                                "applicationRole '%s' unresolvable (403) — granting configuring user '%s' direct access on %s",
+                                role_key, self.creator_email, project_key
+                            )
+                    else:
+                        self.logger.warning(
+                            "Cannot resolve applicationRole '%s' for project %s — skipping",
+                            role_key, project_key
+                        )
 
                 elif holder_type == "user" and holder_param:
-                    # Specific user has access
+                    # holder_param is the user key; resolve via AppUser map first, fall back to email
                     user_data = holder.get("user", {})
                     user_email = user_data.get("emailAddress")
-                    if user_email:
+
+                    resolved_email = None
+                    if user_by_key and holder_param in user_by_key:
+                        resolved_email = user_by_key[holder_param].email
+                    elif user_email:
+                        resolved_email = user_email
+
+                    if resolved_email:
                         permissions.append(Permission(
                             entity_type=EntityType.USER,
-                            email=user_email,
+                            email=resolved_email,
                             type=PermissionType.READ
                         ))
                     else:
-                        self.logger.warning(f"⚠️  {project_key}: User permission skipped - no email for accountId '{holder_param}'")
+                        self.logger.debug(f"  {project_key}: User permission skipped - cannot resolve key '{holder_param}'")
 
                 elif holder_type == "anyone":
                     # All authenticated users have access handle public condition
@@ -1600,8 +1871,8 @@ class JiraDataCenterConnector(BaseConnector):
 
             self.logger.info(f"👥 Found {len(groups)} groups. Fetching members...")
 
-            # Create email -> AppUser lookup for efficient matching
-            user_by_email = {user.email.lower(): user for user in jira_users if user.email}
+            # Create user_key -> AppUser lookup for efficient matching
+            user_by_key = {user.source_user_id: user for user in jira_users if user.source_user_id}
 
             user_groups_batch = []
             # Mapping: group_id -> members, group_name -> members (for role actor lookup)
@@ -1619,7 +1890,7 @@ class JiraDataCenterConnector(BaseConnector):
 
                     # Create AppUserGroup (always create, even if no members)
                     user_group = AppUserGroup(
-                        app_name=Connectors.JIRA_DATA_CENTER,
+                        app_name=self.connector_name,
                         connector_id=self.connector_id,
                         source_user_group_id=group_id,
                         name=group_name,
@@ -1627,18 +1898,26 @@ class JiraDataCenterConnector(BaseConnector):
                         description=f"Jira user group: {group_name}"
                     )
 
-                    # Fetch members for this group
-                    member_emails = await self._fetch_group_members(group_id, group_name)
+                    # Fetch member keys for this group
+                    member_keys = await self._fetch_group_members(group_id, group_name)
 
-                    # Map member emails to AppUser objects
+                    # Map member keys to AppUser objects
                     app_users = []
-                    if member_emails:
-                        for email in member_emails:
-                            user = user_by_email.get(email.lower())
+                    skipped_members = 0
+                    if member_keys:
+                        for user_key in member_keys:
+                            user = user_by_key.get(user_key)
                             if user:
                                 app_users.append(user)
                             else:
-                                self.logger.warning(f"⚠️️ Member email {email} not found in synced users")
+                                skipped_members += 1
+
+                    if skipped_members:
+                        self.logger.debug(
+                            "Group %s: %s member(s) skipped (no AppUser; hidden email or not in PipesHub)",
+                            group_name,
+                            skipped_members,
+                        )
 
                     # Store mapping by both group_id and group_name for flexible lookup
                     groups_members_map[group_id] = app_users
@@ -1688,6 +1967,20 @@ class JiraDataCenterConnector(BaseConnector):
                     maxResults=max_results,
                 )
 
+                if response.status == HttpStatusCode.NOT_FOUND.value:
+                    # /rest/api/2/group/bulk was introduced in Jira Data Center 11.x.
+                    # Older Server/DC builds (8.x / 9.x / 10.x) reply with a Tomcat
+                    # 404 (HTML/XML, not a JSON Jira error). Without a fallback the
+                    # outer loop would silently treat the tenant as having zero
+                    # groups and drop every group-based permission downstream.
+                    # /rest/api/2/groups/picker has existed since Jira 4.x and is the
+                    # documented enumeration endpoint on legacy DC.
+                    self.logger.warning(
+                        "DC /group/bulk unavailable on this Jira version (404) — "
+                        "falling back to /groups/picker for group enumeration"
+                    )
+                    return await self._fetch_groups_via_picker()
+
                 if response.status != HttpStatusCode.OK.value:
                     self.logger.error(
                         "DC group bulk failed (%s): %s",
@@ -1732,13 +2025,132 @@ class JiraDataCenterConnector(BaseConnector):
         self.logger.info("👥 Fetched %s total groups (DC)", len(groups))
         return groups
 
+    async def _fetch_groups_via_picker(self) -> list[dict[str, Any]]:
+        """Enumerate groups via ``GET /rest/api/2/groups/picker``.
+
+        Used as a fallback when ``/group/bulk`` returns 404 on Jira DC versions
+        prior to 11.x. The picker endpoint does not support ``startAt`` pagination
+        and is typically capped server-side by ``jira.ajax.autocomplete.limit``
+        (default 50, configurable up to a few thousand). To approximate full
+        enumeration we sweep across an empty query plus alphanumeric prefixes
+        and deduplicate by group name (which is the canonical DC group key —
+        see ``_normalize_jira_dc_group_row``).
+
+        Short-circuits the sweep when the server's reported ``total`` matches
+        the number of groups already collected, so small/medium tenants exit
+        after the first call instead of doing 36 useless round trips. Also
+        bails out early when several consecutive prefixes contribute nothing
+        new (convergence on a large tenant).
+        """
+        if not self.data_source:
+            raise ValueError("DataSource not initialized")
+
+        seen_names: set[str] = set()
+        groups: list[dict[str, Any]] = []
+
+        # Empty query first (covers small tenants in one shot); then prefix sweep
+        # to pick up the tail when the server caps results below the true total.
+        prefix_queries: list[str] = [""] + list("abcdefghijklmnopqrstuvwxyz0123456789")
+        # Request a high cap; the server clamps to its own limit
+        # (``jira.ajax.autocomplete.limit``, default 50 on most DC installs).
+        picker_max = 1000
+        # Stop scanning prefixes once this many in a row contribute zero new
+        # groups — we've converged and further sweeps just burn API budget.
+        empty_streak_limit = 5
+        empty_streak = 0
+
+        for idx, q in enumerate(prefix_queries):
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.groups_picker_get_v2(
+                    query=q,
+                    maxResults=picker_max,
+                )
+
+                if response.status != HttpStatusCode.OK.value:
+                    self.logger.warning(
+                        "DC /groups/picker fallback failed for query %r (%s): %s",
+                        q,
+                        response.status,
+                        response.text()[:300],
+                    )
+                    continue
+
+                payload = response.json() or {}
+                if not isinstance(payload, dict):
+                    continue
+                raw_groups = payload.get("groups") or []
+                if not isinstance(raw_groups, list):
+                    continue
+                # Server-reported total for this query (may be absent on very
+                # old Server builds). Used only for the empty-query short-circuit.
+                reported_total = payload.get("total")
+                try:
+                    reported_total = int(reported_total) if reported_total is not None else None
+                except (TypeError, ValueError):
+                    reported_total = None
+
+                added_this_round = 0
+                for row in raw_groups:
+                    norm = _normalize_jira_dc_group_row(row)
+                    if not norm:
+                        continue
+                    name = norm["name"]
+                    if name in seen_names:
+                        continue
+                    seen_names.add(name)
+                    groups.append(norm)
+                    added_this_round += 1
+
+                self.logger.info(
+                    "groups/picker q=%r returned %s rows (%s new, running total=%s, server total=%s)",
+                    q, len(raw_groups), added_this_round, len(groups), reported_total,
+                )
+
+                # Short-circuit: if this was the empty query and the server told
+                # us how many matched in total, and we already have all of them
+                # (deduped), there is nothing left to enumerate.
+                if q == "" and reported_total is not None and len(groups) >= reported_total:
+                    self.logger.info(
+                        "groups/picker empty-query returned full set "
+                        "(%s of %s) — skipping prefix sweep",
+                        len(groups), reported_total,
+                    )
+                    break
+
+                # Convergence bail-out: large tenants where prefix sweeps stop
+                # producing new groups for several rounds in a row.
+                if idx > 0:
+                    if added_this_round == 0:
+                        empty_streak += 1
+                        if empty_streak >= empty_streak_limit:
+                            self.logger.info(
+                                "groups/picker prefix sweep converged "
+                                "(%s consecutive prefixes returned 0 new groups) — "
+                                "stopping at total=%s",
+                                empty_streak, len(groups),
+                            )
+                            break
+                    else:
+                        empty_streak = 0
+
+            except Exception as e:
+                self.logger.warning(
+                    "Error in /groups/picker fallback for query %r: %s", q, e
+                )
+                continue
+
+        self.logger.info(
+            "👥 Fetched %s total groups (DC, /groups/picker fallback)", len(groups)
+        )
+        return groups
+
     async def _fetch_group_members(self, group_id: str, group_name: str) -> list[str]:
         """
         Fetch group members via Data Center ``GET /rest/api/2/group/member``.
 
-        Server / DC keys this endpoint by ``groupname`` (not ``groupId``). The Cloud
-        ``groupId`` query parameter is rejected on most DC builds, so prefer ``groupname``
-        and fall back to ``groupId`` only when the group has a distinct, non-name id.
+        Returns list of user keys (accountId/key/name) which are always present
+        in the response regardless of email visibility settings.
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
@@ -1748,16 +2160,13 @@ class JiraDataCenterConnector(BaseConnector):
             )
             return []
 
-        member_emails: list[str] = []
+        member_keys: list[str] = []
         start_at = 0
         max_results = GROUP_MEMBER_PAGE_SIZE
 
         while True:
             try:
                 datasource = await self._get_fresh_datasource()
-                # ``groupname`` and ``groupId`` are mutually exclusive on DC. Group name is
-                # the canonical identifier on Server/DC and is reliably populated by the
-                # bulk/picker endpoints, so always send ``groupname``.
                 response = await datasource.get_users_from_group_v2(
                     groupname=group_name,
                     includeInactiveUsers=False,
@@ -1789,9 +2198,9 @@ class JiraDataCenterConnector(BaseConnector):
                     break
 
                 for member in batch_members:
-                    email = member.get("emailAddress")
-                    if email:
-                        member_emails.append(email)
+                    user_key = member.get("accountId") or member.get("key") or member.get("name")
+                    if user_key:
+                        member_keys.append(user_key)
 
                 if is_last is True:
                     break
@@ -1808,7 +2217,7 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.error("❌ Error fetching members for group %s: %s", group_name, e)
                 break
 
-        return member_emails
+        return member_keys
 
     async def _sync_project_roles(
         self,
@@ -1894,7 +2303,7 @@ class JiraDataCenterConnector(BaseConnector):
 
                         # Build AppRole with external_id matching Permission format
                         app_role = AppRole(
-                            app_name=Connectors.JIRA_DATA_CENTER,
+                            app_name=self.connector_name,
                             connector_id=self.connector_id,
                             source_role_id=f"{project_key}_{role_id}",
                             name=f"{project_key} - {role_name_display}",
@@ -2019,7 +2428,7 @@ class JiraDataCenterConnector(BaseConnector):
                 project_updated = project.get("updatedAt")
 
                 app_role = AppRole(
-                    app_name=Connectors.JIRA_DATA_CENTER,
+                    app_name=self.connector_name,
                     connector_id=self.connector_id,
                     source_role_id=f"{project_key}_projectLead",
                     name=f"{project_key} - Project Lead",
@@ -2092,7 +2501,8 @@ class JiraDataCenterConnector(BaseConnector):
     async def _fetch_projects(
         self,
         project_keys: Optional[list[str]] = None,
-        project_keys_operator: Optional[FilterOperatorType] = None
+        project_keys_operator: Optional[FilterOperatorType] = None,
+        jira_users: list["AppUser"] = None
     ) -> tuple[list[tuple[RecordGroup, list[Permission]]], list[dict[str, Any]]]:
         """
         Fetch projects via one ``GET /rest/api/2/project`` call, then apply project-key filters
@@ -2141,6 +2551,10 @@ class JiraDataCenterConnector(BaseConnector):
 
         app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
+        perm_user_by_key: dict[str, AppUser] = {}
+        if jira_users:
+            perm_user_by_key = {u.source_user_id: u for u in jira_users if u.source_user_id}
+
         record_groups: list[tuple[RecordGroup, list[Permission]]] = []
         for project in projects:
             project_id = project.get("id")
@@ -2158,7 +2572,7 @@ class JiraDataCenterConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 external_group_id=project_id,
                 connector_id=self.connector_id,
-                connector_name=Connectors.JIRA_DATA_CENTER,
+                connector_name=self.connector_name,
                 name=project_name,
                 short_name=project_key,
                 group_type=RecordGroupType.PROJECT,
@@ -2167,7 +2581,9 @@ class JiraDataCenterConnector(BaseConnector):
             )
 
             # This determines which groups/users can access the project
-            project_permissions = await self._fetch_project_permission_scheme(project_key, app_roles_mapping)
+            project_permissions = await self._fetch_project_permission_scheme(
+                project_key, app_roles_mapping, perm_user_by_key
+            )
 
             record_groups.append((record_group, project_permissions))
 
@@ -2870,7 +3286,7 @@ class JiraDataCenterConnector(BaseConnector):
                 record_name=issue_name,
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.JIRA_DATA_CENTER,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 record_group_type=record_group_type,
                 external_record_group_id=external_record_group_id,
@@ -3476,6 +3892,52 @@ class JiraDataCenterConnector(BaseConnector):
 
         return attachment_children_map
 
+    async def _get_issue_with_retry(
+        self,
+        issue_id: str,
+        fields: list[str],
+        max_attempts: int = 3,
+    ) -> Any:
+        """Fetch a Jira issue, retrying on transient httpx transport errors.
+
+        Targeted at the failure mode where the httpx connection pool reuses a
+        socket that the LB/proxy in front of Jira DC has already half-closed
+        past its idle timeout, raising ``RemoteProtocolError`` before any
+        response is received. GETs are idempotent, so retrying with backoff is
+        safe; httpx evicts the broken connection on failure, so the retry hits
+        a fresh socket.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(max_attempts):
+            try:
+                datasource = await self._get_fresh_datasource()
+                return await datasource.get_issue_v2(
+                    issueIdOrKey=issue_id,
+                    fields=fields,
+                )
+            except (
+                httpx.RemoteProtocolError,
+                httpx.ReadError,
+                httpx.WriteError,
+                httpx.ConnectError,
+                httpx.PoolTimeout,
+                httpx.ReadTimeout,
+            ) as e:
+                last_exc = e
+                if attempt == max_attempts - 1:
+                    break
+                backoff = 0.5 * (2 ** attempt)  # 0.5s, 1.0s, ...
+                self.logger.warning(
+                    "Transient transport error fetching issue %s "
+                    "(attempt %s/%s): %s — retrying in %.1fs",
+                    issue_id, attempt + 1, max_attempts, e, backoff,
+                )
+                await asyncio.sleep(backoff)
+
+        raise Exception(
+            f"Failed to fetch issue {issue_id} after {max_attempts} attempts: {last_exc}"
+        ) from last_exc
+
     async def _process_issue_blockgroups_for_streaming(self, record: Record) -> bytes:
         """
         Process issue BlockGroups for streaming by creating BlocksContainer on-demand.
@@ -3498,14 +3960,24 @@ class JiraDataCenterConnector(BaseConnector):
         """
         issue_id = record.external_record_id
 
-        datasource = await self._get_fresh_datasource()
-
         # Fetch issue with comments. ``"comments"`` is not a valid v2 ``expand`` value
         # (valid expands: ``renderedFields``, ``names``, ``schema``, ``transitions``,
         # ``operations``, ``editmeta``, ``changelog``, ``versionedRepresentations``).
         # Comments are returned via ``fields=comment``.
-        response = await datasource.get_issue_v2(
-            issueIdOrKey=issue_id,
+        #
+        # The httpx pool occasionally hands out a keep-alive socket that the
+        # Jira DC LB / nginx has already half-closed past its idle timeout. The
+        # very next request raises ``httpx.RemoteProtocolError`` ("Server
+        # disconnected without sending a response") before any HTTP response is
+        # received. The same shape also surfaces as ``httpx.ReadError`` /
+        # ``ConnectError`` for transient infra blips. These are safe to retry —
+        # a GET that never reached the server is idempotent — and the failing
+        # socket gets evicted from the pool automatically, so the retry picks
+        # up a fresh connection. Without this, the indexing consumer burns its
+        # tenacity retries on a single dead-keepalive and surfaces a misleading
+        # 500 to the user.
+        response = await self._get_issue_with_retry(
+            issue_id=issue_id,
             fields=["summary", "description", "attachment", "comment"],
         )
         if response.status != HttpStatusCode.OK.value:
@@ -3782,7 +4254,7 @@ class JiraDataCenterConnector(BaseConnector):
             external_revision_id=str(created_at) if created_at else None,
             parent_external_record_id=parent_issue_id,
             parent_record_type=RecordType.TICKET,
-            connector_name=Connectors.JIRA_DATA_CENTER,
+            connector_name=self.connector_name,
             connector_id=self.connector_id,
             origin=OriginTypes.CONNECTOR,
             version=version,
@@ -4018,7 +4490,20 @@ class JiraDataCenterConnector(BaseConnector):
                 )
 
                 if response.status != HttpStatusCode.OK.value:
-                    raise Exception(f"Failed to fetch attachment content: {response.text()}")
+                    # Propagate the upstream status so the API returns the
+                    # right code (e.g. 404 when an attachment was deleted at
+                    # the source) instead of being swallowed into a generic
+                    # 500. Without this, the indexing consumer treats every
+                    # gone-at-source attachment as a transient server error,
+                    # burns 3 tenacity retries, and emits a misleading
+                    # traceback for an expected condition.
+                    detail = f"Failed to fetch attachment content: {response.text()}"
+                    if response.status == HttpStatusCode.NOT_FOUND.value:
+                        self.logger.warning(
+                            f"Attachment {attachment_id} not found at source "
+                            f"(record {record.external_record_id}) — likely deleted in Jira"
+                        )
+                    raise HTTPException(status_code=response.status, detail=detail)
 
                 # Stream the attachment content
                 async def generate_attachment() -> AsyncGenerator[bytes, None]:
@@ -4049,8 +4534,16 @@ class JiraDataCenterConnector(BaseConnector):
                 )
 
             else:
-                raise ValueError(f"Unsupported record type for streaming: {record.record_type}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail=f"Unsupported record type for streaming: {record.record_type}",
+                )
 
+        except HTTPException:
+            # Already a structured HTTP error (e.g. 404 from a deleted
+            # attachment) — surface it unchanged so the router preserves
+            # the upstream status instead of collapsing it into a 500.
+            raise
         except Exception as e:
             self.logger.error(f"Error streaming record {record.external_record_id} ({record.record_type}): {e}")
             raise
@@ -4212,7 +4705,7 @@ class JiraDataCenterConnector(BaseConnector):
                 if identifier and email:
                     user_by_account_id[identifier] = AppUser(
                         id="",
-                        app_name=Connectors.JIRA_DATA_CENTER,
+                        app_name=self.connector_name,
                         connector_id=self.connector_id,
                         email=email,
                         full_name=user_obj.get("displayName") or email,
@@ -4247,7 +4740,7 @@ class JiraDataCenterConnector(BaseConnector):
                 record_name=issue_data["issue_name"],
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.JIRA_DATA_CENTER,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 record_group_type=record.record_group_type if hasattr(record, 'record_group_type') else RecordGroupType.PROJECT,
                 external_record_group_id=record.external_record_group_id if hasattr(record, 'external_record_group_id') else project_id,

@@ -477,3 +477,38 @@ class TestConcreteMethodCalls:
         instance.batch_upsert_people.return_value = None
         result = await instance.batch_upsert_people([])
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_filtered_connector_instances_returns_two_tuple(self):
+        """get_filtered_connector_instances must return a 2-tuple (list, int)."""
+        ConcreteProvider = _make_concrete_class()
+        instance = ConcreteProvider()
+        expected = (
+            [{"id": "c1"}, {"id": "c2"}],
+            2,
+        )
+        instance.get_filtered_connector_instances.return_value = expected
+        result = await instance.get_filtered_connector_instances(
+            "apps", "orgAppRelation", "org1", "user1"
+        )
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        docs, total = result
+        assert docs == [{"id": "c1"}, {"id": "c2"}]
+        assert total == 2
+
+    @pytest.mark.asyncio
+    async def test_get_filtered_connector_instances_with_new_filter_params(self):
+        """Concrete implementation accepts is_authenticated, is_active, connector_type_filter."""
+        ConcreteProvider = _make_concrete_class()
+        instance = ConcreteProvider()
+        instance.get_filtered_connector_instances.return_value = ([], 0)
+        result = await instance.get_filtered_connector_instances(
+            "apps", "orgAppRelation", "org1", "user1",
+            is_authenticated=True,
+            is_active=True,
+            connector_type_filter="Slack",
+        )
+        docs, total = result
+        assert docs == []
+        assert total == 0

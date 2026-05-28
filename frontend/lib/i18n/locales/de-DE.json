@@ -23,9 +23,11 @@
     "older": "Älter"
   },
   "chatStream": {
-    "thinkingFallback": "Denken…",
+    "thinkingFallback": "Denkt nach…",
     "refiningResponse": "Antwort wird verfeinert…",
-    "errorFallback": "Es ist ein Fehler aufgetreten. Bitte versuchen Sie es erneut."
+    "errorFallback": "Ein Fehler ist aufgetreten. Bitte erneut versuchen.",
+    "copyCode": "Kopieren",
+    "copiedCode": "Kopiert"
   },
   "uploadProgress": {
     "uploadFailedDefault": "Upload fehlgeschlagen",
@@ -365,6 +367,9 @@
   },
   "menu": {
     "reindex": "Neu indizieren",
+    "reindexAll": "Alle neu indizieren",
+    "reindexFailed": "Fehlgeschlagene neu indizieren",
+    "reindexManual": "Manuelle neu indizieren",
     "rename": "Umbenennen",
     "delete": "Löschen"
   },
@@ -1396,7 +1401,6 @@
       "dataCollectionReason3": "Zur Verwaltung Ihres Abonnements für Newsletter oder andere Updates",
       "dataCollectionReason4": "Für Sicherheits- und Betrugspräventionszwecke",
       "dataCollectionReason5": "Zur Personalisierung Ihrer Benutzererfahrung",
-      "dataCollectionReason6": "Zur Verbesserung und Weiterentwicklung unserer Produkte und Dienstleistungen",
       "manageSubtitle": "Verwalten Sie Ihr Unternehmensprofil",
       "editLogoAria": "Organisationslogo bearbeiten",
       "toasts": {
@@ -1530,6 +1534,7 @@
         "syncError": "Synchronisierung konnte nicht gestartet werden",
         "configLoadError": "Konnektor-Konfiguration konnte nicht geladen werden",
         "createError": "Konnektor konnte nicht erstellt werden",
+        "createSuccess": "Konnektor-Instanz „{{name}}“ wurde erfolgreich erstellt",
         "authSaveError": "Authentifizierungskonfiguration konnte nicht gespeichert werden",
         "configSaveError": "Konfiguration konnte nicht gespeichert werden",
         "oauthAppUnavailableTitle": "Für diesen Konnektor sind keine OAuth-Apps verfügbar",
@@ -1561,8 +1566,42 @@
         "title": "Synchronisationsprozess starten?",
         "manualMessage": "Sie haben die manuelle Indexierung für diesen Connector aktiviert. Datensätze werden synchronisiert, sind aber erst durch KI durchsuchbar, nachdem Sie sie indexiert haben. Sie können in „Alle Datensätze“ manuell wählen, welche indexiert werden sollen. Fortfahren?",
         "wideSyncMessage": "Dieser Vorgang kann eine große Anzahl von Datensätzen synchronisieren. Möchten Sie die Synchronisation wirklich starten? Erwägen Sie Filter unter „Filter“, um die Datenmenge zu reduzieren.",
-        "confirm": "Synchronisation starten",
+        "confirm": "Bestätigen",
         "cancel": "Abbrechen"
+      },
+      "disableFirstDialog": {
+        "title": "Connector ist derzeit aktiviert",
+        "message": "{{name}} ist derzeit aktiviert. Um {{action}}, wird er zunächst automatisch deaktiviert. Möchten Sie fortfahren?",
+        "messageNoName": "Dieser Connector ist derzeit aktiviert. Um {{action}}, wird er zunächst automatisch deaktiviert. Möchten Sie fortfahren?",
+        "proceed": "Deaktivieren & Fortfahren",
+        "proceeding": "Wird deaktiviert...",
+        "cancel": "Abbrechen",
+        "errorTitle": "Connector konnte nicht deaktiviert werden",
+        "errorFallback": "Connector konnte nicht deaktiviert werden. Bitte versuchen Sie es erneut.",
+        "actions": {
+          "removeInstance": "diese Connector-Instanz zu entfernen",
+          "saveConfig": "Konfigurationsänderungen zu speichern"
+        }
+      },
+      "adminAccessDialog": {
+        "title": "Administratorzugriff erforderlich",
+        "question": "Haben Sie Administratorzugriff in {{appGroup}}? Der Team-Connector erfordert Administratorrechte in der nativen App, um OAuth-Anwendungen zu registrieren und organisationsweite Daten zu synchronisieren.",
+        "yesContinue": "Ja, Einrichtung fortsetzen",
+        "noNotAdmin": "Nein, ich bin kein Administrator",
+        "redirectTitle": "Persönlichen Connector verwenden",
+        "redirectMessage": "Der Team-Connector {{connectorName}} erfordert Administratorzugriff in Ihrer {{appGroup}}-Instanz. Bitte verwenden Sie den persönlichen {{appGroup}}-Connector, um stattdessen Ihr eigenes Konto zu synchronisieren.",
+        "goToPersonal": "Zu {{appGroup}} Personal wechseln",
+        "cancel": "Schließen"
+      },
+      "removeInstanceDialog": {
+        "title": "Connector-Instanz entfernen?",
+        "description": "Möchten Sie {{name}} wirklich löschen? Dies kann nicht rückgängig gemacht werden.",
+        "cancel": "Abbrechen",
+        "confirm": "Connector entfernen",
+        "alreadyRemovingTitle": "Wird bereits entfernt",
+        "alreadyRemovingDescription": "Dieser Connector wird bereits entfernt.",
+        "successTitle": "Connector entfernt",
+        "errorTitle": "Connector konnte nicht entfernt werden"
       },
       "selectRecords": {
         "title": "Datensätze auswählen",
@@ -1575,14 +1614,18 @@
         "methodPlaceholder": "Authentifizierungstyp wählen...",
         "credentialsHeading": "{{name}}-Anmeldedaten",
         "credentialsSubtext": "Geben Sie Ihre {{name}}-Anmeldedaten ein",
-        "oauthCreateHelperAdmin": "Wenn gespeicherte OAuth-Apps vorhanden sind, wählen Sie oben eine, oder wählen Sie „Neue OAuth-App“ und tragen Sie die Client-Anmeldedaten unten ein. Tragen Sie diese Weiterleitungs-URL zuerst in Ihrem IdP ein.",
-        "oauthCreateHelperNonAdmin": "Wählen Sie eine gespeicherte OAuth-App, die von Ihrem Administrator registriert wurde. Sie tragen hier keine Client-Geheimnisse ein. Tragen Sie die Weiterleitungs-URL in Ihrem IdP ein, falls Ihre Organisation das verlangt.",
+        "oauthCreateHelperAdmin": "Wenn gespeicherte OAuth-Apps vorhanden sind, wählen Sie oben eine, oder wählen Sie „Neue OAuth-App“ und tragen Sie die Client-Anmeldedaten unten ein. Tragen Sie diese Redirect-/Callback-URL zuerst in Ihrem IdP ein.",
+        "oauthCreateHelperNonAdmin": "Wählen Sie eine gespeicherte OAuth-App, die von Ihrem Administrator registriert wurde. Sie tragen hier keine Client-Geheimnisse ein. Tragen Sie die Redirect-/Callback-URL in Ihrem IdP ein, falls Ihre Organisation das verlangt.",
         "oauthEditHelperAdmin": "Wählen Sie oben eine gespeicherte OAuth-App. Wenn Sie die App wechseln und Ihre Änderungen speichern, melden Sie sich danach unter „Autorisieren“ erneut an.",
         "oauthEditHelperNonAdmin": "Wählen Sie oben eine gespeicherte OAuth-App (Ihr Administrator kann mehrere anbieten). Wenn Sie die App wechseln und speichern, melden Sie sich danach unter „Autorisieren“ erneut an.",
         "oauthCredentialsSubtextAdmin": "Client-Anmeldedaten eingeben oder prüfen (für eine neue Registrierung oder eine oben ausgewählte gespeicherte App).",
         "oauthCredentialsSubtextNonAdmin": "Für diese Instanz wird die ausgewählte OAuth-App verwendet. Client-Geheimnisse verwalten Administratoren; Sie müssen sie hier nicht eingeben.",
-        "redirectUrlDescription": "Fügen Sie diese exakte URL zur Liste der erlaubten Weiterleitungen in Ihrem Identitätsanbieter hinzu.",
-        "redirectUrlHelperNonOauth": "Tragen Sie die Weiterleitungs-URL in Ihrem Identitätsanbieter ein und vervollständigen Sie anschließend die Felder unten.",
+        "redirectCallbackUrlLabel": "Redirect-/Callback-URL",
+        "copyRedirectCallbackUrl": "Redirect-/Callback-URL kopieren",
+        "redirectCallbackUrlCopied": "Redirect-/Callback-URL kopiert",
+        "redirectCallbackUrlCopiedDescription": "Fügen Sie sie zur Liste der erlaubten Redirect-/Callback-URLs in Ihrem Identitätsanbieter hinzu.",
+        "redirectUrlDescription": "Fügen Sie diese exakte URL zur Liste der erlaubten Redirect-/Callback-URLs in Ihrem Identitätsanbieter hinzu.",
+        "redirectUrlHelperNonOauth": "Tragen Sie die Redirect-/Callback-URL in Ihrem Identitätsanbieter ein und vervollständigen Sie anschließend die Felder unten.",
         "noAuthRequired": "Für diesen Konnektor ist keine Authentifizierung erforderlich",
         "emailVisibilityDocLink": "Handbuch zur E-Mail-Sichtbarkeit →",
         "oauthAppNameLabel": "OAuth-App-Name",
@@ -2523,5 +2566,10 @@
       "showPassword": "Passwort anzeigen",
       "hidePassword": "Passwort verbergen"
     }
+  },
+  "healthGate": {
+    "title": "Verbindung zum Server nicht möglich",
+    "description": "Der Server ist derzeit nicht erreichbar. Möglicherweise wird er gerade gestartet oder gewartet. Wir versuchen, die Verbindung wiederherzustellen.",
+    "contactAdmin": "Falls das Problem weiterhin besteht, wenden Sie sich bitte an Ihren PipesHub-Administrator."
   }
 }

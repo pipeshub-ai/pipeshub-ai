@@ -1,6 +1,7 @@
 import type {
   Conversation,
   ConversationMessage,
+  ConversationPagination,
   ModelInfo,
   SharedWithEntry,
   ConversationsListResponse,
@@ -243,6 +244,8 @@ export interface AgentConversationDetailApi {
   messages: ConversationMessage[];
   modelInfo: ModelInfo;
   access: { isOwner: boolean; accessLevel: string };
+  /** Optional: present when the API returns paginated messages. */
+  pagination?: ConversationPagination;
 }
 
 export interface AgentConversationDetailApiResponse {
@@ -253,6 +256,7 @@ export interface AgentConversationDetailApiResponse {
 export interface FetchAgentConversationResult {
   conversation: AgentConversationDetailApi;
   messages: ConversationMessage[];
+  pagination: ConversationPagination;
 }
 
 /** Normalized result of {@link AgentsApi.fetchAgentConversations}. */

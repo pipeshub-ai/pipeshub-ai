@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import hashlib
 import logging
 import math
@@ -45,10 +46,29 @@ PDF_OCR_DETECTION_WORKERS = _get_pdf_ocr_detection_worker_count()
 
 @lru_cache(maxsize=1)
 def _get_pdf_ocr_detection_pool() -> ProcessPoolExecutor:
-    return ProcessPoolExecutor(
+    pool = ProcessPoolExecutor(
         max_workers=PDF_OCR_DETECTION_WORKERS,
         mp_context=multiprocessing.get_context("spawn"),
     )
+    # Ensure spawned processes are reaped when the interpreter exits.
+    # The explicit shutdown_pdf_ocr_pool() call in indexing_main.lifespan is
+    # the primary cleanup path; atexit is the safety net for unclean exits.
+    atexit.register(pool.shutdown, wait=False, cancel_futures=True)
+    return pool
+
+
+def shutdown_pdf_ocr_pool() -> bool:
+    """Shut down the PDF OCR detection process pool if it was initialised.
+
+    Returns True if a pool existed and was shut down, False if no pool had
+    been created during this process's lifetime (so there was nothing to
+    clean up). Safe to call multiple times.
+    """
+    if _get_pdf_ocr_detection_pool.cache_info().currsize == 0:
+        return False
+    _get_pdf_ocr_detection_pool().shutdown(wait=False, cancel_futures=True)
+    _get_pdf_ocr_detection_pool.cache_clear()
+    return True
 
 
 def _detect_pdf_needs_ocr(file_content: bytes) -> bool:
@@ -295,6 +315,9 @@ class EventProcessor:
             - {'event': 'parsing_complete', 'data': {...}}
             - {'event': 'indexing_complete', 'data': {...}}
         """
+        # Initialised here so the finally block can always safely release the
+        # reference, regardless of where in the try block an exception occurs.
+        file_content: bytes | str | None = None
         try:
             # Extract event type and record ID
             event_type = event_data.get(
@@ -821,4 +844,11 @@ class EventProcessor:
             # Let the error bubble up to Kafka consumer
             self.logger.error(f"❌ Error in event processor: {repr(e)}")
             raise
+        finally:
+            # Release the file-content reference so the async-generator frame
+            # does not keep megabytes of raw bytes alive after aclose().
+            # Buffer cleanup from the payload dict is handled by record.py's
+            # finally (payload.pop("buffer", None)), which holds the unambiguous
+            # reference to the inner payload dict.
+            file_content = None
 

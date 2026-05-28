@@ -1054,6 +1054,58 @@ li > blockquote {
 }
 
 /*
+ * Markdown del (strikethrough).
+ *
+ * Plain del text: standard line-through via CSS.
+ *
+ * del code: CSS text-decoration position is calculated from the *declaring*
+ * element's font metrics (Manrope). When the child uses a different font
+ * (monospace) the offset never lands at the visual centre.
+ * Fix: display:inline-block stops the parent's decoration propagating through,
+ * then a ::after pseudo draws the line at exactly 50% of the element's height.
+ */
+del {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  opacity: 0.65;
+}
+
+del code {
+  background: none !important;
+  border: none !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  display: inline-block;
+  position: relative;
+  text-decoration: none;
+  vertical-align: middle;
+}
+
+del code::after {
+  content: '';
+  display: block;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 1px;
+  background: currentColor;
+  pointer-events: none;
+}
+
+/*
+ * Inline code inside table cells:
+ * Prevent the badge from stretching the column by capping its width to the cell,
+ * and use ellipsis for pathologically long strings.
+ */
+td code,
+th code {
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+/*
  * Radix Tooltip hover must hit the Trigger element. Disabled native controls do not
  * bubble pointer events; letting the wrapper receive hover fixes tooltips on locked fields.
  */

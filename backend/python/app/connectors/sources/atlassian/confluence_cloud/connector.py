@@ -10,6 +10,7 @@ Authentication: OAuth 2.0 (3-legged OAuth)
 """
 
 import uuid
+import asyncio
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from logging import Logger
@@ -43,6 +44,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -77,6 +79,7 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    User,
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
@@ -106,12 +109,20 @@ CONTENT_EXPAND_PARAMS = (
     "childTypes.comment"
 )
 
+# Expand parameters for fetching folders with required metadata
+# Folders don't need attachment or comment children
+FOLDER_EXPAND_PARAMS = (
+    "ancestors,"
+    "history.lastUpdated,"
+    "space"
+)
+
 # Constant for pseudo-user group prefix
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
 @ConnectorBuilder("Confluence")\
     .in_group("Atlassian")\
-    .with_description("Sync pages, spaces, and users from Confluence Cloud")\
+    .with_description("Sync pages, folders, spaces, and users from Confluence Cloud")\
     .with_categories(["Knowledge Management", "Collaboration"])\
     .with_scopes([ConnectorScope.TEAM.value])\
     .with_auth([
@@ -136,6 +147,16 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
                     field_type="URL",
                     required=True,
                     max_length=2000,
+                    is_secret=False,
+                ),
+                AuthField(
+                    name="includeJiraScope",
+                    display_name="Grant Jira user access",
+                    description="Choose Yes only if your Atlassian OAuth app includes Jira and you have added the read:jira-user scope. Pipeshub will request that scope during authorization and may use Jira to resolve user emails when Confluence profiles hide them. Choose No if you do not use Jira on this site or have not added that scope.",
+                    field_type="SELECT",
+                    required=True,
+                    placeholder="Select...",
+                    options=["no", "yes"],
                     is_secret=False,
                 ),
             ],
@@ -284,7 +305,9 @@ class ConfluenceConnector(BaseConnector):
 
     This connector syncs Confluence Cloud data including:
     - Spaces with permissions
+    - Folders (organizational structure)
     - Pages with content and metadata
+    - Blogposts with content and metadata
     - Users and their access
 
     Authentication: OAuth 2.0 (3LO - 3-legged OAuth)
@@ -468,9 +491,13 @@ class ConfluenceConnector(BaseConnector):
             # Step 3: Sync spaces
             spaces = await self._sync_spaces()
 
-            # Step 4: Sync pages and blogposts per space
+            # Step 4: Sync folders, pages and blogposts per space
             for space in spaces:
                 space_key = space.short_name
+
+                # Sync folders
+                self.logger.info(f"Syncing folders for space: {space.name} ({space_key})")
+                await self._sync_folders(space_key)
 
                 # Sync pages (with attachments, comments, permissions)
                 self.logger.info(f"Syncing pages for space: {space.name} ({space_key})")
@@ -577,9 +604,195 @@ class ConfluenceConnector(BaseConnector):
 
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")
 
+            try:
+                await self._link_platform_users_via_jira()
+            except Exception as link_err:
+                self.logger.error(
+                    f"Jira user linking fallback failed (user sync still complete): {link_err}",
+                    exc_info=True,
+                )
+
         except Exception as e:
             self.logger.error(f"❌ User sync failed: {e}", exc_info=True)
             raise
+
+    async def _link_platform_users_via_jira(self) -> None:
+        """
+        Link active platform users to Confluence via Jira user search.
+
+        Confluence user search omits emails when users keep them private. For platform
+        users without a userAppRelation on this connector, Jira user search by email
+        can still resolve the Atlassian accountId.
+        
+        Uses batch-parallel processing with bounded concurrency to efficiently handle
+        large numbers of unlinked users while respecting API rate limits.
+        """
+        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
+        auth_config = (config or {}).get("auth") or {}
+        auth_type = (auth_config.get("authType") or "OAUTH").upper()
+        if auth_type == "OAUTH":
+            if not include_jira_scope_enabled(auth_config.get("includeJiraScope")):
+                return
+
+        datasource = await self._get_fresh_datasource()
+        org_id = self.data_entities_processor.org_id
+
+        active_users = await self.data_entities_processor.get_all_active_users()
+        linked_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+
+        linked_emails = {
+            (u.email or "").strip().lower()
+            for u in linked_users
+            if u.email
+        }
+
+        unlinked: list[User] = []
+        for user in active_users:
+            email = (user.email or "").strip()
+            if not email or "@" not in email:
+                continue
+            if email.lower() in linked_emails:
+                continue
+            unlinked.append(user)
+
+        if not unlinked:
+            self.logger.info("No unlinked active platform users for Jira fallback linking")
+            return
+
+        self.logger.info(
+            "Attempting Jira user linking for %s unlinked platform user(s)",
+            len(unlinked),
+        )
+
+        # Batch-parallel processing with bounded concurrency
+        linked_count = 0
+        not_found_count = 0
+        failed_count = 0
+        unlinked_count = len(unlinked)
+        semaphore = asyncio.Semaphore(10)  # Limit concurrent API calls
+        batch_size = 20
+        rate_limit_hit = False
+
+        async def try_link_user(user: User) -> Optional[tuple[str, str, str]]:
+            """
+            Try to link a single user via Jira API.
+            Returns (accountId, email, displayName) if successful, None otherwise.
+            """
+            nonlocal not_found_count, failed_count
+            email = (user.email or "").strip()
+            
+            async with semaphore:
+                try:
+                    account_id = await datasource.find_user_account_id_by_email(email)
+                    if not account_id:
+                        not_found_count += 1
+                        return None
+                    
+                    display_name = user.full_name or email
+                    return (account_id, email, display_name)
+                    
+                except Exception as e:
+                    error_msg = str(e)
+                    # Check if this is a rate limit error
+                    if "rate limit" in error_msg.lower() or "429" in error_msg:
+                        raise
+                    else:
+                        self.logger.debug(f"Failed to link platform user {email} via Jira: {e}")
+                        failed_count += 1
+                        return None
+
+        # Process in batches with early termination
+        for i in range(0, len(unlinked), batch_size):
+            # Early termination if we've linked all unresolved users
+            if linked_count >= unlinked_count:
+                break
+            
+            batch = unlinked[i:i + batch_size]
+            tasks = [try_link_user(user) for user in batch]
+            
+            try:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            except Exception as batch_err:
+                self.logger.error(f"Batch processing failed: {batch_err}")
+                break
+            
+            # Collect successful results and check for rate limit
+            batch_app_users = []
+            for result in results:
+                if isinstance(result, Exception):
+                    error_msg = str(result)
+                    if "rate limit" in error_msg.lower() or "429" in error_msg:
+                        self.logger.warning(
+                            "Jira API rate limit hit. Stopping Jira fallback linking. "
+                            "Consider reducing sync frequency or requesting higher rate limits from Atlassian."
+                        )
+                        rate_limit_hit = True
+                        break
+                    # Other exceptions already logged and counted in try_link_user
+                    continue
+                
+                if result is None:
+                    continue
+                
+                # Successfully found a match
+                account_id, email, display_name = result
+                app_user = AppUser(
+                    app_name=Connectors.CONFLUENCE,
+                    connector_id=self.connector_id,
+                    source_user_id=account_id,
+                    org_id=org_id,
+                    email=email,
+                    full_name=display_name,
+                    is_active=False,
+                )
+                batch_app_users.append((app_user, account_id, email))
+            
+            # Break early if rate limit was hit
+            if rate_limit_hit:
+                break
+            
+            # Batch save all AppUsers from this batch in a single DB transaction
+            if batch_app_users:
+                try:
+                    app_users_only = [user for user, _, _ in batch_app_users]
+                    await self.data_entities_processor.on_new_app_users(app_users_only)
+                    
+                    # Process migrations individually (can't batch these easily)
+                    for app_user, account_id, email in batch_app_users:
+                        try:
+                            await self.data_entities_processor.migrate_group_to_user_by_external_id(
+                                group_external_id=account_id,
+                                user_email=email,
+                                connector_id=self.connector_id,
+                            )
+                        except Exception as migrate_err:
+                            self.logger.warning(
+                                "Failed to migrate pseudo-group permissions for %s: %s",
+                                email,
+                                migrate_err,
+                            )
+                        
+                        linked_count += 1
+                        self.logger.info(f"Linked platform user {email} via Jira (accountId={account_id})")
+                
+                except Exception as save_err:
+                    self.logger.error(f"Failed to save batch of linked users: {save_err}")
+                    failed_count += len(batch_app_users)
+
+        self.logger.info(
+            "Jira user linking complete. Linked: %s, Not found: %s, Failed: %s (Total: %s)",
+            linked_count,
+            not_found_count,
+            failed_count,
+            unlinked_count,
+        )
+        
+        # If ALL lookups returned None (not found), it might be a Data Center deployment
+        if linked_count == 0 and not_found_count == unlinked_count and not rate_limit_hit:
+            self.logger.debug(
+                "Jira fallback did not find any users. If this is a Confluence Data Center/Server "
+                "deployment, this is expected (Jira fallback only works with Cloud instances)."
+            )
 
     async def _sync_user_groups(self) -> None:
         """
@@ -630,7 +843,9 @@ class ConfluenceConnector(BaseConnector):
                         self.logger.debug(f"  Processing group: {group_name} ({group_id})")
 
                         # Fetch members for this group
-                        member_emails = await self._fetch_group_members(group_id, group_name)
+                        member_emails, member_account_ids = await self._fetch_group_members(
+                            group_id, group_name
+                        )
 
                         # Create user group
                         user_group = self._transform_to_user_group(group_data)
@@ -638,7 +853,9 @@ class ConfluenceConnector(BaseConnector):
                             continue
 
                         # Get AppUser objects for members
-                        app_users = await self._get_app_users_by_emails(member_emails)
+                        app_users = await self._resolve_group_app_users(
+                            member_emails, member_account_ids
+                        )
 
                         # Save group with members
                         await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
@@ -789,6 +1006,166 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Space sync failed: {e}", exc_info=True)
             raise
 
+    async def _sync_folders(self, space_key: str) -> None:
+        """
+        Sync folders from Confluence using v1 API.
+
+        Uses offset- or cursor-based pagination (via ``_split_pagination_token``) with
+        modification time filtering for incremental sync.
+        Creates FileRecord (isFile=False) for each folder with permissions.
+        Folders are synced before pages to ensure proper parent hierarchy.
+
+        Args:
+            space_key: The space key to sync folders from
+        """
+        try:
+            self.logger.info(f"Starting folder synchronization for space {space_key}...")
+            
+            # Get last sync checkpoint
+            sync_point_key = generate_record_sync_point_key(
+                RecordType.FILE.value, "confluence_folders", space_key
+            )
+            last_sync_data = await self.pages_sync_point.read_sync_point(sync_point_key)
+            last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
+            if last_sync_time:
+                self.logger.info(f"🔄 Incremental sync: Fetching folders modified after {last_sync_time}")
+
+            # Build date filter parameters from sync filters
+            modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
+            modified_after = None
+            modified_before = None
+
+            if modified_filter:
+                modified_after, modified_before = modified_filter.get_datetime_iso()
+
+            created_filter = self.sync_filters.get(SyncFilterKey.CREATED)
+            created_after = None
+            created_before = None
+
+            if created_filter:
+                created_after, created_before = created_filter.get_datetime_iso()
+
+            # Merge modified_after with checkpoint (use the latest)
+            if modified_after and last_sync_time:
+                modified_after = max(modified_after, last_sync_time)
+                self.logger.info(f"🔄 Using latest modified_after: {modified_after}")
+            elif modified_after:
+                self.logger.info(f"🔍 Using filter: Fetching folders modified after {modified_after}")
+            elif last_sync_time:
+                modified_after = last_sync_time
+                self.logger.info(f"🔄 Incremental sync: Fetching folders modified after {modified_after}")
+            else:
+                self.logger.info(f"🆕 Full sync: Fetching all folders (first time)")
+
+            # Pagination variables — v1 content/search may use start (offset) or cursor
+            batch_size = 50
+            pagination_token: Optional[str] = None
+            total_synced = 0
+            total_permissions_synced = 0
+
+            # Paginate through all folders
+            while True:
+                datasource = await self._get_fresh_datasource()
+
+                start_offset, cursor_token = self._split_pagination_token(pagination_token)
+
+                response = await datasource.get_folders_v1(
+                    modified_after=modified_after,
+                    modified_before=modified_before,
+                    created_after=created_after,
+                    created_before=created_before,
+                    start=start_offset,
+                    cursor=cursor_token,
+                    limit=batch_size,
+                    space_key=space_key,
+                    order_by="lastModified",
+                    sort_order="asc",
+                    expand=FOLDER_EXPAND_PARAMS,
+                    time_offset_hours=TIME_OFFSET_HOURS
+                )
+
+                # Check response
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
+                    self.logger.error(f"❌ Failed to fetch folders: {response.status if response else 'No response'}")
+                    break
+
+                response_data = response.json()
+                items_data = response_data.get("results", [])
+
+                if not items_data:
+                    break
+
+                # Transform folders to FileRecords with permissions
+                records_with_permissions = []
+                for item_data in items_data:
+                    try:
+                        item_id = item_data.get("id")
+                        item_title = item_data.get("title")
+
+                        if not item_id or not item_title:
+                            continue
+
+                        self.logger.debug(f"Processing folder: {item_title} ({item_id})")
+
+                        # Check if record exists in DB
+                        existing_record = await self.data_entities_processor.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_record_id=item_id
+                        )
+
+                        # Fetch folder permissions
+                        permissions = await self._fetch_page_permissions(item_id)
+                        total_permissions_synced += len(permissions)
+
+                        # Transform to FileRecord
+                        folder_record = self._transform_to_folder_file_record(
+                            item_data, existing_record
+                        )
+
+                        if not folder_record:
+                            continue
+
+                        # Only set inherit_permissions to False if there are READ restrictions
+                        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
+                        if len(read_permissions) > 0:
+                            folder_record.inherit_permissions = False
+
+                        # Add folder to batch
+                        records_with_permissions.append((folder_record, permissions))
+                        total_synced += 1
+                        self.logger.debug(f"Folder {item_title}: {len(permissions)} permissions")
+
+                    except Exception as item_error:
+                        self.logger.error(f"❌ Failed to process folder {item_data.get('title')}: {item_error}")
+                        continue
+
+                # Save batch to database
+                if records_with_permissions:
+                    await self.data_entities_processor.on_new_records(records_with_permissions)
+                    self.logger.info(f"Synced batch of {len(records_with_permissions)} folders")
+
+                # Extract next page token from _links.next
+                # May contain either start=N (offset) or cursor=<token> depending on API version
+                next_url = response_data.get("_links", {}).get("next")
+                if not next_url:
+                    break
+
+                pagination_token = self._extract_cursor_from_next_link(next_url)
+                if not pagination_token:
+                    break
+
+            # Update sync checkpoint with current time (only if we synced something)
+            if total_synced > 0:
+                current_sync_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": current_sync_time})
+                self.logger.info(f"Updated folders sync checkpoint to {current_sync_time}")
+
+            self.logger.info(f"✅ Folder sync complete. Folders: {total_synced}, Permissions: {total_permissions_synced}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Folder sync failed: {e}", exc_info=True)
+            raise
+
     async def _sync_content(self, space_key: str, record_type: RecordType) -> None:
         """
         Unified sync for pages and blogposts from Confluence using v1 API.
@@ -876,9 +1253,10 @@ class ConfluenceConnector(BaseConnector):
             if created_before:
                 self.logger.info(f"🔍 Filter: Fetching {content_type}s created before {created_before}")
 
-            # Pagination variables (v1 content/search uses offset ``start``, not v2 ``cursor``)
+            # Pagination variables
+            # v1 content/search may use offset (start) or cursor depending on Confluence version
             batch_size = 50
-            start_offset: Optional[int] = None
+            pagination_token: Optional[str] = None
             total_synced = 0
             total_attachments_synced = 0
             total_comments_synced = 0
@@ -888,6 +1266,9 @@ class ConfluenceConnector(BaseConnector):
             while True:
                 datasource = await self._get_fresh_datasource()
 
+                # Determine pagination parameters based on token type
+                start_offset, cursor_token = self._split_pagination_token(pagination_token)
+
                 if record_type == RecordType.CONFLUENCE_PAGE:
                     response = await datasource.get_pages_v1(
                         modified_after=modified_after,
@@ -895,6 +1276,7 @@ class ConfluenceConnector(BaseConnector):
                         created_after=created_after,
                         created_before=created_before,
                         start=start_offset,
+                        cursor=cursor_token,
                         limit=batch_size,
                         space_key=space_key,
                         page_ids=content_ids,
@@ -912,6 +1294,7 @@ class ConfluenceConnector(BaseConnector):
                         created_after=created_after,
                         created_before=created_before,
                         start=start_offset,
+                        cursor=cursor_token,
                         limit=batch_size,
                         space_key=space_key,
                         blogpost_ids=content_ids,
@@ -1064,17 +1447,14 @@ class ConfluenceConnector(BaseConnector):
                     await self.data_entities_processor.on_new_records(records_with_permissions)
                     self.logger.info(f"Synced batch of {len(records_with_permissions)} items ({content_type}s + attachments + comments)")
 
-                # Extract next page token from _links.next (v1 content/search uses ``start``)
+                # Extract next page token from _links.next
+                # May contain either start=N (offset) or cursor=<token> depending on API version
                 next_url = response_data.get("_links", {}).get("next")
                 if not next_url:
                     break
 
-                token = self._extract_cursor_from_next_link(next_url)
-                if not token:
-                    break
-                try:
-                    start_offset = int(token)
-                except (TypeError, ValueError):
+                pagination_token = self._extract_cursor_from_next_link(next_url)
+                if not pagination_token:
                     break
 
             # Update sync checkpoint with current time (only if we synced something)
@@ -1896,6 +2276,27 @@ class ConfluenceConnector(BaseConnector):
 
         return None
 
+    @staticmethod
+    def _split_pagination_token(token: Optional[str]) -> tuple[Optional[int], Optional[str]]:
+        """
+        Split a pagination token into offset (int) or cursor (str) components.
+        
+        Handles both offset-based pagination (Data Center, Cloud v1) and 
+        cursor-based pagination (Cloud v2).
+        
+        Args:
+            token: Pagination token from _links.next (could be "123" or "base64cursor")
+            
+        Returns:
+            Tuple of (start_offset, cursor_token) where one is None
+        """
+        if not token:
+            return None, None
+        try:
+            return int(token), None
+        except (TypeError, ValueError):
+            return None, token
+
     def _extract_cursor_from_next_link(self, next_url: str) -> Optional[str]:
         """
         Extract pagination token from _links.next URL query string.
@@ -2301,7 +2702,12 @@ class ConfluenceConnector(BaseConnector):
             WebpageRecord object or None if transformation fails
         """
         # Derive content_type for logging
-        content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
+        if record_type == RecordType.CONFLUENCE_PAGE:
+            content_type = "page"
+        elif record_type == RecordType.CONFLUENCE_BLOGPOST:
+            content_type = "blogpost"
+        else:
+            content_type = "content"
 
         try:
             item_id = data.get("id")
@@ -2360,17 +2766,21 @@ class ConfluenceConnector(BaseConnector):
                 self.logger.warning(f"{content_type.capitalize()} {item_id} has no space - skipping")
                 return None
 
-            # Extract parent page ID - v2 has parentId at top level, v1 uses ancestors
+            # Extract parent ID and type - v2 has parentId at top level, v1 uses ancestors
             parent_external_record_id = None
+            parent_type_str = None
             parent_id_v2 = data.get("parentId")  # v2 format
+            parent_type_v2 = data.get("parentType")  # v2 format includes parentType
             if parent_id_v2:
                 parent_external_record_id = str(parent_id_v2)
+                parent_type_str = parent_type_v2  # May be None if not provided
             else:
                 # v1 format - last ancestor is direct parent
                 ancestors = data.get("ancestors", [])
                 if ancestors and len(ancestors) > 0:
                     direct_parent = ancestors[-1]
                     parent_external_record_id = direct_parent.get("id")
+                    parent_type_str = direct_parent.get("type")  # May be None if not expanded
 
             # Construct web URL - v1 vs v2 have different link structures
             web_url = None
@@ -2389,9 +2799,20 @@ class ConfluenceConnector(BaseConnector):
                         base_url = self_link.split("/wiki/")[0] + "/wiki"
                         web_url = f"{base_url}{webui}"
 
-            # Set parent_record_type to match record_type when parent exists
-            # This allows placeholder parent creation when parent doesn't exist yet
-            parent_record_type = record_type if parent_external_record_id else None
+            # Set parent_record_type from parent's actual type when available
+            # Maps Confluence type string to RecordType enum
+            parent_record_type = None
+            if parent_external_record_id:
+                if parent_type_str == "folder":
+                    parent_record_type = RecordType.FILE  # Folders are FILE type
+                elif parent_type_str == "page":
+                    parent_record_type = RecordType.CONFLUENCE_PAGE
+                elif parent_type_str == "blogpost":
+                    parent_record_type = RecordType.CONFLUENCE_BLOGPOST
+                else:
+                    # Fallback: assume parent is same type as current record for backwards compatibility
+                    # This handles cases where type is not provided in ancestor data
+                    parent_record_type = record_type
 
             # Determine record ID and version
             is_new = existing_record is None
@@ -2433,6 +2854,161 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to transform {content_type}: {e}")
             return None
 
+
+    def _transform_to_folder_file_record(
+        self,
+        data: dict[str, Any],
+        existing_record: Optional[Record] = None
+    ) -> Optional[FileRecord]:
+        """
+        Transform Confluence folder to FileRecord entity (isFile=False).
+        
+        Args:
+            data: Raw folder data from Confluence API
+            existing_record: Optional existing record to check for updates
+        
+        Returns:
+            FileRecord object (folder) or None if transformation fails
+        """
+        try:
+            folder_id = data.get("id")
+            folder_title = data.get("title")
+
+            if not folder_id or not folder_title:
+                return None
+
+            # Parse timestamps
+            source_created_at = None
+            source_updated_at = None
+            version_number = 0
+
+            # Try v2 format first (createdAt at top level)
+            created_at_v2 = data.get("createdAt")
+            if created_at_v2:
+                source_created_at = self._parse_confluence_datetime(created_at_v2)
+            else:
+                # Fall back to v1 format (history.createdDate)
+                history = data.get("history", {})
+                created_date = history.get("createdDate")
+                if created_date:
+                    source_created_at = self._parse_confluence_datetime(created_date)
+
+            # Try v2 format for updated date and version
+            version_data = data.get("version", {})
+            if isinstance(version_data, dict):
+                version_created_at = version_data.get("createdAt")
+                if version_created_at:
+                    source_updated_at = self._parse_confluence_datetime(version_created_at)
+                version_number = version_data.get("number", 0)
+
+            # Fall back to v1 format
+            if not source_updated_at:
+                history = data.get("history", {})
+                last_updated = history.get("lastUpdated", {})
+                if isinstance(last_updated, dict):
+                    updated_when = last_updated.get("when")
+                    if updated_when:
+                        source_updated_at = self._parse_confluence_datetime(updated_when)
+                    if not version_number:
+                        version_number = last_updated.get("number", 0)
+
+            # Extract space ID
+            external_record_group_id = None
+            space_id_v2 = data.get("spaceId")
+            if space_id_v2:
+                external_record_group_id = str(space_id_v2)
+            else:
+                space_data = data.get("space", {})
+                space_id = space_data.get("id")
+                external_record_group_id = str(space_id) if space_id else None
+
+            if not external_record_group_id:
+                self.logger.warning(f"Folder {folder_id} has no space - skipping")
+                return None
+
+            # Extract parent ID and type
+            parent_external_record_id = None
+            parent_type_str = None
+            parent_id_v2 = data.get("parentId")
+            parent_type_v2 = data.get("parentType")
+            if parent_id_v2:
+                parent_external_record_id = str(parent_id_v2)
+                parent_type_str = parent_type_v2
+            else:
+                ancestors = data.get("ancestors", [])
+                if ancestors and len(ancestors) > 0:
+                    direct_parent = ancestors[-1]
+                    parent_external_record_id = direct_parent.get("id")
+                    parent_type_str = direct_parent.get("type")
+
+            # Construct web URL
+            web_url = None
+            links = data.get("_links", {})
+            webui = links.get("webui")
+
+            if webui:
+                base_url = links.get("base")
+                if base_url:
+                    web_url = f"{base_url}{webui}"
+                else:
+                    self_link = links.get("self")
+                    if self_link and "/wiki/" in self_link:
+                        base_url = self_link.split("/wiki/")[0] + "/wiki"
+                        web_url = f"{base_url}{webui}"
+
+            # Set parent_record_type from parent's actual type
+            parent_record_type = None
+            if parent_external_record_id:
+                if parent_type_str == "folder":
+                    parent_record_type = RecordType.FILE  # Folders are FILE type
+                elif parent_type_str == "page":
+                    parent_record_type = RecordType.CONFLUENCE_PAGE
+                elif parent_type_str == "blogpost":
+                    parent_record_type = RecordType.CONFLUENCE_BLOGPOST
+                else:
+                    # Fallback: assume parent is also a folder
+                    parent_record_type = RecordType.FILE
+
+            # Determine record ID and version
+            is_new = existing_record is None
+            record_id = str(uuid.uuid4()) if is_new else existing_record.id
+
+            # Calculate version based on changes
+            record_version = 0
+            if not is_new:
+                if str(version_number) != existing_record.external_revision_id:
+                    record_version = existing_record.version + 1
+                else:
+                    record_version = existing_record.version
+
+            return FileRecord(
+                id=record_id,
+                org_id=self.data_entities_processor.org_id,
+                record_name=folder_title,
+                record_type=RecordType.FILE,
+                external_record_id=folder_id,
+                external_revision_id=str(version_number) if version_number else None,
+                version=record_version,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.CONFLUENCE,
+                connector_id=self.connector_id,
+                record_group_type=RecordGroupType.CONFLUENCE_SPACES,
+                external_record_group_id=external_record_group_id,
+                parent_external_record_id=parent_external_record_id,
+                parent_record_type=parent_record_type,
+                is_file=False,  # This is a folder, not a file
+                extension=None,
+                mime_type=MimeTypes.FOLDER.value,
+                size_in_bytes=0,
+                weburl=web_url,
+                path=None,
+                source_created_at=source_created_at,
+                source_updated_at=source_updated_at,
+            )
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to transform folder: {e}")
+            return None
 
     def _transform_to_attachment_file_record(
         self,
@@ -2598,7 +3174,7 @@ class ConfluenceConnector(BaseConnector):
 
         Args:
             data: Raw data from Confluence API
-            record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
+            record_type: RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST, or RecordType.CONFLUENCE_FOLDER
             existing_record: Existing record from database (if any)
             permissions: Permissions for the record
 
@@ -2630,11 +3206,17 @@ class ConfluenceConnector(BaseConnector):
 
         if not is_new:
             # Check if version changed (content update)
-            current_version = data.get("version", {}).get("number")
+            # Handle both dict and direct number access
+            version_data = data.get("version", {})
+            if isinstance(version_data, dict):
+                current_version = version_data.get("number")
+            else:
+                current_version = version_data
+            
             if str(current_version) != existing_record.external_revision_id:
                 content_changed = True
 
-            # Check if parent changed (moved between pages)
+            # Check if parent changed (moved between pages/folders)
             current_parent_v2 = data.get("parentId")
             current_parent_v1 = None
             ancestors = data.get("ancestors", [])
@@ -2657,7 +3239,9 @@ class ConfluenceConnector(BaseConnector):
             external_record_id=webpage_record.external_record_id
         )
 
-    async def _fetch_group_members(self, group_id: str, group_name: str) -> list[str]:
+    async def _fetch_group_members(
+        self, group_id: str, group_name: str
+    ) -> tuple[list[str], list[str]]:
         """
         Fetch all members of a group with pagination.
 
@@ -2666,10 +3250,11 @@ class ConfluenceConnector(BaseConnector):
             group_name: The group name (for logging)
 
         Returns:
-            List of member email addresses
+            Tuple of (member emails, accountIds for members without email in API response)
         """
         try:
-            member_emails = []
+            member_emails: list[str] = []
+            member_account_ids: list[str] = []
             batch_size = 100
             start = 0
 
@@ -2693,13 +3278,18 @@ class ConfluenceConnector(BaseConnector):
                 if not members_data:
                     break
 
-                # Extract emails from members (skip members without email)
                 for member_data in members_data:
-                    email = member_data.get("email", "").strip()
+                    email = (member_data.get("email") or "").strip()
+                    account_id = (member_data.get("accountId") or member_data.get("id") or "").strip()
                     if email:
                         member_emails.append(email)
+                    elif account_id:
+                        member_account_ids.append(account_id)
                     else:
-                        self.logger.warning(f"Skipping member creation with name : {member_data.get('displayName')}, Reason: No email found for the member")
+                        self.logger.debug(
+                            "Skipping group member %s: no email or accountId",
+                            member_data.get("displayName"),
+                        )
 
                 # Move to next page
                 start += batch_size
@@ -2709,11 +3299,47 @@ class ConfluenceConnector(BaseConnector):
                 if size < batch_size:
                     break
 
-            return member_emails
+            return member_emails, member_account_ids
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch members for group {group_name}: {e}")
-            return []
+            return [], []
+
+    async def _app_user_from_linked_source_id(self, account_id: str) -> Optional[AppUser]:
+        """Build AppUser for a Confluence accountId linked to this connector."""
+        async with self.data_store_provider.transaction() as tx_store:
+            user = await tx_store.get_user_by_source_id(
+                source_user_id=account_id,
+                connector_id=self.connector_id,
+            )
+        if not user or not user.email:
+            return None
+        return AppUser(
+            app_name=Connectors.CONFLUENCE,
+            connector_id=self.connector_id,
+            source_user_id=account_id,
+            org_id=self.data_entities_processor.org_id,
+            email=user.email,
+            full_name=user.full_name or user.email,
+            is_active=False,
+        )
+
+    async def _resolve_group_app_users(
+        self,
+        member_emails: list[str],
+        member_account_ids: list[str],
+    ) -> list[AppUser]:
+        """Resolve group members by email and by linked accountId."""
+        app_users = await self._get_app_users_by_emails(member_emails)
+        seen_emails = {u.email for u in app_users if u.email}
+
+        for account_id in member_account_ids:
+            app_user = await self._app_user_from_linked_source_id(account_id)
+            if app_user and app_user.email not in seen_emails:
+                app_users.append(app_user)
+                seen_emails.add(app_user.email)
+
+        return app_users
 
     async def _get_app_users_by_emails(self, emails: list[str]) -> list[AppUser]:
         """
@@ -3512,11 +4138,15 @@ class ConfluenceConnector(BaseConnector):
         next_cursor = None
 
         if search:
+            # Determine pagination parameters based on token type
+            start_offset, cursor_token = self._split_pagination_token(cursor)
+            
             # Use CQL search for fuzzy matching on space name/key
             spaces_response = await datasource.search_spaces_cql(
                 search_term=search,
                 limit=limit,
-                cursor=cursor
+                start=start_offset,
+                cursor=cursor_token
             )
 
             if not spaces_response or spaces_response.status != HttpStatusCode.SUCCESS.value:
@@ -3616,11 +4246,15 @@ class ConfluenceConnector(BaseConnector):
         next_cursor = None
 
         if search:
+            # Determine pagination parameters based on token type
+            start_offset, cursor_token = self._split_pagination_token(cursor)
+            
             # Use CQL search for fuzzy title matching
             pages_response = await datasource.search_pages_cql(
                 search_term=search,
                 limit=limit,
-                cursor=cursor
+                start=start_offset,
+                cursor=cursor_token
             )
 
             if not pages_response or pages_response.status != HttpStatusCode.SUCCESS.value:
@@ -3709,11 +4343,15 @@ class ConfluenceConnector(BaseConnector):
         next_cursor = None
 
         if search:
+            # Determine pagination parameters based on token type
+            start_offset, cursor_token = self._split_pagination_token(cursor)
+            
             # Use CQL search for fuzzy title matching
             blogposts_response = await datasource.search_blogposts_cql(
                 search_term=search,
                 limit=limit,
-                cursor=cursor
+                start=start_offset,
+                cursor=cursor_token
             )
 
             if not blogposts_response or blogposts_response.status != HttpStatusCode.SUCCESS.value:

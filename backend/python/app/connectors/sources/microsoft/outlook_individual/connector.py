@@ -66,6 +66,9 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.microsoft.common.apps import OutlookIndividualApp
+from app.connectors.sources.microsoft.common.content_type_utils import (
+    attachment_metadata_from_graph,
+)
 from app.connectors.sources.microsoft.common.constants import (
     MicrosoftGraphScopes,
     MicrosoftOAuth,
@@ -1184,7 +1187,8 @@ class OutlookIndividualConnector(BaseConnector):
                 if has_attachments:
                     email_permissions = await self._extract_email_permissions(message, None, user.email)
                     attachment_updates = await self._process_email_attachments_with_folder(
-                        org_id, user, message, email_permissions, folder_id, folder_name
+                        org_id, user, message, email_permissions, folder_id, folder_name,
+                        parent_node_id=email_update.record.id,
                     )
                     if attachment_updates:
                         updates.extend(attachment_updates)
@@ -1313,18 +1317,20 @@ class OutlookIndividualConnector(BaseConnector):
         attachment: Attachment,
         message_id: str,
         folder_id: str,
+        parent_node_id: str,
         existing_record: Record | None = None,
         parent_weburl: str | None = None,
-    ) -> FileRecord:
+    ) -> FileRecord | None:
         """Helper method to create a FileRecord from an attachment.
 
         Args:
             org_id: Organization ID
             attachment: Attachment data from Microsoft Graph API
-            message_id: Parent message ID
+            message_id: Parent message external ID (Graph message id)
             folder_id: Folder ID
             existing_record: Existing record if updating
             parent_weburl: Web URL of the parent mail
+            parent_node_id: Internal record ID of the parent mail
 
         Returns:
             FileRecord: Created attachment record, or None if attachment should be skipped
@@ -1339,12 +1345,11 @@ class OutlookIndividualConnector(BaseConnector):
             self.logger.warning(f"Skipping attachment '{file_name}' (id: {attachment_id}) - no content_type available")
             return None
 
-        mime_type = self._get_mime_type_enum(content_type)
-
-        file_name = attachment.name or OutlookDefaults.ATTACHMENT_NAME
-        extension = None
-        if '.' in file_name:
-            extension = file_name.split('.')[-1].lower()
+        file_name, mime_type, extension = attachment_metadata_from_graph(
+            attachment.name,
+            content_type,
+            OutlookDefaults.ATTACHMENT_NAME,
+        )
 
         attachment_record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
@@ -1373,6 +1378,8 @@ class OutlookIndividualConnector(BaseConnector):
             is_file=True,
             size_in_bytes=attachment.size or 0,
             extension=extension,
+            is_dependent_node=True,
+            parent_node_id=parent_node_id,
         )
 
         # Apply indexing filter for attachment records
@@ -1381,8 +1388,16 @@ class OutlookIndividualConnector(BaseConnector):
 
         return attachment_record
 
-    async def _process_email_attachments_with_folder(self, org_id: str, user: AppUser, message: Message,
-                                                  email_permissions: list[Permission], folder_id: str, folder_name: str) -> list[RecordUpdate]:
+    async def _process_email_attachments_with_folder(
+        self,
+        org_id: str,
+        user: AppUser,
+        message: Message,
+        email_permissions: list[Permission],
+        folder_id: str,
+        folder_name: str,
+        parent_node_id: str,
+    ) -> list[RecordUpdate]:
         """Process email attachments with folder information."""
         attachment_updates = []
 
@@ -1414,7 +1429,13 @@ class OutlookIndividualConnector(BaseConnector):
                         is_updated = True
 
                 attachment_record = await self._create_attachment_record(
-                    org_id, attachment, message_id, folder_id, existing_record, parent_weburl
+                    org_id,
+                    attachment,
+                    message_id,
+                    folder_id,
+                    parent_node_id,
+                    existing_record,
+                    parent_weburl,
                 )
 
                 # Skip if attachment was filtered out (e.g., no content_type)
@@ -1859,8 +1880,22 @@ class OutlookIndividualConnector(BaseConnector):
             email_permissions = await self._extract_email_permissions(message, None, user_email)
             parent_weburl = message.web_link
 
+            parent_mail = await self._get_existing_record(org_id, parent_message_id)
+            if not parent_mail:
+                self.logger.warning(
+                    f"Parent mail record not found in database for attachment {attachment_id} "
+                    f"(parent message {parent_message_id}); sync the parent mail before reindexing attachments"
+                )
+                return None
+
             attachment_record = await self._create_attachment_record(
-                org_id, attachment, parent_message_id, folder_id, existing_record=record, parent_weburl=parent_weburl
+                org_id,
+                attachment,
+                parent_message_id,
+                folder_id,
+                parent_mail.id,
+                existing_record=record,
+                parent_weburl=parent_weburl,
             )
 
             # Return None if attachment was filtered out
@@ -2005,26 +2040,6 @@ class OutlookIndividualConnector(BaseConnector):
             return email_addr.address or ''
 
         return ''
-
-
-    def _get_mime_type_enum(self, content_type: str) -> MimeTypes:
-        """Map content type string to MimeTypes enum."""
-        content_type_lower = content_type.lower()
-
-        mime_type_map = {
-            'text/plain': MimeTypes.PLAIN_TEXT,
-            'text/html': MimeTypes.HTML,
-            'text/csv': MimeTypes.CSV,
-            'application/pdf': MimeTypes.PDF,
-            'application/msword': MimeTypes.DOC,
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document': MimeTypes.DOCX,
-            'application/vnd.ms-excel': MimeTypes.XLS,
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': MimeTypes.XLSX,
-            'application/vnd.ms-powerpoint': MimeTypes.PPT,
-            'application/vnd.openxmlformats-officedocument.presentationml.presentation': MimeTypes.PPTX,
-        }
-
-        return mime_type_map.get(content_type_lower, MimeTypes.BIN)
 
 
     @classmethod

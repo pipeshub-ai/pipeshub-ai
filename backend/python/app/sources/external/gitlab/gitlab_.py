@@ -76,15 +76,41 @@ class GitLabDataSource:
         include_subgroups: bool = True,
         search: str | None = None,
         get_all: bool | None = None,
+        iterator: bool | None = None,
+        page: int | None = None,
+        per_page: int | None = None,
+        order_by: str | None = None,
+        sort: str | None = None,
+        simple: bool | None = None,
     ) -> GitLabResponse:
-        """List projects belonging to a group (optionally including subgroups)."""
+        """List projects belonging to a group (optionally including subgroups).
+
+        Pass ``page`` and ``per_page`` (with ``get_all=False``) to request a
+        single page from the API instead of materializing every project.
+        ``simple=True`` returns the smaller project payload which is enough
+        for picker/filter UIs.
+
+        Pass ``iterator=True`` (mutually exclusive with ``get_all=True``)
+        to receive a python-gitlab ``GitlabList`` that fetches pages
+        lazily as you iterate — preferred for large groups where a full
+        materialization would block the worker thread for minutes with
+        no visibility.
+        """
         try:
             g = self._sdk.groups.get(group_id, lazy=True)
+            extra: dict[str, object] = {}
+            if iterator is not None:
+                extra["iterator"] = iterator
             params = self._params(
                 include_subgroups=include_subgroups,
                 search=search,
+                page=page,
+                per_page=per_page,
+                order_by=order_by,
+                sort=sort,
+                simple=simple,
             )
-            projects = g.projects.list(get_all=get_all, **params)
+            projects = g.projects.list(get_all=get_all, **extra, **params)
             return GitLabResponse(success=True, data=projects)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
@@ -94,29 +120,82 @@ class GitLabDataSource:
         search: str | None = None,
         *,
         membership: bool | None = None,
+        min_access_level: int | None = None,
         owned: bool | None = None,
         starred: bool | None = None,
         simple: bool | None = None,
         get_all: bool | None = None,
+        iterator: bool | None = None,
+        page: int | None = None,
+        per_page: int | None = None,
+        order_by: str | None = None,
+        sort: str | None = None,
+        pagination: str | None = None,
+        search_namespaces: bool | None = None,
     ) -> GitLabResponse:
-        """List accessible projects (optionally filtered).  [projects]"""
+        """List accessible projects (optionally filtered).  [projects]
+
+        Pass ``page`` and ``per_page`` (with ``get_all=False``) for true
+        server-side pagination instead of fetching every accessible project.
+
+        Pass ``pagination="keyset"`` with ``order_by="id"`` and
+        ``sort="asc"`` for keyset pagination — strongly recommended for
+        full-scan sweeps because per-page cost stays constant regardless
+        of offset depth. python-gitlab follows the keyset ``Link`` headers
+        automatically when ``get_all=True``.
+
+        Pass ``iterator=True`` (mutually exclusive with ``get_all=True``)
+        to receive a python-gitlab ``GitlabList`` that drives keyset/offset
+        pagination lazily. Use this on large tenants so the caller can
+        log progress between pages instead of blocking inside a single
+        opaque ``get_all=True`` call.
+
+        Pass ``min_access_level`` to filter to projects where the current
+        user has at least the given access level (10=Guest, 20=Reporter,
+        30=Developer, 40=Maintainer, 50=Owner). Prefer this over
+        ``membership=True`` for filter-option UIs — on some GitLab
+        versions ``membership`` silently drops Guest-level (10) projects.
+        """
         try:
+            extra: dict[str, object] = {}
+            if iterator is not None:
+                extra["iterator"] = iterator
             params = self._params(
                 search=search,
                 membership=membership,
+                min_access_level=min_access_level,
                 owned=owned,
                 starred=starred,
                 simple=simple,
+                page=page,
+                per_page=per_page,
+                order_by=order_by,
+                sort=sort,
+                pagination=pagination,
+                search_namespaces=search_namespaces,
             )
-            projects = self._sdk.projects.list(get_all=get_all, **params)
+            projects = self._sdk.projects.list(get_all=get_all, **extra, **params)
             return GitLabResponse(success=True, data=projects)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
 
     def get_project(self, project_id: int | str) -> GitLabResponse:
-        """Get a single project by ID or path.  [projects]"""
-        p = self._project(project_id)
-        return GitLabResponse(success=True, data=p)
+        """Get a single project by ID or path.  [projects]
+
+        Wrapped in ``try/except`` so a ``GitlabGetError`` for a path the
+        OAuth token can't see (404 for renamed/moved projects, 403 for
+        access loss between filter-pick and sync) surfaces as a normal
+        ``success=False`` response. Without this every other read wrapper
+        in this file returns ``success=False`` on error while ``get_project``
+        re-raises — one stale path in ``PROJECT_IDS IN`` then crashes
+        ``_resolve_projects_with_filters`` with no per-path try/except,
+        and the whole ``_sync_projects`` flow aborts.
+        """
+        try:
+            p = self._project(project_id)
+            return GitLabResponse(success=True, data=p)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def create_project(
         self,
@@ -512,11 +591,97 @@ class GitLabDataSource:
         until: str | None = None,
         get_all: bool | None = None,
     ) -> GitLabResponse:
-        """List commits (supports ref_name/since/until).  [commits]"""
-        p = self._project(project_id)
-        params = self._params(ref_name=ref_name, since=since, until=until)
-        items = p.commits.list(get_all=get_all, **params)
-        return GitLabResponse(success=True, data=items)
+        """List commits (supports ref_name/since/until).  [commits]
+
+        Wrapped in ``try/except`` to match every other read wrapper here:
+        a transient GitlabListError on a single project must not bubble
+        out of ``_ds_call`` and abort the surrounding sync loop.
+        """
+        try:
+            p = self._project(project_id)
+            params = self._params(ref_name=ref_name, since=since, until=until)
+            items = p.commits.list(get_all=get_all, **params)
+            return GitLabResponse(success=True, data=items)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
+    def list_commits_for_path(
+        self,
+        project_id: int | str,
+        path: str,
+        ref_name: str | None = None,
+        *,
+        per_page: int = 100,
+    ) -> GitLabResponse:
+        """Newest + oldest commit for a repository path (1–2 REST pages)."""
+        try:
+            p = self._project(project_id)
+            query_data: dict[str, object] = {
+                "path": path,
+                "per_page": per_page,
+                "page": 1,
+            }
+            if ref_name is not None:
+                query_data["ref_name"] = ref_name
+
+            # ``http_get`` returns parsed JSON and drops pagination headers;
+            # ``http_request`` keeps the raw response we need for X-Total-Pages.
+            first_resp = self._sdk.http_request(
+                "get", p.commits.path, query_data=query_data
+            )
+            first_resp.raise_for_status()
+            first_payload = first_resp.json()
+            if not isinstance(first_payload, list):
+                message = (
+                    first_payload.get("message")
+                    if isinstance(first_payload, dict)
+                    else "Unexpected commits response"
+                )
+                return GitLabResponse(success=False, error=str(message))
+            first_page: list[dict[str, object]] = first_payload
+            if not first_page:
+                return GitLabResponse(
+                    success=True,
+                    data={
+                        "newest_committed_date": None,
+                        "oldest_committed_date": None,
+                        "commit_count": 0,
+                    },
+                )
+
+            total_pages = int(first_resp.headers.get("X-Total-Pages") or 1)
+            commit_count = int(first_resp.headers.get("X-Total") or len(first_page))
+            newest = first_page[0]
+            if total_pages <= 1:
+                oldest = first_page[-1]
+            else:
+                last_resp = self._sdk.http_request(
+                    "get",
+                    p.commits.path,
+                    query_data={**query_data, "page": total_pages},
+                )
+                last_resp.raise_for_status()
+                last_payload = last_resp.json()
+                if not isinstance(last_payload, list):
+                    message = (
+                        last_payload.get("message")
+                        if isinstance(last_payload, dict)
+                        else "Unexpected commits response"
+                    )
+                    return GitLabResponse(success=False, error=str(message))
+                last_page: list[dict[str, object]] = last_payload
+                oldest = last_page[-1] if last_page else first_page[-1]
+
+            return GitLabResponse(
+                success=True,
+                data={
+                    "newest_committed_date": newest.get("committed_date"),
+                    "oldest_committed_date": oldest.get("committed_date"),
+                    "commit_count": commit_count,
+                },
+            )
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def get_commit(self, project_id: int | str, sha: str) -> GitLabResponse:
         """Get a single commit.  [commits]"""
@@ -771,12 +936,22 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     def list_project_members_all(
-        self, project_id: str | int, get_all: bool | None = None
+        self,
+        project_id: str | int,
+        get_all: bool | None = None,
+        iterator: bool | None = None,
     ) -> GitLabResponse:
-        """List project members including inherited ones"""
+        """List project members including inherited ones.
+
+        Pass ``iterator=True`` for streaming pagination on projects with
+        large inherited-membership sets.
+        """
         try:
             p = self._project(project_id)
-            items = p.members_all.list(get_all=get_all)
+            extra: dict[str, object] = {}
+            if iterator is not None:
+                extra["iterator"] = iterator
+            items = p.members_all.list(get_all=get_all, **extra)
             return GitLabResponse(success=True, data=items)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
@@ -829,8 +1004,14 @@ class GitLabDataSource:
         self,
         search: str | None = None,
         get_all: bool | None = None,
+        iterator: bool | None = None,
         owned: bool | None = None,
         min_access_level: int | None = None,
+        all_available: bool | None = None,
+        page: int | None = None,
+        per_page: int | None = None,
+        order_by: str | None = None,
+        sort: str | None = None,
     ) -> GitLabResponse:
         """List groups.
 
@@ -839,14 +1020,104 @@ class GitLabDataSource:
         50=Owner). Without it (and without ``owned``) the endpoint returns
         every group visible to the user, including public groups on
         GitLab.com — usually not what we want.
+
+        ``all_available=True`` widens the result to every group the user can
+        see, including those they have access to via an EE role (Auditor)
+        rather than direct membership. ``min_access_level`` still requires
+        the user to be a Guest+ MEMBER, so an Auditor without membership
+        sees nothing with ``min_access_level=10``; pass ``all_available=True``
+        (and drop ``min_access_level``) when the goal is "every group the
+        caller can read", not "every group the caller is a member of".
+
+        Pass ``page`` and ``per_page`` (with ``get_all=False``) to request a
+        single page from the API instead of materializing every group.
+
+        Note: keyset pagination is intentionally not exposed here. GitLab's
+        ``/groups`` endpoint only supports keyset pagination for
+        **unauthenticated** requests (with ``order_by=name``, ``sort=asc``);
+        for authenticated callers — every connector use case — it is
+        silently ignored and offset pagination is used. To reduce
+        round-trips on full-scan sweeps, pass ``per_page=100`` (the API
+        max) instead.
+
+        Pass ``iterator=True`` (mutually exclusive with ``get_all=True``)
+        for streaming pagination — strongly preferred over ``get_all=True``
+        on large self-managed EE instances where a single Guest+ account
+        can be a member of tens of thousands of groups and ``get_all=True``
+        will block silently for minutes-to-hours with no progress log.
         """
         try:
+            extra: dict[str, object] = {}
+            if iterator is not None:
+                extra["iterator"] = iterator
             params = self._params(
                 search=search,
                 owned=owned,
                 min_access_level=min_access_level,
+                all_available=all_available,
+                page=page,
+                per_page=per_page,
+                order_by=order_by,
+                sort=sort,
             )
-            groups = self._sdk.groups.list(get_all=get_all, **params)
+            groups = self._sdk.groups.list(get_all=get_all, **extra, **params)
+            return GitLabResponse(success=True, data=groups)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
+    def list_descendant_groups(
+        self,
+        group_id: int | str,
+        search: str | None = None,
+        get_all: bool | None = None,
+        iterator: bool | None = None,
+        owned: bool | None = None,
+        min_access_level: int | None = None,
+        all_available: bool | None = None,
+        page: int | None = None,
+        per_page: int | None = None,
+        order_by: str | None = None,
+        sort: str | None = None,
+    ) -> GitLabResponse:
+        """List descendant groups of a group (full subtree, parent excluded).
+
+        Wraps ``GET /api/v4/groups/:id/descendant_groups``. Use this to walk
+        the subgroup hierarchy from a known-accessible parent — the caller's
+        membership on ``group_id`` propagates by inheritance, so descendants
+        are returned even when the flat ``GET /groups`` listing misses them.
+
+        Primary use case: an EE Auditor who hits the documented
+        "auditor read access doesn't flow through the listing endpoints"
+        known issue (see ``GitLabConnector._list_groups_scope_kwargs``) and
+        falls back to ``list_groups(min_access_level=10)``. That fallback
+        only returns groups with an explicit member row, missing any
+        subgroup whose access is inherited from an ancestor's Reporter+
+        membership. Walking each fallback group's descendants here closes
+        that gap.
+
+        Returns ``GroupDescendantGroup`` objects, which expose ``id``,
+        ``name``, ``path``, ``full_path``, ``full_name`` and ``parent_id``
+        but not the full ``Group`` manager API. Re-fetch with
+        ``get_group(id)`` if a managed object is needed.
+        """
+        try:
+            g = self._sdk.groups.get(group_id, lazy=True)
+            extra: dict[str, object] = {}
+            if iterator is not None:
+                extra["iterator"] = iterator
+            params = self._params(
+                search=search,
+                owned=owned,
+                min_access_level=min_access_level,
+                all_available=all_available,
+                page=page,
+                per_page=per_page,
+                order_by=order_by,
+                sort=sort,
+            )
+            groups = g.descendant_groups.list(
+                get_all=get_all, **extra, **params
+            )
             return GitLabResponse(success=True, data=groups)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
@@ -863,20 +1134,33 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     def list_group_members_all(
-        self, group_id: int | str, get_all: bool | None = None
+        self,
+        group_id: int | str,
+        get_all: bool | None = None,
+        iterator: bool | None = None,
     ) -> GitLabResponse:
-        """List all group members including inherited ones."""
+        """List all group members including inherited ones.
+
+        Pass ``iterator=True`` for streaming pagination on groups with
+        large inherited-membership sets.
+        """
         try:
             g = self._sdk.groups.get(group_id, lazy=True)
-            items = g.members_all.list(get_all=get_all)
+            extra: dict[str, object] = {}
+            if iterator is not None:
+                extra["iterator"] = iterator
+            items = g.members_all.list(get_all=get_all, **extra)
             return GitLabResponse(success=True, data=items)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
 
     def get_group(self, group_id: int | str) -> GitLabResponse:
         """Get a group by ID or full path."""
-        g = self._sdk.groups.get(group_id)
-        return GitLabResponse(success=True, data=g)
+        try:
+            g = self._sdk.groups.get(group_id)
+            return GitLabResponse(success=True, data=g)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def create_group(
         self,
