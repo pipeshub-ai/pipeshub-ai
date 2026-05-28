@@ -1242,6 +1242,13 @@ class JiraDataCenterConnector(BaseConnector):
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
 
+            # Reconcile deletions via the DC audit log. Independent of the
+            # forward sync — uses its own ``issues_audit_deletions`` checkpoint
+            # so the audit cursor can advance even when no new issues were
+            # written. Internal failures are swallowed inside the method so a
+            # broken audit endpoint never tanks the whole ``run_sync``.
+            await self._handle_issue_deletions(last_sync_time)
+
             self.logger.info(
                 f"✅ Jira sync completed. Total: {sync_stats['total_synced']} issues "
                 f"(New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']})"
@@ -1311,6 +1318,372 @@ class JiraDataCenterConnector(BaseConnector):
         }
 
         await self.issues_sync_point.update_sync_point(sync_point_key, sync_point_data)
+
+    async def _handle_issue_deletions(self, global_last_sync_time: Optional[int]) -> None:
+        """Detect and reconcile issue deletions via the DC audit log.
+
+        Uses a dedicated ``issues_audit_deletions`` sync point so the audit
+        cursor advances independently of the JQL ``updated`` window. Order of
+        precedence for the deletion-check baseline:
+
+        1. ``issues_audit_deletions`` checkpoint (audit cursor from a prior run),
+        2. ``global_last_sync_time`` passed in by ``run_sync`` (the JQL global
+           ``updated`` watermark) when the audit cursor doesn't exist yet.
+
+        If neither is available this is the first sync — there's nothing to
+        reconcile against, so skip. All failures are swallowed: a broken or
+        admin-gated audit endpoint must not kill the forward sync. The audit
+        checkpoint is only advanced when the pass actually completes, so a
+        transient failure causes the next run to retry the same window rather
+        than silently skipping it.
+        """
+        audit_sync_key = "issues_audit_deletions"
+
+        try:
+            audit_sync_point_data = await self.issues_sync_point.read_sync_point(audit_sync_key)
+            audit_last_sync_time = audit_sync_point_data.get("last_sync_time") if audit_sync_point_data else None
+        except Exception:
+            audit_last_sync_time = None
+
+        deletion_check_time = audit_last_sync_time or global_last_sync_time
+        if not deletion_check_time:
+            return
+
+        try:
+            await self._detect_and_handle_deletions(deletion_check_time)
+        except Exception as e:
+            # Reconciliation pass — never raise into the outer ``run_sync``
+            # try/except. Skip the checkpoint advance so the next run retries
+            # this window.
+            self.logger.error(
+                "❌ Audit deletion pass failed (window from %s): %s",
+                deletion_check_time, e,
+                exc_info=True,
+            )
+            return
+
+        try:
+            await self.issues_sync_point.update_sync_point(
+                audit_sync_key,
+                {"last_sync_time": get_epoch_timestamp_in_ms()},
+            )
+        except Exception as e:
+            self.logger.warning(
+                "⚠️ Failed to advance audit deletion checkpoint: %s", e
+            )
+
+    # ============================================================================
+    # Deletion Handling (DC audit log)
+    # ============================================================================
+
+    async def _detect_and_handle_deletions(self, last_sync_time: int) -> int:
+        """Fetch deleted issue keys from the DC audit log and cascade-delete
+        each one's records. Returns the number of issues successfully handled.
+
+        Failures inside the per-issue loop are logged and skipped so a single
+        bad row doesn't abort the rest of the reconciliation.
+        """
+        try:
+            self.logger.info("🔍 Checking for deleted issues via DC Audit API...")
+
+            # DC ``/auditing/record`` accepts ISO-8601 strings for ``from`` / ``to``.
+            from_date = datetime.fromtimestamp(
+                last_sync_time / 1000, tz=timezone.utc,
+            ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            to_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+            deleted_issue_keys = await self._fetch_deleted_issues_from_audit(from_date, to_date)
+
+            if not deleted_issue_keys:
+                self.logger.info("ℹ️ No deleted issues found in DC audit log")
+                return 0
+
+            deleted_count = 0
+            for issue_key in deleted_issue_keys:
+                try:
+                    await self._handle_deleted_issue(issue_key)
+                    deleted_count += 1
+                except Exception as e:
+                    self.logger.error(f"❌ Error handling deleted issue {issue_key}: {e}")
+                    continue
+
+            return deleted_count
+
+        except Exception as e:
+            self.logger.error(f"❌ Error detecting deletions: {e}", exc_info=True)
+            return 0
+
+    async def _fetch_deleted_issues_from_audit(
+        self,
+        from_date: str,
+        to_date: str,
+    ) -> list[str]:
+        """Paginated read of ``GET /rest/api/2/auditing/record`` filtering for
+        issue-deletion events.
+
+        DC's audit row shape differs from Cloud:
+
+        - ``objectItem.typeName`` is the entity type (``"ISSUE"``, ``"USER"``,
+          etc.) — NOT the event verb.
+        - The verb lives in ``summary`` (e.g. ``"Issue deleted"``,
+          ``"Issue updated"``). Match it case-insensitively against ``"delete"``
+          to cover both ``"Issue deleted"`` and locale/casing variants.
+
+        Admin-gated: non-admin sync users get 401/403 here. Mirror the other
+        admin-fallbacks in this connector — return ``[]`` on the first
+        forbidden response without retrying or paginating further, so the
+        sync proceeds without deletion reconciliation rather than dying.
+        """
+        deleted_issue_keys: list[str] = []
+        offset = 0
+        limit = AUDIT_PAGE_SIZE
+
+        while True:
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_audit_records_v2(
+                    offset=offset,
+                    limit=limit,
+                    from_=from_date,
+                    to=to_date,
+                )
+
+                if response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value,
+                    HttpStatusCode.FORBIDDEN.value,
+                ):
+                    self.logger.warning(
+                        "⚠️ DC /auditing/record returned %s — configuring user "
+                        "lacks Jira System Administrator. Skipping deletion "
+                        "reconciliation; orphaned records will be cleaned up on "
+                        "the next sync where an admin token is available.",
+                        response.status,
+                    )
+                    return []
+
+                if response.status != HttpStatusCode.OK.value:
+                    self.logger.warning(
+                        "⚠️ Failed to fetch DC audit records (HTTP %s): %s",
+                        response.status, response.text(),
+                    )
+                    break
+
+                audit_data = response.json() or {}
+                records = audit_data.get("records") or []
+                if not records:
+                    break
+
+                for record in records:
+                    object_item = record.get("objectItem") or {}
+                    type_name = object_item.get("typeName")
+                    summary = (record.get("summary") or "").lower()
+                    issue_key = object_item.get("name")
+                    # DC: entity type must be ISSUE, summary must contain
+                    # "delete" (covers "Issue deleted" / "ISSUE DELETED" /
+                    # localized "Issue deleted by ..."), and the row must
+                    # carry the issue key in ``objectItem.name``.
+                    if (
+                        type_name == "ISSUE"
+                        and "delete" in summary
+                        and issue_key
+                    ):
+                        deleted_issue_keys.append(issue_key)
+                        self.logger.debug(
+                            "Audit: Issue %s deleted at %s",
+                            issue_key, record.get("created"),
+                        )
+
+                # Stop when we've consumed everything the server told us about.
+                # Guards against infinite loops if the server reports a
+                # non-decreasing ``total`` across pages.
+                total = audit_data.get("total", 0)
+                if offset + len(records) >= total:
+                    break
+
+                offset += limit
+
+            except Exception as e:
+                self.logger.error(
+                    "❌ Error fetching DC audit records at offset %s: %s",
+                    offset, e,
+                )
+                break
+
+        return deleted_issue_keys
+
+    async def _handle_deleted_issue(self, issue_key: str) -> None:
+        """Cascade-delete records for an issue surfaced by the audit log.
+
+        Mirrors Cloud's behavior:
+
+        - First confirm the issue is *actually* gone by hitting
+          ``GET /rest/api/2/issue/{key}``. A 200 here means the audit row was
+          a move/rename, not a deletion — bail out without touching the DB.
+        - Look up our local record by issue key inside a single transaction.
+        - Cascade per Jira's own delete semantics:
+            * Epic → keep child tasks (they only lose their epic link in Jira).
+            * Task/Story → delete subtasks (recursive) and attachments.
+            * Subtask → delete attachments only.
+        - Hard-delete the issue record itself last so any partial failure
+          above leaves the parent in place for the next reconciliation pass.
+        """
+        try:
+            self.logger.info(f"🗑️ Handling deletion of issue {issue_key}")
+
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_issue_v2(issueIdOrKey=issue_key)
+                if response.status == HttpStatusCode.OK.value:
+                    self.logger.warning(
+                        "⚠️ Issue %s still exists in Jira (audit row was a "
+                        "move/rename, not a deletion) — skipping",
+                        issue_key,
+                    )
+                    return
+            except Exception:
+                # The issue not being fetchable is consistent with a real
+                # deletion; fall through to the DB cleanup below.
+                pass
+
+            async with self.data_store_provider.transaction() as tx_store:
+                issue_record = await tx_store.get_record_by_issue_key(
+                    connector_id=self.connector_id,
+                    issue_key=issue_key,
+                )
+
+                if not issue_record:
+                    self.logger.warning(
+                        "⚠️ Issue %s not found in database "
+                        "(already deleted or never synced?)",
+                        issue_key,
+                    )
+                    return
+
+                issue_id = issue_record.external_record_id
+                record_internal_id = issue_record.id
+
+                # Both enum (Type.EPIC) and string ("EPIC") representations
+                # are accepted on TicketRecord — normalize before comparing.
+                issue_type = getattr(issue_record, "type", None)
+                if issue_type:
+                    type_value = (
+                        issue_type.value if hasattr(issue_type, "value") else str(issue_type)
+                    )
+                    is_epic = type_value.upper() == "EPIC"
+                else:
+                    is_epic = False
+
+                self.logger.info(
+                    "✅ Found issue %s (type: %s, is_epic: %s) internal=%s external=%s",
+                    issue_key, issue_type, is_epic, record_internal_id, issue_id,
+                )
+
+                child_issue_count = 0
+                if not is_epic:
+                    child_issue_count = await self._delete_issue_children(
+                        issue_id, RecordType.TICKET, tx_store,
+                    )
+                else:
+                    self.logger.info(
+                        "📋 Epic %s deleted — child tasks/stories remain (Jira behavior)",
+                        issue_key,
+                    )
+
+                attachment_count = await self._delete_issue_children(
+                    issue_id, RecordType.FILE, tx_store,
+                )
+
+                await tx_store.delete_records_and_relations(
+                    record_key=record_internal_id,
+                    hard_delete=True,
+                )
+
+                if is_epic:
+                    self.logger.info(
+                        "🗑️ Deleted Epic %s (%s direct attachments)",
+                        issue_key, attachment_count,
+                    )
+                else:
+                    self.logger.info(
+                        "🗑️ Deleted issue %s and its hierarchy "
+                        "(%s subtasks, %s direct attachments)",
+                        issue_key, child_issue_count, attachment_count,
+                    )
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Error handling deleted issue %s: %s", issue_key, e, exc_info=True,
+            )
+
+    async def _delete_issue_children(
+        self,
+        parent_issue_id: str,
+        child_type: RecordType,
+        tx_store,
+    ) -> int:
+        """Recursively delete child records of ``child_type`` under
+        ``parent_issue_id``.
+
+        For ``TICKET`` children (subtasks): recurse into their own subtasks
+        and attachments first, then delete the subtask record itself. For
+        ``FILE`` children (attachments): just delete the attachment record.
+
+        Called only for non-Epic deletions — Epic cascade is gated by the
+        caller (Jira itself does not cascade-delete tasks when an Epic is
+        deleted). Returns the number of records actually deleted at this level
+        (excluding nested counts, which are logged at debug).
+        """
+        child_type_name = {
+            RecordType.TICKET: "child issue",
+            RecordType.FILE: "attachment",
+        }.get(child_type, str(child_type))
+
+        try:
+            deleted_count = 0
+            child_records = await tx_store.get_records_by_parent(
+                connector_id=self.connector_id,
+                parent_external_record_id=parent_issue_id,
+                record_type=child_type.value,
+            )
+
+            for record in child_records:
+                if child_type == RecordType.TICKET:
+                    child_issue_id = record.external_record_id
+                    nested_subtask_count = await self._delete_issue_children(
+                        child_issue_id, RecordType.TICKET, tx_store,
+                    )
+                    if nested_subtask_count > 0:
+                        self.logger.debug(
+                            "  Deleted %s nested subtasks for %s",
+                            nested_subtask_count, child_issue_id,
+                        )
+
+                    nested_attachment_count = await self._delete_issue_children(
+                        child_issue_id, RecordType.FILE, tx_store,
+                    )
+                    if nested_attachment_count > 0:
+                        self.logger.debug(
+                            "  Deleted %s attachments for %s",
+                            nested_attachment_count, child_issue_id,
+                        )
+
+                await tx_store.delete_records_and_relations(
+                    record_key=record.id,
+                    hard_delete=True,
+                )
+                deleted_count += 1
+                self.logger.debug(
+                    "  Deleted %s %s", child_type_name, record.external_record_id,
+                )
+
+            return deleted_count
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Error deleting %ss for issue %s: %s",
+                child_type_name, parent_issue_id, e,
+            )
+            return 0
 
     # ============================================================================
     # User & Group Management
