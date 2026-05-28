@@ -267,6 +267,7 @@ export function ShareSidebar({
     async (memberId: string, memberType: 'user' | 'team', newRole: ShareRole) => {
       if (!adapter.updateRole) return;
       const member = existingMembers.find((m) => m.id === memberId);
+      if (member?.isCurrentUser) return;
       try {
         await adapter.updateRole(memberId, memberType, newRole);
         setExistingMembers((prev) =>
@@ -292,6 +293,7 @@ export function ShareSidebar({
   const handleRemoveMember = useCallback(
     async (memberId: string, memberType: 'user' | 'team') => {
       const member = existingMembers.find((m) => m.id === memberId);
+      if (member?.isCurrentUser) return;
       try {
         await adapter.removeMember(memberId, memberType);
         setExistingMembers((prev) => prev.filter((m) => m.id !== memberId));
@@ -634,7 +636,7 @@ export function ShareSidebar({
                           isCurrentUser={member.isCurrentUser}
                           isOwner={member.isOwner}
                           role={member.role}
-                          showRoleDropdown ={!member.isCurrentUser}
+                          showRoleDropdown={!member.isCurrentUser}
                           noRolesInfo={
                             !adapter.supportsRoles && member.type === 'user'
                               ? { title: 'Full Access', description: 'Chats do not have roles' }
