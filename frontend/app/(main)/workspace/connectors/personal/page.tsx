@@ -265,7 +265,7 @@ function PersonalConnectorsPageContent() {
       return refreshConnectorInstanceDetails(connectorId, {
         afterConfig: isLocalFs
           ? async (fresh, config) => {
-              await ensureLocalWatcherForInstance(fresh as ConnectorInstance, config);
+              await ensureLocalWatcherForInstance(fresh, config);
             }
           : undefined,
       });

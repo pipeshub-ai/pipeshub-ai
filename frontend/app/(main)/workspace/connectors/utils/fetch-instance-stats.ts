@@ -11,7 +11,7 @@ export async function fetchInstanceStats(
     return;
   }
   const res = await ConnectorsApi.getConnectorStats(connectorId);
-  useConnectorsStore.getState().setInstanceStats(connectorId, res.data);
+  state.setInstanceStats(connectorId, res.data);
 }
 
 /** Refetch stats when the instance management drawer is open for this connector. */

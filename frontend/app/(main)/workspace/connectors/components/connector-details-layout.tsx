@@ -43,7 +43,7 @@ interface ConnectorDetailsLayoutProps {
   onRefreshAll?: () => void | Promise<void>;
   isRefreshingAll?: boolean;
   /** Refresh one instance row + config */
-  onRefreshInstance?: (instance: ConnectorInstance) => void | Promise<void>;
+  onRefreshInstance?: (instance: ConnectorInstance) => void | Promise<unknown>;
 }
 
 // ========================================
