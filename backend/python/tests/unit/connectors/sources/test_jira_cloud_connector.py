@@ -560,12 +560,12 @@ class TestGetProjectOptions:
 class TestRunSync:
 
     @pytest.mark.asyncio
-    async def test_full_sync_proceeds_when_pipeshub_directory_empty(self):
-        """Regression: empty PipesHub directory must NOT bail out the sync.
+    async def test_full_sync_skips_when_pipeshub_directory_empty(self):
+        """Empty PipesHub directory short-circuits run_sync early.
 
-        ``get_all_active_users`` returns the org/directory roster, not Jira
-        users. Previously this short-circuited ``run_sync`` and produced a
-        silent "no records synced" — the fix is to skip that gate entirely.
+        ``get_all_active_users`` returns the org/directory roster. When it is
+        empty (fresh or single-user deployment) ``run_sync`` returns early
+        without hitting Jira — downstream methods must not be called.
         """
         connector = _make_connector()
         connector.data_source = MagicMock()
@@ -573,30 +573,20 @@ class TestRunSync:
         connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
         connector._fetch_users = AsyncMock(return_value=[])
         connector._sync_user_groups = AsyncMock(return_value={})
-        rg = MagicMock()
-        rg.short_name = "PROJ"
-        rg.external_group_id = "10000"
-        connector._fetch_projects = AsyncMock(
-            return_value=([(rg, [])], [{"key": "PROJ", "lead": None}])
-        )
-        connector._sync_project_roles = AsyncMock()
-        connector._sync_project_lead_roles = AsyncMock()
-        connector._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        connector._fetch_projects = AsyncMock(return_value=([], []))
         connector._sync_all_project_issues = AsyncMock(
-            return_value={"total_synced": 1, "new_count": 1, "updated_count": 0}
+            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0}
         )
-        connector._update_issues_sync_checkpoint = AsyncMock()
         connector._handle_issue_deletions = AsyncMock()
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
                    new_callable=AsyncMock, return_value=(None, None)):
             await connector.run_sync()
 
-        # The actual sync path must run even with an empty PipesHub directory.
-        connector._fetch_users.assert_awaited_once()
-        connector._sync_user_groups.assert_awaited_once()
-        connector._fetch_projects.assert_awaited_once()
-        connector._sync_all_project_issues.assert_awaited_once()
+        # Early return — none of the Jira-side fetches should have been called.
+        connector._fetch_users.assert_not_awaited()
+        connector._fetch_projects.assert_not_awaited()
+        connector._sync_all_project_issues.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_run_sync_raises_when_init_fails(self):

@@ -373,37 +373,23 @@ class TestJiraDataCenterCreateConnector:
 
 class TestJiraDataCenterRunSyncSmoke:
     @pytest.mark.asyncio
-    async def test_run_sync_proceeds_when_pipeshub_directory_empty(self) -> None:
-        """Regression: empty PipesHub directory must NOT bail out the sync.
+    async def test_run_sync_skips_when_pipeshub_directory_empty(self) -> None:
+        """Empty PipesHub directory short-circuits run_sync early.
 
-        ``get_all_active_users`` returns the org/directory roster, not Jira
-        users. On single-user or fresh deployments the directory may legitimately
-        be empty at first sync, and the previous early-return surfaced as a
-        silent "no records synced". The fix is to skip that gate entirely and
-        let the sync proceed; permission mapping degrades to Jira-side IDs but
-        records flow.
+        ``get_all_active_users`` returns the org/directory roster. When it is
+        empty (fresh or single-user deployment) ``run_sync`` returns early
+        without hitting Jira — downstream methods must not be called.
         """
         conn = _make_connector()
         conn.data_source = MagicMock()
-        # Empty PipesHub directory — the bug used to short-circuit here.
         conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
-        # Stub every downstream step that run_sync orchestrates.
         conn._fetch_users = AsyncMock(return_value=[])
         conn._sync_user_groups = AsyncMock(return_value={})
         conn._fetch_application_roles_to_groups_mapping = AsyncMock(return_value={})
-        rg = MagicMock()
-        rg.short_name = "PROJ"
-        rg.external_group_id = "10000"
-        conn._fetch_projects = AsyncMock(
-            return_value=([(rg, [])], [{"key": "PROJ", "lead": None}])
-        )
-        conn._sync_project_roles = AsyncMock()
-        conn._sync_project_lead_roles = AsyncMock()
-        conn._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        conn._fetch_projects = AsyncMock(return_value=([], []))
         conn._sync_all_project_issues = AsyncMock(
-            return_value={"total_synced": 3, "new_count": 2, "updated_count": 1}
+            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0}
         )
-        conn._update_issues_sync_checkpoint = AsyncMock()
         conn._handle_issue_deletions = AsyncMock()
 
         with patch(
@@ -413,11 +399,10 @@ class TestJiraDataCenterRunSyncSmoke:
         ):
             await conn.run_sync()
 
-        # The actual sync path must run even with an empty PipesHub directory.
-        conn._fetch_users.assert_awaited_once()
-        conn._sync_user_groups.assert_awaited_once()
-        conn._fetch_projects.assert_awaited_once()
-        conn._sync_all_project_issues.assert_awaited_once()
+        # Early return — none of the Jira-side fetches should have been called.
+        conn._fetch_users.assert_not_awaited()
+        conn._fetch_projects.assert_not_awaited()
+        conn._sync_all_project_issues.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_run_sync_raises_when_init_fails(self) -> None:
@@ -434,12 +419,16 @@ class TestJiraDataCenterRunSyncSmoke:
 
     @pytest.mark.asyncio
     async def test_run_sync_hoists_app_roles_mapping_call(self) -> None:
-        """Regression: ``_fetch_application_roles_to_groups_mapping`` must be
-        called exactly once per ``run_sync`` and passed into ``_fetch_projects``
-        rather than being fetched again inside it.
+        """``_fetch_application_roles_to_groups_mapping`` must be called exactly
+        once per ``run_sync`` and passed into ``_fetch_projects`` rather than
+        being re-fetched inside it.
         """
         conn = _make_connector()
         conn.data_source = MagicMock()
+        # Non-empty directory so the early-return gate does not fire.
+        conn.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[MagicMock()]
+        )
         conn._fetch_users = AsyncMock(return_value=[])
         conn._sync_user_groups = AsyncMock(return_value={})
         roles_mapping = {"jira-software": [{"name": "g1", "groupId": "g1"}]}
@@ -464,17 +453,21 @@ class TestJiraDataCenterRunSyncSmoke:
             await conn.run_sync()
 
         conn._fetch_application_roles_to_groups_mapping.assert_awaited_once()
-        # And the mapping must be threaded through to _fetch_projects so we
-        # don't re-fetch it inside that call.
+        # The mapping must be threaded through to _fetch_projects so it is not
+        # re-fetched inside that call.
         kwargs = conn._fetch_projects.await_args.kwargs
         assert kwargs.get("app_roles_mapping") is roles_mapping
 
     @pytest.mark.asyncio
     async def test_run_sync_calls_handle_issue_deletions(self) -> None:
-        """Regression: DC ``run_sync`` must invoke deletion reconciliation
-        after the checkpoint update (was previously missing entirely)."""
+        """DC ``run_sync`` must invoke deletion reconciliation after the
+        checkpoint update."""
         conn = _make_connector()
         conn.data_source = MagicMock()
+        # Non-empty directory so the early-return gate does not fire.
+        conn.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[MagicMock()]
+        )
         conn._fetch_users = AsyncMock(return_value=[])
         conn._sync_user_groups = AsyncMock(return_value={})
         conn._fetch_application_roles_to_groups_mapping = AsyncMock(return_value={})
