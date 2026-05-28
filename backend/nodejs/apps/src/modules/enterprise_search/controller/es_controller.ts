@@ -5209,8 +5209,23 @@ export const getAgent =
       if (aiResponse && aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Get Agent');
       }
-      const agent = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(agent);
+      const responsePayload = aiResponse.data as Record<string, unknown>;
+      if (
+        responsePayload &&
+        typeof responsePayload === 'object' &&
+        responsePayload.agent &&
+        typeof responsePayload.agent === 'object' &&
+        !Array.isArray(responsePayload.agent)
+      ) {
+        const normalizedAgent = { ...(responsePayload.agent as Record<string, unknown>) };
+        delete normalizedAgent.id;
+        res.status(HTTP_STATUS.OK).json({
+          ...responsePayload,
+          agent: normalizedAgent,
+        });
+        return;
+      }
+      res.status(HTTP_STATUS.OK).json(responsePayload);
     } catch (error: any) {
       logger.error('Error getting agent', {
         requestId,
