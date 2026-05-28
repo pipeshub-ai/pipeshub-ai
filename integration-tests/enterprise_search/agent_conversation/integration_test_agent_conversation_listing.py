@@ -9,6 +9,7 @@ listing using the shared ``agent_session`` fixture.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
@@ -20,6 +21,8 @@ import requests
 
 from openapi_search_validator import assert_response_matches_spec
 from pipeshub_client import PipeshubClient
+
+logger = logging.getLogger(__name__)
 
 _AGENT_LIST_SPEC_PATH = "/agents/{agentKey}/conversations"
 _SSE_MAX_EVENTS = 10_000
@@ -117,10 +120,11 @@ class TestAgentConversationListing:
                     headers=self.headers,
                     timeout=self.timeout,
                 )
-                assert resp.status_code < 300, (
-                    f"Conversation delete failed for {conversation_id}: "
-                    f"HTTP {resp.status_code} {resp.text[:300]}"
-                )
+                if resp.status_code >= 300:
+                    logger.warning(
+                        "Conversation delete failed for %s: HTTP %s %s",
+                        conversation_id, resp.status_code, resp.text[:300]
+                    )
             except Exception:
                 pass
 

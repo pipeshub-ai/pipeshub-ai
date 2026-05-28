@@ -10,6 +10,7 @@ request shapes using the existing enterprise-search fixtures.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from uuid import uuid4
 
@@ -19,6 +20,8 @@ import requests
 from ai_models_setup import SeededAIModel
 from openapi_search_validator import assert_response_matches_spec
 from pipeshub_client import PipeshubClient
+
+logger = logging.getLogger(__name__)
 
 _AGENTS_CREATE_PATH = "/api/v1/agents/create"
 _AGENTS_LIST_PATH = "/api/v1/agents"
@@ -125,10 +128,11 @@ class TestCreateAgent:
                     headers=self.headers,
                     timeout=self.timeout,
                 )
-                assert resp.status_code < 300, (
-                    f"Agent delete failed for {agent_key}: "
-                    f"HTTP {resp.status_code} {resp.text[:300]}"
-                )
+                if resp.status_code >= 300:
+                    logger.warning(
+                        "Agent delete failed for %s: HTTP %s %s",
+                        agent_key, resp.status_code, resp.text[:300]
+                    )
             except Exception:
                 # Best-effort cleanup in teardown: preserve the original test failure.
                 pass
@@ -391,10 +395,11 @@ class TestListAgents:
                     headers=self.headers,
                     timeout=self.timeout,
                 )
-                assert resp.status_code < 300, (
-                    f"Agent delete failed for {agent_key}: "
-                    f"HTTP {resp.status_code} {resp.text[:300]}"
-                )
+                if resp.status_code >= 300:
+                    logger.warning(
+                        "Agent delete failed for %s: HTTP %s %s",
+                        agent_key, resp.status_code, resp.text[:300]
+                    )
             except Exception:
                 pass
 
@@ -596,10 +601,11 @@ class TestGetAgent:
                     headers=self.headers,
                     timeout=self.timeout,
                 )
-                assert resp.status_code < 300, (
-                    f"Agent delete failed for {agent_key}: "
-                    f"HTTP {resp.status_code} {resp.text[:300]}"
-                )
+                if resp.status_code >= 300:
+                    logger.warning(
+                        "Agent delete failed for %s: HTTP %s %s",
+                        agent_key, resp.status_code, resp.text[:300]
+                    )
             except Exception:
                 pass
 

@@ -315,7 +315,7 @@ const agentModelEntrySchema = z.union([
   z.string().trim().min(1),
   z
     .object({
-      modelKey: z.string().trim().min(1).optional(),
+      modelKey: z.string().trim().min(1),
       modelName: z.string().optional(),
       isReasoning: z.boolean().optional(),
       provider: z.string().optional(),
