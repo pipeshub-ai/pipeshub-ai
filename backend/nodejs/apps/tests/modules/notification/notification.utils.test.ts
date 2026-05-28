@@ -26,7 +26,7 @@ describe('notification/notification.utils', () => {
   it('buildRetentionFilter scopes to user and retention window', () => {
     const userOid = new mongoose.Types.ObjectId();
     const before = retentionCutoff().getTime();
-    const filter = buildRetentionFilter(userOid);
+    const filter = buildRetentionFilter(userOid, null);
     const after = retentionCutoff().getTime();
     expect(filter.assignedTo).to.equal(userOid);
     expect(filter.isDeleted).to.equal(false);

@@ -2,7 +2,7 @@ import { apiClient } from '@/lib/api';
 
 export type NotificationSeverity = 'info' | 'warning' | 'error' | 'critical';
 
-export type NotificationStatus = 'Read' | 'Unread' | 'Archived';
+export type NotificationStatus = 'read' | 'unread' | 'archived';
 
 export type NotificationOrigin =
   | 'Connector Service'
@@ -42,9 +42,13 @@ export interface NotificationListResponse {
   unreadCount: number;
 }
 
+export type NotificationListFilter = 'all' | 'unread';
+
 export interface NotificationListParams {
   limit?: number;
   cursor?: string;
+  /** When `'unread'`, only unread notifications are returned. Omit for all. */
+  status?: 'unread';
 }
 
 export const DEFAULT_NOTIFICATION_PAGE_SIZE = 20;
@@ -56,6 +60,9 @@ export const NotificationsApi = {
     if (params.cursor) {
       searchParams.set('cursor', params.cursor);
     }
+    if (params.status === 'unread') {
+      searchParams.set('status', 'unread');
+    }
     const { data } = await apiClient.get<NotificationListResponse>(
       `/api/v1/notifications?${searchParams.toString()}`,
     );
@@ -64,6 +71,16 @@ export const NotificationsApi = {
       cursor: data.cursor ?? null,
       hasMore: data.hasMore ?? false,
       unreadCount: data.unreadCount ?? 0,
+    };
+  },
+
+  async markAllRead(): Promise<{ success: boolean; modifiedCount: number }> {
+    const { data } = await apiClient.patch<{ success: boolean; modifiedCount: number }>(
+      '/api/v1/notifications/read-all',
+    );
+    return {
+      success: data.success ?? true,
+      modifiedCount: data.modifiedCount ?? 0,
     };
   },
 

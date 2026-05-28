@@ -44,8 +44,9 @@ from app.connectors.sources.s3.base_connector import (
 from app.connectors.sources.s3.common.apps import S3App
 from app.sources.client.s3.s3 import S3Client
 from app.sources.external.s3.s3 import S3DataSource
-from app.services.notification.notification_service import (
+from app.services.notification.types import (
     NotificationSeverity,
+    NotificationType,
 )
 
 # Re-export the entities processor for backward compatibility
@@ -146,7 +147,14 @@ class S3Connector(S3CompatibleBaseConnector):
         )
         if not config:
             self.logger.error("S3 configuration not found.")
-            await self.notify(message="S3 configuration not found for this connector.", title="Configuration not found.", severity=NotificationSeverity.WARNING)
+            payload = {
+                "title": "Configuration not found",
+                "message": "S3 configuration not found for this connector.",
+                "connectorId": self.connector_id,
+                "connectorName": self.connector_name.value, 
+                "redirectLink": f"workspace/connectors/{self.scope}/?connectorType={self.connector_name.value}",
+            }
+            await self.notify(type=NotificationType.CONNECTOR_AUTH_ERROR, payload=payload, severity=NotificationSeverity.ERROR)
             return False
 
         auth_config = config.get("auth", {})
@@ -156,11 +164,14 @@ class S3Connector(S3CompatibleBaseConnector):
 
         if not access_key or not secret_key:
             self.logger.error("S3 access key or secret key not found in configuration.")
-            await self.notify(
-                message="S3 access key or secret key is missing in connector configuration.",
-                title="Credentials missing.",
-                severity=NotificationSeverity.ERROR
-            )
+            payload = {
+                "title": "Credentials missing",
+                "message": "S3 access key or secret key is missing in connector configuration.",
+                "connectorId": self.connector_id,
+                "connectorName": self.connector_name.value,
+                "redirectLink": f"workspace/connectors/{self.scope}/?connectorType={self.connector_name.value}",
+            }
+            await self.notify(type=NotificationType.CONNECTOR_AUTH_ERROR, payload=payload, severity=NotificationSeverity.ERROR)
             return False
 
         try:
@@ -180,7 +191,14 @@ class S3Connector(S3CompatibleBaseConnector):
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize S3 client: {e}", exc_info=True)
-            await self.notify(message=f"Failed to initialize S3 client: {e}", title="Failed to initialize S3 client.", severity=NotificationSeverity.ERROR)
+            payload = {
+                "title": "Failed to initialize S3 client",
+                "message": f"Failed to initialize S3 client: {e}",
+                "connectorId": self.connector_id,
+                "connectorName": self.connector_name.value,
+                "redirectLink": f"workspace/connectors/{self.scope}/?connectorType={self.connector_name.value}",
+            }
+            await self.notify(type=NotificationType.CONNECTOR_SYNC_ERROR, payload=payload, severity=NotificationSeverity.ERROR)
             return False
 
     async def _build_data_source(self) -> S3DataSource:

@@ -26,7 +26,7 @@ function makePage(
     notifications,
     cursor: null,
     hasMore: false,
-    unreadCount: notifications.filter((n) => n.status === 'Unread').length,
+    unreadCount: notifications.filter((n) => n.status === 'unread').length,
     ...overrides,
   };
 }
@@ -39,6 +39,7 @@ describe('useNotificationStore', () => {
       cursor: null,
       hasMore: false,
       isLoadingMore: false,
+      listFilter: 'all',
     });
   });
 
@@ -46,7 +47,7 @@ describe('useNotificationStore', () => {
     const items: NotificationListItem[] = [
       makeNotification({
         _id: '1',
-        status: 'Unread',
+        status: 'unread',
         payload: {
           title: 'A',
           message: 'Message A',
@@ -56,7 +57,7 @@ describe('useNotificationStore', () => {
       }),
       makeNotification({
         _id: '2',
-        status: 'Read',
+        status: 'read',
         severity: 'warning',
         payload: {
           title: 'B',
@@ -78,7 +79,7 @@ describe('useNotificationStore', () => {
 
   it('appendPage merges without duplicates', () => {
     useNotificationStore.getState().setInitialPage(
-      makePage([makeNotification({ _id: '1', status: 'Unread' })], {
+      makePage([makeNotification({ _id: '1', status: 'unread' })], {
         hasMore: true,
         cursor: 'c1',
       }),
@@ -86,8 +87,8 @@ describe('useNotificationStore', () => {
     useNotificationStore.getState().appendPage(
       makePage(
         [
-          makeNotification({ _id: '1', status: 'Unread' }),
-          makeNotification({ _id: '2', status: 'Unread', severity: 'warning' }),
+          makeNotification({ _id: '1', status: 'unread' }),
+          makeNotification({ _id: '2', status: 'unread', severity: 'warning' }),
         ],
         { hasMore: false, cursor: null },
       ),
@@ -98,12 +99,12 @@ describe('useNotificationStore', () => {
 
   it('addNotification prepends and increments unreadCount for unread items', () => {
     useNotificationStore.getState().setInitialPage(
-      makePage([makeNotification({ _id: '1', status: 'Unread' })], { unreadCount: 1 }),
+      makePage([makeNotification({ _id: '1', status: 'unread' })], { unreadCount: 1 }),
     );
     useNotificationStore.getState().addNotification(
       makeNotification({
         _id: '1',
-        status: 'Unread',
+        status: 'unread',
         payload: {
           title: 'New',
           message: 'New message',
@@ -119,19 +120,50 @@ describe('useNotificationStore', () => {
 
   it('markRead updates status and decrements unreadCount', () => {
     useNotificationStore.getState().setInitialPage(
-      makePage([makeNotification({ _id: '1', status: 'Unread' })], { unreadCount: 1 }),
+      makePage([makeNotification({ _id: '1', status: 'unread' })], { unreadCount: 1 }),
     );
     useNotificationStore.getState().markRead('1');
-    expect(useNotificationStore.getState().notifications[0].status).toBe('Read');
+    expect(useNotificationStore.getState().notifications[0].status).toBe('read');
     expect(useNotificationStore.getState().unreadCount).toBe(0);
+  });
+
+  it('markAllRead sets all items read and clears unreadCount', () => {
+    useNotificationStore.getState().setInitialPage(
+      makePage(
+        [
+          makeNotification({ _id: '1', status: 'unread' }),
+          makeNotification({ _id: '2', status: 'unread', severity: 'warning' }),
+        ],
+        { unreadCount: 2, hasMore: true, cursor: 'cursor-1' },
+      ),
+    );
+    useNotificationStore.getState().markAllRead();
+    const s = useNotificationStore.getState();
+    expect(s.notifications.every((n) => n.status === 'read')).toBe(true);
+    expect(s.unreadCount).toBe(0);
+  });
+
+  it('markAllRead on unread filter clears pagination', () => {
+    useNotificationStore.setState({ listFilter: 'unread' });
+    useNotificationStore.getState().setInitialPage(
+      makePage([makeNotification({ _id: '1', status: 'unread' })], {
+        unreadCount: 1,
+        hasMore: true,
+        cursor: 'c1',
+      }),
+    );
+    useNotificationStore.getState().markAllRead();
+    const s = useNotificationStore.getState();
+    expect(s.hasMore).toBe(false);
+    expect(s.cursor).toBe(null);
   });
 
   it('remove drops notification and decrements unreadCount', () => {
     useNotificationStore.getState().setInitialPage(
       makePage(
         [
-          makeNotification({ _id: '1', status: 'Unread' }),
-          makeNotification({ _id: '2', status: 'Unread', severity: 'warning' }),
+          makeNotification({ _id: '1', status: 'unread' }),
+          makeNotification({ _id: '2', status: 'unread', severity: 'warning' }),
         ],
         { unreadCount: 2 },
       ),

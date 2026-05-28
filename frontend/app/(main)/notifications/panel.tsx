@@ -3,11 +3,15 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { SidebarLoadMoreButton } from '@/app/(main)/knowledge-base/sidebar/sidebar-load-more-button';
 import { createPortal } from 'react-dom';
-import { Theme, Flex, Text, Box } from '@radix-ui/themes';
+import { Theme, Flex, Text, Box, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { NotificationsApi, type NotificationListItem } from './api';
+import { NotificationsApi, type NotificationListFilter, type NotificationListItem } from './api';
 import { useNotificationStore } from './store';
 import { NotificationRow } from './notification-row';
+import {
+  NotificationFilterMenu,
+  NOTIFICATIONS_PANEL_TOOLTIP_CLASS,
+} from './notification-filter-menu';
 import { useTranslation } from 'react-i18next';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
@@ -38,7 +42,11 @@ export function NotificationsPanel() {
   const loadMore = useNotificationStore((s) => s.loadMore);
   const setInitialPage = useNotificationStore((s) => s.setInitialPage);
   const markReadStore = useNotificationStore((s) => s.markRead);
+  const markAllReadStore = useNotificationStore((s) => s.markAllRead);
   const removeStore = useNotificationStore((s) => s.remove);
+  const listFilter = useNotificationStore((s) => s.listFilter);
+  const setListFilter = useNotificationStore((s) => s.setListFilter);
+  const unreadCount = useNotificationStore((s) => s.unreadCount);
 
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -156,25 +164,36 @@ export function NotificationsPanel() {
   // ──────────────────────────────────────────────────────────────────────────
 
   const [loading, setLoading] = useState(false);
+  const [markingAllRead, setMarkingAllRead] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const page = await NotificationsApi.list();
+      const page = await NotificationsApi.list(
+        listFilter === 'unread' ? { status: 'unread' } : {},
+      );
       setInitialPage(page);
     } catch (e) {
       setError(e instanceof Error ? e.message : t('notifications.loadFailed'));
     } finally {
       setLoading(false);
     }
-  }, [setInitialPage, t]);
+  }, [setInitialPage, listFilter, t]);
 
   useEffect(() => {
     if (isPanelOpen) void load();
   }, [isPanelOpen, load]);
 
+  const handleFilterChange = (next: NotificationListFilter) => {
+    setListFilter(next);
+  };
+
+  const displayNotifications =
+    listFilter === 'unread'
+      ? notifications.filter((n) => n.status === 'unread')
+      : notifications;
 
   // Close on Escape
   useEffect(() => {
@@ -195,7 +214,16 @@ export function NotificationsPanel() {
       const target = e.target;
       if (!(target instanceof Node)) return;
       if (panelRef.current?.contains(target)) return;
-      if (target instanceof Element && target.closest('[data-ph-notifications-trigger]')) return;
+      if (target instanceof Element) {
+        if (target.closest('[data-ph-notifications-trigger]')) return;
+        // Filter menu is portaled outside the panel; keep panel open while using it.
+        if (
+          target.closest('[data-ph-notifications-filter-menu]') ||
+          target.closest('.rt-DropdownMenuContent')
+        ) {
+          return;
+        }
+      }
       closePanel();
     };
 
@@ -204,12 +232,26 @@ export function NotificationsPanel() {
   }, [isPanelOpen, closePanel]);
 
   const onMarkRead = async (n: NotificationListItem) => {
-    if (n.status === 'Read' || !n._id) return;
+    if (n.status === 'read' || !n._id) return;
     try {
       await NotificationsApi.markRead(n._id);
       markReadStore(n._id);
     } catch {
       setError(t('notifications.updateFailed'));
+    }
+  };
+
+  const onMarkAllRead = async () => {
+    if (unreadCount === 0 || markingAllRead) return;
+    setMarkingAllRead(true);
+    setError(null);
+    try {
+      await NotificationsApi.markAllRead();
+      markAllReadStore();
+    } catch {
+      setError(t('notifications.updateFailed'));
+    } finally {
+      setMarkingAllRead(false);
     }
   };
 
@@ -235,6 +277,20 @@ export function NotificationsPanel() {
         @keyframes notif-panel-slide-out {
           from { opacity: 1; transform: translateX(0); }
           to   { opacity: 0; transform: translateX(-16px); }
+        }
+        [data-ph-notifications-filter-menu],
+        [data-ph-notifications-filter-menu] .rt-PopperContent {
+          z-index: 9200 !important;
+        }
+        .rt-TooltipContent.${NOTIFICATIONS_PANEL_TOOLTIP_CLASS} {
+          z-index: 9200 !important;
+        }
+        [data-ph-notifications-header-actions] > * {
+          position: relative;
+          isolation: isolate;
+        }
+        [data-ph-notifications-header-actions] > *:hover {
+          z-index: 1;
         }
       `}</style>
       <Box
@@ -293,17 +349,48 @@ export function NotificationsPanel() {
         {/* ── Header ──────────────────────────────────────────── */}
         <Flex
           align="center"
+          justify="between"
           gap="2"
           style={{
             padding: 'var(--space-3) var(--space-4)',
             borderBottom: '1px solid var(--olive-4)',
             flexShrink: 0,
+            overflow: 'visible',
           }}
         >
-          <MaterialIcon name="inbox" size={16} color="var(--slate-11)" />
-          <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-            {t('inbox.title', { defaultValue: 'Inbox' })}
-          </Text>
+          <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+            <MaterialIcon name="inbox" size={16} color="var(--slate-11)" />
+            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+              {t('inbox.title', { defaultValue: 'Inbox' })}
+            </Text>
+          </Flex>
+          <Flex
+            align="center"
+            gap="2"
+            data-ph-notifications-header-actions=""
+            style={{ flexShrink: 0 }}
+          >
+            <Box style={{ display: 'inline-flex', flexShrink: 0, position: 'relative' }}>
+              <Tooltip
+                className={NOTIFICATIONS_PANEL_TOOLTIP_CLASS}
+                content={t('notifications.markAllRead', { defaultValue: 'Mark all as read' })}
+                side="bottom"
+              >
+                <IconButton
+                  variant="ghost"
+                  size="1"
+                  color="gray"
+                  disabled={unreadCount === 0 || markingAllRead}
+                  aria-label={t('notifications.markAllRead', { defaultValue: 'Mark all as read' })}
+                  onClick={() => void onMarkAllRead()}
+                  style={{ cursor: unreadCount === 0 ? 'not-allowed' : 'pointer' }}
+                >
+                  <MaterialIcon name="done_all" size={18} color="var(--slate-11)" />
+                </IconButton>
+              </Tooltip>
+            </Box>
+            <NotificationFilterMenu value={listFilter} onChange={handleFilterChange} />
+          </Flex>
         </Flex>
 
         {/* ── Body ────────────────────────────────────────────── */}
@@ -324,13 +411,13 @@ export function NotificationsPanel() {
             </Text>
           )}
 
-          {loading && notifications.length === 0 ? (
+          {loading && displayNotifications.length === 0 ? (
             <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
               <Text size="2" color="gray">
                 {t('notifications.loading')}
               </Text>
             </Flex>
-          ) : notifications.length === 0 ? (
+          ) : displayNotifications.length === 0 ? (
             <Flex
               direction="column"
               align="center"
@@ -340,12 +427,16 @@ export function NotificationsPanel() {
             >
               <MaterialIcon name="inbox" size={40} color="var(--slate-8)" />
               <Text size="2" color="gray">
-                {t('notifications.empty')}
+                {listFilter === 'unread'
+                  ? t('notifications.emptyUnread', {
+                      defaultValue: 'No unread notifications',
+                    })
+                  : t('notifications.empty')}
               </Text>
             </Flex>
           ) : (
             <Flex direction="column">
-              {notifications.map((n) => (
+              {displayNotifications.map((n) => (
                 <NotificationRow
                   key={n._id}
                   notification={n}

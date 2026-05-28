@@ -315,11 +315,9 @@ class BaseConnector(ABC):
 
     async def notify(
         self,
-        message: str,
-        title: str| None = None,
-        severity: NotificationSeverity = NotificationSeverity.INFO,
-        *,
-        error_code: str | None = None,
+        type: NotificationType,
+        severity: NotificationSeverity,
+        payload: dict[str, Any],
     ) -> None:
         """Fire-and-forget: publish a user-visible connector notification to the broker."""
         svc = self._notification_service
@@ -327,27 +325,13 @@ class BaseConnector(ABC):
             self.logger.debug("notify skipped: no notification service or created_by associated with connector: %s, connector id: %s", self.connector_name, self.connector_id)
             return
         org_id = getattr(self.data_entities_processor, "org_id", None) or ""
-        connector_name_str = self.connector_name.value if isinstance(self.connector_name, Connectors) else self.connector_name
-        connector_name_normalized = connector_name_str.replace("_", " ").capitalize()
-
-        title = title or message[:100]
-        redirect_link = DEFAULT_CONNECTOR_NOTIFICATION_LINK + self.scope + "/" + "?connectorType=" + connector_name_normalized
-        payload: dict[str, Any] = {
-            "title": title,
-            "message": message,
-            "connectorId": self.connector_id,
-            "connectorName": connector_name_normalized,
-            "redirectLink": redirect_link,
-        }
-        if error_code:
-            payload["errorCode"] = error_code
 
         async def _run() -> None:
             await svc.publish_notification(
                 user_id=self.created_by,
                 org_id=str(org_id),
                 payload=payload,
-                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                type=type,
                 origin=NotificationOrigin.CONNECTOR,
                 severity=severity,
             )

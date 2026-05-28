@@ -58,7 +58,7 @@ describe('notification/routes/notification.routes', () => {
   }
 
   it('GET / returns paginated notifications for user', async () => {
-    const lean = [{ _id: userId, title: 'Hello', status: 'Unread' }];
+    const lean = [{ _id: userId, title: 'Hello', status: 'unread' }];
     sinon.stub(Notifications, 'find').returns({
       sort: sinon.stub().returnsThis(),
       limit: sinon.stub().returnsThis(),
@@ -132,9 +132,63 @@ describe('notification/routes/notification.routes', () => {
     await new Promise<void>((resolve, reject) => srv.close((err) => (err ? reject(err) : resolve())));
   });
 
+  it('PATCH /read-all marks all unread notifications read', async () => {
+    const updateManyStub = sinon.stub(Notifications, 'updateMany').resolves({
+      acknowledged: true,
+      modifiedCount: 3,
+      matchedCount: 3,
+      upsertedCount: 0,
+      upsertedId: null,
+    });
+
+    const port = await listen();
+    const res = await fetch(`http://127.0.0.1:${port}/api/v1/notifications/read-all`, {
+      method: 'PATCH',
+    });
+    expect(res.status).to.equal(200);
+    const body = await res.json();
+    expect(body.success).to.equal(true);
+    expect(body.modifiedCount).to.equal(3);
+
+    const filterArg = updateManyStub.firstCall.args[0] as Record<string, unknown>;
+    expect(filterArg.status).to.equal('unread');
+    expect(String(filterArg.assignedTo)).to.equal(userId);
+    expect(filterArg.isDeleted).to.equal(false);
+  });
+
+  it('PATCH /read-all returns 401 when userId missing', async () => {
+    container.unbind('AuthMiddleware');
+    container
+      .bind<AuthMiddleware>('AuthMiddleware')
+      .toConstantValue({
+        authenticate: sinon.stub().callsFake((req: any, _res: any, next: any) => {
+          req.user = {};
+          next();
+        }),
+      } as any);
+    const router = createNotificationRouter(container);
+    const app401 = express();
+    app401.use('/api/v1/notifications', router);
+    const srv = app401.listen(0);
+    const port = await new Promise<number>((resolve, reject) => {
+      srv.on('listening', () => {
+        const a = srv.address();
+        if (a && typeof a === 'object') resolve(a.port);
+        else reject(new Error('no port'));
+      });
+    });
+    const res = await fetch(`http://127.0.0.1:${port}/api/v1/notifications/read-all`, {
+      method: 'PATCH',
+    });
+    expect(res.status).to.equal(401);
+    await new Promise<void>((resolve, reject) =>
+      srv.close((err) => (err ? reject(err) : resolve())),
+    );
+  });
+
   it('PATCH /:id/read marks notification read', async () => {
     const notifId = new mongoose.Types.ObjectId().toString();
-    const doc = { _id: notifId, status: 'Read' };
+    const doc = { _id: notifId, status: 'read' };
     sinon.stub(Notifications, 'findOneAndUpdate').returns({
       lean: sinon.stub().resolves(doc),
     } as any);

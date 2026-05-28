@@ -36,7 +36,7 @@ class NotificationService:
                 "orgId": org_id,
                 "type": type.value,
                 "severity": severity.value,
-                "status": "Unread",
+                "status": "unread",
                 "origin": origin.value,
                 "assignedTo": user_id,
                 "payload": payload,

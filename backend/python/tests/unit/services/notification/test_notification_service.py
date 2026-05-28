@@ -36,7 +36,7 @@ async def test_publish_error_sends_expected_document() -> None:
     kafka_service.publish_notification.assert_awaited_once()
     doc = kafka_service.publish_notification.await_args.args[0]
     assert doc["type"] == NotificationType.CONNECTOR_SYNC_ERROR.value
-    assert doc["status"] == "Unread"
+    assert doc["status"] == "unread"
     assert doc["severity"] == NotificationSeverity.ERROR.value
     assert doc["origin"] == NotificationOrigin.CONNECTOR.value
     assert doc["assignedTo"] == "507f1f77bcf86cd799439011"

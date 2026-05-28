@@ -9,7 +9,7 @@ export interface INotification extends Document {
   orgId: mongoose.Types.ObjectId;
   type: string;
   severity: "info" | "warning" | "error" | "critical";
-  status: "Read" | "Unread" | "Archived";
+  status: "read" | "unread" | "archived";
   origin: "Connector Service" | "Indexing Service" | "AI Service" | "External Service";
   initiator?: mongoose.Types.ObjectId;
   externalInitiator?: string;
@@ -163,8 +163,8 @@ const notificationSchema = new Schema<INotification>(
     },
     status: {
       type: String,
-      enum: ["Read", "Unread", "Archived"],
-      default: "Unread",
+      enum: ["read", "unread", "archived"],
+      default: "unread",
     },
     origin: {
       type: String,

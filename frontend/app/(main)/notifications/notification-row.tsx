@@ -75,7 +75,7 @@ export function NotificationRow({
   const message = n.payload?.message ?? '';
   const href = notificationHref(n.payload?.redirectLink ?? '');
 
-  const isRead = n.status === 'Read';
+  const isRead = n.status === 'read';
   const titleStyle = { color: 'var(--slate-12)' };
 
   return (
@@ -158,12 +158,12 @@ export function NotificationRow({
               justifyContent: 'flex-end',
               alignItems: 'center',
               minHeight: 26,
-              width: n.status === 'Unread' ? 84 : 40,
+              width: n.status === 'unread' ? 84 : 40,
             }}
           >
             {isHovered ? (
               <Flex align="center" gap="2">
-                {n.status === 'Unread' && (
+                {n.status === 'unread' && (
                   <IconButton
                     variant="ghost"
                     color="gray"

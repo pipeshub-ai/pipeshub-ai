@@ -28,6 +28,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.services.notification.types import (
     NotificationSeverity,
+    NotificationType,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -413,9 +414,15 @@ class S3CompatibleBaseConnector(BaseConnector):
                     err = buckets_response.error or "unknown error"
                     self.logger.error(f"Failed to list buckets: {err}")
                     await self.notify(
-                        message=f"Failed to list S3 buckets: {err}. "
-                        "Check credentials and s3:ListAllMyBuckets / bucket access.",
-                        title="Failed to list S3 buckets",
+                        type=NotificationType.CONNECTOR_SYNC_ERROR,
+                        payload={
+                            "title": "Failed to list S3 buckets",
+                            "message": f"Failed to list S3 buckets: {err}. "
+                            "Check credentials and s3:ListAllMyBuckets / bucket access.",
+                            "connectorId": self.connector_id,
+                            "connectorName": self.connector_name.value,
+                            "redirectLink": f"workspace/connectors/{self.scope}/?connectorType={self.connector_name.value}",
+                        },
                         severity=NotificationSeverity.ERROR,
                     )
                     return
@@ -729,17 +736,30 @@ class S3CompatibleBaseConnector(BaseConnector):
                                 f"Also check if there's a bucket policy that might be blocking access."
                             )
                             await self.notify(
-                                f"Access denied when listing objects in bucket '{bucket_name}'. "
-                                f"Verify IAM permissions (s3:ListBucket, s3:GetObject). Details: {error_msg}",
-                                severity=NotificationSeverity.WARNING,
+                                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                                payload={
+                                    "title": "Access denied",
+                                    "message": f"Access denied when listing objects in bucket '{bucket_name}'. "
+                                    f"Verify IAM permissions (s3:ListBucket, s3:GetObject). Details: {error_msg}",
+                                    "connectorId": self.connector_id,
+                                    "connectorName": self.connector_name.value,
+                                    "redirectLink": f"workspace/connectors/{self.scope}/?connectorType={self.connector_name.value}",
+                                },
+                                severity=NotificationSeverity.ERROR,
                             )
                         else:
                             self.logger.error(
                                 f"Failed to list objects in bucket {bucket_name}: {error_msg}"
                             )
                             await self.notify(
-                                message=f"Failed to list objects in bucket '{bucket_name}': {error_msg}",
-                                title="Failed to list objects in bucket",
+                                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                                payload={
+                                    "title": "Failed to list objects in bucket",
+                                    "message": f"Failed to list objects in bucket '{bucket_name}': {error_msg}",
+                                    "connectorId": self.connector_id,
+                                    "connectorName": self.connector_name.value,
+                                    "redirectLink": f"workspace/connectors/{self.scope}/?connectorType={self.connector_name.value}",
+                                },
                                 severity=NotificationSeverity.ERROR,
                             )
                         has_more = False

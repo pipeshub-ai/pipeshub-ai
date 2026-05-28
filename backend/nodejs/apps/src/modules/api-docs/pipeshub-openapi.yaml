@@ -9254,6 +9254,37 @@ paths:
         '401':
           description: Unauthorized — missing or invalid session
 
+  /notifications/read-all:
+    patch:
+      tags:
+        - Notifications
+      summary: Mark all unread notifications as read
+      description: |
+        Marks every unread notification assigned to the authenticated user within the
+        30-day retention window as read.
+      operationId: markAllInAppNotificationsRead
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Notifications updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - modifiedCount
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  modifiedCount:
+                    type: integer
+                    description: Number of notifications updated
+        '401':
+          description: Unauthorized — missing or invalid session
+
   /notifications/{id}/read:
     patch:
       tags:

@@ -2,9 +2,21 @@ import { create } from 'zustand';
 import {
   DEFAULT_NOTIFICATION_PAGE_SIZE,
   NotificationsApi,
+  type NotificationListFilter,
   type NotificationListItem,
   type NotificationListResponse,
 } from './api';
+
+function listParamsForFilter(
+  filter: NotificationListFilter,
+  extra?: { cursor?: string },
+) {
+  return {
+    limit: DEFAULT_NOTIFICATION_PAGE_SIZE,
+    ...(filter === 'unread' ? { status: 'unread' as const } : {}),
+    ...extra,
+  };
+}
 
 interface NotificationState {
   notifications: NotificationListItem[];
@@ -12,15 +24,18 @@ interface NotificationState {
   cursor: string | null;
   hasMore: boolean;
   isLoadingMore: boolean;
+  listFilter: NotificationListFilter;
   isPanelOpen: boolean;
   openPanel: () => void;
   closePanel: () => void;
   togglePanel: () => void;
+  setListFilter: (filter: NotificationListFilter) => void;
   setInitialPage: (response: NotificationListResponse) => void;
   appendPage: (response: NotificationListResponse) => void;
   loadMore: () => Promise<void>;
   addNotification: (item: NotificationListItem) => void;
   markRead: (id: string) => void;
+  markAllRead: () => void;
   remove: (id: string) => void;
 }
 
@@ -45,7 +60,9 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   cursor: null,
   hasMore: false,
   isLoadingMore: false,
+  listFilter: 'all',
   isPanelOpen: false,
+  setListFilter: (filter) => set({ listFilter: filter }),
   openPanel: () => set({ isPanelOpen: true }),
   closePanel: () => set({ isPanelOpen: false }),
   togglePanel: () => set((s) => ({ isPanelOpen: !s.isPanelOpen })),
@@ -72,10 +89,9 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     }
     set({ isLoadingMore: true });
     try {
-      const response = await NotificationsApi.list({
-        limit: DEFAULT_NOTIFICATION_PAGE_SIZE,
-        cursor,
-      });
+      const response = await NotificationsApi.list(
+        listParamsForFilter(get().listFilter, { cursor }),
+      );
       get().appendPage(response);
     } finally {
       set({ isLoadingMore: false });
@@ -85,7 +101,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   addNotification: (item) => {
     const prev = get().notifications;
     const isDuplicate = prev.some((n) => n._id === item._id);
-    const wasUnread = item.status === 'Unread';
+    const wasUnread = item.status === 'unread';
     const next = [item, ...prev.filter((n) => n._id !== item._id)];
     set({
       notifications: next,
@@ -95,9 +111,9 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
 
   markRead: (id) => {
     const target = get().notifications.find((n) => n._id === id);
-    const wasUnread = target?.status === 'Unread';
+    const wasUnread = target?.status === 'unread';
     const next = get().notifications.map((n) =>
-      n._id === id ? { ...n, status: 'Read' as const } : n,
+      n._id === id ? { ...n, status: 'read' as const } : n,
     );
     set({
       notifications: next,
@@ -105,9 +121,18 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     });
   },
 
+  markAllRead: () => {
+    const { listFilter, notifications } = get();
+    set({
+      notifications: notifications.map((n) => ({ ...n, status: 'read' as const })),
+      unreadCount: 0,
+      ...(listFilter === 'unread' ? { hasMore: false, cursor: null } : {}),
+    });
+  },
+
   remove: (id) => {
     const target = get().notifications.find((n) => n._id === id);
-    const wasUnread = target?.status === 'Unread';
+    const wasUnread = target?.status === 'unread';
     const next = get().notifications.filter((n) => n._id !== id);
     set({
       notifications: next,
