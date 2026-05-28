@@ -2119,17 +2119,28 @@ async def get_connector_instances(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
     search: str | None = Query(None, description="Search by instance name/type/group"),
+    is_authenticated: bool | None = Query(None, alias="isAuthenticated", description="Filter by authentication status"),
+    is_active: bool | None = Query(None, alias="isActive", description="Filter by active status"),
+    connector_type: str | None = Query(None, alias="connectorType", description="Filter by exact connector type (e.g. 'Confluence')"),
 ) -> dict[str, Any]:
     """
     Get all configured connector instances.
 
     This endpoint returns actual configured instances with their status.
+    The response intentionally omits the full connector schema (auth fields,
+    sync config, filter definitions) — use ``GET /registry/{type}/schema``
+    to retrieve that detail when needed.
 
     Args:
         request: FastAPI request object
 
-    Returns:
-        Dictionary with success status and list of connector instances
+    Query parameters:
+        scope: personal | team
+        page / limit: pagination
+        search: full-text search across name, type, appGroup
+        isAuthenticated: true → only authenticated instances; false → only unauthenticated
+        isActive: true → only active instances; false → only inactive
+        connectorType: exact connector type string (e.g. 'Confluence')
     """
     connector_registry = request.app.state.connector_registry
     container = request.app.container
@@ -2161,7 +2172,10 @@ async def get_connector_instances(
             scope=scope,
             page=page,
             limit=limit,
-            search=search
+            search=search,
+            is_authenticated=is_authenticated,
+            is_active=is_active,
+            connector_type=connector_type,
         )
 
         return {
@@ -6496,6 +6510,11 @@ async def get_connector_schema(
 
         raw_schema = metadata.get(ConnectorRequestKeys.CONFIG, {})
         cleaned_schema = _clean_schema_for_response(raw_schema)
+
+        # documentationLinks is stripped from the config blob in _build_connector_info
+        # (to avoid duplication with the top-level field it promotes it to).
+        # Re-inject it here so the schema endpoint exposes it for the frontend.
+        cleaned_schema['documentationLinks'] = metadata.get('documentationLinks', [])
 
         return {
             "success": True,

@@ -3,9 +3,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import { useRouter } from 'next/navigation';
 import { toast } from '@/lib/store/toast-store';
 import { isProcessedError } from '@/lib/api/api-error';
 import { ServiceGate } from '@/app/components/ui/service-gate';
+import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { useAIModelsStore } from './store';
 import { AIModelsApi } from './api';
 import type { AIModelProvider, ConfiguredModel } from './types';
@@ -15,8 +17,17 @@ import { ProviderGrid, ModelConfigDialog } from './components';
 
 export default function AIModelsPage() {
   const { t } = useTranslation();
+  const router = useRouter();
+  const isAdmin = useUserStore(selectIsAdmin);
+  const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const store = useAIModelsStore();
   const [isDeleting, setIsDeleting] = useState(false);
+
+  useEffect(() => {
+    if (isProfileInitialized && isAdmin === false) {
+      router.replace('/workspace/general');
+    }
+  }, [isProfileInitialized, isAdmin, router]);
 
   const loadProviders = useCallback(async () => {
     const s = useAIModelsStore.getState();
@@ -45,10 +56,11 @@ export default function AIModelsPage() {
   }, [t]);
 
   useEffect(() => {
+    if (!isProfileInitialized || isAdmin === false) return;
     void loadProviders();
     void loadModels();
     return () => useAIModelsStore.getState().reset();
-  }, [loadProviders, loadModels]);
+  }, [isProfileInitialized, isAdmin, loadProviders, loadModels]);
 
   const handleRefresh = useCallback(() => {
     void loadProviders();
@@ -98,6 +110,8 @@ export default function AIModelsPage() {
 
   const isLoading = store.isLoadingProviders || store.isLoadingModels;
   const deleteKeyword = store.deleteTarget?.modelName ?? '';
+
+  if (!isProfileInitialized || isAdmin === false) return null;
 
   // For the Add dialog, compute how many models of the target model type are
   // already configured. The dialog uses this to decide whether to auto-default

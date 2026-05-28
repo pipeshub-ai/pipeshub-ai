@@ -25494,9 +25494,11 @@ paths:
         - name: scope
           in: query
           required: false
-          description: Filter by scope (team or personal)
+          description: |
+            Filter by scope. Defaults to <code>team</code> when omitted.
           schema:
             $ref: '#/components/schemas/ConnectorScope'
+          default: team
         - name: page
           in: query
           schema:
@@ -25512,9 +25514,35 @@ paths:
             default: 20
         - name: search
           in: query
-          description: Search by instance name
+          description: Full-text search across instance name, type, and app group
           schema:
             type: string
+        - name: isAuthenticated
+          in: query
+          description: |
+            Filter by authentication status.
+            <code>true</code> returns only authenticated instances;
+            <code>false</code> returns only unauthenticated ones.
+            Omit to return all.
+          schema:
+            type: boolean
+        - name: isActive
+          in: query
+          description: |
+            Filter by active status.
+            <code>true</code> returns only active instances;
+            <code>false</code> returns only inactive ones.
+            Omit to return all.
+          schema:
+            type: boolean
+        - name: connectorType
+          in: query
+          description: |
+            Filter by exact connector type string (e.g. <code>Confluence</code>,
+            <code>GoogleDrive</code>). Case-sensitive.
+          schema:
+            type: string
+            minLength: 1
       responses:
         '200':
           description: Instances retrieved

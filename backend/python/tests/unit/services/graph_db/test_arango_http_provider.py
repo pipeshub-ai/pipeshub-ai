@@ -2183,13 +2183,12 @@ class TestGetUserConnectorInstances:
 
 class TestGetFilteredConnectorInstances:
     @pytest.mark.asyncio
-    @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         with patch.object(
             connected_provider, "execute_query",
             new_callable=AsyncMock, side_effect=Exception("fail")
         ):
-            docs, total, scope_counts = await connected_provider.get_filtered_connector_instances(
+            docs, total = await connected_provider.get_filtered_connector_instances(
                 "apps", "orgAppRelation", "org1", "u1"
             )
             assert docs == []
@@ -5021,29 +5020,27 @@ class TestGetFilteredConnectorInstancesOptions:
             new_callable=AsyncMock,
             side_effect=[
                 [3],  # count
-                [1],  # personal count
                 [{"_key": "c1"}],  # documents
             ]
         ):
-            docs, total, scope_counts = await connected_provider.get_filtered_connector_instances(
+            docs, total = await connected_provider.get_filtered_connector_instances(
                 "apps", "orgAppRelation", "org1", "u1", scope="personal"
             )
             assert total == 3
-            assert scope_counts["personal"] == 1
+            assert len(docs) == 1
 
     @pytest.mark.asyncio
     async def test_team_scope_with_admin(self, connected_provider):
+        # is_admin=True: no accessible-keys pre-query; count + main only
         with patch.object(
             connected_provider, "execute_query",
             new_callable=AsyncMock,
             side_effect=[
                 [5],  # count
-                [2],  # personal count
-                [4],  # team count
                 [{"_key": "c1"}],  # documents
             ]
         ):
-            docs, total, scope_counts = await connected_provider.get_filtered_connector_instances(
+            docs, total = await connected_provider.get_filtered_connector_instances(
                 "apps", "orgAppRelation", "org1", "u1",
                 scope="team", is_admin=True
             )
@@ -5056,11 +5053,10 @@ class TestGetFilteredConnectorInstancesOptions:
             new_callable=AsyncMock,
             side_effect=[
                 [1],  # count
-                [0],  # personal count
                 [{"_key": "c1", "name": "Drive"}],  # documents
             ]
         ):
-            docs, total, scope_counts = await connected_provider.get_filtered_connector_instances(
+            docs, total = await connected_provider.get_filtered_connector_instances(
                 "apps", "orgAppRelation", "org1", "u1",
                 search="drive"
             )
@@ -18396,27 +18392,28 @@ class TestGetFilteredConnectorInstancesFullCoverage:
                 return [5]
             return [{"_key": "d1"}]
         connected_provider_fullcov.execute_query = mock_query
-        docs, total, scope_counts = await connected_provider_fullcov.get_filtered_connector_instances(
+        docs, total = await connected_provider_fullcov.get_filtered_connector_instances(
             "apps", "edges", "org1", "u1", scope="personal"
         )
         assert total == 5
 
     @pytest.mark.asyncio
     async def test_with_team_scope_admin(self, connected_provider_fullcov):
+        # is_admin=True: no accessible-keys pre-query; count + main only
         async def mock_query(query, bind_vars=None, transaction=None):
             if "COLLECT" in query:
                 return [3]
             return [{"_key": "d1"}]
         connected_provider_fullcov.execute_query = mock_query
-        docs, total, scope_counts = await connected_provider_fullcov.get_filtered_connector_instances(
+        docs, total = await connected_provider_fullcov.get_filtered_connector_instances(
             "apps", "edges", "org1", "u1", scope="team", is_admin=True
         )
-        assert isinstance(scope_counts, dict)
+        assert total == 3
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider_fullcov):
         connected_provider_fullcov.execute_query = AsyncMock(side_effect=Exception("err"))
-        docs, total, scope_counts = await connected_provider_fullcov.get_filtered_connector_instances(
+        docs, total = await connected_provider_fullcov.get_filtered_connector_instances(
             "apps", "edges", "org1", "u1"
         )
         assert docs == []

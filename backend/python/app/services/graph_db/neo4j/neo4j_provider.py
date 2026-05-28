@@ -12674,6 +12674,56 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Delete parent-child edge failed: {str(e)}")
             return False
 
+    async def _get_user_accessible_team_app_ids(
+        self,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return the ``id`` list of team-scoped apps this user may access.
+
+        Covers two access paths:
+
+        1. **Direct USER_APP_RELATION edge** — ``(User) -[:USER_APP_RELATION]→ (App {scope:'team'})``.
+           Handles connectors explicitly shared with a specific user.
+
+        2. **Team-based edge** — ``(User) -[:PERMISSION {type:'USER'}]→ (Teams)
+           -[:USER_APP_RELATION]→ (App {scope:'team'})``.
+           Handles the standard org-wide pattern:
+           * ``ensure_all_team_with_users`` creates the ``User → Teams`` ``PERMISSION``
+             relationship (``type='USER'``).
+           * ``ensure_team_app_edge`` creates the ``(Teams {id:'all_{org_id}'})-[:USER_APP_RELATION]→
+             (App)`` relationship when a team-scope connector is configured.
+
+        Args:
+            user_id: MongoDB userId value (``user.userId`` in Neo4j).
+            transaction: Optional Neo4j transaction ID.
+
+        Returns:
+            List of app ``id`` strings the user can access (empty list when
+            the user has no accessible team connectors).  Any DB error is
+            propagated to the caller so it is never silently swallowed.
+        """
+        # Match by userId (MongoDB ID) — not by id (the graph-internal key).
+        # Intermediate WITH after the first OPTIONAL MATCH avoids an M×N
+        # Cartesian product when both paths return multiple rows.
+        query = """
+        MATCH (u:User {userId: $user_id})
+        OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(a1:App {scope: $team_scope})
+        WITH u, collect(DISTINCT a1.id) AS direct_ids
+        OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(t:Teams)-[:USER_APP_RELATION]->(a2:App {scope: $team_scope})
+        WITH direct_ids, collect(DISTINCT a2.id) AS team_ids
+        WITH direct_ids + team_ids AS all_ids
+        UNWIND all_ids AS app_id
+        WITH app_id WHERE app_id IS NOT NULL
+        RETURN DISTINCT app_id
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={"user_id": user_id, "team_scope": "team"},
+            txn_id=transaction,
+        )
+        return [r["app_id"] for r in results] if results else []
+
     async def get_filtered_connector_instances(
         self,
         collection: str,
@@ -12688,11 +12738,18 @@ class Neo4jProvider(IGraphDBProvider):
         exclude_kb: bool = True,
         kb_connector_type: str | None = None,
         is_admin: bool = False,
+        is_authenticated: bool | None = None,
+        is_active: bool | None = None,
+        connector_type_filter: str | None = None,
         transaction: str | None = None,
-    ) -> tuple[list[dict], int, dict[str, int]]:
-        """Get filtered connector instances with pagination and scope counts."""
+    ) -> tuple[list[dict], int]:
+        """Get filtered connector instances with pagination."""
         try:
             label = self._get_label(collection)
+
+            # For non-admin team scope we pre-compute which team apps the user
+            # can actually see.
+            accessible_team_ids: list[str] | None = None
 
             # Build WHERE conditions
             conditions = ["doc.id IS NOT NULL"]
@@ -12704,21 +12761,52 @@ class Neo4jProvider(IGraphDBProvider):
                 params["kb_connector_type"] = kb_connector_type
 
             # Scope filter
+            # personal → only the caller's own personal connectors
+            # team (admin)     → all team-scoped connectors in the org
+            # team (non-admin) → only team connectors reachable via the user's
+            #                    USER_APP_RELATION / PERMISSION edges
             if scope == "personal":
-                conditions.append("doc.scope = $scope")
+                conditions.append("doc.scope = $personal_scope")
                 conditions.append("doc.createdBy = $user_id")
-                params["scope"] = scope
+                params["personal_scope"] = "personal"
                 params["user_id"] = user_id
             elif scope == "team":
-                conditions.append("(doc.scope = $team_scope OR doc.createdBy = $user_id)")
+                conditions.append("doc.scope = $team_scope")
                 params["team_scope"] = "team"
-                params["user_id"] = user_id
+                if not is_admin:
+                    accessible_team_ids = await self._get_user_accessible_team_app_ids(
+                        user_id, transaction
+                    )
+                    if not accessible_team_ids:
+                        self.logger.info(
+                            "No accessible team app IDs found for user %s — "
+                            "edge data may be inconsistent (ensure_team_app_edge / "
+                            "ensure_all_team_with_users not yet run for this org).",
+                            user_id,
+                        )
+                    conditions.append("doc.id IN $accessible_team_ids")
+                    params["accessible_team_ids"] = accessible_team_ids
 
             # Search filter
             if search:
                 search_pattern = f"(?i).*{search}.*"
                 conditions.append("(doc.name =~ $search OR doc.type =~ $search OR doc.appGroup =~ $search)")
                 params["search"] = search_pattern
+
+            # is_authenticated filter
+            if is_authenticated is not None:
+                conditions.append("doc.isAuthenticated = $is_authenticated")
+                params["is_authenticated"] = is_authenticated
+
+            # is_active filter
+            if is_active is not None:
+                conditions.append("doc.isActive = $is_active")
+                params["is_active"] = is_active
+
+            # connector type filter
+            if connector_type_filter:
+                conditions.append("doc.type = $connector_type_filter")
+                params["connector_type_filter"] = connector_type_filter
 
             where_clause = " AND ".join(conditions)
 
@@ -12730,42 +12818,6 @@ class Neo4jProvider(IGraphDBProvider):
             """
             count_result = await self.client.execute_query(count_query, parameters=params, txn_id=transaction)
             total_count = count_result[0]["total"] if count_result else 0
-
-            # Scope counts (personal and team)
-            scope_counts = {"personal": 0, "team": 0}
-
-            # Personal count
-            personal_query = f"""
-            MATCH (doc:{label})
-            WHERE doc.id IS NOT NULL
-            AND doc.scope = $personal_scope
-            AND doc.createdBy = $user_id
-            AND doc.isConfigured = true
-            RETURN count(doc) as total
-            """
-            personal_result = await self.client.execute_query(
-                personal_query,
-                parameters={"personal_scope": "personal", "user_id": user_id},
-                txn_id=transaction
-            )
-            scope_counts["personal"] = personal_result[0]["total"] if personal_result else 0
-
-            # Team count (if admin or has team access)
-            if is_admin or scope == "team":
-                team_query = f"""
-                MATCH (doc:{label})
-                WHERE doc.id IS NOT NULL
-                AND doc.type <> $kb_connector_type
-                AND doc.scope = $team_scope
-                AND doc.isConfigured = true
-                RETURN count(doc) as total
-                """
-                team_result = await self.client.execute_query(
-                    team_query,
-                    parameters={"kb_connector_type": kb_connector_type or "", "team_scope": "team"},
-                    txn_id=transaction
-                )
-                scope_counts["team"] = team_result[0]["total"] if team_result else 0
 
             # Main query with pagination
             main_query = f"""
@@ -12781,12 +12833,12 @@ class Neo4jProvider(IGraphDBProvider):
             results = await self.client.execute_query(main_query, parameters=params, txn_id=transaction)
             documents = [self._neo4j_to_arango_node(dict(r["doc"]), collection) for r in results] if results else []
 
-            self.logger.debug(f"✅ Found {len(documents)} connector instances (total: {total_count})")
-            return documents, total_count, scope_counts
+            self.logger.info(f"✅ Found {len(documents)} connector instances (total: {total_count})")
+            return documents, total_count
 
         except Exception as e:
             self.logger.error(f"❌ Get filtered connector instances failed: {str(e)}")
-            return [], 0, {"personal": 0, "team": 0}
+            return [], 0
 
     async def get_kb_permissions(
         self,

@@ -5,6 +5,8 @@ import { Container } from 'inversify'
 import { createConnectorRouter } from '../../../../src/modules/tokens_manager/routes/connectors.routes'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { PrometheusService } from '../../../../src/libs/services/prometheus/prometheus.service'
+import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
+import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema'
 
 describe('Connector Routes - handler coverage', () => {
   let container: Container
@@ -378,6 +380,129 @@ describe('Connector Routes - handler coverage', () => {
         )
         expect(found, `Expected route ${expected.method.toUpperCase()} ${expected.path} to exist`).to.not.be.undefined
       }
+    })
+  })
+
+  describe('GET / — connectorListSchema validation', () => {
+    function getAllHandlers(path: string, method: string) {
+      const layer = router.stack.find(
+        (l: any) => l.route && l.route.path === path && l.route.methods[method],
+      )
+      if (!layer) return []
+      return layer.route.stack.map((s: any) => s.handle)
+    }
+
+    async function runChain(reqOverrides: any) {
+      const req: any = {
+        user: { userId: 'u1', orgId: 'o1' },
+        query: {},
+        params: {},
+        body: {},
+        headers: {},
+        ...reqOverrides,
+      }
+      const res: any = { status: sinon.stub().returnsThis(), json: sinon.stub().returnsThis() }
+      const next = sinon.stub()
+      for (const handler of getAllHandlers('/', 'get')) {
+        if (next.called) break
+        await Promise.resolve(handler(req, res, next))
+      }
+      return { req, res, next }
+    }
+
+    it('isAuthenticated=true string is coerced to boolean true by Zod', async () => {
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 200, data: [] })
+      sinon.stub(UserGroups, 'find').returns({ select: sinon.stub().resolves([]) } as any)
+
+      const { next } = await runChain({ query: { scope: 'team', isAuthenticated: 'true' } })
+
+      const wasZodError = next.called && next.firstCall.args[0]?.issues != null
+      expect(wasZodError).to.be.false
+    })
+
+    it('isAuthenticated=false string is coerced to boolean false by Zod', async () => {
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 200, data: [] })
+      sinon.stub(UserGroups, 'find').returns({ select: sinon.stub().resolves([]) } as any)
+
+      const { next } = await runChain({ query: { scope: 'team', isAuthenticated: 'false' } })
+
+      const wasZodError = next.called && next.firstCall.args[0]?.issues != null
+      expect(wasZodError).to.be.false
+    })
+
+    it('isAuthenticated=maybe is rejected by Zod', async () => {
+      const { next } = await runChain({ query: { scope: 'team', isAuthenticated: 'maybe' } })
+      expect(next.called).to.be.true
+    })
+
+    it('isActive=true is accepted by Zod', async () => {
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 200, data: [] })
+      sinon.stub(UserGroups, 'find').returns({ select: sinon.stub().resolves([]) } as any)
+
+      const { next } = await runChain({ query: { scope: 'team', isActive: 'true' } })
+
+      const wasZodError = next.called && next.firstCall.args[0]?.issues != null
+      expect(wasZodError).to.be.false
+    })
+
+    it('connectorType=google_drive is accepted by Zod', async () => {
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 200, data: [] })
+      sinon.stub(UserGroups, 'find').returns({ select: sinon.stub().resolves([]) } as any)
+
+      const { next } = await runChain({ query: { scope: 'team', connectorType: 'google_drive' } })
+
+      const wasZodError = next.called && next.firstCall.args[0]?.issues != null
+      expect(wasZodError).to.be.false
+    })
+
+    it('empty connectorType is rejected by Zod', async () => {
+      const { next } = await runChain({ query: { scope: 'team', connectorType: '' } })
+      expect(next.called).to.be.true
+    })
+
+    it('scope defaults to team when omitted', async () => {
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 200, data: [] })
+      sinon.stub(UserGroups, 'find').returns({ select: sinon.stub().resolves([]) } as any)
+
+      const { next } = await runChain({ query: {} })
+
+      const wasZodError = next.called && next.firstCall.args[0]?.issues != null
+      expect(wasZodError).to.be.false
+    })
+
+    it('scope=invalid is rejected by Zod', async () => {
+      const { next } = await runChain({ query: { scope: 'bad_scope' } })
+      expect(next.called).to.be.true
+    })
+
+    it('page=0 is rejected by Zod (min 1)', async () => {
+      const { next } = await runChain({ query: { scope: 'team', page: '0' } })
+      expect(next.called).to.be.true
+    })
+
+    it('limit=300 is rejected by Zod (max 200)', async () => {
+      const { next } = await runChain({ query: { scope: 'team', limit: '300' } })
+      expect(next.called).to.be.true
+    })
+
+    it('all valid new params together pass Zod and reach controller', async () => {
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 200, data: [] })
+      sinon.stub(UserGroups, 'find').returns({ select: sinon.stub().resolves([]) } as any)
+
+      const { res, next } = await runChain({
+        query: {
+          scope: 'team',
+          page: '1',
+          limit: '50',
+          search: 'test',
+          isAuthenticated: 'true',
+          isActive: 'false',
+          connectorType: 'slack',
+        },
+      })
+
+      const wasZodError = next.called && next.firstCall.args[0]?.issues != null
+      expect(wasZodError).to.be.false
     })
   })
 })

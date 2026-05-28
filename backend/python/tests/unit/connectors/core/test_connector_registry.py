@@ -1088,7 +1088,6 @@ class TestGetAllConnectorInstances:
         gp.get_filtered_connector_instances.return_value = (
             [{"_key": "c1", "type": "Gmail", "name": "My Gmail", "scope": "personal"}],
             1,
-            {"personal": 1, "team": 0},
         )
 
         mock_data_store = MagicMock()
@@ -1110,7 +1109,6 @@ class TestGetAllConnectorInstances:
         gp.get_filtered_connector_instances.return_value = (
             [{"_key": "c1", "type": "UnknownType", "name": "X"}],
             1,
-            {"personal": 0, "team": 0},
         )
 
         mock_data_store = MagicMock()
@@ -1796,7 +1794,6 @@ class TestGetActiveAgentConnectorInstances:
                  "isAgentActive": True, "isConfigured": False, "scope": "personal"},
             ],
             3,
-            {"personal": 3, "team": 0},
         )
 
         mock_data_store = MagicMock()
@@ -1835,7 +1832,6 @@ class TestGetConfiguredConnectorInstances:
                  "isConfigured": False, "scope": "personal"},
             ],
             2,
-            {"personal": 2, "team": 0},
         )
 
         mock_data_store = MagicMock()

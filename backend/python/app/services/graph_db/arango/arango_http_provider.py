@@ -981,6 +981,72 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to get user connector instances: {e}")
             return []
 
+    async def _get_user_accessible_team_app_keys(
+        self,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return the ``_key`` list of team-scoped apps this user may access.
+
+        Covers two access paths:
+
+        1. **Direct userAppRelation edge** — ``(users/{key}) -[userAppRelation]→ (apps/{key})``
+           where ``app.scope == 'team'``.  Handles connectors explicitly shared
+           with a specific user.
+
+        2. **Team-based edge** — ``(users/{key}) -[permission {type:'USER'}]→
+           (teams/{key}) -[userAppRelation]→ (apps/{key})``.
+           Handles the standard org-wide pattern:
+           * ``ensure_all_team_with_users`` creates the user→team ``permission``
+             edge (``type='USER'``).
+           * ``ensure_team_app_edge`` creates the ``teams/all_{org_id} →
+             userAppRelation → apps/{connector_id}`` edge when a team-scope
+             connector is configured.
+
+        Args:
+            user_id: External userId value (as stored in ``user.userId``), NOT
+                     the ArangoDB ``_key``.  The query resolves the ``_key``
+                     internally.
+            transaction: Optional ArangoDB transaction ID.
+
+        Returns:
+            List of app ``_key`` strings the user can access (empty list when
+            the user has no accessible team connectors).  Any DB error is
+            propagated to the caller so it is never silently swallowed.
+        """
+        query = f"""
+        LET user_doc = FIRST(
+            FOR u IN {CollectionNames.USERS.value}
+                FILTER u.userId == @user_id
+                LIMIT 1
+                RETURN u
+        )
+        FILTER user_doc != null
+        LET user_from = CONCAT("{CollectionNames.USERS.value}/", user_doc._key)
+        LET direct_keys = (
+            FOR app IN OUTBOUND user_from {CollectionNames.USER_APP_RELATION.value}
+                FILTER app.scope == @team_scope
+                RETURN app._key
+        )
+        LET team_keys = (
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._from == user_from
+                FILTER perm.type == "USER"
+                FILTER STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
+                FOR app IN OUTBOUND perm._to {CollectionNames.USER_APP_RELATION.value}
+                    FILTER app.scope == @team_scope
+                    RETURN app._key
+        )
+        FOR key IN UNION_DISTINCT(direct_keys, team_keys)
+            RETURN key
+        """
+        results = await self.execute_query(
+            query,
+            bind_vars={"user_id": user_id, "team_scope": "team"},
+            transaction=transaction,
+        )
+        return results or []
+
     async def get_filtered_connector_instances(
         self,
         collection: str,
@@ -995,10 +1061,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
         exclude_kb: bool = True,
         kb_connector_type: str | None = None,
         is_admin: bool = False,
+        is_authenticated: bool | None = None,
+        is_active: bool | None = None,
+        connector_type_filter: str | None = None,
         transaction: str | None = None,
-    ) -> tuple[list[dict], int, dict[str, int]]:
-        """Get filtered connector instances with pagination and scope counts."""
+    ) -> tuple[list[dict], int]:
+        """Get filtered connector instances with pagination."""
         try:
+            # For non-admin team scope we pre-compute which team apps the user
+            # can actually see.  This is done once here so the same list can be
+            # reused for both the main query and the scope-count sub-query.
+            accessible_team_keys: list[str] | None = None
+
             # Build base query
             query = """
             FOR doc IN @@collection
@@ -1014,65 +1088,56 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars["kb_connector_type"] = kb_connector_type
 
             # Scope filter
+            # personal → only the caller's own personal connectors
+            # team (admin)     → all team-scoped connectors in the org
+            # team (non-admin) → only team connectors reachable via the user's
+            #                    userAppRelation / permission edges
             if scope == "personal":
-                query += " FILTER doc.scope == @scope\n"
-                query += " FILTER (doc.createdBy == @user_id)\n"
-                bind_vars["scope"] = scope
+                query += " FILTER doc.scope == @personal_scope\n"
+                query += " FILTER doc.createdBy == @user_id\n"
+                bind_vars["personal_scope"] = "personal"
                 bind_vars["user_id"] = user_id
             elif scope == "team":
-                query += " FILTER (doc.scope == @team_scope) OR (doc.createdBy == @user_id)\n"
+                query += " FILTER doc.scope == @team_scope\n"
                 bind_vars["team_scope"] = "team"
-                bind_vars["user_id"] = user_id
+                if not is_admin:
+                    accessible_team_keys = await self._get_user_accessible_team_app_keys(
+                        user_id, transaction
+                    )
+                    if not accessible_team_keys:
+                        self.logger.info(
+                            "No accessible team app keys found for user %s — "
+                            "edge data may be inconsistent (ensure_team_app_edge / "
+                            "ensure_all_team_with_users not yet run for this org).",
+                            user_id,
+                        )
+                    query += " FILTER doc._key IN @accessible_team_keys\n"
+                    bind_vars["accessible_team_keys"] = accessible_team_keys
 
             # Search filter
             if search:
                 query += " FILTER (LOWER(doc.name) LIKE @search) OR (LOWER(doc.type) LIKE @search) OR (LOWER(doc.appGroup) LIKE @search)\n"
                 bind_vars["search"] = f"%{search.lower()}%"
 
+            # is_authenticated filter
+            if is_authenticated is not None:
+                query += " FILTER doc.isAuthenticated == @is_authenticated\n"
+                bind_vars["is_authenticated"] = is_authenticated
+
+            # is_active filter
+            if is_active is not None:
+                query += " FILTER doc.isActive == @is_active\n"
+                bind_vars["is_active"] = is_active
+
+            # connector type filter
+            if connector_type_filter:
+                query += " FILTER doc.type == @connector_type_filter\n"
+                bind_vars["connector_type_filter"] = connector_type_filter
+
             # Count query
             count_query = query + " COLLECT WITH COUNT INTO total RETURN total"
             count_result = await self.execute_query(count_query, bind_vars=bind_vars, transaction=transaction)
             total_count = count_result[0] if count_result else 0
-
-            # Scope counts (personal and team)
-            scope_counts = {"personal": 0, "team": 0}
-
-            # Personal count
-            personal_count_query = """
-            FOR doc IN @@collection
-                FILTER doc._id != null
-                FILTER doc.scope == @personal_scope
-                FILTER doc.createdBy == @user_id
-                FILTER doc.isConfigured == true
-                COLLECT WITH COUNT INTO total
-                RETURN total
-            """
-            personal_bind_vars = {
-                "@collection": collection,
-                "personal_scope": "personal",
-                "user_id": user_id,
-            }
-            personal_result = await self.execute_query(personal_count_query, bind_vars=personal_bind_vars, transaction=transaction)
-            scope_counts["personal"] = personal_result[0] if personal_result else 0
-
-            # Team count (if admin or has team access)
-            if is_admin or scope == "team":
-                team_count_query = """
-                FOR doc IN @@collection
-                    FILTER doc._id != null
-                    FILTER doc.type != @kb_connector_type
-                    FILTER doc.scope == @team_scope
-                    FILTER doc.isConfigured == true
-                    COLLECT WITH COUNT INTO total
-                    RETURN total
-                """
-                team_bind_vars = {
-                    "@collection": collection,
-                    "kb_connector_type": kb_connector_type or "",
-                    "team_scope": "team",
-                }
-                team_result = await self.execute_query(team_count_query, bind_vars=team_bind_vars, transaction=transaction)
-                scope_counts["team"] = team_result[0] if team_result else 0
 
             # Main query with pagination
             query += " LIMIT @skip, @limit\n RETURN doc"
@@ -1081,11 +1146,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             documents = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction) or []
 
-            return documents, total_count, scope_counts
+            return documents, total_count
 
         except Exception as e:
             self.logger.error(f"Failed to get filtered connector instances: {e}")
-            return [], 0, {"personal": 0, "team": 0}
+            return [], 0
 
     async def reindex_record_group_records(
         self,

@@ -192,16 +192,23 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('should throw BadRequestError when scope is missing', async () => {
+    it('should forward query to backend when scope defaults to team via Zod middleware', async () => {
+      // The Zod schema sets scope.default('team'), so by the time the controller
+      // runs req.query.scope is always 'team' or 'personal', never undefined.
       const handler = getConnectorInstances(mockAppConfig)
-      req.query = {}
+      req.query = { scope: 'team' }
       sinon.stub(UserGroups, 'find').returns({
         select: sinon.stub().resolves([]),
       } as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: [],
+      })
 
       await handler(req, res, next)
 
-      expect(next.calledOnce).to.be.true
+      expect(res.status.calledWith(200)).to.be.true
+      expect(next.called).to.be.false
     })
 
     it('should return connector instances for valid request', async () => {
@@ -1290,13 +1297,21 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       expect(res.status.calledWith(200)).to.be.true
     })
 
-    it('should throw when scope is missing', async () => {
+    it('should succeed when scope is team (set by Zod middleware default)', async () => {
+      // Zod's default('team') means scope is always present when the route middleware runs.
       const handler = getConnectorInstances(mockAppConfig)
-      req.query = {}
+      req.query = { scope: 'team' }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: [],
+      })
 
       await handler(req, res, next)
 
-      expect(next.calledOnce).to.be.true
+      expect(res.status.calledWith(200)).to.be.true
     })
   })
 
@@ -1347,6 +1362,178 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
+    })
+  })
+
+  describe('getConnectorInstances - new filter params (isAuthenticated, isActive, connectorType)', () => {
+    it('should forward isAuthenticated=true to backend', async () => {
+      const handler = getConnectorInstances(mockAppConfig)
+      req.query = { scope: 'team', isAuthenticated: 'true' }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: [],
+      })
+
+      await handler(req, res, next)
+
+      const calledUrl = execStub.firstCall.args[0] as string
+      expect(calledUrl).to.include('isAuthenticated=true')
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('should forward isAuthenticated=false to backend', async () => {
+      const handler = getConnectorInstances(mockAppConfig)
+      req.query = { scope: 'team', isAuthenticated: 'false' }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: [],
+      })
+
+      await handler(req, res, next)
+
+      const calledUrl = execStub.firstCall.args[0] as string
+      expect(calledUrl).to.include('isAuthenticated=false')
+    })
+
+    it('should NOT append isAuthenticated when it is undefined', async () => {
+      const handler = getConnectorInstances(mockAppConfig)
+      req.query = { scope: 'team' }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: [],
+      })
+
+      await handler(req, res, next)
+
+      const calledUrl = execStub.firstCall.args[0] as string
+      expect(calledUrl).to.not.include('isAuthenticated')
+    })
+
+    it('should forward isActive=true to backend', async () => {
+      const handler = getConnectorInstances(mockAppConfig)
+      req.query = { scope: 'team', isActive: 'true' }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: [],
+      })
+
+      await handler(req, res, next)
+
+      const calledUrl = execStub.firstCall.args[0] as string
+      expect(calledUrl).to.include('isActive=true')
+    })
+
+    it('should forward isActive=false to backend', async () => {
+      const handler = getConnectorInstances(mockAppConfig)
+      req.query = { scope: 'team', isActive: 'false' }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: [],
+      })
+
+      await handler(req, res, next)
+
+      const calledUrl = execStub.firstCall.args[0] as string
+      expect(calledUrl).to.include('isActive=false')
+    })
+
+    it('should NOT append isActive when it is undefined', async () => {
+      const handler = getConnectorInstances(mockAppConfig)
+      req.query = { scope: 'team' }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: [],
+      })
+
+      await handler(req, res, next)
+
+      const calledUrl = execStub.firstCall.args[0] as string
+      expect(calledUrl).to.not.include('isActive')
+    })
+
+    it('should forward connectorType to backend', async () => {
+      const handler = getConnectorInstances(mockAppConfig)
+      req.query = { scope: 'team', connectorType: 'google_drive' }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: [],
+      })
+
+      await handler(req, res, next)
+
+      const calledUrl = execStub.firstCall.args[0] as string
+      expect(calledUrl).to.include('connectorType=google_drive')
+    })
+
+    it('should NOT append connectorType when it is undefined', async () => {
+      const handler = getConnectorInstances(mockAppConfig)
+      req.query = { scope: 'team' }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: [],
+      })
+
+      await handler(req, res, next)
+
+      const calledUrl = execStub.firstCall.args[0] as string
+      expect(calledUrl).to.not.include('connectorType')
+    })
+
+    it('should forward all new filter params together', async () => {
+      const handler = getConnectorInstances(mockAppConfig)
+      req.query = {
+        scope: 'team',
+        isAuthenticated: 'true',
+        isActive: 'false',
+        connectorType: 'slack',
+        search: 'test',
+        page: '2',
+        limit: '50',
+      }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'admin' }]),
+      } as any)
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: [],
+      })
+
+      await handler(req, res, next)
+
+      const calledUrl = execStub.firstCall.args[0] as string
+      expect(calledUrl).to.include('isAuthenticated=true')
+      expect(calledUrl).to.include('isActive=false')
+      expect(calledUrl).to.include('connectorType=slack')
+      expect(calledUrl).to.include('search=test')
+      expect(calledUrl).to.include('page=2')
+      expect(calledUrl).to.include('limit=50')
+      // X-Is-Admin header should reflect admin status
+      const headers = execStub.firstCall.args[2]
+      expect(headers['X-Is-Admin']).to.equal('true')
     })
   })
 

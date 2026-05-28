@@ -15,6 +15,11 @@ export function getConnectorInfoText(connector: Connector | null | undefined): s
  *
  * Pass `documentationLinksOverride` when the UI has schema-fetched links that are not
  * yet on `connector.config` (e.g. connector panel before/without merged config).
+ *
+ * Resolution order:
+ *  1. `documentationLinksOverride` (caller-supplied, e.g. freshly-fetched schema)
+ *  2. `connector.documentationLinks` (top-level field on list responses)
+ *  3. `connector.config?.documentationLinks` (legacy, kept for backward compat)
  */
 export function getConnectorDocumentationUrl(
   connector: Connector | null | undefined,
@@ -25,7 +30,9 @@ export function getConnectorDocumentationUrl(
   const links =
     documentationLinksOverride !== undefined
       ? documentationLinksOverride
-      : ((configObj?.documentationLinks as DocumentationLink[] | undefined) ?? []);
+      : (connector.documentationLinks ??
+         (configObj?.documentationLinks as DocumentationLink[] | undefined) ??
+         []);
 
   const pipeshub = links.find((l) => l.type === 'pipeshub' && (l.url?.trim() ?? '') !== '');
   if (pipeshub?.url) return pipeshub.url.trim();

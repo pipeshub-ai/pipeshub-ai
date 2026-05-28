@@ -27,6 +27,8 @@ export interface Connector {
   supportsRealtime: boolean;
   supportsSync: boolean;
   supportsAgent: boolean;
+  /** Documentation links promoted from config; present on list responses. */
+  documentationLinks?: DocumentationLink[];
   scope: string;
   /** Only present on active connectors. */
   isActive: boolean;
@@ -40,6 +42,11 @@ export interface Connector {
   updatedBy?: string;
   authType?: string;
   connectorInfo?: string | Record<string, unknown> | null;
+  /**
+   * @deprecated Full config schema is no longer included in list responses.
+   * Use `GET /registry/{type}/schema` to retrieve auth/sync/filter schemas.
+   * `documentationLinks` is now promoted to a top-level field.
+   */
   config?: Record<string, unknown>;
   /**
    * Transient operational status from the backend.
