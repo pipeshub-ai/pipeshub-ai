@@ -62,6 +62,7 @@ from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
+from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.sources.local_fs.connector import LocalFsConnector
 from app.connectors.sources.local_fs.file_events import (
     _normalize_connector_type_value,
@@ -2474,15 +2475,17 @@ def _apply_confluence_optional_jira_scope(
     auth_config: dict[str, Any],
     scopes: list[str],
 ) -> list[str]:
-    """Append read:jira-user when Confluence Cloud OAuth has includeJiraScope enabled."""
+    """Add or remove read:jira-user based on Confluence Cloud includeJiraScope."""
     normalized = (connector_type or "").replace(" ", "").upper()
     if normalized != Connectors.CONFLUENCE.value:
         return scopes
-    enabled = auth_config.get("includeJiraScope")
     jira_scope = "read:jira-user"
-    if not enabled or jira_scope in scopes:
-        return scopes
-    return [*scopes, jira_scope]
+    enabled = include_jira_scope_enabled(auth_config.get("includeJiraScope"))
+    if enabled:
+        if jira_scope in scopes:
+            return scopes
+        return [*scopes, jira_scope]
+    return [scope for scope in scopes if scope != jira_scope]
 
 
 async def _prepare_connector_config(

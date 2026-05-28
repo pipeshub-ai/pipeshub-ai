@@ -858,6 +858,13 @@ function NumberInput({
   );
 }
 
+/** Map legacy checkbox booleans to yes/no select values (Radix items use "yes"/"no"). */
+function toYesNoSelectValue(value: unknown): string {
+  if (value === true) return 'yes';
+  if (value === false) return 'no';
+  return String(value ?? '');
+}
+
 function SelectInput({
   field,
   value,
@@ -879,15 +886,29 @@ function SelectInput({
 }) {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
 
-  // Build options list from field.options or external options prop
-  const optionItems = (options ||
-    ('options' in field && Array.isArray(field.options)
-      ? field.options.map((opt: string | { id: string; label: string }) =>
-          typeof opt === 'string'
-            ? { label: opt, value: opt }
-            : { label: opt.label, value: opt.id }
-        )
-      : [])).filter((opt) => opt.value !== '');
+  const optionItems = useMemo(
+    () =>
+      (options ||
+        ('options' in field && Array.isArray(field.options)
+          ? field.options.map((opt: string | { id: string; label: string }) =>
+              typeof opt === 'string'
+                ? { label: opt, value: opt }
+                : { label: opt.label, value: opt.id }
+            )
+          : [])
+      ).filter((opt) => opt.value !== ''),
+    [options, field]
+  );
+
+  const hasYesNoOptions = useMemo(() => {
+    const optionValues = new Set(optionItems.map((opt) => opt.value));
+    return optionValues.has('yes') && optionValues.has('no');
+  }, [optionItems]);
+
+  const selectValue = useMemo(
+    () => (hasYesNoOptions ? toYesNoSelectValue(value) : String(value ?? '')),
+    [hasYesNoOptions, value]
+  );
 
   const leftGutter = startAdornment ? ADORNMENT_LEFT_GUTTER : 0;
 
@@ -895,7 +916,7 @@ function SelectInput({
     <>
       <StartAdornmentOverlay startAdornment={startAdornment}>
         <Select.Root
-          value={String(value ?? '')}
+          value={selectValue}
           onValueChange={(v) => onChange(field.name, v)}
           disabled={disabled}
         >
