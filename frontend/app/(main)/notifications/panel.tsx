@@ -292,6 +292,27 @@ export function NotificationsPanel() {
         [data-ph-notifications-header-actions] > *:hover {
           z-index: 1;
         }
+        [data-ph-notification-row]:hover {
+          background-color: var(--olive-3);
+        }
+        [data-ph-notification-row] [data-ph-notification-row-actions] {
+          display: none;
+        }
+        [data-ph-notification-row]:hover [data-ph-notification-row-actions] {
+          display: flex;
+        }
+        [data-ph-notification-row] [data-ph-notification-row-time] {
+          display: block;
+        }
+        [data-ph-notification-row]:hover [data-ph-notification-row-time] {
+          display: none;
+        }
+        [data-ph-notification-row] [data-ph-notification-row-title-link] {
+          text-decoration: none;
+        }
+        [data-ph-notification-row] [data-ph-notification-row-title-link]:hover {
+          text-decoration: underline;
+        }
       `}</style>
       <Box
         ref={panelRef}

@@ -1,6 +1,5 @@
 'use client';
 
-import { useState } from 'react';
 import Link from 'next/link';
 import { Flex, Text, Box, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -67,8 +66,6 @@ export function NotificationRow({
   markReadLabel: string;
   dismissLabel: string;
 }) {
-  const [isHovered, setIsHovered] = useState(false);
-  const [isTitleHovered, setIsTitleHovered] = useState(false);
   const timeLabel = formatRelativeTime(n.createdAt);
   const severity = n.severity ?? 'error';
   const title = n.payload?.title ?? '';
@@ -80,12 +77,10 @@ export function NotificationRow({
 
   return (
     <Box
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
+      data-ph-notification-row=""
       style={{
         width: '100%',
         boxSizing: 'border-box',
-        backgroundColor: isHovered ? 'var(--olive-3)' : 'transparent',
         borderBottom: '1px solid var(--olive-4)',
         padding: 'var(--space-3) var(--space-4)',
         opacity: isRead ? 0.65 : 1,
@@ -117,12 +112,10 @@ export function NotificationRow({
               <Text size="2" weight="medium" style={titleStyle} truncate asChild>
                 <Link
                   href={href}
-                  onMouseEnter={() => setIsTitleHovered(true)}
-                  onMouseLeave={() => setIsTitleHovered(false)}
+                  data-ph-notification-row-title-link=""
                   style={{
                     minWidth: 0,
                     display: 'block',
-                    textDecoration: isTitleHovered ? 'underline' : 'none',
                   }}
                   {...(/^https?:\/\//i.test(href)
                     ? { target: '_blank', rel: 'noopener noreferrer' }
@@ -161,36 +154,42 @@ export function NotificationRow({
               width: n.status === 'unread' ? 84 : 40,
             }}
           >
-            {isHovered ? (
-              <Flex align="center" gap="2">
-                {n.status === 'unread' && (
-                  <IconButton
-                    variant="ghost"
-                    color="gray"
-                    size="1"
-                    onClick={() => onMarkRead(n)}
-                    aria-label={markReadLabel}
-                    style={{ flexShrink: 0 }}
-                  >
-                    <MaterialIcon name="done" size={16} color="var(--slate-11)" />
-                  </IconButton>
-                )}
+            <Flex
+              data-ph-notification-row-actions=""
+              align="center"
+              gap="2"
+            >
+              {n.status === 'unread' && (
                 <IconButton
                   variant="ghost"
                   color="gray"
                   size="1"
-                  onClick={() => onDismiss(n)}
-                  aria-label={dismissLabel}
+                  onClick={() => onMarkRead(n)}
+                  aria-label={markReadLabel}
                   style={{ flexShrink: 0 }}
                 >
-                  <MaterialIcon name="close" size={16} color="var(--slate-11)" />
+                  <MaterialIcon name="done" size={16} color="var(--slate-11)" />
                 </IconButton>
-              </Flex>
-            ) : (
-              <Text size="1" color="gray" style={{ whiteSpace: 'nowrap' }}>
-                {timeLabel}
-              </Text>
-            )}
+              )}
+              <IconButton
+                variant="ghost"
+                color="gray"
+                size="1"
+                onClick={() => onDismiss(n)}
+                aria-label={dismissLabel}
+                style={{ flexShrink: 0 }}
+              >
+                <MaterialIcon name="close" size={16} color="var(--slate-11)" />
+              </IconButton>
+            </Flex>
+            <Text
+              data-ph-notification-row-time=""
+              size="1"
+              color="gray"
+              style={{ whiteSpace: 'nowrap' }}
+            >
+              {timeLabel}
+            </Text>
           </Box>
         </Flex>
       </Flex>
