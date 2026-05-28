@@ -12,7 +12,10 @@ import { ConnectorsApi } from '../api';
 import { startConnectorSync } from '../utils/connector-sync-actions';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
-import { refreshConnectorInstanceDetails } from '../utils/refresh-instance-details';
+import {
+  refreshAllConnectorInstances,
+  refreshConnectorInstanceDetails,
+} from '../utils/refresh-instance-details';
 import {
   stopElectronLocalSync,
   getElectronLocalSyncStatus,
@@ -289,7 +292,7 @@ function PersonalConnectorsPageContent() {
     setIsRefreshingAllInstances(true);
     try {
       await refreshConnectorsListsQuiet();
-      await Promise.allSettled(instanceIds.map((id) => refreshInstanceDetailsForPage(id)));
+      await refreshAllConnectorInstances(instanceIds, refreshInstanceDetailsForPage);
     } catch {
       addToast({
         variant: 'error',
@@ -527,7 +530,9 @@ function PersonalConnectorsPageContent() {
           onRefreshAll={handleRefreshAllInstances}
           isRefreshingAll={isRefreshingAllInstances}
           onRefreshInstance={(instance) =>
-            void refreshInstanceDetailsForPage(instance._key as string)
+            instance._key
+              ? refreshInstanceDetailsForPage(instance._key)
+              : Promise.resolve()
           }
         />
         <ConnectorPanel />

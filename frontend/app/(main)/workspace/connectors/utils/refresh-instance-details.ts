@@ -27,3 +27,15 @@ export async function refreshConnectorInstanceDetails(
   fetchInstanceStatsIfPanelOpen(connectorId);
   return fresh;
 }
+
+/** Run per-instance refresh in parallel; throw if any instance fails. */
+export async function refreshAllConnectorInstances(
+  instanceIds: string[],
+  refreshOne: (connectorId: string) => Promise<unknown>
+): Promise<void> {
+  if (instanceIds.length === 0) return;
+  const results = await Promise.allSettled(instanceIds.map(refreshOne));
+  if (results.some((r) => r.status === 'rejected')) {
+    throw new Error('One or more connector instances failed to refresh');
+  }
+}

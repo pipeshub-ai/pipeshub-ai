@@ -7,6 +7,7 @@ import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { InstanceCard } from './instance-card';
 import type { Connector, ConnectorInstance, ConnectorConfig, ConnectorScope } from '../types';
+import { useToastStore } from '@/lib/store/toast-store';
 import { getConnectorInfoText, getConnectorDocumentationUrl } from '../utils/connector-metadata';
 
 // ========================================
@@ -67,6 +68,7 @@ export function ConnectorDetailsLayout({
   onRefreshInstance,
 }: ConnectorDetailsLayoutProps) {
   const { t } = useTranslation();
+  const addToast = useToastStore((s) => s.addToast);
   const connectorName = connector?.name ?? '';
   const connectorInfoText = getConnectorInfoText(connector);
 
@@ -97,18 +99,16 @@ export function ConnectorDetailsLayout({
   const handleRefreshCardClick = useCallback(
     async (instance: ConnectorInstance) => {
       const id = instance._key;
-      if (!id || !onRefreshInstance) return;
+      if (!id || !onRefreshInstance || refreshingCardIds.has(id)) return;
 
-      let started = false;
-      setRefreshingCardIds((prev) => {
-        if (prev.has(id)) return prev;
-        started = true;
-        return new Set(prev).add(id);
-      });
-      if (!started) return;
-
+      setRefreshingCardIds((prev) => new Set(prev).add(id));
       try {
         await onRefreshInstance(instance);
+      } catch {
+        addToast({
+          variant: 'error',
+          title: t('workspace.connectors.toasts.refreshInstancesError'),
+        });
       } finally {
         setRefreshingCardIds((prev) => {
           const next = new Set(prev);
@@ -117,7 +117,7 @@ export function ConnectorDetailsLayout({
         });
       }
     },
-    [onRefreshInstance]
+    [onRefreshInstance, refreshingCardIds, addToast, t]
   );
 
   const refreshAllBusy = isRefreshingAll || refreshingCardIds.size > 0;

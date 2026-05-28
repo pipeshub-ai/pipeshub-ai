@@ -12,7 +12,10 @@ import { ConnectorsApi } from '../api';
 import { startConnectorSync } from '../utils/connector-sync-actions';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
-import { refreshConnectorInstanceDetails } from '../utils/refresh-instance-details';
+import {
+  refreshAllConnectorInstances,
+  refreshConnectorInstanceDetails,
+} from '../utils/refresh-instance-details';
 import {
   ConnectorCatalogLayout,
   ConnectorPanel,
@@ -263,9 +266,7 @@ function TeamConnectorsPageContent() {
     setIsRefreshingAllInstances(true);
     try {
       await refreshConnectorsListsQuiet();
-      await Promise.allSettled(
-        instanceIds.map((id) => refreshConnectorInstanceDetails(id))
-      );
+      await refreshAllConnectorInstances(instanceIds, refreshConnectorInstanceDetails);
     } catch {
       addToast({
         variant: 'error',
@@ -483,11 +484,11 @@ function TeamConnectorsPageContent() {
           onInstanceChevron={handleInstanceChevron}
           onRefreshAll={handleRefreshAllInstances}
           isRefreshingAll={isRefreshingAllInstances}
-          onRefreshInstance={(instance) => {
-            if (instance._key) {
-              void handleRefreshInstanceDetails(instance._key);
-            }
-          }}
+          onRefreshInstance={(instance) =>
+            instance._key
+              ? handleRefreshInstanceDetails(instance._key)
+              : Promise.resolve()
+          }
         />
         <ConnectorPanel />
         <InstanceManagementPanel />
