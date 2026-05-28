@@ -5,8 +5,8 @@
  * connected via StreamableHTTP transport.
  */
 
-import { Response, NextFunction } from 'express';
 import { randomUUID } from 'crypto';
+import { Response, NextFunction } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger, getLogLevel } from '../../../libs/services/logger.service';
