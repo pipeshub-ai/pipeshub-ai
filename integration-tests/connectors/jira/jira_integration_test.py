@@ -732,6 +732,9 @@ class TestJiraIndexing:
         assert rec.external_record_group_id == project_id, (
             f"Issue {key} should belong to project {project_id}; got {rec.external_record_group_id!r}"
         )
+        assert rec.virtual_record_id, (
+            f"Issue {key} should have virtual_record_id after indexing COMPLETED"
+        )
         logger.info("TC-JIRA-IDX-001 passed: %s indexing completed", key)
 
 

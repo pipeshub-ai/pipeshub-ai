@@ -62,8 +62,8 @@ GraphEntityKind = Literal[  # ``entity`` values accepted by ``assert_graph_entit
 
 _DEFAULT_SKIP_COMPARE_BY_ENTITY: Final[dict[str, frozenset[str]]] = {
     # Things integration tests often cannot know ahead of time or that change after sync.
-    "ticket_record": frozenset({"id", "org_id", "indexing_status", "record_group_id"}),
-    "file_record": frozenset({"id", "org_id", "indexing_status", "record_group_id"}),
+    "ticket_record": frozenset({"id", "org_id", "indexing_status", "record_group_id", "virtual_record_id"}),
+    "file_record": frozenset({"id", "org_id", "indexing_status", "record_group_id", "virtual_record_id"}),
     "record_group": frozenset({"id", "org_id"}),
     "app_user_group": frozenset({"id", "org_id"}),
     "app_role": frozenset({"id", "org_id"}),
