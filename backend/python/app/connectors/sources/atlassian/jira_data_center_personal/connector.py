@@ -207,20 +207,63 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
         )
         self.app = JiraDataCenterPersonalApp(connector_id)
         self.connector_name = self.app.get_app_name()
+        self.logger.info(
+            "Jira DC Personal connector %s instantiated (scope=%s, created_by=%s, app=%s)",
+            self.connector_id,
+            scope,
+            created_by,
+            self.connector_name,
+        )
 
     async def run_sync(self) -> None:
         """Sync projects and issues visible to the configured user; no permission APIs."""
         try:
+            self.logger.info(
+                "▶️ Jira DC Personal connector %s: run_sync starting (data_source_ready=%s, site_url=%s)",
+                self.connector_id,
+                bool(self.data_source),
+                self.site_url,
+            )
             if not self.data_source:
-                await self.init()
+                # ``init()`` returns False on missing/invalid auth config; check
+                # the return so a misconfigured connector raises here instead of
+                # surfacing ``ValueError("DataSource not initialized")`` from
+                # the first datasource call several layers down.
+                self.logger.info(
+                    "Jira DC Personal connector %s: data source not initialized — calling init()",
+                    self.connector_id,
+                )
+                if not await self.init():
+                    raise RuntimeError(
+                        f"Jira Data Center Personal connector {self.connector_id} init failed; "
+                        "check auth configuration (authType / baseUrl / credentials)"
+                    )
+                self.logger.info(
+                    "Jira DC Personal connector %s: init() succeeded (site_url=%s)",
+                    self.connector_id,
+                    self.site_url,
+                )
 
             # Force a fresh ConnectorGroup upsert each run so re-runs after the
             # creator email is rotated pick up the new identity instead of
             # reusing a stale cached permission.
             self._connector_group_permission = None
 
-            if not self.creator_email:
-                await self._load_creator_email()
+            if not self.creator_email and self.created_by:
+                try:
+                    creator = await self.data_entities_processor.get_user_by_user_id(
+                        self.created_by
+                    )
+                    if creator and getattr(creator, "email", None):
+                        self.creator_email = creator.email
+                except Exception as e:
+                    self.logger.warning(
+                        "Jira Data Center Personal connector %s: could not resolve creator "
+                        "email for created_by %s: %s",
+                        self.connector_id,
+                        self.created_by,
+                        e,
+                    )
 
             if not self.creator_email:
                 self.logger.warning(
@@ -228,18 +271,35 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
                     "projects will sync without user permissions",
                     self.connector_id,
                 )
+            else:
+                self.logger.info(
+                    "Jira DC Personal connector %s: creator_email=%s",
+                    self.connector_id,
+                    self.creator_email,
+                )
 
             # Upsert the pseudo ConnectorGroup (creator becomes a member) and cache
             # the GROUP permission for use on every project record group below.
             # Routing access via this internal group lets new users be added later
             # without rewriting per-project ACLs.
-            await self.ensure_connector_group_permission()
+            group_permission = await self.ensure_connector_group_permission()
+            self.logger.info(
+                "Jira DC Personal connector %s: connector group permission ready (granted=%s)",
+                self.connector_id,
+                bool(group_permission),
+            )
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service,
                 "jira",
                 self.connector_id,
                 self.logger,
+            )
+            self.logger.info(
+                "Jira DC Personal connector %s: filters loaded (sync_keys=%s, indexing_keys=%s)",
+                self.connector_id,
+                list((self.sync_filters or {}).keys()),
+                list((self.indexing_filters or {}).keys()),
             )
 
             allowed_keys = None
@@ -270,20 +330,32 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
             projects, _raw_projects = await self._fetch_projects(
                 allowed_keys, project_keys_operator, []
             )
+            self.logger.info(
+                "Jira DC Personal connector %s: %s project record groups prepared for sync",
+                self.connector_id,
+                len(projects),
+            )
 
             await self.data_entities_processor.on_new_record_groups(projects)
 
             last_sync_time = await self._get_issues_sync_checkpoint()
+            self.logger.info(
+                "Jira DC Personal connector %s: issues checkpoint=%s — starting issue sync",
+                self.connector_id,
+                last_sync_time,
+            )
             sync_stats = await self._sync_all_project_issues(projects, [], last_sync_time)
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
 
             self.logger.info(
-                "Jira DC Personal sync completed. Total: %s issues "
-                "(New: %s, Updated: %s)",
+                "✅ Jira DC Personal connector %s sync completed. Total: %s issues "
+                "(New: %s, Updated: %s) across %s projects",
+                self.connector_id,
                 sync_stats["total_synced"],
                 sync_stats["new_count"],
                 sync_stats["updated_count"],
+                len(projects),
             )
 
         except Exception as e:
@@ -302,7 +374,19 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
+        self.logger.info(
+            "Jira DC Personal connector %s: _fetch_projects called (project_keys=%s, operator=%s)",
+            self.connector_id,
+            project_keys,
+            project_keys_operator,
+        )
+
         all_projects = await self._list_all_projects_dc()
+        self.logger.info(
+            "Jira DC Personal connector %s: fetched %s projects from /rest/api/2/project",
+            self.connector_id,
+            len(all_projects),
+        )
 
         is_exclude = False
         if project_keys_operator:
@@ -377,6 +461,12 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
                     project_key,
                 )
 
+        self.logger.info(
+            "Jira DC Personal connector %s: _fetch_projects returning %s record groups (raw=%s)",
+            self.connector_id,
+            len(record_groups),
+            len(projects),
+        )
         return record_groups, projects
 
     @classmethod
@@ -389,6 +479,12 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
         scope: str,
         created_by: str,
     ) -> BaseConnector:
+        logger.info(
+            "Jira DC Personal connector factory: create_connector(connector_id=%s, scope=%s, created_by=%s)",
+            connector_id,
+            scope,
+            created_by,
+        )
         dep = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
         await dep.initialize()
         return cls(

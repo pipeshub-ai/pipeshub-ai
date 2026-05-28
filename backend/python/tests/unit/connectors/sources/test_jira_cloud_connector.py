@@ -560,14 +560,54 @@ class TestGetProjectOptions:
 class TestRunSync:
 
     @pytest.mark.asyncio
-    async def test_full_sync_no_users(self):
+    async def test_full_sync_proceeds_when_pipeshub_directory_empty(self):
+        """Regression: empty PipesHub directory must NOT bail out the sync.
+
+        ``get_all_active_users`` returns the org/directory roster, not Jira
+        users. Previously this short-circuited ``run_sync`` and produced a
+        silent "no records synced" — the fix is to skip that gate entirely.
+        """
         connector = _make_connector()
         connector.data_source = MagicMock()
+        connector.site_url = "https://company.atlassian.net"
         connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        connector._fetch_users = AsyncMock(return_value=[])
+        connector._sync_user_groups = AsyncMock(return_value={})
+        rg = MagicMock()
+        rg.short_name = "PROJ"
+        rg.external_group_id = "10000"
+        connector._fetch_projects = AsyncMock(
+            return_value=([(rg, [])], [{"key": "PROJ", "lead": None}])
+        )
+        connector._sync_project_roles = AsyncMock()
+        connector._sync_project_lead_roles = AsyncMock()
+        connector._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        connector._sync_all_project_issues = AsyncMock(
+            return_value={"total_synced": 1, "new_count": 1, "updated_count": 0}
+        )
+        connector._update_issues_sync_checkpoint = AsyncMock()
+        connector._handle_issue_deletions = AsyncMock()
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
                    new_callable=AsyncMock, return_value=(None, None)):
             await connector.run_sync()
+
+        # The actual sync path must run even with an empty PipesHub directory.
+        connector._fetch_users.assert_awaited_once()
+        connector._sync_user_groups.assert_awaited_once()
+        connector._fetch_projects.assert_awaited_once()
+        connector._sync_all_project_issues.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_run_sync_raises_when_init_fails(self):
+        """Regression: ``init()`` returning False must raise."""
+        connector = _make_connector()
+        connector.data_source = None
+        connector.init = AsyncMock(return_value=False)
+
+        with pytest.raises(RuntimeError, match="init failed"):
+            await connector.run_sync()
+        connector.init.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_full_sync_with_users_and_projects(self):
@@ -611,7 +651,18 @@ class TestRunSync:
         connector = _make_connector()
         connector.data_source = None
         connector.init = AsyncMock(return_value=True)
-        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        # Stub the rest of the orchestration to a no-op happy path.
+        connector._fetch_users = AsyncMock(return_value=[])
+        connector._sync_user_groups = AsyncMock(return_value={})
+        connector._fetch_projects = AsyncMock(return_value=([], []))
+        connector._sync_project_roles = AsyncMock()
+        connector._sync_project_lead_roles = AsyncMock()
+        connector._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        connector._sync_all_project_issues = AsyncMock(
+            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0}
+        )
+        connector._update_issues_sync_checkpoint = AsyncMock()
+        connector._handle_issue_deletions = AsyncMock()
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
                    new_callable=AsyncMock, return_value=(None, None)):
@@ -622,13 +673,14 @@ class TestRunSync:
     async def test_run_sync_error_raises(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
-        connector.data_entities_processor.get_all_active_users = AsyncMock(
-            side_effect=Exception("db error")
-        )
+        # ``_fetch_users`` is the first orchestrated step now that the
+        # ``get_all_active_users`` gate was removed; an exception there must
+        # propagate out of ``run_sync``.
+        connector._fetch_users = AsyncMock(side_effect=Exception("upstream error"))
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
                    new_callable=AsyncMock, return_value=(None, None)):
-            with pytest.raises(Exception, match="db error"):
+            with pytest.raises(Exception, match="upstream error"):
                 await connector.run_sync()
 
     @pytest.mark.asyncio
@@ -1000,6 +1052,46 @@ class TestFetchUsersCoverage:
             await connector._fetch_users()
 
     @pytest.mark.asyncio
+    async def test_bulk_403_returns_partial_and_sets_flag(self):
+        """Regression: 403 on /users/search must NOT raise — it must fall back
+        to whatever the bulk fetch had already collected and flag
+        ``_user_bulk_forbidden`` so Phase 5 can take over."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        # No PipesHub directory candidates → Phase 5 short-circuits, so this
+        # isolates the bulk-fetch fallback specifically.
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(403))
+        mock_ds.find_users = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await connector._fetch_users()
+        assert result == []
+        assert connector._user_bulk_forbidden is True
+        # No PipesHub candidates → reverse lookup must not have been attempted.
+        mock_ds.find_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_bulk_401_also_treated_as_forbidden(self):
+        """401 (unauthenticated against this endpoint) is the same fallback
+        shape as 403; treat them identically."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(401))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await connector._fetch_users()
+        assert result == []
+        assert connector._user_bulk_forbidden is True
+
+    @pytest.mark.asyncio
     async def test_json_parse_failure_breaks(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
@@ -1125,6 +1217,59 @@ class TestFetchUsersPhases:
 
         result = await connector._fetch_users()
         assert len(result) == 0
+
+    @pytest.mark.asyncio
+    async def test_bulk_forbidden_triggers_directory_sweep(self):
+        """Regression: when /users/search is forbidden, Phase 5 must still run
+        against the full PipesHub directory (not be skipped by the
+        ``unresolved_count == 0`` early exit) and resolve users via per-email
+        ``find_users``, which is typically permitted even when the bulk
+        enumeration is not."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        u1 = MagicMock(email="alice@example.com")
+        u2 = MagicMock(email="bob@example.com")
+        connector.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[u1, u2]
+        )
+
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(403))
+        mock_ds.find_users = AsyncMock(side_effect=[
+            _make_mock_response(200, [{"accountId": "acc-alice", "displayName": "Alice"}]),
+            _make_mock_response(200, [{"accountId": "acc-bob", "displayName": "Bob"}]),
+        ])
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await connector._fetch_users()
+
+        assert connector._user_bulk_forbidden is True
+        emails = {u.email for u in result}
+        assert emails == {"alice@example.com", "bob@example.com"}
+        # Both directory candidates must have been swept.
+        assert mock_ds.find_users.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_bulk_forbidden_with_empty_directory_resolves_nothing(self):
+        """With both bulk forbidden AND an empty PipesHub directory, there are
+        no candidates and reverse-lookup is a no-op — sync still returns
+        cleanly without raising."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(403))
+        mock_ds.find_users = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await connector._fetch_users()
+        assert result == []
+        assert connector._user_bulk_forbidden is True
+        mock_ds.find_users.assert_not_awaited()
 
 
 # ===========================================================================

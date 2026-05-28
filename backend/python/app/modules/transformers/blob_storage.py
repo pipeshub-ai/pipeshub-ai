@@ -1648,7 +1648,7 @@ class BlobStorage(Transformer):
             dict | None: Metadata dict (hash_to_block_ids, block_id_to_index with block_id -> index int) if found, None otherwise
         """
         try:
-            self.logger.info("🔍 Retrieving reconciliation metadata for virtual_record_id: %s", virtual_record_id)
+            self.logger.debug("🔍 Retrieving reconciliation metadata for virtual_record_id: %s", virtual_record_id)
 
             if not self.graph_provider:
                 self.logger.error("❌ ArangoService not initialized")
@@ -1688,7 +1688,7 @@ class BlobStorage(Transformer):
                             record = data.get("record", data)
                         else:
                             record = data
-                        self.logger.info(
+                        self.logger.debug(
                             "✅ Retrieved reconciliation metadata for virtual_record_id: %s",
                             virtual_record_id
                         )

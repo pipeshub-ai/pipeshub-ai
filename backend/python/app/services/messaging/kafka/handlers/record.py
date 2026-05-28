@@ -228,9 +228,9 @@ class RecordEventHandler(BaseEventService):
                 if record_name and "." in record_name:
                     extension = record_name.split(".")[-1]
 
-            self.logger.info("🚀 Checking for mime_type")
-            self.logger.info("🚀 mime_type: %s", mime_type)
-            self.logger.info("🚀 extension: %s", extension)
+            self.logger.debug("🚀 Checking for mime_type")
+            self.logger.debug("🚀 mime_type: %s", mime_type)
+            self.logger.debug("🚀 extension: %s", extension)
 
             # Folder / tree-node records are skeleton graph entries with no
             # streamable content (created by tree-aware connectors like
@@ -247,7 +247,7 @@ class RecordEventHandler(BaseEventService):
             )
             is_folder_record = record.get("isFile") is False
             if is_folder_mime or is_folder_record:
-                self.logger.info(
+                self.logger.debug(
                     f"⏭️ Skipping indexing for folder record {record_id} "
                     f"(mime_type={mime_type}, isFile={record.get('isFile')})"
                 )
@@ -389,7 +389,7 @@ class RecordEventHandler(BaseEventService):
                     # Don't raise - fall through to connector streaming fallback
 
             if not signed_url_success:
-                self.logger.info(f"🔍 No signed URL received for record {record_id}")
+                self.logger.debug(f"🔍 No signed URL received for record {record_id}")
                 try:
                     jwt_payload  = {
                         "orgId": payload["orgId"],

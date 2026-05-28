@@ -94,6 +94,10 @@ BATCH_PROCESSING_SIZE: int = 100
 USER_PAGE_SIZE: int = 50
 GROUP_PAGE_SIZE: int = 50
 GROUP_MEMBER_PAGE_SIZE: int = 50
+# DC audit endpoint (/rest/api/2/auditing/record) caps ``limit`` server-side; the
+# documented hard cap is 1000 but values above 500 occasionally time out on
+# large installs. Mirror Cloud's 500.
+AUDIT_PAGE_SIZE: int = 500
 
 # JQL query constants
 ISSUE_SEARCH_FIELDS: list[str] = [
@@ -958,6 +962,11 @@ class JiraDataCenterConnector(BaseConnector):
 
         # Tracks whether /applicationrole returned 403 (non-admin user)
         self._app_roles_forbidden: bool = False
+        # Tracks whether /user/search returned 401/403 (configuring user lacks
+        # "Browse users and groups" global permission). When True, downstream
+        # consumers can branch to per-email reverse-lookup instead of relying
+        # on the bulk enumeration.
+        self._user_bulk_forbidden: bool = False
 
     async def init(self) -> bool:
         try:
@@ -1152,7 +1161,17 @@ class JiraDataCenterConnector(BaseConnector):
         """
         try:
             if not self.data_source:
-                await self.init()
+                # ``init()`` returns False (rather than raising) on missing /
+                # invalid auth config. Without this check we would proceed
+                # against a None ``self.data_source`` and the first datasource
+                # call would surface a ``ValueError("DataSource not
+                # initialized")``, which is harder to diagnose than a clear
+                # "init failed" at the top of the orchestration.
+                if not await self.init():
+                    raise RuntimeError(
+                        f"Jira Data Center connector {self.connector_id} init failed; "
+                        "check auth configuration (authType / baseUrl / credentials)"
+                    )
 
             # Load sync and indexing filters (loaded in run_sync to ensure latest values)
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -1177,6 +1196,13 @@ class JiraDataCenterConnector(BaseConnector):
             # Fetch and sync user groups (returns mapping for role resolution)
             groups_members_map = await self._sync_user_groups(jira_users)
 
+            # Hoisted out of ``_fetch_projects``: this is a single
+            # ``GET /rest/api/2/applicationrole`` call, but ``_fetch_projects``
+            # may be called more than once in future code paths (e.g. delta
+            # vs. full reconciliation). Computing it here ties the call rate
+            # to ``run_sync`` instead of to the number of project sweeps.
+            app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
+
             # Get project_keys filter if configured (to fetch only those projects)
             allowed_keys = None
             project_keys_operator = None
@@ -1195,7 +1221,10 @@ class JiraDataCenterConnector(BaseConnector):
                         allowed_keys = None
                         self.logger.info("🔍 Project keys filter is empty — syncing all visible projects (DC)")
             # Fetch projects
-            projects, raw_projects = await self._fetch_projects(allowed_keys, project_keys_operator, jira_users)
+            projects, raw_projects = await self._fetch_projects(
+                allowed_keys, project_keys_operator, jira_users,
+                app_roles_mapping=app_roles_mapping,
+            )
 
             # Sync project roles BEFORE RecordGroups
             project_keys_for_roles = [proj.short_name for proj, _ in projects]
@@ -1394,14 +1423,22 @@ class JiraDataCenterConnector(BaseConnector):
         # ====================================================================
         # Phase 5: Reverse lookup (only when there are gaps to fill)
         # ====================================================================
-        if unresolved_count > 0 and candidate_count > 0:
+        # Normally Phase 5 only runs when the bulk fetch left us with
+        # ``unresolved_user_keys`` — but when the bulk fetch was forbidden
+        # (``_user_bulk_forbidden``) ``all_active_user_keys`` is empty by
+        # construction, so ``unresolved_count == 0`` even though we resolved
+        # nobody. In that case fall back to a directory-driven sweep: try
+        # per-email search for every PipesHub user we know about, since the
+        # single-user ``/user/search?username=<email>`` endpoint is often
+        # permitted even when the bulk enumeration is not.
+        if (unresolved_count > 0 or self._user_bulk_forbidden) and candidate_count > 0:
             new_found = await self._resolve_private_email_users(
                 candidate_emails, unresolved_user_keys, resolved
             )
             self.logger.info(
                 f"👥 Reverse lookup resolved {new_found} additional users"
             )
-        elif unresolved_count == 0:
+        elif unresolved_count == 0 and not self._user_bulk_forbidden:
             self.logger.info("👥 All Jira DC users resolved, no reverse lookup needed")
 
         self.logger.info(f"👥 Total: {len(resolved)} Jira DC AppUsers resolved")
@@ -1415,6 +1452,7 @@ class JiraDataCenterConnector(BaseConnector):
         users: list[dict[str, Any]] = []
         start_at = 0
         max_results_per_request = USER_PAGE_SIZE
+        self._user_bulk_forbidden = False
 
         while True:
             datasource = await self._get_fresh_datasource()
@@ -1426,6 +1464,27 @@ class JiraDataCenterConnector(BaseConnector):
             )
 
             if response.status != HttpStatusCode.OK.value:
+                # /rest/api/2/user/search requires the *Browse users and groups*
+                # global permission. Non-admin sync users get 401/403 here.
+                # Mirror the ``_app_roles_forbidden`` fallback in
+                # ``_fetch_application_roles_to_groups_mapping``: rather than
+                # killing the whole ``run_sync`` (and silently dropping the
+                # entire connector), mark the gap, return whatever pages we
+                # already collected, and let downstream code degrade to
+                # per-email reverse-lookup / configuring-user fallbacks.
+                if response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value,
+                    HttpStatusCode.FORBIDDEN.value,
+                ):
+                    self._user_bulk_forbidden = True
+                    self.logger.warning(
+                        "⚠️ DC /user/search returned %s — configuring user lacks "
+                        "'Browse users and groups'. Returning %s users collected "
+                        "so far; user resolution will degrade to PipesHub-directory "
+                        "reverse lookup only.",
+                        response.status, len(users),
+                    )
+                    return users
                 raise Exception(f"Failed to fetch users: {response.text()}")
 
             users_batch = self._safe_json_parse(response, "users fetch")
@@ -1497,9 +1556,15 @@ class JiraDataCenterConnector(BaseConnector):
 
         batch_size = 20
         email_list = list(candidate_emails)
+        # When the bulk fetch was forbidden, ``unresolved_count`` is 0
+        # (``all_active_user_keys`` was empty) and the standard early-exit
+        # would skip every batch. Disable the early-exit in that case so we
+        # actually exhaust the candidate list and resolve as many directory
+        # users as the per-email endpoint will let us.
+        skip_early_exit = self._user_bulk_forbidden
 
         for i in range(0, len(email_list), batch_size):
-            if new_found >= unresolved_count:
+            if not skip_early_exit and new_found >= unresolved_count:
                 break
 
             batch = email_list[i:i + batch_size]
@@ -1522,7 +1587,7 @@ class JiraDataCenterConnector(BaseConnector):
                     )
                     new_found += 1
 
-            if new_found >= unresolved_count:
+            if not skip_early_exit and new_found >= unresolved_count:
                 break
 
         return new_found
@@ -2502,7 +2567,8 @@ class JiraDataCenterConnector(BaseConnector):
         self,
         project_keys: Optional[list[str]] = None,
         project_keys_operator: Optional[FilterOperatorType] = None,
-        jira_users: list["AppUser"] = None
+        jira_users: list["AppUser"] = None,
+        app_roles_mapping: Optional[dict[str, list[dict[str, str]]]] = None,
     ) -> tuple[list[tuple[RecordGroup, list[Permission]]], list[dict[str, Any]]]:
         """
         Fetch projects via one ``GET /rest/api/2/project`` call, then apply project-key filters
@@ -2513,6 +2579,10 @@ class JiraDataCenterConnector(BaseConnector):
             project_keys: ``None`` or empty list = sync all visible projects; non-empty list =
                 keys to include (IN) or exclude (NOT_IN).
             project_keys_operator: IN vs NOT_IN when ``project_keys`` is non-empty.
+            app_roles_mapping: Pre-computed application-role → groups mapping
+                from ``run_sync``. Falls back to a fresh fetch when ``None`` so
+                that callers (e.g. the personal-variant override or tests) that
+                bypass ``run_sync`` continue to work.
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
@@ -2549,7 +2619,8 @@ class JiraDataCenterConnector(BaseConnector):
             self.logger.info("📁 No project key filter — syncing all visible projects (DC)")
             projects = list(all_projects)
 
-        app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
+        if app_roles_mapping is None:
+            app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
         perm_user_by_key: dict[str, AppUser] = {}
         if jira_users:
