@@ -26,9 +26,8 @@ export function createNotificationRouter(
       try {
         const userId = req.user?.userId;
         let notificationStatus: string | null = null;
-        if (req.query.status) {
-          notificationStatus = req.query.status as string;
-          notificationStatus = notificationStatus.toLowerCase();
+        if (typeof req.query.status === 'string') {
+          notificationStatus = req.query.status.toLowerCase();
         }
 
         if (!userId || !mongoose.isValidObjectId(userId)) {

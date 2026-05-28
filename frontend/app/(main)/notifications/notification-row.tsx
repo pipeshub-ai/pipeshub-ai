@@ -35,6 +35,8 @@ function severityIcon(severity: NotificationSeverity): string {
       return 'warning';
     case 'critical':
       return 'priority_high';
+    case 'success':
+      return 'check_circle';
     default:
       return 'error_outline';
   }
@@ -48,6 +50,8 @@ function severityColor(severity: NotificationSeverity): string {
       return 'var(--amber-9)';
     case 'critical':
       return 'var(--red-11)';
+    case 'success':
+      return 'var(--green-9)';
     default:
       return 'var(--red-9)';
   }

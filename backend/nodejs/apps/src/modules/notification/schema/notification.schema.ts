@@ -8,7 +8,7 @@ const { ObjectId } = Schema.Types;
 export interface INotification extends Document {
   orgId: mongoose.Types.ObjectId;
   type: string;
-  severity: "info" | "warning" | "error" | "critical";
+  severity: "info" | "warning" | "error" | "critical" | "success";
   status: "read" | "unread" | "archived";
   origin: "Connector Service" | "Indexing Service" | "AI Service" | "External Service";
   initiator?: mongoose.Types.ObjectId;
@@ -159,7 +159,7 @@ const notificationSchema = new Schema<INotification>(
     severity: {
       type: String,
       required: false,
-      enum: ["info", "warning", "error", "critical"],
+      enum: ["info", "warning", "error", "critical", "success"],
     },
     status: {
       type: String,

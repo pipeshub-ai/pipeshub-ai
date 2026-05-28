@@ -1,6 +1,6 @@
 import { apiClient } from '@/lib/api';
 
-export type NotificationSeverity = 'info' | 'warning' | 'error' | 'critical';
+export type NotificationSeverity = 'info' | 'warning' | 'error' | 'critical' | 'success';
 
 export type NotificationStatus = 'read' | 'unread' | 'archived';
 
