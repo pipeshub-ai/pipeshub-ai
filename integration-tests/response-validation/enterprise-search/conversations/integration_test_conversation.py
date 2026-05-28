@@ -11,16 +11,26 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import uuid
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 import requests
 
+_ROOT = Path(__file__).resolve().parents[3]
+_HELPER = _ROOT / "helper"
+_RV_HELPER = _ROOT / "response-validation" / "helper"
+for _p in (_ROOT, _HELPER, _RV_HELPER):
+    s = str(_p)
+    if s not in sys.path:
+        sys.path.insert(0, s)
+
 from openapi_search_validator import (
     assert_matches_component_schema,
-    assert_response_matches_spec,
 )
+from openapi_schema_validator import assert_response_matches_openapi_operation
 from pipeshub_client import PipeshubClient
 
 SEARCH_QUERY = "every year asana undertakes which exercise?"
@@ -174,7 +184,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AssistantStreamSSEEvent")
+                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
                 if envelope["event"] == "error":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(f"stream emitted error event: {payload!r}")
@@ -218,7 +228,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AssistantStreamSSEEvent")
+                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
                 if envelope["event"] == "error":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(f"stream emitted error event: {payload!r}")
@@ -283,7 +293,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             saw_complete = False
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AssistantStreamSSEEvent")
+                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
 
                 payload = json.loads(envelope["data"])
                 event = envelope["event"]
@@ -338,7 +348,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             saw_complete = False
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AssistantStreamSSEEvent")
+                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
 
                 payload = json.loads(envelope["data"])
                 event = envelope["event"]
@@ -445,8 +455,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             page += 1
 
         assert first_list_body is not None
-        assert_response_matches_spec(
-            first_list_body, "/conversations", "GET", 200,
+        assert_response_matches_openapi_operation(
+            first_list_body, "getAllConversations", status_code="200"
         )
 
     def test_get_conversations_invalid_source_returns_400(self) -> None:
@@ -475,8 +485,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         assert body.get("meta", {}).get("conversationId") == conversation_id, (
             f"meta.conversationId mismatch: {body.get('meta', {})!r}"
         )
-        assert_response_matches_spec(
-            body, "/conversations/{conversationId}", "GET", 200,
+        assert_response_matches_openapi_operation(
+            body, "getConversationById", status_code="200"
         )
 
     def test_get_conversation_by_id_invalid_conversation_id_returns_400(self) -> None:
@@ -567,11 +577,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             f"status should be 'archived', got {archive_body.get('status')!r}"
         )
 
-        assert_response_matches_spec(
-            archive_body,
-            "/conversations/{conversationId}/archive",
-            "PATCH",
-            200,
+        assert_response_matches_openapi_operation(
+            archive_body, "archiveConversation", status_code="200"
         )
 
         get_after = requests.get(url, headers=self.headers, timeout=self.timeout)
@@ -609,11 +616,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             f"status should be 'unarchived', got {unarchive_body.get('status')!r}"
         )
 
-        assert_response_matches_spec(
-            unarchive_body,
-            "/conversations/{conversationId}/unarchive",
-            "PATCH",
-            200,
+        assert_response_matches_openapi_operation(
+            unarchive_body, "unarchiveConversation", status_code="200"
         )
 
         get_after_unarchive = requests.get(
@@ -685,8 +689,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         )
         assert after.status_code == 200, f"{after.status_code}: {after.text}"
         after_body = after.json()
-        assert_response_matches_spec(
-            after_body, "/conversations/show/archives", "GET", 200,
+        assert_response_matches_openapi_operation(
+            after_body, "getArchivedConversations", status_code="200"
         )
         rows = after_body.get("conversations") or []
         assert len(rows) == 1, f"expected exactly one archived row: {rows!r}"
@@ -709,8 +713,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             body = resp.json()
             if list_body is None:
                 list_body = body
-                assert_response_matches_spec(
-                    list_body, "/conversations/show/archives", "GET", 200,
+                assert_response_matches_openapi_operation(
+                    list_body, "getArchivedConversations", status_code="200"
                 )
             for c in body.get("conversations") or []:
                 if isinstance(c, dict) and c.get("_id") == conversation_id:
@@ -769,8 +773,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             f"{search_resp.status_code}: {search_resp.text}"
         )
         body = search_resp.json()
-        assert_response_matches_spec(
-            body, "/conversations/show/archives/search", "GET", 200,
+        assert_response_matches_openapi_operation(
+            body, "searchArchivedConversations", status_code="200"
         )
         summary = body.get("summary") or {}
         assert summary.get("searchQuery") == token, (
@@ -936,8 +940,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             f"got {conv.get('title')!r}"
         )
 
-        assert_response_matches_spec(
-            body, "/conversations/{conversationId}/title", "PATCH", 200,
+        assert_response_matches_openapi_operation(
+            body, "updateConversationTitle", status_code="200"
         )
 
         get_resp = requests.get(
@@ -1038,8 +1042,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             f"accessLevel should be 'read', got {target.get('accessLevel')!r}"
         )
 
-        assert_response_matches_spec(
-            body, "/conversations/{conversationId}/share", "POST", 200,
+        assert_response_matches_openapi_operation(
+            body, "shareConversation", status_code="200"
         )
 
     @pytest.mark.parametrize(
@@ -1141,8 +1145,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             f"got {body.get('isShared')!r}"
         )
 
-        assert_response_matches_spec(
-            body, "/conversations/{conversationId}/unshare", "POST", 200,
+        assert_response_matches_openapi_operation(
+            body, "unshareConversationById", status_code="200"
         )
 
     @pytest.mark.parametrize(
@@ -1184,7 +1188,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
 
             saw_complete = False
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AssistantStreamSSEEvent")
+                assert_matches_component_schema(envelope, "AgentMessageStreamSSEEvent")
                 if envelope["event"] == "error":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(f"stream emitted error event: {payload!r}")
@@ -1440,11 +1444,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         body = resp.json()
         assert body.get("conversationId") == conversation_id
         assert body.get("messageId") == bot_id
-        assert_response_matches_spec(
-            body,
-            "/conversations/{conversationId}/message/{messageId}/feedback",
-            "POST",
-            200,
+        assert_response_matches_openapi_operation(
+            body, "updateMessageFeedback", status_code="200"
         )
 
     def test_post_message_feedback_on_user_query_returns_400(self) -> None:
@@ -1486,8 +1487,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         assert conv.get("id") == conversation_id, (
             f"conversation.id mismatch: {conv!r}"
         )
-        assert_response_matches_spec(
-            body, "/conversations/{conversationId}", "GET", 200,
+        assert_response_matches_openapi_operation(
+            body, "getConversationById", status_code="200"
         )
 
     # Asking for one message at a time caps how many come back.
@@ -1508,8 +1509,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         assert len(msgs) <= 1, (
             f"limit=1 should cap messages at 1, got {len(msgs)}"
         )
-        assert_response_matches_spec(
-            body, "/conversations/{conversationId}", "GET", 200,
+        assert_response_matches_openapi_operation(
+            body, "getConversationById", status_code="200"
         )
 
     # A small page on archived search returns at most that many rows.
@@ -1543,8 +1544,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             assert len(rows) <= 1, (
                 f"limit=1 should cap rows at 1, got {len(rows)}"
             )
-            assert_response_matches_spec(
-                body, "/conversations/show/archives/search", "GET", 200,
+            assert_response_matches_openapi_operation(
+                body, "searchArchivedConversations", status_code="200"
             )
         finally:
             for cid in archived_ids:

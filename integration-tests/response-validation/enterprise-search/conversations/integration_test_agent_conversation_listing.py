@@ -11,15 +11,25 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import pytest
 import requests
 
-from openapi_search_validator import assert_response_matches_spec
+_ROOT = Path(__file__).resolve().parents[3]
+_HELPER = _ROOT / "helper"
+_RV_HELPER = _ROOT / "response-validation" / "helper"
+for _p in (_ROOT, _HELPER, _RV_HELPER):
+    s = str(_p)
+    if s not in sys.path:
+        sys.path.insert(0, s)
+
+from openapi_schema_validator import assert_response_matches_openapi_operation
 from pipeshub_client import PipeshubClient
 
 logger = logging.getLogger(__name__)
@@ -439,4 +449,6 @@ class TestAgentConversationListing:
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
-        assert_response_matches_spec(body, _AGENT_LIST_SPEC_PATH, "get", status_code=200)
+        assert_response_matches_openapi_operation(
+            body, "listAgentConversations", status_code="200"
+        )

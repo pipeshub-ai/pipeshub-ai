@@ -4,7 +4,7 @@
 ``POST /api/v1/agents/{agentKey}/conversations/{conversationId}/messages/stream``
 
 Requires ``session_kb`` (indexed Asana DR PDF) and ``agent_session`` fixtures from
-the parent ``enterprise_search/conftest.py``.
+the local ``response-validation/enterprise-search/conftest.py``.
 
 ``PIPESHUB_TEST_STREAM_TIMEOUT`` (optional): override seconds for SSE reads;
 otherwise ``max(PIPESHUB_TEST_TIMEOUT, 120)``.
@@ -15,14 +15,24 @@ from __future__ import annotations
 import json
 import os
 import random
+import sys
 import uuid
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
 import requests
 
-from openapi_search_validator import assert_matches_component_schema
+_ROOT = Path(__file__).resolve().parents[3]
+_HELPER = _ROOT / "helper"
+_RV_HELPER = _ROOT / "response-validation" / "helper"
+for _p in (_ROOT, _HELPER, _RV_HELPER):
+    s = str(_p)
+    if s not in sys.path:
+        sys.path.insert(0, s)
+
+from openapi_schema_validator import assert_response_matches_openapi_ref
 from pipeshub_client import PipeshubClient
 
 SEARCH_QUERY = "every year asana undertakes which exercise?"
@@ -38,7 +48,8 @@ _KB_QA_POOL: list[tuple[str, list[str]]] = [
 
 _SSE_MAX_EVENTS = 10_000
 _SSEEnvelope = dict[str, str]
-
+_AGENT_STREAM_SSE_EVENT_REF = "#/components/schemas/AgentStreamSSEEvent"
+_AGENT_MESSAGE_STREAM_SSE_EVENT_REF = "#/components/schemas/AgentMessageStreamSSEEvent"
 
 def _iter_sse_envelopes(
     resp: requests.Response,
@@ -181,7 +192,7 @@ class _AgentStreamTestBase:
             )
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
+                assert_response_matches_openapi_ref(envelope, _AGENT_STREAM_SSE_EVENT_REF)
                 event = envelope["event"]
                 payload = json.loads(envelope["data"])
 
@@ -274,7 +285,9 @@ class _AgentStreamTestBase:
             )
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AgentMessageStreamSSEEvent")
+                assert_response_matches_openapi_ref(
+                    envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
+                )
                 event = envelope["event"]
                 payload = json.loads(envelope["data"])
 
@@ -329,7 +342,7 @@ class TestAgentConversationStream(_AgentStreamTestBase):
             saw_complete = False
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
+                assert_response_matches_openapi_ref(envelope, _AGENT_STREAM_SSE_EVENT_REF)
 
                 payload = json.loads(envelope["data"])
                 event = envelope["event"]
@@ -490,7 +503,9 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
             saw_complete = False
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AgentMessageStreamSSEEvent")
+                assert_response_matches_openapi_ref(
+                    envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
+                )
 
                 payload = json.loads(envelope["data"])
                 event = envelope["event"]
@@ -569,7 +584,9 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
 
             saw_complete = False
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AgentMessageStreamSSEEvent")
+                assert_response_matches_openapi_ref(
+                    envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
+                )
                 if envelope["event"] == "error":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(f"stream emitted error event: {payload!r}")
@@ -771,7 +788,9 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AgentMessageStreamSSEEvent")
+                assert_response_matches_openapi_ref(
+                    envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
+                )
                 if envelope["event"] == "error":
                     saw_error = True
                     break
