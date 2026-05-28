@@ -630,6 +630,7 @@ class TestDeltaAndMessageProcessing:
             attachment=attachment,
             message_id="msg-1",
             folder_id="folder-1",
+            parent_node_id="mail-record-id",
         )
         assert result is None
 
@@ -651,12 +652,16 @@ class TestDeltaAndMessageProcessing:
             attachment=attachment,
             message_id="msg-1",
             folder_id="folder-1",
+            parent_node_id="mail-record-id",
             parent_weburl="https://outlook/message",
         )
 
         assert record is not None
         assert record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+        assert record.mime_type == "application/pdf"
         assert record.extension == "pdf"
+        assert record.is_dependent_node is True
+        assert record.parent_node_id == "mail-record-id"
 
     @pytest.mark.asyncio
     async def test_process_email_attachments_with_folder_skips_filtered_attachments(self, connector):
@@ -668,7 +673,7 @@ class TestDeltaAndMessageProcessing:
         message = MagicMock(id="msg-1", web_link="https://x")
 
         updates = await connector._process_email_attachments_with_folder(
-            "org-1", user, message, [], "folder-1", "Inbox"
+            "org-1", user, message, [], "folder-1", "Inbox", "mail-record-id"
         )
 
         assert updates == []
@@ -879,10 +884,15 @@ class TestReindexInternalsAndCredentials:
             return_value=[MagicMock(id="att-1", last_modified_date_time=datetime.now(timezone.utc), content_type="application/pdf")]
         )
         connector._extract_email_permissions = AsyncMock(return_value=[])
+        parent_mail = MagicMock()
+        parent_mail.id = "parent-mail-id"
+        connector._get_existing_record = AsyncMock(return_value=parent_mail)
         connector._create_attachment_record = AsyncMock(return_value=MagicMock())
 
         result = await connector._check_and_fetch_updated_attachment("org-1", "u@test.com", record)
         assert result is not None
+        connector._create_attachment_record.assert_awaited_once()
+        assert connector._create_attachment_record.await_args.args[4] == "parent-mail-id"
 
     @pytest.mark.asyncio
     async def test_get_credentials_success(self, connector, mock_config_service):
@@ -942,10 +952,6 @@ class TestUtilityMethods:
         assert connector._extract_email_from_recipient(recipient) == "test@example.com"
         assert connector._extract_email_from_recipient(recipient_no_address) == ""
         assert connector._extract_email_from_recipient(None) == ""
-
-    def test_get_mime_type_enum_maps_known_and_unknown(self, connector):
-        assert connector._get_mime_type_enum("application/pdf") == MimeTypes.PDF
-        assert connector._get_mime_type_enum("application/unknown-type") == MimeTypes.BIN
 
     def test_parse_datetime_and_format_datetime_string(self, connector):
         # _parse_datetime was replaced with datetime_to_epoch_ms utility - test removed
@@ -1140,6 +1146,7 @@ class TestAdditionalBranchCoverage:
             [],
             "new-folder",
             "Inbox",
+            "mail-record-id",
         )
 
         assert len(updates) == 1
@@ -1165,6 +1172,31 @@ class TestAdditionalBranchCoverage:
     async def test_check_and_fetch_updated_attachment_returns_none_when_parent_not_found(self, connector):
         connector._get_message_by_id_external = AsyncMock(return_value={})
         record = MagicMock(external_record_id="att-1", parent_external_record_id="msg-404")
+
+        result = await connector._check_and_fetch_updated_attachment("org-1", "u@test.com", record)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_check_and_fetch_updated_attachment_returns_none_when_parent_mail_not_in_database(
+        self, connector
+    ):
+        connector._get_message_by_id_external = AsyncMock(return_value=MagicMock(id="msg-1", web_link="https://x"))
+        connector._get_message_attachments_external = AsyncMock(
+            return_value=[
+                MagicMock(
+                    id="att-1",
+                    last_modified_date_time=datetime.now(timezone.utc),
+                    content_type="application/pdf",
+                )
+            ]
+        )
+        connector._get_existing_record = AsyncMock(return_value=None)
+        record = MagicMock(
+            external_record_id="att-1",
+            parent_external_record_id="msg-1",
+            external_record_group_id="folder-1",
+            external_revision_id="old",
+        )
 
         result = await connector._check_and_fetch_updated_attachment("org-1", "u@test.com", record)
         assert result is None
@@ -1389,7 +1421,7 @@ class TestCoverageBoostBranches:
         user = MagicMock(email="u@test.com")
         message = MagicMock(id="m1", web_link="x")
         updates = await connector._process_email_attachments_with_folder(
-            "org-1", user, message, [], "f1", "Inbox"
+            "org-1", user, message, [], "f1", "Inbox", "mail-record-id"
         )
         assert updates == []
 
