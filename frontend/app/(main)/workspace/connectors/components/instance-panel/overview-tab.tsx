@@ -5,8 +5,14 @@ import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import { Flex, Text, Box, Badge } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import {
+  OverviewStatsGridShimmer,
+  OverviewRecordTypesShimmer,
+  OverviewTypesBadgeShimmer,
+} from './overview-stats-shimmer';
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
+import { fetchInstanceStats } from '../../utils/fetch-instance-stats';
 import { useToastStore } from '@/lib/store/toast-store';
 import { deriveSyncStatus } from '../instance-card/utils';
 import { runConnectorResync } from '../../utils/connector-sync-actions';
@@ -37,6 +43,8 @@ interface OverviewTabProps {
   instance: ConnectorInstance;
   /** Stats data from GET /knowledgeBase/stats/{connectorId} */
   stats?: ConnectorStatsResponse['data'] | null;
+  /** Initial stats fetch in progress (panel open) */
+  statsLoading?: boolean;
   /** GET …/config — used to resolve auth type for OAuth-only UI rules */
   connectorConfig?: ConnectorConfig;
   /** Local sync runtime status from Electron watcher manager */
@@ -85,6 +93,7 @@ function deriveRecordsStatus(
 export function OverviewTab({
   instance,
   stats,
+  statsLoading = false,
   connectorConfig,
   localSyncStatus,
 }: OverviewTabProps) {
@@ -95,11 +104,14 @@ export function OverviewTab({
   const setLocalSyncStatus = useConnectorsStore((s) => s.setLocalSyncStatus);
   const addToast = useToastStore((s) => s.addToast);
   const bumpCatalogRefresh = useConnectorsStore((s) => s.bumpCatalogRefresh);
-  const setInstanceStats = useConnectorsStore((s) => s.setInstanceStats);
   const [isRefreshStatsBusy, setIsRefreshStatsBusy] = useState(false);
   const [isHeaderSyncBusy, setIsHeaderSyncBusy] = useState(false);
   const [isReindexBusy, setIsReindexBusy] = useState(false);
-  const recordsStatus = useMemo(() => deriveRecordsStatus(stats), [stats]);
+  const showStatsShimmer = statsLoading || isRefreshStatsBusy;
+  const recordsStatus = useMemo(
+    () => (showStatsShimmer ? null : deriveRecordsStatus(stats)),
+    [stats, showStatsShimmer]
+  );
 
   // Derive indexed records from byRecordType data
   const byRecordType = stats?.byRecordType ?? [];
@@ -136,8 +148,7 @@ export function OverviewTab({
     if (!connectorId || isRefreshStatsBusy) return;
     try {
       setIsRefreshStatsBusy(true);
-      const res = await ConnectorsApi.getConnectorStats(connectorId);
-      setInstanceStats(connectorId, res.data);
+      await fetchInstanceStats(connectorId, { force: true });
       addToast({
         variant: 'success',
         title: t('workspace.connectors.overview.refreshStatsSuccess'),
@@ -161,7 +172,6 @@ export function OverviewTab({
           }
         }
       }
-      bumpCatalogRefresh();
     } catch {
       addToast({
         variant: 'error',
@@ -176,9 +186,7 @@ export function OverviewTab({
     instance.name,
     isRefreshStatsBusy,
     addToast,
-    setInstanceStats,
     t,
-    bumpCatalogRefresh,
     instanceConfigs,
     setLocalSyncStatus,
   ]);
@@ -317,7 +325,9 @@ export function OverviewTab({
           </Flex>
         )}
 
-        {/* Stats grid */}
+        {showStatsShimmer ? (
+          <OverviewStatsGridShimmer />
+        ) : recordsStatus ? (
         <Flex direction="column" gap="2">
           {/* Row 1: Total + Completed */}
           <Flex gap="2" style={{ width: '100%' }}>
@@ -384,6 +394,7 @@ export function OverviewTab({
             />
           </Flex>
         </Flex>
+        ) : null}
       </Flex>
 
       {/* ── Indexed Records by Type section ── */}
@@ -392,12 +403,18 @@ export function OverviewTab({
           <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.connectors.overview.recordsByType')}
           </Text>
-          <Badge variant="soft" color="gray" size="1">
-            {byRecordType.length} Types
-          </Badge>
+          {showStatsShimmer ? (
+            <OverviewTypesBadgeShimmer />
+          ) : (
+            <Badge variant="soft" color="gray" size="1">
+              {byRecordType.length} Types
+            </Badge>
+          )}
         </Flex>
 
-        {byRecordType.length === 0 ? (
+        {showStatsShimmer ? (
+          <OverviewRecordTypesShimmer />
+        ) : byRecordType.length === 0 ? (
           <Text size="2" style={{ color: 'var(--gray-9)' }}>
             {t('workspace.connectors.overview.noRecordTypes')}
           </Text>

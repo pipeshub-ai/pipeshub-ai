@@ -12,6 +12,7 @@ import { ConnectorsApi } from '../api';
 import { startConnectorSync } from '../utils/connector-sync-actions';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
+import { refreshConnectorInstanceDetails } from '../utils/refresh-instance-details';
 import {
   ConnectorCatalogLayout,
   ConnectorPanel,
@@ -79,7 +80,6 @@ function TeamConnectorsPageContent() {
     showConfigSuccessDialog,
     newlyConfiguredConnectorId,
     instanceConfigs,
-    instanceStats,
     setRegistryConnectors,
     setActiveConnectors,
     setSearchQuery,
@@ -91,8 +91,6 @@ function TeamConnectorsPageContent() {
     setIsLoadingInstances,
     setConnectorTypeInfo,
     setInstanceConfig,
-    setInstanceStats,
-    upsertConnectorInstance,
     clearInstanceData,
     openInstancePanel,
     setShowConfigSuccessDialog,
@@ -109,6 +107,7 @@ function TeamConnectorsPageContent() {
   const [pendingSetupConnectorId, setPendingSetupConnectorId] = useState<string | undefined>(
     undefined
   );
+  const [isRefreshingAllInstances, setIsRefreshingAllInstances] = useState(false);
 
   // Keep catalog scope in store aligned with this route (panel + API use `selectedScope`).
   useLayoutEffect(() => {
@@ -193,7 +192,7 @@ function TeamConnectorsPageContent() {
     setInstances,
   ]);
 
-  // ── Fetch config + stats when instance set or catalog refresh changes (full loader) ──
+  // ── Fetch config when instance set or catalog refresh changes (full loader) ──
   useEffect(() => {
     if (!connectorType) {
       setIsLoadingInstances(false);
@@ -213,16 +212,10 @@ function TeamConnectorsPageContent() {
       try {
         await Promise.allSettled(
           instanceIds.map(async (id) => {
-            const [configRes, statsRes] = await Promise.allSettled([
-              ConnectorsApi.getConnectorConfig(id),
-              ConnectorsApi.getConnectorStats(id),
-            ]);
+            const configRes = await ConnectorsApi.getConnectorConfig(id).catch(() => null);
             if (cancelled) return;
-            if (configRes.status === 'fulfilled') {
-              setInstanceConfig(id, configRes.value);
-            }
-            if (statsRes.status === 'fulfilled') {
-              setInstanceStats(id, statsRes.value.data);
+            if (configRes) {
+              setInstanceConfig(id, configRes);
             }
           })
         );
@@ -244,18 +237,16 @@ function TeamConnectorsPageContent() {
     instanceDetailKeys,
     setIsLoadingInstances,
     setInstanceConfig,
-    setInstanceStats,
   ]);
 
   const refreshConnectorRowQuiet = useCallback(
-    async (connectorId: string) => {
-      const fresh = await ConnectorsApi.getConnectorInstance(connectorId);
-      upsertConnectorInstance(fresh);
-      void ConnectorsApi.getConnectorStats(connectorId)
-        .then((res) => setInstanceStats(connectorId, res.data))
-        .catch(() => {});
-    },
-    [upsertConnectorInstance, setInstanceStats]
+    async (connectorId: string) => refreshConnectorInstanceDetails(connectorId),
+    []
+  );
+
+  const handleRefreshInstanceDetails = useCallback(
+    async (connectorId: string) => refreshConnectorInstanceDetails(connectorId),
+    []
   );
 
   /** Re-sync catalog lists without toggling page `isLoading` (e.g. after sync toggle). */
@@ -264,6 +255,32 @@ function TeamConnectorsPageContent() {
     if (registry) setRegistryConnectors(registry);
     if (active) setActiveConnectors(active);
   }, [setRegistryConnectors, setActiveConnectors]);
+
+  const handleRefreshAllInstances = useCallback(async () => {
+    const instanceIds = instanceDetailKeys.split('|').filter(Boolean);
+    if (instanceIds.length === 0 || isRefreshingAllInstances) return;
+
+    setIsRefreshingAllInstances(true);
+    try {
+      await refreshConnectorsListsQuiet();
+      await Promise.allSettled(
+        instanceIds.map((id) => refreshConnectorInstanceDetails(id))
+      );
+    } catch {
+      addToast({
+        variant: 'error',
+        title: t('workspace.connectors.toasts.refreshInstancesError'),
+      });
+    } finally {
+      setIsRefreshingAllInstances(false);
+    }
+  }, [
+    instanceDetailKeys,
+    isRefreshingAllInstances,
+    refreshConnectorsListsQuiet,
+    addToast,
+    t,
+  ]);
 
   const proceedWithSetup = useCallback(
     (connector: Connector, connectorId?: string) => {
@@ -457,7 +474,6 @@ function TeamConnectorsPageContent() {
           scopeLabel={t('workspace.sidebar.nav.connectors')}
           instances={instances}
           instanceConfigs={instanceConfigs}
-          instanceStats={instanceStats}
           isLoading={isLoadingInstances}
           onBack={handleBackToList}
           onAddInstance={handleAddInstance}
@@ -465,6 +481,13 @@ function TeamConnectorsPageContent() {
           onManageInstance={handleManageInstance}
           onToggleSyncActive={handleToggleSyncActive}
           onInstanceChevron={handleInstanceChevron}
+          onRefreshAll={handleRefreshAllInstances}
+          isRefreshingAll={isRefreshingAllInstances}
+          onRefreshInstance={(instance) => {
+            if (instance._key) {
+              void handleRefreshInstanceDetails(instance._key);
+            }
+          }}
         />
         <ConnectorPanel />
         <InstanceManagementPanel />

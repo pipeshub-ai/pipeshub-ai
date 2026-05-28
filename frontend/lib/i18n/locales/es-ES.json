@@ -1514,6 +1514,8 @@
       "emptyState": "No connectors found",
       "noInstances": "No instances configured yet",
       "addInstance": "Add Another Instance",
+      "refreshAllInstances": "Actualizar todo",
+      "refreshInstance": "Actualizar detalles de la instancia",
       "saveConfig": "Save Configuration",
       "continueToConfiguration": "Continuar a la configuración →",
       "oauthSigningIn": "Termine de iniciar sesión con su proveedor…",
@@ -1529,6 +1531,7 @@
         "syncStartedDescription": "Your records will be available shortly.",
         "syncStartedLongDescription": "This may take a few minutes. You'll be notified when it's done.",
         "syncError": "Failed to start sync",
+        "refreshInstancesError": "No se pudieron actualizar las instancias del conector",
         "configLoadError": "Failed to load connector configuration",
         "createError": "Failed to create connector",
         "createSuccess": "Instancia del conector «{{name}}» creada correctamente",
@@ -1711,6 +1714,27 @@
         "syncStrategy": "Estrategia de Sincronización",
         "authBannerTitle": "Authenticate Personal Account",
         "authBannerDescription": "Connect your account to enable access and workspace configuration"
+      },
+      "instanceStatus": {
+        "setup": {
+          "kind": "Setup",
+          "rowLabel": "Configuración",
+          "notConfigured": "Incompleto",
+          "notConfiguredTooltip": "La configuración no está terminada. Abra la configuración para completar sync y filtros.",
+          "needsAuth": "Requiere auth",
+          "needsAuthTooltip": "La configuración está guardada pero esta instancia aún necesita autenticación.",
+          "ready": "Completo",
+          "readyTooltip": "La configuración está completa y autenticada. La sincronización puede ejecutarse cuando esté habilitada."
+        },
+        "sync": {
+          "kind": "Sync",
+          "syncing": "Sincronizando",
+          "syncingTooltip": "Hay un trabajo de sincronización en curso para esta instancia.",
+          "fullSyncing": "Sync completo",
+          "fullSyncingTooltip": "Hay una sincronización completa en curso para esta instancia.",
+          "removing": "Eliminando",
+          "removingTooltip": "Esta instancia se está eliminando."
+        }
       },
       "schemaForm": {
         "tagsPlaceholder": "Escriba y pulse Intro para añadir etiquetas",

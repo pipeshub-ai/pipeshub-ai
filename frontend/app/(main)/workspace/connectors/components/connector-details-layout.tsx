@@ -1,12 +1,12 @@
 'use client';
 
-import React from 'react';
+import React, { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Heading, Text, Button, Box } from '@radix-ui/themes';
 import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { InstanceCard } from './instance-card';
-import type { Connector, ConnectorInstance, ConnectorConfig, ConnectorStatsResponse, ConnectorScope } from '../types';
+import type { Connector, ConnectorInstance, ConnectorConfig, ConnectorScope } from '../types';
 import { getConnectorInfoText, getConnectorDocumentationUrl } from '../utils/connector-metadata';
 
 // ========================================
@@ -24,8 +24,6 @@ interface ConnectorDetailsLayoutProps {
   instances: ConnectorInstance[];
   /** Per-instance config data from API */
   instanceConfigs?: Record<string, ConnectorConfig>;
-  /** Per-instance stats data from API */
-  instanceStats?: Record<string, ConnectorStatsResponse['data']>;
   /** Loading state */
   isLoading: boolean;
   /** Navigate back to connectors list */
@@ -40,6 +38,11 @@ interface ConnectorDetailsLayoutProps {
   onToggleSyncActive: (instance: ConnectorInstance) => void | Promise<void>;
   /** Open chevron → management panel */
   onInstanceChevron: (instance: ConnectorInstance) => void;
+  /** Refresh all instance rows + configs for this connector type */
+  onRefreshAll?: () => void | Promise<void>;
+  isRefreshingAll?: boolean;
+  /** Refresh one instance row + config */
+  onRefreshInstance?: (instance: ConnectorInstance) => void | Promise<void>;
 }
 
 // ========================================
@@ -52,7 +55,6 @@ export function ConnectorDetailsLayout({
   scopeLabel,
   instances,
   instanceConfigs,
-  instanceStats,
   isLoading,
   onBack,
   onAddInstance,
@@ -60,6 +62,9 @@ export function ConnectorDetailsLayout({
   onManageInstance,
   onToggleSyncActive,
   onInstanceChevron,
+  onRefreshAll,
+  isRefreshingAll = false,
+  onRefreshInstance,
 }: ConnectorDetailsLayoutProps) {
   const { t } = useTranslation();
   const connectorName = connector?.name ?? '';
@@ -73,6 +78,49 @@ export function ConnectorDetailsLayout({
     if (!baseUrl) return null;
     return `${baseUrl}#prerequisite-email-visibility`;
   }, [connector]);
+
+  const [refreshingCardIds, setRefreshingCardIds] = useState<Set<string>>(() => new Set());
+
+  const handleRefreshAllClick = useCallback(async () => {
+    if (!onRefreshAll || isRefreshingAll) return;
+    const ids = instances
+      .map((i) => i._key)
+      .filter((id): id is string => Boolean(id));
+    setRefreshingCardIds(new Set(ids));
+    try {
+      await onRefreshAll();
+    } finally {
+      setRefreshingCardIds(new Set());
+    }
+  }, [onRefreshAll, isRefreshingAll, instances]);
+
+  const handleRefreshCardClick = useCallback(
+    async (instance: ConnectorInstance) => {
+      const id = instance._key;
+      if (!id || !onRefreshInstance) return;
+
+      let started = false;
+      setRefreshingCardIds((prev) => {
+        if (prev.has(id)) return prev;
+        started = true;
+        return new Set(prev).add(id);
+      });
+      if (!started) return;
+
+      try {
+        await onRefreshInstance(instance);
+      } finally {
+        setRefreshingCardIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }
+    },
+    [onRefreshInstance]
+  );
+
+  const refreshAllBusy = isRefreshingAll || refreshingCardIds.size > 0;
 
   return (
     <Flex
@@ -132,6 +180,30 @@ export function ConnectorDetailsLayout({
         </Flex>
 
         <Flex align="center" gap="2">
+          {onRefreshAll && instances.length > 0 ? (
+            <Button
+              type="button"
+              variant="outline"
+              color="gray"
+              size="2"
+              disabled={refreshAllBusy || isLoading}
+              onClick={() => void handleRefreshAllClick()}
+              style={{
+                cursor: refreshAllBusy ? 'wait' : 'pointer',
+                gap: 'var(--space-1)',
+              }}
+            >
+              <span
+                style={{
+                  display: 'inline-flex',
+                  animation: refreshAllBusy ? 'spin 0.8s linear infinite' : undefined,
+                }}
+              >
+                <MaterialIcon name="refresh" size={16} color="var(--gray-11)" />
+              </span>
+              {t('workspace.connectors.refreshAllInstances')}
+            </Button>
+          ) : null}
           {onOpenDocs && (
             <button
               type="button"
@@ -232,10 +304,15 @@ export function ConnectorDetailsLayout({
               instance={instance}
               scope={scope}
               config={instance._key ? instanceConfigs?.[instance._key] : undefined}
-              stats={instance._key ? instanceStats?.[instance._key] : undefined}
               onManage={onManageInstance}
               onToggleSyncActive={onToggleSyncActive}
               onChevronClick={onInstanceChevron}
+              isRefreshing={instance._key ? refreshingCardIds.has(instance._key) : false}
+              onRefresh={
+                onRefreshInstance && instance._key
+                  ? () => void handleRefreshCardClick(instance)
+                  : undefined
+              }
             />
           ))}
         </Flex>
