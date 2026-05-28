@@ -12,6 +12,7 @@ from typing import Any, Optional
 from urllib.parse import quote
 from uuid import uuid4
 
+import httpx  # type: ignore
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -1352,7 +1353,7 @@ class JiraDataCenterConnector(BaseConnector):
         # 3A: Visible-email users from bulk (freshest data)
         for email_lower, user_key in visible_email_map.items():
             resolved[user_key] = AppUser(
-                app_name=Connectors.JIRA_DATA_CENTER,
+                app_name=self.connector_name,
                 connector_id=self.connector_id,
                 source_user_id=user_key,
                 org_id=self.data_entities_processor.org_id,
@@ -1365,7 +1366,7 @@ class JiraDataCenterConnector(BaseConnector):
         for user_key, email in cached_key_to_email.items():
             if user_key in all_active_user_keys and user_key not in resolved:
                 resolved[user_key] = AppUser(
-                    app_name=Connectors.JIRA_DATA_CENTER,
+                    app_name=self.connector_name,
                     connector_id=self.connector_id,
                     source_user_id=user_key,
                     org_id=self.data_entities_processor.org_id,
@@ -1511,7 +1512,7 @@ class JiraDataCenterConnector(BaseConnector):
                 user_key, email, display_name = result
                 if user_key not in resolved:
                     resolved[user_key] = AppUser(
-                        app_name=Connectors.JIRA_DATA_CENTER,
+                        app_name=self.connector_name,
                         connector_id=self.connector_id,
                         source_user_id=user_key,
                         org_id=self.data_entities_processor.org_id,
@@ -1587,6 +1588,41 @@ class JiraDataCenterConnector(BaseConnector):
 
         return mapping
 
+    def _fallback_permissions_for_forbidden_scheme(
+        self,
+        project_key: str,
+        status: int,
+        stage: str,
+    ) -> list[Permission]:
+        """Build a single-user BROWSE permission for the configuring user when
+        the permission-scheme endpoints return 401/403 for this project.
+
+        Mirrors the ``_app_roles_forbidden`` fallback in
+        ``_fetch_application_roles_to_groups_mapping``: rather than indexing
+        the project with no ACLs (which would silently hide it from search
+        results across the org), give the configuring user direct READ access
+        so they can still discover their own data.
+        """
+        if self.creator_email:
+            self.logger.warning(
+                "⚠️ %s for %s returned %s — configuring user lacks Administer "
+                "Projects. Granting configuring user '%s' direct BROWSE access "
+                "instead of dropping all ACLs for this project.",
+                stage, project_key, status, self.creator_email,
+            )
+            return [Permission(
+                entity_type=EntityType.USER,
+                email=self.creator_email,
+                type=PermissionType.READ,
+            )]
+
+        self.logger.warning(
+            "⚠️ %s for %s returned %s and no configuring user email resolved — "
+            "project will be indexed with no BROWSE permissions.",
+            stage, project_key, status,
+        )
+        return []
+
     async def _fetch_project_permission_scheme(
         self,
         project_key: str,
@@ -1623,6 +1659,24 @@ class JiraDataCenterConnector(BaseConnector):
             )
 
             if scheme_response.status != HttpStatusCode.OK.value:
+                # ``GET /project/{key}/permissionscheme`` requires *Administer
+                # Projects* (or global *Administer Jira*). Non-admin sync users
+                # get a 401/403 with ``"You cannot edit the configuration of
+                # this project."`` — same shape as the applicationroles 403
+                # handled in ``_fetch_application_roles_to_groups_mapping``.
+                # Mirror that fallback: rather than silently dropping all
+                # BROWSE holders (which leaves the project indexed with empty
+                # ACLs), grant the configuring user direct BROWSE so they can
+                # at least see their own project content.
+                if scheme_response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value,
+                    HttpStatusCode.FORBIDDEN.value,
+                ):
+                    return self._fallback_permissions_for_forbidden_scheme(
+                        project_key=project_key,
+                        status=scheme_response.status,
+                        stage="permission scheme",
+                    )
                 self.logger.warning(f"⚠️ Failed to fetch permission scheme for {project_key}: {scheme_response.text()}")
                 return []
 
@@ -1636,6 +1690,18 @@ class JiraDataCenterConnector(BaseConnector):
             )
 
             if grants_response.status != HttpStatusCode.OK.value:
+                # Same admin-only gating applies to the grants endpoint; apply
+                # the same fallback so a partial admin (can read scheme name
+                # but not grants) doesn't yield empty ACLs either.
+                if grants_response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value,
+                    HttpStatusCode.FORBIDDEN.value,
+                ):
+                    return self._fallback_permissions_for_forbidden_scheme(
+                        project_key=project_key,
+                        status=grants_response.status,
+                        stage=f"permission grants (scheme {scheme_id})",
+                    )
                 self.logger.warning(f"⚠️ Failed to fetch permission grants for scheme {scheme_id}: {grants_response.text()}")
                 return []
 
@@ -1824,7 +1890,7 @@ class JiraDataCenterConnector(BaseConnector):
 
                     # Create AppUserGroup (always create, even if no members)
                     user_group = AppUserGroup(
-                        app_name=Connectors.JIRA_DATA_CENTER,
+                        app_name=self.connector_name,
                         connector_id=self.connector_id,
                         source_user_group_id=group_id,
                         name=group_name,
@@ -1901,6 +1967,20 @@ class JiraDataCenterConnector(BaseConnector):
                     maxResults=max_results,
                 )
 
+                if response.status == HttpStatusCode.NOT_FOUND.value:
+                    # /rest/api/2/group/bulk was introduced in Jira Data Center 11.x.
+                    # Older Server/DC builds (8.x / 9.x / 10.x) reply with a Tomcat
+                    # 404 (HTML/XML, not a JSON Jira error). Without a fallback the
+                    # outer loop would silently treat the tenant as having zero
+                    # groups and drop every group-based permission downstream.
+                    # /rest/api/2/groups/picker has existed since Jira 4.x and is the
+                    # documented enumeration endpoint on legacy DC.
+                    self.logger.warning(
+                        "DC /group/bulk unavailable on this Jira version (404) — "
+                        "falling back to /groups/picker for group enumeration"
+                    )
+                    return await self._fetch_groups_via_picker()
+
                 if response.status != HttpStatusCode.OK.value:
                     self.logger.error(
                         "DC group bulk failed (%s): %s",
@@ -1943,6 +2023,126 @@ class JiraDataCenterConnector(BaseConnector):
                 break
 
         self.logger.info("👥 Fetched %s total groups (DC)", len(groups))
+        return groups
+
+    async def _fetch_groups_via_picker(self) -> list[dict[str, Any]]:
+        """Enumerate groups via ``GET /rest/api/2/groups/picker``.
+
+        Used as a fallback when ``/group/bulk`` returns 404 on Jira DC versions
+        prior to 11.x. The picker endpoint does not support ``startAt`` pagination
+        and is typically capped server-side by ``jira.ajax.autocomplete.limit``
+        (default 50, configurable up to a few thousand). To approximate full
+        enumeration we sweep across an empty query plus alphanumeric prefixes
+        and deduplicate by group name (which is the canonical DC group key —
+        see ``_normalize_jira_dc_group_row``).
+
+        Short-circuits the sweep when the server's reported ``total`` matches
+        the number of groups already collected, so small/medium tenants exit
+        after the first call instead of doing 36 useless round trips. Also
+        bails out early when several consecutive prefixes contribute nothing
+        new (convergence on a large tenant).
+        """
+        if not self.data_source:
+            raise ValueError("DataSource not initialized")
+
+        seen_names: set[str] = set()
+        groups: list[dict[str, Any]] = []
+
+        # Empty query first (covers small tenants in one shot); then prefix sweep
+        # to pick up the tail when the server caps results below the true total.
+        prefix_queries: list[str] = [""] + list("abcdefghijklmnopqrstuvwxyz0123456789")
+        # Request a high cap; the server clamps to its own limit
+        # (``jira.ajax.autocomplete.limit``, default 50 on most DC installs).
+        picker_max = 1000
+        # Stop scanning prefixes once this many in a row contribute zero new
+        # groups — we've converged and further sweeps just burn API budget.
+        empty_streak_limit = 5
+        empty_streak = 0
+
+        for idx, q in enumerate(prefix_queries):
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.groups_picker_get_v2(
+                    query=q,
+                    maxResults=picker_max,
+                )
+
+                if response.status != HttpStatusCode.OK.value:
+                    self.logger.warning(
+                        "DC /groups/picker fallback failed for query %r (%s): %s",
+                        q,
+                        response.status,
+                        response.text()[:300],
+                    )
+                    continue
+
+                payload = response.json() or {}
+                if not isinstance(payload, dict):
+                    continue
+                raw_groups = payload.get("groups") or []
+                if not isinstance(raw_groups, list):
+                    continue
+                # Server-reported total for this query (may be absent on very
+                # old Server builds). Used only for the empty-query short-circuit.
+                reported_total = payload.get("total")
+                try:
+                    reported_total = int(reported_total) if reported_total is not None else None
+                except (TypeError, ValueError):
+                    reported_total = None
+
+                added_this_round = 0
+                for row in raw_groups:
+                    norm = _normalize_jira_dc_group_row(row)
+                    if not norm:
+                        continue
+                    name = norm["name"]
+                    if name in seen_names:
+                        continue
+                    seen_names.add(name)
+                    groups.append(norm)
+                    added_this_round += 1
+
+                self.logger.info(
+                    "groups/picker q=%r returned %s rows (%s new, running total=%s, server total=%s)",
+                    q, len(raw_groups), added_this_round, len(groups), reported_total,
+                )
+
+                # Short-circuit: if this was the empty query and the server told
+                # us how many matched in total, and we already have all of them
+                # (deduped), there is nothing left to enumerate.
+                if q == "" and reported_total is not None and len(groups) >= reported_total:
+                    self.logger.info(
+                        "groups/picker empty-query returned full set "
+                        "(%s of %s) — skipping prefix sweep",
+                        len(groups), reported_total,
+                    )
+                    break
+
+                # Convergence bail-out: large tenants where prefix sweeps stop
+                # producing new groups for several rounds in a row.
+                if idx > 0:
+                    if added_this_round == 0:
+                        empty_streak += 1
+                        if empty_streak >= empty_streak_limit:
+                            self.logger.info(
+                                "groups/picker prefix sweep converged "
+                                "(%s consecutive prefixes returned 0 new groups) — "
+                                "stopping at total=%s",
+                                empty_streak, len(groups),
+                            )
+                            break
+                    else:
+                        empty_streak = 0
+
+            except Exception as e:
+                self.logger.warning(
+                    "Error in /groups/picker fallback for query %r: %s", q, e
+                )
+                continue
+
+        self.logger.info(
+            "👥 Fetched %s total groups (DC, /groups/picker fallback)", len(groups)
+        )
         return groups
 
     async def _fetch_group_members(self, group_id: str, group_name: str) -> list[str]:
@@ -2103,7 +2303,7 @@ class JiraDataCenterConnector(BaseConnector):
 
                         # Build AppRole with external_id matching Permission format
                         app_role = AppRole(
-                            app_name=Connectors.JIRA_DATA_CENTER,
+                            app_name=self.connector_name,
                             connector_id=self.connector_id,
                             source_role_id=f"{project_key}_{role_id}",
                             name=f"{project_key} - {role_name_display}",
@@ -2228,7 +2428,7 @@ class JiraDataCenterConnector(BaseConnector):
                 project_updated = project.get("updatedAt")
 
                 app_role = AppRole(
-                    app_name=Connectors.JIRA_DATA_CENTER,
+                    app_name=self.connector_name,
                     connector_id=self.connector_id,
                     source_role_id=f"{project_key}_projectLead",
                     name=f"{project_key} - Project Lead",
@@ -2372,7 +2572,7 @@ class JiraDataCenterConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 external_group_id=project_id,
                 connector_id=self.connector_id,
-                connector_name=Connectors.JIRA_DATA_CENTER,
+                connector_name=self.connector_name,
                 name=project_name,
                 short_name=project_key,
                 group_type=RecordGroupType.PROJECT,
@@ -3086,7 +3286,7 @@ class JiraDataCenterConnector(BaseConnector):
                 record_name=issue_name,
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.JIRA_DATA_CENTER,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 record_group_type=record_group_type,
                 external_record_group_id=external_record_group_id,
@@ -3692,6 +3892,52 @@ class JiraDataCenterConnector(BaseConnector):
 
         return attachment_children_map
 
+    async def _get_issue_with_retry(
+        self,
+        issue_id: str,
+        fields: list[str],
+        max_attempts: int = 3,
+    ) -> Any:
+        """Fetch a Jira issue, retrying on transient httpx transport errors.
+
+        Targeted at the failure mode where the httpx connection pool reuses a
+        socket that the LB/proxy in front of Jira DC has already half-closed
+        past its idle timeout, raising ``RemoteProtocolError`` before any
+        response is received. GETs are idempotent, so retrying with backoff is
+        safe; httpx evicts the broken connection on failure, so the retry hits
+        a fresh socket.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(max_attempts):
+            try:
+                datasource = await self._get_fresh_datasource()
+                return await datasource.get_issue_v2(
+                    issueIdOrKey=issue_id,
+                    fields=fields,
+                )
+            except (
+                httpx.RemoteProtocolError,
+                httpx.ReadError,
+                httpx.WriteError,
+                httpx.ConnectError,
+                httpx.PoolTimeout,
+                httpx.ReadTimeout,
+            ) as e:
+                last_exc = e
+                if attempt == max_attempts - 1:
+                    break
+                backoff = 0.5 * (2 ** attempt)  # 0.5s, 1.0s, ...
+                self.logger.warning(
+                    "Transient transport error fetching issue %s "
+                    "(attempt %s/%s): %s — retrying in %.1fs",
+                    issue_id, attempt + 1, max_attempts, e, backoff,
+                )
+                await asyncio.sleep(backoff)
+
+        raise Exception(
+            f"Failed to fetch issue {issue_id} after {max_attempts} attempts: {last_exc}"
+        ) from last_exc
+
     async def _process_issue_blockgroups_for_streaming(self, record: Record) -> bytes:
         """
         Process issue BlockGroups for streaming by creating BlocksContainer on-demand.
@@ -3714,14 +3960,24 @@ class JiraDataCenterConnector(BaseConnector):
         """
         issue_id = record.external_record_id
 
-        datasource = await self._get_fresh_datasource()
-
         # Fetch issue with comments. ``"comments"`` is not a valid v2 ``expand`` value
         # (valid expands: ``renderedFields``, ``names``, ``schema``, ``transitions``,
         # ``operations``, ``editmeta``, ``changelog``, ``versionedRepresentations``).
         # Comments are returned via ``fields=comment``.
-        response = await datasource.get_issue_v2(
-            issueIdOrKey=issue_id,
+        #
+        # The httpx pool occasionally hands out a keep-alive socket that the
+        # Jira DC LB / nginx has already half-closed past its idle timeout. The
+        # very next request raises ``httpx.RemoteProtocolError`` ("Server
+        # disconnected without sending a response") before any HTTP response is
+        # received. The same shape also surfaces as ``httpx.ReadError`` /
+        # ``ConnectError`` for transient infra blips. These are safe to retry —
+        # a GET that never reached the server is idempotent — and the failing
+        # socket gets evicted from the pool automatically, so the retry picks
+        # up a fresh connection. Without this, the indexing consumer burns its
+        # tenacity retries on a single dead-keepalive and surfaces a misleading
+        # 500 to the user.
+        response = await self._get_issue_with_retry(
+            issue_id=issue_id,
             fields=["summary", "description", "attachment", "comment"],
         )
         if response.status != HttpStatusCode.OK.value:
@@ -3998,7 +4254,7 @@ class JiraDataCenterConnector(BaseConnector):
             external_revision_id=str(created_at) if created_at else None,
             parent_external_record_id=parent_issue_id,
             parent_record_type=RecordType.TICKET,
-            connector_name=Connectors.JIRA_DATA_CENTER,
+            connector_name=self.connector_name,
             connector_id=self.connector_id,
             origin=OriginTypes.CONNECTOR,
             version=version,
@@ -4449,7 +4705,7 @@ class JiraDataCenterConnector(BaseConnector):
                 if identifier and email:
                     user_by_account_id[identifier] = AppUser(
                         id="",
-                        app_name=Connectors.JIRA_DATA_CENTER,
+                        app_name=self.connector_name,
                         connector_id=self.connector_id,
                         email=email,
                         full_name=user_obj.get("displayName") or email,
@@ -4484,7 +4740,7 @@ class JiraDataCenterConnector(BaseConnector):
                 record_name=issue_data["issue_name"],
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.JIRA_DATA_CENTER,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 record_group_type=record.record_group_type if hasattr(record, 'record_group_type') else RecordGroupType.PROJECT,
                 external_record_group_id=record.external_record_group_id if hasattr(record, 'external_record_group_id') else project_id,

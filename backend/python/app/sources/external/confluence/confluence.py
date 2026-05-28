@@ -2693,18 +2693,19 @@ class ConfluenceDataSource:
         sort_order: Optional[Literal["asc", "desc"]] = None,
         expand: Optional[str] = None,
         start: Optional[int] = None,
+        cursor: Optional[str] = None,
         limit: Optional[int] = None,
         time_offset_hours: int = 0,
         headers: Optional[Dict[str, Any]] = None,
     ) -> HTTPResponse:
         """List folders via v1 ``GET .../rest/api/content/search`` with CQL ``type=folder``.
 
-        Folders are first-class content in Confluence; there is no separate folder-only
-        REST resource on Server/DC/Cloud for bulk listing. Reference stacks use the same content-search endpoint with ``type=folder`` and space
-        filters, same as pages/blogposts.
+        Supports both pagination types to handle different Confluence deployments:
+        - Offset-based (``start`` / ``limit``) for Data Center and Cloud v1
+        - Cursor-based (``cursor`` / ``limit``) for Confluence Cloud when available
 
-        Pagination uses ``start`` / ``limit`` (offset-based), like ``get_pages_v1`` /
-        ``get_blogposts_v1`` — not cursor — so Data Center and Cloud v1 behave the same.
+        The API will return pagination info in ``_links.next`` which may contain
+        either ``start=N`` (offset) or ``cursor=<token>`` depending on the API version.
         """
         if self._client is None:
             raise ValueError("HTTP client is not initialized")
@@ -2754,7 +2755,9 @@ class ConfluenceDataSource:
 
         _query["cql"] = cql_query
 
-        if start is not None:
+        if cursor is not None:
+            _query["cursor"] = cursor
+        elif start is not None:
             _query["start"] = start
 
         url = self._v1_rest_api_base() + "/content/search"

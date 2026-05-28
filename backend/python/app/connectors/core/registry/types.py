@@ -99,6 +99,7 @@ class AuthField:
     usage: Literal["CONFIGURE", "AUTHENTICATE", "BOTH"] = "BOTH"
     accepted_file_types: list[str] = field(default_factory=list)
     validation_rules: list[FileContentValidationRule] = field(default_factory=list)
+    options: list[str] = field(default_factory=list)
 
 
 @dataclass

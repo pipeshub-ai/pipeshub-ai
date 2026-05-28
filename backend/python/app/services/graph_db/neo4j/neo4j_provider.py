@@ -309,14 +309,9 @@ class Neo4jProvider(IGraphDBProvider):
             # Batch upsert tools
             if tools_to_upsert:
                 await self.batch_upsert_nodes(tools_to_upsert, "tools")
-                self.logger.info(f"✅ Upserted {len(tools_to_upsert)} tools into Neo4j")
-
             # Batch upsert ctags
             if ctags_to_upsert:
                 await self.batch_upsert_nodes(ctags_to_upsert, "tools_ctags")
-                self.logger.info(f"✅ Upserted {len(ctags_to_upsert)} tool ctags into Neo4j")
-
-            self.logger.info(f"✅ Successfully populated {len(all_tools)} tools into Neo4j")
 
         except Exception as e:
             self.logger.warning(f"⚠️ Failed to populate tools collections: {str(e)}")
@@ -601,7 +596,6 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Create unique constraints on 'id' property for all collections
             # Auto-generated from schema registry to ensure complete coverage
-            self.logger.info("🔧 Creating unique id constraints...")
             unique_constraints = self._generate_unique_id_constraints()
 
             for constraint_query in unique_constraints:
@@ -613,7 +607,6 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.info(f"✅ Created {len(unique_constraints)} unique id constraints")
 
             # Create property existence constraints for required fields from schemas
-            self.logger.info("🔧 Creating property existence constraints for required fields...")
             property_constraints = self._generate_required_field_constraints()
 
             for constraint_query in property_constraints:
@@ -627,7 +620,6 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Create indexes for common queries
             # Indexes are strategically placed based on query pattern analysis
-            self.logger.info("🔧 Creating performance indexes...")
             indexes = self._generate_performance_indexes()
 
             for index_query in indexes:
@@ -789,7 +781,7 @@ class Neo4jProvider(IGraphDBProvider):
             List[Dict]: List of all documents in the collection
         """
         try:
-            self.logger.info(f"🚀 Getting all documents from collection: {collection}")
+            self.logger.debug(f"🚀 Getting all documents from collection: {collection}")
             label = collection_to_label(collection)
 
             query = f"""
@@ -1140,7 +1132,7 @@ class Neo4jProvider(IGraphDBProvider):
             if not edges:
                 return True
 
-            self.logger.info("🚀 Batch creating entity relation edges")
+            self.logger.debug("🚀 Batch creating entity relation edges")
 
             relationship_type = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
 
@@ -1215,7 +1207,7 @@ class Neo4jProvider(IGraphDBProvider):
                     txn_id=transaction
                 )
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Successfully created {len(edge_data)} entity relation edges."
             )
             return True
@@ -2022,7 +2014,7 @@ class Neo4jProvider(IGraphDBProvider):
             List[str]: List of record keys that match the criteria
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 "🔍 Finding records with virtualRecordId: %s", virtual_record_id
             )
 
@@ -2054,7 +2046,7 @@ class Neo4jProvider(IGraphDBProvider):
             # Extract record keys from results
             record_keys = [result["record_key"] for result in results if result.get("record_key")]
 
-            self.logger.info(
+            self.logger.debug(
                 "✅ Found %d records with virtualRecordId %s",
                 len(record_keys),
                 virtual_record_id
@@ -2288,7 +2280,7 @@ class Neo4jProvider(IGraphDBProvider):
                 for r in results
             ]
 
-            self.logger.info(f"✅ Retrieved {len(records)} child records for parent {parent_external_record_id}")
+            self.logger.debug(f"✅ Retrieved {len(records)} child records for parent {parent_external_record_id}")
             return records
 
         except Exception as e:
@@ -2329,7 +2321,7 @@ class Neo4jProvider(IGraphDBProvider):
             when they match connectorId/org/permission constraints.
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"Retrieving records for record group {record_group_id}, "
                 f"connector {connector_id}, org {org_id}, depth {depth}, "
                 f"user_key: {user_key}, limit: {limit}, offset: {offset}, "
@@ -2488,7 +2480,7 @@ class Neo4jProvider(IGraphDBProvider):
                 record = self._create_typed_record_from_neo4j(record_data, type_doc)
                 typed_records.append(record)
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Successfully retrieved {len(typed_records)} typed records "
                 f"for record group {record_group_id}, connector {connector_id}"
             )
@@ -2532,7 +2524,7 @@ class Neo4jProvider(IGraphDBProvider):
             List[Record]: List of properly typed Record instances
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"Retrieving child records for parent {parent_record_id}, "
                 f"connector {connector_id}, org {org_id}, depth {depth}, "
                 f"user_key: {user_key}, limit: {limit}, offset: {offset}, "
@@ -2642,7 +2634,7 @@ class Neo4jProvider(IGraphDBProvider):
                 record = self._create_typed_record_from_neo4j(record_data, type_doc)
                 typed_records.append(record)
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Successfully retrieved {len(typed_records)} typed records "
                 f"for parent record {parent_record_id} with depth {depth}"
             )
@@ -2673,7 +2665,7 @@ class Neo4jProvider(IGraphDBProvider):
             Optional[Record]: Record if found, None otherwise
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Retrieving record for Jira issue key {connector_id} {issue_key}"
             )
 
@@ -2707,20 +2699,20 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             if results:
-                self.logger.info(
-                    f"✅ Successfully retrieved record for Jira issue key {connector_id} {issue_key}"
+                self.logger.debug(
+                    f"✅ Successfully retrieved record for issue key {connector_id} {issue_key}"
                 )
                 record_data = self._neo4j_to_arango_node(dict(results[0]["record"]), CollectionNames.RECORDS.value)
                 return Record.from_arango_base_record(record_data)
             else:
                 self.logger.warning(
-                    f"⚠️ No record found for Jira issue key {connector_id} {issue_key}"
+                    f"⚠️ No record found for issue key {connector_id} {issue_key}"
                 )
                 return None
 
         except Exception as e:
             self.logger.error(
-                f"❌ Failed to retrieve record for Jira issue key {connector_id} {issue_key}: {str(e)}"
+                f"❌ Failed to retrieve record for issue key {connector_id} {issue_key}: {str(e)}"
             )
             return None
 
@@ -3294,7 +3286,7 @@ class Neo4jProvider(IGraphDBProvider):
             List[Dict]: List of duplicate records that match the criteria
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🔍 Finding duplicate records with MD5: {md5_checksum}"
             )
 
@@ -3339,10 +3331,7 @@ class Neo4jProvider(IGraphDBProvider):
                     duplicate_records.append(self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value))
 
             if duplicate_records:
-                self.logger.info(f"✅ Found {len(duplicate_records)} duplicate record(s)")
-            else:
-                self.logger.info("✅ No duplicate records found")
-
+                self.logger.info(f"Found {len(duplicate_records)} duplicate record(s)")
             return duplicate_records
 
         except Exception as e:
@@ -3366,7 +3355,7 @@ class Neo4jProvider(IGraphDBProvider):
             Optional[dict]: The next queued record if found, None otherwise
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🔍 Finding next QUEUED duplicate record for record {record_id}"
             )
 
@@ -3383,7 +3372,7 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             if not results or not results[0].get("record"):
-                self.logger.info(f"No record found for {record_id}, skipping queued duplicate search")
+                self.logger.debug(f"No record found for {record_id}, skipping queued duplicate search")
                 return None
 
             ref_record = dict(results[0]["record"])
@@ -3428,12 +3417,12 @@ class Neo4jProvider(IGraphDBProvider):
             if results and results[0].get("record"):
                 queued_record = dict(results[0]["record"])
                 queued_record_dict = self._neo4j_to_arango_node(queued_record, CollectionNames.RECORDS.value)
-                self.logger.info(
+                self.logger.debug(
                     f"✅ Found QUEUED duplicate record: {queued_record_dict.get('_key')}"
                 )
                 return queued_record_dict
 
-            self.logger.info("✅ No QUEUED duplicate record found")
+            self.logger.debug("✅ No QUEUED duplicate record found")
             return None
 
         except Exception as e:
@@ -3463,7 +3452,7 @@ class Neo4jProvider(IGraphDBProvider):
             int: Number of records updated
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🔍 Finding QUEUED duplicate records for record {record_id}"
             )
 
@@ -3480,7 +3469,7 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             if not results or not results[0].get("record"):
-                self.logger.info(f"No record found for {record_id}, skipping queued duplicate update")
+                self.logger.debug(f"No record found for {record_id}, skipping queued duplicate update")
                 return 0
 
             ref_record = dict(results[0]["record"])
@@ -3528,7 +3517,7 @@ class Neo4jProvider(IGraphDBProvider):
                     queued_records.append(self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value))
 
             if not queued_records:
-                self.logger.info("✅ No QUEUED duplicate records found")
+                self.logger.debug("✅ No QUEUED duplicate records found")
                 return 0
 
             self.logger.info(
@@ -3565,7 +3554,7 @@ class Neo4jProvider(IGraphDBProvider):
             # Batch update all queued records
             await self.batch_upsert_nodes(updated_records, CollectionNames.RECORDS.value, transaction)
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Successfully updated {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
             )
 
@@ -3596,7 +3585,7 @@ class Neo4jProvider(IGraphDBProvider):
             bool: True if successful, False otherwise
         """
         try:
-            self.logger.info(f"🚀 Copying relationships from {source_key} to {target_key}")
+            self.logger.debug(f"🚀 Copying relationships from {source_key} to {target_key}")
 
             # Define relationship types to copy
             relationship_types = [
@@ -3652,11 +3641,11 @@ class Neo4jProvider(IGraphDBProvider):
                     # Batch create the new edges
                     if new_edges:
                         await self.batch_create_edges(new_edges, rel_type, transaction=transaction)
-                        self.logger.info(
+                        self.logger.debug(
                             f"✅ Copied {len(new_edges)} relationships of type {rel_type}"
                         )
 
-            self.logger.info(f"✅ Successfully copied all relationships to {target_key}")
+            self.logger.debug(f"✅ Successfully copied all relationships to {target_key}")
             return True
 
         except Exception as e:
@@ -3930,7 +3919,7 @@ class Neo4jProvider(IGraphDBProvider):
                     virtual_id_to_record_id[vid] = rid
 
             elapsed_time = time.time() - start_time
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Connector {connector_id}: Found {len(virtual_id_to_record_id)} virtualRecordIds in {elapsed_time:.3f}s"
             )
             return virtual_id_to_record_id
@@ -4108,8 +4097,8 @@ class Neo4jProvider(IGraphDBProvider):
 
             elapsed_time = time.time() - start_time
             kb_filter_info = f" (filtered: {len(kb_ids)} KBs)" if kb_ids else " (all KBs)"
-            self.logger.info(
-                f"✅ KB query{kb_filter_info}: Found {len(virtual_id_to_record_id)} virtualRecordIds in {elapsed_time:.3f}s"
+            self.logger.debug(
+                f"KB query{kb_filter_info}: Found {len(virtual_id_to_record_id)} virtualRecordIds in {elapsed_time:.3f}s"
             )
             return virtual_id_to_record_id
 
@@ -4150,7 +4139,7 @@ class Neo4jProvider(IGraphDBProvider):
             Dict[str, str]: Mapping of virtualRecordId -> recordId
         """
         start_time = time.time()
-        self.logger.info(
+        self.logger.debug(
             f"Getting accessible virtual record IDs for user {user_id} in org {org_id} with filters {filters}"
         )
 
@@ -4182,7 +4171,7 @@ class Neo4jProvider(IGraphDBProvider):
             has_kb_filter = kb_ids is not None and len(kb_ids) > 0
             has_app_filter = connector_ids_filter is not None and len(connector_ids_filter) > 0
 
-            self.logger.info(
+            self.logger.debug(
                 f"🔍 Filter analysis - KB filter: {has_kb_filter} (IDs: {kb_ids}), "
                 f"App filter: {has_app_filter} (Connector IDs: {connector_ids_filter}), "
                 f"Metadata filters: {list(metadata_filters.keys())}"
@@ -4200,7 +4189,7 @@ class Neo4jProvider(IGraphDBProvider):
                     cid for cid in user_apps_ids
                     if cid in connector_ids_filter
                 ]
-                self.logger.info(f"Querying {len(connectors_to_query)} filtered connectors")
+                self.logger.debug(f"Querying {len(connectors_to_query)} filtered connectors")
 
                 for connector_id in connectors_to_query:
                     if connector_id.startswith("knowledgeBase_"):
@@ -4210,7 +4199,7 @@ class Neo4jProvider(IGraphDBProvider):
                     ))
 
                 # Query only filtered KBs
-                self.logger.info(f"Querying {len(kb_ids)} filtered KBs")
+                self.logger.debug(f"Querying {len(kb_ids)} filtered KBs")
                 tasks.append(self._get_kb_virtual_ids(
                     user_id, org_id, kb_ids, metadata_filters
                 ))
@@ -4220,7 +4209,7 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.info("🔍 Scenario 2: Only KB filter applied")
 
                 # Query only filtered KBs (skip connector queries)
-                self.logger.info(f"Querying {len(kb_ids)} filtered KBs only")
+                self.logger.debug(f"Querying {len(kb_ids)} filtered KBs only")
                 tasks.append(self._get_kb_virtual_ids(
                     user_id, org_id, kb_ids, metadata_filters
                 ))
@@ -4231,7 +4220,7 @@ class Neo4jProvider(IGraphDBProvider):
 
                 # Query all accessible connectors
                 connectors_to_query = user_apps_ids
-                self.logger.info(f"Querying all {len(connectors_to_query)} accessible connectors")
+                self.logger.debug(f"Querying all {len(connectors_to_query)} accessible connectors")
 
                 for connector_id in connectors_to_query:
                     if connector_id.startswith("knowledgeBase_"):
@@ -4241,7 +4230,7 @@ class Neo4jProvider(IGraphDBProvider):
                     ))
 
                 # Query all KBs
-                self.logger.info("Querying all KBs")
+                self.logger.debug("Querying all KBs")
                 tasks.append(self._get_kb_virtual_ids(
                     user_id, org_id, None, metadata_filters
                 ))
@@ -4255,7 +4244,7 @@ class Neo4jProvider(IGraphDBProvider):
                     cid for cid in user_apps_ids
                     if cid in connector_ids_filter
                 ]
-                self.logger.info(f"Querying {len(connectors_to_query)} filtered connectors only")
+                self.logger.debug(f"Querying {len(connectors_to_query)} filtered connectors only")
 
                 for connector_id in connectors_to_query:
                     if connector_id.startswith("knowledgeBase_"):
@@ -4269,7 +4258,7 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.warning("No tasks to execute")
                 return {}
 
-            self.logger.info(f"Executing {len(tasks)} parallel queries...")
+            self.logger.debug(f"Executing {len(tasks)} parallel queries...")
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             # Step 6: Merge all virtualRecordId -> recordId dicts (first seen wins)
@@ -4285,7 +4274,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             total_time = time.time() - start_time
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Found {len(virtual_id_to_record_id)} unique virtualRecordIds "
                 f"in {total_time:.3f}s"
             )
@@ -4446,7 +4435,7 @@ class Neo4jProvider(IGraphDBProvider):
             if not edges:
                 return True
 
-            self.logger.info("Batch upserting record relation edges")
+            self.logger.debug("Batch upserting record relation edges")
 
             edge_data = []
             for edge in edges:
@@ -4480,7 +4469,7 @@ class Neo4jProvider(IGraphDBProvider):
                 txn_id=transaction
             )
 
-            self.logger.info(f"Successfully upserted {len(edge_data)} record relation edges.")
+            self.logger.debug(f"Successfully upserted {len(edge_data)} record relation edges.")
             return True
 
         except Exception as e:
@@ -5114,7 +5103,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "updatedAtTimestamp": ts,
                 }
                 await self.batch_upsert_nodes([team_node], CollectionNames.TEAMS.value)
-                self.logger.info(f"Created 'All' team for org {org_id}")
+                self.logger.debug(f"Created 'All' team for org {org_id}")
 
             # 2. Get all active users sorted by createdAtTimestamp ascending
             users = await self.get_users(org_id, active=True)
@@ -5123,16 +5112,16 @@ class Neo4jProvider(IGraphDBProvider):
                 return
 
             users_sorted = sorted(users, key=lambda u: u.get("createdAtTimestamp", 0))
-            self.logger.info(f"📊 Found {len(users_sorted)} active users for org {org_id}")
+            self.logger.debug(f"📊 Found {len(users_sorted)} active users for org {org_id}")
 
             # 3. Get current team members to determine if team is empty
             team_with_users = await self.get_team_with_users(team_id=team_id, user_key=None)
             existing_member_count = len((team_with_users or {}).get("members", []))
             owner_assigned = existing_member_count > 0
 
-            self.logger.info(f"📊 All team for org {org_id}: existing_member_count={existing_member_count}, owner_assigned={owner_assigned}")
+            self.logger.debug(f"📊 All team for org {org_id}: existing_member_count={existing_member_count}, owner_assigned={owner_assigned}")
             if team_with_users and team_with_users.get("members"):
-                self.logger.info(
+                self.logger.debug(
                     "📊 Existing members: %s",
                     [
                         f"{m.get('userEmail') or '?'}:{m.get('role') or '?'}"
@@ -5160,7 +5149,7 @@ class Neo4jProvider(IGraphDBProvider):
                     continue
 
                 role = "OWNER" if not owner_assigned else "READER"
-                self.logger.info(f"📊 Assigning role {role} to user {user_key} (owner_assigned={owner_assigned})")
+                self.logger.debug(f"📊 Assigning role {role} to user {user_key} (owner_assigned={owner_assigned})")
 
                 if not owner_assigned:
                     owner_assigned = True
@@ -5170,7 +5159,7 @@ class Neo4jProvider(IGraphDBProvider):
                             CollectionNames.TEAMS.value,
                             {"createdBy": user_key, "updatedAtTimestamp": ts},
                         )
-                        self.logger.info(f"✅ Updated team createdBy to {user_key}")
+                        self.logger.debug(f"✅ Updated team createdBy to {user_key}")
                     except Exception as e:
                         self.logger.warning(f"Failed to update createdBy for team {team_id}: {e}")
 
@@ -5187,7 +5176,7 @@ class Neo4jProvider(IGraphDBProvider):
                 await self.batch_create_edges(
                     [permission_edge], CollectionNames.PERMISSION.value
                 )
-                self.logger.info(f"✅ Added user {user_key} to All team with role {role}")
+                self.logger.debug(f"✅ Added user {user_key} to All team with role {role}")
 
         except Exception as e:
             self.logger.error(f"ensure_all_team_with_users failed for org {org_id}: {e}", exc_info=True)
@@ -5219,7 +5208,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "updatedAtTimestamp": ts,
                 }
                 await self.batch_upsert_nodes([team_node], CollectionNames.TEAMS.value)
-                self.logger.info(f"Created 'All' team for org {org_id}")
+                self.logger.debug(f"Created 'All' team for org {org_id}")
 
             # 2. Check if this user already has a PERMISSION edge
             check_edge_query = """
@@ -5248,7 +5237,7 @@ class Neo4jProvider(IGraphDBProvider):
             member_count = count_result[0].get("count", 0) if count_result else 0
             role = "OWNER" if member_count == 0 else "READER"
 
-            self.logger.info(f"Assigning role {role} to user {user_key} (existing members: {member_count})")
+            self.logger.debug(f"Assigning role {role} to user {user_key} (existing members: {member_count})")
 
             # 4. If assigning first OWNER, update team.createdBy
             if role == "OWNER":
@@ -5258,7 +5247,7 @@ class Neo4jProvider(IGraphDBProvider):
                         CollectionNames.TEAMS.value,
                         {"createdBy": user_key, "updatedAtTimestamp": ts},
                     )
-                    self.logger.info(f"Updated team createdBy to {user_key}")
+                    self.logger.debug(f"Updated team createdBy to {user_key}")
                 except Exception as e:
                     self.logger.warning(f"Failed to update createdBy for team {team_id}: {e}")
 
@@ -5276,7 +5265,7 @@ class Neo4jProvider(IGraphDBProvider):
             await self.batch_create_edges(
                 [permission_edge], CollectionNames.PERMISSION.value
             )
-            self.logger.info(f"Added user {user_key} to All team with role {role}")
+            self.logger.debug(f"Added user {user_key} to All team with role {role}")
 
         except Exception as e:
             self.logger.error(f"add_user_to_all_team failed for org {org_id}, user {user_key}: {e}", exc_info=True)
@@ -5564,7 +5553,7 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> None:
         """Process and upsert file permissions"""
         try:
-            self.logger.info(f"🚀 Processing permissions for file {file_key}")
+            self.logger.debug(f"🚀 Processing permissions for file {file_key}")
             timestamp = get_epoch_timestamp_in_ms()
 
             # Remove 'anyone' permission for this file
@@ -5675,7 +5664,7 @@ class Neo4jProvider(IGraphDBProvider):
                             transaction=transaction
                         )
 
-            self.logger.info(f"✅ Successfully processed all permissions for file {file_key}")
+            self.logger.debug(f"✅ Successfully processed all permissions for file {file_key}")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to process permissions: {str(e)}")
@@ -5938,7 +5927,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         result = results[0]["result"]
 
-        self.logger.info(
+        self.logger.debug(
             f"📊 Collected entities for connector {connector_id}: "
             f"records={len(result['record_keys'])}, "
             f"recordGroups={len(result['record_group_keys'])}, "
@@ -5994,7 +5983,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             deleted_count = sum(row.get("deleted_count", 0) for row in results) if results else 0
 
-            self.logger.info(f"✅ Deleted {deleted_count} relationships for {len(node_ids)} nodes")
+            self.logger.debug(f"✅ Deleted {deleted_count} relationships for {len(node_ids)} nodes")
 
             return (deleted_count, [])
 
@@ -6030,7 +6019,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             targets = [result["target"] for result in results] if results else []
 
-            self.logger.info(f"📋 Collected {len(targets)} isOfType target nodes")
+            self.logger.debug(f"📋 Collected {len(targets)} isOfType target nodes")
 
             return (targets, True)
 
@@ -6088,7 +6077,7 @@ class Neo4jProvider(IGraphDBProvider):
                 f"Transaction will be rolled back."
             )
 
-        self.logger.info(f"✅ Deleted {total_deleted} isOfType target documents")
+        self.logger.debug(f"✅ Deleted {total_deleted} isOfType target documents")
         return (total_deleted, [])
 
     async def _delete_nodes_by_keys(
@@ -6220,7 +6209,7 @@ class Neo4jProvider(IGraphDBProvider):
             collected = await self._collect_connector_entities(connector_id, transaction)
             node_ids = collected.get("all_node_ids") or []
             if not node_ids:
-                self.logger.info(f"No connector entities found for {connector_id}, nothing to delete")
+                self.logger.debug(f"No connector entities found for {connector_id}, nothing to delete")
                 return (0, True)
 
             sync_edge_collections = [
@@ -6238,7 +6227,7 @@ class Neo4jProvider(IGraphDBProvider):
             if failed:
                 self.logger.warning(f"Failed to delete some sync edges for connector {connector_id}")
                 return (deleted_count, False)
-            self.logger.info(f"Deleted {deleted_count} sync edges for connector {connector_id}")
+            self.logger.debug(f"Deleted {deleted_count} sync edges for connector {connector_id}")
             return (deleted_count, True)
         except Exception as e:
             self.logger.error(f"Error deleting connector sync edges for {connector_id}: {e}", exc_info=True)
@@ -6282,7 +6271,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "error": "Failed to collect isOfType targets. Cannot safely delete type nodes."
                 }
 
-            self.logger.info(
+            self.logger.debug(
                 f"📊 Collected for deletion - Records: {len(collected['record_keys'])}, "
                 f"RecordGroups: {len(collected['record_group_keys'])}, Roles: {len(collected['role_keys'])}, "
                 f"Groups: {len(collected['group_keys'])}, TypeNodes: {len(isoftype_targets)}"
@@ -6376,7 +6365,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if created_transaction:
                     await self.commit_transaction(transaction)
 
-                self.logger.info(
+                self.logger.debug(
                     f"✅ Connector instance {connector_id} deleted successfully. "
                     f"Records: {deleted_records}, RecordGroups: {deleted_rg}, "
                     f"Roles: {deleted_roles}, Groups: {deleted_groups}, "
@@ -6445,7 +6434,7 @@ class Neo4jProvider(IGraphDBProvider):
             Optional[str]: Internal key if found, None otherwise
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Retrieving internal key for external message ID {external_message_id}"
             )
 
@@ -6462,7 +6451,7 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             if results:
-                self.logger.info(
+                self.logger.debug(
                     f"✅ Successfully retrieved internal key for external message ID {external_message_id}"
                 )
                 return results[0]["id"]
@@ -6498,7 +6487,7 @@ class Neo4jProvider(IGraphDBProvider):
             List[Dict]: List of related records with messageId, id/key, and relationshipType
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Getting related records for {record_id} with relationship type {relation_type}"
             )
 
@@ -6526,12 +6515,12 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             if results:
-                self.logger.info(
+                self.logger.debug(
                     f"✅ Found {len(results)} related records for {record_id}"
                 )
                 return [dict(r["result"]) for r in results]
             else:
-                self.logger.info(
+                self.logger.debug(
                     f"ℹ️ No related records found for {record_id} with relation type {relation_type}"
                 )
                 return []
@@ -6560,7 +6549,7 @@ class Neo4jProvider(IGraphDBProvider):
             Optional[str]: messageIdHeader value if found, None otherwise
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Getting messageIdHeader for record {record_key} in collection {collection}"
             )
 
@@ -6580,7 +6569,7 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             if results and results[0].get("messageIdHeader") is not None:
-                self.logger.info(
+                self.logger.debug(
                     f"✅ Found messageIdHeader for record {record_key}"
                 )
                 return results[0]["messageIdHeader"]
@@ -6616,7 +6605,7 @@ class Neo4jProvider(IGraphDBProvider):
             List[str]: List of record keys (_key or id) matching the criteria
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Finding related mails with messageIdHeader {message_id_header}, excluding {exclude_key}"
             )
 
@@ -6640,12 +6629,12 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             if results:
-                self.logger.info(
+                self.logger.debug(
                     f"✅ Found {len(results)} related mails with messageIdHeader {message_id_header}"
                 )
                 return [r["id"] for r in results]
             else:
-                self.logger.info(
+                self.logger.debug(
                     f"ℹ️ No related mails found with messageIdHeader {message_id_header}"
                 )
                 return []
@@ -6682,7 +6671,7 @@ class Neo4jProvider(IGraphDBProvider):
             bool: True if name is unique, False if already exists
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Checking name uniqueness for '{instance_name}' with scope {scope}"
             )
 
@@ -6727,7 +6716,7 @@ class Neo4jProvider(IGraphDBProvider):
             existing = list(results) if results else []
             is_unique = len(existing) == 0
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Name uniqueness check: '{instance_name}' is {'unique' if is_unique else 'not unique'}"
             )
             return is_unique
@@ -6757,7 +6746,7 @@ class Neo4jProvider(IGraphDBProvider):
             bool: True if successful, False otherwise
         """
         try:
-            self.logger.info(f"🚀 Batch updating {len(node_ids)} nodes in {collection}")
+            self.logger.debug(f"🚀 Batch updating {len(node_ids)} nodes in {collection}")
 
             label = self._get_label(collection)
 
@@ -6785,7 +6774,7 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             if results:
-                self.logger.info(f"✅ Successfully batch updated {len(results)} nodes")
+                self.logger.debug(f"✅ Successfully batch updated {len(results)} nodes")
                 return True
             else:
                 self.logger.warning("⚠️ No nodes were updated")
@@ -6824,7 +6813,7 @@ class Neo4jProvider(IGraphDBProvider):
             Tuple[List[Dict], int]: (List of connector instances, total count)
         """
         try:
-            self.logger.info(
+            self.logger.debug(
                 f"🚀 Getting connector instances with filters: scope={scope}, search={search}, page={page}"
             )
 
@@ -6895,7 +6884,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             documents = [self._neo4j_to_arango_node(dict(r["doc"]), collection) for r in results] if results else []
 
-            self.logger.info(f"✅ Found {len(documents)} connector instances (total: {total_count})")
+            self.logger.debug(f"✅ Found {len(documents)} connector instances (total: {total_count})")
             return documents, total_count
 
         except Exception as e:
@@ -6925,7 +6914,7 @@ class Neo4jProvider(IGraphDBProvider):
             int: Count of connector instances
         """
         try:
-            self.logger.info(f"🚀 Counting connector instances for scope {scope}")
+            self.logger.debug(f"🚀 Counting connector instances for scope {scope}")
 
             label = self._get_label(collection)
 
@@ -6952,7 +6941,7 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             count = results[0]["total"] if results else 0
-            self.logger.info(f"✅ Found {count} connector instances for scope {scope}")
+            self.logger.debug(f"✅ Found {count} connector instances for scope {scope}")
             return count
 
         except Exception as e:
@@ -6981,7 +6970,7 @@ class Neo4jProvider(IGraphDBProvider):
             List[Dict]: List of connector instance documents
         """
         try:
-            self.logger.info(f"🚀 Getting connector instances for user {user_id}")
+            self.logger.debug(f"🚀 Getting connector instances for user {user_id}")
 
             label = self._get_label(collection)
 
@@ -7005,7 +6994,7 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             documents = [self._neo4j_to_arango_node(dict(r["doc"]), collection) for r in results] if results else []
-            self.logger.info(f"✅ Found {len(documents)} connector instances")
+            self.logger.debug(f"✅ Found {len(documents)} connector instances")
             return documents
 
         except Exception as e:
@@ -7028,7 +7017,7 @@ class Neo4jProvider(IGraphDBProvider):
             Optional[Record]: Typed Record instance (FileRecord, MailRecord, etc.) or None
         """
         try:
-            self.logger.info(f"🚀 Retrieving record for id {record_id}")
+            self.logger.debug(f"🚀 Retrieving record for id {record_id}")
 
             query = """
             MATCH (record:Record {id: $record_id})
@@ -7053,7 +7042,7 @@ class Neo4jProvider(IGraphDBProvider):
                     type_doc = self._neo4j_to_arango_node(type_doc, "")
 
                 typed_record = self._create_typed_record_from_neo4j(record_dict, type_doc)
-                self.logger.info(f"✅ Successfully retrieved record for id {record_id}")
+                self.logger.debug(f"✅ Successfully retrieved record for id {record_id}")
                 return typed_record
             else:
                 self.logger.warning(f"⚠️ No record found for id {record_id}")
@@ -7083,7 +7072,7 @@ class Neo4jProvider(IGraphDBProvider):
             Optional[Dict]: Record details with permissions if accessible, None otherwise
         """
         try:
-            self.logger.info(f"🚀 Checking record access for user {user_id}, record {record_id}")
+            self.logger.debug(f"🚀 Checking record access for user {user_id}, record {record_id}")
 
             # Get user by userId field
             user_query = """
@@ -7107,7 +7096,7 @@ class Neo4jProvider(IGraphDBProvider):
             # Get user's accessible app connector ids
             user_apps_ids = await self._get_user_app_ids(user_key)
 
-            self.logger.info(f"🚀 User apps ids: {user_apps_ids}")
+            self.logger.debug(f"🚀 User apps ids: {user_apps_ids}")
 
             # Get record
             record = await self.get_document(record_id, CollectionNames.RECORDS.value, transaction)
@@ -7408,7 +7397,7 @@ class Neo4jProvider(IGraphDBProvider):
             Optional[str]: Account type (e.g., "INDIVIDUAL", "ENTERPRISE") or None
         """
         try:
-            self.logger.info(f"🚀 Getting account type for organization {org_id}")
+            self.logger.debug(f"🚀 Getting account type for organization {org_id}")
 
             if is_external:
                 external_filter = "o.isExternal = true"
@@ -7430,7 +7419,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             if results:
                 account_type = results[0].get("accountType")
-                self.logger.info(f"✅ Found account type: {account_type}")
+                self.logger.debug(f"✅ Found account type: {account_type}")
                 return account_type
             else:
                 self.logger.warning(f"⚠️ Organization not found: {org_id}")
@@ -7459,7 +7448,7 @@ class Neo4jProvider(IGraphDBProvider):
         """
         statuses = [s.value for s in ProgressStatus]
         try:
-            self.logger.info(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
+            self.logger.debug(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
 
             query = """
             MATCH (app:App {id: $connector_id})
@@ -7482,7 +7471,7 @@ class Neo4jProvider(IGraphDBProvider):
             rows = results or []
             result = build_connector_stats_response(rows, statuses, org_id, connector_id)
 
-            self.logger.info(f"✅ Retrieved stats for connector {connector_id}")
+            self.logger.debug(f"✅ Retrieved stats for connector {connector_id}")
             return {
                 "success": True,
                 "data": result
@@ -7523,7 +7512,7 @@ class Neo4jProvider(IGraphDBProvider):
             Dict: success, recordId, recordName, connector, eventPublished, userRole; or error code/reason
         """
         try:
-            self.logger.info(f"🔄 Starting reindex for record {record_id} by user {user_id} with depth {depth}")
+            self.logger.debug(f"🔄 Starting reindex for record {record_id} by user {user_id} with depth {depth}")
 
             # Normalize depth only when including children (-1 or >MAX -> MAX_REINDEX_DEPTH); depth 0 stays 0
             if depth != 0 and (depth == -1 or depth > MAX_REINDEX_DEPTH):
@@ -7549,7 +7538,7 @@ class Neo4jProvider(IGraphDBProvider):
             connector_id = record.get("connectorId", "")
             origin = record.get("origin", "")
 
-            self.logger.info(f"📋 Record details - Origin: {origin}, Connector: {connector_name}, ConnectorId: {connector_id}")
+            self.logger.debug(f"📋 Record details - Origin: {origin}, Connector: {connector_name}, ConnectorId: {connector_id}")
 
             # Get user
             user = await self.get_user_by_user_id(user_id)
@@ -7830,12 +7819,12 @@ class Neo4jProvider(IGraphDBProvider):
             Dict: Result with success status and connector information
         """
         try:
-            self.logger.info(f"🔄 Validating record group reindex for {record_group_id} with depth {depth} by user {user_id}")
+            self.logger.debug(f"🔄 Validating record group reindex for {record_group_id} with depth {depth} by user {user_id}")
 
             # Handle negative depth: -1 means unlimited (set to MAX_REINDEX_DEPTH), other negatives are invalid (set to 0)
             if depth == -1:
                 depth = MAX_REINDEX_DEPTH
-                self.logger.info(f"Depth was -1 (unlimited), setting to maximum limit: {depth}")
+                self.logger.debug(f"Depth was -1 (unlimited), setting to maximum limit: {depth}")
             elif depth < 0:
                 self.logger.warning(f"Invalid negative depth {depth}, setting to 0 (direct records only)")
                 depth = 0
@@ -8480,7 +8469,7 @@ class Neo4jProvider(IGraphDBProvider):
         """Create a knowledge base with permissions"""
         try:
             kb_name = kb_data.get('groupName', 'Unknown')
-            self.logger.info(f"🚀 Creating knowledge base: '{kb_name}' in Neo4j")
+            self.logger.debug(f"🚀 Creating knowledge base: '{kb_name}' in Neo4j")
 
             # Create KB record group
             await self.batch_upsert_nodes(
@@ -8497,7 +8486,7 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             kb_id = kb_data.get('id') or kb_data.get('_key')
-            self.logger.info(f"✅ Knowledge base created successfully: {kb_id}")
+            self.logger.debug(f"✅ Knowledge base created successfully: {kb_id}")
             return {
                 "id": kb_id,
                 "name": kb_data.get("groupName"),
@@ -8515,7 +8504,7 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> dict | None:
         """Get KB context for a record."""
         try:
-            self.logger.info(f"🔍 Finding KB context for record {record_id}")
+            self.logger.debug(f"🔍 Finding KB context for record {record_id}")
 
             # Find KB via belongs_to edge
             query = """
@@ -8551,7 +8540,7 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> str | None:
         """Get user's effective role on a KB: max(direct user edge, team-derived), same idea as Arango."""
         try:
-            self.logger.info(f"🔍 Checking permissions for user {user_id} on KB {kb_id}")
+            self.logger.debug(f"🔍 Checking permissions for user {user_id} on KB {kb_id}")
 
             # Direct user->KB and user->team->KB both contribute; return highest-priority role (not direct-only).
             query = """
@@ -8587,7 +8576,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             if results:
                 role = results[0].get("role")
-                self.logger.info(f"✅ Effective KB role for user {user_id} on KB {kb_id}: '{role}'")
+                self.logger.debug(f"✅ Effective KB role for user {user_id} on KB {kb_id}: '{role}'")
                 return role
 
             self.logger.warning(f"⚠️ No permission found for user {user_id} on KB {kb_id}")
@@ -8658,15 +8647,13 @@ class Neo4jProvider(IGraphDBProvider):
                 txn_id=transaction
             )
 
-            self.logger.info(f"🔍 Results: {results}")
-
             if results:
                 result = results[0]["result"]
                 # If user has no permission (neither direct nor via teams), return None
                 if not user_role:
                     self.logger.warning(f"⚠️ User {user_id} has no access to KB {kb_id}")
                     return None
-                self.logger.info("✅ Knowledge base retrieved successfully")
+                self.logger.debug("✅ Knowledge base retrieved successfully")
                 return result
             else:
                 self.logger.warning("⚠️ Knowledge base not found")
@@ -8986,7 +8973,7 @@ class Neo4jProvider(IGraphDBProvider):
                 "sortOrders": ["asc", "desc"]
             }
 
-            self.logger.info(f"✅ Found {len(kbs)} knowledge bases out of {total_count} total (including team-based access)")
+            self.logger.debug(f"✅ Found {len(kbs)} knowledge bases out of {total_count} total (including team-based access)")
             return kbs, total_count, available_filters
 
         except Exception as e:
@@ -9005,7 +8992,7 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> dict | None:
         """Update knowledge base details"""
         try:
-            self.logger.info(f"🚀 Updating knowledge base {kb_id}")
+            self.logger.debug(f"🚀 Updating knowledge base {kb_id}")
 
             # Remove id from updates if present
             updates_clean = {k: v for k, v in updates.items() if k != "id" and k != "_key"}
@@ -9024,7 +9011,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             if results:
                 kb_dict = dict(results[0]["kb"])
-                self.logger.info("✅ Knowledge base updated successfully")
+                self.logger.debug("✅ Knowledge base updated successfully")
                 return self._neo4j_to_arango_node(kb_dict, CollectionNames.RECORD_GROUPS.value)
 
             self.logger.warning("⚠️ Knowledge base not found")
@@ -9107,7 +9094,7 @@ class Neo4jProvider(IGraphDBProvider):
             timestamp = get_epoch_timestamp_in_ms()
 
             location = "KB root" if parent_folder_id is None else f"folder {parent_folder_id}"
-            self.logger.info(f"🚀 Creating folder '{folder_name}' in {location}")
+            self.logger.debug(f"🚀 Creating folder '{folder_name}' in {location}")
 
             # Step 1: Validate parent folder exists (if nested)
             if parent_folder_id:
@@ -9115,7 +9102,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if not parent_folder:
                     raise ValueError(f"Parent folder {parent_folder_id} not found in KB {kb_id}")
 
-                self.logger.info(f"✅ Validated parent folder: {parent_folder.get('name') or parent_folder.get('recordName')}")
+                self.logger.debug(f"✅ Validated parent folder: {parent_folder.get('name') or parent_folder.get('recordName')}")
 
             # Step 2: Check for name conflicts in the target location
             existing_folder = await self.find_folder_by_name_in_parent(
@@ -9246,7 +9233,7 @@ class Neo4jProvider(IGraphDBProvider):
                 }
                 await self.batch_create_edges([parent_child_edge], CollectionNames.RECORD_RELATIONS.value, transaction)
 
-            self.logger.info(f"✅ Folder '{folder_name}' created successfully with RECORDS document")
+            self.logger.debug(f"✅ Folder '{folder_name}' created successfully with RECORDS document")
             return {
                 "id": folder_id,
                 "name": folder_name,
@@ -9318,7 +9305,7 @@ class Neo4jProvider(IGraphDBProvider):
         Updates FILES.name and RECORDS.recordName + updatedAtTimestamp
         """
         try:
-            self.logger.info(f"🚀 Updating folder {folder_id}")
+            self.logger.debug(f"🚀 Updating folder {folder_id}")
 
             # First, get existing File and Record nodes to check if they exist and get current names
             get_nodes_query = """
@@ -9409,7 +9396,7 @@ class Neo4jProvider(IGraphDBProvider):
                 )
 
             if results:
-                self.logger.info("✅ Folder updated successfully")
+                self.logger.debug("✅ Folder updated successfully")
                 return True
 
             self.logger.warning("⚠️ Record node not found")
@@ -9506,7 +9493,7 @@ class Neo4jProvider(IGraphDBProvider):
 
                 inventory = inv_results[0]["inventory"] if inv_results else {}
 
-                self.logger.info(f"inventory: {inventory}")
+                self.logger.debug(f"inventory: {inventory}")
 
                 if not inventory.get("folder_exists"):
                     if transaction is None and txn_id:
@@ -9522,7 +9509,7 @@ class Neo4jProvider(IGraphDBProvider):
                 # Step 2: Delete ALL edges connected to records and folders
                 all_ids = all_record_keys + all_folders
                 if all_ids:
-                    self.logger.info(f"🗑️ Step 2: Deleting all relationships for {len(all_ids)} nodes...")
+                    self.logger.debug(f"🗑️ Step 2: Deleting all relationships for {len(all_ids)} nodes...")
                     edges_cleanup = """
                     UNWIND $all_ids AS node_id
                     MATCH (node:Record {id: node_id})
@@ -9541,14 +9528,14 @@ class Neo4jProvider(IGraphDBProvider):
                     )
 
                     edges_deleted = edge_results[0]["edges_deleted"] if edge_results else 0
-                    self.logger.info(f"✅ Deleted {edges_deleted} relationships")
+                    self.logger.debug(f"✅ Deleted {edges_deleted} relationships")
 
                 # Step 3: Delete ALL File nodes (both files and folders)
                 # Combine File node IDs from both files and folders (collected in inventory)
                 all_file_node_ids = file_records + folder_file_nodes
 
                 if all_file_node_ids:
-                    self.logger.info(f"🗑️ Step 3: Deleting {len(all_file_node_ids)} File nodes ({len(file_records)} files + {len(folder_file_nodes)} folders)...")
+                    self.logger.debug(f"🗑️ Step 3: Deleting {len(all_file_node_ids)} File nodes ({len(file_records)} files + {len(folder_file_nodes)} folders)...")
                     delete_all_file_nodes = """
                     MATCH (file:File)
                     WHERE file.id IN $file_node_ids
@@ -9559,11 +9546,11 @@ class Neo4jProvider(IGraphDBProvider):
                         parameters={"file_node_ids": all_file_node_ids},
                         txn_id=txn_id
                     )
-                    self.logger.info(f"✅ Deleted {len(all_file_node_ids)} File nodes")
+                    self.logger.debug(f"✅ Deleted {len(all_file_node_ids)} File nodes")
 
                 # Step 4: Delete RECORD nodes for files
                 if all_record_keys:
-                    self.logger.info(f"🗑️ Step 4: Deleting {len(all_record_keys)} file Record nodes...")
+                    self.logger.debug(f"🗑️ Step 4: Deleting {len(all_record_keys)} file Record nodes...")
                     delete_file_records = """
                     MATCH (record:Record)
                     WHERE record.id IN $record_ids
@@ -9574,11 +9561,11 @@ class Neo4jProvider(IGraphDBProvider):
                         parameters={"record_ids": all_record_keys},
                         txn_id=txn_id
                     )
-                    self.logger.info(f"✅ Deleted {len(all_record_keys)} file Record nodes")
+                    self.logger.debug(f"✅ Deleted {len(all_record_keys)} file Record nodes")
 
                 # Step 5: Delete RECORD nodes for folders (in reverse order - deepest first)
                 if all_folders:
-                    self.logger.info(f"🗑️ Step 5: Deleting {len(all_folders)} folder Record nodes...")
+                    self.logger.debug(f"🗑️ Step 5: Deleting {len(all_folders)} folder Record nodes...")
                     # Reverse to delete deepest folders first
                     reversed_folders = list(reversed(all_folders))
                     delete_folder_records = """
@@ -9591,7 +9578,7 @@ class Neo4jProvider(IGraphDBProvider):
                         parameters={"folder_ids": reversed_folders},
                         txn_id=txn_id
                     )
-                    self.logger.info(f"✅ Deleted {len(all_folders)} folder Record nodes")
+                    self.logger.debug(f"✅ Deleted {len(all_folders)} folder Record nodes")
 
                 if transaction is None and txn_id:
                     await self.commit_transaction(txn_id)
@@ -9773,8 +9760,8 @@ class Neo4jProvider(IGraphDBProvider):
         """
         try:
             upload_type = "folder" if parent_folder_id else "KB root"
-            self.logger.info(f"🚀 Starting unified upload to {upload_type} in KB {kb_id}")
-            self.logger.info(f"📊 Processing {len(files)} files")
+            self.logger.debug(f"🚀 Starting unified upload to {upload_type} in KB {kb_id}")
+            self.logger.debug(f"📊 Processing {len(files)} files")
 
             # Step 1: Validate user permissions and target location
             validation_result = await self._validate_upload_context(
@@ -9788,7 +9775,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Step 2: Analyze folder structure relative to upload target
             folder_analysis = self._analyze_upload_structure(files, validation_result)
-            self.logger.info(f"📁 Structure analysis: {folder_analysis['summary']}")
+            self.logger.debug(f"📁 Structure analysis: {folder_analysis['summary']}")
 
             # Step 3: Execute upload in single transaction
             result = await self._execute_upload_transaction(
@@ -9995,7 +9982,7 @@ class Neo4jProvider(IGraphDBProvider):
             if creation_result["total_created"] > 0 or len(folder_map) > 0:
                 # Commit transaction; event publishing is done by the router
                 await self.commit_transaction(transaction)
-                self.logger.info("✅ Upload transaction committed successfully")
+                self.logger.debug("✅ Upload transaction committed successfully")
 
                 # Build event payloads for router to publish (no publishing here)
                 event_payloads = await self._build_upload_event_payloads(kb_id, {
@@ -10024,7 +10011,7 @@ class Neo4jProvider(IGraphDBProvider):
             else:
                 # Nothing created - rollback
                 await self.rollback_transaction(transaction)
-                self.logger.info("🔄 Transaction rolled back - no items to create")
+                self.logger.debug("🔄 Transaction rolled back - no items to create")
                 return {
                     "success": True,
                     "total_created": 0,
@@ -10037,7 +10024,7 @@ class Neo4jProvider(IGraphDBProvider):
             if transaction:
                 try:
                     await self.rollback_transaction(transaction)
-                    self.logger.info("🔄 Transaction rolled back due to error")
+                    self.logger.debug("🔄 Transaction rolled back due to error")
                 except Exception as abort_error:
                     self.logger.error(f"❌ Failed to rollback transaction: {str(abort_error)}")
 
@@ -10095,7 +10082,7 @@ class Neo4jProvider(IGraphDBProvider):
                 )
                 folder_id = folder['id']
                 folder_map[hierarchy_path] = folder_id
-                self.logger.info(f"✅ Created folder: {folder_name} -> {folder_id}")
+                self.logger.debug(f"✅ Created folder: {folder_name} -> {folder_id}")
 
         return folder_map
 
@@ -10320,7 +10307,7 @@ class Neo4jProvider(IGraphDBProvider):
         """
         try:
             record_id = record_doc.get("_key") or record_doc.get("id")
-            self.logger.info(f"🚀 Preparing NewRecordEvent for record_id: {record_id}")
+            self.logger.debug(f"🚀 Preparing NewRecordEvent for record_id: {record_id}")
 
             signed_url_route = (
                 f"{storage_url}/api/v1/document/internal/{record_doc['externalRecordId']}/download"
@@ -10777,7 +10764,7 @@ class Neo4jProvider(IGraphDBProvider):
 
                 inventory = inv_results[0]["inventory"] if inv_results else {}
 
-                self.logger.info(f"inventory: {inventory}")
+                self.logger.debug(f"inventory: {inventory}")
                 # return False
 
                 if not inventory.get("kb_exists"):
@@ -10790,12 +10777,12 @@ class Neo4jProvider(IGraphDBProvider):
                 all_record_ids = inventory.get("record_ids", [])
                 all_file_ids = inventory.get("file_ids", [])
 
-                self.logger.info(f"folder_keys: {inventory.get('folder_keys', [])}")
-                self.logger.info(f"total_folders: {inventory.get('total_folders', 0)}")
-                self.logger.info(f"total_records: {inventory.get('total_records', 0)}")
+                self.logger.debug(f"folder_keys: {inventory.get('folder_keys', [])}")
+                self.logger.debug(f"total_folders: {inventory.get('total_folders', 0)}")
+                self.logger.debug(f"total_records: {inventory.get('total_records', 0)}")
 
                 # Step 2: Delete ALL relationships first (prevents orphaned edges)
-                self.logger.info("🗑️ Step 2: Deleting all relationships...")
+                self.logger.debug("🗑️ Step 2: Deleting all relationships...")
 
                 if all_record_ids:
                     # First, delete all relationships connected to the records (comprehensive approach)
@@ -10819,7 +10806,7 @@ class Neo4jProvider(IGraphDBProvider):
                     )
 
                     edges_deleted = edge_results[0]["edges_deleted"] if edge_results else 0
-                    self.logger.info(f"✅ Deleted {edges_deleted} edges for records")
+                    self.logger.debug(f"✅ Deleted {edges_deleted} edges for records")
 
                     # Also delete KB-related edges
                     kb_edges_query = """
@@ -10839,11 +10826,11 @@ class Neo4jProvider(IGraphDBProvider):
                     )
 
                     kb_edges_deleted = kb_edge_results[0]["kb_edges_deleted"] if kb_edge_results else 0
-                    self.logger.info(f"✅ Deleted {kb_edges_deleted} edges for KB {kb_id}")
+                    self.logger.debug(f"✅ Deleted {kb_edges_deleted} edges for KB {kb_id}")
 
                 # Step 3: Delete all FILE nodes
                 if all_file_ids:
-                    self.logger.info(f"🗑️ Step 3: Deleting {len(all_file_ids)} FILE nodes...")
+                    self.logger.debug(f"🗑️ Step 3: Deleting {len(all_file_ids)} FILE nodes...")
                     delete_files_query = """
                     MATCH (file:File)
                     WHERE file.id IN $file_ids
@@ -10858,11 +10845,11 @@ class Neo4jProvider(IGraphDBProvider):
                     )
 
                     files_deleted = file_results[0]["deleted"] if file_results else 0
-                    self.logger.info(f"✅ Deleted {files_deleted} FILE nodes")
+                    self.logger.debug(f"✅ Deleted {files_deleted} FILE nodes")
 
                 # Step 4: Delete all RECORD nodes
                 if all_record_ids:
-                    self.logger.info(f"🗑️ Step 4: Deleting {len(all_record_ids)} RECORD nodes...")
+                    self.logger.debug(f"🗑️ Step 4: Deleting {len(all_record_ids)} RECORD nodes...")
                     delete_records_query = """
                     MATCH (record:Record)
                     WHERE record.id IN $record_ids
@@ -10877,10 +10864,10 @@ class Neo4jProvider(IGraphDBProvider):
                     )
 
                     records_deleted = record_results[0]["deleted"] if record_results else 0
-                    self.logger.info(f"✅ Deleted {records_deleted} RECORD nodes")
+                    self.logger.debug(f"✅ Deleted {records_deleted} RECORD nodes")
 
                 # Step 5: Delete any remaining relationships on the KB node, then delete the KB RecordGroup itself
-                self.logger.info(f"🗑️ Step 5: Deleting remaining KB relationships and KB RecordGroup {kb_id}...")
+                self.logger.debug(f"🗑️ Step 5: Deleting remaining KB relationships and KB RecordGroup {kb_id}...")
                 delete_kb_query = """
                 MATCH (kb:RecordGroup {id: $kb_id})
                 OPTIONAL MATCH (kb)-[r]-()
@@ -10895,13 +10882,11 @@ class Neo4jProvider(IGraphDBProvider):
                 )
 
                 kb_deleted = kb_results[0]["deleted"] if kb_results else 0
-                self.logger.info(f"✅ Deleted KB RecordGroup: {kb_deleted}")
+                self.logger.debug(f"✅ Deleted KB RecordGroup: {kb_deleted}")
 
                 # Step 6: Commit transaction
                 if should_commit:
-                    self.logger.info("💾 Committing complete deletion transaction...")
                     await self.commit_transaction(transaction)
-                    self.logger.info("✅ Transaction committed successfully!")
 
                 # Step 7: Prepare event data for all deleted records (router will publish)
                 event_payloads = []
@@ -10923,7 +10908,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "payloads": event_payloads
                 } if event_payloads else None
 
-                self.logger.info(f"🎉 KB {kb_id} and ALL contents deleted successfully.")
+                self.logger.info(f"KB {kb_id} and ALL contents deleted successfully.")
                 return {
                     "success": True,
                     "eventData": event_data
@@ -10933,7 +10918,7 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.error(f"❌ Database error during KB deletion: {str(db_error)}")
                 if should_commit and transaction:
                     await self.rollback_transaction(transaction)
-                    self.logger.info("🔄 Transaction aborted due to error")
+                    self.logger.debug("🔄 Transaction aborted due to error")
                 raise db_error
 
         except Exception as e:
@@ -11009,7 +10994,7 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> dict:
         """Optimistically update permissions for users and teams on a knowledge base"""
         try:
-            self.logger.info(f"🚀 Optimistic update: {len(user_ids or [])} users and {len(team_ids or [])} teams on KB {kb_id} to {new_role}")
+            self.logger.debug(f"🚀 Optimistic update: {len(user_ids or [])} users and {len(team_ids or [])} teams on KB {kb_id} to {new_role}")
 
             # Quick validation of inputs
             if not user_ids and not team_ids:
@@ -11086,7 +11071,7 @@ class Neo4jProvider(IGraphDBProvider):
             # So we don't update team permissions
             updated_teams = 0
 
-            self.logger.info(f"✅ Optimistically updated {updated_users} user permissions for KB {kb_id}")
+            self.logger.debug(f"✅ Optimistically updated {updated_users} user permissions for KB {kb_id}")
 
             return {
                 "success": True,
@@ -11235,7 +11220,7 @@ class Neo4jProvider(IGraphDBProvider):
         Returns (records, total_count, available_filters)
         """
         try:
-            self.logger.info(f"🔍 Listing all records for user {user_id}, source: {source}")
+            self.logger.debug(f"🔍 Listing all records for user {user_id}, source: {source}")
 
             # Determine what data sources to include
             include_kb_records = source in ['all', 'local']
@@ -11582,7 +11567,7 @@ class Neo4jProvider(IGraphDBProvider):
             available_filters.setdefault("indexingStatus", [])
             available_filters.setdefault("permissions", [])
 
-            self.logger.info(f"✅ Found {len(records)} records out of {total_count} total")
+            self.logger.debug(f"✅ Found {len(records)} records out of {total_count} total")
             return records, total_count, available_filters
 
         except Exception as e:
@@ -11618,7 +11603,7 @@ class Neo4jProvider(IGraphDBProvider):
         List all records in a specific KB through folder structure for better folder-based filtering.
         """
         try:
-            self.logger.info(f"🔍 Listing records for KB {kb_id} (folder-based)")
+            self.logger.debug(f"🔍 Listing records for KB {kb_id} (folder-based)")
 
             # Check user permissions first (includes team-based access)
             user_permission = await self.get_user_kb_permission(kb_id, user_id, transaction)
@@ -11873,7 +11858,7 @@ class Neo4jProvider(IGraphDBProvider):
             available_filters.setdefault("permissions", [user_permission] if user_permission else [])
             available_filters.setdefault("folders", [])
 
-            self.logger.info(f"✅ Listed {len(records)} KB records out of {total_count} total")
+            self.logger.debug(f"✅ Listed {len(records)} KB records out of {total_count} total")
             return records, total_count, available_filters
 
         except Exception as e:
@@ -11911,7 +11896,7 @@ class Neo4jProvider(IGraphDBProvider):
         - If folders fit in page, fill remaining space with records
         """
         try:
-            self.logger.info(f"🔍 Getting KB {kb_id} children with folders_first pagination (skip={skip}, limit={limit}, level={level})")
+            self.logger.debug(f"🔍 Getting KB {kb_id} children with folders_first pagination (skip={skip}, limit={limit}, level={level})")
 
             # Get KB info first
             kb = await self.get_document(kb_id, CollectionNames.RECORD_GROUPS.value)
@@ -12112,7 +12097,7 @@ class Neo4jProvider(IGraphDBProvider):
                 "paginationMode": "folders_first"
             }
 
-            self.logger.info(f"✅ Retrieved KB children with folders_first pagination: {result['counts']['totalItems']} items")
+            self.logger.debug(f"✅ Retrieved KB children with folders_first pagination: {result['counts']['totalItems']} items")
             return result
 
         except Exception as e:
@@ -12141,7 +12126,7 @@ class Neo4jProvider(IGraphDBProvider):
         NEW LOGIC: Children are identified via RECORD_RELATION edges with relationshipType="PARENT_CHILD"
         """
         try:
-            self.logger.info(f"🔍 Getting folder {folder_id} children with folders_first pagination (skip={skip}, limit={limit}, level={level})")
+            self.logger.debug(f"🔍 Getting folder {folder_id} children with folders_first pagination (skip={skip}, limit={limit}, level={level})")
 
             # Build filter conditions
             folder_conditions = []
@@ -12318,7 +12303,7 @@ class Neo4jProvider(IGraphDBProvider):
                 "availableFilters": available_filters
             }
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Folder children retrieved: {len(paginated_folders)} folders, {len(paginated_records)} records "
                 f"(total: {total_folders} folders, {total_records} records)"
             )
@@ -12689,6 +12674,56 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Delete parent-child edge failed: {str(e)}")
             return False
 
+    async def _get_user_accessible_team_app_ids(
+        self,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return the ``id`` list of team-scoped apps this user may access.
+
+        Covers two access paths:
+
+        1. **Direct USER_APP_RELATION edge** — ``(User) -[:USER_APP_RELATION]→ (App {scope:'team'})``.
+           Handles connectors explicitly shared with a specific user.
+
+        2. **Team-based edge** — ``(User) -[:PERMISSION {type:'USER'}]→ (Teams)
+           -[:USER_APP_RELATION]→ (App {scope:'team'})``.
+           Handles the standard org-wide pattern:
+           * ``ensure_all_team_with_users`` creates the ``User → Teams`` ``PERMISSION``
+             relationship (``type='USER'``).
+           * ``ensure_team_app_edge`` creates the ``(Teams {id:'all_{org_id}'})-[:USER_APP_RELATION]→
+             (App)`` relationship when a team-scope connector is configured.
+
+        Args:
+            user_id: MongoDB userId value (``user.userId`` in Neo4j).
+            transaction: Optional Neo4j transaction ID.
+
+        Returns:
+            List of app ``id`` strings the user can access (empty list when
+            the user has no accessible team connectors).  Any DB error is
+            propagated to the caller so it is never silently swallowed.
+        """
+        # Match by userId (MongoDB ID) — not by id (the graph-internal key).
+        # Intermediate WITH after the first OPTIONAL MATCH avoids an M×N
+        # Cartesian product when both paths return multiple rows.
+        query = """
+        MATCH (u:User {userId: $user_id})
+        OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(a1:App {scope: $team_scope})
+        WITH u, collect(DISTINCT a1.id) AS direct_ids
+        OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(t:Teams)-[:USER_APP_RELATION]->(a2:App {scope: $team_scope})
+        WITH direct_ids, collect(DISTINCT a2.id) AS team_ids
+        WITH direct_ids + team_ids AS all_ids
+        UNWIND all_ids AS app_id
+        WITH app_id WHERE app_id IS NOT NULL
+        RETURN DISTINCT app_id
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={"user_id": user_id, "team_scope": "team"},
+            txn_id=transaction,
+        )
+        return [r["app_id"] for r in results] if results else []
+
     async def get_filtered_connector_instances(
         self,
         collection: str,
@@ -12703,11 +12738,18 @@ class Neo4jProvider(IGraphDBProvider):
         exclude_kb: bool = True,
         kb_connector_type: str | None = None,
         is_admin: bool = False,
+        is_authenticated: bool | None = None,
+        is_active: bool | None = None,
+        connector_type_filter: str | None = None,
         transaction: str | None = None,
-    ) -> tuple[list[dict], int, dict[str, int]]:
-        """Get filtered connector instances with pagination and scope counts."""
+    ) -> tuple[list[dict], int]:
+        """Get filtered connector instances with pagination."""
         try:
             label = self._get_label(collection)
+
+            # For non-admin team scope we pre-compute which team apps the user
+            # can actually see.
+            accessible_team_ids: list[str] | None = None
 
             # Build WHERE conditions
             conditions = ["doc.id IS NOT NULL"]
@@ -12719,21 +12761,52 @@ class Neo4jProvider(IGraphDBProvider):
                 params["kb_connector_type"] = kb_connector_type
 
             # Scope filter
+            # personal → only the caller's own personal connectors
+            # team (admin)     → all team-scoped connectors in the org
+            # team (non-admin) → only team connectors reachable via the user's
+            #                    USER_APP_RELATION / PERMISSION edges
             if scope == "personal":
-                conditions.append("doc.scope = $scope")
+                conditions.append("doc.scope = $personal_scope")
                 conditions.append("doc.createdBy = $user_id")
-                params["scope"] = scope
+                params["personal_scope"] = "personal"
                 params["user_id"] = user_id
             elif scope == "team":
-                conditions.append("(doc.scope = $team_scope OR doc.createdBy = $user_id)")
+                conditions.append("doc.scope = $team_scope")
                 params["team_scope"] = "team"
-                params["user_id"] = user_id
+                if not is_admin:
+                    accessible_team_ids = await self._get_user_accessible_team_app_ids(
+                        user_id, transaction
+                    )
+                    if not accessible_team_ids:
+                        self.logger.info(
+                            "No accessible team app IDs found for user %s — "
+                            "edge data may be inconsistent (ensure_team_app_edge / "
+                            "ensure_all_team_with_users not yet run for this org).",
+                            user_id,
+                        )
+                    conditions.append("doc.id IN $accessible_team_ids")
+                    params["accessible_team_ids"] = accessible_team_ids
 
             # Search filter
             if search:
                 search_pattern = f"(?i).*{search}.*"
                 conditions.append("(doc.name =~ $search OR doc.type =~ $search OR doc.appGroup =~ $search)")
                 params["search"] = search_pattern
+
+            # is_authenticated filter
+            if is_authenticated is not None:
+                conditions.append("doc.isAuthenticated = $is_authenticated")
+                params["is_authenticated"] = is_authenticated
+
+            # is_active filter
+            if is_active is not None:
+                conditions.append("doc.isActive = $is_active")
+                params["is_active"] = is_active
+
+            # connector type filter
+            if connector_type_filter:
+                conditions.append("doc.type = $connector_type_filter")
+                params["connector_type_filter"] = connector_type_filter
 
             where_clause = " AND ".join(conditions)
 
@@ -12745,42 +12818,6 @@ class Neo4jProvider(IGraphDBProvider):
             """
             count_result = await self.client.execute_query(count_query, parameters=params, txn_id=transaction)
             total_count = count_result[0]["total"] if count_result else 0
-
-            # Scope counts (personal and team)
-            scope_counts = {"personal": 0, "team": 0}
-
-            # Personal count
-            personal_query = f"""
-            MATCH (doc:{label})
-            WHERE doc.id IS NOT NULL
-            AND doc.scope = $personal_scope
-            AND doc.createdBy = $user_id
-            AND doc.isConfigured = true
-            RETURN count(doc) as total
-            """
-            personal_result = await self.client.execute_query(
-                personal_query,
-                parameters={"personal_scope": "personal", "user_id": user_id},
-                txn_id=transaction
-            )
-            scope_counts["personal"] = personal_result[0]["total"] if personal_result else 0
-
-            # Team count (if admin or has team access)
-            if is_admin or scope == "team":
-                team_query = f"""
-                MATCH (doc:{label})
-                WHERE doc.id IS NOT NULL
-                AND doc.type <> $kb_connector_type
-                AND doc.scope = $team_scope
-                AND doc.isConfigured = true
-                RETURN count(doc) as total
-                """
-                team_result = await self.client.execute_query(
-                    team_query,
-                    parameters={"kb_connector_type": kb_connector_type or "", "team_scope": "team"},
-                    txn_id=transaction
-                )
-                scope_counts["team"] = team_result[0]["total"] if team_result else 0
 
             # Main query with pagination
             main_query = f"""
@@ -12797,11 +12834,11 @@ class Neo4jProvider(IGraphDBProvider):
             documents = [self._neo4j_to_arango_node(dict(r["doc"]), collection) for r in results] if results else []
 
             self.logger.info(f"✅ Found {len(documents)} connector instances (total: {total_count})")
-            return documents, total_count, scope_counts
+            return documents, total_count
 
         except Exception as e:
             self.logger.error(f"❌ Get filtered connector instances failed: {str(e)}")
-            return [], 0, {"personal": 0, "team": 0}
+            return [], 0
 
     async def get_kb_permissions(
         self,
@@ -13344,7 +13381,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         result = await self.client.execute_query(query, parameters=params, txn_id=transaction)
         elapsed = time.perf_counter() - start
-        self.logger.info(f"get_knowledge_hub_children finished in {elapsed * 1000} ms")
+        self.logger.debug(f"get_knowledge_hub_children finished in {elapsed * 1000} ms")
         if result and result[0].get("result"):
             return result[0]["result"]
         return {"nodes": [], "total": 0}
@@ -13397,7 +13434,7 @@ class Neo4jProvider(IGraphDBProvider):
         start = time.perf_counter()
 
         try:
-            self.logger.info(f"🔍 Starting knowledge hub search with parent_id={parent_id}, parent_type={parent_type}, only_containers={only_containers}, search_query={search_query}, node_types={node_types}, record_types={record_types}, origins={origins}, connector_ids={connector_ids}, indexing_status={indexing_status}, created_at={created_at}, updated_at={updated_at}, size={size}, record_group_ids={record_group_ids}")
+            self.logger.debug(f"🔍 Starting knowledge hub search with parent_id={parent_id}, parent_type={parent_type}, only_containers={only_containers}, search_query={search_query}, node_types={node_types}, record_types={record_types}, origins={origins}, connector_ids={connector_ids}, indexing_status={indexing_status}, created_at={created_at}, updated_at={updated_at}, size={size}, record_group_ids={record_group_ids}")
             # Build filter conditions using helper
             filter_conditions, filter_params = self._build_knowledge_hub_filter_conditions(
                 search_query=search_query,
@@ -13492,10 +13529,10 @@ class Neo4jProvider(IGraphDBProvider):
             count_result = await self.client.execute_query(count_query, parameters=params, txn_id=transaction)
             total = count_result[0]["total"] if count_result else 0
             phase1a_elapsed = time.perf_counter() - phase1a_start
-            self.logger.info(f"Phase 1a (count): {total} total nodes in {phase1a_elapsed * 1000:.2f} ms")
+            self.logger.debug(f"Phase 1a (count): {total} total nodes in {phase1a_elapsed * 1000:.2f} ms")
 
             if total == 0:
-                self.logger.info(f"get_knowledge_hub_search finished (no results) in {(time.perf_counter() - start) * 1000:.2f} ms")
+                self.logger.debug(f"get_knowledge_hub_search finished (no results) in {(time.perf_counter() - start) * 1000:.2f} ms")
                 return {"nodes": [], "total": 0}
 
             # ========== PHASE 1B: PAGINATED IDS QUERY (Streaming) ==========
@@ -13507,10 +13544,10 @@ class Neo4jProvider(IGraphDBProvider):
             ids_result = await self.client.execute_query(ids_query, parameters=params, txn_id=transaction)
             paginated_ids = ids_result[0]["paginated_ids"] if ids_result else []
             phase1b_elapsed = time.perf_counter() - phase1b_start
-            self.logger.info(f"Phase 1b (paginated IDs): {len(paginated_ids)} IDs in {phase1b_elapsed * 1000:.2f} ms")
+            self.logger.debug(f"Phase 1b (paginated IDs): {len(paginated_ids)} IDs in {phase1b_elapsed * 1000:.2f} ms")
 
             if not paginated_ids:
-                self.logger.info(f"get_knowledge_hub_search finished (no IDs for page) in {(time.perf_counter() - start) * 1000:.2f} ms")
+                self.logger.debug(f"get_knowledge_hub_search finished (no IDs for page) in {(time.perf_counter() - start) * 1000:.2f} ms")
                 return {"nodes": [], "total": total}
 
             # ========== PHASE 2: HYDRATION QUERY ==========
@@ -13520,10 +13557,10 @@ class Neo4jProvider(IGraphDBProvider):
             hydration_result = await self.client.execute_query(hydration_query, parameters=params, txn_id=transaction)
             nodes = hydration_result[0]["nodes"] if hydration_result else []
             phase2_elapsed = time.perf_counter() - phase2_start
-            self.logger.info(f"Phase 2 (hydration): {len(nodes)} nodes hydrated in {phase2_elapsed * 1000:.2f} ms")
+            self.logger.debug(f"Phase 2 (hydration): {len(nodes)} nodes hydrated in {phase2_elapsed * 1000:.2f} ms")
 
             elapsed = time.perf_counter() - start
-            self.logger.info(f"get_knowledge_hub_search finished in {elapsed * 1000:.2f} ms (count: {phase1a_elapsed*1000:.2f}ms, IDs: {phase1b_elapsed*1000:.2f}ms, hydration: {phase2_elapsed*1000:.2f}ms)")
+            self.logger.debug(f"get_knowledge_hub_search finished in {elapsed * 1000:.2f} ms (count: {phase1a_elapsed*1000:.2f}ms, IDs: {phase1b_elapsed*1000:.2f}ms, hydration: {phase2_elapsed*1000:.2f}ms)")
 
             return {"nodes": nodes, "total": total}
 
@@ -16734,7 +16771,7 @@ class Neo4jProvider(IGraphDBProvider):
             int: Total number of edges deleted
         """
         try:
-            self.logger.info(f"🚀 Deleting all edges for node: {node_key} in collection: {collection}")
+            self.logger.debug(f"🚀 Deleting all edges for node: {node_key} in collection: {collection}")
 
             # Parse node_key to get collection and key
             collection_name, key = self._parse_arango_id(node_key)
@@ -16766,7 +16803,7 @@ class Neo4jProvider(IGraphDBProvider):
             count = results[0]["deleted"] if results else 0
 
             if count > 0:
-                self.logger.info(f"✅ Successfully deleted {count} edges for node: {node_key}")
+                self.logger.debug(f"✅ Successfully deleted {count} edges for node: {node_key}")
             else:
                 self.logger.warning(f"⚠️ No edges found for node: {node_key} in collection: {collection}")
 
@@ -17554,7 +17591,7 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.error(f"Failed to update agent {agent_id}")
                 return False
 
-            self.logger.info(f"Successfully updated agent {agent_id}")
+            self.logger.debug(f"Successfully updated agent {agent_id}")
             return True
 
         except Exception as e:
@@ -17594,7 +17631,7 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.error(f"Failed to delete agent {agent_id}")
                 return False
 
-            self.logger.info(f"Successfully deleted agent {agent_id}")
+            self.logger.debug(f"Successfully deleted agent {agent_id}")
             return True
 
         except Exception as e:
@@ -17781,7 +17818,7 @@ class Neo4jProvider(IGraphDBProvider):
             )
             agents_deleted = result[0].get("deleted_count", 0) or 0 if result else 0
 
-            self.logger.info(
+            self.logger.debug(
                 f"Hard deleted agent {agent_id}: {agents_deleted} agent, "
                 f"{toolsets_deleted} toolsets, {tools_deleted} tools, "
                 f"{knowledge_deleted} knowledge, {edges_deleted} relationships"
@@ -17992,7 +18029,7 @@ class Neo4jProvider(IGraphDBProvider):
                 txn_id=transaction
             )
 
-            self.logger.info(
+            self.logger.debug(
                 f"Hard deleted {agents_deleted} agents, {toolsets_deleted} toolsets, "
                 f"{tools_deleted} tools, {knowledge_deleted} knowledge, and {edges_deleted} relationships"
             )
@@ -18137,7 +18174,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if result:
                     deleted_count += result[0].get("deleted", 0)
 
-            self.logger.info(f"Unshared agent {agent_id}: removed {deleted_count} permissions")
+            self.logger.debug(f"Unshared agent {agent_id}: removed {deleted_count} permissions")
 
             return {
                 "success": True,
@@ -18222,7 +18259,7 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.warning(f"No permission edges found to update for agent {agent_id}")
                 return {"success": False, "reason": "No permissions found to update"}
 
-            self.logger.info(f"Successfully updated {updated_count} permissions for agent {agent_id} to role {role}")
+            self.logger.debug(f"Successfully updated {updated_count} permissions for agent {agent_id} to role {role}")
 
             return {
                 "success": True,
@@ -18503,7 +18540,7 @@ class Neo4jProvider(IGraphDBProvider):
     async def share_agent_template(self, template_id: str, user_id: str, user_ids: list[str] | None = None, team_ids: list[str] | None = None, transaction: str | None = None) -> bool | None:
         """Share an agent template with users"""
         try:
-            self.logger.info(f"Sharing agent template {template_id} with users {user_ids}")
+            self.logger.debug(f"Sharing agent template {template_id} with users {user_ids}")
 
             template_label = collection_to_label(CollectionNames.AGENT_TEMPLATES.value)
             user_label = collection_to_label(CollectionNames.USERS.value)
@@ -18645,7 +18682,7 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.error(f"Failed to delete template {template_id}")
                 return False
 
-            self.logger.info(f"Successfully deleted template {template_id}")
+            self.logger.debug(f"Successfully deleted template {template_id}")
             return True
 
         except Exception as e:
@@ -18700,7 +18737,7 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.error(f"Failed to update template {template_id}")
                 return False
 
-            self.logger.info(f"Successfully updated template {template_id}")
+            self.logger.debug(f"Successfully updated template {template_id}")
             return True
 
         except Exception as e:

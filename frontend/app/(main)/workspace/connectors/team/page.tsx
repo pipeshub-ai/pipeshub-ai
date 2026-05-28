@@ -19,6 +19,12 @@ import {
   InstanceManagementPanel,
   ConfigSuccessDialog,
 } from '../components';
+import { AdminAccessRequiredDialog } from '../components/admin-access-required-dialog';
+import type { AdminAccessDialogPhase } from '../components/admin-access-required-dialog';
+import {
+  resolveConnectorForSetup,
+  shouldPromptAdminAccess,
+} from '../utils/admin-access-helpers';
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
 import type { Connector, ConnectorInstance, TeamFilterTab } from '../types';
@@ -95,6 +101,14 @@ function TeamConnectorsPageContent() {
     bumpCatalogRefresh,
     setSelectedScope,
   } = useConnectorsStore();
+
+  const [adminAccessDialogOpen, setAdminAccessDialogOpen] = useState(false);
+  const [adminAccessDialogPhase, setAdminAccessDialogPhase] =
+    useState<AdminAccessDialogPhase>('question');
+  const [pendingSetupConnector, setPendingSetupConnector] = useState<Connector | null>(null);
+  const [pendingSetupConnectorId, setPendingSetupConnectorId] = useState<string | undefined>(
+    undefined
+  );
 
   // Keep catalog scope in store aligned with this route (panel + API use `selectedScope`).
   useLayoutEffect(() => {
@@ -251,15 +265,47 @@ function TeamConnectorsPageContent() {
     if (active) setActiveConnectors(active);
   }, [setRegistryConnectors, setActiveConnectors]);
 
-  // ── Handlers (list view) ───────────────────────────────────
-  const handleSetup = useCallback(
-    (connector: Connector) => {
-      // For active connectors (have _key), open in edit mode
-      // For registry connectors (no _key), open in create mode
-      const connectorId = connector._key;
+  const proceedWithSetup = useCallback(
+    (connector: Connector, connectorId?: string) => {
       openPanel(connector, connectorId, 'team');
     },
     [openPanel]
+  );
+
+  const requestSetupOrPromptAdminAccess = useCallback(
+    (connector: Connector, connectorId?: string) => {
+      const resolved = resolveConnectorForSetup(connector, registryConnectors);
+      const isCreateMode = connectorId === undefined;
+
+      if (shouldPromptAdminAccess(resolved, isCreateMode)) {
+        setPendingSetupConnector(resolved);
+        setPendingSetupConnectorId(connectorId);
+        setAdminAccessDialogPhase('question');
+        setAdminAccessDialogOpen(true);
+        return;
+      }
+
+      proceedWithSetup(connector, connectorId);
+    },
+    [registryConnectors, proceedWithSetup]
+  );
+
+  const handleAdminAccessConfirm = useCallback(() => {
+    if (!pendingSetupConnector) return;
+    setAdminAccessDialogOpen(false);
+    setAdminAccessDialogPhase('question');
+    proceedWithSetup(pendingSetupConnector, pendingSetupConnectorId);
+    setPendingSetupConnector(null);
+    setPendingSetupConnectorId(undefined);
+  }, [pendingSetupConnector, pendingSetupConnectorId, proceedWithSetup]);
+
+  // ── Handlers (list view) ───────────────────────────────────
+  const handleSetup = useCallback(
+    (connector: Connector) => {
+      const connectorId = connector._key;
+      requestSetupOrPromptAdminAccess(connector, connectorId);
+    },
+    [requestSetupOrPromptAdminAccess]
   );
 
   /** "+" on catalog cards must create a new instance, not edit whichever instance supplied `_key`. */
@@ -268,9 +314,9 @@ function TeamConnectorsPageContent() {
       const registry = registryConnectors.find((c) => c.type === connector.type);
       const base = registry ?? connector;
       const { _key: _omitInstanceKey, ...template } = base;
-      openPanel(template, undefined, 'team');
+      requestSetupOrPromptAdminAccess(template, undefined);
     },
-    [registryConnectors, openPanel]
+    [registryConnectors, requestSetupOrPromptAdminAccess]
   );
 
   const handleCardClick = useCallback(
@@ -318,8 +364,8 @@ function TeamConnectorsPageContent() {
     const registry = registryConnectors.find((c) => c.type === connectorTypeInfo.type);
     const base = registry ?? connectorTypeInfo;
     const { _key: _omitInstanceKey, ...template } = base;
-    openPanel(template, undefined, 'team');
-  }, [connectorTypeInfo, registryConnectors, openPanel]);
+    requestSetupOrPromptAdminAccess(template, undefined);
+  }, [connectorTypeInfo, registryConnectors, requestSetupOrPromptAdminAccess]);
 
   const handleOpenDocs = useCallback(() => {
     const docUrl = getConnectorDocumentationUrl(connectorTypeInfo);
@@ -428,6 +474,14 @@ function TeamConnectorsPageContent() {
           onStartSyncing={handleStartSyncingFromDialog}
           onDoLater={handleDoLater}
         />
+        <AdminAccessRequiredDialog
+          open={adminAccessDialogOpen}
+          onOpenChange={setAdminAccessDialogOpen}
+          connector={pendingSetupConnector}
+          phase={adminAccessDialogPhase}
+          onPhaseChange={setAdminAccessDialogPhase}
+          onConfirmAdmin={handleAdminAccessConfirm}
+        />
       </>
     );
   }
@@ -456,6 +510,14 @@ function TeamConnectorsPageContent() {
         isLoading={isLoading}
       />
       <ConnectorPanel />
+      <AdminAccessRequiredDialog
+        open={adminAccessDialogOpen}
+        onOpenChange={setAdminAccessDialogOpen}
+        connector={pendingSetupConnector}
+        phase={adminAccessDialogPhase}
+        onPhaseChange={setAdminAccessDialogPhase}
+        onConfirmAdmin={handleAdminAccessConfirm}
+      />
     </>
   );
 }

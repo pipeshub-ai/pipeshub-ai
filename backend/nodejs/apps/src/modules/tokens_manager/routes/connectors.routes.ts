@@ -272,7 +272,11 @@ const connectorTypeParamSchema = z.object({
 });
 
 /**
- * Schema for validating connector list query parameters
+ * Schema for validating connector list query parameters.
+ * Covers both GET / (instances) and GET /registry endpoints.
+ * The three filter params (is_authenticated, is_active, connector_type) are
+ * only meaningful on the instances endpoint but are declared here to keep
+ * a single reusable schema.
  */
 const connectorListSchema = z.object({
   query: z.object({
@@ -281,7 +285,7 @@ const connectorListSchema = z.object({
       .refine((val) => val === 'team' || val === 'personal', {
         message: 'Scope must be either team or personal',
       })
-      .optional(),
+      .default('team'),
     page: z
       .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
       .optional(),
@@ -289,6 +293,30 @@ const connectorListSchema = z.object({
       .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
       .optional(),
     search: z.string().optional(),
+    /** Filter instances by authentication status (instances endpoint only). */
+    isAuthenticated: z
+      .preprocess(
+        (arg) => {
+          if (arg === 'true') return true;
+          if (arg === 'false') return false;
+          return arg;
+        },
+        z.boolean(),
+      )
+      .optional(),
+    /** Filter instances by active status (instances endpoint only). */
+    isActive: z
+      .preprocess(
+        (arg) => {
+          if (arg === 'true') return true;
+          if (arg === 'false') return false;
+          return arg;
+        },
+        z.boolean(),
+      )
+      .optional(),
+    /** Filter instances by exact connector type (instances endpoint only). */
+    connectorType: z.string().min(1).optional(),
   }),
 });
 

@@ -3,7 +3,11 @@
 import pytest
 
 from app.connectors.core.registry.auth_builder import OAuthConfig, OAuthScopeConfig
-from app.connectors.core.registry.auth_utils import auth_field_to_dict, auto_add_oauth_fields
+from app.connectors.core.registry.auth_utils import (
+    auth_field_to_dict,
+    auto_add_oauth_fields,
+    include_jira_scope_enabled,
+)
 from app.connectors.core.registry.types import AuthField, FileContentValidationRule, ValidationRuleType
 
 
@@ -113,6 +117,40 @@ class TestAuthFieldToDict:
         result = auth_field_to_dict(field)
         assert result["validation"]["acceptedFileTypes"] == []
         assert result["validation"]["validationRules"] == []
+
+    def test_select_field_includes_options(self):
+        field = AuthField(
+            name="includeJiraScope",
+            display_name="Grant Jira user access",
+            field_type="SELECT",
+            options=["no", "yes"],
+        )
+        result = auth_field_to_dict(field)
+        assert result["options"] == ["no", "yes"]
+
+    def test_empty_options_omitted_from_dict(self):
+        field = AuthField(name="token", display_name="Token", field_type="TEXT")
+        result = auth_field_to_dict(field)
+        assert "options" not in result
+
+
+class TestIncludeJiraScopeEnabled:
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            (True, True),
+            (False, False),
+            (None, False),
+            ("yes", True),
+            ("no", False),
+            ("YES", True),
+            ("NO", False),
+            ("true", False),
+            ("false", False),
+        ],
+    )
+    def test_coerces_auth_values(self, value, expected: bool) -> None:
+        assert include_jira_scope_enabled(value) is expected
 
 
 # ---------------------------------------------------------------------------

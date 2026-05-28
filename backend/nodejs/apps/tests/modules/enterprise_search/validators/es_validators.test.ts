@@ -91,7 +91,7 @@ describe('enterprise_search/validators/es_validators', () => {
       const data = {
         body: {
           query: 'summarize',
-          chatMode: 'auto',
+          chatMode: 'web_search',
           attachments: [
             {
               recordId: '507f1f77bcf86cd799439011',
@@ -306,7 +306,7 @@ describe('enterprise_search/validators/es_validators', () => {
         params: { conversationId: '507f1f77bcf86cd799439011' },
         body: {
           query: 'follow up',
-          chatMode: 'quick',
+          chatMode: 'internal_search',
           attachments: [{ recordId: 'aaaaaaaaaaaaaaaaaaaaaaaa' }],
         },
       }

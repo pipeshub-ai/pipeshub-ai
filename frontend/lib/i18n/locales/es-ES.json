@@ -1580,6 +1580,16 @@
           "saveConfig": "guardar los cambios de configuración"
         }
       },
+      "adminAccessDialog": {
+        "title": "Se requiere acceso de administrador",
+        "question": "¿Tiene acceso de administrador en {{appGroup}}? El conector de equipo requiere privilegios de administrador en la aplicación nativa para registrar aplicaciones OAuth y sincronizar datos de toda la organización.",
+        "yesContinue": "Sí, continuar con la configuración",
+        "noNotAdmin": "No, no soy administrador",
+        "redirectTitle": "Use el conector personal en su lugar",
+        "redirectMessage": "El conector de equipo {{connectorName}} requiere acceso de administrador en su instancia de {{appGroup}}. Utilice el conector personal de {{appGroup}} para sincronizar su propia cuenta.",
+        "goToPersonal": "Ir a {{appGroup}} Personal",
+        "cancel": "Cerrar"
+      },
       "removeInstanceDialog": {
         "title": "¿Eliminar instancia del conector?",
         "description": "¿Está seguro de que desea eliminar {{name}}? Esta acción no se puede deshacer.",

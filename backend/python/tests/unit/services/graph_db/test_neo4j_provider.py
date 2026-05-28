@@ -3311,3 +3311,303 @@ class TestKnowledgeHubSearchThreePhase:
         assert result["total"] == 3
         assert len(result["nodes"]) == 3
         assert all("tech" in node["name"].lower() for node in result["nodes"])
+
+
+# ---------------------------------------------------------------------------
+# get_filtered_connector_instances (Neo4j)
+# ---------------------------------------------------------------------------
+
+
+class TestNeo4jGetFilteredConnectorInstances:
+    """Tests for Neo4jProvider.get_filtered_connector_instances."""
+
+    @pytest.mark.asyncio
+    async def test_basic_no_filters_returns_two_tuple(self, neo4j_provider: Neo4jProvider):
+        """Returns (list[dict], int) — 2-tuple, not 3."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[
+            [{"total": 3}],
+            [
+                {"doc": {"id": "c1", "name": "Conn1", "nodeType": "App"}},
+                {"doc": {"id": "c2", "name": "Conn2", "nodeType": "App"}},
+                {"doc": {"id": "c3", "name": "Conn3", "nodeType": "App"}},
+            ],
+        ])
+        result = await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1"
+        )
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        docs, total = result
+        assert total == 3
+        assert len(docs) == 3
+
+    @pytest.mark.asyncio
+    async def test_personal_scope_filter(self, neo4j_provider: Neo4jProvider):
+        """personal scope appends scope and createdBy conditions."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[
+            [{"total": 1}],
+            [{"doc": {"id": "p1", "name": "Personal", "nodeType": "App"}}],
+        ])
+        docs, total = await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", scope="personal"
+        )
+        assert total == 1
+
+    @pytest.mark.asyncio
+    async def test_team_scope_admin_skips_accessible_ids_lookup(self, neo4j_provider: Neo4jProvider):
+        """is_admin=True skips _get_user_accessible_team_app_ids entirely."""
+        neo4j_provider._get_user_accessible_team_app_ids = AsyncMock(return_value=[])
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[
+            [{"total": 5}],
+            [{"doc": {"id": f"t{i}", "name": f"T{i}", "nodeType": "App"}} for i in range(5)],
+        ])
+        docs, total = await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="admin1", scope="team", is_admin=True
+        )
+        assert total == 5
+        neo4j_provider._get_user_accessible_team_app_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_team_scope_non_admin_with_accessible_ids(self, neo4j_provider: Neo4jProvider):
+        """Non-admin team scope pre-fetches accessible team IDs."""
+        neo4j_provider._get_user_accessible_team_app_ids = AsyncMock(
+            return_value=["id1", "id2"]
+        )
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[
+            [{"total": 2}],
+            [
+                {"doc": {"id": "id1", "name": "Team1", "nodeType": "App"}},
+                {"doc": {"id": "id2", "name": "Team2", "nodeType": "App"}},
+            ],
+        ])
+        docs, total = await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", scope="team", is_admin=False
+        )
+        assert total == 2
+        assert len(docs) == 2
+        neo4j_provider._get_user_accessible_team_app_ids.assert_awaited_once_with("user1", None)
+
+    @pytest.mark.asyncio
+    async def test_team_scope_non_admin_empty_ids_logs_warning(self, neo4j_provider: Neo4jProvider):
+        """Warning is emitted when accessible team IDs list is empty for non-admin."""
+        neo4j_provider._get_user_accessible_team_app_ids = AsyncMock(return_value=[])
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[
+            [{"total": 0}],
+            [],
+        ])
+        docs, total = await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user_no_edges", scope="team", is_admin=False
+        )
+        assert total == 0
+        assert docs == []
+        info_calls = neo4j_provider.logger.info.call_args_list
+        assert any(
+            len(call.args) >= 2 and "user_no_edges" in str(call.args[1])
+            for call in info_calls
+        )
+
+    @pytest.mark.asyncio
+    async def test_with_is_authenticated_filter_true(self, neo4j_provider: Neo4jProvider):
+        """is_authenticated=True passes through to Cypher conditions."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[
+            [{"total": 2}],
+            [
+                {"doc": {"id": "a1", "isAuthenticated": True, "nodeType": "App"}},
+                {"doc": {"id": "a2", "isAuthenticated": True, "nodeType": "App"}},
+            ],
+        ])
+        docs, total = await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", is_authenticated=True
+        )
+        assert total == 2
+        assert neo4j_provider.client.execute_query.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_with_is_authenticated_filter_false(self, neo4j_provider: Neo4jProvider):
+        """is_authenticated=False filters to unauthenticated connectors."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[
+            [{"total": 1}],
+            [{"doc": {"id": "unauth1", "isAuthenticated": False, "nodeType": "App"}}],
+        ])
+        docs, total = await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", is_authenticated=False
+        )
+        assert total == 1
+
+    @pytest.mark.asyncio
+    async def test_with_is_active_filter_true(self, neo4j_provider: Neo4jProvider):
+        """is_active=True passes through to Cypher conditions."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[
+            [{"total": 3}],
+            [{"doc": {"id": f"a{i}", "isActive": True, "nodeType": "App"}} for i in range(3)],
+        ])
+        docs, total = await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", is_active=True
+        )
+        assert total == 3
+
+    @pytest.mark.asyncio
+    async def test_with_is_active_filter_false(self, neo4j_provider: Neo4jProvider):
+        """is_active=False returns only inactive connectors."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[
+            [{"total": 1}],
+            [{"doc": {"id": "inactive1", "isActive": False, "nodeType": "App"}}],
+        ])
+        docs, total = await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", is_active=False
+        )
+        assert total == 1
+
+    @pytest.mark.asyncio
+    async def test_with_connector_type_filter(self, neo4j_provider: Neo4jProvider):
+        """connector_type_filter narrows to a specific type."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[
+            [{"total": 1}],
+            [{"doc": {"id": "slack1", "type": "Slack", "nodeType": "App"}}],
+        ])
+        docs, total = await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", connector_type_filter="Slack"
+        )
+        assert total == 1
+
+    @pytest.mark.asyncio
+    async def test_with_search_filter(self, neo4j_provider: Neo4jProvider):
+        """search param builds a regex condition on name/type/appGroup."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[
+            [{"total": 1}],
+            [{"doc": {"id": "gd1", "name": "Google Drive", "nodeType": "App"}}],
+        ])
+        docs, total = await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", search="google"
+        )
+        assert total == 1
+
+    @pytest.mark.asyncio
+    async def test_combined_filters(self, neo4j_provider: Neo4jProvider):
+        """Multiple filters combined: is_authenticated + is_active + connector_type."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[
+            [{"total": 1}],
+            [{"doc": {"id": "c1", "type": "Jira", "isAuthenticated": True,
+                      "isActive": True, "nodeType": "App"}}],
+        ])
+        docs, total = await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1",
+            is_authenticated=True, is_active=True, connector_type_filter="Jira"
+        )
+        assert total == 1
+        assert neo4j_provider.client.execute_query.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_empty_tuple(self, neo4j_provider: Neo4jProvider):
+        """DB exception returns ([], 0) and logs the error."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("Neo4j down"))
+        docs, total = await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1"
+        )
+        assert docs == []
+        assert total == 0
+        neo4j_provider.logger.error.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_empty_count_result_returns_zero_total(self, neo4j_provider: Neo4jProvider):
+        """If count query returns empty list, total defaults to 0."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[
+            [],   # empty count result
+            [],   # empty main result
+        ])
+        docs, total = await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1"
+        )
+        assert total == 0
+        assert docs == []
+
+    @pytest.mark.asyncio
+    async def test_exclude_kb_with_kb_connector_type(self, neo4j_provider: Neo4jProvider):
+        """exclude_kb=True with kb_connector_type appends type exclusion condition."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[
+            [{"total": 4}],
+            [{"doc": {"id": f"c{i}", "nodeType": "App"}} for i in range(4)],
+        ])
+        docs, total = await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1",
+            exclude_kb=True, kb_connector_type="KnowledgeBase"
+        )
+        assert total == 4
+
+
+# ---------------------------------------------------------------------------
+# _get_user_accessible_team_app_ids (Neo4j)
+# ---------------------------------------------------------------------------
+
+
+class TestNeo4jGetUserAccessibleTeamAppIds:
+    """Tests for Neo4jProvider._get_user_accessible_team_app_ids."""
+
+    @pytest.mark.asyncio
+    async def test_returns_ids_for_known_user(self, neo4j_provider: Neo4jProvider):
+        """Happy path: returns list of app id strings."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"app_id": "app1"}, {"app_id": "app2"}]
+        )
+        result = await neo4j_provider._get_user_accessible_team_app_ids("user1")
+        assert result == ["app1", "app2"]
+        neo4j_provider.client.execute_query.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_list_when_user_has_no_team_edges(self, neo4j_provider: Neo4jProvider):
+        """User exists but has no team app edges — returns []."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        result = await neo4j_provider._get_user_accessible_team_app_ids("user_no_edges")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_query_returns_none(self, neo4j_provider: Neo4jProvider):
+        """Falsy query result (None) treated as empty list."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=None)
+        result = await neo4j_provider._get_user_accessible_team_app_ids("user1")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_exception_propagates(self, neo4j_provider: Neo4jProvider):
+        """DB errors propagate — they are NOT silently swallowed."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=RuntimeError("Connection refused")
+        )
+        with pytest.raises(RuntimeError, match="Connection refused"):
+            await neo4j_provider._get_user_accessible_team_app_ids("user1")
+
+    @pytest.mark.asyncio
+    async def test_with_transaction_parameter(self, neo4j_provider: Neo4jProvider):
+        """transaction kwarg is forwarded to client.execute_query."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"app_id": "app-txn"}]
+        )
+        result = await neo4j_provider._get_user_accessible_team_app_ids("user1", "txn-123")
+        assert result == ["app-txn"]
+        _, kwargs = neo4j_provider.client.execute_query.call_args
+        assert kwargs.get("txn_id") == "txn-123"
+
+    @pytest.mark.asyncio
+    async def test_query_uses_userId_not_id(self, neo4j_provider: Neo4jProvider):
+        """Cypher must look up the user by userId (MongoDB ID), not by id (graph key)."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider._get_user_accessible_team_app_ids("mongo-user-123")
+        call_args = neo4j_provider.client.execute_query.call_args
+        query = call_args[0][0] if call_args[0] else call_args.args[0]
+        assert "userId" in query, "query must match on user.userId, not user.id"
+        assert "{id:" not in query.replace(" ", ""), "query must not match on user.id"

@@ -465,6 +465,14 @@ export const getConnectorRegistry =
 
 /**
  * Get all configured connector instances.
+ *
+ * Query parameters (camelCase — forwarded as-is to Python via FastAPI aliases):
+ *   scope            – personal | team
+ *   page / limit     – pagination
+ *   search           – full-text across name/type/group
+ *   isAuthenticated  – true | false  (filter by auth status)
+ *   isActive         – true | false  (filter by active status)
+ *   connectorType    – exact type string (e.g. "Confluence")
  */
 export const getConnectorInstances =
   (appConfig: AppConfig) =>
@@ -475,7 +483,16 @@ export const getConnectorInstances =
   ): Promise<void> => {
     try {
       const { userId } = req.user || {};
-      const { scope, page, limit, search } = req.query;
+      const {
+        scope,
+        page,
+        limit,
+        search,
+        isAuthenticated,
+        isActive,
+        connectorType,
+      } = req.query;
+
       if (!userId) {
         throw new UnauthorizedError('User authentication required');
       }
@@ -491,18 +508,13 @@ export const getConnectorInstances =
       };
 
       const queryParams = new URLSearchParams();
-      if (scope) {
-        queryParams.append('scope', String(scope));
-      }
-      if (page) {
-        queryParams.append('page', String(page));
-      }
-      if (limit) {
-        queryParams.append('limit', String(limit));
-      }
-      if (search) {
-        queryParams.append('search', String(search));
-      }
+      queryParams.append('scope', String(scope));
+      if (page) queryParams.append('page', String(page));
+      if (limit) queryParams.append('limit', String(limit));
+      if (search) queryParams.append('search', String(search));
+      if (isAuthenticated !== undefined) queryParams.append('isAuthenticated', String(isAuthenticated));
+      if (isActive !== undefined) queryParams.append('isActive', String(isActive));
+      if (connectorType !== undefined) queryParams.append('connectorType', String(connectorType));
 
       logger.info(`Getting connector instances for user ${userId}`);
 

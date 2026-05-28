@@ -114,6 +114,42 @@ class AtlassianScope(Enum):
         ]
 
     @classmethod
+    def get_jira_personal_read_access(cls) -> List[str]:
+        """Read-only scopes for the personal Jira Cloud connector.
+
+        The personal connector only fetches projects + issues visible to the
+        single user who created it. It deliberately skips group sync, project
+        roles, application roles, permission-scheme lookups, and audit-log
+        based deletion detection — so the corresponding scopes from
+        ``get_jira_read_access`` are dropped to keep the OAuth consent screen
+        narrow and avoid asking the user for admin-leaning grants we never
+        exercise.
+
+        Kept (still load-bearing):
+          * ``read:jira-work`` — projects, issues, attachments, worklogs.
+          * ``read:jira-user`` + ``read:user:jira`` — embedded user fields
+            (creator/reporter/assignee + emailAddress) on each issue payload.
+          * ``read:avatar:jira`` — user/project avatars referenced in issues.
+          * ``read:account`` — needed for the OAuth ``accessible-resources``
+            call in ``JiraConnector.init``.
+          * ``offline_access`` — refresh tokens.
+
+        Dropped (no callsite in the personal ``run_sync`` flow):
+          * ``read:group:jira`` (no ``_sync_user_groups``).
+          * ``read:audit-log:jira`` (no ``_handle_issue_deletions``).
+          * ``read:application-role:jira`` (no app-role mapping).
+          * ``read:project-role:jira`` (no project-role sync).
+        """
+        return [
+            cls.JIRA_WORK_READ.value,
+            cls.JIRA_USER_READ.value,
+            cls.USER_JIRA_READ.value,
+            cls.JIRA_AVATAR_READ.value,
+            cls.ACCOUNT_READ.value,
+            cls.OFFLINE_ACCESS.value,
+        ]
+
+    @classmethod
     def get_confluence_basic(cls) -> List[str]:
         """Get basic Confluence scopes"""
         return [
