@@ -743,6 +743,7 @@ record_group_schema = {
                 "enum": [connector.value for connector in Connectors],
             },
             "isInternal": {"type": ["boolean", "null"], "default": False},
+            "hideChildren": {"type": ["boolean", "null"], "default": False},
             "connectorId": {"type": ["string", "null"]},
             "parentExternalGroupId": {"type": ["string", "null"]},
             "webUrl": {"type": ["string", "null"]},

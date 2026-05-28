@@ -14399,7 +14399,8 @@ class Neo4jProvider(IGraphDBProvider):
         MATCH (u:User {{id: $user_key}})
 
         WITH rg, u, $parent_id AS parent_id, $org_id AS org_id, (rg.connectorName = 'KB') AS is_kb_rg,
-             coalesce(rg.isInternal, false) AS is_internal
+             coalesce(rg.isInternal, false) AS is_internal,
+             coalesce(rg.hideChildren, false) AS hide_children
 
         // ============================================
         // SPECIAL CASE: Internal RecordGroups
@@ -14466,7 +14467,7 @@ class Neo4jProvider(IGraphDBProvider):
             }}) AS internal_records
         }}
 
-        WITH rg, u, parent_id, org_id, is_kb_rg, is_internal,
+        WITH rg, u, parent_id, org_id, is_kb_rg, is_internal, hide_children,
              coalesce(internal_records, []) AS internal_records
 
         // ============================================
@@ -14474,9 +14475,9 @@ class Neo4jProvider(IGraphDBProvider):
         // ============================================
         // Get child recordGroups via BELONGS_TO (skip if internal)
         CALL {{
-            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal
-            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal
-            WHERE is_internal = false
+            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal, hide_children
+            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal, hide_children
+            WHERE is_internal = false AND hide_children = false
 
             OPTIONAL MATCH (child_rg:RecordGroup)-[:BELONGS_TO]->(rg)
             WHERE ((is_kb_rg AND child_rg.connectorName = 'KB' AND child_rg.orgId = org_id)
@@ -14557,17 +14558,17 @@ class Neo4jProvider(IGraphDBProvider):
             }}) AS child_rgs
         }}
 
-        WITH rg, u, parent_id, org_id, is_kb_rg, is_internal, internal_records,
+        WITH rg, u, parent_id, org_id, is_kb_rg, is_internal, hide_children, internal_records,
              coalesce(child_rgs, []) AS child_rgs
 
         // ============================================
         // NORMAL CASE: Direct Child Records
         // ============================================
-        // Get direct child records via BELONGS_TO (skip if internal)
+        // Get direct child records via BELONGS_TO (skip if internal or hideChildren)
         CALL {{
-            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal
-            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal
-            WHERE is_internal = false
+            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal, hide_children
+            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal, hide_children
+            WHERE is_internal = false AND hide_children = false
 
             OPTIONAL MATCH (record:Record)-[:BELONGS_TO]->(rg)
             WHERE record.orgId = org_id
@@ -15411,10 +15412,12 @@ class Neo4jProvider(IGraphDBProvider):
         WITH u, user_accessible_app_ids,
              path1_rgs + path2_rgs + path3_rgs + path4_rgs AS all_parent_rgs
 
-        // Find nested RecordGroups via INHERIT_PERMISSIONS
+        // Find nested RecordGroups via INHERIT_PERMISSIONS (skip parents with hideChildren)
         CALL {
             WITH all_parent_rgs, user_accessible_app_ids
             UNWIND all_parent_rgs AS parent_rg
+            WITH parent_rg, user_accessible_app_ids
+            WHERE coalesce(parent_rg.hideChildren, false) = false
             MATCH (parent_rg)<-[:INHERIT_PERMISSIONS*1..5]-(rg:RecordGroup)
             WHERE rg.orgId = $org_id
               AND (rg.connectorName = 'KB' OR rg.connectorId IN user_accessible_app_ids)
@@ -15426,12 +15429,14 @@ class Neo4jProvider(IGraphDBProvider):
         WITH u, user_accessible_app_ids,
              all_parent_rgs + (CASE WHEN nested_rgs IS NOT NULL THEN nested_rgs ELSE [] END) AS all_accessible_rgs
 
-        // Find all Records that inherit from accessible RecordGroups
+        // Find all Records that inherit from accessible RecordGroups (skip hideChildren parents)
         WITH u, user_accessible_app_ids, all_accessible_rgs,
              [rg IN all_accessible_rgs |
-               [(record:Record)-[:INHERIT_PERMISSIONS]->(rg)
+               CASE WHEN coalesce(rg.hideChildren, false) = true THEN []
+               ELSE [(record:Record)-[:INHERIT_PERMISSIONS]->(rg)
                 WHERE record.orgId = $org_id
                | record]
+               END
              ] AS records_lists
 
         // Flatten and deduplicate records from RecordGroups

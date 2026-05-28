@@ -140,6 +140,23 @@ SLACK_TIER_LIMITS_PER_MINUTE: dict[int, int] = {
 # Leave ~10% headroom so transient bursts don't trip Slack's 429.
 RATE_LIMIT_HEADROOM = 0.9
 
+_SLACK_MAX_TIMESTAMP_LENGTH = 13
+
+
+def _numeric_epoch_to_ms(value: int | float | str | None) -> int | None:
+    """Normalize a numeric Unix timestamp to epoch milliseconds.
+
+    Slack channel ``created`` is in seconds; ``updated`` is already in ms.
+    Values with at least 13 digits are returned as-is.
+    """
+    if value is None:
+        return None
+    ts = int(float(value))
+    if len(str(abs(ts))) >= _SLACK_MAX_TIMESTAMP_LENGTH:
+        return ts
+    return ts * 1000
+
+
 # Concurrency bounds for parallel fan-out within a single sync run.
 MAX_CONCURRENT_CHANNEL_MEMBERS = 10  # private/mpim member fetches in Phase 3
 MAX_CONCURRENT_CHANNEL_SYNCS   = 6   # parallel channel message syncs in Phase 4
@@ -1136,10 +1153,8 @@ class SlackConnector(BaseConnector):
             f"https://{self.workspace_domain}.slack.com/archives/{cid}"
             if self.workspace_domain else None
         )
-        created_ts = cd.get("created")
-        src_ts = int(float(created_ts) * 1000) if created_ts else None
-        updated_ts = cd.get("updated")
-        upd_ts = int(float(updated_ts) * 1000) if updated_ts else None
+        src_ts = _numeric_epoch_to_ms(cd.get("created"))
+        upd_ts = _numeric_epoch_to_ms(cd.get("updated"))
         current_ts = get_epoch_timestamp_in_ms()
 
         try:
@@ -1161,6 +1176,7 @@ class SlackConnector(BaseConnector):
                 source_created_at=src_ts,
                 source_updated_at=upd_ts,
                 inherit_permissions=True,
+                hide_children=True,
             )
         except Exception as exc:
             self.logger.error(f"_to_channel_record_group({cid}): {exc}")

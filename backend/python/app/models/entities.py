@@ -709,6 +709,14 @@ class MessageRecord(Record):
             specific_lines.append(f"* Author ID: {self.author_id}")
         if self.thread_id:
             specific_lines.append(f"* Thread ID: {self.thread_id}")
+        if self.start_ts:
+            dt = datetime.fromtimestamp(float(self.start_ts), tz=timezone.utc)
+            start_iso = dt.isoformat().replace("+00:00", "Z")
+            specific_lines.append(f"* Start Message ID: {start_iso}")
+        if self.end_ts:
+            dt = datetime.fromtimestamp(float(self.end_ts), tz=timezone.utc)
+            end_iso = dt.isoformat().replace("+00:00", "Z")
+            specific_lines.append(f"* End Message ID: {end_iso}")
         specific_lines.append(f"* Is Thread Parent: {self.is_thread_parent}")
         if self.reply_count:
             specific_lines.append(f"* Reply Count: {self.reply_count}")
@@ -2400,6 +2408,10 @@ class RecordGroup(BaseModel):
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record group update in the source system")
     inherit_permissions: bool | None = Field(default=False, description="Permissions for the record group")
     is_internal: bool | None = Field(default=False, description="Flag indicating if the record group is for internal use")
+    hide_children: bool | None = Field(
+        default=False,
+        description="When true, child records are hidden in the knowledge-base tree UI",
+    )
 
     def to_arango_base_record_group(self) -> dict:
         return {
@@ -2414,6 +2426,7 @@ class RecordGroup(BaseModel):
             "connectorId": self.connector_id,
             "groupType": self.group_type.value,
             "isInternal": self.is_internal,
+            "hideChildren": self.hide_children,
             "webUrl": self.web_url,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -2434,6 +2447,7 @@ class RecordGroup(BaseModel):
             connector_name=arango_base_record_group.get("connectorName", Connectors.KNOWLEDGE_BASE),
             connector_id=arango_base_record_group.get("connectorId"),
             is_internal=arango_base_record_group.get("isInternal", False),
+            hide_children=arango_base_record_group.get("hideChildren", False),
             group_type=arango_base_record_group.get("groupType", RecordGroupType.KB),
             web_url=arango_base_record_group.get("webUrl"),
             created_at=arango_base_record_group.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),
