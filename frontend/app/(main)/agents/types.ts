@@ -163,11 +163,6 @@ export interface AgentDetail {
   can_delete: boolean;
   can_share: boolean;
   can_view: boolean;
-  /** Saved visual layout — round-trips through the API so positions survive edits. */
-  flow?: {
-    nodes: unknown[];
-    edges: unknown[];
-  };
 }
 
 // ── Builder catalog rows (tool list + KB) ───────────────────────

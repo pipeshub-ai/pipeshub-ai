@@ -49,25 +49,6 @@ export function useAgentBuilderReconstruction(): {
   const { t } = useTranslation();
   const reconstructFlowFromAgent = useCallback(
     (agent: AgentReconstructionSource, models: unknown[], tools: unknown[], knowledgeBases: { id: string; name: string; connectorId?: string }[]) => {
-      // ── Fast path: if the agent was saved with its visual layout, restore it
-      // directly so the user's custom positions survive edits.
-      if (
-        agent.flow?.nodes &&
-        Array.isArray(agent.flow.nodes) &&
-        agent.flow.nodes.length > 0
-      ) {
-        const savedNodes = agent.flow.nodes as Node<FlowNodeData>[];
-        const savedEdges = (agent.flow.edges || []) as Edge[];
-        // Validate that the saved nodes look like proper ReactFlow flow nodes
-        // (they must have an id, the 'flowNode' type marker, and a data payload).
-        const valid = savedNodes.every(
-          (n) => n.id && n.type === 'flowNode' && n.data && n.data.type
-        );
-        if (valid) {
-          return { nodes: savedNodes, edges: savedEdges };
-        }
-      }
-
       const nodes: Node<FlowNodeData>[] = [];
       const edges: Edge[] = [];
       let nodeCounter = 1;
