@@ -6,6 +6,7 @@
  */
 
 import { Response, NextFunction } from 'express';
+import { randomUUID } from 'crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger, getLogLevel } from '../../../libs/services/logger.service';
@@ -40,7 +41,7 @@ export const handleMCPRequest =
       const { PipeshubCore } = await coreModule;
 
       const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
+        sessionIdGenerator: () => randomUUID(),
       });
 
       const { server: mcpServer } = createMCPServer({
