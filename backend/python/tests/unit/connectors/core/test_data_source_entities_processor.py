@@ -3390,7 +3390,7 @@ class TestUpsertExternalPerson:
 class TestResetIndexingStatusToQueued:
     @pytest.mark.asyncio
     async def test_resets_status_to_queued(self):
-        """Resets indexing status to QUEUED when not already queued/empty."""
+        """Resets indexing status to QUEUED when not already queued."""
         proc = _make_processor()
         tx_store = _make_tx_store()
 
@@ -3415,6 +3415,20 @@ class TestResetIndexingStatusToQueued:
         await proc._reset_indexing_status_to_queued("rec-1", tx_store)
 
         tx_store.batch_upsert_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_resets_empty_to_queued(self):
+        """Resets EMPTY to QUEUED for manual reindex."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+
+        record_mock = MagicMock()
+        record_mock.indexing_status = ProgressStatus.EMPTY.value
+        tx_store.get_record_by_key.return_value = record_mock
+
+        await proc._reset_indexing_status_to_queued("rec-1", tx_store)
+
+        tx_store.batch_upsert_nodes.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_skips_when_record_not_found(self):

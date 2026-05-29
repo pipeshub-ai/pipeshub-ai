@@ -24,6 +24,7 @@ export {
   DeleteConfirmationDialog,
   BulkDeleteConfirmationDialog,
   FolderDetailsSidebar,
+  ReindexScopeDialog,
 } from './dialogs';
 export type { MoveFolderSidebarProps } from './dialogs';
 export type { CreateFolderDialogProps } from './dialogs';

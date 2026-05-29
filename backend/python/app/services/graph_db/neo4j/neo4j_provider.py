@@ -10340,13 +10340,13 @@ class Neo4jProvider(IGraphDBProvider):
     async def reset_indexing_status_to_queued_for_record_ids(self, record_ids: list[str]) -> None:
         """
         Bulk-fetch records, then batch upsert indexingStatus=QUEUED where appropriate.
-        Skips missing ids, isInternal records, and docs already QUEUED or EMPTY.
+        Skips missing ids, isInternal records, and docs already QUEUED.
         """
         unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
         if not unique_ids:
             return
         coll = CollectionNames.RECORDS.value
-        skip_status = frozenset({ProgressStatus.EMPTY.value, ProgressStatus.QUEUED.value})
+        skip_status = frozenset({ProgressStatus.QUEUED.value})
         try:
             label = collection_to_label(coll)
             query = f"""

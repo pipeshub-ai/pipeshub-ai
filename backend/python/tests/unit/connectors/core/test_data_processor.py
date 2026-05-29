@@ -670,8 +670,8 @@ class TestResetIndexingStatusToQueued:
         tx_store.batch_upsert_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_skips_if_empty_status(self):
-        """Does not reset if status is EMPTY."""
+    async def test_resets_empty_status_to_queued(self):
+        """Resets EMPTY to QUEUED so manual reindex can re-run indexing."""
         proc = _make_processor()
         tx_store = _make_tx_store()
 
@@ -681,7 +681,7 @@ class TestResetIndexingStatusToQueued:
 
         await proc._reset_indexing_status_to_queued("rec-1", tx_store)
 
-        tx_store.batch_upsert_nodes.assert_not_awaited()
+        tx_store.batch_upsert_nodes.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_record_not_found_logs_warning(self):

@@ -379,6 +379,11 @@
     "rename": "Rename",
     "delete": "Delete"
   },
+  "reindexScope": {
+    "description": "Choose what to index for \"{{name}}\".",
+    "thisItemOnly": "This item only",
+    "withChildren": "This item and all children"
+  },
   "kb": {
     "viewToggle": "View Toggle",
     "collectionsView": "Collections View",

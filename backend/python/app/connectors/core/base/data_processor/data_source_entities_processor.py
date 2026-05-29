@@ -842,7 +842,7 @@ class DataSourceEntitiesProcessor:
     async def _reset_indexing_status_to_queued(self, record_id: str, tx_store: TransactionStore) -> None:
         """
         Reset indexing status to QUEUED before sending update/reindex events.
-        Only resets if status is not already QUEUED or EMPTY.
+        Only skips if status is already QUEUED.
         """
         try:
             # Get the record
@@ -853,8 +853,7 @@ class DataSourceEntitiesProcessor:
 
             current_status = record.indexing_status
 
-            # Only reset if not already QUEUED or EMPTY
-            if current_status in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value]:
+            if current_status == ProgressStatus.QUEUED.value:
                 self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
                 return
 
@@ -924,7 +923,7 @@ class DataSourceEntitiesProcessor:
 
             # Reset indexing status to QUEUED before sending update event
             current_status = processed_record.indexing_status if hasattr(processed_record, 'indexing_status') else None
-            if current_status not in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value]:
+            if current_status != ProgressStatus.QUEUED.value:
                 await self._reset_indexing_status_to_queued(record.id, tx_store)
 
             await self.messaging_producer.send_message(
@@ -968,8 +967,7 @@ class DataSourceEntitiesProcessor:
             async with self.data_store_provider.transaction() as tx_store:
                 for record in records:
                     current_status = record.indexing_status if hasattr(record, 'indexing_status') else None
-                    # Only reset if not already QUEUED or EMPTY or internal record
-                    if current_status not in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value] and not record.is_internal:
+                    if current_status != ProgressStatus.QUEUED.value and not record.is_internal:
                         await self._reset_indexing_status_to_queued(record.id, tx_store)
 
             # Now send the reindex events
