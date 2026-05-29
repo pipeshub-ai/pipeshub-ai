@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Flex, Box, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
@@ -145,6 +145,12 @@ export function AppSection({
   const hasChildContent =
     (hierarchicalTree != null && hierarchicalTree.length > 0) || children.length > 0;
 
+  const visibleIndentedTree = useMemo(() => {
+    if (!hierarchicalTree?.length) return [];
+    const sliced = maxVisible ? hierarchicalTree.slice(0, maxVisible) : hierarchicalTree;
+    return indentAppSectionTreeRoots(sliced);
+  }, [hierarchicalTree, maxVisible]);
+
   return (
     <Box style={{ marginBottom: isExpanded ? 'var(--space-2)' : 0 }}>
       {/* App Header — chevron expands/collapses; icon+title opens app in table */}
@@ -246,12 +252,9 @@ export function AppSection({
       {isExpanded && (hasChildContent || !isLoading) ? (
       <Box className="no-scrollbar" style={{ overflowX: 'auto', minWidth: 0 }}>
       <Flex direction="column" gap="0">
-        {hierarchicalTree && hierarchicalTree.length > 0 ? (
+        {visibleIndentedTree.length > 0 ? (
             <>
-              {(maxVisible
-                ? indentAppSectionTreeRoots(hierarchicalTree.slice(0, maxVisible))
-                : indentAppSectionTreeRoots(hierarchicalTree)
-              ).map((node) => (
+              {visibleIndentedTree.map((node) => (
                 <FolderTreeItem
                   key={node.id}
                   node={node}

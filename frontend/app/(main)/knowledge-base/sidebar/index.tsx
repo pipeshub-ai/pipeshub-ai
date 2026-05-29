@@ -274,7 +274,8 @@ function KBSidebarContent({
   };
 
   const handleExpandApp = useCallback((appId: string) => {
-    void fetchAppDirectChildren(appId);
+    // Errors are logged inside fetchAppDirectChildren; avoid unhandled rejection on chevron expand.
+    void fetchAppDirectChildren(appId).catch(() => {});
   }, []);
 
   // Handler for opening "More Folders" panel from connector sections

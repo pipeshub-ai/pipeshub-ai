@@ -153,6 +153,8 @@ export function useKnowledgeBaseSidebarAutoExpand({
     const attemptGeneration = ++expansionAttemptGenerationRef.current;
 
     async function doExpansion() {
+      const isStale = () => attemptGeneration !== expansionAttemptGenerationRef.current;
+
       setIsAutoExpanding(true);
       try {
         setCurrentFolderId(nodeId);
@@ -164,6 +166,7 @@ export function useKnowledgeBaseSidebarAutoExpand({
           if (kbApp && isKbCollectionsNavigationPath(breadcrumbs, kbApp, nonKbApps)) {
             setSectionExpanded(appSectionKey(kbApp.id), true);
             await fetchAppDirectChildren(kbApp.id);
+            if (isStale()) return;
           }
         }
 
@@ -185,6 +188,8 @@ export function useKnowledgeBaseSidebarAutoExpand({
           : kbTreeNode;
 
         if (effectiveKbBreadcrumb) {
+          if (isStale()) return;
+
           if (isAllRecordsMode) {
             const collectionName =
               freshRootNodes.find((n) => n.id === effectiveKbBreadcrumb.id)?.name ||
@@ -204,6 +209,7 @@ export function useKnowledgeBaseSidebarAutoExpand({
 
           useKnowledgeBaseStore.getState().expandFolderExclusive(kbId);
           await handleNodeExpand(kbId, kbNodeType);
+          if (isStale()) return;
 
           const kbIndex = breadcrumbs.findIndex((b) => b.id === kbId);
           const pathAfterKb = breadcrumbs.slice(kbIndex + 1);
@@ -212,10 +218,13 @@ export function useKnowledgeBaseSidebarAutoExpand({
           );
 
           for (const folder of intermediates) {
+            if (isStale()) return;
             useKnowledgeBaseStore.getState().expandFolderExclusive(folder.id);
             await handleNodeExpand(folder.id, folder.nodeType as NodeType);
+            if (isStale()) return;
           }
         } else if (isAllRecordsMode) {
+          if (isStale()) return;
           setAllRecordsSidebarSelection({ type: 'explorer' });
 
           const store = useKnowledgeBaseStore.getState();
@@ -255,21 +264,27 @@ export function useKnowledgeBaseSidebarAutoExpand({
               setSectionExpanded(appSectionKey(anchorAppId), true);
               useKnowledgeBaseStore.getState().expandFolderExclusive(anchorAppId);
               await handleNodeExpand(anchorAppId, appNodeType);
+              if (isStale()) return;
               for (const anc of intermediates) {
+                if (isStale()) return;
                 useKnowledgeBaseStore.getState().expandFolderExclusive(anc.id);
                 await handleNodeExpand(anc.id, anc.nodeType as NodeType);
+                if (isStale()) return;
               }
             } else {
               setSectionExpanded(appSectionKey(anchorAppId), true);
               await fetchAppDirectChildren(anchorAppId);
+              if (isStale()) return;
               const tree = useKnowledgeBaseStore.getState().connectorAppTrees.get(anchorAppId);
               if (tree?.length) {
                 const ancestorIds = findAncestorChainIds(tree, nodeId);
                 if (ancestorIds?.length) {
                   for (const ancId of ancestorIds) {
+                    if (isStale()) return;
                     const nType = (flatNodes.find((n) => n.id === ancId)?.nodeType ?? 'folder') as NodeType;
                     useKnowledgeBaseStore.getState().expandFolderExclusive(ancId);
                     await handleNodeExpand(ancId, nType);
+                    if (isStale()) return;
                   }
                 }
               }
@@ -277,7 +292,7 @@ export function useKnowledgeBaseSidebarAutoExpand({
           }
         }
 
-        if (attemptGeneration !== expansionAttemptGenerationRef.current) return;
+        if (isStale()) return;
         lastCompletedExpansionKeyRef.current = expansionKey;
       } catch (err) {
         console.error('Failed to auto-expand sidebar tree', err);
