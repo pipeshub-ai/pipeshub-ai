@@ -9795,25 +9795,25 @@ paths:
       summary: Initiate OAuth authorization flow
       description: |
         OAuth 2.0 Authorization Endpoint (RFC 6749 Section 4.1.1).
-        <br><br>
+
         Initiates the authorization code flow. Users are redirected here by OAuth clients
         to authorize access to their account.
-        <br><br>
-        <b>Flow:</b><br>
-        1. Client redirects user to this endpoint with required parameters<br>
-        2. If not logged in, user is redirected to PipesHub login<br>
-        3. User sees consent page with requested scopes<br>
-        4. User grants or denies consent<br>
+
+        **Flow:**
+        1. Client redirects user to this endpoint with required parameters
+        2. If not logged in, user is redirected to PipesHub login
+        3. User sees consent page with requested scopes
+        4. User grants or denies consent
         5. User is redirected back to client with authorization code
-        <br><br>
-        <b>PKCE Support (RFC 7636):</b><br>
-        - Required for public clients (SPA, mobile apps)<br>
-        - Recommended for confidential clients<br>
+
+        **PKCE Support (RFC 7636):**
+        - Required for public clients (SPA, mobile apps)
+        - Recommended for confidential clients
         - Use S256 method (SHA256 hash of code_verifier)
-        <br><br>
-        <b>Security:</b><br>
-        - Always use HTTPS in production<br>
-        - State parameter provides CSRF protection<br>
+
+        **Security:**
+        - Always use HTTPS in production
+        - State parameter provides CSRF protection
         - Redirect URI must match registered URIs exactly
       operationId: oauthAuthorize
       security: []
@@ -9888,19 +9888,19 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthErrorResponse'
+                $ref: '#/components/schemas/ErrorResponse'
     post:
       tags:
         - OAuth Provider
       summary: Submit authorization consent
       description: |
         Submit user's consent decision for OAuth authorization.
-        <br><br>
+
         Called after user reviews the consent page and makes a decision.
         This endpoint generates an authorization code if consent is granted.
-        <br><br>
-        <b>Responses:</b><br>
-        - Consent granted: Redirects to client with authorization code<br>
+
+        **Responses:**
+        - Consent granted: Redirects to client with authorization code
         - Consent denied: Redirects to client with `access_denied` error
       operationId: oauthAuthorizeConsent
       security:
@@ -9929,7 +9929,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthErrorResponse'
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: User not authenticated
         '403':
@@ -9942,25 +9942,26 @@ paths:
       summary: Exchange authorization code for tokens
       description: |
         OAuth 2.0 Token Endpoint (RFC 6749 Section 4.1.3).
-        <br><br>
+
         Exchanges an authorization code, client credentials, or refresh token for access tokens.
-        <br><br>
-        <b>Grant Types:</b><br>
-        - `authorization_code`: Exchange auth code for tokens (user-based)<br>
-        - `client_credentials`: Get tokens for machine-to-machine auth<br>
+
+        **Grant Types:**
+        - `authorization_code`: Exchange auth code for tokens (user-based)
+        - `client_credentials`: Get tokens for machine-to-machine auth
         - `refresh_token`: Get new access token using refresh token
-        <br><br>
+
         For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client). The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the creator (**`createdBy`** claim or OAuth app lookup) and must not trust client-supplied **`x-oauth-user-id`** (stripped on ingress). Downstream Python services accept **`x-oauth-user-id`** only when set by the gateway — see **OAuth Provider** tag.
-        <br><br>
-        <b>Client Authentication:</b><br>
-        Can be provided via:<br>
-        - HTTP Basic auth: `Authorization: Basic base64(client_id:client_secret)`<br>
+
+        **Client Authentication:**
+        Can be provided via:
+        - HTTP Basic auth: `Authorization: Basic base64(client_id:client_secret)`
         - Request body: `client_id` and `client_secret` parameters
-        <br><br>
-        <b>PKCE Verification:</b><br>
+
+        **PKCE Verification:**
         If authorization used PKCE, the `code_verifier` must be provided and will be
         verified against the stored code challenge.
       operationId: oauthToken
+      x-pipeshub-sdk: true
       security: []
       requestBody:
         description: "Request payload"
@@ -9991,13 +9992,19 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthErrorResponse'
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Client authentication failed
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/OAuthErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth2/revoke:
     post:
@@ -10006,18 +10013,19 @@ paths:
       summary: Revoke an access or refresh token
       description: |
         OAuth 2.0 Token Revocation Endpoint (RFC 7009).
-        <br><br>
+
         Revokes an access token or refresh token, preventing further use.
         Revoking a refresh token also invalidates associated access tokens.
-        <br><br>
-        <b>Use Cases:</b><br>
-        - User logs out of third-party app<br>
-        - User revokes app access from account settings<br>
+
+        **Use Cases:**
+        - User logs out of third-party app
+        - User revokes app access from account settings
         - Security incident response
-        <br><br>
-        <b>Note:</b> Returns 200 OK even if token was already revoked or invalid
+
+        **Note:** Returns 200 OK even if token was already revoked or invalid
         (per RFC 7009, to prevent token enumeration).
       operationId: oauthRevoke
+      x-pipeshub-sdk: true
       security: []
       requestBody:
         description: "Request payload"
@@ -10038,6 +10046,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OAuthErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth2/introspect:
     post:
@@ -10046,18 +10060,19 @@ paths:
       summary: Introspect a token
       description: |
         OAuth 2.0 Token Introspection Endpoint (RFC 7662).
-        <br><br>
+
         Check if a token is active and retrieve its metadata.
-        <br><br>
-        <b>Use Cases:</b><br>
-        - Resource servers validating tokens<br>
-        - Debugging token issues<br>
+
+        **Use Cases:**
+        - Resource servers validating tokens
+        - Debugging token issues
         - Checking token scopes before processing requests
-        <br><br>
-        <b>Response:</b><br>
-        - Active token: Returns `active: true` with token metadata<br>
+
+        **Response:**
+        - Active token: Returns `active: true` with token metadata
         - Invalid/expired/revoked token: Returns only `active: false`
       operationId: oauthIntrospect
+      x-pipeshub-sdk: true
       security: []
       requestBody:
         description: "Request payload"
@@ -10099,6 +10114,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OAuthErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth2/userinfo:
     get:
@@ -10107,18 +10128,19 @@ paths:
       summary: Get authenticated user information
       description: |
         OpenID Connect UserInfo Endpoint.
-        <br><br>
+
         Returns claims about the authenticated user. Requires a valid access token
         with the `openid` scope.
-        <br><br>
-        <b>Available Claims:</b><br>
-        - `user_id` - User identifier<br>
-        - `name`, `given_name`, `family_name` - Name claims (with `profile` scope)<br>
+
+        **Available Claims:**
+        - `user_id` - User identifier
+        - `name`, `given_name`, `family_name` - Name claims (with `profile` scope)
         - `email`, `email_verified` - Email claims (with `email` scope)
-        <br><br>
-        <b>Authentication:</b><br>
+
+        **Authentication:**
         Pass the access token as a Bearer token: `Authorization: Bearer {access_token}`
       operationId: oauthUserInfo
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       responses:
@@ -10312,6 +10334,7 @@ paths:
 
         Use the `status` query parameter to filter by lifecycle state (`active`, `suspended`, `revoked`) and `search` for a case-insensitive substring match against `name` or `description`.
       operationId: listOAuthApps
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10382,6 +10405,7 @@ paths:
 
         All `/oauth-clients/*` routes share a per-user rate limiter (default 1000 req/min, configurable via the `MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE` env var).
       operationId: createOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       requestBody:
@@ -10437,6 +10461,7 @@ paths:
 
         Shares the per-user rate limiter applied to every `/oauth-clients/*` route (default 1000 req/min, `MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE`).
       operationId: listOAuthScopes
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       responses:
@@ -10490,6 +10515,7 @@ paths:
 
         Access is creator-scoped: even org admins receive `404` for apps owned by other users. This avoids leaking app metadata across org members and keeps the read surface symmetric with `listOAuthApps`.
       operationId: getOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10545,6 +10571,7 @@ paths:
 
         This endpoint never rotates the client secret — use `POST /oauth-clients/{appId}/regenerate-secret` for that.
       operationId: updateOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10609,6 +10636,7 @@ paths:
 
         Creator-only: even org admins cannot delete apps owned by other users.
       operationId: deleteOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10667,6 +10695,7 @@ paths:
 
         Creator-only: even org admins cannot rotate secrets for other users' apps.
       operationId: regenerateOAuthAppSecret
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10721,6 +10750,7 @@ paths:
 
         Creator-only.
       operationId: suspendOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10781,6 +10811,7 @@ paths:
 
         Creator-only.
       operationId: activateOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10841,6 +10872,7 @@ paths:
 
         Creator-only.
       operationId: listOAuthAppTokens
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10895,6 +10927,7 @@ paths:
 
         Creator-only.
       operationId: revokeAllOAuthAppTokens
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
