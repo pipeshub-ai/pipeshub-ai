@@ -368,10 +368,10 @@ const createAgentBodySchema = z
         }
         continue;
       }
-      const modelKey = model.modelKey?.trim();
+      const modelKey = model?.modelKey?.trim();
       if (modelKey) {
         parsedCount += 1;
-        if (model.isReasoning === true) {
+        if (model?.isReasoning === true) {
           hasReasoningModel = true;
         }
       }

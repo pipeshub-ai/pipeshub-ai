@@ -84,8 +84,13 @@ def _admin_headers(client: PipeshubClient) -> Dict[str, str]:
     }
 
 
+def _as_dict(value: Any) -> Dict[str, Any]:
+    """Coerce API/entry JSON values to a dict; non-dicts become empty."""
+    return value if isinstance(value, dict) else {}
+
+
 def _parse_model_name_from_config(entry: Dict[str, Any]) -> str:
-    configuration = entry.get("configuration") or {}
+    configuration = _as_dict(entry.get("configuration"))
     raw = configuration.get("model") or entry.get("modelName") or ""
     if isinstance(raw, str) and "," in raw:
         return raw.split(",")[0].strip()
@@ -104,7 +109,7 @@ def list_configured_llm_models(client: PipeshubClient) -> List[Dict[str, Any]]:
         raise RuntimeError(
             f"Failed to list LLM models: HTTP {resp.status_code} {resp.text[:500]}"
         )
-    data = resp.json() or {}
+    data = _as_dict(resp.json())
     models = data.get("models")
     if not isinstance(models, list):
         return []
@@ -188,13 +193,13 @@ def setup_test_llm_model(
         )
 
     try:
-        data = resp.json() or {}
+        data = _as_dict(resp.json())
     except ValueError as e:
         raise RuntimeError(
             f"LLM model add returned non-JSON body: {e}"
         ) from e
 
-    details = data.get("details") or {}
+    details = _as_dict(data.get("details"))
     model_key = details.get("modelKey")
     if not model_key:
         raise RuntimeError(

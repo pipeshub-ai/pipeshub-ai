@@ -1268,6 +1268,13 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
+    it('should reject null elements in models array without throwing', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Agent', models: [null] },
+      })
+      expect(result.success).to.be.false
+    })
+
     it('should reject models without reasoning flag', () => {
       const result = createAgentSchema.safeParse({
         body: {
