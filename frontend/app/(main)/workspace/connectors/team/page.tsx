@@ -25,10 +25,7 @@ import {
 } from '../components';
 import { AdminAccessRequiredDialog } from '../components/admin-access-required-dialog';
 import type { AdminAccessDialogPhase } from '../components/admin-access-required-dialog';
-import {
-  resolveConnectorForSetup,
-  shouldPromptAdminAccess,
-} from '../utils/admin-access-helpers';
+import { shouldPromptAdminAccess } from '../utils/admin-access-helpers';
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
 import type { Connector, ConnectorInstance, TeamFilterTab } from '../types';
@@ -292,11 +289,10 @@ function TeamConnectorsPageContent() {
 
   const requestSetupOrPromptAdminAccess = useCallback(
     (connector: Connector, connectorId?: string) => {
-      const resolved = resolveConnectorForSetup(connector, registryConnectors);
       const isCreateMode = connectorId === undefined;
 
-      if (shouldPromptAdminAccess(resolved, isCreateMode)) {
-        setPendingSetupConnector(resolved);
+      if (shouldPromptAdminAccess(connector, isCreateMode)) {
+        setPendingSetupConnector(connector);
         setPendingSetupConnectorId(connectorId);
         setAdminAccessDialogPhase('question');
         setAdminAccessDialogOpen(true);
@@ -305,7 +301,7 @@ function TeamConnectorsPageContent() {
 
       proceedWithSetup(connector, connectorId);
     },
-    [registryConnectors, proceedWithSetup]
+    [proceedWithSetup]
   );
 
   const handleAdminAccessConfirm = useCallback(() => {
