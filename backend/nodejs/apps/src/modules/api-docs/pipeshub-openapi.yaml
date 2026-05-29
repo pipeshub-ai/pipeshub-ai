@@ -6397,6 +6397,66 @@ components:
         agent:
           $ref: '#/components/schemas/Agent'
 
+    AgentDeleteCounts:
+      type: object
+      additionalProperties: false
+      description: |
+        Counts of graph entities affected by `DELETE /agents/{agentKey}`.
+        The Python backend soft-deletes (tombstones) the agent instance; related
+        toolsets, tools, and knowledge documents remain unless separately removed.
+        A simple agent with no attachments returns `agents: 1` and zero for the
+        other buckets (as asserted by integration tests).
+      required:
+        - agents
+        - toolsets
+        - tools
+        - knowledge
+        - edges
+      properties:
+        agents:
+          type: integer
+          minimum: 0
+          description: Agent instance documents tombstoned (1 on a successful delete).
+          example: 1
+        toolsets:
+          type: integer
+          minimum: 0
+          example: 0
+        tools:
+          type: integer
+          minimum: 0
+          example: 0
+        knowledge:
+          type: integer
+          minimum: 0
+          example: 0
+        edges:
+          type: integer
+          minimum: 0
+          example: 0
+
+    AgentDeleteResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Success envelope returned by `DELETE /agents/{agentKey}` on HTTP 200.
+        The Node gateway proxies `DELETE` to the Python query service and returns
+        the backend JSON body unchanged.
+      required:
+        - status
+        - message
+        - deleted
+      properties:
+        status:
+          type: string
+          enum: [success]
+          example: success
+        message:
+          type: string
+          example: Agent deleted successfully
+        deleted:
+          $ref: '#/components/schemas/AgentDeleteCounts'
+
     AgentCreateModelEntry:
       description: |
         Accepted model entry for `POST /agents/create`.
@@ -6745,6 +6805,105 @@ components:
               items:
                 $ref: '#/components/schemas/AgentCreateWarning'
             - type: 'null'
+
+    AgentUpdateRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Partial update payload for `PUT /agents/{agentKey}`.
+
+        All properties are optional; only supplied fields are updated. The Node
+        gateway does not Zod-validate this body (unlike `POST /agents/create`);
+        the Python agent service validates fields when they are present.
+
+        When `models` is included, the backend requires a non-empty array with at
+        least one entry that resolves to a reasoning-capable model object
+        (`isReasoning: true` on an object entry, matching create semantics).
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Agent display name
+        description:
+          type: string
+          maxLength: 100000
+          description: What the agent does
+        startMessage:
+          type: string
+          maxLength: 100000
+          description: Initial greeting shown when conversation starts
+        systemPrompt:
+          type: string
+          maxLength: 100000
+          description: System instructions for the agent
+        instructions:
+          type: string
+          maxLength: 100000
+          nullable: true
+          description: Additional agent execution instructions
+        models:
+          type: array
+          description: |
+            Agent model configuration entries. When this field is sent, the Python
+            backend requires at least one parsed model entry and at least one
+            reasoning-capable model object in the array.
+          items:
+            $ref: '#/components/schemas/AgentCreateModelEntry'
+        tags:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+            maxLength: 100
+        shareWithOrg:
+          type: boolean
+          description: Share agent with the organization
+        isServiceAccount:
+          type: boolean
+          description: |
+            Mark the agent as a service-account agent. A service-account agent
+            cannot be converted back to a regular agent.
+        toolsets:
+          type: array
+          maxItems: 100
+          description: |
+            Toolsets attached to the agent (instance-aware). An empty array
+            removes all toolsets when this field is supplied.
+          items:
+            $ref: '#/components/schemas/AgentCreateToolset'
+        knowledge:
+          type: array
+          maxItems: 100
+          description: |
+            Knowledge sources connected to the agent. An empty array removes all
+            knowledge sources when this field is supplied.
+          items:
+            $ref: '#/components/schemas/AgentCreateKnowledge'
+        webSearch:
+          $ref: '#/components/schemas/AgentCreateWebSearch'
+
+    AgentUpdateResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Success envelope returned by `PUT /agents/{agentKey}`.
+
+        The Node gateway forwards the Python backend response on success. The
+        updated agent projection is not included; use `GET /agents/{agentKey}`
+        to read the persisted configuration.
+      required:
+        - status
+        - message
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+          example: "success"
+        message:
+          type: string
+          example: "Agent updated successfully"
 
     AgentTemplate:
       type: object
@@ -24269,10 +24428,42 @@ paths:
         - Agents
       summary: Update agent
       description: |
-        Update an existing agent's configuration.<br><br>
-        <b>Permissions:</b><br>
-        Only the agent creator can update it.
+        Apply a partial update to an existing agent configuration.
+
+        **Gateway contract**
+
+        The Node gateway proxies the JSON body unchanged to the Python agent
+        service. Unlike `POST /agents/create`, this route does not run gateway
+        Zod validation on the request body. Query parameters are not validated and
+        are ignored by the controller.
+
+        **Update semantics**
+
+        Only fields present in the request body are updated. When `models` is
+        included, the Python backend requires at least one parsed model entry and
+        at least one reasoning-capable model object (`isReasoning: true`).
+
+        **Permissions**
+
+        The authenticated user must have `can_edit` on the agent (typically the
+        owner). Service-account and `shareWithOrg` transitions follow additional
+        Python business rules.
+
+        **Success response**
+
+        Returns a lightweight success envelope only. Use
+        `GET /agents/{agentKey}` to read the persisted agent after an update.
+
+        **Observed error behavior**
+
+        Integration tests against the Node gateway commonly receive `500`
+        `ErrorResponse` envelopes for AI-backend validation failures (invalid
+        `models`, unknown `agentKey`, permission errors) because non-200 backend
+        responses are mapped without preserving the upstream HTTP status. The
+        Python service itself returns `400`/`403`/`404` for many of these cases
+        when called directly.
       operationId: updateAgent
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -24280,127 +24471,74 @@ paths:
         - name: agentKey
           in: path
           required: true
+          description: Unique agent identifier
           schema:
             type: string
+            minLength: 1
+          example: "customer-support-agent"
       requestBody:
         required: true
-        description: "Request body for Update agent"
+        description: Partial agent configuration fields to update
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                description:
-                  type: string
-                systemPrompt:
-                  type: string
-                startMessage:
-                  type: string
-                instructions:
-                  type: string
-                  nullable: true
-                models:
-                  type: array
-                  items:
-                    oneOf:
-                      - type: string
-                      - type: object
-                        properties:
-                          modelKey:
-                            type: string
-                          modelName:
-                            type: string
-                          provider:
-                            type: string
-                          isReasoning:
-                            type: boolean
-                toolsets:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      name:
-                        type: string
-                      displayName:
-                        type: string
-                      type:
-                        type: string
-                      instanceId:
-                        type: string
-                      instanceName:
-                        type: string
-                      tools:
-                        type: array
-                        items:
-                          type: object
-                          properties:
-                            name:
-                              type: string
-                            fullName:
-                              type: string
-                            description:
-                              type: string
-                knowledge:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      connectorId:
-                        type: string
-                      filters:
-                        oneOf:
-                          - type: object
-                            additionalProperties: true
-                          - type: string
-                webSearch:
-                  type: object
-                  nullable: true
-                  description: Web search provider to attach to the agent
-                  properties:
-                    provider:
-                      type: string
-                      description: Provider identifier (e.g. "tavily", "serper", "exa", "duckduckgo")
-                    providerKey:
-                      type: string
-                      description: Stored provider document key (empty string for providers that don't require one)
-                    providerLabel:
-                      type: string
-                      description: Human-readable provider label (e.g. "DuckDuckGo")
-                  required:
-                    - provider
-                  example:
-                    provider: "duckduckgo"
-                    providerKey: ""
-                    providerLabel: "DuckDuckGo"
-                isPublic:
-                  type: boolean
-                shareWithOrg:
-                  type: boolean
+              $ref: '#/components/schemas/AgentUpdateRequest'
       responses:
         '200':
-          description: Agent updated
+          description: Agent updated successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Agent'
+                $ref: '#/components/schemas/AgentUpdateResponse'
         '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Only creator can update
-        '404':
-          description: Agent not found
+          description: Missing or invalid authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: |
+            Malformed JSON request body (Express parser). Observed intermittently
+            for syntactically invalid JSON; may also surface as `500`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            AI-backend or gateway failure. Observed for unknown `agentKey`,
+            invalid `models` when sent, permission errors, and other non-200
+            responses from the Python agent service via the Node proxy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
         - Agents
       summary: Delete agent
       description: |
-        Delete an agent.<br><br>
-        <b>Warning:</b><br>
+        Soft-delete an agent (tombstone) in the graph database.
+
+        **Overview:**
+        The Python query service marks the agent instance deleted inside a transaction.
+        List and search endpoints exclude tombstoned agents. Toolsets, tools, and
+        knowledge linked to the agent are not removed by this call.
+
+        **Permissions:**
+        Only the agent owner may delete (`can_delete` on the permission check).
+
+        **Warning:**
         All conversations with this agent will become inaccessible.
+
+        **Observed gateway behavior (localhost integration tests):**
+        Unknown `agentKey`, deleting an already-deleted agent, and `GET /agents/{agentKey}`
+        after delete currently return **HTTP 500** with an `ErrorResponse` body (message
+        often mentions the agent or "not found"), not 404. The Python backend raises 404
+        for not-found when called directly; the Node proxy may surface 500 instead.
       operationId: deleteAgent
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -24408,17 +24546,33 @@ paths:
         - name: agentKey
           in: path
           required: true
+          description: Unique agent identifier (gateway Zod requires non-empty string).
           schema:
             type: string
+            minLength: 1
+          example: customer-support-agent
       responses:
         '200':
-          description: Agent deleted
+          description: Agent soft-deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentDeleteResponse'
         '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Only creator can delete
-        '404':
-          description: Agent not found
+          description: Missing or invalid bearer token (e.g. `No token provided`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Agent not found, already deleted, permission or lookup failure, or other
+            backend error forwarded by the gateway (observed for unknown key, second
+            delete, and GET after delete on localhost).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/permissions:
     get:

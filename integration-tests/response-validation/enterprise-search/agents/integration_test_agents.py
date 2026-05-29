@@ -3,9 +3,11 @@
 ``POST /api/v1/agents/create``
 ``GET /api/v1/agents``
 ``GET /api/v1/agents/{agentKey}``
+``PUT /api/v1/agents/{agentKey}``
+``DELETE /api/v1/agents/{agentKey}``
 
-Exercises the Node gateway + Zod validation layer with positive and negative
-request shapes using the existing enterprise-search fixtures.
+Exercises the Node gateway (and Python agent service for updates) with positive
+and negative request shapes using the existing enterprise-search fixtures.
 """
 
 from __future__ import annotations
@@ -805,4 +807,550 @@ class TestGetAgent:
         assert isinstance(body, dict) and "error" in body, f"Expected error body, got: {body!r}"
         assert body["error"]["message"] == "No token provided", (
             f"Expected 'No token provided', got {body['error']['message']!r}"
+        )
+
+
+@pytest.mark.integration
+class TestUpdateAgent:
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.client = pipeshub_client
+        self.base_url = pipeshub_client.base_url
+        self.headers = pipeshub_client.auth_headers
+        self.timeout = pipeshub_client.timeout_seconds
+
+    @pytest.fixture
+    def created_agent_keys(self):
+        created: list[str] = []
+        yield created
+        for agent_key in reversed(created):
+            try:
+                resp = requests.delete(
+                    f"{self.base_url}/api/v1/agents/{agent_key}",
+                    headers=self.headers,
+                    timeout=self.timeout,
+                )
+                if resp.status_code >= 300:
+                    logger.warning(
+                        "Agent delete failed for %s: HTTP %s %s",
+                        agent_key, resp.status_code, resp.text[:300]
+                    )
+            except Exception:
+                pass
+
+    def _create_agent_raw(self, payload: dict[str, Any]) -> requests.Response:
+        return requests.post(
+            f"{self.base_url}{_AGENTS_CREATE_PATH}",
+            headers=self.headers,
+            json=payload,
+            timeout=self.timeout,
+        )
+
+    def _create_agent_for_update_test(
+        self,
+        *,
+        name: str,
+        seeded_model: SeededAIModel,
+        created_agent_keys: list[str],
+        description: str | None = None,
+    ) -> str:
+        payload = _build_payload(
+            name=name,
+            seeded_model=seeded_model,
+            description=description,
+        )
+        resp = self._create_agent_raw(payload)
+        assert resp.status_code == 201, f"Agent create failed: {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        agent_key = TestCreateAgent._created_agent_key(body)
+        created_agent_keys.append(agent_key)
+        return agent_key
+
+    def _update_agent_raw(
+        self,
+        agent_key: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        data: str | bytes | None = None,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> requests.Response:
+        request_headers = dict(headers if headers is not None else self.headers)
+        if data is not None:
+            request_headers.setdefault("Content-Type", "application/json")
+        return requests.put(
+            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
+            headers=request_headers,
+            json=json_body,
+            data=data,
+            params=params,
+            timeout=self.timeout,
+        )
+
+    def _get_agent_raw(self, agent_key: str) -> requests.Response:
+        return requests.get(
+            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+
+    @staticmethod
+    def _assert_update_agent_response_shape(body: dict[str, Any]) -> None:
+        assert body.get("status") == "success", f"Expected success status, got: {body!r}"
+        assert body.get("message") == "Agent updated successfully", (
+            f"Expected update success message, got: {body!r}"
+        )
+        assert "agent" not in body, (
+            f"Update response should not include agent object, got: {body!r}"
+        )
+
+    def test_update_agent_partial_name_and_description(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        original_name = f"it-agent-update-before-{uuid4().hex[:8]}"
+        agent_key = self._create_agent_for_update_test(
+            name=original_name,
+            seeded_model=reasoning_multimodal_llm_model,
+            created_agent_keys=created_agent_keys,
+            description="original description",
+        )
+
+        updated_name = f"it-agent-update-after-{uuid4().hex[:8]}"
+        updated_description = f"updated description {uuid4().hex[:8]}"
+
+        resp = self._update_agent_raw(
+            agent_key,
+            json_body={"name": updated_name, "description": updated_description},
+        )
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        self._assert_update_agent_response_shape(body)
+
+        get_resp = self._get_agent_raw(agent_key)
+        assert get_resp.status_code == 200, (
+            f"Expected GET 200 after update, got {get_resp.status_code}: {get_resp.text}"
+        )
+        get_body = _response_json(get_resp)
+        agent = TestGetAgent._assert_get_agent_response_shape(
+            get_body,
+            expected_agent_key=agent_key,
+            expected_name=updated_name,
+        )
+        assert agent.get("description") == updated_description, (
+            f"Expected updated description on GET, got: {get_body!r}"
+        )
+
+    def test_update_agent_accepts_valid_models_array(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        agent_key = self._create_agent_for_update_test(
+            name=f"it-agent-update-models-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+            created_agent_keys=created_agent_keys,
+        )
+
+        resp = self._update_agent_raw(
+            agent_key,
+            json_body={
+                "models": [
+                    {
+                        "modelKey": reasoning_multimodal_llm_model.model_key,
+                        "modelName": reasoning_multimodal_llm_model.model_name,
+                        "provider": reasoning_multimodal_llm_model.provider,
+                        "isReasoning": True,
+                    },
+                ],
+            },
+        )
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        self._assert_update_agent_response_shape(body)
+
+        get_resp = self._get_agent_raw(agent_key)
+        assert get_resp.status_code == 200, (
+            f"Expected GET 200 after models update, got {get_resp.status_code}: {get_resp.text}"
+        )
+        get_body = _response_json(get_resp)
+        agent = TestGetAgent._assert_get_agent_response_shape(
+            get_body,
+            expected_agent_key=agent_key,
+        )
+        models = agent.get("models")
+        assert isinstance(models, list) and models, f"Expected models after update, got: {agent!r}"
+        first_model = models[0]
+        assert isinstance(first_model, dict), f"Expected model object, got: {first_model!r}"
+        assert first_model.get("modelKey") == reasoning_multimodal_llm_model.model_key
+
+    def test_update_agent_accepts_varied_query_params_even_though_controller_ignores_them(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        agent_key = self._create_agent_for_update_test(
+            name=f"it-agent-update-query-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+            created_agent_keys=created_agent_keys,
+        )
+
+        resp = self._update_agent_raw(
+            agent_key,
+            json_body={"description": f"query-param probe {uuid4().hex[:8]}"},
+            params={"page": 2, "limit": 10, "unexpected": "still-allowed"},
+        )
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        self._assert_update_agent_response_shape(body)
+
+    def test_update_agent_requires_auth(self, agent_session: dict[str, Any]) -> None:
+        resp = self._update_agent_raw(
+            agent_session["primary_agent"],
+            json_body={"name": "should-not-update"},
+            headers={},
+        )
+        assert resp.status_code == 401, (
+            f"Expected 401 for missing auth, got {resp.status_code}: {resp.text}"
+        )
+
+        body = _response_json(resp)
+        assert isinstance(body, dict) and "error" in body, f"Expected error body, got: {body!r}"
+        assert body["error"]["message"] == "No token provided", (
+            f"Expected 'No token provided', got {body['error']['message']!r}"
+        )
+
+    def test_update_agent_returns_current_error_status_for_empty_models_array(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        agent_key = self._create_agent_for_update_test(
+            name=f"it-agent-update-empty-models-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+            created_agent_keys=created_agent_keys,
+        )
+
+        resp = self._update_agent_raw(agent_key, json_body={"models": []})
+        assert resp.status_code == 500, (
+            f"Expected current 500 error for empty models array, got {resp.status_code}: {resp.text}"
+        )
+
+        error_text = _response_text_fragments(resp)
+        assert "at least one" in error_text and "model" in error_text, (
+            f"unexpected error payload: {resp.text}"
+        )
+
+    def test_update_agent_returns_current_error_status_for_models_without_reasoning_flag(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        """Document current gateway behavior when models omit the reasoning flag."""
+        agent_key = self._create_agent_for_update_test(
+            name=f"it-agent-update-no-reasoning-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+            created_agent_keys=created_agent_keys,
+        )
+
+        resp = self._update_agent_raw(
+            agent_key,
+            json_body={
+                "models": [
+                    {
+                        "modelKey": reasoning_multimodal_llm_model.model_key,
+                        "modelName": reasoning_multimodal_llm_model.model_name,
+                        "provider": reasoning_multimodal_llm_model.provider,
+                    },
+                ],
+            },
+        )
+        assert resp.status_code == 500, (
+            f"Expected current 500 for models without reasoning flag, "
+            f"got {resp.status_code}: {resp.text}"
+        )
+
+        error_text = _response_text_fragments(resp)
+        assert "reasoning model" in error_text, f"unexpected error payload: {resp.text}"
+
+    def test_update_agent_returns_current_error_status_for_unknown_agent_key(self) -> None:
+        missing_agent_key = f"missing-agent-{uuid4().hex[:12]}"
+
+        resp = self._update_agent_raw(
+            missing_agent_key,
+            json_body={"name": f"ghost-{uuid4().hex[:8]}"},
+        )
+        assert resp.status_code == 500, (
+            f"Expected current 500 error for unknown agent key, got {resp.status_code}: {resp.text}"
+        )
+
+        error_text = _response_text_fragments(resp)
+        assert "not found" in error_text or "agent" in error_text, (
+            f"unexpected error payload: {resp.text}"
+        )
+
+    def test_update_agent_rejects_malformed_json_body(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        agent_key = self._create_agent_for_update_test(
+            name=f"it-agent-update-bad-json-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+            created_agent_keys=created_agent_keys,
+        )
+
+        resp = self._update_agent_raw(
+            agent_key,
+            data='{"name": "broken"',
+        )
+        assert resp.status_code in {400, 500}, (
+            f"Expected client or server error for malformed JSON, got {resp.status_code}: {resp.text}"
+        )
+
+        error_text = _response_text_fragments(resp)
+        assert (
+            "json" in error_text
+            or "unexpected" in error_text
+            or "syntax" in error_text
+            or "parse" in error_text
+            or "error" in error_text
+        ), f"unexpected error payload: {resp.text}"
+
+
+@pytest.mark.integration
+class TestDeleteAgent:
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.client = pipeshub_client
+        self.base_url = pipeshub_client.base_url
+        self.headers = pipeshub_client.auth_headers
+        self.timeout = pipeshub_client.timeout_seconds
+
+    @pytest.fixture
+    def created_agent_keys(self):
+        created: list[str] = []
+        yield created
+        for agent_key in reversed(created):
+            try:
+                resp = requests.delete(
+                    f"{self.base_url}/api/v1/agents/{agent_key}",
+                    headers=self.headers,
+                    timeout=self.timeout,
+                )
+                if resp.status_code >= 300:
+                    logger.warning(
+                        "Agent delete failed for %s: HTTP %s %s",
+                        agent_key, resp.status_code, resp.text[:300]
+                    )
+            except Exception:
+                pass
+
+    def _create_agent_raw(self, payload: dict[str, Any]) -> requests.Response:
+        return requests.post(
+            f"{self.base_url}{_AGENTS_CREATE_PATH}",
+            headers=self.headers,
+            json=payload,
+            timeout=self.timeout,
+        )
+
+    def _create_agent_for_delete_test(
+        self,
+        *,
+        name: str,
+        seeded_model: SeededAIModel,
+        created_agent_keys: list[str],
+        description: str | None = None,
+        tags: list[str] | None = None,
+    ) -> str:
+        payload = _build_payload(
+            name=name,
+            seeded_model=seeded_model,
+            description=description,
+            tags=tags,
+        )
+        resp = self._create_agent_raw(payload)
+        assert resp.status_code == 201, f"Agent create failed: {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        agent_key = TestCreateAgent._created_agent_key(body)
+        created_agent_keys.append(agent_key)
+        return agent_key
+
+    def _get_agent_raw(
+        self,
+        agent_key: str,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> requests.Response:
+        return requests.get(
+            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
+            headers=headers if headers is not None else self.headers,
+            timeout=self.timeout,
+        )
+
+    def _delete_agent_raw(
+        self,
+        agent_key: str,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> requests.Response:
+        return requests.delete(
+            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
+            headers=headers if headers is not None else self.headers,
+            timeout=self.timeout,
+        )
+
+    def _list_agents_raw(
+        self,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> requests.Response:
+        return requests.get(
+            f"{self.base_url}{_AGENTS_LIST_PATH}",
+            headers=self.headers,
+            params=params,
+            timeout=self.timeout,
+        )
+
+    @staticmethod
+    def _assert_delete_agent_success_shape(body: dict[str, Any]) -> None:
+        assert body.get("status") == "success", f"Expected success status, got: {body!r}"
+        assert body.get("message") == "Agent deleted successfully", (
+            f"Expected delete success message, got: {body!r}"
+        )
+        deleted = body.get("deleted")
+        assert isinstance(deleted, dict), f"Expected deleted counts object, got: {body!r}"
+        assert deleted.get("agents") == 1, f"Expected one agent deleted, got: {body!r}"
+        for key in ("toolsets", "tools", "knowledge", "edges"):
+            assert deleted.get(key) == 0, f"Expected deleted.{key}=0, got: {body!r}"
+
+    @staticmethod
+    def _assert_get_agent_not_available_after_delete(resp: requests.Response) -> None:
+        """Document current gateway behavior for soft-deleted / missing agents."""
+        assert resp.status_code == 500, (
+            f"Expected current 500 after delete (same as unknown GET), "
+            f"got {resp.status_code}: {resp.text}"
+        )
+        error_text = _response_text_fragments(resp)
+        assert "not found" in error_text or "agent" in error_text, (
+            f"unexpected error payload: {resp.text}"
+        )
+
+    def test_delete_agent_lifecycle(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        search_token = uuid4().hex[:10]
+        unique_name = f"it-agent-delete-lifecycle-{search_token}"
+        agent_key = self._create_agent_for_delete_test(
+            name=unique_name,
+            seeded_model=reasoning_multimodal_llm_model,
+            created_agent_keys=created_agent_keys,
+            description=f"delete lifecycle integration test {search_token}",
+            tags=[f"delete-{search_token}"],
+        )
+
+        get_before = self._get_agent_raw(agent_key)
+        assert get_before.status_code == 200, (
+            f"Expected 200 before delete, got {get_before.status_code}: {get_before.text}"
+        )
+        before_body = _response_json(get_before)
+        TestGetAgent._assert_get_agent_response_shape(
+            before_body,
+            expected_agent_key=agent_key,
+            expected_name=unique_name,
+        )
+
+        del_resp = self._delete_agent_raw(agent_key)
+        assert del_resp.status_code == 200, (
+            f"Expected 200 on delete, got {del_resp.status_code}: {del_resp.text}"
+        )
+        del_body = _response_json(del_resp)
+        self._assert_delete_agent_success_shape(del_body)
+
+        if agent_key in created_agent_keys:
+            created_agent_keys.remove(agent_key)
+
+        get_after = self._get_agent_raw(agent_key)
+        self._assert_get_agent_not_available_after_delete(get_after)
+
+        list_resp = self._list_agents_raw(params={"search": search_token})
+        assert list_resp.status_code == 200, (
+            f"Expected 200 on list search, got {list_resp.status_code}: {list_resp.text}"
+        )
+        list_body = _response_json(list_resp)
+        agents = list_body.get("agents")
+        assert isinstance(agents, list), f"Expected agents list, got: {list_body!r}"
+        matching_keys = [
+            agent.get("_key")
+            for agent in agents
+            if isinstance(agent, dict) and agent.get("_key") == agent_key
+        ]
+        assert not matching_keys, (
+            f"Deleted agent {agent_key!r} should not appear in search results: {list_body!r}"
+        )
+
+    def test_delete_agent_requires_auth(self, agent_session: dict[str, Any]) -> None:
+        resp = self._delete_agent_raw(
+            agent_session["primary_agent"],
+            headers={},
+        )
+        assert resp.status_code == 401, (
+            f"Expected 401 for missing auth, got {resp.status_code}: {resp.text}"
+        )
+
+        body = _response_json(resp)
+        assert isinstance(body, dict) and "error" in body, f"Expected error body, got: {body!r}"
+        assert body["error"]["message"] == "No token provided", (
+            f"Expected 'No token provided', got {body['error']['message']!r}"
+        )
+
+    def test_delete_agent_unknown_key(self) -> None:
+        """Document current gateway behavior for unknown agent key on DELETE."""
+        missing_agent_key = f"missing-agent-{uuid4().hex[:12]}"
+
+        resp = self._delete_agent_raw(missing_agent_key)
+        assert resp.status_code == 500, (
+            f"Expected current 500 error for unknown agent key, got {resp.status_code}: {resp.text}"
+        )
+
+        error_text = _response_text_fragments(resp)
+        assert "not found" in error_text or "agent" in error_text, (
+            f"unexpected error payload: {resp.text}"
+        )
+
+    def test_delete_agent_twice(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        agent_key = self._create_agent_for_delete_test(
+            name=f"it-agent-delete-twice-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+            created_agent_keys=created_agent_keys,
+        )
+
+        first = self._delete_agent_raw(agent_key)
+        assert first.status_code == 200, f"{first.status_code}: {first.text}"
+        self._assert_delete_agent_success_shape(_response_json(first))
+
+        if agent_key in created_agent_keys:
+            created_agent_keys.remove(agent_key)
+
+        second = self._delete_agent_raw(agent_key)
+        assert second.status_code == 500, (
+            f"Expected current 500 on second delete, got {second.status_code}: {second.text}"
+        )
+        error_text = _response_text_fragments(second)
+        assert "not found" in error_text or "agent" in error_text, (
+            f"unexpected error payload: {second.text}"
         )
