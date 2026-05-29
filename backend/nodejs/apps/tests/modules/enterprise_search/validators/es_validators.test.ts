@@ -260,6 +260,22 @@ describe('enterprise_search/validators/es_validators', () => {
         sort_order: 'asc',
       })
     })
+
+    it('should reject search with XSS patterns', () => {
+      const result = listAgentsQuerySchema.safeParse({
+        query: { search: '<script>alert(1)</script>' },
+      })
+
+      expect(result.success).to.be.false
+    })
+
+    it('should reject search with format specifiers', () => {
+      const result = listAgentsQuerySchema.safeParse({
+        query: { search: 'hello %s' },
+      })
+
+      expect(result.success).to.be.false
+    })
   })
 
   describe('messageIdParamsSchema', () => {

@@ -421,7 +421,27 @@ export const listAgentsQuerySchema = z.object({
   query: z.object({
     page: pageSchema,
     limit: agentListLimitSchema,
-    search: z.string().trim().min(1).max(1000).optional(),
+    search: z
+      .string()
+      .trim()
+      .min(1)
+      .max(1000, { message: 'Search parameter too long (max 1000 characters)' })
+      .optional()
+      .superRefine((value, ctx) => {
+        if (!value) {
+          return;
+        }
+
+        try {
+          validateNoXSS(value, 'search parameter');
+          validateNoFormatSpecifiers(value, 'search parameter');
+        } catch (error: any) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: error.message,
+          });
+        }
+      }),
     sort_by: z.string().trim().min(1).max(100).optional().default('updatedAtTimestamp'),
     sort_order: z.enum(['asc', 'desc']).optional().default('desc'),
   }),
