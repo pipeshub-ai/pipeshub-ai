@@ -2703,7 +2703,7 @@ describe('Enterprise Search Controller', () => {
 
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
-        data: { agentKey: 'agent-1' },
+        data: { agent: { id: 'remove-me', agentKey: 'agent-1' } },
       } as any)
 
       const req = createMockRequest({
@@ -2717,6 +2717,7 @@ describe('Enterprise Search Controller', () => {
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
+        expect(res.json.firstCall.args[0].agent).to.not.have.property('id')
       }
     })
 
