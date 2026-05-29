@@ -194,6 +194,7 @@ export function OverviewTab({
     t,
     instanceConfigs,
     setLocalSyncStatus,
+    fetchInstanceStats,
   ]);
 
   const handleOverviewResync = useCallback(async () => {
@@ -236,7 +237,7 @@ export function OverviewTab({
     } finally {
       setIsReindexFailedBusy(false);
     }
-  }, [instance._key, instance.type, instance.isActive, isReindexFailedBusy, addToast]);
+  }, [instance._key, instance.type, instance.isActive, isReindexFailedBusy, addToast, fetchInstanceStats]);
 
   const handleManualIndex = useCallback(async () => {
     const connectorId = instance._key;
@@ -254,7 +255,7 @@ export function OverviewTab({
     } finally {
       setIsManualIndexBusy(false);
     }
-  }, [instance._key, instance.type, instance.isActive, isManualIndexBusy, addToast]);
+  }, [instance._key, instance.type, instance.isActive, isManualIndexBusy, addToast, fetchInstanceStats]);
 
   // Show sync progress bar for syncing
   const showProgressBar = isSyncing && instance.syncProgress;

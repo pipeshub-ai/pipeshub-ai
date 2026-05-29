@@ -25,11 +25,14 @@ import type {
 import { KB_SECTION_HEADER_MARGIN_BOTTOM } from '@/app/components/sidebar/constants';
 import { SidebarLoadMoreButton } from './sidebar-load-more-button';
 
-/** One level of indent so app descendants align under the app icon (not the app chevron). */
+/** Shift the whole subtree one indent level under the app icon (not the app chevron). */
 function indentAppSectionTreeRoots(nodes: EnhancedFolderTreeNode[]): EnhancedFolderTreeNode[] {
   return nodes.map((n) => ({
     ...n,
-    depth: n.depth === 0 ? 1 : n.depth,
+    depth: n.depth + 1,
+    children: n.children?.length
+      ? indentAppSectionTreeRoots(n.children as EnhancedFolderTreeNode[])
+      : n.children,
   }));
 }
 
