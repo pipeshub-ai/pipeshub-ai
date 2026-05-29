@@ -7885,6 +7885,7 @@ components:
 
     AIModelProviderConfig:
       type: object
+      additionalProperties: false
       required:
         - provider
         - configuration
@@ -7893,18 +7894,12 @@ components:
           type: string
           description: AI provider name
         configuration:
-          type: object
-          properties:
-            model:
-              type: string
-              description: Model name(s)
-            apiKey:
-              type: string
-              description: API key for the model
-            endpoint:
-              type: string
-              format: uri
-              description: Endpoint URL for the model
+          $ref: '#/components/schemas/AIModelProviderConfiguration'
+        modelFriendlyName:
+          type: string
+          description: |
+            Display name for this model entry. May duplicate configuration.modelFriendlyName
+            when set on the stored provider record.
         isMultimodal:
           type: boolean
           default: false
@@ -7928,6 +7923,17 @@ components:
 
     AIModelsConfig:
       type: object
+      additionalProperties: false
+      required:
+        - ocr
+        - embedding
+        - slm
+        - llm
+        - reasoning
+        - multiModal
+        - imageGeneration
+        - tts
+        - stt
       properties:
         ocr:
           type: array
@@ -7968,6 +7974,51 @@ components:
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'
       description: Must have at least one model type configured
+
+    GetAIModelsProvidersResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Success response from getAIModelsProviders. Returns the full stored
+        models bucket map (masked when secrets are hidden).
+      required:
+        - status
+        - models
+        - message
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          description: >-
+            Human-readable summary (e.g. "AI models retrieved successfully" or
+            "No AI models found").
+        models:
+          $ref: '#/components/schemas/AIModelsConfig'
+
+    GetModelsByTypeResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Success response from getModelsByType. Returns stored provider entries
+        for a single model type bucket (not the flattened available-models shape).
+      required:
+        - status
+        - models
+        - message
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          description: >-
+            Human-readable summary (e.g. "Found 2 llm models", "No llm models found").
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
 
     # AI Model Registry Schemas (Python backend)
     AIModelRegistryProvider:
@@ -8408,9 +8459,123 @@ components:
           description: Custom system prompt text for AI models
 
     # AI Model Provider Management Schemas
+    AIModelProviderConfiguration:
+      type: object
+      description: |
+        Provider-specific configuration stored on each AI model entry.
+
+        **Passthrough contract:** `additionalProperties` is intentionally `true` at this
+        level only. Node validation uses Zod `configurationSchema` with `.passthrough()`
+        so provider-specific keys reach the Python backend unchanged. The canonical field
+        list for each provider lives in `backend/python/app/config/ai_models/providers/`;
+        new providers may add keys without updating this spec. Do not set
+        `additionalProperties: false` here unless every registry field is enumerated.
+
+        Properties below are the documented union of the Zod base shape and registry-defined
+        configuration keys (all optional unless required by a given provider at runtime).
+      additionalProperties: false
+      properties:
+        model:
+          type: string
+          description: |
+            Model name/identifier. May be comma-separated for multiple models
+            (e.g. `gpt-4o, gpt-4o-mini`).
+          example: "gpt-4"
+        modelFriendlyName:
+          type: string
+          description: |
+            Display name for the model. Only allowed when `model` is a single name
+            (not comma-separated).
+        apiKey:
+          type: string
+          description: API key for the provider
+        endpoint:
+          type: string
+          description: Custom endpoint URL (Azure OpenAI, self-hosted, Wispr override)
+        organizationId:
+          type: string
+          description: Organization ID (OpenAI)
+        deploymentName:
+          type: string
+          description: Deployment name (Azure OpenAI)
+        provider:
+          type: string
+          description: Bedrock model vendor (e.g. anthropic, cohere) or provider name override
+        customProvider:
+          type: string
+          description: Custom Bedrock vendor name when `provider` is `other`
+        awsAccessKeyId:
+          type: string
+          description: AWS access key (Bedrock). Optional - omit to use IAM role credentials.
+        awsAccessSecretKey:
+          type: string
+          description: AWS secret key (Bedrock). Optional - omit to use IAM role credentials.
+        region:
+          type: string
+          description: AWS region (Bedrock)
+        project:
+          type: string
+          description: GCP project ID (Vertex AI)
+        location:
+          type: string
+          description: Vertex AI region (e.g. us-central1)
+        serviceAccountJson:
+          type: string
+          description: |
+            Google Cloud service account JSON key (Vertex AI). Uploaded as a string;
+            treated as a secret at runtime.
+        dimensions:
+          description: |
+            Embedding output dimensions override (when supported by the model).
+            Stored configs may use an empty string when unset (registry default).
+          anyOf:
+            - type: integer
+            - type: string
+              enum: ['']
+        voice:
+          type: string
+          description: Default TTS voice (OpenAI / Gemini audio)
+        responseFormat:
+          type: string
+          description: TTS audio format (e.g. mp3, wav)
+        device:
+          type: string
+          description: Whisper runtime device (auto, cpu, cuda)
+        computeType:
+          type: string
+          description: Whisper numeric precision (e.g. int8, float16)
+        modelDir:
+          type: string
+          description: Whisper model weights cache directory
+        language:
+          type: string
+          description: Wispr Flow default language (ISO 639-1) or empty for auto-detect
+        appType:
+          type: string
+          description: Wispr Flow output formatting (e.g. ai, email)
+        model_kwargs:
+          type: object
+          description: |
+            Optional keyword arguments forwarded to LangChain embedding/LLM clients
+            (mirrors Zod `z.record(z.any())`). Used by HuggingFace (`device`, `api_key`)
+            and Bedrock (`max_tokens`) paths in Python; values are typically string,
+            number, or boolean. Omitted when not configured.
+          additionalProperties: {}
+        encode_kwargs:
+          type: object
+          description: |
+            Optional encoding kwargs for embedding models (mirrors Zod
+            `z.record(z.any())`). Commonly `normalize_embeddings` (boolean) for
+            HuggingFace and SentenceTransformer providers. Omitted when not configured.
+          additionalProperties: {}
+        cache_folder:
+          type: string
+          description: Cache folder for models
+
     AddAIModelProviderRequest:
       type: object
       description: Request to add a new AI model provider
+      additionalProperties: false
       required:
         - modelType
         - provider
@@ -8420,38 +8585,11 @@ components:
           $ref: '#/components/schemas/ModelType'
         provider:
           type: string
-          description: Provider name (e.g., openai, anthropic, azure-openai, aws-bedrock)
-          example: "openai"
+          minLength: 1
+          description: Provider registry ID (e.g. openAI, gemini, azureOpenAI, groq)
+          example: "openAI"
         configuration:
-          type: object
-          description: Provider-specific configuration
-          properties:
-            model:
-              type: string
-              description: Model name/identifier
-              example: "gpt-4"
-            apiKey:
-              type: string
-              description: API key for the provider
-            endpoint:
-              type: string
-              format: uri
-              description: Custom endpoint URL (for Azure, self-hosted)
-            organizationId:
-              type: string
-              description: Organization ID (OpenAI)
-            deploymentName:
-              type: string
-              description: Deployment name (Azure OpenAI)
-            awsAccessKeyId:
-              type: string
-              description: AWS access key (Bedrock). Optional - omit to use IAM role credentials.
-            awsAccessSecretKey:
-              type: string
-              description: AWS secret key (Bedrock). Optional - omit to use IAM role credentials.
-            region:
-              type: string
-              description: AWS region (Bedrock)
+          $ref: '#/components/schemas/AIModelProviderConfiguration'
         isMultimodal:
           type: boolean
           description: Whether the model supports multimodal inputs
@@ -8472,37 +8610,319 @@ components:
     UpdateAIModelProviderRequest:
       type: object
       description: Request to update an existing AI model provider
+      additionalProperties: false
       required:
         - provider
         - configuration
       properties:
         provider:
           type: string
-          description: Provider name
+          minLength: 1
+          description: Provider registry ID (e.g. openAI, gemini, azureOpenAI, groq)
         configuration:
-          type: object
-          description: Updated provider configuration
+          $ref: '#/components/schemas/AIModelProviderConfiguration'
         isMultimodal:
           type: boolean
+          description: Whether the model supports multimodal inputs
+          default: false
         isReasoning:
           type: boolean
+          description: Whether this is a reasoning model
+          default: false
         isDefault:
           type: boolean
+          description: Set as default model for this type
+          default: false
+        contextLength:
+          type: integer
+          description: Maximum context length (tokens)
+          nullable: true
+
+    AIModelProviderAddedDetails:
+      type: object
+      additionalProperties: false
+      description: Summary of the provider entry created by addAIModelProvider
+      required:
+        - modelKey
+        - modelType
+        - provider
+        - isDefault
+      properties:
+        modelKey:
+          type: string
+          format: uuid
+          description: Unique identifier assigned to the new provider configuration
+        modelType:
+          $ref: '#/components/schemas/ModelType'
+        provider:
+          type: string
+          description: Provider registry ID
+        model:
+          type: string
+          description: Model name from `configuration.model`
+        isDefault:
+          type: boolean
+          description: Whether this provider was saved as the default for its type
         contextLength:
           type: integer
           nullable: true
+          description: Context length (tokens), when provided in the request
 
     AIModelProviderResponse:
       type: object
-      description: Response containing AI model provider details
+      additionalProperties: false
+      description: Success response from addAIModelProvider
+      required:
+        - status
+        - message
+        - details
       properties:
         status:
           type: string
-          enum: [success, error]
+          enum: [success]
         message:
           type: string
-        data:
-          $ref: '#/components/schemas/AIModelProviderConfig'
+          example: "LLM provider added successfully"
+        details:
+          $ref: '#/components/schemas/AIModelProviderAddedDetails'
+
+    AIModelProviderSimpleError:
+      type: object
+      additionalProperties: false
+      description: |
+        Controller validation error returned before the Python health-check
+        (e.g. missing required fields or invalid modelType).
+      required:
+        - status
+        - message
+      properties:
+        status:
+          type: string
+          enum: [error]
+        message:
+          type: string
+
+    AIModelProviderHealthCheckBackendDetails:
+      type: object
+      additionalProperties: false
+      description: |
+        Nested diagnostics from the Python query service health-check response
+        (`content.details`). Present on credential, timeout, and embedding-policy failures.
+      properties:
+        provider:
+          type: string
+          description: Provider registry ID (e.g. openai, azure-openai)
+        model:
+          type: string
+          description: Model name from the configuration under test
+        error:
+          type: string
+          description: Underlying provider or multimodal probe error text
+        error_type:
+          type: string
+          description: Python exception class name (e.g. AuthenticationError)
+        timeout_seconds:
+          type: integer
+          description: Health-check invoke timeout in seconds
+        existing_vector_size:
+          type: integer
+          description: Vector dimension of the existing Qdrant collection
+        new_embedding_size:
+          type: integer
+          description: Dimension produced by the candidate embedding model
+        points_count:
+          type: integer
+          description: Number of points in the existing collection
+        current_model:
+          type: string
+          description: Embedding model name already stored for the org collection
+        new_model:
+          type: string
+          description: Candidate embedding model name
+        new_provider:
+          type: string
+          description: Candidate embedding provider ID
+        embedding_model:
+          type: string
+          description: Embedding subsystem status (HTTPException detail payloads)
+        vector_store:
+          type: string
+          description: Vector store subsystem status (HTTPException detail payloads)
+        llm:
+          type: string
+          description: LLM subsystem status (HTTPException detail payloads)
+
+    AIModelProviderHealthCheckBackendPayload:
+      type: object
+      additionalProperties: false
+      description: |
+        Raw JSON body from `POST /api/v1/health-check/{modelType}` on the Python query
+        service, forwarded unchanged as `error.details` by addAIModelProvider and
+        updateAIModelProvider when the health check fails.
+      properties:
+        status:
+          type: string
+          description: Health outcome from Python (e.g. error, not healthy)
+          example: error
+        message:
+          type: string
+          description: Primary human-readable failure reason from Python
+          example: "LLM health check failed: Incorrect API key provided"
+        error:
+          type: string
+          description: Alternate top-level error field (legacy envelopes and HTTPException detail)
+          example: "Health check failed: Connection refused"
+        timestamp:
+          type: integer
+          format: int64
+          description: Epoch milliseconds when the check completed
+        details:
+          $ref: '#/components/schemas/AIModelProviderHealthCheckBackendDetails'
+      example:
+        status: error
+        message: "LLM health check failed: Incorrect API key provided"
+        details:
+          provider: openai
+          model: gpt-4o-mini
+          error_type: AuthenticationError
+
+    AIModelProviderHealthCheckErrorEnvelope:
+      type: object
+      additionalProperties: false
+      description: Health-check failure from the Python AI backend
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required:
+            - status
+            - message
+          properties:
+            status:
+              type: string
+              enum: [error]
+            message:
+              type: string
+              description: |
+                User-facing reason from the Node controller, derived from the Python
+                body (`message`, or `error` / `error.message` when present).
+            details:
+              $ref: '#/components/schemas/AIModelProviderHealthCheckBackendPayload'
+
+    AddAIModelProviderErrorResponse:
+      oneOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - $ref: '#/components/schemas/AIModelProviderSimpleError'
+        - $ref: '#/components/schemas/AIModelProviderHealthCheckErrorEnvelope'
+
+    UpdateAIModelProviderDetails:
+      type: object
+      additionalProperties: false
+      description: Summary of the provider entry returned by updateAIModelProvider
+      required:
+        - modelKey
+        - modelType
+        - provider
+        - isMultimodal
+        - isReasoning
+      properties:
+        modelKey:
+          type: string
+          format: uuid
+          description: Unique identifier for this model configuration
+        modelType:
+          $ref: '#/components/schemas/ModelType'
+        provider:
+          type: string
+          description: Provider registry ID
+        model:
+          type: string
+          description: Model name from `configuration.model`
+        contextLength:
+          type: integer
+          nullable: true
+          description: Context length (tokens)
+        isMultimodal:
+          type: boolean
+          description: Whether the model supports multimodal inputs
+        isReasoning:
+          type: boolean
+          description: Whether this is a reasoning model
+
+    UpdateAIModelProviderResponse:
+      type: object
+      additionalProperties: false
+      description: Success response from updateAIModelProvider
+      required:
+        - status
+        - message
+        - details
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          example: "LLM provider updated successfully"
+        details:
+          $ref: '#/components/schemas/UpdateAIModelProviderDetails'
+
+    UpdateAIModelProviderErrorResponse:
+      oneOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - $ref: '#/components/schemas/AIModelProviderSimpleError'
+        - $ref: '#/components/schemas/AIModelProviderHealthCheckErrorEnvelope'
+
+    DeleteAIModelProviderDetails:
+      type: object
+      additionalProperties: false
+      description: Metadata about the AI model provider entry removed by deleteAIModelProvider
+      required:
+        - modelKey
+        - modelType
+        - provider
+        - wasDefault
+      properties:
+        modelKey:
+          type: string
+          format: uuid
+          description: UUID of the deleted provider configuration
+        modelType:
+          $ref: '#/components/schemas/ModelType'
+        provider:
+          type: string
+          description: Provider registry ID (e.g. openAI, gemini, azureOpenAI)
+        model:
+          type: string
+          description: Model name from `configuration.model` when present
+        wasDefault:
+          type: boolean
+          description: Whether the deleted entry was the default for its model type
+        contextLength:
+          type: integer
+          nullable: true
+          description: Maximum context length (tokens) when configured
+
+    DeleteAIModelProviderResponse:
+      type: object
+      additionalProperties: false
+      description: Success response from deleteAIModelProvider
+      required:
+        - status
+        - message
+        - details
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          description: Human-readable confirmation
+          example: "LLM provider deleted successfully"
+        details:
+          $ref: '#/components/schemas/DeleteAIModelProviderDetails'
 
     # ==================== CRAWLING MANAGER SCHEMAS ====================
     CrawlingScheduleType:
@@ -28047,6 +28467,7 @@ paths:
       summary: Get models by type
       description: Get all configured models of a specific type.
       operationId: getModelsByType
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -28063,16 +28484,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  message:
-                    type: string
-                  models:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/AIModelProviderConfig'
+                $ref: '#/components/schemas/GetModelsByTypeResponse'
         '401':
           description: Unauthorized
 
@@ -28436,6 +28848,7 @@ paths:
       summary: Add new AI model provider
       description: "Add a new AI model provider configuration. Performs a health check before saving to verify connectivity. Supported providers: openai, anthropic, azure-openai, aws-bedrock, google-vertex, ollama, huggingface."
       operationId: addAIModelProvider
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:write]
@@ -28447,18 +28860,32 @@ paths:
             schema:
               $ref: '#/components/schemas/AddAIModelProviderRequest'
       responses:
-        '201':
+        '200':
           description: AI model provider added successfully
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AIModelProviderResponse'
         '400':
-          description: Invalid configuration or health check failed
+          description: |
+            Invalid request body (Zod validation), controller validation, or
+            health-check failure (invalid credentials or provider config).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddAIModelProviderErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/ai-models/providers/{modelType}/{modelKey}:
     put:
@@ -28467,6 +28894,7 @@ paths:
       summary: Update AI model provider
       description: Update an existing AI model provider configuration.
       operationId: updateAIModelProvider
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:write]
@@ -28481,56 +28909,135 @@ paths:
           required: true
           schema:
             type: string
+            minLength: 1
           description: Unique model key (UUID)
       requestBody:
         required: true
-        description: "Request payload"
+        description: Updated provider configuration (validated by `updateProviderRequestSchema`)
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/UpdateAIModelProviderRequest'
       responses:
         '200':
-          description: AI model provider updated
+          description: AI model provider updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateAIModelProviderResponse'
         '400':
-          description: Invalid configuration
+          description: |
+            Invalid request body (Zod validation), controller validation (e.g. model type
+            mismatch, missing fields), health-check failure, or admin access required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateAIModelProviderErrorResponse'
         '401':
-          description: Unauthorized
-        '403':
-          description: Admin access required
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Model provider not found
+          description: |
+            No AI models configuration in KV store, or no provider with the given modelKey.
+            Health-check runs before KV lookup, so unknown keys with invalid credentials may
+            return 400 from the health-check instead.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelProviderSimpleError'
 
     delete:
       tags:
         - AI Models Providers
       summary: Delete AI model provider
-      description: Remove an AI model provider configuration. Cannot delete the default model if it's the only one.
+      description: |
+        Remove an AI model provider configuration. Fails with 409 when agents still
+        reference the model. If the deleted entry was default, the first remaining
+        entry for that type is promoted to default.
       operationId: deleteAIModelProvider
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
         - name: modelType
           in: path
           required: true
+          description: Model category (ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt)
           schema:
             $ref: '#/components/schemas/ModelType'
         - name: modelKey
           in: path
           required: true
+          description: Unique model key (UUID)
           schema:
             type: string
+            minLength: 1
       responses:
         '200':
           description: AI model provider deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteAIModelProviderResponse'
+              example:
+                status: success
+                message: "LLM provider deleted successfully"
+                details:
+                  modelKey: f3a4b5b6-5b6c-4e85-9097-3202cfe696fc
+                  modelType: llm
+                  provider: openAI
+                  model: gpt-4o-mini
+                  wasDefault: false
+                  contextLength: 128000
         '400':
-          description: Cannot delete default model
+          description: |
+            Model type mismatch — the `modelKey` exists under a different `modelType`
+            than the path parameter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelProviderSimpleError'
+              example:
+                status: error
+                message: "Model key 'f3a4b5b6-5b6c-4e85-9097-3202cfe696fc' belongs to type 'llm', not 'embedding'"
         '401':
           description: Unauthorized
         '403':
           description: Admin access required
         '404':
-          description: Model provider not found
+          description: |
+            Model provider not found, or no AI models configuration exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelProviderSimpleError'
+              examples:
+                modelNotFound:
+                  summary: Unknown modelKey
+                  value:
+                    status: error
+                    message: "Model with key 'f3a4b5b6-5b6c-4e85-9097-3202cfe696fc' not found"
+                noConfig:
+                  summary: No AI models configuration in KV store
+                  value:
+                    status: error
+                    message: "No AI models configuration found"
+        '409':
+          description: |
+            Model is in use by one or more agents. Remove the model from those agents
+            before deleting. Response body is the standard error envelope (`error.code`,
+            `error.message`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: HTTP_CONFLICT
+                  message: "Cannot delete model 'gpt-4o-mini': currently in use by agent 'Research Assistant'. Remove it from the agent first."
 
   /configurationManager/ai-models/default/{modelType}/{modelKey}:
     put:
@@ -29733,8 +30240,11 @@ paths:
         - Configuration Manager
       summary: Get AI model providers
       description: |
-        Retrieve all available AI model providers.
+        Retrieve all configured AI model provider entries grouped by model type
+        (admin-only). Returns the stored KV shape under `models`, not the flattened
+        list from getAvailableModelsByType.
       operationId: getAIModelsProviders
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       responses:
@@ -29743,7 +30253,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                $ref: '#/components/schemas/GetAIModelsProvidersResponse'
         '401':
           description: Unauthorized
         '403':
