@@ -358,6 +358,10 @@ const createAgentBodySchema = z
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
   })
   .superRefine((body, ctx) => {
+    if (!Array.isArray(body.models)) {
+      return;
+    }
+
     let parsedCount = 0;
     let hasReasoningModel = false;
 

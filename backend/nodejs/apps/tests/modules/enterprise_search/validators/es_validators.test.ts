@@ -1268,6 +1268,26 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
+    it('should reject missing models without throwing', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Agent' },
+      })
+      expect(result.success).to.be.false
+      if (!result.success) {
+        expect(result.error.issues.some((i) => i.path.join('.') === 'body.models')).to
+          .be.true
+      }
+    })
+
+    it('should reject invalid models types without throwing', () => {
+      for (const models of [undefined, null, 'not-an-array', 42]) {
+        const result = createAgentSchema.safeParse({
+          body: { name: 'Agent', models },
+        })
+        expect(result.success).to.be.false
+      }
+    })
+
     it('should reject null elements in models array without throwing', () => {
       const result = createAgentSchema.safeParse({
         body: { name: 'Agent', models: [null] },
