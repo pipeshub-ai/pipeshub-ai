@@ -1336,6 +1336,26 @@ class TestGitlabConnectorCodeFileTimestamps:
         assert result["a.py"] == (1_700_000_000_000, 1_700_000_100_000)
 
     @pytest.mark.asyncio
+    async def test_fetch_code_file_timestamps_batch_partial_failure(self) -> None:
+        connector = _make_connector()
+
+        async def _fake_timestamps(
+            project_id: int, path: str, ref: str = "HEAD"
+        ) -> tuple[int | None, int | None]:
+            if path == "bad.py":
+                raise RuntimeError("GitLab API error")
+            return (1_700_000_000_000, 1_700_000_100_000)
+
+        connector._code_file_source_timestamps = AsyncMock(side_effect=_fake_timestamps)
+
+        result = await connector._fetch_code_file_timestamps_batch(
+            123, ["good.py", "bad.py"]
+        )
+
+        assert result["good.py"] == (1_700_000_000_000, 1_700_000_100_000)
+        assert result["bad.py"] == (None, None)
+
+    @pytest.mark.asyncio
     async def test_backfill_code_file_timestamps_paginates_and_updates(self) -> None:
         connector = _make_connector()
         connector._refresh_token_if_needed = AsyncMock()

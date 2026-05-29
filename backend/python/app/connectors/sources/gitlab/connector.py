@@ -2585,9 +2585,18 @@ class GitLabConnector(BaseConnector):
 
         async def fetch_one(path: str) -> None:
             async with semaphore:
-                results[path] = await self._code_file_source_timestamps(
-                    project_id, path
-                )
+                try:
+                    results[path] = await self._code_file_source_timestamps(
+                        project_id, path
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        "Failed to fetch timestamps for path %s in project %s: %s",
+                        path,
+                        project_id,
+                        e,
+                    )
+                    results[path] = (None, None)
 
         await asyncio.gather(*(fetch_one(path) for path in paths))
         return results
@@ -2649,6 +2658,7 @@ class GitLabConnector(BaseConnector):
             status_filters = [status.value for status in ProgressStatus]
 
             while True:
+                await self._refresh_token_if_needed()
                 async with self.data_store_provider.transaction() as tx_store:
                     page = await tx_store.graph_provider.get_records_by_record_group(
                         record_group_id=record_group.id,
