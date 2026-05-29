@@ -68,7 +68,9 @@ def _iter_sse_envelopes(
         return env
 
     emitted = 0
-    for raw in resp.iter_lines(decode_unicode=True):
+    # Use a literal LF delimiter so requests does not split on Unicode
+    # line-separator characters that can appear inside JSON string values.
+    for raw in resp.iter_lines(delimiter="\n", decode_unicode=True):
         if raw is None:
             continue
         line = raw.rstrip("\r")
