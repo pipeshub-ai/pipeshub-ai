@@ -106,8 +106,10 @@ export function OverviewTab({
   const bumpCatalogRefresh = useConnectorsStore((s) => s.bumpCatalogRefresh);
   const [isRefreshStatsBusy, setIsRefreshStatsBusy] = useState(false);
   const [isHeaderSyncBusy, setIsHeaderSyncBusy] = useState(false);
-  const [isReindexBusy, setIsReindexBusy] = useState(false);
+  const [isReindexFailedBusy, setIsReindexFailedBusy] = useState(false);
+  const [isManualIndexBusy, setIsManualIndexBusy] = useState(false);
   const showStatsShimmer = statsLoading || isRefreshStatsBusy;
+  const reindexActionsBusy = isReindexFailedBusy || isManualIndexBusy;
   const recordsStatus = useMemo(
     () => (showStatsShimmer ? null : deriveRecordsStatus(stats)),
     [stats, showStatsShimmer]
@@ -120,7 +122,10 @@ export function OverviewTab({
     connectorConfig ?? (instance._key ? instanceConfigs[instance._key] : undefined);
   const syncStatus = deriveSyncStatus(instance, stats ?? undefined, configForDerive);
   const isSyncing = syncStatus === 'syncing';
-  const isSyncFailed = syncStatus === 'sync_failed';
+  const showReindexFailedAction =
+    Boolean(recordsStatus && recordsStatus.failed > 0) && !showStatsShimmer;
+  const showManualIndexAction =
+    Boolean(recordsStatus && recordsStatus.autoIndexOff > 0) && !showStatsShimmer;
 
   // Navigate to All Records page with filters for this connector
   const navigateToRecords = useCallback(
@@ -218,18 +223,35 @@ export function OverviewTab({
 
   const handleReindexFailed = useCallback(async () => {
     const connectorId = instance._key;
-    if (!connectorId || !instance.isActive || isReindexBusy) return;
+    if (!connectorId || !instance.isActive || isReindexFailedBusy) return;
     try {
-      setIsReindexBusy(true);
-      await ConnectorsApi.reindexFailedConnector(connectorId, instance.type);
+      setIsReindexFailedBusy(true);
+      await ConnectorsApi.reindexFailedConnector(connectorId, instance.type, ['FAILED']);
       addToast({ variant: 'success', title: 'Reindexing failed records…' });
-      bumpCatalogRefresh();
+      await fetchInstanceStats(connectorId, { force: true });
     } catch {
-      addToast({ variant: 'error', title: 'Failed to reindex' });
+      addToast({ variant: 'error', title: 'Failed to reindex failed records' });
     } finally {
-      setIsReindexBusy(false);
+      setIsReindexFailedBusy(false);
     }
-  }, [instance._key, instance.type, instance.isActive, isReindexBusy, addToast, bumpCatalogRefresh]);
+  }, [instance._key, instance.type, instance.isActive, isReindexFailedBusy, addToast]);
+
+  const handleManualIndex = useCallback(async () => {
+    const connectorId = instance._key;
+    if (!connectorId || !instance.isActive || isManualIndexBusy) return;
+    try {
+      setIsManualIndexBusy(true);
+      await ConnectorsApi.reindexFailedConnector(connectorId, instance.type, [
+        'AUTO_INDEX_OFF',
+      ]);
+      addToast({ variant: 'success', title: 'Indexing manual-indexing records…' });
+      await fetchInstanceStats(connectorId, { force: true });
+    } catch {
+      addToast({ variant: 'error', title: 'Failed to start manual indexing' });
+    } finally {
+      setIsManualIndexBusy(false);
+    }
+  }, [instance._key, instance.type, instance.isActive, isManualIndexBusy, addToast]);
 
   // Show sync progress bar for syncing
   const showProgressBar = isSyncing && instance.syncProgress;
@@ -269,7 +291,7 @@ export function OverviewTab({
       {/* ── Records Status section ── */}
       <Flex
         direction="column"
-        gap="5"
+        gap="3"
         style={{
           backgroundColor: 'var(--olive-2)',
           border: '1px solid var(--olive-3)',
@@ -277,35 +299,59 @@ export function OverviewTab({
           padding: 16,
         }}
       >
-        <Flex align="center" justify="between">
-          <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
+        <Flex align="start" gap="2">
+          <Text size="3" weight="medium" style={{ color: 'var(--gray-12)', flex: 1, minWidth: 0 }}>
             {t('workspace.connectors.overview.recordsStatus')}
           </Text>
           {instance.isActive && (
-            <Flex align="center" gap="1">
-              {isSyncFailed && (
+            <Flex
+              direction="column"
+              align="end"
+              gap="1"
+              style={{ marginLeft: 'auto', flexShrink: 0 }}
+            >
+              <Flex align="center" gap="1">
                 <StatusActionButton
-                  label="Reindex Failed"
-                  icon="replay"
-                  onClick={handleReindexFailed}
-                  disabled={isReindexBusy}
-                  loading={isReindexBusy}
+                  label="Sync now"
+                  icon="sync"
+                  onClick={() => void handleOverviewResync()}
+                  disabled={isHeaderSyncBusy || reindexActionsBusy}
+                  loading={isHeaderSyncBusy}
                 />
+                <StatusActionButton
+                  label={t('action.refresh')}
+                  icon="refresh"
+                  onClick={() => void handleOverviewRefreshStats()}
+                  disabled={isRefreshStatsBusy || reindexActionsBusy}
+                  loading={isRefreshStatsBusy}
+                />
+              </Flex>
+              {(showReindexFailedAction || showManualIndexAction) && recordsStatus && (
+                <Flex align="center" gap="1">
+                  {showReindexFailedAction && (
+                    <IndexActionButton
+                      label={`Reindex failed (${recordsStatus.failed})`}
+                      icon="error_outline"
+                      color="orange"
+                      iconColor="var(--orange-11)"
+                      onClick={() => void handleReindexFailed()}
+                      disabled={reindexActionsBusy || isHeaderSyncBusy}
+                      loading={isReindexFailedBusy}
+                    />
+                  )}
+                  {showManualIndexAction && (
+                    <IndexActionButton
+                      label={`Manual index (${recordsStatus.autoIndexOff})`}
+                      icon="touch_app"
+                      color="gray"
+                      iconColor="var(--gray-11)"
+                      onClick={() => void handleManualIndex()}
+                      disabled={reindexActionsBusy || isHeaderSyncBusy}
+                      loading={isManualIndexBusy}
+                    />
+                  )}
+                </Flex>
               )}
-              <StatusActionButton
-                label="Sync now"
-                icon="sync"
-                onClick={() => void handleOverviewResync()}
-                disabled={isHeaderSyncBusy}
-                loading={isHeaderSyncBusy}
-              />
-              <StatusActionButton
-                label={t('action.refresh')}
-                icon="refresh"
-                onClick={() => void handleOverviewRefreshStats()}
-                disabled={isRefreshStatsBusy}
-                loading={isRefreshStatsBusy}
-              />
             </Flex>
           )}
         </Flex>
@@ -449,6 +495,76 @@ export function OverviewTab({
 // Sub-components
 // ========================================
 
+const INDEX_ACTION_ICON_SIZE = 16;
+
+/** Soft indexing actions (orange / gray). */
+function IndexActionButton({
+  label,
+  icon,
+  color,
+  iconColor,
+  onClick,
+  disabled,
+  loading,
+}: {
+  label: string;
+  icon: string;
+  color: 'orange' | 'gray';
+  iconColor: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  loading?: boolean;
+}) {
+  const [isHovered, setIsHovered] = useState(false);
+  const isBusy = disabled || loading;
+  const backgroundColor =
+    color === 'orange'
+      ? isHovered && !isBusy
+        ? 'var(--orange-a4)'
+        : 'var(--orange-a3)'
+      : isHovered && !isBusy
+        ? 'var(--gray-a4)'
+        : 'var(--gray-a3)';
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={isBusy}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      style={{
+        appearance: 'none',
+        margin: 0,
+        font: 'inherit',
+        outline: 'none',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+        height: 'var(--space-5)',
+        padding: '0 var(--space-2)',
+        borderRadius: 'max(var(--radius-1), var(--radius-full))',
+        border: 'none',
+        backgroundColor,
+        color: iconColor,
+        fontSize: 'var(--font-size-1)',
+        fontWeight: 500,
+        lineHeight: 'var(--line-height-1)',
+        width: 'max-content',
+        maxWidth: '100%',
+        flexShrink: 0,
+        whiteSpace: 'nowrap',
+        cursor: loading ? 'wait' : disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled && !loading ? 0.6 : 1,
+        transition: 'background-color 150ms ease',
+      }}
+    >
+      <MaterialIcon name={icon} size={INDEX_ACTION_ICON_SIZE} color={iconColor} />
+      {label}
+    </button>
+  );
+}
+
 function StatusActionButton({
   label,
   icon,
@@ -488,14 +604,14 @@ function StatusActionButton({
         color: 'var(--gray-11)',
         fontSize: 12,
         fontWeight: 500,
-        cursor: isDisabled ? 'not-allowed' : 'pointer',
+        cursor: loading ? 'wait' : isDisabled ? 'not-allowed' : 'pointer',
         opacity: isDisabled ? 0.6 : 1,
         transition: 'background-color 150ms ease',
         whiteSpace: 'nowrap',
       }}
     >
       <MaterialIcon name={icon} size={12} color="var(--gray-11)" />
-      {loading ? '…' : label}
+      {label}
     </button>
   );
 }

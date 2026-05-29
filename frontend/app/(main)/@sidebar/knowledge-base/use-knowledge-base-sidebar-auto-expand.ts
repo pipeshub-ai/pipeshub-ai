@@ -4,6 +4,11 @@ import { useEffect, useRef, useState } from 'react';
 import type { ReadonlyURLSearchParams } from 'next/navigation';
 import { useKnowledgeBaseStore } from '../../knowledge-base/store';
 import { treeHasNodeWithId, findAncestorChainIds } from '../../knowledge-base/utils/tree-builder';
+import {
+  fetchAppDirectChildren,
+  appSectionKey,
+} from '../../knowledge-base/utils/fetch-app-direct-children';
+import { isKbCollectionsHubApp } from '../../knowledge-base/utils/all-records-transformer';
 import type {
   NodeType,
   EnhancedFolderTreeNode,
@@ -11,7 +16,22 @@ import type {
   CategorizedNodes,
   KnowledgeHubApiResponse,
   AllRecordsSidebarSelection,
+  Breadcrumb,
 } from '../../knowledge-base/types';
+
+/** True when breadcrumbs point at the KB Collections hub, not a connector app tree. */
+function isKbCollectionsNavigationPath(
+  breadcrumbs: Breadcrumb[],
+  kbApp: KnowledgeHubNode,
+  nonKbApps: KnowledgeHubNode[]
+): boolean {
+  if (breadcrumbs.some((b) => b.id === kbApp.id)) return true;
+  if (breadcrumbs.some((b) => b.nodeType === 'kb')) return true;
+  const appInTrail = breadcrumbs.find(
+    (b) => b.nodeType === 'app' || b.id === kbApp.id || nonKbApps.some((a) => a.id === b.id)
+  );
+  return appInTrail?.id === kbApp.id;
+}
 
 function dedupeBreadcrumbsById<T extends { id: string }>(items: T[]): T[] {
   const seen = new Set<string>();
@@ -33,6 +53,7 @@ export interface UseKnowledgeBaseSidebarAutoExpandParams {
   appNodes: KnowledgeHubNode[];
   appChildrenCache: Map<string, KnowledgeHubNode[]>;
   connectorAppTrees: Map<string, EnhancedFolderTreeNode[]>;
+  loadingAppIds: Set<string>;
   /** Omitted from the auto-expand effect deps (stable useCallback in parent). */
   handleNodeExpand: (nodeId: string, nodeType: NodeType) => Promise<void>;
   setCurrentFolderId: (folderId: string | null) => void;
@@ -48,6 +69,7 @@ export function useKnowledgeBaseSidebarAutoExpand({
   appNodes,
   appChildrenCache,
   connectorAppTrees,
+  loadingAppIds,
   handleNodeExpand,
   setCurrentFolderId,
   setAllRecordsSidebarSelection,
@@ -95,20 +117,31 @@ export function useKnowledgeBaseSidebarAutoExpand({
     const breadcrumbPathKey = breadcrumbs.map((b) => b.id).join('/');
     const breadcrumbIdSet = new Set(breadcrumbs.map((b) => b.id));
 
-    const nonKbApps = appNodes.filter((a) => a.connector !== 'KB');
+    const nonKbApps = appNodes.filter((a) => !isKbCollectionsHubApp(a));
     const appsInBreadcrumbTrail = nonKbApps.filter((a) => breadcrumbIdSet.has(a.id));
     const connectorPrimedKey = (() => {
       if (!isAllRecordsMode || appNodes.length === 0) return '';
+      const store = useKnowledgeBaseStore.getState();
       const readyFor = (appId: string) => {
-        const cached = appChildrenCache.get(appId);
-        const tree = connectorAppTrees.get(appId);
-        return (cached?.length ?? 0) > 0 && (tree?.length ?? 0) > 0;
+        if (store.loadingAppIds.has(appId)) return false;
+        const app = appNodes.find((a) => a.id === appId);
+        if (app && isKbCollectionsHubApp(app)) {
+          const cat = store.categorizedNodes;
+          const roots = (cat?.shared?.length ?? 0) + (cat?.private?.length ?? 0);
+          return store.appChildrenCache.has(appId) && (roots > 0 || !app.hasChildren);
+        }
+        return store.appChildrenCache.has(appId);
       };
+      const kbApp = appNodes.find((a) => isKbCollectionsHubApp(a));
+      const kbOnPath =
+        kbApp && breadcrumbs.length > 0
+          ? isKbCollectionsNavigationPath(breadcrumbs, kbApp, nonKbApps)
+          : false;
+      const kbReady = kbOnPath && kbApp ? (readyFor(kbApp.id) ? '1' : '0') : 'x';
       if (appsInBreadcrumbTrail.length > 0) {
-        return `trail:${appsInBreadcrumbTrail.map((a) => (readyFor(a.id) ? '1' : '0')).join('')}`;
+        return `kb:${kbReady}:trail:${appsInBreadcrumbTrail.map((a) => (readyFor(a.id) ? '1' : '0')).join('')}`;
       }
-      const anyReady = nonKbApps.some((a) => readyFor(a.id));
-      return `any:${anyReady ? '1' : '0'}`;
+      return `kb:${kbReady}`;
     })();
 
     const expansionKey = `${branchTag}:${nodeType}:${nodeId}:${breadcrumbPathKey}:cprim:${connectorPrimedKey}`;
@@ -124,17 +157,50 @@ export function useKnowledgeBaseSidebarAutoExpand({
       try {
         setCurrentFolderId(nodeId);
 
-        if (kbBreadcrumb) {
+        const { setSectionExpanded } = useKnowledgeBaseStore.getState();
+
+        if (isAllRecordsMode) {
+          const kbApp = appNodes.find((a) => isKbCollectionsHubApp(a));
+          if (kbApp && isKbCollectionsNavigationPath(breadcrumbs, kbApp, nonKbApps)) {
+            setSectionExpanded(appSectionKey(kbApp.id), true);
+            await fetchAppDirectChildren(kbApp.id);
+          }
+        }
+
+        const freshCategorized = useKnowledgeBaseStore.getState().categorizedNodes;
+        const freshRootNodes = [
+          ...(freshCategorized?.shared ?? []),
+          ...(freshCategorized?.private ?? []),
+        ];
+        const effectiveKbBreadcrumb =
+          freshRootNodes.length > 0
+            ? breadcrumbs.find((b) =>
+                isAllRecordsMode
+                  ? freshRootNodes.some((n) => n.id === b.id)
+                  : freshRootNodes.some((n) => n.id === b.id) || b.nodeType === 'kb'
+              )
+            : kbBreadcrumb;
+        const effectiveKbTreeNode = effectiveKbBreadcrumb
+          ? freshRootNodes.find((n) => n.id === effectiveKbBreadcrumb.id)
+          : kbTreeNode;
+
+        if (effectiveKbBreadcrumb) {
           if (isAllRecordsMode) {
             const collectionName =
-              allRootNodes.find((n) => n.id === kbBreadcrumb.id)?.name ||
-              kbBreadcrumb.name ||
-              kbBreadcrumb.id;
-            setAllRecordsSidebarSelection({ type: 'collection', id: kbBreadcrumb.id, name: collectionName });
+              freshRootNodes.find((n) => n.id === effectiveKbBreadcrumb.id)?.name ||
+              effectiveKbBreadcrumb.name ||
+              effectiveKbBreadcrumb.id;
+            setAllRecordsSidebarSelection({
+              type: 'collection',
+              id: effectiveKbBreadcrumb.id,
+              name: collectionName,
+            });
           }
 
-          const kbId = kbBreadcrumb.id;
-          const kbNodeType = (kbTreeNode?.nodeType ?? kbBreadcrumb.nodeType ?? 'kb') as NodeType;
+          const kbId = effectiveKbBreadcrumb.id;
+          const kbNodeType = (effectiveKbTreeNode?.nodeType ??
+            effectiveKbBreadcrumb.nodeType ??
+            'kb') as NodeType;
 
           useKnowledgeBaseStore.getState().expandFolderExclusive(kbId);
           await handleNodeExpand(kbId, kbNodeType);
@@ -186,6 +252,7 @@ export function useKnowledgeBaseSidebarAutoExpand({
               );
               const appNode = apps.find((a) => a.id === anchorAppId);
               const appNodeType = (appNode?.nodeType ?? 'app') as NodeType;
+              setSectionExpanded(appSectionKey(anchorAppId), true);
               useKnowledgeBaseStore.getState().expandFolderExclusive(anchorAppId);
               await handleNodeExpand(anchorAppId, appNodeType);
               for (const anc of intermediates) {
@@ -193,7 +260,9 @@ export function useKnowledgeBaseSidebarAutoExpand({
                 await handleNodeExpand(anc.id, anc.nodeType as NodeType);
               }
             } else {
-              const tree = trees.get(anchorAppId);
+              setSectionExpanded(appSectionKey(anchorAppId), true);
+              await fetchAppDirectChildren(anchorAppId);
+              const tree = useKnowledgeBaseStore.getState().connectorAppTrees.get(anchorAppId);
               if (tree?.length) {
                 const ancestorIds = findAncestorChainIds(tree, nodeId);
                 if (ancestorIds?.length) {
@@ -235,6 +304,7 @@ export function useKnowledgeBaseSidebarAutoExpand({
     appNodes,
     appChildrenCache,
     connectorAppTrees,
+    loadingAppIds,
   ]);
 
   useEffect(() => {
