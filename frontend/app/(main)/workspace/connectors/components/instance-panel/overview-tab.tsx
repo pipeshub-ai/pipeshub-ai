@@ -214,7 +214,8 @@ export function OverviewTab({
       }
       addToast({ variant: 'success', title: 'Sync started' });
       bumpCatalogRefresh();
-    } catch {
+    } catch (error) {
+      console.error('Failed to start sync', { connectorId, error });
       addToast({ variant: 'error', title: 'Failed to start sync' });
     } finally {
       setIsHeaderSyncBusy(false);
@@ -229,7 +230,8 @@ export function OverviewTab({
       await ConnectorsApi.reindexFailedConnector(connectorId, instance.type, ['FAILED']);
       addToast({ variant: 'success', title: 'Reindexing failed records…' });
       await fetchInstanceStats(connectorId, { force: true });
-    } catch {
+    } catch (error) {
+      console.error('Failed to reindex failed records', { connectorId, error });
       addToast({ variant: 'error', title: 'Failed to reindex failed records' });
     } finally {
       setIsReindexFailedBusy(false);
@@ -246,7 +248,8 @@ export function OverviewTab({
       ]);
       addToast({ variant: 'success', title: 'Indexing manual-indexing records…' });
       await fetchInstanceStats(connectorId, { force: true });
-    } catch {
+    } catch (error) {
+      console.error('Failed to start manual indexing', { connectorId, error });
       addToast({ variant: 'error', title: 'Failed to start manual indexing' });
     } finally {
       setIsManualIndexBusy(false);

@@ -9,15 +9,11 @@ export function appSectionKey(appId: string): string {
   return `app:${appId}`;
 }
 
-/**
- * Fetches the first page of direct children for a hub app node and updates store
- * caches/trees. Idempotent when children are already cached.
- */
-export async function fetchAppDirectChildren(appId: string): Promise<void> {
-  const state = useKnowledgeBaseStore.getState();
-  if (state.appChildrenCache.has(appId)) return;
+/** Coalesce concurrent fetches for the same app into one in-flight request. */
+const inflightAppChildFetches = new Map<string, Promise<void>>();
 
-  const app = state.appNodes.find((a) => a.id === appId);
+async function runFetchAppDirectChildren(appId: string): Promise<void> {
+  const app = useKnowledgeBaseStore.getState().appNodes.find((a) => a.id === appId);
   if (!app) return;
 
   const {
@@ -68,4 +64,23 @@ export async function fetchAppDirectChildren(appId: string): Promise<void> {
   } finally {
     setAppLoading(appId, false);
   }
+}
+
+/**
+ * Fetches the first page of direct children for a hub app node and updates store
+ * caches/trees. Idempotent when children are already cached; concurrent callers
+ * share the same in-flight promise.
+ */
+export async function fetchAppDirectChildren(appId: string): Promise<void> {
+  const state = useKnowledgeBaseStore.getState();
+  if (state.appChildrenCache.has(appId)) return;
+
+  const inflight = inflightAppChildFetches.get(appId);
+  if (inflight) return inflight;
+
+  const promise = runFetchAppDirectChildren(appId).finally(() => {
+    inflightAppChildFetches.delete(appId);
+  });
+  inflightAppChildFetches.set(appId, promise);
+  return promise;
 }
