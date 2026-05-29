@@ -1,13 +1,13 @@
 import type { Connector } from '../types';
 
 /** Whether the connector schema requires native-app admin access before team setup. */
-export function isAdminAccessRequired(connector: Connector): boolean {
-  return connector.isAdminAccessRequired === true;
+export function isAdminAccessRequired(connector?: Connector | null): boolean {
+  return connector?.isAdminAccessRequired === true;
 }
 
 /** Connector type key to redirect non-admin users to (e.g. gitlabpersonal). */
-export function getPersonalConnectorRedirectType(connector: Connector): string | undefined {
-  const type = connector.personalConnectorType;
+export function getPersonalConnectorRedirectType(connector?: Connector | null): string | undefined {
+  const type = connector?.personalConnectorType;
   return typeof type === 'string' && type.length > 0 ? type : undefined;
 }
 
