@@ -12,7 +12,12 @@ from .common_fields import API_KEY, EMBEDDING_COMMON_TAIL, model_field
 
 @AIModelProviderBuilder("Default (System Provided)", "default") \
     .with_description("Using the default embedding model provided by the system. No additional configuration required.") \
-    .with_notice("The default embedding model runs on the CPU and is slower than GPU-backed or hosted providers for large workloads.") \
+    .with_notice(
+        "- The default embedding model runs on CPU and is slower for large workloads.\n"
+        "- Embedding models cannot be changed after documents are indexed.\n"
+        "- For better performance and scalability, prefer an API-based embedding provider when possible.",
+        title="Performance Limitation",
+    ) \
     .with_capabilities([ModelCapability.EMBEDDING]) \
     .with_icon("/icons/ai-models/huggingface-color.svg") \
     .with_color("#FFD21E") \

@@ -10,7 +10,14 @@ import { useOnboardingStore } from '../store';
 import { AIModelsApi } from '@/app/(main)/workspace/ai-models/api';
 import type { AIModelProvider, ConfiguredModel, CapabilitySection } from '@/app/(main)/workspace/ai-models/types';
 import type { MainSection } from '@/app/(main)/workspace/ai-models/store';
-import { ProviderGrid, ModelConfigDialog } from '@/app/(main)/workspace/ai-models/components';
+import {
+  ProviderGrid,
+  ModelConfigDialog,
+  type ModelConfigSaveResult,
+} from '@/app/(main)/workspace/ai-models/components';
+/** Longer than default success toasts so users can read the model name before continuing. */
+const MODEL_ADDED_TOAST_DURATION_MS = 6000;
+
 interface StepAiModelProps {
   systemStepIndex: number;
   totalSystemSteps: number;
@@ -153,6 +160,18 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
     }
   }, [deleteTarget, closeDeleteDialog, loadModels, t]);
 
+  const handleModelConfigSaved = useCallback(
+    (result: ModelConfigSaveResult) => {
+      if (result.mode === 'add') {
+        toast.success(t('onboarding.toastModelAddedAi', { name: result.modelName }), {
+          duration: MODEL_ADDED_TOAST_DURATION_MS,
+        });
+      }
+      void loadModels();
+    },
+    [loadModels, t]
+  );
+
   const handleRefresh = useCallback(() => {
     void loadProviders();
     void loadModels();
@@ -231,7 +250,7 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
         capability={dialogCapability}
         editModel={dialogEditModel}
         onClose={closeDialog}
-        onSaved={loadModels}
+        onSaved={handleModelConfigSaved}
       />
 
       <DestructiveTypedConfirmationDialog

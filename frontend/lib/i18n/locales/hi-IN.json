@@ -58,6 +58,8 @@
     "embeddingDefaultNotInRegistry": "इस डिप्लॉयमेंट के लिए कोई सिस्टम डिफ़ॉल्ट एम्बेडिंग उपलब्ध नहीं है।",
     "failedToLoadEmbeddingProviders": "एम्बेडिंग प्रदाता लोड नहीं हो सके।",
     "failedToLoadConfiguredModels": "कॉन्फ़िगर किए गए मॉडल लोड नहीं हो सके।",
+    "toastModelAddedAi": "{{name}} को AI मॉडल के रूप में सफलतापूर्वक जोड़ दिया गया है।",
+    "toastModelAddedEmbedding": "{{name}} को एम्बेडिंग मॉडल के रूप में सफलतापूर्वक जोड़ दिया गया है।",
     "nextDisabledEmbeddingHintNoRegistryDefault": "आगे बढ़ने के लिए नीचे एम्बेडिंग प्रदाता जोड़ें",
     "steps": {
       "aiModel": {

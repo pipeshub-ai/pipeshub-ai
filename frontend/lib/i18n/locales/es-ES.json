@@ -57,6 +57,8 @@
     "embeddingDefaultNotInRegistry": "No hay embedding predeterminado del sistema disponible en este despliegue.",
     "failedToLoadEmbeddingProviders": "No se pudieron cargar los proveedores de embedding.",
     "failedToLoadConfiguredModels": "No se pudieron cargar los modelos configurados.",
+    "toastModelAddedAi": "{{name}} se ha añadido correctamente como modelo de IA.",
+    "toastModelAddedEmbedding": "{{name}} se ha añadido correctamente como modelo de embedding.",
     "nextDisabledEmbeddingHintNoRegistryDefault": "Añada un proveedor de embeddings abajo para continuar",
     "steps": {
       "aiModel": {
