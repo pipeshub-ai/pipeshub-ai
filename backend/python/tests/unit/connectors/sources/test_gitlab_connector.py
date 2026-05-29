@@ -25,6 +25,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.connectors.sources.gitlab.connector import (
     FileAttachment,
@@ -61,6 +62,7 @@ def _make_connector() -> GitLabConnector:
     dep.on_new_app_users = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
+    dep.on_record_metadata_update = AsyncMock()
 
     dsp = MagicMock()
     config_service = AsyncMock()
@@ -1291,6 +1293,157 @@ class TestGitlabConnectorSyncPoints:
         )
 
 
+class TestGitlabConnectorCodeFileTimestamps:
+    @pytest.mark.asyncio
+    async def test_code_file_source_timestamps_maps_commit_dates(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.list_commits_for_path = MagicMock(
+            return_value=MagicMock(
+                success=True,
+                data={
+                    "oldest_committed_date": "2024-01-01T00:00:00.000Z",
+                    "newest_committed_date": "2024-06-01T00:00:00.000Z",
+                },
+            )
+        )
+        connector._ds_call = AsyncMock(side_effect=lambda fn, **kw: fn(**kw))
+
+        created_ms, updated_ms = await connector._code_file_source_timestamps(
+            123, "src/main.py"
+        )
+
+        assert created_ms is not None
+        assert updated_ms is not None
+        assert updated_ms >= created_ms
+
+    @pytest.mark.asyncio
+    async def test_fetch_code_file_timestamps_batch(self) -> None:
+        connector = _make_connector()
+
+        async def _fake_timestamps(
+            project_id: int, path: str, ref: str = "HEAD"
+        ) -> tuple[int | None, int | None]:
+            return (1_700_000_000_000, 1_700_000_100_000)
+
+        connector._code_file_source_timestamps = AsyncMock(side_effect=_fake_timestamps)
+
+        result = await connector._fetch_code_file_timestamps_batch(
+            123, ["a.py", "b.py"]
+        )
+
+        assert set(result.keys()) == {"a.py", "b.py"}
+        assert result["a.py"] == (1_700_000_000_000, 1_700_000_100_000)
+
+    @pytest.mark.asyncio
+    async def test_backfill_code_file_timestamps_paginates_and_updates(self) -> None:
+        connector = _make_connector()
+        connector._refresh_token_if_needed = AsyncMock()
+
+        record = CodeFileRecord(
+            id="rec-1",
+            org_id="org-1",
+            record_name="main.py",
+            record_type=RecordType.CODE_FILE.value,
+            connector_name=Connectors.GITLAB.value,
+            connector_id="gitlab-conn-1",
+            external_record_id="/project/src/main.py",
+            external_record_group_id="123-code-repository",
+            version=0,
+            origin=OriginTypes.CONNECTOR.value,
+            file_path="src/main.py",
+            source_created_at=1,
+            source_updated_at=1,
+        )
+
+        mock_tx_store = AsyncMock()
+        mock_tx_store.get_record_group_by_external_id = AsyncMock(
+            return_value=MagicMock(id="rg-123")
+        )
+        mock_tx_store.txn = "txn-1"
+        mock_tx_store.graph_provider.get_records_by_record_group = AsyncMock(
+            side_effect=[[record], []]
+        )
+        connector.data_store_provider.transaction = MagicMock()
+        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
+            return_value=mock_tx_store
+        )
+        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
+
+        connector._fetch_code_file_timestamps_batch = AsyncMock(
+            return_value={"src/main.py": (1_700_000_000_000, 1_700_000_100_000)}
+        )
+
+        await connector._run_code_file_timestamp_backfill(123)
+
+        connector.data_entities_processor.on_record_metadata_update.assert_awaited_once()
+        updated = connector.data_entities_processor.on_record_metadata_update.await_args.args[0]
+        assert updated.source_created_at == 1_700_000_000_000
+        assert updated.source_updated_at == 1_700_000_100_000
+
+    @pytest.mark.asyncio
+    async def test_backfill_skips_unchanged_timestamps(self) -> None:
+        connector = _make_connector()
+        connector._refresh_token_if_needed = AsyncMock()
+
+        record = CodeFileRecord(
+            id="rec-1",
+            org_id="org-1",
+            record_name="main.py",
+            record_type=RecordType.CODE_FILE.value,
+            connector_name=Connectors.GITLAB.value,
+            connector_id="gitlab-conn-1",
+            external_record_id="/project/src/main.py",
+            external_record_group_id="123-code-repository",
+            version=0,
+            origin=OriginTypes.CONNECTOR.value,
+            file_path="src/main.py",
+            source_created_at=1_700_000_000_000,
+            source_updated_at=1_700_000_100_000,
+        )
+
+        mock_tx_store = AsyncMock()
+        mock_tx_store.get_record_group_by_external_id = AsyncMock(
+            return_value=MagicMock(id="rg-123")
+        )
+        mock_tx_store.txn = "txn-1"
+        mock_tx_store.graph_provider.get_records_by_record_group = AsyncMock(
+            side_effect=[[record], []]
+        )
+        connector.data_store_provider.transaction = MagicMock()
+        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
+            return_value=mock_tx_store
+        )
+        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
+
+        connector._fetch_code_file_timestamps_batch = AsyncMock(
+            return_value={"src/main.py": (1_700_000_000_000, 1_700_000_100_000)}
+        )
+
+        await connector._run_code_file_timestamp_backfill(123)
+
+        connector.data_entities_processor.on_record_metadata_update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_schedule_backfill_skips_duplicate_project_task(self) -> None:
+        connector = _make_connector()
+        started = asyncio.Event()
+
+        async def slow_backfill(project_id: int) -> None:
+            started.set()
+            await asyncio.sleep(0.05)
+
+        connector._run_code_file_timestamp_backfill = AsyncMock(side_effect=slow_backfill)
+
+        connector._schedule_code_file_timestamp_backfill_for_project(123)
+        await started.wait()
+
+        connector._run_code_file_timestamp_backfill.reset_mock()
+        connector._schedule_code_file_timestamp_backfill_for_project(123)
+        await asyncio.sleep(0.01)
+        connector._run_code_file_timestamp_backfill.assert_not_awaited()
+
+
 class TestGitlabConnectorRunSync:
     @pytest.mark.asyncio
     async def test_run_sync_completes_successfully(self) -> None:
@@ -1311,6 +1464,43 @@ class TestGitlabConnectorRunSync:
         # Verify both methods were invoked
         assert connector._sync_users.called
         assert connector._sync_all_project.called
+
+    @pytest.mark.asyncio
+    async def test_run_sync_cancels_in_flight_backfill(self) -> None:
+        from app.connectors.core.registry.filters import FilterCollection
+
+        connector = _make_connector()
+        connector._sync_users = AsyncMock()
+        connector._sync_all_project = AsyncMock()
+        connector._cancel_code_file_timestamp_backfill = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.gitlab.connector.load_connector_filters",
+            new=AsyncMock(return_value=(FilterCollection(), FilterCollection())),
+        ):
+            await connector.run_sync()
+
+        connector._cancel_code_file_timestamp_backfill.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_run_sync_does_not_schedule_connector_wide_backfill(self) -> None:
+        from app.connectors.core.registry.filters import FilterCollection
+
+        connector = _make_connector()
+        connector._sync_users = AsyncMock()
+        connector._sync_all_project = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.gitlab.connector.load_connector_filters",
+            new=AsyncMock(return_value=(FilterCollection(), FilterCollection())),
+        ):
+            with patch.object(
+                connector,
+                "_schedule_code_file_timestamp_backfill_for_project",
+            ) as schedule_backfill:
+                await connector.run_sync()
+
+        schedule_backfill.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_run_sync_propagates_exceptions(self) -> None:
@@ -3293,7 +3483,7 @@ class TestGitlabConnectorBuildCodeFileRecords:
         assert code_file.weburl == "https://gitlab.com/project/src/main.py"
         assert code_file.external_record_group_id == "123-code-repository"
         assert code_file.mime_type == MimeTypes.PLAIN_TEXT.value
-        # Timestamps now use current sync time (not fetched from GitLab API)
+        # Sync uses current time; backfill replaces with Git commit history.
         assert code_file.source_created_at > 0
         assert code_file.source_updated_at > 0
         assert code_file.source_created_at == code_file.source_updated_at
