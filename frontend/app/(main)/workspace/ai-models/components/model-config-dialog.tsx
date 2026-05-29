@@ -53,8 +53,8 @@ function ProviderNoticeBody({ notice }: { notice: string }) {
   if (isBulletList) {
     return (
       <ul style={{ margin: 0, paddingLeft: 20, color: 'var(--gray-12)' }}>
-        {items.map((item) => (
-          <li key={item}>
+        {items.map((item, index) => (
+          <li key={index}>
             <Text as="span" size="2" style={{ color: 'var(--gray-12)' }}>
               {item}
             </Text>
@@ -64,7 +64,7 @@ function ProviderNoticeBody({ notice }: { notice: string }) {
     );
   }
   return (
-    <Text size="2" style={{ color: 'var(--gray-12)' }}>
+    <Text size="2" style={{ color: 'var(--gray-12)', whiteSpace: 'pre-line' }}>
       {notice}
     </Text>
   );
