@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useCallback, useMemo, Suspense, useRef } from 'react';
+import { useEffect, useLayoutEffect, useCallback, useMemo, useState, Suspense, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
@@ -12,6 +12,10 @@ import { ConnectorsApi } from '../api';
 import { startConnectorSync } from '../utils/connector-sync-actions';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
+import {
+  refreshAllConnectorInstances,
+  refreshConnectorInstanceDetails,
+} from '../utils/refresh-instance-details';
 import {
   stopElectronLocalSync,
   getElectronLocalSyncStatus,
@@ -51,6 +55,7 @@ function PersonalConnectorsPageContent() {
   ];
 
   const managedWatcherIdsRef = useRef<Set<string>>(new Set());
+  const [isRefreshingAllInstances, setIsRefreshingAllInstances] = useState(false);
 
   // The connectorType query param determines whether we show the instance page
   const connectorType = searchParams.get('connectorType');
@@ -67,7 +72,6 @@ function PersonalConnectorsPageContent() {
     showConfigSuccessDialog,
     newlyConfiguredConnectorId,
     instanceConfigs,
-    instanceStats,
     setRegistryConnectors,
     setActiveConnectors,
     setSearchQuery,
@@ -79,7 +83,6 @@ function PersonalConnectorsPageContent() {
     setIsLoadingInstances,
     setConnectorTypeInfo,
     setInstanceConfig,
-    setInstanceStats,
     upsertConnectorInstance,
     setLocalSyncStatus,
     clearLocalSyncStatus,
@@ -198,7 +201,7 @@ function PersonalConnectorsPageContent() {
     clearLocalSyncStatus,
   ]);
 
-  // ── Fetch config + stats when instance set or catalog refresh changes (full loader) ──
+  // ── Fetch config when instance set or catalog refresh changes (full loader) ──
   useEffect(() => {
     if (!connectorType) {
       setIsLoadingInstances(false);
@@ -219,24 +222,18 @@ function PersonalConnectorsPageContent() {
       try {
         await Promise.allSettled(
           instanceIds.map(async (id) => {
-            const [configRes, statsRes] = await Promise.allSettled([
-              ConnectorsApi.getConnectorConfig(id),
-              ConnectorsApi.getConnectorStats(id),
-            ]);
+            const config = await ConnectorsApi.getConnectorConfig(id).catch(() => null);
             if (cancelled) return;
-            if (configRes.status === 'fulfilled') {
-              setInstanceConfig(id, configRes.value);
+            if (config) {
+              setInstanceConfig(id, config);
               if (isLocalFs) {
                 const instanceRow = activeConnectors.find(
                   (c) => c._key === id && c.type === connectorType
                 ) as ConnectorInstance | undefined;
                 if (instanceRow) {
-                  await ensureLocalWatcherForInstance(instanceRow, configRes.value);
+                  await ensureLocalWatcherForInstance(instanceRow, config);
                 }
               }
-            }
-            if (statsRes.status === 'fulfilled') {
-              setInstanceStats(id, statsRes.value.data);
             }
           })
         );
@@ -259,20 +256,26 @@ function PersonalConnectorsPageContent() {
     activeConnectors,
     setIsLoadingInstances,
     setInstanceConfig,
-    setInstanceStats,
     ensureLocalWatcherForInstance,
   ]);
 
-  const refreshConnectorRowQuiet = useCallback(
+  const refreshInstanceDetailsForPage = useCallback(
     async (connectorId: string) => {
-      const fresh = await ConnectorsApi.getConnectorInstance(connectorId);
-      upsertConnectorInstance(fresh);
-      void ConnectorsApi.getConnectorStats(connectorId)
-        .then((res) => setInstanceStats(connectorId, res.data))
-        .catch(() => {});
-      return fresh;
+      const isLocalFs = Boolean(connectorType && isLocalFsConnectorType(connectorType));
+      return refreshConnectorInstanceDetails(connectorId, {
+        afterConfig: isLocalFs
+          ? async (fresh, config) => {
+              await ensureLocalWatcherForInstance(fresh, config);
+            }
+          : undefined,
+      });
     },
-    [upsertConnectorInstance, setInstanceStats]
+    [connectorType, ensureLocalWatcherForInstance]
+  );
+
+  const refreshConnectorRowQuiet = useCallback(
+    async (connectorId: string) => refreshInstanceDetailsForPage(connectorId),
+    [refreshInstanceDetailsForPage]
   );
 
   /** Re-sync catalog lists without toggling page `isLoading` (e.g. after sync toggle). */
@@ -281,6 +284,31 @@ function PersonalConnectorsPageContent() {
     if (registry) setRegistryConnectors(registry);
     if (active) setActiveConnectors(active);
   }, [setRegistryConnectors, setActiveConnectors]);
+
+  const handleRefreshAllInstances = useCallback(async () => {
+    const instanceIds = instanceDetailKeys.split('|').filter(Boolean);
+    if (instanceIds.length === 0 || isRefreshingAllInstances) return;
+
+    setIsRefreshingAllInstances(true);
+    try {
+      await refreshConnectorsListsQuiet();
+      await refreshAllConnectorInstances(instanceIds, refreshInstanceDetailsForPage);
+    } catch {
+      addToast({
+        variant: 'error',
+        title: t('workspace.connectors.toasts.refreshInstancesError'),
+      });
+    } finally {
+      setIsRefreshingAllInstances(false);
+    }
+  }, [
+    instanceDetailKeys,
+    isRefreshingAllInstances,
+    refreshConnectorsListsQuiet,
+    refreshInstanceDetailsForPage,
+    addToast,
+    t,
+  ]);
 
   useEffect(() => {
     if (!isElectron() || !connectorTypeInfo || !isLocalFsConnectorType(connectorTypeInfo.type)) {
@@ -492,7 +520,6 @@ function PersonalConnectorsPageContent() {
           scopeLabel={t('workspace.sidebar.nav.connectors')}
           instances={instances}
           instanceConfigs={instanceConfigs}
-          instanceStats={instanceStats}
           isLoading={isLoadingInstances}
           onBack={handleBackToList}
           onAddInstance={handleAddInstance}
@@ -500,6 +527,13 @@ function PersonalConnectorsPageContent() {
           onManageInstance={handleManageInstance}
           onToggleSyncActive={handleToggleSyncActive}
           onInstanceChevron={handleInstanceChevron}
+          onRefreshAll={handleRefreshAllInstances}
+          isRefreshingAll={isRefreshingAllInstances}
+          onRefreshInstance={(instance) =>
+            instance._key
+              ? refreshInstanceDetailsForPage(instance._key)
+              : Promise.resolve()
+          }
         />
         <ConnectorPanel />
         <InstanceManagementPanel />

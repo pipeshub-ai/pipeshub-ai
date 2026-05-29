@@ -2,6 +2,7 @@ import { apiClient } from '@/lib/api';
 import type { ConnectorOAuthCallbackRaw } from '@/app/(main)/connectors/oauth/connector-oauth-callback-response';
 import type {
   Connector,
+  ConnectorInstance,
   ConnectorListResponse,
   ConnectorScope,
   ConnectorSchemaResponse,
@@ -323,8 +324,8 @@ export const ConnectorsApi = {
   // ── Instance Details ──
 
   /** Fetch a specific connector instance. Backend returns `{ success, connector }`. */
-  async getConnectorInstance(connectorId: string): Promise<Connector> {
-    const { data } = await apiClient.get<{ success: boolean; connector: Connector }>(
+  async getConnectorInstance(connectorId: string): Promise<ConnectorInstance> {
+    const { data } = await apiClient.get<{ success: boolean; connector: ConnectorInstance }>(
       `${BASE_URL}/${connectorId}`
     );
     if (!data?.connector) {

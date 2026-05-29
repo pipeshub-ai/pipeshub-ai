@@ -1,0 +1,51 @@
+name: app_metadata
+description: App / connector metadata (matches AppMetadata.model_dump mode=json).
+fields:
+  app_group:
+    required: true
+    type: string
+  auth_type:
+    required: false
+    type: string
+  connector_id:
+    required: true
+    type: string
+  created_at_timestamp:
+    required: true
+    type: integer
+  created_by:
+    required: false
+    type: string
+  is_active:
+    required: false
+    type: boolean
+  is_agent_active:
+    required: false
+    type: boolean
+  is_authenticated:
+    required: false
+    type: boolean
+  is_configured:
+    required: false
+    type: boolean
+  is_locked:
+    required: false
+    type: boolean
+  name:
+    required: true
+    type: string
+  scope:
+    required: true
+    type: string
+  status:
+    required: false
+    type: string
+  type:
+    required: true
+    type: string
+  updated_at_timestamp:
+    required: true
+    type: integer
+  updated_by:
+    required: false
+    type: string

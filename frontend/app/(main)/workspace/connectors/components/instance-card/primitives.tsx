@@ -3,12 +3,8 @@
 import React, { useState } from 'react';
 import { Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { ConnectorsApi } from '../../api';
 import { useToastStore } from '@/lib/store/toast-store';
 import { runConnectorResync } from '../../utils/connector-sync-actions';
-
-/** Brief busy state after instance-card async actions so rapid double-clicks do not stack requests. */
-const INSTANCE_ACTION_BUTTON_BUSY_MS = 800;
 
 // ========================================
 // InfoRow
@@ -218,92 +214,6 @@ export function FullSyncButton({
     >
       <MaterialIcon name={config.icon} size={16} color={config.color} />
       {config.label}
-    </Button>
-  );
-}
-
-/** Reindex failed records (parity with legacy connector stats card). */
-export function ReindexFailedButton({
-  connectorId,
-  connectorType,
-  failedCount,
-}: {
-  connectorId: string;
-  connectorType: string;
-  failedCount: number;
-}) {
-  const [busy, setBusy] = useState(false);
-  const addToast = useToastStore((s) => s.addToast);
-
-  if (failedCount <= 0) return null;
-
-  const handleClick = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await ConnectorsApi.reindexFailedConnector(connectorId, connectorType);
-      addToast({ variant: 'success', title: 'Reindexing failed records…' });
-    } catch {
-      addToast({ variant: 'error', title: 'Failed to reindex failed records' });
-    } finally {
-      setTimeout(() => setBusy(false), INSTANCE_ACTION_BUTTON_BUSY_MS);
-    }
-  };
-
-  return (
-    <Button
-      variant="soft"
-      color="orange"
-      size="1"
-      onClick={handleClick}
-      disabled={busy}
-      style={{ cursor: busy ? 'wait' : 'pointer', flexShrink: 0 }}
-    >
-      <MaterialIcon name="error_outline" size={16} color="var(--orange-11)" />
-      Retry failed ({failedCount})
-    </Button>
-  );
-}
-
-/** Index records stuck in AUTO_INDEX_OFF (manual sync path from legacy UI). */
-export function ManualIndexButton({
-  connectorId,
-  connectorType,
-  autoIndexOffCount,
-}: {
-  connectorId: string;
-  connectorType: string;
-  autoIndexOffCount: number;
-}) {
-  const [busy, setBusy] = useState(false);
-  const addToast = useToastStore((s) => s.addToast);
-
-  if (autoIndexOffCount <= 0) return null;
-
-  const handleClick = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await ConnectorsApi.reindexFailedConnector(connectorId, connectorType, ['AUTO_INDEX_OFF']);
-      addToast({ variant: 'success', title: 'Indexing manual-sync records…' });
-    } catch {
-      addToast({ variant: 'error', title: 'Failed to start manual index' });
-    } finally {
-      setTimeout(() => setBusy(false), INSTANCE_ACTION_BUTTON_BUSY_MS);
-    }
-  };
-
-  return (
-    <Button
-      variant="soft"
-      color="gray"
-      size="1"
-      onClick={handleClick}
-      disabled={busy}
-      style={{ cursor: busy ? 'wait' : 'pointer', flexShrink: 0 }}
-    >
-      <MaterialIcon name="touch_app" size={16} color="var(--gray-11)" />
-      Manual index ({autoIndexOffCount})
     </Button>
   );
 }

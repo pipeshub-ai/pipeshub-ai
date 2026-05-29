@@ -1515,6 +1515,8 @@
       "emptyState": "No connectors found",
       "noInstances": "No instances configured yet",
       "addInstance": "Add Another Instance",
+      "refreshAllInstances": "सभी रीफ़्रेश करें",
+      "refreshInstance": "इंस्टेंस विवरण रीफ़्रेश करें",
       "saveConfig": "Save Configuration",
       "continueToConfiguration": "Continue to configuration →",
       "oauthSigningIn": "Finish signing in with your provider…",
@@ -1530,6 +1532,7 @@
         "syncStartedDescription": "Your records will be available shortly.",
         "syncStartedLongDescription": "This may take a few minutes. You'll be notified when it's done.",
         "syncError": "Failed to start sync",
+        "refreshInstancesError": "कनेक्टर इंस्टेंस रीफ़्रेश नहीं हो सके",
         "configLoadError": "Failed to load connector configuration",
         "createError": "Failed to create connector",
         "createSuccess": "कनेक्टर इंस्टेंस '{{name}}' सफलतापूर्वक बनाया गया",
@@ -1712,6 +1715,27 @@
         "syncStrategy": "सिंक रणनीति",
         "authBannerTitle": "Authenticate Personal Account",
         "authBannerDescription": "Connect your account to enable access and workspace configuration"
+      },
+      "instanceStatus": {
+        "setup": {
+          "kind": "Setup",
+          "rowLabel": "कॉन्फ़िगरेशन",
+          "notConfigured": "अपूर्ण",
+          "notConfiguredTooltip": "कॉन्फ़िगरेशन पूरी नहीं हुई। सिंक और फ़िल्टर सेटिंग्स पूरी करने के लिए सेटअप खोलें।",
+          "needsAuth": "Auth आवश्यक",
+          "needsAuthTooltip": "कॉन्फ़िगरेशन सहेजी गई है, लेकिन इस इंस्टेंस को अभी भी प्रमाणीकरण चाहिए।",
+          "ready": "पूर्ण",
+          "readyTooltip": "कॉन्फ़िगरेशन पूर्ण और प्रमाणित है। सक्षम होने पर सिंक चल सकता है।"
+        },
+        "sync": {
+          "kind": "Sync",
+          "syncing": "सिंक हो रहा है",
+          "syncingTooltip": "इस इंस्टेंस के लिए सिंक जॉब चल रही है।",
+          "fullSyncing": "पूर्ण सिंक",
+          "fullSyncingTooltip": "इस इंस्टेंस के लिए पूर्ण सिंक चल रही है।",
+          "removing": "हटाया जा रहा है",
+          "removingTooltip": "यह इंस्टेंस हटाई जा रही है।"
+        }
       },
       "schemaForm": {
         "tagsPlaceholder": "टैग जोड़ने के लिए टाइप करें और एंटर दबाएँ",

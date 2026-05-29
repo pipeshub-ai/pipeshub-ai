@@ -50,38 +50,6 @@ export function getRecordsSelectedInfo(
 }
 
 // ========================================
-// Stats-derived helpers
-// ========================================
-
-export function getTotalRecords(
-  stats?: ConnectorStatsResponse['data'],
-): number | null {
-  if (!stats?.stats) return null;
-  return stats.stats.total;
-}
-
-export function getSyncedRecords(
-  stats?: ConnectorStatsResponse['data'],
-): number | null {
-  if (!stats?.stats?.indexingStatus) return null;
-  return stats.stats.indexingStatus.COMPLETED ?? 0;
-}
-
-export function getFailedRecords(
-  stats?: ConnectorStatsResponse['data'],
-): number | null {
-  if (!stats?.stats?.indexingStatus) return null;
-  return stats.stats.indexingStatus.FAILED ?? 0;
-}
-
-export function getUnsupportedRecords(
-  stats?: ConnectorStatsResponse['data'],
-): number | null {
-  if (!stats?.stats?.indexingStatus) return null;
-  return stats.stats.indexingStatus.FILE_TYPE_NOT_SUPPORTED ?? 0;
-}
-
-// ========================================
 // Status derivation
 // ========================================
 

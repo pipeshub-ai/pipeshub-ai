@@ -98,7 +98,7 @@ describe('smtpConfigCheck Middleware', () => {
     expect(next.calledOnce).to.be.true;
     const error = next.firstCall.args[0];
     expect(error).to.be.an('error');
-    expect(error.message).to.equal('Smtp Host is missing');
+    expect(error.message).to.equal('Smtp not configured: Host is missing');
   });
 
   it('should call next with NotFoundError when port is missing', async () => {
@@ -116,7 +116,7 @@ describe('smtpConfigCheck Middleware', () => {
     expect(next.calledOnce).to.be.true;
     const error = next.firstCall.args[0];
     expect(error).to.be.an('error');
-    expect(error.message).to.equal('Smtp Port is missing');
+    expect(error.message).to.equal('Smtp not configured: Port is missing');
   });
 
   it('should call next with NotFoundError when fromEmail is missing', async () => {
@@ -134,7 +134,7 @@ describe('smtpConfigCheck Middleware', () => {
     expect(next.calledOnce).to.be.true;
     const error = next.firstCall.args[0];
     expect(error).to.be.an('error');
-    expect(error.message).to.equal('Smtp From Email is missing');
+    expect(error.message).to.equal('Smtp not configured: From Email is missing');
   });
 
   it('should handle errors from the command execution', async () => {

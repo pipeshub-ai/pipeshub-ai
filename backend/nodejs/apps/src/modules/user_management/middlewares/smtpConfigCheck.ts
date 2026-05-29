@@ -40,13 +40,13 @@ export const smtpConfigCheck =
         throw new NotFoundError('Smtp Configuration not found');
       }
       if (!credentialsData.host) {
-        throw new NotFoundError('Smtp Host is missing');
+        throw new NotFoundError('Smtp not configured: Host is missing');
       }
       if (!credentialsData.port) {
-        throw new NotFoundError('Smtp Port is missing');
+        throw new NotFoundError('Smtp not configured: Port is missing');
       }
       if (!credentialsData.fromEmail) {
-        throw new NotFoundError('Smtp From Email is missing');
+        throw new NotFoundError('Smtp not configured: From Email is missing');
       }
       next();
     } catch (error) {

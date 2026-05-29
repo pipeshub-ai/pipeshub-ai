@@ -19,11 +19,10 @@ from helper.assertions import ConnectorAssertions  # type: ignore[import-not-fou
 from helper.graph_provider import (
     GraphProviderProtocol,  # type: ignore[import-not-found]
 )
-from connectors.confluence.constants import CONFLUENCE_TEST_SETTLE_WAIT_SEC
 from connectors.confluence.confluence_v1_test_utils import (  # type: ignore[import-not-found]
-    assert_confluence_pages_match_graph_records,
-    wait_until_confluence_condition,
-    check_page_count_in_space_bool,
+    assert_api_content_matches_graph,
+    fetch_space_content_snapshot,
+    find_page_with_ancestors,
 )
 from helper.graph_provider_utils import (  # type: ignore[import-not-found]
     wait_for_sync_completion,
@@ -39,10 +38,13 @@ async def confluence_datasource():
     base_url = os.getenv("CONFLUENCE_TEST_BASE_URL")
     email = os.getenv("CONFLUENCE_TEST_EMAIL")
     api_token = os.getenv("CONFLUENCE_TEST_API_TOKEN")
-    
+
     if not base_url or not email or not api_token:
-        pytest.skip("Confluence credentials not set (CONFLUENCE_TEST_BASE_URL, CONFLUENCE_TEST_EMAIL, CONFLUENCE_TEST_API_TOKEN)")
-    
+        pytest.skip(
+            "Confluence credentials not set "
+            "(CONFLUENCE_TEST_BASE_URL, CONFLUENCE_TEST_EMAIL, CONFLUENCE_TEST_API_TOKEN)"
+        )
+
     config = ConfluenceApiKeyConfig(base_url=base_url, email=email, api_key=api_token)
     client = ConfluenceClient.build_with_config(config)
     return ConfluenceDataSource(client)
@@ -54,92 +56,85 @@ async def connector_assertions(graph_provider: GraphProviderProtocol):
     return ConnectorAssertions(graph_provider)
 
 
-def _normalize_space_key(space_key: str) -> str:
-    """Normalize space key to uppercase alphanumeric, max 10 chars."""
-    cleaned = "".join(ch for ch in space_key.upper() if ch.isalnum())[:10]
-    if not cleaned:
-        raise ValueError("space_key must contain at least one alphanumeric character")
-    return cleaned
-
-
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
 async def confluence_connector(
     confluence_datasource: ConfluenceDataSource,
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
+    connector_assertions: ConnectorAssertions,
 ) -> AsyncGenerator[Dict[str, Any], None]:
-    """Module-scoped Confluence connector with full lifecycle."""
+    """Module-scoped Confluence connector using a pre-provisioned static space."""
     base_url = os.getenv("CONFLUENCE_TEST_BASE_URL")
     email = os.getenv("CONFLUENCE_TEST_EMAIL")
     api_token = os.getenv("CONFLUENCE_TEST_API_TOKEN")
+    space_key_raw = os.getenv("CONFLUENCE_TEST_SPACE_KEY")
 
     assert email, "CONFLUENCE_TEST_EMAIL is not set"
     assert api_token, "CONFLUENCE_TEST_API_TOKEN is not set"
     assert base_url, "CONFLUENCE_TEST_BASE_URL is not set"
-    
-    custom_space_key = os.getenv("CONFLUENCE_TEST_SPACE_KEY")
-    if custom_space_key:
-        space_key = _normalize_space_key(custom_space_key)
-    else:
-        space_key = _normalize_space_key(f"INTTEST{uuid.uuid4().hex[:6]}")
-    
+    assert space_key_raw, "CONFLUENCE_TEST_SPACE_KEY is not set (required for static IT space)"
+
+    space_key = space_key_raw.strip()
+    if not space_key:
+        pytest.fail("CONFLUENCE_TEST_SPACE_KEY cannot be empty after trimming")
+
     connector_name = f"confluence-test-{uuid.uuid4().hex[:8]}"
     state: Dict[str, Any] = {
         "space_key": space_key,
         "connector_name": connector_name,
     }
-    
-    # ========== SETUP ==========
-    logger.info("SETUP: Creating Confluence space '%s'", space_key)
-    
-    # Create or reuse space
+
+    # ========== SETUP (read-only) ==========
+    logger.info("SETUP: Using Confluence space '%s'", space_key)
+
     try:
         resp = await confluence_datasource.get_spaces(keys=[space_key])
         results = resp.json().get("results", [])
-        if results:
-            space = results[0]
-            state["space_id"] = str(space.get("id"))
-        else:
-            raise ValueError("Space not found")
-    except (ValueError, Exception):
-        resp = await confluence_datasource.create_space(
-            space_key=space_key,
-            name=f"Integration Test Space {space_key}",
-            description="Automated integration test space"
+        if not results:
+            pytest.fail(
+                f"Confluence space '{space_key}' not found. "
+                "Set CONFLUENCE_TEST_SPACE_KEY to an existing space key."
+            )
+        space = results[0]
+        state["space_id"] = str(space.get("id"))
+        state["space_name"] = space.get("name", space_key)
+        logger.info(
+            "SETUP: Found space '%s' (id=%s, name=%s)",
+            space_key, state["space_id"], state["space_name"],
         )
-        if resp.status != 200:
-            raise RuntimeError(f"Failed to create Confluence space: HTTP {resp.status}")
-        space_data = resp.json()
-        state["space_id"] = str(space_data.get("id"))
-        logger.info("SETUP: Created space '%s' (id=%s)", space_key, state["space_id"])
-    
-    page_count = 0
-    for i in range(3):
-        title = f"InitTestPage{i + 1}-{uuid.uuid4().hex[:6]}"
-        content = f"<p>This is initial test page {i + 1} for integration testing.</p>"
-        body_payload = {
-            "spaceId": state["space_id"],
-            "status": "current",
-            "title": title,
-            "body": {
-                "representation": "storage",
-                "value": content,
-            },
-        }
-        resp = await confluence_datasource.create_page(
-            root_level=True,
-            body=body_payload,
+    except Exception as e:
+        pytest.fail(f"Failed to resolve Confluence space '{space_key}': {e}")
+
+    try:
+        snapshot = await fetch_space_content_snapshot(confluence_datasource, space_key)
+        state["content_snapshot"] = snapshot
+
+        if not snapshot.pages:
+            pytest.fail(
+                f"Confluence space '{space_key}' has no pages. "
+                "Add at least one page to the IT space before running tests."
+            )
+
+        state["test_page_id"] = snapshot.pages[0].id
+        state["test_page_title"] = snapshot.pages[0].title
+        logger.info(
+            "SETUP: Selected test page: %s (id=%s)",
+            state["test_page_title"], state["test_page_id"],
         )
-        if resp.status == 200:
-            page_count += 1
-        else:
-            logger.error("SETUP: Failed to create page '%s': HTTP %s", title, resp.status)
-    
-    assert page_count >= 3, f"Expected at least 3 initial pages, got {page_count}"
-    state["uploaded_count"] = page_count
-    
-    # Create connector (filters must match etcd layout and SyncFilterKey.SPACE_KEYS — see
-    # load_connector_filters: filters.sync.values; wrong key ``filter`` is ignored by API.)
+
+        hierarchy_page_id, hierarchy_parent_id = await find_page_with_ancestors(
+            snapshot, confluence_datasource,
+        )
+        state["hierarchy_page_id"] = hierarchy_page_id
+        state["hierarchy_parent_id"] = hierarchy_parent_id
+        if hierarchy_page_id:
+            logger.info(
+                "SETUP: Found hierarchy: page %s has parent %s",
+                hierarchy_page_id, hierarchy_parent_id,
+            )
+    except Exception as e:
+        pytest.fail(f"Failed to fetch content snapshot for space '{space_key}': {e}")
+
     config = {
         "auth": {
             "authType": "API_TOKEN",
@@ -170,77 +165,50 @@ async def confluence_connector(
     connector_id = instance.connector_id
     state["connector_id"] = connector_id
 
-    # Wait for pages to be visible in Confluence v1 search API.
-    # Confluence creates a default space page on new space; plus our InitTestPage* uploads.
-    expected_v1_page_count = page_count + 1
-    await wait_until_confluence_condition(
-        check_fn=lambda: check_page_count_in_space_bool(
-            confluence_datasource, space_key, expected_v1_page_count
-        ),
-        description=(
-            f"SETUP: {expected_v1_page_count} pages visible in v1 search for space {space_key} "
-            f"({page_count} uploaded + 1 default space page)"
-        ),
-    )
-
     pipeshub_client.toggle_sync(connector_id, enable=True)
-    
-    # Wait for sync completion
+
     await wait_for_sync_completion(
         pipeshub_client,
         graph_provider,
         connector_id,
-        # min_records=page_count,
         timeout=180,
     )
 
-    await assert_confluence_pages_match_graph_records(
+    await assert_api_content_matches_graph(
+        snapshot,
         confluence_datasource,
         graph_provider,
+        connector_assertions,
         connector_id,
-        space_key,
         phase="SETUP after initial sync",
     )
 
-    # One verification sync: lets the connector finish background work and leaves it
-    # idle before tests run. Without this, the first test can toggle_sync while the
-    # connector is still mid-cycle, which can break incremental sync (TC-INCR-001).
-    pipeshub_client.toggle_sync(connector_id, enable=False)
-    pipeshub_client.wait(5)
-    pipeshub_client.toggle_sync(connector_id, enable=True)
-    
-    # Wait for verification sync completion
-    verified_count = await wait_for_sync_completion(
-        pipeshub_client,
-        graph_provider,
-        connector_id,
-        timeout=180,
+    space_rg = await graph_provider.get_record_group_by_external_id(
+        connector_id, state["space_id"]
     )
-
-    await assert_confluence_pages_match_graph_records(
-        confluence_datasource,
-        graph_provider,
-        connector_id,
-        space_key,
-        phase="SETUP after verification sync",
+    assert space_rg is not None, (
+        f"Space RecordGroup for external id {state['space_id']} should exist after sync"
     )
+    state["space_record_group_id"] = space_rg.id
 
-    state["full_sync_count"] = verified_count
+    state["full_sync_count"] = await graph_provider.count_records(connector_id)
+    logger.info("SETUP: Full sync completed with %d records", state["full_sync_count"])
 
     yield state
-    
-    # ========== TEARDOWN ==========
-    logger.info("TEARDOWN: Cleaning up connector %s and space '%s'", connector_id, space_key)
-    
-    # Disable connector
+
+    # ========== TEARDOWN (connector only; preserve Confluence content) ==========
+    logger.info(
+        "TEARDOWN: Cleaning up connector %s (space '%s' preserved)",
+        connector_id, space_key,
+    )
+
     try:
         pipeshub_client.toggle_sync(connector_id, enable=False)
         status = pipeshub_client.get_connector_status(connector_id)
         assert not status.get("isActive"), "Connector should be inactive after disable"
     except Exception as e:
         logger.warning("TEARDOWN: Failed to disable connector %s: %s", connector_id, e)
-    
-    # Delete connector
+
     try:
         pipeshub_client.delete_connector(connector_id)
         pipeshub_client.wait(25)
@@ -248,33 +216,5 @@ async def confluence_connector(
         await graph_provider.assert_all_records_cleaned(connector_id, timeout=cleanup_timeout)
     except Exception as e:
         logger.warning("TEARDOWN: Failed to delete/clean connector %s: %s", connector_id, e)
-    
-    try:
-        resp = await confluence_datasource.get_pages_in_space(state["space_id"], limit=250)
-        pages = resp.json().get("results", [])
-        
-        # First pass: Delete pages (moves to trash)
-        for page in pages:
-            try:
-                page_id = page.get("id")
-                if page_id:
-                    await confluence_datasource.delete_page(int(page_id), purge=False)
-            except Exception as e:
-                logger.warning("TEARDOWN: Failed to delete page %s: %s", page.get("id"), e)
-        
-        # Second pass: Purge deleted pages
-        for page in pages:
-            try:
-                page_id = page.get("id")
-                if page_id:
-                    await confluence_datasource.delete_page(int(page_id), purge=True)
-            except Exception as e:
-                logger.warning("TEARDOWN: Failed to purge page %s: %s", page.get("id"), e)
-    except Exception as e:
-        logger.warning("TEARDOWN: Failed to clear pages in space '%s': %s", space_key, e)
-    
-    try:
-        await confluence_datasource.delete_space(space_key)
-        logger.info("TEARDOWN: Deleted space '%s'", space_key)
-    except Exception as e:
-        logger.warning("TEARDOWN: Failed to delete space '%s': %s", space_key, e)
+
+    logger.info("TEARDOWN: Connector cleanup complete; Confluence space '%s' preserved", space_key)

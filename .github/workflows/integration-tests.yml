@@ -15,15 +15,16 @@ on:
         required: true
         default: 'integration'
         type: choice
-        options:
-          - integration
-          - s3
-          - confluence
-          - jira
-          - gcs
-          - azure_blob
-          - azure_files
-          - messaging
+          options:
+            - integration
+            - s3
+            - confluence
+            - jira
+            - gcs
+            - azure_blob
+            - azure_files
+            - messaging
+            - oauth_clients
       commit_hash:
         description: 'Commit hash to checkout (defaults to HEAD)'
         required: false

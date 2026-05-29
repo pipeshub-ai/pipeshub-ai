@@ -845,6 +845,11 @@ class JiraConnector(BaseConnector):
 
         # Tracks whether /applicationrole returned 403 (non-admin user)
         self._app_roles_forbidden: bool = False
+        # Tracks whether /users/search returned 401/403 (configuring user lacks
+        # "Browse users" global permission). When True, downstream consumers
+        # can branch to per-email reverse-lookup instead of relying on the
+        # bulk enumeration.
+        self._user_bulk_forbidden: bool = False
 
     # ============================================================================
     # Initialization & Configuration
@@ -1104,7 +1109,14 @@ class JiraConnector(BaseConnector):
         """
         try:
             if not self.data_source:
-                await self.init()
+                # ``init()`` returns False on missing/invalid auth config; without
+                # this check we would silently proceed against a None data_source
+                # and surface a ValueError from the first datasource call rather
+                # than a clear "init failed" error at the top of the orchestration.
+                if not await self.init():
+                    raise RuntimeError(
+                        f"Jira connector {self.connector_id} init failed; check auth configuration"
+                    )
 
             # Load sync and indexing filters (loaded in run_sync to ensure latest values)
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -1644,14 +1656,22 @@ class JiraConnector(BaseConnector):
         # ====================================================================
         # Phase 5: Reverse lookup (always runs when there are gaps to fill)
         # ====================================================================
-        if unresolved_count > 0 and candidate_count > 0:
+        # Normally Phase 5 only runs when the bulk fetch left us with
+        # ``unresolved_account_ids`` — but when the bulk fetch was forbidden
+        # (``_user_bulk_forbidden``) ``all_active_account_ids`` is empty by
+        # construction, so ``unresolved_count == 0`` even though we resolved
+        # nobody. In that case fall back to a directory-driven sweep: try
+        # per-email ``find_users`` for every PipesHub user we know about, since
+        # ``GET /rest/api/3/user/search?query=<email>`` is usually permitted
+        # even when bulk enumeration is not.
+        if (unresolved_count > 0 or self._user_bulk_forbidden) and candidate_count > 0:
             new_found = await self._resolve_private_email_users(
                 candidate_emails, unresolved_account_ids, resolved
             )
             self.logger.info(
                 f"👥 Reverse lookup resolved {new_found} additional users"
             )
-        elif unresolved_count == 0:
+        elif unresolved_count == 0 and not self._user_bulk_forbidden:
             self.logger.info("👥 All Jira users resolved, no reverse lookup needed")
 
         self.logger.info(f"👥 Total: {len(resolved)} Jira AppUsers resolved")
@@ -1665,6 +1685,7 @@ class JiraConnector(BaseConnector):
         users: list[dict[str, Any]] = []
         start_at = 0
         max_results_per_request = USER_PAGE_SIZE
+        self._user_bulk_forbidden = False
 
         while True:
             datasource = await self._get_fresh_datasource()
@@ -1675,6 +1696,27 @@ class JiraConnector(BaseConnector):
             )
 
             if response.status != HttpStatusCode.OK.value:
+                # /rest/api/3/users/search requires the *Browse users* global
+                # permission. Non-admin sync users get 401/403 here. Mirror the
+                # ``_app_roles_forbidden`` fallback in
+                # ``_fetch_application_roles_to_groups_mapping``: rather than
+                # killing the whole ``run_sync`` (and silently dropping the
+                # entire connector), mark the gap, return whatever pages we
+                # already collected, and let downstream code degrade to
+                # per-email reverse-lookup / configuring-user fallbacks.
+                if response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value,
+                    HttpStatusCode.FORBIDDEN.value,
+                ):
+                    self._user_bulk_forbidden = True
+                    self.logger.warning(
+                        "⚠️ /users/search returned %s — configuring user lacks "
+                        "'Browse users'. Returning %s users collected so far; "
+                        "user resolution will degrade to PipesHub-directory "
+                        "reverse lookup only.",
+                        response.status, len(users),
+                    )
+                    return users
                 raise Exception(f"Failed to fetch users: {response.text()}")
 
             users_batch = self._safe_json_parse(response, "users fetch")
@@ -1743,9 +1785,15 @@ class JiraConnector(BaseConnector):
         # Process in batches to allow early termination
         batch_size = 20
         email_list = list(candidate_emails)
+        # When the bulk fetch was forbidden, ``unresolved_count`` is 0
+        # (``all_active_account_ids`` was empty) and the standard early-exit
+        # would skip every batch. Disable the early-exit in that case so we
+        # actually exhaust the candidate list and resolve as many directory
+        # users as the per-email endpoint will let us.
+        skip_early_exit = self._user_bulk_forbidden
 
         for i in range(0, len(email_list), batch_size):
-            if new_found >= unresolved_count:
+            if not skip_early_exit and new_found >= unresolved_count:
                 break
 
             batch = email_list[i:i + batch_size]
@@ -1768,7 +1816,7 @@ class JiraConnector(BaseConnector):
                     )
                     new_found += 1
 
-            if new_found >= unresolved_count:
+            if not skip_early_exit and new_found >= unresolved_count:
                 break
 
         return new_found

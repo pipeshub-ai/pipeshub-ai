@@ -11,9 +11,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Awaitable, Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Awaitable, Callable, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
+from app.models.entities import RecordType
 from app.sources.external.confluence.confluence import (
     ConfluenceDataSource,  # type: ignore[import-not-found]
 )
@@ -25,9 +27,208 @@ from helper.graph_provider_utils import (
 )
 
 if TYPE_CHECKING:
+    from helper.assertions import ConnectorAssertions
     from helper.graph_provider import GraphProviderProtocol
 
 logger = logging.getLogger("confluence-v1-test-utils")
+
+FOLDER_MIME_TYPE = "text/directory"
+
+
+@dataclass
+class ContentItem:
+    """Single content item from Confluence API (page, blogpost, or folder)."""
+    id: str
+    title: str
+    version_number: int
+    space_id: str
+    space_key: str
+    content_type: str  # "page", "blogpost", or "folder"
+
+
+@dataclass
+class SpaceContentSnapshot:
+    """Complete snapshot of content in a Confluence space from v1 APIs."""
+    space_id: str
+    space_key: str
+    pages: List[ContentItem]
+    blogposts: List[ContentItem]
+    folders: List[ContentItem]
+
+    @property
+    def all_content(self) -> List[ContentItem]:
+        return self.pages + self.blogposts + self.folders
+
+
+async def fetch_space_content_snapshot(
+    datasource: ConfluenceDataSource,
+    space_key: str,
+) -> SpaceContentSnapshot:
+    """Fetch all pages, blogposts, and folders in a space from Confluence v1 APIs."""
+    logger.info("Fetching content snapshot for space '%s'...", space_key)
+
+    resp = await datasource.get_spaces(keys=[space_key])
+    if resp.status != 200:
+        raise RuntimeError(f"Failed to fetch space '{space_key}': HTTP {resp.status}")
+
+    spaces = resp.json().get("results", [])
+    if not spaces:
+        raise RuntimeError(f"Space '{space_key}' not found")
+
+    space_id = str(spaces[0]["id"])
+    pages = await _fetch_content_by_type(datasource, space_key, space_id, "page")
+    blogposts = await _fetch_content_by_type(datasource, space_key, space_id, "blogpost")
+    folders = await _fetch_content_by_type(datasource, space_key, space_id, "folder")
+
+    snapshot = SpaceContentSnapshot(
+        space_id=space_id,
+        space_key=space_key,
+        pages=pages,
+        blogposts=blogposts,
+        folders=folders,
+    )
+    logger.info(
+        "Snapshot complete: %d pages, %d blogposts, %d folders",
+        len(pages), len(blogposts), len(folders),
+    )
+    return snapshot
+
+
+async def _fetch_content_by_type(
+    datasource: ConfluenceDataSource,
+    space_key: str,
+    space_id: str,
+    content_type: str,
+) -> List[ContentItem]:
+    items: List[ContentItem] = []
+    cursor: str | None = None
+    batch_size = 50
+
+    while True:
+        if content_type == "page":
+            resp = await datasource.get_pages_v1(
+                space_key=space_key, cursor=cursor, limit=batch_size, expand="version,space",
+            )
+        elif content_type == "blogpost":
+            resp = await datasource.get_blogposts_v1(
+                space_key=space_key, cursor=cursor, limit=batch_size, expand="version,space",
+            )
+        elif content_type == "folder":
+            resp = await datasource.get_folders_v1(
+                space_key=space_key, cursor=cursor, limit=batch_size, expand="version,space",
+            )
+        else:
+            raise ValueError(f"Unknown content_type: {content_type}")
+
+        if resp.status != 200:
+            logger.warning(
+                "Failed to fetch %ss for space '%s': HTTP %d",
+                content_type, space_key, resp.status,
+            )
+            break
+
+        data = resp.json()
+        for item_data in data.get("results", []):
+            try:
+                version_obj = item_data.get("version", {})
+                items.append(ContentItem(
+                    id=str(item_data["id"]),
+                    title=item_data.get("title", ""),
+                    version_number=int(version_obj.get("number", 0)),
+                    space_id=space_id,
+                    space_key=space_key,
+                    content_type=content_type,
+                ))
+            except (KeyError, TypeError, ValueError) as e:
+                logger.warning("Failed to parse %s item: %s", content_type, e)
+
+        next_url = (data.get("_links") or {}).get("next")
+        if not next_url:
+            break
+        cursor = _confluence_extract_cursor_from_next_link(next_url)
+        if not cursor:
+            break
+
+    return items
+
+
+async def assert_api_content_matches_graph(
+    snapshot: SpaceContentSnapshot,
+    datasource: ConfluenceDataSource,
+    graph_provider: "GraphProviderProtocol",
+    connector_assertions: "ConnectorAssertions",
+    connector_id: str,
+    *,
+    phase: str,
+) -> None:
+    """Assert all content from API snapshot exists in graph with matching properties."""
+    from helper.assertions import RecordAssertion
+
+    logger.info(
+        "%s: asserting %d pages, %d blogposts, %d folders in graph",
+        phase, len(snapshot.pages), len(snapshot.blogposts), len(snapshot.folders),
+    )
+
+    for page_item in snapshot.pages:
+        expected = RecordAssertion(
+            external_record_id=page_item.id,
+            record_type=RecordType.CONFLUENCE_PAGE.value,
+            record_name=page_item.title,
+            mime_type="text/html",
+            external_record_group_id=page_item.space_id,
+            external_revision_id=str(page_item.version_number),
+        )
+        await assert_confluence_page_in_v1_space_content_search(
+            datasource, snapshot.space_key, page_item.id, context=f"{phase} - page",
+        )
+        await connector_assertions.assert_record_exists(connector_id, page_item.id, expected)
+
+    for blogpost_item in snapshot.blogposts:
+        expected = RecordAssertion(
+            external_record_id=blogpost_item.id,
+            record_type=RecordType.CONFLUENCE_BLOGPOST.value,
+            record_name=blogpost_item.title,
+            mime_type="text/html",
+            external_record_group_id=blogpost_item.space_id,
+            external_revision_id=str(blogpost_item.version_number),
+        )
+        await connector_assertions.assert_record_exists(
+            connector_id, blogpost_item.id, expected,
+        )
+
+    for folder_item in snapshot.folders:
+        expected = RecordAssertion(
+            external_record_id=folder_item.id,
+            record_type=RecordType.FILE.value,
+            record_name=folder_item.title,
+            mime_type=FOLDER_MIME_TYPE,
+            external_record_group_id=folder_item.space_id,
+            external_revision_id=str(folder_item.version_number),
+        )
+        await connector_assertions.assert_record_exists(
+            connector_id, folder_item.id, expected,
+        )
+
+    logger.info("✅ %s: all API content verified in graph", phase)
+
+
+async def find_page_with_ancestors(
+    snapshot: SpaceContentSnapshot,
+    datasource: ConfluenceDataSource,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return (page_id, immediate_parent_id) for the first page with ancestors."""
+    for page_item in snapshot.pages:
+        try:
+            resp = await datasource.get_page_content_v1(page_item.id, expand="ancestors")
+            if resp.status != 200:
+                continue
+            ancestors = resp.json().get("ancestors", [])
+            if ancestors and isinstance(ancestors, list):
+                parent_id = str(ancestors[-1]["id"])
+                return page_item.id, parent_id
+        except Exception as e:
+            logger.debug("Failed to check ancestors for page %s: %s", page_item.id, e)
+    return None, None
 
 
 def _confluence_extract_cursor_from_next_link(next_url: str | None) -> str | None:

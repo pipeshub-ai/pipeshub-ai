@@ -1501,9 +1501,14 @@ components:
     CreateOAuthAppRequest:
       type: object
       description: |
-        Request to create a new OAuth app.
-        Redirect URIs are required only when `authorization_code` is included in `allowedGrantTypes`.
-        If `authorization_code` is not enabled, redirect URIs are optional and will be ignored.
+        Request to create a new OAuth app (`createAppSchema` in `oauth.validators.ts`).
+
+        **Required:** `name`, `allowedScopes`. **Optional:** `description`, `redirectUris`, `allowedGrantTypes`,
+        `homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`, `isConfidential`, `accessTokenLifetime`, `refreshTokenLifetime`.
+
+        **Redirect rule (Zod refine):** If the effective grant list includes `authorization_code`
+        (including when `allowedGrantTypes` is omitted — defaults to `authorization_code` + `refresh_token`),
+        at least one redirect URI is required. If grants exclude `authorization_code`, `redirectUris` may be omitted.
       properties:
         name:
           type: string
@@ -1522,8 +1527,8 @@ components:
             type: string
             format: uri
           description: |
-            Allowed redirect URIs (up to 10). Required when `authorization_code` grant type is enabled.
-            Not needed for apps using only `client_credentials` grant type.
+            Allowed redirect URIs (max 10). Required when an effective grant list includes `authorization_code`
+            (including the default when `allowedGrantTypes` is omitted).
           maxItems: 10
           example: ["https://myapp.com/callback", "http://localhost:3000/callback"]
         allowedGrantTypes:
@@ -1532,13 +1537,13 @@ components:
             type: string
             enum: [authorization_code, client_credentials, refresh_token]
           description: |
-            Allowed grant types. Defaults to `["authorization_code", "refresh_token"]` if not specified.
+            Allowed grant types. Defaults to `["authorization_code", "refresh_token"]` if omitted (applied by the service, not Zod).
           example: ["authorization_code", "refresh_token"]
         allowedScopes:
           type: array
           items:
             type: string
-          description: Scopes the app can request
+          description: Scopes the app can request (non-empty)
           minItems: 1
           example: ["openid", "profile", "read:records"]
         homepageUrl:
@@ -1562,18 +1567,18 @@ components:
           default: true
         accessTokenLifetime:
           type: integer
-          description: Access token lifetime in seconds (300-86400)
+          description: Access token lifetime in seconds (300–86400)
           minimum: 300
           maximum: 86400
           default: 3600
           example: 3600
         refreshTokenLifetime:
           type: integer
-          description: Refresh token lifetime in seconds (3600-31536000)
+          description: Refresh token lifetime in seconds (3600–31536000)
           minimum: 3600
           maximum: 31536000
-          default: 604800
-          example: 604800
+          default: 2592000
+          example: 2592000
       required:
         - name
         - allowedScopes
@@ -1581,9 +1586,11 @@ components:
     UpdateOAuthAppRequest:
       type: object
       description: |
-        Request to update an OAuth app.
-        Redirect URIs are required when `authorization_code` grant type is enabled (either already set or being added).
-        Existing redirect URIs are preserved in the database even if `authorization_code` is removed from grant types.
+        Request to update an OAuth app (`updateAppSchema` in `oauth.validators.ts`).
+
+        All fields are optional — include only fields that should change. URL fields (`homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`) accept `null` to clear them (nullable in Zod).
+
+        **Redirect rule (Zod refine):** If `allowedGrantTypes` includes `authorization_code` and `redirectUris` is present in the body, `redirectUris` must contain at least one URI.
       properties:
         name:
           type: string
@@ -1636,7 +1643,24 @@ components:
 
     OAuthAppResponse:
       type: object
-      description: OAuth app details (without secret)
+      description: |
+        OAuth app details (without secret). Fields under `required:` always appear
+        in `toAppResponse` (`oauth.app.service.ts`); optional URL/description fields
+        are only present when set by the caller.
+      required:
+        - id
+        - slug
+        - clientId
+        - name
+        - redirectUris
+        - allowedGrantTypes
+        - allowedScopes
+        - status
+        - isConfidential
+        - accessTokenLifetime
+        - refreshTokenLifetime
+        - createdAt
+        - updatedAt
       properties:
         id:
           type: string
@@ -1657,7 +1681,8 @@ components:
           type: array
           items:
             type: string
-          description: Allowed redirect URIs
+            format: uri
+          description: Allowed redirect URIs (always returned; may be empty)
         allowedGrantTypes:
           type: array
           items:
@@ -1715,9 +1740,93 @@ components:
           required:
             - clientSecret
 
+    CreateOAuthAppResponse:
+      type: object
+      description: |
+        Response body for `POST /oauth-clients` (`oauth.app.controller.ts` `createApp`).
+        The new app (including one-time `clientSecret`) is nested under `app`.
+      required:
+        - message
+        - app
+      properties:
+        message:
+          type: string
+          example: OAuth app created successfully
+        app:
+          $ref: '#/components/schemas/OAuthAppWithSecret'
+
+    RegenerateOAuthAppSecretResponse:
+      type: object
+      description: |
+        Response body for `POST /oauth-clients/{appId}/regenerate-secret` (`regenerateSecret`).
+      required:
+        - message
+        - clientId
+        - clientSecret
+      properties:
+        message:
+          type: string
+          example: Client secret regenerated successfully
+        clientId:
+          type: string
+          description: OAuth client ID (unchanged)
+        clientSecret:
+          type: string
+          description: New client secret (store securely; previous secret is invalidated)
+
+    UpdateOAuthAppResponse:
+      type: object
+      description: |
+        Response body for `PUT /oauth-clients/{appId}` (`oauth.app.controller.ts` `updateApp`).
+        Updated app (never includes `clientSecret`) is nested under `app`.
+      required:
+        - message
+        - app
+      properties:
+        message:
+          type: string
+          example: OAuth app updated successfully
+        app:
+          $ref: '#/components/schemas/OAuthAppResponse'
+
+    SuspendOAuthAppResponse:
+      type: object
+      description: |
+        Response body for `POST /oauth-clients/{appId}/suspend`
+        (`oauth.app.controller.ts` `suspendApp`). Suspended app (never includes
+        `clientSecret`) is nested under `app`.
+      required:
+        - message
+        - app
+      properties:
+        message:
+          type: string
+          example: OAuth app suspended successfully
+        app:
+          $ref: '#/components/schemas/OAuthAppResponse'
+
+    ActivateOAuthAppResponse:
+      type: object
+      description: |
+        Response body for `POST /oauth-clients/{appId}/activate`
+        (`oauth.app.controller.ts` `activateApp`). Re-activated app (never includes
+        `clientSecret`) is nested under `app`.
+      required:
+        - message
+        - app
+      properties:
+        message:
+          type: string
+          example: OAuth app activated successfully
+        app:
+          $ref: '#/components/schemas/OAuthAppResponse'
+
     OAuthAppListResponse:
       type: object
       description: Paginated list of OAuth apps
+      required:
+        - data
+        - pagination
       properties:
         data:
           type: array
@@ -1726,6 +1835,11 @@ components:
           description: List of OAuth apps
         pagination:
           type: object
+          required:
+            - page
+            - limit
+            - total
+            - totalPages
           properties:
             page:
               type: integer
@@ -1747,19 +1861,102 @@ components:
         name:
           type: string
           description: Scope identifier
-          example: "read:records"
+          example: "openid"
         description:
           type: string
           description: Human-readable scope description
-          example: "Read access to records"
+          example: "OpenID Connect authentication"
         category:
           type: string
-          description: Scope category for grouping
-          example: "Records"
+          description: Scope category for grouping (matches the key under `scopes` on list responses)
+          example: "Identity"
+        requiresUserConsent:
+          type: boolean
+          description: Whether end-user consent is required when this scope is requested
+          example: false
+      required:
+        - name
+        - description
+        - category
+        - requiresUserConsent
+
+    OAuthScopesGroupedResponse:
+      type: object
+      description: |
+        OAuth scopes available to the signed-in user for app registration, grouped by category label.
+        Category keys are UI labels (e.g. `Identity`, `Knowledge Base`); each maps to a list of scopes in that group.
+        Categories defined in server config may appear with an **empty array** when every scope in that category is restricted for the caller's role (e.g. non–org-admin users never receive admin-only scopes).
+      properties:
+        scopes:
+          type: object
+          description: Map of category display name to scopes in that category
+          additionalProperties:
+            type: array
+            items:
+              $ref: '#/components/schemas/OAuthScopeInfo'
+      required:
+        - scopes
+
+    OAuthClientManagementRateLimitError:
+      type: object
+      description: JSON body when OAuth client management routes exceed the per-minute rate limit (same limiter as other `/oauth-clients/*` routes).
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              example: TOO_MANY_REQUESTS
+            message:
+              type: string
+              example: Too many OAuth client requests. Please try again later.
+            retryAfter:
+              type: integer
+              nullable: true
+              description: Seconds until the limit window resets (when `Retry-After` is present); may be null.
+
+    ApplicationJsonErrorResponse:
+      type: object
+      description: |
+        Standard JSON error envelope from `ErrorMiddleware` for `BaseError` subclasses (`error.middleware.ts`).
+        Returned for most API 4xx errors (unauthorized, forbidden, not found, validation failures, etc.).
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              description: Machine-readable code (e.g. `HTTP_UNAUTHORIZED`, `HTTP_FORBIDDEN`).
+            message:
+              type: string
+            metadata:
+              type: object
+              description: Optional; may appear in non-production for some errors.
+              additionalProperties: true
 
     OAuthTokenListItem:
       type: object
-      description: Information about an issued token
+      description: |
+        Information about an issued token (one element returned by `listTokensForApp`
+        in `oauth_token.service.ts`). `userId` is omitted for client-credentials access
+        tokens; all other fields are always populated.
+      required:
+        - id
+        - tokenType
+        - scopes
+        - createdAt
+        - expiresAt
+        - isRevoked
       properties:
         id:
           type: string
@@ -1770,7 +1967,7 @@ components:
           description: Type of token
         userId:
           type: string
-          description: User ID (if user-based token)
+          description: User ID (omitted for client-credentials access tokens)
         scopes:
           type: array
           items:
@@ -1787,6 +1984,19 @@ components:
         isRevoked:
           type: boolean
           description: Whether token has been revoked
+
+    OAuthAppTokensListResponse:
+      type: object
+      description: |
+        Response body for `GET /oauth-clients/{appId}/tokens` (`listAppTokens`).
+      required:
+        - tokens
+      properties:
+        tokens:
+          type: array
+          items:
+            $ref: '#/components/schemas/OAuthTokenListItem'
+          description: Active access and refresh tokens for the app
 
     # ==================== USER MANAGEMENT SCHEMAS ====================
     User:
@@ -8763,6 +8973,7 @@ components:
 
     AIModelProviderConfig:
       type: object
+      additionalProperties: false
       required:
         - provider
         - configuration
@@ -8771,18 +8982,12 @@ components:
           type: string
           description: AI provider name
         configuration:
-          type: object
-          properties:
-            model:
-              type: string
-              description: Model name(s)
-            apiKey:
-              type: string
-              description: API key for the model
-            endpoint:
-              type: string
-              format: uri
-              description: Endpoint URL for the model
+          $ref: '#/components/schemas/AIModelProviderConfiguration'
+        modelFriendlyName:
+          type: string
+          description: |
+            Display name for this model entry. May duplicate configuration.modelFriendlyName
+            when set on the stored provider record.
         isMultimodal:
           type: boolean
           default: false
@@ -8806,6 +9011,17 @@ components:
 
     AIModelsConfig:
       type: object
+      additionalProperties: false
+      required:
+        - ocr
+        - embedding
+        - slm
+        - llm
+        - reasoning
+        - multiModal
+        - imageGeneration
+        - tts
+        - stt
       properties:
         ocr:
           type: array
@@ -8846,6 +9062,51 @@ components:
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'
       description: Must have at least one model type configured
+
+    GetAIModelsProvidersResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Success response from getAIModelsProviders. Returns the full stored
+        models bucket map (masked when secrets are hidden).
+      required:
+        - status
+        - models
+        - message
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          description: >-
+            Human-readable summary (e.g. "AI models retrieved successfully" or
+            "No AI models found").
+        models:
+          $ref: '#/components/schemas/AIModelsConfig'
+
+    GetModelsByTypeResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Success response from getModelsByType. Returns stored provider entries
+        for a single model type bucket (not the flattened available-models shape).
+      required:
+        - status
+        - models
+        - message
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          description: >-
+            Human-readable summary (e.g. "Found 2 llm models", "No llm models found").
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
 
     # AI Model Registry Schemas (Python backend)
     AIModelRegistryProvider:
@@ -9286,9 +9547,123 @@ components:
           description: Custom system prompt text for AI models
 
     # AI Model Provider Management Schemas
+    AIModelProviderConfiguration:
+      type: object
+      description: |
+        Provider-specific configuration stored on each AI model entry.
+
+        **Passthrough contract:** `additionalProperties` is intentionally `true` at this
+        level only. Node validation uses Zod `configurationSchema` with `.passthrough()`
+        so provider-specific keys reach the Python backend unchanged. The canonical field
+        list for each provider lives in `backend/python/app/config/ai_models/providers/`;
+        new providers may add keys without updating this spec. Do not set
+        `additionalProperties: false` here unless every registry field is enumerated.
+
+        Properties below are the documented union of the Zod base shape and registry-defined
+        configuration keys (all optional unless required by a given provider at runtime).
+      additionalProperties: false
+      properties:
+        model:
+          type: string
+          description: |
+            Model name/identifier. May be comma-separated for multiple models
+            (e.g. `gpt-4o, gpt-4o-mini`).
+          example: "gpt-4"
+        modelFriendlyName:
+          type: string
+          description: |
+            Display name for the model. Only allowed when `model` is a single name
+            (not comma-separated).
+        apiKey:
+          type: string
+          description: API key for the provider
+        endpoint:
+          type: string
+          description: Custom endpoint URL (Azure OpenAI, self-hosted, Wispr override)
+        organizationId:
+          type: string
+          description: Organization ID (OpenAI)
+        deploymentName:
+          type: string
+          description: Deployment name (Azure OpenAI)
+        provider:
+          type: string
+          description: Bedrock model vendor (e.g. anthropic, cohere) or provider name override
+        customProvider:
+          type: string
+          description: Custom Bedrock vendor name when `provider` is `other`
+        awsAccessKeyId:
+          type: string
+          description: AWS access key (Bedrock). Optional - omit to use IAM role credentials.
+        awsAccessSecretKey:
+          type: string
+          description: AWS secret key (Bedrock). Optional - omit to use IAM role credentials.
+        region:
+          type: string
+          description: AWS region (Bedrock)
+        project:
+          type: string
+          description: GCP project ID (Vertex AI)
+        location:
+          type: string
+          description: Vertex AI region (e.g. us-central1)
+        serviceAccountJson:
+          type: string
+          description: |
+            Google Cloud service account JSON key (Vertex AI). Uploaded as a string;
+            treated as a secret at runtime.
+        dimensions:
+          description: |
+            Embedding output dimensions override (when supported by the model).
+            Stored configs may use an empty string when unset (registry default).
+          anyOf:
+            - type: integer
+            - type: string
+              enum: ['']
+        voice:
+          type: string
+          description: Default TTS voice (OpenAI / Gemini audio)
+        responseFormat:
+          type: string
+          description: TTS audio format (e.g. mp3, wav)
+        device:
+          type: string
+          description: Whisper runtime device (auto, cpu, cuda)
+        computeType:
+          type: string
+          description: Whisper numeric precision (e.g. int8, float16)
+        modelDir:
+          type: string
+          description: Whisper model weights cache directory
+        language:
+          type: string
+          description: Wispr Flow default language (ISO 639-1) or empty for auto-detect
+        appType:
+          type: string
+          description: Wispr Flow output formatting (e.g. ai, email)
+        model_kwargs:
+          type: object
+          description: |
+            Optional keyword arguments forwarded to LangChain embedding/LLM clients
+            (mirrors Zod `z.record(z.any())`). Used by HuggingFace (`device`, `api_key`)
+            and Bedrock (`max_tokens`) paths in Python; values are typically string,
+            number, or boolean. Omitted when not configured.
+          additionalProperties: {}
+        encode_kwargs:
+          type: object
+          description: |
+            Optional encoding kwargs for embedding models (mirrors Zod
+            `z.record(z.any())`). Commonly `normalize_embeddings` (boolean) for
+            HuggingFace and SentenceTransformer providers. Omitted when not configured.
+          additionalProperties: {}
+        cache_folder:
+          type: string
+          description: Cache folder for models
+
     AddAIModelProviderRequest:
       type: object
       description: Request to add a new AI model provider
+      additionalProperties: false
       required:
         - modelType
         - provider
@@ -9298,38 +9673,11 @@ components:
           $ref: '#/components/schemas/ModelType'
         provider:
           type: string
-          description: Provider name (e.g., openai, anthropic, azure-openai, aws-bedrock)
-          example: "openai"
+          minLength: 1
+          description: Provider registry ID (e.g. openAI, gemini, azureOpenAI, groq)
+          example: "openAI"
         configuration:
-          type: object
-          description: Provider-specific configuration
-          properties:
-            model:
-              type: string
-              description: Model name/identifier
-              example: "gpt-4"
-            apiKey:
-              type: string
-              description: API key for the provider
-            endpoint:
-              type: string
-              format: uri
-              description: Custom endpoint URL (for Azure, self-hosted)
-            organizationId:
-              type: string
-              description: Organization ID (OpenAI)
-            deploymentName:
-              type: string
-              description: Deployment name (Azure OpenAI)
-            awsAccessKeyId:
-              type: string
-              description: AWS access key (Bedrock). Optional - omit to use IAM role credentials.
-            awsAccessSecretKey:
-              type: string
-              description: AWS secret key (Bedrock). Optional - omit to use IAM role credentials.
-            region:
-              type: string
-              description: AWS region (Bedrock)
+          $ref: '#/components/schemas/AIModelProviderConfiguration'
         isMultimodal:
           type: boolean
           description: Whether the model supports multimodal inputs
@@ -9350,37 +9698,319 @@ components:
     UpdateAIModelProviderRequest:
       type: object
       description: Request to update an existing AI model provider
+      additionalProperties: false
       required:
         - provider
         - configuration
       properties:
         provider:
           type: string
-          description: Provider name
+          minLength: 1
+          description: Provider registry ID (e.g. openAI, gemini, azureOpenAI, groq)
         configuration:
-          type: object
-          description: Updated provider configuration
+          $ref: '#/components/schemas/AIModelProviderConfiguration'
         isMultimodal:
           type: boolean
+          description: Whether the model supports multimodal inputs
+          default: false
         isReasoning:
           type: boolean
+          description: Whether this is a reasoning model
+          default: false
         isDefault:
           type: boolean
+          description: Set as default model for this type
+          default: false
+        contextLength:
+          type: integer
+          description: Maximum context length (tokens)
+          nullable: true
+
+    AIModelProviderAddedDetails:
+      type: object
+      additionalProperties: false
+      description: Summary of the provider entry created by addAIModelProvider
+      required:
+        - modelKey
+        - modelType
+        - provider
+        - isDefault
+      properties:
+        modelKey:
+          type: string
+          format: uuid
+          description: Unique identifier assigned to the new provider configuration
+        modelType:
+          $ref: '#/components/schemas/ModelType'
+        provider:
+          type: string
+          description: Provider registry ID
+        model:
+          type: string
+          description: Model name from `configuration.model`
+        isDefault:
+          type: boolean
+          description: Whether this provider was saved as the default for its type
         contextLength:
           type: integer
           nullable: true
+          description: Context length (tokens), when provided in the request
 
     AIModelProviderResponse:
       type: object
-      description: Response containing AI model provider details
+      additionalProperties: false
+      description: Success response from addAIModelProvider
+      required:
+        - status
+        - message
+        - details
       properties:
         status:
           type: string
-          enum: [success, error]
+          enum: [success]
         message:
           type: string
-        data:
-          $ref: '#/components/schemas/AIModelProviderConfig'
+          example: "LLM provider added successfully"
+        details:
+          $ref: '#/components/schemas/AIModelProviderAddedDetails'
+
+    AIModelProviderSimpleError:
+      type: object
+      additionalProperties: false
+      description: |
+        Controller validation error returned before the Python health-check
+        (e.g. missing required fields or invalid modelType).
+      required:
+        - status
+        - message
+      properties:
+        status:
+          type: string
+          enum: [error]
+        message:
+          type: string
+
+    AIModelProviderHealthCheckBackendDetails:
+      type: object
+      additionalProperties: false
+      description: |
+        Nested diagnostics from the Python query service health-check response
+        (`content.details`). Present on credential, timeout, and embedding-policy failures.
+      properties:
+        provider:
+          type: string
+          description: Provider registry ID (e.g. openai, azure-openai)
+        model:
+          type: string
+          description: Model name from the configuration under test
+        error:
+          type: string
+          description: Underlying provider or multimodal probe error text
+        error_type:
+          type: string
+          description: Python exception class name (e.g. AuthenticationError)
+        timeout_seconds:
+          type: integer
+          description: Health-check invoke timeout in seconds
+        existing_vector_size:
+          type: integer
+          description: Vector dimension of the existing Qdrant collection
+        new_embedding_size:
+          type: integer
+          description: Dimension produced by the candidate embedding model
+        points_count:
+          type: integer
+          description: Number of points in the existing collection
+        current_model:
+          type: string
+          description: Embedding model name already stored for the org collection
+        new_model:
+          type: string
+          description: Candidate embedding model name
+        new_provider:
+          type: string
+          description: Candidate embedding provider ID
+        embedding_model:
+          type: string
+          description: Embedding subsystem status (HTTPException detail payloads)
+        vector_store:
+          type: string
+          description: Vector store subsystem status (HTTPException detail payloads)
+        llm:
+          type: string
+          description: LLM subsystem status (HTTPException detail payloads)
+
+    AIModelProviderHealthCheckBackendPayload:
+      type: object
+      additionalProperties: false
+      description: |
+        Raw JSON body from `POST /api/v1/health-check/{modelType}` on the Python query
+        service, forwarded unchanged as `error.details` by addAIModelProvider and
+        updateAIModelProvider when the health check fails.
+      properties:
+        status:
+          type: string
+          description: Health outcome from Python (e.g. error, not healthy)
+          example: error
+        message:
+          type: string
+          description: Primary human-readable failure reason from Python
+          example: "LLM health check failed: Incorrect API key provided"
+        error:
+          type: string
+          description: Alternate top-level error field (legacy envelopes and HTTPException detail)
+          example: "Health check failed: Connection refused"
+        timestamp:
+          type: integer
+          format: int64
+          description: Epoch milliseconds when the check completed
+        details:
+          $ref: '#/components/schemas/AIModelProviderHealthCheckBackendDetails'
+      example:
+        status: error
+        message: "LLM health check failed: Incorrect API key provided"
+        details:
+          provider: openai
+          model: gpt-4o-mini
+          error_type: AuthenticationError
+
+    AIModelProviderHealthCheckErrorEnvelope:
+      type: object
+      additionalProperties: false
+      description: Health-check failure from the Python AI backend
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required:
+            - status
+            - message
+          properties:
+            status:
+              type: string
+              enum: [error]
+            message:
+              type: string
+              description: |
+                User-facing reason from the Node controller, derived from the Python
+                body (`message`, or `error` / `error.message` when present).
+            details:
+              $ref: '#/components/schemas/AIModelProviderHealthCheckBackendPayload'
+
+    AddAIModelProviderErrorResponse:
+      oneOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - $ref: '#/components/schemas/AIModelProviderSimpleError'
+        - $ref: '#/components/schemas/AIModelProviderHealthCheckErrorEnvelope'
+
+    UpdateAIModelProviderDetails:
+      type: object
+      additionalProperties: false
+      description: Summary of the provider entry returned by updateAIModelProvider
+      required:
+        - modelKey
+        - modelType
+        - provider
+        - isMultimodal
+        - isReasoning
+      properties:
+        modelKey:
+          type: string
+          format: uuid
+          description: Unique identifier for this model configuration
+        modelType:
+          $ref: '#/components/schemas/ModelType'
+        provider:
+          type: string
+          description: Provider registry ID
+        model:
+          type: string
+          description: Model name from `configuration.model`
+        contextLength:
+          type: integer
+          nullable: true
+          description: Context length (tokens)
+        isMultimodal:
+          type: boolean
+          description: Whether the model supports multimodal inputs
+        isReasoning:
+          type: boolean
+          description: Whether this is a reasoning model
+
+    UpdateAIModelProviderResponse:
+      type: object
+      additionalProperties: false
+      description: Success response from updateAIModelProvider
+      required:
+        - status
+        - message
+        - details
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          example: "LLM provider updated successfully"
+        details:
+          $ref: '#/components/schemas/UpdateAIModelProviderDetails'
+
+    UpdateAIModelProviderErrorResponse:
+      oneOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - $ref: '#/components/schemas/AIModelProviderSimpleError'
+        - $ref: '#/components/schemas/AIModelProviderHealthCheckErrorEnvelope'
+
+    DeleteAIModelProviderDetails:
+      type: object
+      additionalProperties: false
+      description: Metadata about the AI model provider entry removed by deleteAIModelProvider
+      required:
+        - modelKey
+        - modelType
+        - provider
+        - wasDefault
+      properties:
+        modelKey:
+          type: string
+          format: uuid
+          description: UUID of the deleted provider configuration
+        modelType:
+          $ref: '#/components/schemas/ModelType'
+        provider:
+          type: string
+          description: Provider registry ID (e.g. openAI, gemini, azureOpenAI)
+        model:
+          type: string
+          description: Model name from `configuration.model` when present
+        wasDefault:
+          type: boolean
+          description: Whether the deleted entry was the default for its model type
+        contextLength:
+          type: integer
+          nullable: true
+          description: Maximum context length (tokens) when configured
+
+    DeleteAIModelProviderResponse:
+      type: object
+      additionalProperties: false
+      description: Success response from deleteAIModelProvider
+      required:
+        - status
+        - message
+        - details
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          description: Human-readable confirmation
+          example: "LLM provider deleted successfully"
+        details:
+          $ref: '#/components/schemas/DeleteAIModelProviderDetails'
 
     # ==================== CRAWLING MANAGER SCHEMAS ====================
     CrawlingScheduleType:
@@ -10043,25 +10673,25 @@ paths:
       summary: Initiate OAuth authorization flow
       description: |
         OAuth 2.0 Authorization Endpoint (RFC 6749 Section 4.1.1).
-        <br><br>
+
         Initiates the authorization code flow. Users are redirected here by OAuth clients
         to authorize access to their account.
-        <br><br>
-        <b>Flow:</b><br>
-        1. Client redirects user to this endpoint with required parameters<br>
-        2. If not logged in, user is redirected to PipesHub login<br>
-        3. User sees consent page with requested scopes<br>
-        4. User grants or denies consent<br>
+
+        **Flow:**
+        1. Client redirects user to this endpoint with required parameters
+        2. If not logged in, user is redirected to PipesHub login
+        3. User sees consent page with requested scopes
+        4. User grants or denies consent
         5. User is redirected back to client with authorization code
-        <br><br>
-        <b>PKCE Support (RFC 7636):</b><br>
-        - Required for public clients (SPA, mobile apps)<br>
-        - Recommended for confidential clients<br>
+
+        **PKCE Support (RFC 7636):**
+        - Required for public clients (SPA, mobile apps)
+        - Recommended for confidential clients
         - Use S256 method (SHA256 hash of code_verifier)
-        <br><br>
-        <b>Security:</b><br>
-        - Always use HTTPS in production<br>
-        - State parameter provides CSRF protection<br>
+
+        **Security:**
+        - Always use HTTPS in production
+        - State parameter provides CSRF protection
         - Redirect URI must match registered URIs exactly
       operationId: oauthAuthorize
       security: []
@@ -10136,19 +10766,19 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthErrorResponse'
+                $ref: '#/components/schemas/ErrorResponse'
     post:
       tags:
         - OAuth Provider
       summary: Submit authorization consent
       description: |
         Submit user's consent decision for OAuth authorization.
-        <br><br>
+
         Called after user reviews the consent page and makes a decision.
         This endpoint generates an authorization code if consent is granted.
-        <br><br>
-        <b>Responses:</b><br>
-        - Consent granted: Redirects to client with authorization code<br>
+
+        **Responses:**
+        - Consent granted: Redirects to client with authorization code
         - Consent denied: Redirects to client with `access_denied` error
       operationId: oauthAuthorizeConsent
       security:
@@ -10177,7 +10807,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthErrorResponse'
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: User not authenticated
         '403':
@@ -10190,25 +10820,26 @@ paths:
       summary: Exchange authorization code for tokens
       description: |
         OAuth 2.0 Token Endpoint (RFC 6749 Section 4.1.3).
-        <br><br>
+
         Exchanges an authorization code, client credentials, or refresh token for access tokens.
-        <br><br>
-        <b>Grant Types:</b><br>
-        - `authorization_code`: Exchange auth code for tokens (user-based)<br>
-        - `client_credentials`: Get tokens for machine-to-machine auth<br>
+
+        **Grant Types:**
+        - `authorization_code`: Exchange auth code for tokens (user-based)
+        - `client_credentials`: Get tokens for machine-to-machine auth
         - `refresh_token`: Get new access token using refresh token
-        <br><br>
+
         For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client). The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the creator (**`createdBy`** claim or OAuth app lookup) and must not trust client-supplied **`x-oauth-user-id`** (stripped on ingress). Downstream Python services accept **`x-oauth-user-id`** only when set by the gateway — see **OAuth Provider** tag.
-        <br><br>
-        <b>Client Authentication:</b><br>
-        Can be provided via:<br>
-        - HTTP Basic auth: `Authorization: Basic base64(client_id:client_secret)`<br>
+
+        **Client Authentication:**
+        Can be provided via:
+        - HTTP Basic auth: `Authorization: Basic base64(client_id:client_secret)`
         - Request body: `client_id` and `client_secret` parameters
-        <br><br>
-        <b>PKCE Verification:</b><br>
+
+        **PKCE Verification:**
         If authorization used PKCE, the `code_verifier` must be provided and will be
         verified against the stored code challenge.
       operationId: oauthToken
+      x-pipeshub-sdk: true
       security: []
       requestBody:
         description: "Request payload"
@@ -10239,13 +10870,19 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthErrorResponse'
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Client authentication failed
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/OAuthErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth2/revoke:
     post:
@@ -10254,18 +10891,19 @@ paths:
       summary: Revoke an access or refresh token
       description: |
         OAuth 2.0 Token Revocation Endpoint (RFC 7009).
-        <br><br>
+
         Revokes an access token or refresh token, preventing further use.
         Revoking a refresh token also invalidates associated access tokens.
-        <br><br>
-        <b>Use Cases:</b><br>
-        - User logs out of third-party app<br>
-        - User revokes app access from account settings<br>
+
+        **Use Cases:**
+        - User logs out of third-party app
+        - User revokes app access from account settings
         - Security incident response
-        <br><br>
-        <b>Note:</b> Returns 200 OK even if token was already revoked or invalid
+
+        **Note:** Returns 200 OK even if token was already revoked or invalid
         (per RFC 7009, to prevent token enumeration).
       operationId: oauthRevoke
+      x-pipeshub-sdk: true
       security: []
       requestBody:
         description: "Request payload"
@@ -10286,6 +10924,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OAuthErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth2/introspect:
     post:
@@ -10294,18 +10938,19 @@ paths:
       summary: Introspect a token
       description: |
         OAuth 2.0 Token Introspection Endpoint (RFC 7662).
-        <br><br>
+
         Check if a token is active and retrieve its metadata.
-        <br><br>
-        <b>Use Cases:</b><br>
-        - Resource servers validating tokens<br>
-        - Debugging token issues<br>
+
+        **Use Cases:**
+        - Resource servers validating tokens
+        - Debugging token issues
         - Checking token scopes before processing requests
-        <br><br>
-        <b>Response:</b><br>
-        - Active token: Returns `active: true` with token metadata<br>
+
+        **Response:**
+        - Active token: Returns `active: true` with token metadata
         - Invalid/expired/revoked token: Returns only `active: false`
       operationId: oauthIntrospect
+      x-pipeshub-sdk: true
       security: []
       requestBody:
         description: "Request payload"
@@ -10347,6 +10992,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OAuthErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth2/userinfo:
     get:
@@ -10355,18 +11006,19 @@ paths:
       summary: Get authenticated user information
       description: |
         OpenID Connect UserInfo Endpoint.
-        <br><br>
+
         Returns claims about the authenticated user. Requires a valid access token
         with the `openid` scope.
-        <br><br>
-        <b>Available Claims:</b><br>
-        - `user_id` - User identifier<br>
-        - `name`, `given_name`, `family_name` - Name claims (with `profile` scope)<br>
+
+        **Available Claims:**
+        - `user_id` - User identifier
+        - `name`, `given_name`, `family_name` - Name claims (with `profile` scope)
         - `email`, `email_verified` - Email claims (with `email` scope)
-        <br><br>
-        <b>Authentication:</b><br>
+
+        **Authentication:**
         Pass the access token as a Bearer token: `Authorization: Bearer {access_token}`
       operationId: oauthUserInfo
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       responses:
@@ -10554,16 +11206,13 @@ paths:
         - OAuth Apps
       summary: List OAuth apps
       description: |
-        List OAuth apps visible to the signed-in user for the organization.
-        <br><br>
-        Returns only apps **created by** the signed-in user (including when that user is an org admin).
-        <br><br>
-        Returns a paginated list of apps with their configuration (excluding secrets).
-        <br><br>
-        <b>Filters:</b><br>
-        - `status` - Filter by app status (active, suspended, revoked)<br>
-        - `search` - Search by app name or description
+        Returns a paginated list of OAuth apps registered by the signed-in user. Access is creator-scoped — even org admins only see apps they created themselves, so this endpoint is safe to use for per-user developer dashboards without leaking org-wide app metadata.
+
+        Each entry carries the full app configuration except the client secret, which is only ever returned at creation time and immediately after a regeneration.
+
+        Use the `status` query parameter to filter by lifecycle state (`active`, `suspended`, `revoked`) and `search` for a case-insensitive substring match against `name` or `description`.
       operationId: listOAuthApps
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10573,7 +11222,8 @@ paths:
             type: integer
             minimum: 1
             default: 1
-          description: Page number
+          description: |
+            Page number (matches `listAppsQuerySchema`: defaults to `1` when omitted or empty).
         - name: limit
           in: query
           schema:
@@ -10581,7 +11231,8 @@ paths:
             minimum: 1
             maximum: 100
             default: 20
-          description: Items per page
+          description: |
+            Items per page (defaults to `20` when omitted or empty; max 100).
         - name: status
           in: query
           schema:
@@ -10602,26 +11253,37 @@ paths:
                 $ref: '#/components/schemas/OAuthAppListResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — insufficient workspace permission to list OAuth apps
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
     post:
       tags:
         - OAuth Apps
       summary: Create OAuth app
       description: |
-        Create a new OAuth app for the organization (any authenticated org member may create apps).
-        <br><br>
-        <b>Important:</b> The client secret is only returned once during creation.
-        Store it securely - it cannot be retrieved later. If lost, you'll need to
-        regenerate it.
-        <br><br>
-        <b>Scopes:</b> `allowedScopes` must be a subset of scopes returned by `GET /oauth-clients/scopes` for your role (org admins may include additional admin-only scopes).
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Register a new OAuth app for the organization. Any authenticated org member may create apps; the creator is recorded as the app's owner and is the only user who can subsequently read, update, suspend, activate, regenerate the secret of, or delete it.
+
+        The `clientSecret` is returned in this response **only** — it is stored hashed server-side and cannot be retrieved later. Persist it before exiting the create flow; if it is ever lost, rotate via `POST /oauth-clients/{appId}/regenerate-secret`.
+
+        `allowedScopes` is validated against the caller's role-aware scope set (see `GET /oauth-clients/scopes`). Org admins may include admin-only scopes; non-admins requesting a restricted scope receive `400`.
+
+        All `/oauth-clients/*` routes share a per-user rate limiter (default 1000 req/min, configurable via the `MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE` env var).
       operationId: createOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       requestBody:
@@ -10637,15 +11299,31 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthAppWithSecret'
+                $ref: '#/components/schemas/CreateOAuthAppResponse'
         '400':
           description: Invalid request (validation error)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — insufficient workspace permission to create OAuth apps
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/scopes:
     get:
@@ -10653,12 +11331,15 @@ paths:
         - OAuth Apps
       summary: List available scopes
       description: |
-        List OAuth scopes that the signed-in user may register on new or updated apps, grouped by category.
-        <br><br>
-        The set is **role-aware**: org admins see additional admin-only scopes; non-admins see the member scope set.
-        <br><br>
-        Returns scope names, descriptions, categories, and consent flags for the developer-settings UI.
+        Returns the OAuth scopes the signed-in user is permitted to register on new or updated apps, grouped by category. Use this to populate scope-picker UIs and to validate `allowedScopes` client-side before submitting to `createOAuthApp` / `updateOAuthApp`.
+
+        The result is role-aware. Org admins (members of an admin user group) receive every registered scope; everyone else is filtered to exclude admin-only scopes: `org:write`, `org:admin`, `user:invite`, `user:delete`, `usergroup:write`, `team:write`, `config:write`, `crawl:write`, `crawl:delete`.
+
+        Each key in the `scopes` map matches the `category` field on the `OAuthScopeInfo` entries it contains. A category may appear with an empty array when every scope it contains is restricted for the caller — treat empty buckets as "no permitted scopes in this group", not as a missing category.
+
+        Shares the per-user rate limiter applied to every `/oauth-clients/*` route (default 1000 req/min, `MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE`).
       operationId: listOAuthScopes
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       responses:
@@ -10667,30 +11348,40 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  scopes:
-                    type: object
-                    description: Scopes grouped by category
-                    additionalProperties:
-                      type: array
-                      items:
-                        type: object
-                        properties:
-                          name:
-                            type: string
-                          description:
-                            type: string
-                          category:
-                            type: string
-                          requiresUserConsent:
-                            type: boolean
+                $ref: '#/components/schemas/OAuthScopesGroupedResponse'
+              example:
+                scopes:
+                  Identity:
+                    - name: openid
+                      description: OpenID Connect authentication
+                      category: Identity
+                      requiresUserConsent: false
+                    - name: profile
+                      description: User profile information (name, picture)
+                      category: Identity
+                      requiresUserConsent: true
+                  Knowledge Base:
+                    - name: kb:read
+                      description: Read knowledge bases and records
+                      category: Knowledge Base
+                      requiresUserConsent: true
         '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden — insufficient permission to list OAuth scopes in this workspace
+          description: Unauthorized — missing/invalid token, or session invalidated (e.g. password change after token issuance)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
-          description: Rate limit exceeded
+          description: Rate limit exceeded for OAuth client management routes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+              example:
+                error:
+                  code: TOO_MANY_REQUESTS
+                  message: Too many OAuth client requests. Please try again later.
+                  retryAfter: 45
 
   /oauth-clients/{appId}:
     get:
@@ -10698,10 +11389,11 @@ paths:
         - OAuth Apps
       summary: Get OAuth app details
       description: |
-        Get details of an OAuth app **you created** (creator-only; org admins do not access other members' apps).
-        <br><br>
-        Returns app configuration without the client secret.
+        Returns the full configuration of an OAuth app you registered. The `clientSecret` is never echoed back here; if you need a new one, call `POST /oauth-clients/{appId}/regenerate-secret`.
+
+        Access is creator-scoped: even org admins receive `404` for apps owned by other users. This avoids leaking app metadata across org members and keeps the read surface symmetric with `listOAuthApps`.
       operationId: getOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10721,27 +11413,43 @@ paths:
                 $ref: '#/components/schemas/OAuthAppResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
     put:
       tags:
         - OAuth Apps
       summary: Update OAuth app
       description: |
-        Update an OAuth app's configuration (**creator only** — the user who registered the app).
-        <br><br>
-        <b>Scopes:</b> When changing `allowedScopes`, values must remain allowed for your role (same rules as `GET /oauth-clients/scopes`).
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
-        <br><br>
-        <b>Note:</b> To regenerate the client secret, use the
-        `/oauth-clients/{appId}/regenerate-secret` endpoint.
+        Update an OAuth app's configuration. All body fields are optional — supply only what should change. URL fields (`homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`) accept `null` to clear them.
+
+        Creator-only: even org admins cannot edit apps owned by other users.
+
+        When modifying `allowedScopes`, the new set must remain a subset of the caller's role-aware scope list (same rule as `GET /oauth-clients/scopes`). When adding `authorization_code` to `allowedGrantTypes`, `redirectUris` becomes required and must contain at least one URI; otherwise the request is rejected with `400` by the Zod refine on `updateAppSchema`.
+
+        This endpoint never rotates the client secret — use `POST /oauth-clients/{appId}/regenerate-secret` for that.
       operationId: updateOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10765,30 +11473,48 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthAppResponse'
+                $ref: '#/components/schemas/UpdateOAuthAppResponse'
         '400':
           description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
     delete:
       tags:
         - OAuth Apps
       summary: Delete OAuth app
       description: |
-        Delete (soft delete) an OAuth app (**creator only**).
-        <br><br>
-        This marks the app as deleted and revokes all its tokens.
-        The app cannot be restored after deletion.
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Soft-deletes an OAuth app. The app is flagged `isDeleted=true` on the `OAuthApp` document, removed from list/get responses for every caller, and all of its access and refresh tokens are revoked in the same operation. There is no restore endpoint — deletion is final.
+
+        Creator-only: even org admins cannot delete apps owned by other users.
       operationId: deleteOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10812,12 +11538,28 @@ paths:
                     example: "OAuth app deleted successfully"
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/{appId}/regenerate-secret:
     post:
@@ -10825,17 +11567,13 @@ paths:
         - OAuth Apps
       summary: Regenerate client secret
       description: |
-        Regenerate the client secret for an OAuth app.
-        <br><br>
-        The old secret is immediately invalidated. Any clients using the old
-        secret will fail to authenticate until updated with the new secret.
-        <br><br>
-        <b>Important:</b> The new secret is only returned once. Store it securely.
-        <br><br>
-        Caller must be the **creator** (registered owner) of the app.
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Generates a fresh client secret for an OAuth app. The previous secret is invalidated immediately — any client still presenting it will fail token exchange at `POST /oauth2/token` until updated.
+
+        The new secret is returned in this response **only** and cannot be retrieved later. Pair this call with credential propagation to every integration that uses the app. If the rotation was triggered by a suspected leak, also call `POST /oauth-clients/{appId}/revoke-all-tokens` to invalidate already-issued access and refresh tokens instead of waiting for their natural expiry.
+
+        Creator-only: even org admins cannot rotate secrets for other users' apps.
       operationId: regenerateOAuthAppSecret
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10852,15 +11590,31 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthAppWithSecret'
+                $ref: '#/components/schemas/RegenerateOAuthAppSecretResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/{appId}/suspend:
     post:
@@ -10868,15 +11622,13 @@ paths:
         - OAuth Apps
       summary: Suspend OAuth app
       description: |
-        Suspend an OAuth app, preventing it from authenticating or issuing tokens.
-        <br><br>
-        Existing tokens remain valid until they expire, but no new tokens can
-        be obtained. Use this for temporary access suspension.
-        <br><br>
-        Caller must be the **creator** (registered owner) of the app.
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Moves an OAuth app to `status: "suspended"`, blocking new token issuance at `POST /oauth2/token` and the authorization-code consent flow. Tokens that have already been issued remain valid until their natural expiry — call `POST /oauth-clients/{appId}/revoke-all-tokens` immediately afterwards if you need an immediate lockout.
+
+        Use this for temporary suspensions where you intend to reactivate later. For permanent removal, use `DELETE /oauth-clients/{appId}`. Suspending an app that is already suspended returns `400`.
+
+        Creator-only.
       operationId: suspendOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10893,15 +11645,37 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthAppResponse'
+                $ref: '#/components/schemas/SuspendOAuthAppResponse'
+        '400':
+          description: Bad request — e.g. OAuth app is already suspended
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/{appId}/activate:
     post:
@@ -10909,12 +11683,13 @@ paths:
         - OAuth Apps
       summary: Activate suspended OAuth app
       description: |
-        Reactivate a suspended OAuth app, allowing it to authenticate and issue tokens again.
-        <br><br>
-        Caller must be the **creator** (registered owner) of the app.
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Moves a suspended OAuth app back to `status: "active"`, restoring its ability to authenticate and obtain new tokens via `POST /oauth2/token`.
+
+        A revoked app cannot be reactivated (returns `400`); the only path back is to register a new app. Activating an app that is already active also returns `400`.
+
+        Creator-only.
       operationId: activateOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10931,15 +11706,37 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthAppResponse'
+                $ref: '#/components/schemas/ActivateOAuthAppResponse'
+        '400':
+          description: Bad request — e.g. app is already active, or cannot activate a revoked app
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/{appId}/tokens:
     get:
@@ -10947,12 +11744,13 @@ paths:
         - OAuth Apps
       summary: List app tokens
       description: |
-        List all active tokens issued to an OAuth app.
-        <br><br>
-        Useful for monitoring app usage and identifying tokens to revoke.
-        <br><br>
-        Caller must be the **creator** (registered owner) of the app.
+        Lists active access and refresh tokens currently issued to an OAuth app, sorted newest first. Useful for auditing app usage and picking specific tokens to investigate before a targeted revocation.
+
+        Each entry includes the token type (`access` or `refresh`), the user the token was issued for (omitted for client-credentials access tokens), the granted scopes, the issuance and expiry timestamps, and the revocation flag. Each type is capped at 100 most-recent rows server-side (`listTokensForApp` in `oauth_token.service.ts`); revoked and expired tokens are excluded.
+
+        Creator-only.
       operationId: listOAuthAppTokens
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10969,17 +11767,31 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/OAuthTokenListItem'
+                $ref: '#/components/schemas/OAuthAppTokensListResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/{appId}/revoke-all-tokens:
     post:
@@ -10987,14 +11799,13 @@ paths:
         - OAuth Apps
       summary: Revoke all app tokens
       description: |
-        Revoke all tokens (access and refresh) issued to an OAuth app.
-        <br><br>
-        Use this for emergency access removal or when rotating credentials.
-        <br><br>
-        Caller must be the **creator** (registered owner) of the app.
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Revokes every access and refresh token currently issued to an OAuth app, in a single operation. Use this for emergency credential rotation, suspected secret leaks, or as a follow-up to `POST /oauth-clients/{appId}/regenerate-secret` when you want existing sessions invalidated immediately rather than letting them expire naturally.
+
+        The response `count` is the total number of tokens revoked across both types. Clients of this app must then obtain new tokens via the standard OAuth flow.
+
+        Creator-only.
       operationId: revokeAllOAuthAppTokens
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -11021,12 +11832,28 @@ paths:
                     description: Number of tokens revoked
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   # ==================== AUTHENTICATION ENDPOINTS ====================
   /userAccount/initAuth:
@@ -29011,6 +29838,7 @@ paths:
       summary: Get models by type
       description: Get all configured models of a specific type.
       operationId: getModelsByType
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -29027,16 +29855,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  message:
-                    type: string
-                  models:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/AIModelProviderConfig'
+                $ref: '#/components/schemas/GetModelsByTypeResponse'
         '401':
           description: Unauthorized
 
@@ -29400,6 +30219,7 @@ paths:
       summary: Add new AI model provider
       description: "Add a new AI model provider configuration. Performs a health check before saving to verify connectivity. Supported providers: openai, anthropic, azure-openai, aws-bedrock, google-vertex, ollama, huggingface."
       operationId: addAIModelProvider
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:write]
@@ -29411,18 +30231,32 @@ paths:
             schema:
               $ref: '#/components/schemas/AddAIModelProviderRequest'
       responses:
-        '201':
+        '200':
           description: AI model provider added successfully
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AIModelProviderResponse'
         '400':
-          description: Invalid configuration or health check failed
+          description: |
+            Invalid request body (Zod validation), controller validation, or
+            health-check failure (invalid credentials or provider config).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddAIModelProviderErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/ai-models/providers/{modelType}/{modelKey}:
     put:
@@ -29431,6 +30265,7 @@ paths:
       summary: Update AI model provider
       description: Update an existing AI model provider configuration.
       operationId: updateAIModelProvider
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:write]
@@ -29445,56 +30280,135 @@ paths:
           required: true
           schema:
             type: string
+            minLength: 1
           description: Unique model key (UUID)
       requestBody:
         required: true
-        description: "Request payload"
+        description: Updated provider configuration (validated by `updateProviderRequestSchema`)
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/UpdateAIModelProviderRequest'
       responses:
         '200':
-          description: AI model provider updated
+          description: AI model provider updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateAIModelProviderResponse'
         '400':
-          description: Invalid configuration
+          description: |
+            Invalid request body (Zod validation), controller validation (e.g. model type
+            mismatch, missing fields), health-check failure, or admin access required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateAIModelProviderErrorResponse'
         '401':
-          description: Unauthorized
-        '403':
-          description: Admin access required
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Model provider not found
+          description: |
+            No AI models configuration in KV store, or no provider with the given modelKey.
+            Health-check runs before KV lookup, so unknown keys with invalid credentials may
+            return 400 from the health-check instead.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelProviderSimpleError'
 
     delete:
       tags:
         - AI Models Providers
       summary: Delete AI model provider
-      description: Remove an AI model provider configuration. Cannot delete the default model if it's the only one.
+      description: |
+        Remove an AI model provider configuration. Fails with 409 when agents still
+        reference the model. If the deleted entry was default, the first remaining
+        entry for that type is promoted to default.
       operationId: deleteAIModelProvider
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
         - name: modelType
           in: path
           required: true
+          description: Model category (ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt)
           schema:
             $ref: '#/components/schemas/ModelType'
         - name: modelKey
           in: path
           required: true
+          description: Unique model key (UUID)
           schema:
             type: string
+            minLength: 1
       responses:
         '200':
           description: AI model provider deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteAIModelProviderResponse'
+              example:
+                status: success
+                message: "LLM provider deleted successfully"
+                details:
+                  modelKey: f3a4b5b6-5b6c-4e85-9097-3202cfe696fc
+                  modelType: llm
+                  provider: openAI
+                  model: gpt-4o-mini
+                  wasDefault: false
+                  contextLength: 128000
         '400':
-          description: Cannot delete default model
+          description: |
+            Model type mismatch — the `modelKey` exists under a different `modelType`
+            than the path parameter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelProviderSimpleError'
+              example:
+                status: error
+                message: "Model key 'f3a4b5b6-5b6c-4e85-9097-3202cfe696fc' belongs to type 'llm', not 'embedding'"
         '401':
           description: Unauthorized
         '403':
           description: Admin access required
         '404':
-          description: Model provider not found
+          description: |
+            Model provider not found, or no AI models configuration exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelProviderSimpleError'
+              examples:
+                modelNotFound:
+                  summary: Unknown modelKey
+                  value:
+                    status: error
+                    message: "Model with key 'f3a4b5b6-5b6c-4e85-9097-3202cfe696fc' not found"
+                noConfig:
+                  summary: No AI models configuration in KV store
+                  value:
+                    status: error
+                    message: "No AI models configuration found"
+        '409':
+          description: |
+            Model is in use by one or more agents. Remove the model from those agents
+            before deleting. Response body is the standard error envelope (`error.code`,
+            `error.message`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: HTTP_CONFLICT
+                  message: "Cannot delete model 'gpt-4o-mini': currently in use by agent 'Research Assistant'. Remove it from the agent first."
 
   /configurationManager/ai-models/default/{modelType}/{modelKey}:
     put:
@@ -30697,8 +31611,11 @@ paths:
         - Configuration Manager
       summary: Get AI model providers
       description: |
-        Retrieve all available AI model providers.
+        Retrieve all configured AI model provider entries grouped by model type
+        (admin-only). Returns the stored KV shape under `models`, not the flattened
+        list from getAvailableModelsByType.
       operationId: getAIModelsProviders
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       responses:
@@ -30707,7 +31624,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                $ref: '#/components/schemas/GetAIModelsProvidersResponse'
         '401':
           description: Unauthorized
         '403':

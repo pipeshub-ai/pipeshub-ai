@@ -1519,6 +1519,8 @@
       "emptyState": "No connectors found",
       "noInstances": "No instances configured yet",
       "addInstance": "Add Another Instance",
+      "refreshAllInstances": "Refresh all",
+      "refreshInstance": "Refresh instance details",
       "saveConfig": "Save Configuration",
       "continueToConfiguration": "Continue to configuration →",
       "oauthSigningIn": "Finish signing in with your provider…",
@@ -1534,6 +1536,7 @@
         "syncStartedDescription": "Your records will be available shortly.",
         "syncStartedLongDescription": "This may take a few minutes. You'll be notified when it's done.",
         "syncError": "Failed to start sync",
+        "refreshInstancesError": "Failed to refresh connector instances",
         "configLoadError": "Failed to load connector configuration",
         "createError": "Failed to create connector",
         "createSuccess": "Connector instance '{{name}}' created successfully",
@@ -1716,6 +1719,27 @@
         "syncStrategy": "Sync Strategy",
         "authBannerTitle": "Authenticate Personal Account",
         "authBannerDescription": "Connect your account to enable access and workspace configuration"
+      },
+      "instanceStatus": {
+        "setup": {
+          "kind": "Setup",
+          "rowLabel": "Configuration",
+          "notConfigured": "Incomplete",
+          "notConfiguredTooltip": "Configuration is not finished. Open setup to complete sync and filter settings.",
+          "needsAuth": "Needs auth",
+          "needsAuthTooltip": "Configuration is saved but this instance still needs authentication.",
+          "ready": "Complete",
+          "readyTooltip": "Configuration is complete and authenticated. Sync can run when enabled."
+        },
+        "sync": {
+          "kind": "Sync",
+          "syncing": "Syncing",
+          "syncingTooltip": "A sync job is running for this instance.",
+          "fullSyncing": "Full sync",
+          "fullSyncingTooltip": "A full sync is running for this instance.",
+          "removing": "Removing",
+          "removingTooltip": "This instance is being deleted."
+        }
       },
       "schemaForm": {
         "tagsPlaceholder": "Type and press Enter to add tags",

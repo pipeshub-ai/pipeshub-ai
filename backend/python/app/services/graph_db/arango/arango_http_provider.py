@@ -539,7 +539,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 await self._ensure_edge_definitions_up_to_date(GraphNames.KNOWLEDGE_GRAPH.value)
 
             # 3. Ensure persistent indexes for frequent query patterns
-            # await self._ensure_indexes()
+            await self._ensure_indexes()
 
             # 4. Seed departments collection with predefined department types
             await self._ensure_departments_seed()
@@ -613,12 +613,99 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Edge collections have automatic indexes on _from and _to fields which optimize
         graph traversals. Custom indexes below cover document-lookup hot paths.
         """
+        # ==================== RECORD INDEXES (Highest Priority) ====================
+        # Records are the most queried entity, especially in permission checks
+
         # COMPOSITE: virtualRecordId + orgId
         # Pattern: FOR record IN records FILTER record.virtualRecordId IN @ids AND record.orgId == @orgId
         # Used in: get_records_by_virtual_record_ids (Phase 3 batch fetch after Qdrant search)
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
             ["virtualRecordId", "orgId"],
+        )
+
+        # COMPOSITE: externalRecordId + connectorId (ALWAYS queried together)
+        # Pattern: FOR record IN records FILTER record.externalRecordId == @id AND record.connectorId == @cid
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["externalRecordId", "connectorId"],
+        )
+
+        # SINGLE: orgId (queried independently and with other fields)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["orgId"],
+        )
+
+        # SINGLE: connectorId (queried independently in many patterns)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["connectorId"],
+        )
+
+        # SINGLE: indexingStatus (pipeline queries)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["indexingStatus"],
+        )
+
+        # SINGLE: origin (heavily used in permission WHERE clauses)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["origin"],
+        )
+
+        # SINGLE: md5Checksum (duplicate detection)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["md5Checksum"],
+        )
+
+        # ==================== USER INDEXES (High Priority) ====================
+
+        # SINGLE: email (authentication, lookups)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.USERS.value,
+            ["email"],
+        )
+
+        # SINGLE: userId (user identification)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.USERS.value,
+            ["userId"],
+        )
+
+        # SINGLE: orgId (org-scoped queries)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.USERS.value,
+            ["orgId"],
+        )
+
+        # ==================== RECORDGROUP INDEXES (High Priority) ====================
+
+        # COMPOSITE: externalGroupId + connectorId (ALWAYS queried together)
+        # Pattern: FOR rg IN record_groups FILTER rg.externalGroupId == @id AND rg.connectorId == @cid
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORD_GROUPS.value,
+            ["externalGroupId", "connectorId"],
+        )
+
+        # SINGLE: orgId (org-scoped queries)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORD_GROUPS.value,
+            ["orgId"],
+        )
+
+        # SINGLE: connectorId (cleanup operations, queried independently)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORD_GROUPS.value,
+            ["connectorId"],
+        )
+
+        # SINGLE: groupType (KB filtering)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORD_GROUPS.value,
+            ["groupType"],
         )
 
     async def _ensure_departments_seed(self) -> None:

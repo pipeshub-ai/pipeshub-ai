@@ -3243,89 +3243,6 @@ class TestGitlabConnectorSyncAllProject:
 
 
 class TestGitlabConnectorBuildCodeFileRecords:
-    @pytest.fixture(autouse=True)
-    def _default_code_file_timestamps(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Avoid live GitLab calls when unit-testing record construction."""
-
-        async def _batch(
-            _self: GitLabConnector,
-            _project_id: int,
-            _project_path: str,
-            file_paths: list[str],
-        ) -> dict[str, tuple[int | None, int | None]]:
-            stamp = (1_700_000_000_000, 1_700_000_100_000)
-            return {path: stamp for path in file_paths}
-
-        monkeypatch.setattr(
-            GitLabConnector, "_fetch_code_file_timestamps_batch", _batch
-        )
-
-    @pytest.mark.asyncio
-    async def test_code_file_source_timestamps_from_commit_history(
-        self,
-    ) -> None:
-        connector = _make_connector()
-        connector.data_source = MagicMock()
-
-        connector._ds_call = AsyncMock(
-            return_value=MagicMock(
-                success=True,
-                data={
-                    "newest_committed_date": "2024-06-01T10:00:00+00:00",
-                    "oldest_committed_date": "2024-01-01T00:00:00Z",
-                    "commit_count": 2,
-                },
-            )
-        )
-
-        created_ms, updated_ms = await connector._code_file_source_timestamps(
-            123, "group/project", "README.md"
-        )
-
-        from app.utils.time_conversion import parse_timestamp
-
-        assert updated_ms == parse_timestamp("2024-06-01T10:00:00+00:00")
-        assert created_ms == parse_timestamp("2024-01-01T00:00:00Z")
-
-    @pytest.mark.asyncio
-    async def test_code_file_source_timestamps_returns_none_when_history_unavailable(
-        self,
-    ) -> None:
-        connector = _make_connector()
-        connector.data_source = MagicMock()
-        connector._ds_call = AsyncMock(
-            return_value=MagicMock(success=False, error="history unavailable")
-        )
-
-        created_ms, updated_ms = await connector._code_file_source_timestamps(
-            123, "group/project", "README.md"
-        )
-
-        assert created_ms is None
-        assert updated_ms is None
-
-    @pytest.mark.asyncio
-    async def test_code_file_source_timestamps_rest_omits_head_ref(self) -> None:
-        connector = _make_connector()
-        connector.data_source = MagicMock()
-        connector._ds_call = AsyncMock(
-            return_value=MagicMock(
-                success=True,
-                data={
-                    "newest_committed_date": "2024-06-01T10:00:00+00:00",
-                    "oldest_committed_date": "2024-01-01T00:00:00Z",
-                    "commit_count": 2,
-                },
-            )
-        )
-
-        await connector._code_file_source_timestamps(
-            123, "group/project", "README.md", ref="HEAD"
-        )
-
-        connector._ds_call.assert_awaited_once()
-        assert connector._ds_call.await_args.kwargs["ref_name"] is None
-
     @pytest.mark.asyncio
     async def test_build_code_file_records_success_single_file(self) -> None:
         """Test building code file records with a single file."""
@@ -3353,14 +3270,6 @@ class TestGitlabConnectorBuildCodeFileRecords:
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector._process_new_records = AsyncMock()
-        connector._fetch_code_file_timestamps_batch = AsyncMock(
-            return_value={
-                "src/main.py": (
-                    1_700_000_000_000,
-                    1_700_000_100_000,
-                )
-            }
-        )
 
         # Execute
         await connector.build_code_file_records(code_file_list, 123, "project-path")
@@ -3384,8 +3293,10 @@ class TestGitlabConnectorBuildCodeFileRecords:
         assert code_file.weburl == "https://gitlab.com/project/src/main.py"
         assert code_file.external_record_group_id == "123-code-repository"
         assert code_file.mime_type == MimeTypes.PLAIN_TEXT.value
-        assert code_file.source_created_at == 1_700_000_000_000
-        assert code_file.source_updated_at == 1_700_000_100_000
+        # Timestamps now use current sync time (not fetched from GitLab API)
+        assert code_file.source_created_at > 0
+        assert code_file.source_updated_at > 0
+        assert code_file.source_created_at == code_file.source_updated_at
 
     @pytest.mark.asyncio
     async def test_build_code_file_records_multiple_files(self) -> None:

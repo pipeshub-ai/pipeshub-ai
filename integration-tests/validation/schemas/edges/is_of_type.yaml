@@ -1,0 +1,9 @@
+name: is_of_type_edge
+description: IsOfType edge document (matches Arango isOfType collection).
+fields:
+  createdAtTimestamp:
+    required: false
+    type: integer
+  updatedAtTimestamp:
+    required: false
+    type: integer
