@@ -15,7 +15,7 @@ on:
         required: true
         default: 'integration'
         type: choice
-          options:
+        options:
             - integration
             - s3
             - confluence
