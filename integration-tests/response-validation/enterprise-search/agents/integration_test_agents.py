@@ -8,6 +8,8 @@
 
 Exercises the Node gateway (and Python agent service for updates) with positive
 and negative request shapes using the existing enterprise-search fixtures.
+Update-agent tests assert request/response bodies against the ``updateAgent``
+OpenAPI operation where applicable.
 """
 
 from __future__ import annotations
@@ -91,6 +93,62 @@ def _build_payload(
         payload["startMessage"] = start_message
     if system_prompt is not None:
         payload["systemPrompt"] = system_prompt
+    if tags is not None:
+        payload["tags"] = tags
+    if share_with_org is not None:
+        payload["shareWithOrg"] = share_with_org
+    if is_service_account is not None:
+        payload["isServiceAccount"] = is_service_account
+    if knowledge is not None:
+        payload["knowledge"] = knowledge
+    if web_search is not None:
+        payload["webSearch"] = web_search
+    if toolsets is not None:
+        payload["toolsets"] = toolsets
+
+    return payload
+
+
+def _build_update_payload(
+    *,
+    name: str | None = None,
+    seeded_model: SeededAIModel | None = None,
+    models: list[dict[str, Any]] | None = None,
+    description: str | None = None,
+    start_message: str | None = None,
+    system_prompt: str | None = None,
+    instructions: str | None = None,
+    tags: list[str] | None = None,
+    share_with_org: bool | None = None,
+    is_service_account: bool | None = None,
+    knowledge: list[dict[str, Any]] | None = None,
+    web_search: str | dict[str, Any] | None = None,
+    toolsets: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Partial update payload — only includes explicitly provided fields."""
+    payload: dict[str, Any] = {}
+
+    if name is not None:
+        payload["name"] = name
+    if seeded_model is not None:
+        payload["models"] = [
+            {
+                "modelKey": seeded_model.model_key,
+                "modelName": seeded_model.model_name,
+                "provider": seeded_model.provider,
+                "isReasoning": True,
+            },
+        ]
+    elif models is not None:
+        payload["models"] = models
+    if description is not None:
+        payload["description"] = description
+    if start_message is not None:
+        payload["startMessage"] = start_message
+    if system_prompt is not None:
+        payload["systemPrompt"] = system_prompt
+    if instructions is not None:
+        payload["instructions"] = instructions
     if tags is not None:
         payload["tags"] = tags
     if share_with_org is not None:
@@ -944,6 +1002,7 @@ class TestUpdateAgent:
         self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.headers = pipeshub_client.auth_headers
+        self.org_id = pipeshub_client.org_id
         self.timeout = pipeshub_client.timeout_seconds
 
     @pytest.fixture
@@ -1022,14 +1081,39 @@ class TestUpdateAgent:
             timeout=self.timeout,
         )
 
-    @staticmethod
-    def _assert_update_agent_response_shape(body: dict[str, Any]) -> None:
-        assert body.get("status") == "success", f"Expected success status, got: {body!r}"
-        assert body.get("message") == "Agent updated successfully", (
-            f"Expected update success message, got: {body!r}"
+    def test_update_agent_empty_body_matches_openapi(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        original_name = f"it-agent-update-empty-body-{uuid4().hex[:8]}"
+        agent_key = self._create_agent_for_update_test(
+            name=original_name,
+            seeded_model=reasoning_multimodal_llm_model,
+            created_agent_keys=created_agent_keys,
         )
-        assert "agent" not in body, (
-            f"Update response should not include agent object, got: {body!r}"
+
+        payload: dict[str, Any] = {}
+        assert_request_body_matches_openapi_operation(payload, "updateAgent")
+
+        resp = self._update_agent_raw(agent_key, json_body=payload)
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        assert_response_matches_openapi_operation(body, "updateAgent", status_code="200")
+
+        get_resp = self._get_agent_raw(agent_key)
+        assert get_resp.status_code == 200, (
+            f"Expected GET 200 after empty-body update, got {get_resp.status_code}: {get_resp.text}"
+        )
+        get_body = _response_json(get_resp)
+        agent = TestGetAgent._assert_get_agent_response_shape(
+            get_body,
+            expected_agent_key=agent_key,
+            expected_name=original_name,
+        )
+        assert agent.get("name") == original_name, (
+            f"Expected name unchanged after empty-body update, got: {get_body!r}"
         )
 
     def test_update_agent_partial_name_and_description(
@@ -1048,14 +1132,17 @@ class TestUpdateAgent:
         updated_name = f"it-agent-update-after-{uuid4().hex[:8]}"
         updated_description = f"updated description {uuid4().hex[:8]}"
 
-        resp = self._update_agent_raw(
-            agent_key,
-            json_body={"name": updated_name, "description": updated_description},
+        payload = _build_update_payload(
+            name=updated_name,
+            description=updated_description,
         )
+        assert_request_body_matches_openapi_operation(payload, "updateAgent")
+
+        resp = self._update_agent_raw(agent_key, json_body=payload)
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
-        self._assert_update_agent_response_shape(body)
+        assert_response_matches_openapi_operation(body, "updateAgent", status_code="200")
 
         get_resp = self._get_agent_raw(agent_key)
         assert get_resp.status_code == 200, (
@@ -1071,6 +1158,59 @@ class TestUpdateAgent:
             f"Expected updated description on GET, got: {get_body!r}"
         )
 
+    def test_update_agent_rich_payload_matches_openapi_and_updates(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        session_kb: dict[str, str],
+        created_agent_keys: list[str],
+    ) -> None:
+        agent_key = self._create_agent_for_update_test(
+            name=f"it-agent-update-rich-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+            created_agent_keys=created_agent_keys,
+        )
+
+        updated_description = f"rich update description {uuid4().hex[:8]}"
+        payload = _build_update_payload(
+            description=updated_description,
+            start_message="Hello from integration test",
+            system_prompt="You are a helpful assistant.",
+            instructions="Be concise.",
+            tags=["integration", "update-rich"],
+            seeded_model=reasoning_multimodal_llm_model,
+            toolsets=[_valid_toolset_entry()],
+            knowledge=[
+                {
+                    "connectorId": f"knowledgeBase_{self.org_id}",
+                    "filters": {"recordGroups": [session_kb["kb_id"]], "records": []},
+                },
+            ],
+            web_search={"provider": "tavily", "providerKey": "demo-key"},
+        )
+        assert_request_body_matches_openapi_operation(payload, "updateAgent")
+
+        resp = self._update_agent_raw(agent_key, json_body=payload)
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        assert_response_matches_openapi_operation(body, "updateAgent", status_code="200")
+
+        get_resp = self._get_agent_raw(agent_key)
+        assert get_resp.status_code == 200, (
+            f"Expected GET 200 after rich update, got {get_resp.status_code}: {get_resp.text}"
+        )
+        get_body = _response_json(get_resp)
+        agent = TestGetAgent._assert_get_agent_response_shape(
+            get_body,
+            expected_agent_key=agent_key,
+        )
+        assert agent.get("description") == updated_description, (
+            f"Expected updated description on GET, got: {get_body!r}"
+        )
+        assert agent.get("tags") == ["integration", "update-rich"], (
+            f"Expected updated tags on GET, got: {get_body!r}"
+        )
+
     def test_update_agent_accepts_valid_models_array(
         self,
         reasoning_multimodal_llm_model: SeededAIModel,
@@ -1082,23 +1222,16 @@ class TestUpdateAgent:
             created_agent_keys=created_agent_keys,
         )
 
-        resp = self._update_agent_raw(
-            agent_key,
-            json_body={
-                "models": [
-                    {
-                        "modelKey": reasoning_multimodal_llm_model.model_key,
-                        "modelName": reasoning_multimodal_llm_model.model_name,
-                        "provider": reasoning_multimodal_llm_model.provider,
-                        "isReasoning": True,
-                    },
-                ],
-            },
+        payload = _build_update_payload(
+            seeded_model=reasoning_multimodal_llm_model,
         )
+        assert_request_body_matches_openapi_operation(payload, "updateAgent")
+
+        resp = self._update_agent_raw(agent_key, json_body=payload)
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
-        self._assert_update_agent_response_shape(body)
+        assert_response_matches_openapi_operation(body, "updateAgent", status_code="200")
 
         get_resp = self._get_agent_raw(agent_key)
         assert get_resp.status_code == 200, (
@@ -1114,6 +1247,32 @@ class TestUpdateAgent:
         first_model = models[0]
         assert isinstance(first_model, dict), f"Expected model object, got: {first_model!r}"
         assert first_model.get("modelKey") == reasoning_multimodal_llm_model.model_key
+
+    def test_update_agent_accepts_unknown_fields_with_gateway_stripping(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        agent_key = self._create_agent_for_update_test(
+            name=f"it-agent-update-strip-unknown-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+            created_agent_keys=created_agent_keys,
+        )
+
+        payload = _build_update_payload(
+            description=f"strip-unknown probe {uuid4().hex[:8]}",
+            web_search={"provider": "serper", "providerKey": "demo-key"},
+        )
+        assert_request_body_matches_openapi_operation(payload, "updateAgent")
+
+        payload["unexpectedTopLevelField"] = "drop-me"
+        payload["webSearch"]["unexpectedWebSearchField"] = "drop-me"
+
+        resp = self._update_agent_raw(agent_key, json_body=payload)
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        assert_response_matches_openapi_operation(body, "updateAgent", status_code="200")
 
     def test_update_agent_accepts_varied_query_params_even_though_controller_ignores_them(
         self,
@@ -1134,7 +1293,7 @@ class TestUpdateAgent:
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
-        self._assert_update_agent_response_shape(body)
+        assert_response_matches_openapi_operation(body, "updateAgent", status_code="200")
 
     def test_update_agent_requires_auth(self, agent_session: dict[str, Any]) -> None:
         resp = self._update_agent_raw(
@@ -1164,9 +1323,12 @@ class TestUpdateAgent:
         )
 
         resp = self._update_agent_raw(agent_key, json_body={"models": []})
-        assert resp.status_code == 500, (
-            f"Expected current 500 error for empty models array, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 400, (
+            f"Expected 400 validation error for empty models array, got {resp.status_code}: {resp.text}"
         )
+
+        body = _response_json(resp)
+        assert_response_matches_openapi_operation(body, "updateAgent", status_code="400")
 
         error_text = _response_text_fragments(resp)
         assert "at least one" in error_text and "model" in error_text, (
@@ -1197,13 +1359,61 @@ class TestUpdateAgent:
                 ],
             },
         )
-        assert resp.status_code == 500, (
-            f"Expected current 500 for models without reasoning flag, "
+        assert resp.status_code == 400, (
+            f"Expected 400 validation error for models without reasoning flag, "
             f"got {resp.status_code}: {resp.text}"
         )
 
+        body = _response_json(resp)
+        assert_response_matches_openapi_operation(body, "updateAgent", status_code="400")
+
         error_text = _response_text_fragments(resp)
         assert "reasoning model" in error_text, f"unexpected error payload: {resp.text}"
+
+    def test_update_agent_rejects_invalid_toolset_name(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        agent_key = self._create_agent_for_update_test(
+            name=f"it-agent-update-bad-toolset-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+            created_agent_keys=created_agent_keys,
+        )
+
+        resp = self._update_agent_raw(
+            agent_key,
+            json_body={"toolsets": [{"name": "not_a_real_toolset"}]},
+        )
+        assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        assert_response_matches_openapi_operation(body, "updateAgent", status_code="400")
+
+        error_text = _response_text_fragments(resp)
+        assert "invalid toolset" in error_text, f"unexpected error payload: {resp.text}"
+
+    def test_update_agent_rejects_name_exceeding_max_length(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        agent_key = self._create_agent_for_update_test(
+            name=f"it-agent-update-long-name-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+            created_agent_keys=created_agent_keys,
+        )
+
+        resp = self._update_agent_raw(agent_key, json_body={"name": "a" * 201})
+        assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        assert_response_matches_openapi_operation(body, "updateAgent", status_code="400")
+
+        error_text = _response_text_fragments(resp)
+        assert "200 characters" in error_text or "validation" in error_text, (
+            f"unexpected error payload: {resp.text}"
+        )
 
     def test_update_agent_returns_current_error_status_for_unknown_agent_key(self) -> None:
         missing_agent_key = f"missing-agent-{uuid4().hex[:12]}"
@@ -1248,6 +1458,23 @@ class TestUpdateAgent:
             or "parse" in error_text
             or "error" in error_text
         ), f"unexpected error payload: {resp.text}"
+
+
+@pytest.mark.integration
+class TestUpdateAgentOpenApiRequestContract:
+    """Offline OpenAPI request-body checks not covered by live gateway negatives."""
+
+    @pytest.fixture
+    def valid_partial_payload(self) -> dict[str, Any]:
+        return _build_update_payload(name="Partial rename")
+
+    def test_rejects_extra_top_level_property(
+        self,
+        valid_partial_payload: dict[str, Any],
+    ) -> None:
+        payload = {**valid_partial_payload, "unexpectedTopLevelField": "x"}
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(payload, "updateAgent")
 
 
 @pytest.mark.integration

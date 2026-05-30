@@ -103,6 +103,7 @@ import {
   agentAttachmentUploadSchema,
   agentAttachmentRecordIdParamsSchema,
   createAgentSchema,
+  updateAgentSchema,
   getAgentParamsSchema,
   listAgentsQuerySchema,
   getAgentConversationByIdSchema,
@@ -866,6 +867,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(updateAgentSchema),
     updateAgent(appConfig),
   );
 

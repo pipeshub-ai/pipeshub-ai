@@ -28,6 +28,7 @@ import {
   agentAttachmentUploadSchema,
   agentAttachmentRecordIdParamsSchema,
   createAgentSchema,
+  updateAgentSchema,
   listAgentsQuerySchema,
 } from '../../../../src/modules/enterprise_search/validators/es_validators'
 
@@ -1396,6 +1397,106 @@ describe('enterprise_search/validators/es_validators', () => {
     it('should reject name exceeding max length', () => {
       const result = createAgentSchema.safeParse({
         body: { name: 'a'.repeat(201), models: [validModel] },
+      })
+      expect(result.success).to.be.false
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // updateAgentSchema
+  // ---------------------------------------------------------------------------
+  describe('updateAgentSchema', () => {
+    const validModel = {
+      modelKey: 'mk1',
+      modelName: 'mn1',
+      isReasoning: true,
+    }
+
+    it('should accept empty body (no fields required for partial update)', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: {},
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept partial update with name only', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { name: 'Renamed Agent' },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept models with valid reasoning model', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: {
+          models: [
+            {
+              modelKey: 'mk1',
+              modelName: 'mn1',
+              provider: 'openai',
+              isReasoning: true,
+            },
+          ],
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject missing agentKey param', () => {
+      const result = updateAgentSchema.safeParse({
+        params: {},
+        body: { name: 'Some Agent' },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject empty agentKey param', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: '' },
+        body: { name: 'Some Agent' },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject empty models array', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { models: [] },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject models without a reasoning model', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: {
+          models: [
+            {
+              modelKey: 'mk1',
+              modelName: 'mn1',
+              isReasoning: false,
+            },
+          ],
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject string-only models without a reasoning entry', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { models: ['some-model-string'] },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject name exceeding max length', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { name: 'a'.repeat(201) },
       })
       expect(result.success).to.be.false
     })

@@ -451,6 +451,79 @@ export const createAgentSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Agent update schema (PUT /:agentKey)
+// ---------------------------------------------------------------------------
+
+const updateAgentBodySchema = z
+  .object({
+    name: z
+      .string()
+      .trim()
+      .min(1, { message: 'Name is required' })
+      .max(200, { message: 'Name must be less than 200 characters' })
+      .optional(),
+    models: z.array(agentModelEntrySchema).min(1).optional(),
+    description: agentLongTextSchema.optional(),
+    startMessage: agentLongTextSchema.optional(),
+    systemPrompt: agentLongTextSchema.optional(),
+    instructions: agentLongTextSchema.optional(),
+    tags: z.array(z.string().max(100)).max(50).optional(),
+    shareWithOrg: z.boolean().optional(),
+    isServiceAccount: z.boolean().optional(),
+    toolsets: z.array(agentToolsetSchema).max(100).optional(),
+    knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
+    webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
+  })
+  .superRefine((body, ctx) => {
+    if (!Array.isArray(body.models)) {
+      return;
+    }
+
+    let parsedCount = 0;
+    let hasReasoningModel = false;
+
+    for (const model of body.models) {
+      if (typeof model === 'string') {
+        if (model.trim()) {
+          parsedCount += 1;
+        }
+        continue;
+      }
+      const modelKey = model?.modelKey?.trim();
+      if (modelKey) {
+        parsedCount += 1;
+        if (model?.isReasoning === true) {
+          hasReasoningModel = true;
+        }
+      }
+    }
+
+    if (parsedCount === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'At least one AI model is required. Please add a model to your configuration.',
+        path: ['models'],
+      });
+      return;
+    }
+
+    if (!hasReasoningModel) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'At least one reasoning model is required. Please add a reasoning model to your configuration.',
+        path: ['models'],
+      });
+    }
+  });
+
+export const updateAgentSchema = z.object({
+  params: z.object(agentKeyParam),
+  body: updateAgentBodySchema,
+});
+
+// ---------------------------------------------------------------------------
 // Agent get / list query schemas
 // ---------------------------------------------------------------------------
 
