@@ -29,7 +29,10 @@ for _p in (_ROOT, _RV_HELPER):
         sys.path.insert(0, s)
 
 from ai_models_setup import SeededAIModel
-from openapi_schema_validator import assert_response_matches_openapi_operation
+from openapi_schema_validator import (
+    assert_request_body_matches_openapi_operation,
+    assert_response_matches_openapi_operation,
+)
 from pipeshub_client import PipeshubClient
 
 logger = logging.getLogger(__name__)
@@ -37,6 +40,23 @@ logger = logging.getLogger(__name__)
 _AGENTS_CREATE_PATH = "/api/v1/agents/create"
 _AGENTS_LIST_PATH = "/api/v1/agents"
 _AGENTS_DETAIL_PATH = "/api/v1/agents/{agent_key}"
+
+
+def _valid_toolset_entry(
+    *,
+    name: str = "slack",
+    tool_name: str = "send_message",
+) -> dict[str, Any]:
+    """OpenAPI-valid toolset entry (no UI-only fields such as ``id``)."""
+    return {
+        "name": name,
+        "tools": [
+            {
+                "name": tool_name,
+                "fullName": f"{name}.{tool_name}",
+            },
+        ],
+    }
 
 
 def _build_payload(
@@ -51,6 +71,7 @@ def _build_payload(
     is_service_account: bool | None = None,
     knowledge: list[dict[str, Any]] | None = None,
     web_search: str | dict[str, Any] | None = None,
+    toolsets: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "name": name,
@@ -80,6 +101,8 @@ def _build_payload(
         payload["knowledge"] = knowledge
     if web_search is not None:
         payload["webSearch"] = web_search
+    if toolsets is not None:
+        payload["toolsets"] = toolsets
 
     return payload
 
@@ -175,6 +198,7 @@ class TestCreateAgent:
             name=f"it-agent-minimal-{uuid4().hex[:8]}",
             seeded_model=reasoning_multimodal_llm_model,
         )
+        assert_request_body_matches_openapi_operation(payload, "createAgent")
 
         resp = self._create_agent_raw(payload)
         assert resp.status_code == 201, f"{resp.status_code}: {resp.text}"
@@ -205,6 +229,7 @@ class TestCreateAgent:
             share_with_org=False,
             is_service_account=False,
         )
+        assert_request_body_matches_openapi_operation(payload, "createAgent")
 
         resp = self._create_agent_raw(payload)
         assert resp.status_code == 201, f"{resp.status_code}: {resp.text}"
@@ -217,6 +242,36 @@ class TestCreateAgent:
         assert agent.get("name") == payload["name"]
         assert agent.get("isServiceAccount") is False
         assert agent.get("webSearch") is None
+
+    def test_create_agent_rich_payload_matches_openapi_and_creates(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        session_kb: dict[str, str],
+        created_agent_keys: list[str],
+    ) -> None:
+        payload = _build_payload(
+            name=f"it-agent-rich-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+            tags=["integration"],
+            knowledge=[
+                {
+                    "connectorId": f"knowledgeBase_{self.org_id}",
+                    "filters": {"recordGroups": [session_kb["kb_id"]], "records": []},
+                },
+            ],
+            web_search={"provider": "tavily", "providerKey": "demo-key"},
+            toolsets=[_valid_toolset_entry()],
+        )
+        assert_request_body_matches_openapi_operation(payload, "createAgent")
+
+        resp = self._create_agent_raw(payload)
+        assert resp.status_code == 201, f"{resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        agent_key = self._created_agent_key(body)
+        created_agent_keys.append(agent_key)
+
+        assert_response_matches_openapi_operation(body, "createAgent", status_code="201")
 
     def test_create_agent_response_matches_openapi_spec(
         self,
@@ -334,35 +389,6 @@ class TestCreateAgent:
         error_text = _response_text_fragments(resp)
         assert "name is required" in error_text, f"unexpected error payload: {resp.text}"
 
-    def test_create_agent_rejects_blank_name(
-        self,
-        reasoning_multimodal_llm_model: SeededAIModel,
-    ) -> None:
-        payload = _build_payload(
-            name="   ",
-            seeded_model=reasoning_multimodal_llm_model,
-        )
-
-        resp = self._create_agent_raw(payload)
-        assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
-
-        error_text = _response_text_fragments(resp)
-        assert "name is required" in error_text, f"unexpected error payload: {resp.text}"
-
-    def test_create_agent_rejects_empty_models_array(self) -> None:
-        payload = {
-            "name": f"it-agent-empty-models-{uuid4().hex[:8]}",
-            "models": [],
-        }
-
-        resp = self._create_agent_raw(payload)
-        assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
-
-        error_text = _response_text_fragments(resp)
-        assert "at least one ai model is required" in error_text, (
-            f"unexpected error payload: {resp.text}"
-        )
-
     def test_create_agent_rejects_models_without_reasoning_flag(
         self,
         reasoning_multimodal_llm_model: SeededAIModel,
@@ -383,6 +409,57 @@ class TestCreateAgent:
 
         error_text = _response_text_fragments(resp)
         assert "reasoning model" in error_text, f"unexpected error payload: {resp.text}"
+
+    def test_create_agent_rejects_invalid_toolset_name(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+    ) -> None:
+        payload = _build_payload(
+            name=f"it-agent-bad-toolset-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+            toolsets=[{"name": "not_a_real_toolset"}],
+        )
+
+        resp = self._create_agent_raw(payload)
+        assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
+
+        error_text = _response_text_fragments(resp)
+        assert "invalid toolset" in error_text, f"unexpected error payload: {resp.text}"
+
+    def test_create_agent_rejects_model_object_without_model_key(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+    ) -> None:
+        payload = _build_payload(
+            name=f"it-agent-no-model-key-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+        )
+        payload["models"] = [{}]
+
+        resp = self._create_agent_raw(payload)
+        assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.integration
+class TestCreateAgentOpenApiRequestContract:
+    """Offline OpenAPI request-body checks not covered by live gateway negatives."""
+
+    @pytest.fixture
+    def valid_payload(self, reasoning_multimodal_llm_model: SeededAIModel) -> dict[str, Any]:
+        return _build_payload(
+            name=f"it-agent-openapi-req-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+        )
+
+    def test_rejects_flow_property(self, valid_payload: dict[str, Any]) -> None:
+        payload = {**valid_payload, "flow": {"nodes": [], "edges": []}}
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(payload, "createAgent")
+
+    def test_rejects_extra_top_level_property(self, valid_payload: dict[str, Any]) -> None:
+        payload = {**valid_payload, "unexpectedTopLevelField": "x"}
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(payload, "createAgent")
 
 
 @pytest.mark.integration

@@ -6626,17 +6626,22 @@ components:
     AgentCreateModelEntry:
       description: |
         Accepted model entry for `POST /agents/create`.
-        The gateway accepts either a non-empty string model entry or an object entry.
-        At least one entry must be present, and at least one object entry must carry
-        `isReasoning: true` for the request to pass validation.
+        The gateway accepts either a non-empty string model entry or an object entry
+        with a required `modelKey`.
+
+        The `models` array must include at least one object entry with `isReasoning: true`.
+        String-only entries are schema-valid but are rejected at the gateway with HTTP 400.
       oneOf:
         - type: string
           minLength: 1
         - type: object
           additionalProperties: false
+          required:
+            - modelKey
           properties:
             modelKey:
               type: string
+              minLength: 1
             modelName:
               type: string
             provider:
@@ -6647,6 +6652,8 @@ components:
     AgentCreateToolRef:
       type: object
       additionalProperties: false
+      required:
+        - name
       properties:
         name:
           type: string
@@ -6654,21 +6661,50 @@ components:
           type: string
         description:
           type: string
+          maxLength: 10000
+
+    AgentCreateToolsetName:
+      type: string
+      description: Registered toolset name (lowercase) accepted by the create-agent gateway.
+      enum:
+        - calendar
+        - clickup
+        - confluence
+        - drive
+        - github
+        - gmail
+        - jira
+        - lumos
+        - mariadb
+        - onedrive
+        - outlook
+        - redshift
+        - salesforce
+        - sharepoint
+        - slack
+        - teams
+        - zoom
 
     AgentCreateToolset:
       type: object
       additionalProperties: false
+      required:
+        - name
       properties:
         name:
-          type: string
+          $ref: '#/components/schemas/AgentCreateToolsetName'
         displayName:
           type: string
+          maxLength: 200
         type:
           type: string
+          maxLength: 100
         instanceId:
           type: string
+          maxLength: 256
         instanceName:
           type: string
+          maxLength: 200
         tools:
           type: array
           items:
@@ -6677,6 +6713,8 @@ components:
     AgentCreateKnowledge:
       type: object
       additionalProperties: false
+      required:
+        - connectorId
       properties:
         connectorId:
           type: string
@@ -6702,10 +6740,13 @@ components:
               type: string
             providerKey:
               type: string
+              maxLength: 256
             providerLabel:
               type: string
+              maxLength: 200
             iconPath:
               type: string
+              maxLength: 500
           required:
             - provider
         - type: 'null'
@@ -6743,8 +6784,9 @@ components:
           type: array
           minItems: 1
           description: |
-            Agent model configuration entries. Gateway validation also requires
-            at least one reasoning-capable model object in the array.
+            Agent model configuration entries. The gateway requires at least one
+            object entry with `isReasoning: true`. String-only arrays are schema-valid
+            but rejected at runtime with HTTP 400.
           items:
             $ref: '#/components/schemas/AgentCreateModelEntry'
         tags:
@@ -6775,16 +6817,6 @@ components:
             $ref: '#/components/schemas/AgentCreateKnowledge'
         webSearch:
           $ref: '#/components/schemas/AgentCreateWebSearch'
-        flow:
-          type: object
-          additionalProperties: false
-          properties:
-            nodes:
-              type: array
-              items: {}
-            edges:
-              type: array
-              items: {}
 
     AgentCreateWarning:
       type: object
