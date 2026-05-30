@@ -15379,43 +15379,47 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             self.logger.debug(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
 
-            query = f"""
-            LET app = DOCUMENT(CONCAT("apps/", @connector_id))
+            query = """
+            FOR doc IN @@records
+                FILTER doc.connectorId == @connector_id
+                FILTER doc.orgId == @org_id
+                FILTER doc.isInternal != true
 
-            LET allRecordGroups = (
-                FOR rg IN 1..10 INBOUND app._id {CollectionNames.BELONGS_TO.value}
-                    OPTIONS {{ bfs: true, uniqueVertices: "global" }}
-                    FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", rg._id)
-                    RETURN rg._id
-            )
+                LET hasParentRecordGroup = FIRST(
+                    FOR e IN @@belongs_to
+                        FILTER e._from == doc._id
+                        FILTER STARTS_WITH(e._to, @record_group_prefix)
+                        LIMIT 1
+                        RETURN 1
+                )
+                FILTER hasParentRecordGroup == 1
 
-            LET allRecords = (
-                FOR rgId IN allRecordGroups
-                    FOR doc IN 1..1 INBOUND rgId {CollectionNames.BELONGS_TO.value}
-                        FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", doc._id)
-                        FILTER doc.recordType != @drive_record_type
-                        FILTER doc.isInternal != true
+                LET targetInfo = doc.recordType == @file_record_type ? FIRST(
+                    FOR e IN @@is_of_type
+                        FILTER e._from == doc._id
+                        LIMIT 1
+                        LET t = DOCUMENT(e._to)
+                        RETURN t == null ? null : { id: t._id, isFile: t.isFile }
+                ) : null
+                FILTER targetInfo == null
+                    OR PARSE_IDENTIFIER(targetInfo.id).collection != @files_collection
+                    OR targetInfo.isFile == true
 
-                        LET targetDoc = FIRST(
-                            FOR v IN 1..1 OUTBOUND doc._id {CollectionNames.IS_OF_TYPE.value}
-                                LIMIT 1
-                                RETURN v
-                        )
-                        FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
-
-                        RETURN {{ recordType: doc.recordType, indexingStatus: doc.indexingStatus }}
-            )
-
-            FOR r IN allRecords
-                COLLECT recordType = r.recordType, indexingStatus = r.indexingStatus WITH COUNT INTO cnt
-                RETURN {{ recordType, indexingStatus, cnt }}
+                COLLECT recordType = doc.recordType, indexingStatus = doc.indexingStatus WITH COUNT INTO cnt
+                RETURN { recordType, indexingStatus, cnt }
             """
 
             rows = await self.http_client.execute_aql(
                 query,
                 bind_vars={
                     "connector_id": connector_id,
-                    "drive_record_type": RecordTypes.DRIVE.value
+                    "org_id": org_id,
+                    "@records": CollectionNames.RECORDS.value,
+                    "@belongs_to": CollectionNames.BELONGS_TO.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                    "record_group_prefix": f"{CollectionNames.RECORD_GROUPS.value}/",
+                    "file_record_type": RecordTypes.FILE.value,
+                    "files_collection": CollectionNames.FILES.value,
                 },
                 txn_id=transaction
             )
