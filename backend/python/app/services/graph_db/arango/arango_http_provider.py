@@ -13824,7 +13824,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         if search_query:
             name_field = "groupName" if is_record_group else "recordName"
-            lines.append(f'LOWER({var}.{name_field}) LIKE CONCAT("%", @search_query, "%")')
+            lines.append(f'LOWER({var}.{name_field}) LIKE CONCAT("%", LOWER(@search_query), "%")')
 
         if connector_ids:
             lines.append(f"{var}.connectorId IN @connector_ids")
@@ -13865,7 +13865,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         lines: list[str] = list(self._knowledge_hub_origin_filter_lines(origins, var))
 
         if search_query:
-            lines.append(f'LOWER({var}.recordName) LIKE CONCAT("%", @search_query, "%")')
+            lines.append(f'LOWER({var}.recordName) LIKE CONCAT("%", LOWER(@search_query), "%")')
 
         if connector_ids:
             lines.append(f"{var}.connectorId IN @connector_ids")
@@ -14405,7 +14405,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }
                 )[0] : null
 
-                RETURN rg_node != null ? rg_node : record_node
+                LET final_node = rg_node != null ? rg_node : record_node
+                FILTER final_node != null
+                RETURN final_node
         )
 
         RETURN { nodes: hydrated_nodes }
@@ -16376,7 +16378,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         filter_conditions = []
         filter_params = {}
 
-        # Search query filter - will be combined with other conditions
+        # Search query filter - lowercased for case-insensitive LIKE (see LOWER(@search_query) in AQL)
         if search_query:
             filter_params["search_query"] = search_query.lower()
 
@@ -16448,7 +16450,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         # Add search condition to filter conditions if present
         if search_query:
-            filter_conditions.insert(0, "LOWER(node.name) LIKE CONCAT('%', @search_query, '%')")
+            filter_conditions.insert(0, "LOWER(node.name) LIKE CONCAT('%', LOWER(@search_query), '%')")
 
         # Add only_containers filter
         if only_containers:
