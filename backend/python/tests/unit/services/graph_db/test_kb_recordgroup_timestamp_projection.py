@@ -202,9 +202,13 @@ class TestArangoSearchRecordGroupProjection:
         async def capture(query, **_kwargs):
             captured_queries.append(query)
             bind_vars = _kwargs.get("bind_vars") or {}
+            # Phase 2 runs only when phase 1 returns non-empty paginated_refs.
             if "paginated_refs" in bind_vars:
                 return [{"nodes": []}]
-            return [{"total": 0, "paginated_refs": []}]
+            return [{
+                "total": 1,
+                "paginated_refs": [{"id": "rg1", "nodeType": "recordGroup"}],
+            }]
 
         arango_provider.http_client.execute_aql = AsyncMock(side_effect=capture)
         arango_provider.get_user_app_ids = AsyncMock(return_value=[])

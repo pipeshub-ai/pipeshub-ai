@@ -13835,11 +13835,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             lines.append(f"{var}.indexingStatus IN @indexing_status")
 
         if size and not is_record_group:
-            if size.get("gte"):
+            if size.get("gte") is not None:
                 lines.append(
                     f"({var}.sizeInBytes == null OR {var}.sizeInBytes >= @size_gte)"
                 )
-            if size.get("lte"):
+            if size.get("lte") is not None:
                 lines.append(
                     f"({var}.sizeInBytes == null OR {var}.sizeInBytes <= @size_lte)"
                 )
@@ -13878,19 +13878,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
         created_expr = self._knowledge_hub_record_projected_created_at_expr(var)
         updated_expr = self._knowledge_hub_record_projected_updated_at_expr(var)
         if created_at:
-            if created_at.get("gte"):
+            if created_at.get("gte") is not None:
                 lines.append(f"{created_expr} >= @created_at_gte")
-            if created_at.get("lte"):
+            if created_at.get("lte") is not None:
                 lines.append(f"{created_expr} <= @created_at_lte")
         if updated_at:
-            if updated_at.get("gte"):
+            if updated_at.get("gte") is not None:
                 lines.append(f"{updated_expr} >= @updated_at_gte")
-            if updated_at.get("lte"):
+            if updated_at.get("lte") is not None:
                 lines.append(f"{updated_expr} <= @updated_at_lte")
         if size:
-            if size.get("gte"):
+            if size.get("gte") is not None:
                 lines.append(f"({var}.sizeInBytes == null OR {var}.sizeInBytes >= @size_gte)")
-            if size.get("lte"):
+            if size.get("lte") is not None:
                 lines.append(f"({var}.sizeInBytes == null OR {var}.sizeInBytes <= @size_lte)")
 
         if not lines:
@@ -16407,26 +16407,26 @@ class ArangoHTTPProvider(IGraphDBProvider):
             filter_conditions.append('(node.nodeType == "record" AND node.indexingStatus != null AND node.indexingStatus IN @indexing_status)')
 
         if created_at:
-            if created_at.get("gte"):
+            if created_at.get("gte") is not None:
                 filter_params["created_at_gte"] = created_at["gte"]
                 filter_conditions.append("node.createdAt >= @created_at_gte")
-            if created_at.get("lte"):
+            if created_at.get("lte") is not None:
                 filter_params["created_at_lte"] = created_at["lte"]
                 filter_conditions.append("node.createdAt <= @created_at_lte")
 
         if updated_at:
-            if updated_at.get("gte"):
+            if updated_at.get("gte") is not None:
                 filter_params["updated_at_gte"] = updated_at["gte"]
                 filter_conditions.append("node.updatedAt >= @updated_at_gte")
-            if updated_at.get("lte"):
+            if updated_at.get("lte") is not None:
                 filter_params["updated_at_lte"] = updated_at["lte"]
                 filter_conditions.append("node.updatedAt <= @updated_at_lte")
 
         if size:
-            if size.get("gte"):
+            if size.get("gte") is not None:
                 filter_params["size_gte"] = size["gte"]
                 filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes >= @size_gte)")
-            if size.get("lte"):
+            if size.get("lte") is not None:
                 filter_params["size_lte"] = size["lte"]
                 filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes <= @size_lte)")
 
