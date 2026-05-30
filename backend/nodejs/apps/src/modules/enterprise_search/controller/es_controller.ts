@@ -159,10 +159,10 @@ async function fetchDeletedAgentKeysForUser(
         },
       });
       const aiResponse = await aiCommand.execute();
-      if (aiResponse.statusCode !== 200) {
+      if (!aiResponse || aiResponse.statusCode !== 200) {
         logger.warn(
           'fetchDeletedAgentKeysForUser: AI backend returned non-200; skipping agent soft-delete filter',
-          { statusCode: aiResponse.statusCode },
+          { statusCode: aiResponse?.statusCode },
         );
         return null;
       }
@@ -4919,7 +4919,10 @@ export const createAgentTemplate =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Create Agent Template');
       }
       const agentTemplate = aiResponse.data;
@@ -4959,7 +4962,10 @@ export const getAgentTemplate =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Get Agent Template');
       }
       const agentTemplate = aiResponse.data;
@@ -4998,7 +5004,10 @@ export const listAgentTemplates =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
         throw handleBackendError(
           {
             response: { status: aiResponse.statusCode, data: aiResponse.data },
@@ -5043,7 +5052,10 @@ export const shareAgentTemplate =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Share Agent Template');
       }
       const agentTemplate = aiResponse.data;
@@ -5084,7 +5096,10 @@ export const updateAgentTemplate =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Update Agent Template');
       }
       const agentTemplate = aiResponse.data;
@@ -5124,7 +5139,10 @@ export const deleteAgentTemplate =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Delete Agent Template');
       }
       const agentTemplate = aiResponse.data;
@@ -5166,7 +5184,10 @@ export const createAgent =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Create Agent');
       }
       const agent = aiResponse.data;
@@ -5206,7 +5227,10 @@ export const getAgent =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Get Agent');
       }
       const responsePayload = aiResponse.data as Record<string, unknown>;
@@ -5254,7 +5278,10 @@ export const checkServiceAccountAccess =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (!aiResponse) {
+        return false;
+      }
+      if (aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Check Service Account Access');
       }
       const response = aiResponse.data as { isServiceAccount: boolean };
@@ -5293,7 +5320,7 @@ export const getWebSearchProviderUsage =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (!aiResponse || aiResponse.statusCode !== 200) {
         res.status(HTTP_STATUS.OK).json({ success: true, agents: [] });
         return;
       }
@@ -5332,7 +5359,7 @@ export const getModelUsage =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (!aiResponse || aiResponse.statusCode !== 200) {
         res.status(HTTP_STATUS.OK).json({ success: true, agents: [] });
         return;
       }
@@ -5384,7 +5411,7 @@ export const listAgents =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (!aiResponse || aiResponse.statusCode !== 200) {
         res.status(HTTP_STATUS.OK).json({ success: true, agents: [], pagination: { currentPage: Number(page ?? 1), limit: Number(limit ?? 20), totalItems: 0, totalPages: 0, hasNext: false, hasPrev: false } });
         return;
       }
@@ -5425,7 +5452,10 @@ export const updateAgent =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Update Agent');
       }
       const agent = aiResponse.data;
@@ -5465,7 +5495,10 @@ export const deleteAgent =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Delete Agent');
       }
       const agent = aiResponse.data;
@@ -5506,7 +5539,10 @@ export const deleteAgent =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Share Agent');
       }
       const agent = aiResponse.data;
@@ -5547,7 +5583,10 @@ export const unshareAgent =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Unshare Agent');
       }
       const agent = aiResponse.data;
@@ -5588,7 +5627,10 @@ export const unshareAgent =
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Update Agent Permissions');
       }
       const agent = aiResponse.data;
@@ -7906,7 +7948,10 @@ export const getAvailableTools =
     };
     const aiCommand = new AIServiceCommand(aiCommandOptions);
     const aiResponse = await aiCommand.execute();
-    if (aiResponse && aiResponse.statusCode !== 200) {
+    if (!aiResponse) {
+      throw new InternalServerError('Failed to get response from AI service');
+    }
+    if (aiResponse.statusCode !== 200) {
       throw handleBackendError(aiResponse.data, 'Get Available Tools');
     }
     const tools = aiResponse.data;
@@ -7939,7 +7984,10 @@ export const getAgentPermissions =
     };
     const aiCommand = new AIServiceCommand(aiCommandOptions);
     const aiResponse = await aiCommand.execute();
-    if (aiResponse && aiResponse.statusCode !== 200) {
+    if (!aiResponse) {
+      throw new InternalServerError('Failed to get response from AI service');
+    }
+    if (aiResponse.statusCode !== 200) {
       throw handleBackendError(aiResponse.data, 'Get Agent Permissions');
     }
     const permissions = aiResponse.data;
