@@ -71,10 +71,19 @@ const sdkTransportPath = require.resolve(
   '@modelcontextprotocol/sdk/server/streamableHttp.js',
 );
 
+const { randomUUID } = require('crypto');
+
 class FakeStreamableHTTPServerTransport {
   opts: any;
+  sessionId: string;
+  onclose?: () => void;
+
   constructor(opts?: any) {
     this.opts = opts;
+    this.sessionId = randomUUID();
+    if (opts?.onsessioninitialized) {
+      opts.onsessioninitialized(this.sessionId);
+    }
   }
   handleRequest(_req: any, _res: any, _body: any) {
     return Promise.resolve();
