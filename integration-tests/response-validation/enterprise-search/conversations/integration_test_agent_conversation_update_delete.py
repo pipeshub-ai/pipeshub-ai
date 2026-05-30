@@ -1,31 +1,38 @@
-"""Agent conversation title update integration tests.
+"""Agent conversation update/delete integration tests.
 
 ``PATCH /api/v1/agents/{agentKey}/conversations/{conversationId}/title``
+``DELETE /api/v1/agents/{agentKey}/conversations/{conversationId}``
+``POST /api/v1/agents/{agentKey}/conversations/{conversationId}/archive``
+``POST /api/v1/agents/{agentKey}/conversations/{conversationId}/unarchive``
+``POST /api/v1/agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate``
 
-Focuses on the path/query variations permitted by the route's Zod schema:
-- ``agentKey``: non-empty string path param
-- ``conversationId``: Mongo ObjectId path param
-- no route query schema, so arbitrary query params are accepted/ignored
+Uses ``agent_session`` from ``response-validation/enterprise-search/conftest.py``.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sys
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import pytest
 import requests
 
-from openapi_search_validator import assert_response_matches_spec
+_ROOT = Path(__file__).resolve().parents[3]
+_HELPER = _ROOT / "helper"
+_RV_HELPER = _ROOT / "response-validation" / "helper"
+for _p in (_ROOT, _HELPER, _RV_HELPER):
+    s = str(_p)
+    if s not in sys.path:
+        sys.path.insert(0, s)
+
+from openapi_schema_validator import assert_response_matches_openapi_operation
 from pipeshub_client import PipeshubClient
 
-_DELETE_SPEC_PATH = "/agents/{agentKey}/conversations/{conversationId}"
-_ARCHIVE_SPEC_PATH = "/agents/{agentKey}/conversations/{conversationId}/archive"
-_UNARCHIVE_SPEC_PATH = "/agents/{agentKey}/conversations/{conversationId}/unarchive"
-_TITLE_SPEC_PATH = "/agents/{agentKey}/conversations/{conversationId}/title"
 _SSE_MAX_EVENTS = 10_000
 _SSEEnvelope = dict[str, str]
 
@@ -230,7 +237,7 @@ class TestAgentConversationTitleUpdate:
         assert conversation.get("title") == new_title, (
             f"conversation.title mismatch: expected {new_title!r}, got {conversation!r}"
         )
-        assert_response_matches_spec(body, _TITLE_SPEC_PATH, "PATCH", 200)
+        assert_response_matches_openapi_operation(body, "updateAgentConversationTitle", status_code="200")
 
         get_resp = requests.get(
             self._conversation_url(self.primary_agent, conversation_id),
@@ -548,7 +555,7 @@ class TestAgentConversationDelete:
             expected_conversation_id=conversation_id,
             expect_conversation=True,
         )
-        assert_response_matches_spec(body, _DELETE_SPEC_PATH, "DELETE", 200)
+        assert_response_matches_openapi_operation(body, "deleteAgentConversationById", status_code="200")
 
         get_resp = requests.get(
             self._conversation_url(self.primary_agent, conversation_id),
@@ -839,7 +846,7 @@ class TestAgentConversationArchive:
 
         body = _response_json(resp)
         self._assert_archive_success(body, expected_conversation_id=conversation_id)
-        assert_response_matches_spec(body, _ARCHIVE_SPEC_PATH, "POST", 200)
+        assert_response_matches_openapi_operation(body, "archiveAgentConversation", status_code="200")
 
     @pytest.mark.parametrize(
         ("label", "params"),
@@ -1118,7 +1125,7 @@ class TestAgentConversationUnarchive:
 
         body = _response_json(resp)
         self._assert_unarchive_success(body, expected_conversation_id=conversation_id)
-        assert_response_matches_spec(body, _UNARCHIVE_SPEC_PATH, "POST", 200)
+        assert_response_matches_openapi_operation(body, "unarchiveAgentConversation", status_code="200")
 
     @pytest.mark.parametrize(
         ("label", "params"),
