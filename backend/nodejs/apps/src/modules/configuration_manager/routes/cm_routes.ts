@@ -72,6 +72,7 @@ import {
   aiModelsConfigSchema,
   storageValidationSchema,
   azureAdConfigSchema,
+  microsoftConfigSchema,
   googleAuthConfigSchema,
   oauthConfigSchema,
   ssoConfigSchema,
@@ -363,6 +364,8 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
 
   // auth config routes
+
+  // @deprecated Azure AD auth config routes; superseded by /authConfig/microsoft.
   router.get(
     '/authConfig/azureAd',
     authMiddleware.authenticate,
@@ -410,7 +413,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     metricsMiddleware(container),
-    ValidationMiddleware.validate(azureAdConfigSchema),
+    ValidationMiddleware.validate(microsoftConfigSchema),
     setMicrosoftAuthConfig(keyValueStoreService),
   );
 

@@ -122,10 +122,10 @@ export const oauthConfigSchema = z.object({
   body: z.object({
     providerName: z.string().min(1, { message: 'Provider name is required' }),
     clientId: z.string().min(1, { message: 'Client ID is required' }),
-    clientSecret: z.string().optional(),
-    authorizationUrl: z.string().url().optional().or(z.literal('')),
-    tokenEndpoint: z.string().url().optional().or(z.literal('')),
-    userInfoEndpoint: z.string().url().optional().or(z.literal('')),
+    clientSecret: z.string().min(1, { message: 'Client secret is required' }),
+    authorizationUrl: z.string().url({ message: 'Authorization URL is required and must be a valid URL' }),
+    tokenEndpoint: z.string().url({ message: 'Token endpoint is required and must be a valid URL' }),
+    userInfoEndpoint: z.string().url({ message: 'User info endpoint is required and must be a valid URL' }),
     scope: z.string().optional(),
     redirectUri: z.string().url().optional().or(z.literal('')),
     enableJit: z.boolean().optional().default(true),
@@ -133,9 +133,11 @@ export const oauthConfigSchema = z.object({
 });
 
 export const microsoftConfigSchema = z.object({
-  clientId: z.string().min(1, { message: 'Microsoft client ID is required' }),
-  tenantId: z.string().optional().default('common'),
-  enableJit: z.boolean().optional().default(false),
+  body: z.object({
+    clientId: z.string().min(1, { message: 'Microsoft client ID is required' }),
+    tenantId: z.string().min(1, { message: 'Microsoft tenant ID is required' }),
+    enableJit: z.boolean().optional().default(true),
+  }),
 });
 
 export const mongoDBConfigSchema = z.object({

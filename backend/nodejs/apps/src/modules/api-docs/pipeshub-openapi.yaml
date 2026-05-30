@@ -9174,6 +9174,7 @@ components:
     # Authentication Configuration Schemas
     AzureAdAuthConfig:
       type: object
+      additionalProperties: false
       description: Azure Active Directory authentication configuration
       properties:
         clientId:
@@ -9185,9 +9186,19 @@ components:
           description: Azure AD tenant ID (use 'common' for multi-tenant)
           default: "common"
           example: "common"
+        authority:
+          type: string
+          description: Azure AD authority URL derived from tenantId (set by the server on response)
+          example: "https://login.microsoftonline.com/common"
+        enableJit:
+          type: boolean
+          description: Enable Just-In-Time (JIT) user provisioning
+          default: true
+          example: true
 
     MicrosoftAuthConfig:
       type: object
+      additionalProperties: false
       description: Microsoft authentication configuration
       properties:
         clientId:
@@ -9198,15 +9209,30 @@ components:
           type: string
           description: Microsoft tenant ID
           default: "common"
+        authority:
+          type: string
+          description: Microsoft authority URL derived from tenantId (set by the server on response)
+          example: "https://login.microsoftonline.com/common"
+        enableJit:
+          type: boolean
+          description: Enable Just-In-Time (JIT) user provisioning
+          default: true
+          example: true
 
     GoogleAuthConfig:
       type: object
+      additionalProperties: false
       description: Google authentication configuration
       properties:
         clientId:
           type: string
           description: Google OAuth client ID
           example: "123456789-abc.apps.googleusercontent.com"
+        enableJit:
+          type: boolean
+          description: Enable Just-In-Time (JIT) user provisioning
+          default: true
+          example: true
 
     SSOAuthConfig:
       type: object
@@ -9236,6 +9262,7 @@ components:
 
     GenericOAuthConfig:
       type: object
+      additionalProperties: false
       description: Generic OAuth 2.0 provider configuration
       properties:
         providerName:
@@ -9268,6 +9295,11 @@ components:
           type: string
           format: uri
           description: OAuth redirect URI
+        enableJit:
+          type: boolean
+          description: Enable Just-In-Time (JIT) user provisioning
+          default: true
+          example: true
 
     # Connector Configuration Schemas
     GoogleWorkspaceCredentials:
@@ -29600,6 +29632,7 @@ paths:
       summary: Configure Azure AD authentication
       description: Set up Azure Active Directory as an authentication provider for user login.
       operationId: setAzureAdAuthConfig
+      deprecated: true
       security:
         - bearerAuth: []
         - oauth2: [config:write]
@@ -29615,10 +29648,22 @@ paths:
           description: Azure AD configuration saved
         '400':
           description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
@@ -29626,6 +29671,7 @@ paths:
       summary: Get Azure AD configuration
       description: Retrieve Azure AD authentication configuration.
       operationId: getAzureAdAuthConfig
+      deprecated: true
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -29638,6 +29684,10 @@ paths:
                 $ref: '#/components/schemas/AzureAdAuthConfig'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/authConfig/microsoft:
     post:
@@ -29646,6 +29696,7 @@ paths:
       summary: Configure Microsoft authentication
       description: Set up Microsoft account as an authentication provider.
       operationId: setMicrosoftAuthConfig
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:write]
@@ -29655,16 +29706,33 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/MicrosoftAuthConfig'
+              allOf:
+                - $ref: '#/components/schemas/MicrosoftAuthConfig'
+                - type: object
+                  required:
+                    - clientId
+                    - tenantId
       responses:
         '200':
           description: Microsoft auth configuration saved
         '400':
           description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
@@ -29672,6 +29740,7 @@ paths:
       summary: Get Microsoft authentication configuration
       description: "Get Microsoft authentication configuration."
       operationId: getMicrosoftAuthConfig
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -29684,6 +29753,10 @@ paths:
                 $ref: '#/components/schemas/MicrosoftAuthConfig'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/authConfig/google:
     post:
@@ -29692,6 +29765,7 @@ paths:
       summary: Configure Google authentication
       description: Set up Google OAuth as an authentication provider.
       operationId: setGoogleAuthConfig
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:write]
@@ -29701,16 +29775,32 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/GoogleAuthConfig'
+              allOf:
+                - $ref: '#/components/schemas/GoogleAuthConfig'
+                - type: object
+                  required:
+                    - clientId
       responses:
         '200':
           description: Google auth configuration saved
         '400':
           description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
@@ -29718,6 +29808,7 @@ paths:
       summary: Get Google authentication configuration
       description: "Get Google authentication configuration."
       operationId: getGoogleAuthConfig
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -29730,6 +29821,10 @@ paths:
                 $ref: '#/components/schemas/GoogleAuthConfig'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/authConfig/sso:
     post:
@@ -29738,6 +29833,7 @@ paths:
       summary: Configure SAML SSO authentication
       description: Set up SAML 2.0 Single Sign-On with your identity provider (Okta, OneLogin, etc.).
       operationId: setSsoAuthConfig
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:write]
@@ -29747,16 +29843,34 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SSOAuthConfig'
+              allOf:
+                - $ref: '#/components/schemas/SSOAuthConfig'
+                - type: object
+                  required:
+                    - entryPoint
+                    - certificate
+                    - emailKey
       responses:
         '200':
           description: SSO configuration saved
         '400':
           description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
@@ -29764,6 +29878,7 @@ paths:
       summary: Get SAML SSO configuration
       description: "Get SAML SSO configuration."
       operationId: getSsoAuthConfig
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -29773,16 +29888,41 @@ paths:
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: '#/components/schemas/SSOAuthConfig'
-                  - type: object
-                    properties:
-                      spEntityId:
-                        type: string
-                        description: Service Provider entity ID derived from SAML_SP_ENTITY_ID env var or the frontend public URL
-                        example: "https://app.example.com"
+                type: object
+                additionalProperties: false
+                description: SAML SSO configuration with derived Service Provider entity ID
+                properties:
+                  entryPoint:
+                    type: string
+                    format: uri
+                    description: Identity provider SSO URL
+                    example: "https://idp.example.com/sso/saml"
+                  certificate:
+                    type: string
+                    description: X.509 certificate for signature validation (PEM format)
+                  emailKey:
+                    type: string
+                    description: SAML attribute name for user email
+                    example: "email"
+                  enableJit:
+                    type: boolean
+                    description: Enable Just-In-Time (JIT) user provisioning
+                    default: true
+                    example: true
+                  samlPlatform:
+                    type: string
+                    description: Name of the SAML platform or provider (e.g., Okta, Azure AD)
+                    example: "Okta"
+                  spEntityId:
+                    type: string
+                    description: Service Provider entity ID derived from SAML_SP_ENTITY_ID env var or the frontend public URL
+                    example: "https://app.example.com"
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/authConfig/oauth:
     post:
@@ -29791,6 +29931,7 @@ paths:
       summary: Configure generic OAuth provider
       description: Set up a custom OAuth 2.0 authentication provider.
       operationId: setOAuthConfig
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:write]
@@ -29800,16 +29941,37 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/GenericOAuthConfig'
+              allOf:
+                - $ref: '#/components/schemas/GenericOAuthConfig'
+                - type: object
+                  required:
+                    - providerName
+                    - clientId
+                    - clientSecret
+                    - authorizationUrl
+                    - tokenEndpoint
+                    - userInfoEndpoint
       responses:
         '200':
           description: OAuth configuration saved
         '400':
           description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
@@ -29817,6 +29979,7 @@ paths:
       summary: Get generic OAuth configuration
       description: "Get generic OAuth configuration."
       operationId: getGenericOAuthConfig
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -29829,6 +29992,10 @@ paths:
                 $ref: '#/components/schemas/GenericOAuthConfig'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- AI Models Configuration --------------------
   /configurationManager/ai-models/{modelType}:
