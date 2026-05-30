@@ -784,6 +784,49 @@ class TestSaveConversationFileToStorage:
             assert "downloadUrl" in result
 
     @pytest.mark.asyncio
+    async def test_local_upload_includes_custom_metadata(self):
+        """Local upload forwards custom_metadata to multipart form fields."""
+        bs = _make_blob_storage()
+        bs._get_auth_and_config = AsyncMock(
+            return_value=(
+                {"Authorization": "Bearer tok"},
+                "http://localhost:3001",
+                "local",
+            )
+        )
+        bs._get_public_download_base_url = AsyncMock(return_value="http://localhost:3001")
+
+        upload_resp = AsyncMock()
+        upload_resp.status = 200
+        upload_resp.json = AsyncMock(return_value={"_id": "local-doc-1"})
+        upload_resp.__aenter__ = AsyncMock(return_value=upload_resp)
+        upload_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = AsyncMock()
+        mock_session.post = MagicMock(return_value=upload_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        custom_metadata = [{"key": "isTemporary", "value": True}]
+
+        with patch(
+            "app.modules.transformers.blob_storage.aiohttp.ClientSession",
+            return_value=mock_session,
+        ), patch(
+            "app.modules.transformers.blob_storage._add_custom_metadata_to_form",
+        ) as mock_add_metadata:
+            await bs.save_conversation_file_to_storage(
+                "org-1",
+                "conv-1",
+                "data.csv",
+                b"col1,col2\n1,2\n",
+                custom_metadata=custom_metadata,
+            )
+
+        mock_add_metadata.assert_called_once()
+        assert mock_add_metadata.call_args[0][1] == custom_metadata
+
+    @pytest.mark.asyncio
     async def test_local_upload_non_200_raises(self):
         """Local upload returns non-200."""
         bs = _make_blob_storage()

@@ -1,12 +1,15 @@
 """Pydantic models and shared constants for the Salesforce agent toolset."""
 from enum import Enum
-from typing import Any, Literal, Union
+from typing import Any, Literal, Self, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # Default API version used across all tools
 DEFAULT_API_VERSION = "59.0"
+
+# ``Any``: per-sObject REST field bag — names/values are not enumerable statically.
+SalesforceFieldMap = dict[str, Any]
 
 # SOQL templates: use .format(sobject=..., where=..., limit=..., etc.)
 SOQL_LIST_RECENT_RECORDS = (
@@ -76,6 +79,8 @@ SF_SOBJECT_EVENT = "Event"
 SF_SOBJECT_CONTRACT = "Contract"
 SF_SOBJECT_NOTE = "Note"
 SF_SOBJECT_PRICEBOOK_ENTRY = "PricebookEntry"
+SF_SOBJECT_CONTENT_VERSION = "ContentVersion"
+SF_SOBJECT_CONTENT_DOCUMENT_LINK = "ContentDocumentLink"
 
 MSG_SUCCESS = "Operation completed successfully"
 
@@ -240,29 +245,81 @@ class GetRecordInput(BaseModel):
     )
 
 
+# ``Any``: tool args — field names/values vary per sObject.
+def _collect_data_from_extras(
+    values: dict[str, Any], reserved_keys: set[str]
+) -> dict[str, Any]:
+    """Fold top-level keys (other than reserved schema keys) into the ``data`` map.
+
+    LLMs often flatten tool arguments (passing ``{"sobject": "...", "Name": "..."}``
+    instead of ``{"sobject": "...", "data": {"Name": "..."}}``). We accept either
+    shape so callers don't have to perfectly nest, then let the tool body decide
+    whether the resulting payload is usable.
+    """
+    if not isinstance(values, dict):
+        return values
+    data = values.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    extras = {k: v for k, v in values.items() if k not in reserved_keys and k != "data"}
+    if extras:
+        merged = {**extras, **data}
+        values = {k: v for k, v in values.items() if k in reserved_keys}
+        values["data"] = merged
+    elif "data" not in values:
+        values["data"] = data
+    return values
+
+
 class CreateRecordInput(BaseModel):
     """Schema for creating a Salesforce record"""
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
 
     sobject: str = Field(
-        description="The Salesforce object API name (e.g., 'Account', 'Contact', 'Lead', 'Opportunity', 'Case')"
+        description=(
+            "The Salesforce object API name (e.g. 'Account', 'Contact', 'Lead', "
+            "'Opportunity', 'Case', 'Custom_Object__c')."
+        )
     )
-    data: dict[str, Any] = Field( # Does not have fixed schema
-        description="Field-value pairs for the new record (e.g., {\"Name\": \"Acme Corp\", \"Industry\": \"Technology\"})"
+    data: SalesforceFieldMap = Field(
+        default_factory=dict,
+        description=(
+            "Non-empty map of field API names to values for the new row "
+            "(e.g. {\"Name\": \"Acme Corp\"}). Use describe_object on the same "
+            "sObject first if you don't know the createable/required fields. "
+            "Standard fields use their API names (e.g. Name, StageName); custom "
+            "fields end with '__c'."
+        ),
+        examples=[{"Name": "Acme Corp", "Phone": "555-0100"}],
     )
+
+    @model_validator(mode="before")
+    # ``Any``: raw tool args before validation (see ``_collect_data_from_extras``).
+    @classmethod
+    def _absorb_top_level_fields(cls, values: Any) -> Any:
+        return _collect_data_from_extras(values, reserved_keys={"sobject"})
 
 
 class UpdateRecordInput(BaseModel):
     """Schema for updating a Salesforce record"""
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
 
     sobject: str = Field(
         description="The Salesforce object API name (e.g., 'Account', 'Contact', 'Lead', 'Opportunity', 'Case')"
     )
     record_id: str = Field(description="The 15 or 18-character Salesforce record ID")
-    data: dict[str, Any] = Field( # Does not have fixed schema
-        description="Field-value pairs to update (e.g., {\"Name\": \"New Name\", \"Phone\": \"555-1234\"})"
+    data: SalesforceFieldMap = Field(
+        default_factory=dict,
+        description="Field-value pairs to update (e.g., {\"Name\": \"New Name\", \"Phone\": \"555-1234\"})",
     )
+
+    # ``Any``: raw tool args before validation (see ``_collect_data_from_extras``).
+    @model_validator(mode="before")
+    @classmethod
+    def _absorb_top_level_fields(cls, values: Any) -> Any:
+        return _collect_data_from_extras(
+            values, reserved_keys={"sobject", "record_id"}
+        )
 
 
 class DescribeObjectInput(BaseModel):
@@ -639,6 +696,167 @@ class GetRecordChatterInput(BaseModel):
     record_id: str = Field(
         description="The Salesforce record ID whose Chatter feed should be fetched (Account, Opportunity, Case, Contact, Lead, etc.)",
     )
+
+
+class UploadFileToSalesforceInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    document_ids: list[str] = Field(
+        min_length=1,
+        max_length=10,
+        description=(
+            "List of documentIds registered in chat state by a producer tool "
+            "(e.g. outlook.stage_attachment_to_blob). For each id the cached "
+            "download URL is fetched and uploaded as a Salesforce "
+            "ContentVersion. Must contain 1-10 ids per call."
+        ),
+    )
+
+
+class ContentVersionCreatePayload(BaseModel):
+    """Fixed fields for Salesforce ``ContentVersion`` REST create."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    Title: str
+    PathOnClient: str
+    VersionData: str
+
+
+class ContentVersionUploadResult(BaseModel):
+    """Internal outcome from ``_upload_bytes_as_content_version``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    ok: bool
+    error: str | None = None
+    content_version_id: str | None = None
+    content_document_id: str | None = None
+    filename: str | None = None
+    path_on_client: str | None = None
+    mime_type: str | None = None
+    size_bytes: int | None = None
+    sf_content_size: int | None = None
+    sf_file_type: str | None = None
+    sf_file_extension: str | None = None
+    weburl_content_document_id: str | None = None
+
+
+class StagedDocumentUploadResult(BaseModel):
+    """One per-document row returned by ``upload_file_to_salesforce``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    document_id: str
+    ok: bool
+    error: str | None = None
+    registered_document_ids: list[str] | None = None
+    content_version_id: str | None = None
+    content_document_id: str | None = None
+    filename: str | None = None
+    path_on_client: str | None = None
+    mime_type: str | None = None
+    size_bytes: int | None = None
+    limit_bytes: int | None = None
+    sf_content_size: int | None = None
+    sf_file_type: str | None = None
+    sf_file_extension: str | None = None
+    weburl_content_document_id: str | None = None
+
+    def to_wire_dict(self) -> dict[str, str | int | bool | list[str]]:
+        """Serialize for the agent tool JSON boundary (omit unset fields)."""
+        return self.model_dump(exclude_none=True)
+
+    @classmethod
+    def from_content_version(
+        cls,
+        *,
+        document_id: str,
+        cv: ContentVersionUploadResult,
+    ) -> Self:
+        """Merge a per-doc id with a ContentVersion upload outcome."""
+        return cls(
+            document_id=document_id,
+            ok=cv.ok,
+            error=cv.error,
+            content_version_id=cv.content_version_id,
+            content_document_id=cv.content_document_id,
+            filename=cv.filename,
+            path_on_client=cv.path_on_client,
+            mime_type=cv.mime_type,
+            size_bytes=cv.size_bytes,
+            sf_content_size=cv.sf_content_size,
+            sf_file_type=cv.sf_file_type,
+            sf_file_extension=cv.sf_file_extension,
+            weburl_content_document_id=cv.weburl_content_document_id,
+        )
+
+
+class UploadFileToSalesforceData(BaseModel):
+    """Batch payload returned by ``upload_file_to_salesforce``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    results: list[dict[str, str | int | bool | list[str]]]
+    succeeded: int
+    failed: int
+
+
+class AttachFileToRecordInput(BaseModel):
+    """Schema for attaching an existing Salesforce file to a record (ContentDocumentLink)."""
+    model_config = ConfigDict(extra="ignore")
+
+    content_document_id: str = Field(
+        description=(
+            "ContentDocumentId of the file to attach (15/18-char ID starting "
+            "with '069'). Get this from upload_file_to_salesforce, or by "
+            "querying ContentVersion.ContentDocumentId."
+        ),
+    )
+    record_id: str = Field(
+        description=(
+            "Salesforce record ID to attach the file to (Opportunity, "
+            "Account, Case, Contact, Lead, Task, etc.). 15 or 18 chars."
+        ),
+    )
+    share_type: str = Field(
+        default="V",
+        description=(
+            "ContentDocumentLink ShareType: 'V' (Viewer), 'C' (Collaborator), "
+            "or 'I' (Inferred). Defaults to 'V'."
+        ),
+    )
+    visibility: str = Field(
+        default="AllUsers",
+        description=(
+            "ContentDocumentLink Visibility: 'AllUsers' or "
+            "'InternalUsers'. Defaults to 'AllUsers'."
+        ),
+    )
+
+
+class ContentDocumentLinkCreatePayload(BaseModel):
+    """Fixed fields for Salesforce ``ContentDocumentLink`` REST create."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    ContentDocumentId: str
+    LinkedEntityId: str
+    ShareType: str
+    Visibility: str
+
+
+class AttachFileToRecordData(BaseModel):
+    """Success payload for ``attach_file_to_record``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    content_document_link_id: str | None = None
+    content_document_id: str
+    linked_record_id: str
+    share_type: str
+    visibility: str
+    weburl_linked_record_id: str | None = None
 
 
 class PostChatterCommentInput(BaseModel):

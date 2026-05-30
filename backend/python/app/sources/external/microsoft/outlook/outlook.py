@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from dataclasses import asdict
 from datetime import date
 from typing import Any, Dict, List, Literal, Mapping, Optional
@@ -452,6 +453,75 @@ class OutlookCalendarContactsDataSource:
     def get_data_source(self) -> 'OutlookCalendarContactsDataSource':
         """Get the underlying Outlook client."""
         return self
+
+    @staticmethod
+    def _normalize_search_query(search: Optional[str]) -> Optional[str]:
+        """Normalize an OData ``$search`` value for Microsoft Graph.
+
+        Graph's ``$search`` for messages/events/contacts/etc. uses KQL syntax
+        and **requires the value to be wrapped in double quotes** whenever a
+        property qualifier (e.g. ``from:user@x.com``, ``subject:"hello"``) is
+        present. Sending ``$search=from:foo@bar.com`` (unquoted) triggers a
+        ``BadRequest`` with ``Syntax error: character ':' is not valid``.
+
+        We always wrap the value in double quotes — Graph accepts plain text
+        searches in quotes too — and escape any embedded ``"`` so that values
+        like ``subject:"weekly report"`` round-trip correctly.
+
+        Returns ``None`` for empty/whitespace-only input so callers can skip
+        setting the parameter.
+        """
+        if not search:
+            return None
+        s = search.strip()
+        if not s:
+            return None
+        if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+            return s
+        return '"' + s.replace('"', '\\"') + '"'
+
+    @staticmethod
+    def _normalize_orderby(orderby: Optional[str | List[str]]) -> Optional[List[str]]:
+        """Coerce an OData ``$orderby`` value to ``List[str]`` for kiota.
+
+        ``MessagesRequestBuilderGetQueryParameters.orderby`` expects
+        ``Optional[List[str]]``. Assigning a bare string like
+        ``"receivedDateTime desc"`` makes kiota iterate the string and emit an
+        invalid ``$orderby``, which Graph may reject as ``InefficientFilter``.
+
+        Accepts either a list (returned as-is, minus empties) or a
+        comma-separated string. Returns ``None`` for empty/whitespace-only input.
+        """
+        if orderby is None:
+            return None
+        if isinstance(orderby, list):
+            cleaned = [item.strip() for item in orderby if item and item.strip()]
+            return cleaned or None
+        s = orderby.strip()
+        if not s:
+            return None
+        parts = [p.strip() for p in s.split(",") if p.strip()]
+        return parts or None
+
+    _BARE_ISO_DATETIME_RE = re.compile(
+        r"(?P<dt>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?)"
+        r"(?![Zz]|[+-]\d{2}:\d{2})"
+    )
+
+    @classmethod
+    def _normalize_odata_filter_datetimes(cls, filter_clause: Optional[str]) -> Optional[str]:
+        """Append ``Z`` to bare ISO 8601 datetimes inside an OData ``$filter``.
+
+        Microsoft Graph requires every ``DateTimeOffset`` literal to carry a
+        timezone designator (``Z`` or ``±HH:MM``); sending
+        ``receivedDateTime ge 2026-05-01T00:00:00`` triggers
+        ``BadRequest: Invalid filter clause: The DateTimeOffset text ... should
+        be in format 'yyyy-mm-ddThh:mm:ss('.'s+)?(zzzzzz)?'``. We assume bare
+        literals are UTC, which is what Graph stores ``receivedDateTime`` in.
+        """
+        if not filter_clause:
+            return filter_clause
+        return cls._BARE_ISO_DATETIME_RE.sub(lambda m: m.group("dt") + "Z", filter_clause)
 
     async def fetch_all_messages_delta(
         self,
@@ -7236,46 +7306,64 @@ class OutlookCalendarContactsDataSource:
             search = search if search and search.strip() else None
             orderby = orderby if orderby and orderby.strip() else None
 
-            # Use typed query parameters
-            query_params = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters()
-
-            # Set query parameters using typed object properties
-            if select:
-                query_params.select = select if isinstance(select, list) else [select]
-            if expand:
-                query_params.expand = expand if isinstance(expand, list) else [expand]
-            if search:
-                # $search is mutually exclusive with $filter and $orderby in Graph API
-                query_params.search = search
-            else:
-                if filter:
-                    query_params.filter = filter
-                if orderby:
-                    query_params.orderby = orderby
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
-
-            # Create proper typed request configuration
-            config = MessagesRequestBuilder.MessagesRequestBuilderGetRequestConfiguration()
-            config.query_parameters = query_params
-
-            if headers:
-                for k, v in headers.items():
-                    config.headers.try_add(k, v)
-
-            if search:
-                config.headers.try_add('ConsistencyLevel', 'eventual')
-
             # Verify client has me property before making the call
             if not hasattr(self.client, 'me'):
                 raise AttributeError("Graph client does not have 'me' property. Client may not be properly initialized for delegated authentication.")
-            
+
             if not hasattr(self.client.me, 'messages'):
                 raise AttributeError("Graph client 'me' does not have 'messages' property. This may indicate a permissions or configuration issue.")
 
-            response = await self.client.me.messages.get(request_configuration=config)
+            def _build_config(include_orderby: bool) -> MessagesRequestBuilder.MessagesRequestBuilderGetRequestConfiguration:
+                query_params = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters()
+                if select:
+                    query_params.select = select if isinstance(select, list) else [select]
+                if expand:
+                    query_params.expand = expand if isinstance(expand, list) else [expand]
+                if search:
+                    # $search is mutually exclusive with $filter and $orderby in Graph API
+                    query_params.search = self._normalize_search_query(search)
+                else:
+                    if filter:
+                        query_params.filter = self._normalize_odata_filter_datetimes(filter)
+                    if include_orderby and orderby:
+                        query_params.orderby = self._normalize_orderby(orderby)
+                if top is not None:
+                    query_params.top = top
+                if skip is not None:
+                    query_params.skip = skip
+
+                cfg = MessagesRequestBuilder.MessagesRequestBuilderGetRequestConfiguration()
+                cfg.query_parameters = query_params
+                if headers:
+                    for k, v in headers.items():
+                        cfg.headers.try_add(k, v)
+                if search:
+                    cfg.headers.try_add('ConsistencyLevel', 'eventual')
+                return cfg
+
+            try:
+                response = await self.client.me.messages.get(
+                    request_configuration=_build_config(include_orderby=True)
+                )
+            except Exception as initial_error:
+                # Graph rejects $orderby + $filter combinations its mailbox index
+                # can't satisfy with `InefficientFilter: The restriction or sort
+                # order is too complex for this operation`. The documented
+                # workaround is to drop $orderby; /me/messages then falls back
+                # to its default order (receivedDateTime desc), which is what
+                # callers usually want anyway.
+                if orderby and not search and "InefficientFilter" in str(initial_error):
+                    logger.warning(
+                        "me_list_messages: retrying without $orderby after InefficientFilter "
+                        "(filter=%r, orderby=%r)",
+                        filter, orderby,
+                    )
+                    response = await self.client.me.messages.get(
+                        request_configuration=_build_config(include_orderby=False)
+                    )
+                else:
+                    raise
+
             return self._handle_outlook_response(response)
         except AttributeError as ae:
             logger.error(f"Attribute error in me_list_messages: {str(ae)}")
