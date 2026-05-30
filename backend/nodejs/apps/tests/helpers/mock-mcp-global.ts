@@ -73,6 +73,10 @@ const sdkTransportPath = require.resolve(
 
 const { randomUUID } = require('crypto');
 
+// NOTE: onsessioninitialized is called here in the constructor for test
+// convenience. The real SDK fires it during handleRequest (after connect),
+// so tests based on this fake do not cover order-sensitive behaviour between
+// connect and session storage.
 class FakeStreamableHTTPServerTransport {
   opts: any;
   sessionId: string;

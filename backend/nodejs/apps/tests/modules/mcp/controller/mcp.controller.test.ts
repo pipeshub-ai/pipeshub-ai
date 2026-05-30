@@ -333,6 +333,44 @@ describe('MCP Controller — handleMCPRequest', () => {
       // Calling onclose should not throw (session is in transports map)
       expect(() => capturedTransport.onclose()).to.not.throw()
     })
+
+    it('should remove session from transports when onclose fires, causing next request to return 400', async () => {
+      let capturedTransport: any
+      sdkTransportExports.StreamableHTTPServerTransport = class {
+        constructor(opts: any) {
+          capturedTransport = this
+          if (opts?.onsessioninitialized) opts.onsessioninitialized('sid-cleanup')
+        }
+        sessionId = 'sid-cleanup'
+        onclose?: () => void
+        handleRequest() { return Promise.resolve() }
+      }
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { connect: sinon.stub().resolves() },
+      })
+
+      const handler = handleMCPRequest(appConfig)
+
+      // Initialize — stores the transport under 'sid-cleanup'
+      await handler(
+        createMockRequest({ headers: {}, body: initBody }),
+        createMockResponse() as any,
+        createMockNext(),
+      )
+
+      // Simulate the transport closing (e.g. client disconnects)
+      capturedTransport.onclose()
+
+      // Subsequent request with the now-removed session ID must get 400
+      const res = createMockResponse()
+      await handler(
+        createMockRequest({ headers: { 'mcp-session-id': 'sid-cleanup' }, body: {} }),
+        res as any,
+        createMockNext(),
+      )
+
+      expect(res.status.calledWith(400)).to.be.true
+    })
   })
 
   // =========================================================================
