@@ -58,6 +58,8 @@
     "embeddingDefaultNotInRegistry": "No system default embedding is available for this deployment.",
     "failedToLoadEmbeddingProviders": "Failed to load embedding providers.",
     "failedToLoadConfiguredModels": "Failed to load configured models.",
+    "toastModelAddedAi": "{{name}} has been added successfully as an AI model.",
+    "toastModelAddedEmbedding": "{{name}} has been added successfully as an embedding model.",
     "nextDisabledEmbeddingHintNoRegistryDefault": "Add an embedding provider below to continue",
     "steps": {
       "aiModel": {

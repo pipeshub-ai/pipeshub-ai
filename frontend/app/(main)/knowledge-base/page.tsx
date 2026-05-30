@@ -69,6 +69,7 @@ import { sidebarNodeChildrenMetaFromResponse } from './utils/sidebar-child-pagin
 import { refreshKbTree } from './utils/refresh-kb-tree';
 import { getReindexSuccessTitle } from './utils/reindex-label';
 import { getCollectionsHubBootstrapFromToken } from './utils/collections-hub-app';
+import { fetchAppDirectChildren } from './utils/fetch-app-direct-children';
 import {
   resolveHubNodeNotFoundNavigation,
   resolvePostDeleteNavigation,
@@ -107,7 +108,6 @@ function KnowledgeBasePageContent() {
     setCurrentFolderId,
     expandFolderExclusive,
     categorizedNodes,
-    setNodes,
     addNodes,
     setCategorizedNodes,
     cacheNodeChildren,
@@ -140,10 +140,6 @@ function KnowledgeBasePageContent() {
     setAllRecordsSearchQuery,
     setAppNodes,
     setAppRootListPagination,
-    setAppChildPagination,
-    cacheAppChildren,
-    setConnectorAppTree,
-    setAppLoading,
     setAllRecordsTableData,
     syncAllRecordsPaginationMeta,
     setIsLoadingAllRecordsTable,
@@ -544,71 +540,23 @@ function KnowledgeBasePageContent() {
     setLoadingFlatCollections,
   ]);
 
-  // Fetch children for each app node (lazy loading); for the KB app, also
-  // populate nodes + categorizedNodes so the Collections sidebar tree is driven
-  // from the same data source.
+  // Collections mode: prefetch KB app children only. All Records loads per-app on expand.
   useEffect(() => {
-    if (appNodes.length === 0) return;
+    if (appNodes.length === 0 || isAllRecordsMode) return;
 
     appNodes.forEach(async (app) => {
-      // Use fresh state to avoid stale closure and prevent effect loops
       const { appChildrenCache: freshCache } = useKnowledgeBaseStore.getState();
       if (freshCache.has(app.id)) return;
 
-      // In Collections mode, only prefetch the KB app's children.
-      // Non-KB connector apps are fetched lazily when the user enters All Records mode.
-      const isKbApp = isKbCollectionsHubApp(app);
-      if (!isKbApp && !isAllRecordsMode) return;
+      if (!isKbCollectionsHubApp(app)) return;
 
-      setAppLoading(app.id, true);
       try {
-        const response = await KnowledgeHubApi.getNodeChildren('app', app.id, {
-          onlyContainers: true,
-          page: 1,
-          limit: SIDEBAR_PAGINATION_PAGE_SIZE,
-          sortBy: 'name',
-          sortOrder: 'asc',
-        });
-        cacheAppChildren(app.id, response.items);
-
-        const pag = response.pagination;
-        setAppChildPagination(
-          app.id,
-          pag
-            ? {
-                hasNext: pag.hasNext,
-                nextPage: pag.hasNext ? pag.page + 1 : pag.page,
-              }
-            : { hasNext: false, nextPage: 1 }
-        );
-
-        if (isKbApp) {
-          setNodes(response.items);
-          const categorized = categorizeNodes(response.items, `apps/${app.id}`);
-          setCategorizedNodes(categorized);
-        } else {
-          addNodes(response.items);
-          const connectorTree = buildConnectorAppSidebarTree(app.id, response.items);
-          setConnectorAppTree(app.id, connectorTree);
-        }
-      } catch (error) {
-        console.error(`Error fetching children for app ${app.name}:`, error);
-      } finally {
-        setAppLoading(app.id, false);
+        await fetchAppDirectChildren(app.id);
+      } catch {
+        // fetchAppDirectChildren logs errors
       }
     });
-  // appChildrenCache intentionally omitted — read fresh via getState() to avoid infinite loop
-  }, [
-    appNodes,
-    isAllRecordsMode,
-    setAppLoading,
-    cacheAppChildren,
-    setAppChildPagination,
-    setNodes,
-    setCategorizedNodes,
-    addNodes,
-    setConnectorAppTree,
-  ]);
+  }, [appNodes, isAllRecordsMode]);
 
   // All Records mode: Fetch table data (reusable callback)
   const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string) => {

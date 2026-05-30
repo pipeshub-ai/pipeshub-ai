@@ -8,7 +8,7 @@ import { SECTION_PADDING_BOTTOM, SECTION_CONTENT_MARGIN_TOP, EMPTY_STATE_PADDING
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useTranslation } from 'react-i18next';
 import { KBSectionHeader } from './section-header';
-import { AppSection } from './section';
+import { AppSection, appSectionKey } from './section';
 import { SidebarLoadMoreButton } from './sidebar-load-more-button';
 import { isKbCollectionsHubApp } from '../utils/all-records-transformer';
 import { ConnectorItemComponent, MoreConnectorItem } from './section-element';
@@ -75,6 +75,8 @@ interface AllRecordsModeProps {
 
   // Overflow "More" panel
   onOpenMoreFolders?: (appId: string, appName: string, connector: string) => void;
+  onAppSelect?: (appId: string) => void;
+  onExpandApp?: (appId: string) => void;
 
   /** Server-backed pagination: more root app nodes (connectors) available */
   onLoadMoreRootApps?: () => void;
@@ -123,6 +125,8 @@ export function AllRecordsMode({
   onRename,
   onDelete,
   onOpenMoreFolders,
+  onAppSelect,
+  onExpandApp,
   onLoadMoreRootApps,
   rootAppListHasNext,
   isLoadingRootAppListMore,
@@ -169,12 +173,23 @@ export function AllRecordsMode({
         const categorizedTree = isKbApp
           ? [...(kbSharedTree || []), ...(kbPrivateTree || [])]
           : undefined;
+        const sectionKey = appSectionKey(app.id);
+        const isAppExpanded = expandedSections.has(sectionKey);
         return (
           <AppSection
             key={app.id}
             app={app}
             childNodes={appChildren}
             connectorTree={connectorTree}
+            isExpanded={isAppExpanded}
+            onChevronClick={() => {
+              const willExpand = !expandedSections.has(sectionKey);
+              onToggleSection(sectionKey);
+              if (willExpand) {
+                void onExpandApp?.(app.id);
+              }
+            }}
+            onAppSelect={() => onAppSelect?.(app.id)}
             isLoading={loadingAppIds.has(app.id)}
             onFolderSelect={(nodeType, nodeId) => {
               // For KB root-level collections, also update the selection state

@@ -20,26 +20,30 @@ function ShimmerBar({ style }: { style?: CSSProperties }) {
   );
 }
 
-function StatCardShimmer({ tall }: { tall?: boolean }) {
+/** Mirrors `StatCard` in overview-tab (padding, gap, and text scale). */
+function StatCardShimmer() {
   return (
     <Flex
       direction="column"
       align="center"
       justify="center"
-      gap="3"
+      gap="2"
       style={{
         flex: 1,
         minWidth: 0,
-        padding: tall ? 'var(--space-6) var(--space-4)' : 'var(--space-4)',
+        padding: 'var(--space-6) var(--space-4)',
         backgroundColor: 'var(--olive-2)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
-        minHeight: tall ? 118 : 92,
+        minHeight: 160,
       }}
     >
-      <ShimmerBar style={{ width: '50%', height: 10 }} />
-      <ShimmerBar style={{ width: '32%', height: tall ? 26 : 20 }} />
-      <ShimmerBar style={{ width: '70%', height: 8 }} />
+      {/* label (Text size="2") */}
+      <ShimmerBar style={{ width: '50%', height: 16 }} />
+      {/* value (Text size="6") */}
+      <ShimmerBar style={{ width: '36%', height: 42 }} />
+      {/* subtitle (Text size="1") */}
+      <ShimmerBar style={{ width: '72%', height: 14 }} />
     </Flex>
   );
 }
@@ -49,8 +53,8 @@ export function OverviewStatsGridShimmer() {
   return (
     <Flex direction="column" gap="2" style={{ width: '100%' }} aria-hidden>
       <Flex gap="2" style={{ width: '100%' }}>
-        <StatCardShimmer tall />
-        <StatCardShimmer tall />
+        <StatCardShimmer />
+        <StatCardShimmer />
       </Flex>
       <Flex gap="2" style={{ width: '100%' }}>
         <StatCardShimmer />

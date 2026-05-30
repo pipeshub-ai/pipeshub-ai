@@ -108,14 +108,6 @@ export default function AIModelsPage() {
     }
   }, [loadModels, t]);
 
-  const isLoading = store.isLoadingProviders || store.isLoadingModels;
-  const deleteKeyword = store.deleteTarget?.modelName ?? '';
-
-  if (!isProfileInitialized || isAdmin === false) return null;
-
-  // For the Add dialog, compute how many models of the target model type are
-  // already configured. The dialog uses this to decide whether to auto-default
-  // the new model — only the very first model of a type is auto-defaulted.
   const dialogExistingModelsCount = useMemo(() => {
     if (store.dialogMode !== 'add') return 0;
     const capability = store.dialogCapability;
@@ -124,6 +116,11 @@ export default function AIModelsPage() {
     if (!targetModelType) return 0;
     return store.configuredModels[targetModelType]?.length ?? 0;
   }, [store.dialogMode, store.dialogCapability, store.configuredModels]);
+
+  const isLoading = store.isLoadingProviders || store.isLoadingModels;
+  const deleteKeyword = store.deleteTarget?.modelName ?? '';
+
+  if (!isProfileInitialized || isAdmin === false) return null;
 
   return (
     <ServiceGate services={['query']}>
@@ -152,7 +149,9 @@ export default function AIModelsPage() {
         editModel={store.dialogEditModel}
         existingModelsCount={dialogExistingModelsCount}
         onClose={store.closeDialog}
-        onSaved={loadModels}
+        onSaved={() => {
+          void loadModels();
+        }}
       />
 
       <DestructiveTypedConfirmationDialog

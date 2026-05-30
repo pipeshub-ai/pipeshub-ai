@@ -58,6 +58,8 @@
     "embeddingDefaultNotInRegistry": "Für diese Bereitstellung ist kein systemseitiges Standard-Embedding verfügbar.",
     "failedToLoadEmbeddingProviders": "Embedding-Anbieter konnten nicht geladen werden.",
     "failedToLoadConfiguredModels": "Konfigurierte Modelle konnten nicht geladen werden.",
+    "toastModelAddedAi": "{{name}} wurde erfolgreich als KI-Modell hinzugefügt.",
+    "toastModelAddedEmbedding": "{{name}} wurde erfolgreich als Embedding-Modell hinzugefügt.",
     "nextDisabledEmbeddingHintNoRegistryDefault": "Fügen Sie unten einen Embedding-Anbieter hinzu, um fortzufahren",
     "steps": {
       "aiModel": {
