@@ -171,10 +171,23 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
 
         raise AssertionError("conversation stream ended without a complete event")
 
+    def _get_conversation(self, conversation_id: str) -> dict:
+        resp = requests.get(
+            f"{self.conversations_url}/{conversation_id}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        conv = body.get("conversation") or {}
+        assert isinstance(conv, dict), f"conversation payload was not a dict: {body!r}"
+        return conv
+
     def _stream_create_conversation_and_last_bot_message_id(
         self, *, query: str = SEARCH_QUERY
     ) -> tuple[str, str]:
         headers = {**self.headers, "Accept": "text/event-stream"}
+        connected_conv_id: str | None = None
 
         with requests.post(
             self.conversation_stream_url,
@@ -187,33 +200,39 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
 
             for envelope in _iter_sse_envelopes(resp):
                 assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
+                if envelope["event"] == "connected":
+                    payload = json.loads(envelope["data"])
+                    conv_id = payload.get("conversationId")
+                    if isinstance(conv_id, str) and conv_id:
+                        connected_conv_id = conv_id
+                    continue
                 if envelope["event"] == "error":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(f"stream emitted error event: {payload!r}")
                 if envelope["event"] != "complete":
                     continue
-
-                payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
-                conv_id = conv.get("_id")
-                assert isinstance(conv_id, str) and conv_id, (
-                    f"complete payload missing conversation._id: {payload!r}"
+                assert connected_conv_id, (
+                    f"stream complete arrived without connected conversationId: {envelope!r}"
                 )
-                msgs = conv.get("messages") or []
-                bot_id: str | None = None
-                for m in reversed(msgs if isinstance(msgs, list) else []):
-                    if not isinstance(m, dict):
-                        continue
-                    if m.get("messageType") != "bot_response":
-                        continue
-                    mid = m.get("_id") or m.get("id")
-                    if isinstance(mid, str) and mid:
-                        bot_id = mid
-                        break
-                assert bot_id, f"no bot_response with _id in messages: {msgs!r}"
-                return conv_id, bot_id
+                break
+            else:
+                raise AssertionError("conversation stream ended without a complete event")
 
-        raise AssertionError("conversation stream ended without a complete event")
+        conv_id = connected_conv_id
+        conv = self._get_conversation(conv_id)
+        msgs = conv.get("messages") or []
+        bot_id: str | None = None
+        for m in reversed(msgs if isinstance(msgs, list) else []):
+            if not isinstance(m, dict):
+                continue
+            if m.get("messageType") != "bot_response":
+                continue
+            mid = m.get("_id") or m.get("id")
+            if isinstance(mid, str) and mid:
+                bot_id = mid
+                break
+        assert bot_id, f"no bot_response with _id in messages: {msgs!r}"
+        return conv_id, bot_id
 
     def _stream_create_conversation_bot_and_user_message_ids(
         self, *, query: str = SEARCH_QUERY
