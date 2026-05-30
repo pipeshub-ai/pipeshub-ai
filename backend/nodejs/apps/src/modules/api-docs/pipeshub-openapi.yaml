@@ -6124,6 +6124,26 @@ components:
           $ref: '#/components/schemas/SemanticSearchHistoryMeta'
 
     # ==================== AGENT SCHEMAS ====================
+    AgentKnowledgeFiltersParsed:
+      type: object
+      additionalProperties: false
+      description: |
+        Indexed scope for a knowledge connector: record-group ids (collections /
+        KB roots) and individual record ids. First-party create/update flows set
+        `recordGroups` and `records`. On GET, `filtersParsed` is this shape
+        parsed from the stored `filters` JSON string.
+      properties:
+        recordGroups:
+          type: array
+          items:
+            type: string
+          description: Record-group ids (e.g. knowledge-base roots) in scope.
+        records:
+          type: array
+          items:
+            type: string
+          description: Individual record ids in scope.
+
     Agent:
       type: object
       additionalProperties: false
@@ -6303,13 +6323,24 @@ components:
               displayName:
                 type: string
               filters:
+                description: |
+                  Knowledge scope filter as stored on the graph edge. The Node `getAgent`
+                  handler proxies this field unchanged from the AI service (only `agent.id`
+                  is stripped). May be a JSON string (typical graph storage) or an object.
+                  Prefer `filtersParsed` on GET for a guaranteed parsed object with the
+                  same keys as the object branch below.
                 oneOf:
-                  - type: object
-                    additionalProperties: true
+                  - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
                   - type: string
+                    description: JSON-encoded filter object (graph storage format).
               filtersParsed:
-                type: object
-                additionalProperties: true
+                readOnly: true
+                description: |
+                  Server-derived read-only object parsed from the stored
+                  `filters` JSON by the graph provider on GET (Neo4j / Arango).
+                  Empty object when `filters` is missing or invalid JSON.
+                allOf:
+                  - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the whole organization
@@ -6720,8 +6751,7 @@ components:
           type: string
         filters:
           oneOf:
-            - type: object
-              additionalProperties: true
+            - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
             - type: string
             - type: array
               items: {}
@@ -25283,7 +25313,14 @@ paths:
       tags:
         - Agents
       summary: Get agent
-      description: Retrieve agent details by its unique key.
+      description: |
+        Retrieve agent details by its unique key.
+
+        **Observed gateway behavior (localhost integration tests):**
+        Unknown `agentKey`, lookup after soft-delete, and other AI-backend failures
+        currently return **HTTP 500** with an `ErrorResponse` body (message often
+        mentions the agent or "not found"), not 404. The Python query service may
+        return 404 when called directly; the Node proxy surfaces 500 instead.
       operationId: getAgent
       x-pipeshub-sdk: true
       security:
@@ -25296,6 +25333,7 @@ paths:
           description: Unique agent identifier
           schema:
             type: string
+            minLength: 1
           example: "customer-support-agent"
       responses:
         '200':
@@ -25305,9 +25343,40 @@ paths:
               schema:
                 $ref: '#/components/schemas/GetAgentResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid bearer token (e.g. `No token provided`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden — insufficient OAuth scope (`agent:read` required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: |
+            Gateway validation failure (non-empty `agentKey` path param) or missing
+            organization/user context on the authenticated request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Agent lookup failed
+          description: |
+            Agent not found, post-delete lookup, permission or lookup failure, or other
+            AI-backend error forwarded by the gateway (observed for unknown key and GET
+            after delete on localhost).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AI query service unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:

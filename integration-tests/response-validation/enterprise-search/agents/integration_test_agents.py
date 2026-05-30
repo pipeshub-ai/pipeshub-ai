@@ -861,6 +861,51 @@ class TestGetAgent:
         )
         assert_response_matches_openapi_operation(body, "getAgent", status_code="200")
 
+    def test_get_agent_with_knowledge_matches_openapi_spec(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        session_kb: dict[str, str],
+        created_agent_keys: list[str],
+    ) -> None:
+        unique_name = f"it-agent-get-kb-openapi-{uuid4().hex[:8]}"
+        agent_key = self._create_agent_for_get_test(
+            name=unique_name,
+            seeded_model=reasoning_multimodal_llm_model,
+            created_agent_keys=created_agent_keys,
+            description="openapi GET with KB knowledge",
+            knowledge=[
+                {
+                    "connectorId": f"knowledgeBase_{self.client.org_id}",
+                    "filters": {
+                        "recordGroups": [session_kb["kb_id"]],
+                        "records": [],
+                    },
+                },
+            ],
+        )
+
+        resp = self._get_agent_raw(agent_key)
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        self._assert_get_agent_response_shape(
+            body,
+            expected_agent_key=agent_key,
+            expected_name=unique_name,
+        )
+        assert_response_matches_openapi_operation(body, "getAgent", status_code="200")
+
+        agent = body["agent"]
+        knowledge = agent.get("knowledge")
+        assert isinstance(knowledge, list) and knowledge, f"Expected knowledge entries: {agent!r}"
+        entry = knowledge[0]
+        parsed = entry.get("filtersParsed") or {}
+        if isinstance(parsed, dict):
+            groups = parsed.get("recordGroups") or []
+            assert session_kb["kb_id"] in groups, (
+                f"Expected kb_id in filtersParsed.recordGroups, got: {entry!r}"
+            )
+
     def test_get_agent_returns_current_error_status_for_unknown_agent_key(self) -> None:
         missing_agent_key = f"missing-agent-{uuid4().hex[:12]}"
 
@@ -868,6 +913,9 @@ class TestGetAgent:
         assert resp.status_code == 500, (
             f"Expected current 500 error for unknown agent key, got {resp.status_code}: {resp.text}"
         )
+
+        body = _response_json(resp)
+        assert_response_matches_openapi_operation(body, "getAgent", status_code="500")
 
         error_text = _response_text_fragments(resp)
         assert "not found" in error_text or "agent" in error_text, (
@@ -885,6 +933,7 @@ class TestGetAgent:
         assert body["error"]["message"] == "No token provided", (
             f"Expected 'No token provided', got {body['error']['message']!r}"
         )
+        assert_response_matches_openapi_operation(body, "getAgent", status_code="401")
 
 
 @pytest.mark.integration
