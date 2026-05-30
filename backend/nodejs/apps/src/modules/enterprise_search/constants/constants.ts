@@ -37,3 +37,8 @@ export const FAIL_REASON_TYPE = {
 // Create a type from the object values
 export type FailReasonType =
   (typeof FAIL_REASON_TYPE)[keyof typeof FAIL_REASON_TYPE];
+
+export const INTERNAL_CONVERSATION_CHAT_MODE = {
+  WEB_SEARCH: 'web_search',
+  INTERNAL_SEARCH: 'internal_search',
+} as const;

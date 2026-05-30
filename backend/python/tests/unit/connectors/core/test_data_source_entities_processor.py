@@ -2579,6 +2579,7 @@ class TestProcessRecordSQLTypes:
 
         record = _make_record()
         record.external_revision_id = "rev-new"
+        # Incoming record has a new weburl: it should replace the stored value.
 
         result = await proc._process_record(record, [], tx_store)
 

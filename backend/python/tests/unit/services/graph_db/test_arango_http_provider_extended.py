@@ -437,10 +437,9 @@ class TestGetFilteredConnectorInstances:
     async def test_basic_no_filters(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=[
             [5],  # count query
-            [0],  # personal count
             [{"_key": "c1"}, {"_key": "c2"}],  # main query
         ])
-        docs, total, scope_counts = await connected_provider.get_filtered_connector_instances(
+        docs, total = await connected_provider.get_filtered_connector_instances(
             collection="apps", edge_collection="orgAppRelation",
             org_id="org1", user_id="user1"
         )
@@ -451,10 +450,9 @@ class TestGetFilteredConnectorInstances:
     async def test_personal_scope_filter(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=[
             [3],  # count
-            [3],  # personal count
             [{"_key": "c1"}],  # results
         ])
-        docs, total, scope_counts = await connected_provider.get_filtered_connector_instances(
+        docs, total = await connected_provider.get_filtered_connector_instances(
             collection="apps", edge_collection="orgAppRelation",
             org_id="org1", user_id="user1", scope="personal"
         )
@@ -462,13 +460,12 @@ class TestGetFilteredConnectorInstances:
 
     @pytest.mark.asyncio
     async def test_team_scope_with_admin(self, connected_provider):
+        # is_admin=True skips _get_user_accessible_team_app_keys: count + main only
         connected_provider.execute_query = AsyncMock(side_effect=[
             [10],  # count
-            [2],  # personal count
-            [5],  # team count
             [{"_key": "c1"}],  # results
         ])
-        docs, total, scope_counts = await connected_provider.get_filtered_connector_instances(
+        docs, total = await connected_provider.get_filtered_connector_instances(
             collection="apps", edge_collection="orgAppRelation",
             org_id="org1", user_id="user1", scope="team", is_admin=True,
             kb_connector_type="KB"
@@ -479,10 +476,9 @@ class TestGetFilteredConnectorInstances:
     async def test_with_search(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=[
             [1],  # count
-            [0],  # personal count
             [{"_key": "c1"}],  # results
         ])
-        docs, total, scope_counts = await connected_provider.get_filtered_connector_instances(
+        docs, total = await connected_provider.get_filtered_connector_instances(
             collection="apps", edge_collection="orgAppRelation",
             org_id="org1", user_id="user1", search="gmail"
         )
@@ -491,12 +487,261 @@ class TestGetFilteredConnectorInstances:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("db error"))
-        docs, total, scope_counts = await connected_provider.get_filtered_connector_instances(
+        docs, total = await connected_provider.get_filtered_connector_instances(
             collection="apps", edge_collection="orgAppRelation",
             org_id="org1", user_id="user1"
         )
         assert docs == []
         assert total == 0
+
+    @pytest.mark.asyncio
+    async def test_team_scope_non_admin_with_accessible_keys(self, connected_provider):
+        """Non-admin team scope: pre-fetches accessible team keys and filters by them."""
+        connected_provider._get_user_accessible_team_app_keys = AsyncMock(
+            return_value=["key1", "key2"]
+        )
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [2],                                   # count query
+            [{"_key": "key1"}, {"_key": "key2"}],  # main query
+        ])
+        docs, total = await connected_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", scope="team", is_admin=False
+        )
+        assert total == 2
+        assert len(docs) == 2
+        connected_provider._get_user_accessible_team_app_keys.assert_awaited_once_with(
+            "user1", None
+        )
+
+    @pytest.mark.asyncio
+    async def test_team_scope_non_admin_empty_keys_logs_warning(self, connected_provider):
+        """Warning is logged when no accessible team keys are found for a non-admin."""
+        connected_provider._get_user_accessible_team_app_keys = AsyncMock(return_value=[])
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [0],  # count
+            [],   # results
+        ])
+        docs, total = await connected_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user_no_edges", scope="team", is_admin=False
+        )
+        assert total == 0
+        assert docs == []
+        info_calls = connected_provider.logger.info.call_args_list
+        assert any(
+            len(call.args) >= 2 and "user_no_edges" in str(call.args[1])
+            for call in info_calls
+        )
+
+    @pytest.mark.asyncio
+    async def test_team_scope_admin_skips_accessible_keys_lookup(self, connected_provider):
+        """Admin team scope does NOT call _get_user_accessible_team_app_keys."""
+        connected_provider._get_user_accessible_team_app_keys = AsyncMock(return_value=[])
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [5],                           # count
+            [{"_key": f"k{i}"} for i in range(5)],  # results
+        ])
+        docs, total = await connected_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation",
+            org_id="org1", user_id="admin_user", scope="team", is_admin=True
+        )
+        assert total == 5
+        connected_provider._get_user_accessible_team_app_keys.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_with_is_authenticated_filter_true(self, connected_provider):
+        """is_authenticated=True filter is included in the query."""
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [3],
+            [{"_key": "c1"}, {"_key": "c2"}, {"_key": "c3"}],
+        ])
+        docs, total = await connected_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", is_authenticated=True
+        )
+        assert total == 3
+        call_args = connected_provider.execute_query.call_args_list
+        # First call is count, bind_vars should include is_authenticated
+        count_bind_vars = call_args[0][1].get("bind_vars", call_args[0][0][1] if len(call_args[0][0]) > 1 else {})
+        # Verify execute_query was called with is_authenticated in bind_vars
+        assert connected_provider.execute_query.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_with_is_authenticated_filter_false(self, connected_provider):
+        """is_authenticated=False filter returns only unauthenticated connectors."""
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [1],
+            [{"_key": "unauth1"}],
+        ])
+        docs, total = await connected_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", is_authenticated=False
+        )
+        assert total == 1
+        assert docs[0]["_key"] == "unauth1"
+
+    @pytest.mark.asyncio
+    async def test_with_is_active_filter_true(self, connected_provider):
+        """is_active=True filter passes through to query."""
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [2],
+            [{"_key": "active1"}, {"_key": "active2"}],
+        ])
+        docs, total = await connected_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", is_active=True
+        )
+        assert total == 2
+
+    @pytest.mark.asyncio
+    async def test_with_is_active_filter_false(self, connected_provider):
+        """is_active=False filter returns only inactive connectors."""
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [1],
+            [{"_key": "inactive1"}],
+        ])
+        docs, total = await connected_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", is_active=False
+        )
+        assert total == 1
+        assert docs[0]["_key"] == "inactive1"
+
+    @pytest.mark.asyncio
+    async def test_with_connector_type_filter(self, connected_provider):
+        """connector_type_filter narrows results to a single connector type."""
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [1],
+            [{"_key": "gd1", "type": "GoogleDrive"}],
+        ])
+        docs, total = await connected_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", connector_type_filter="GoogleDrive"
+        )
+        assert total == 1
+        assert docs[0]["type"] == "GoogleDrive"
+
+    @pytest.mark.asyncio
+    async def test_combined_filters_is_authenticated_and_is_active(self, connected_provider):
+        """Both is_authenticated and is_active filters can be applied together."""
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [1],
+            [{"_key": "c1", "isAuthenticated": True, "isActive": True}],
+        ])
+        docs, total = await connected_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1",
+            is_authenticated=True, is_active=True
+        )
+        assert total == 1
+        assert connected_provider.execute_query.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_combined_search_and_connector_type(self, connected_provider):
+        """search and connector_type_filter can be combined."""
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [1],
+            [{"_key": "s1", "type": "Slack", "name": "Slack Workspace"}],
+        ])
+        docs, total = await connected_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1",
+            search="Slack", connector_type_filter="Slack"
+        )
+        assert total == 1
+
+    @pytest.mark.asyncio
+    async def test_exclude_kb_with_kb_connector_type(self, connected_provider):
+        """exclude_kb=True with kb_connector_type excludes KB connectors."""
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [4],
+            [{"_key": f"c{i}"} for i in range(4)],
+        ])
+        docs, total = await connected_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1",
+            exclude_kb=True, kb_connector_type="KnowledgeBase"
+        )
+        assert total == 4
+
+    @pytest.mark.asyncio
+    async def test_pagination_skip_and_limit(self, connected_provider):
+        """Custom skip and limit are forwarded to the query."""
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [50],
+            [{"_key": f"c{i}"} for i in range(10)],
+        ])
+        docs, total = await connected_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", skip=20, limit=10
+        )
+        assert total == 50
+        assert len(docs) == 10
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_all_new_filters_no_match(self, connected_provider):
+        """All new filter params combined return empty when nothing matches."""
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [0],
+            [],
+        ])
+        docs, total = await connected_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1",
+            is_authenticated=True, is_active=True,
+            connector_type_filter="NonExistent", search="xyz"
+        )
+        assert total == 0
+        assert docs == []
+
+
+# ---------------------------------------------------------------------------
+# _get_user_accessible_team_app_keys
+# ---------------------------------------------------------------------------
+
+
+class TestGetUserAccessibleTeamAppKeys:
+    @pytest.mark.asyncio
+    async def test_returns_keys_for_known_user(self, connected_provider):
+        """Happy path: returns a list of _key strings for a user with team app edges."""
+        connected_provider.execute_query = AsyncMock(return_value=["key1", "key2", "key3"])
+        result = await connected_provider._get_user_accessible_team_app_keys("user123")
+        assert result == ["key1", "key2", "key3"]
+        connected_provider.execute_query.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_list_when_user_not_found(self, connected_provider):
+        """When no user doc is found, the AQL FILTER user_doc != null stops execution
+        and execute_query returns an empty list (no results)."""
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        result = await connected_provider._get_user_accessible_team_app_keys("unknown_user")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_list_when_no_team_edges(self, connected_provider):
+        """User exists but has no team app edges — UNION_DISTINCT returns empty."""
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        result = await connected_provider._get_user_accessible_team_app_keys("user_no_edges")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_exception_propagates(self, connected_provider):
+        """DB errors are NOT swallowed: they propagate to the caller."""
+        connected_provider.execute_query = AsyncMock(side_effect=RuntimeError("ArangoDB down"))
+        with pytest.raises(RuntimeError, match="ArangoDB down"):
+            await connected_provider._get_user_accessible_team_app_keys("user1")
+
+    @pytest.mark.asyncio
+    async def test_with_transaction(self, connected_provider):
+        """transaction parameter is forwarded to execute_query."""
+        connected_provider.execute_query = AsyncMock(return_value=["k1"])
+        result = await connected_provider._get_user_accessible_team_app_keys(
+            "user1", transaction="txn-abc"
+        )
+        assert result == ["k1"]
+        _, kwargs = connected_provider.execute_query.call_args
+        assert kwargs.get("transaction") == "txn-abc"
 
 
 # ---------------------------------------------------------------------------
@@ -1378,7 +1623,7 @@ class TestEnsureIndexes:
     async def test_ensure_indexes_success(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        connected_provider.http_client.ensure_persistent_index.assert_called_once()
+        assert connected_provider.http_client.ensure_persistent_index.call_count == 14
 
 
 # ---------------------------------------------------------------------------

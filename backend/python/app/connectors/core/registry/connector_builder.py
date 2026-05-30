@@ -52,6 +52,8 @@ class ConnectorConfigBuilder:
             "supportsAgent": True,
             "documentationLinks": [],
             "hideConnector": False,
+            "isAdminAccessRequired": False,
+            "personalConnectorType": None,
             "auth": {
                 "supportedAuthTypes": ["OAUTH"],
                 "schemas": {},  # Per-auth-type schemas: {"OAUTH": {"fields": []}, "API_TOKEN": {"fields": []}}
@@ -127,6 +129,17 @@ class ConnectorConfigBuilder:
     def with_hide_connector(self, hide: bool = True) -> 'ConnectorConfigBuilder':
         """Set whether to hide the connector from the UI"""
         self.config["hideConnector"] = hide
+        return self
+
+    def with_admin_access_required(
+        self,
+        required: bool = True,
+        personal_connector_type: str | None = None,
+    ) -> 'ConnectorConfigBuilder':
+        """Require native-app admin access before team connector setup in the UI."""
+        self.config["isAdminAccessRequired"] = required
+        if personal_connector_type is not None:
+            self.config["personalConnectorType"] = personal_connector_type
         return self
 
     def add_documentation_link(self, link: DocumentationLink) -> 'ConnectorConfigBuilder':

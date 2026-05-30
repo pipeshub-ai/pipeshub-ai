@@ -130,6 +130,7 @@ class TestConfluenceRunSync:
             connector._sync_user_groups = AsyncMock()
             rg = _space_rg()
             connector._sync_spaces = AsyncMock(return_value=[rg])
+            connector._sync_folders = AsyncMock()
             connector._sync_content = AsyncMock()
             connector._sync_permission_changes_from_audit_log = AsyncMock()
 
@@ -138,6 +139,7 @@ class TestConfluenceRunSync:
             connector._sync_users.assert_awaited_once()
             connector._sync_user_groups.assert_awaited_once()
             connector._sync_spaces.assert_awaited_once()
+            connector._sync_folders.assert_awaited_once_with("DEV")
             # For each space: pages + blogposts
             assert connector._sync_content.await_count == 2
             connector._sync_permission_changes_from_audit_log.assert_awaited_once()
@@ -157,10 +159,12 @@ class TestConfluenceRunSync:
             connector._sync_users = AsyncMock()
             connector._sync_user_groups = AsyncMock()
             connector._sync_spaces = AsyncMock(return_value=[_space_rg("S1"), _space_rg("S2")])
+            connector._sync_folders = AsyncMock()
             connector._sync_content = AsyncMock()
             connector._sync_permission_changes_from_audit_log = AsyncMock()
 
             await connector.run_sync()
+            assert connector._sync_folders.await_count == 2
             # 2 spaces * 2 types (page + blogpost) = 4
             assert connector._sync_content.await_count == 4
 
@@ -857,13 +861,21 @@ class TestFetchSpacePermissions:
         ds = MagicMock()
         ds.get_space_permissions_assignments = AsyncMock(side_effect=mock_perms)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
-        connector._transform_space_permission = AsyncMock(return_value=Permission(
-            entity_type=EntityType.GROUP, external_id="g1", type=PermissionType.READ
-        ))
+
+        async def mock_transform(perm_data: dict[str, Any]) -> Permission:
+            group_id = perm_data.get("group", {}).get("id", "g1")
+            return Permission(
+                entity_type=EntityType.GROUP,
+                external_id=group_id,
+                type=PermissionType.READ,
+            )
+
+        connector._transform_space_permission = AsyncMock(side_effect=mock_transform)
         connector._extract_cursor_from_next_link = MagicMock(side_effect=["abc", None])
 
         perms = await connector._fetch_space_permissions("s1", "Dev Space")
         assert len(perms) == 2
+        assert {p.external_id for p in perms} == {"g1", "g2"}
 
     @pytest.mark.asyncio
     async def test_api_failure_returns_empty(self):

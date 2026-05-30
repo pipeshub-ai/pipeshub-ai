@@ -37,9 +37,12 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch, call
 from uuid import uuid4
 
+import httpx
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus, RecordRelations
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.atlassian.jira_cloud.connector import (
     AUDIT_PAGE_SIZE,
     BATCH_PROCESSING_SIZE,
@@ -557,14 +560,44 @@ class TestGetProjectOptions:
 class TestRunSync:
 
     @pytest.mark.asyncio
-    async def test_full_sync_no_users(self):
+    async def test_full_sync_skips_when_pipeshub_directory_empty(self):
+        """Empty PipesHub directory short-circuits run_sync early.
+
+        ``get_all_active_users`` returns the org/directory roster. When it is
+        empty (fresh or single-user deployment) ``run_sync`` returns early
+        without hitting Jira — downstream methods must not be called.
+        """
         connector = _make_connector()
         connector.data_source = MagicMock()
+        connector.site_url = "https://company.atlassian.net"
         connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        connector._fetch_users = AsyncMock(return_value=[])
+        connector._sync_user_groups = AsyncMock(return_value={})
+        connector._fetch_projects = AsyncMock(return_value=([], []))
+        connector._sync_all_project_issues = AsyncMock(
+            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0}
+        )
+        connector._handle_issue_deletions = AsyncMock()
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
                    new_callable=AsyncMock, return_value=(None, None)):
             await connector.run_sync()
+
+        # Early return — none of the Jira-side fetches should have been called.
+        connector._fetch_users.assert_not_awaited()
+        connector._fetch_projects.assert_not_awaited()
+        connector._sync_all_project_issues.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_run_sync_raises_when_init_fails(self):
+        """Regression: ``init()`` returning False must raise."""
+        connector = _make_connector()
+        connector.data_source = None
+        connector.init = AsyncMock(return_value=False)
+
+        with pytest.raises(RuntimeError, match="init failed"):
+            await connector.run_sync()
+        connector.init.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_full_sync_with_users_and_projects(self):
@@ -608,7 +641,18 @@ class TestRunSync:
         connector = _make_connector()
         connector.data_source = None
         connector.init = AsyncMock(return_value=True)
-        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        # Stub the rest of the orchestration to a no-op happy path.
+        connector._fetch_users = AsyncMock(return_value=[])
+        connector._sync_user_groups = AsyncMock(return_value={})
+        connector._fetch_projects = AsyncMock(return_value=([], []))
+        connector._sync_project_roles = AsyncMock()
+        connector._sync_project_lead_roles = AsyncMock()
+        connector._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        connector._sync_all_project_issues = AsyncMock(
+            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0}
+        )
+        connector._update_issues_sync_checkpoint = AsyncMock()
+        connector._handle_issue_deletions = AsyncMock()
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
                    new_callable=AsyncMock, return_value=(None, None)):
@@ -619,13 +663,14 @@ class TestRunSync:
     async def test_run_sync_error_raises(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
-        connector.data_entities_processor.get_all_active_users = AsyncMock(
-            side_effect=Exception("db error")
-        )
+        # ``_fetch_users`` is the first orchestrated step now that the
+        # ``get_all_active_users`` gate was removed; an exception there must
+        # propagate out of ``run_sync``.
+        connector._fetch_users = AsyncMock(side_effect=Exception("upstream error"))
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
                    new_callable=AsyncMock, return_value=(None, None)):
-            with pytest.raises(Exception, match="db error"):
+            with pytest.raises(Exception, match="upstream error"):
                 await connector.run_sync()
 
     @pytest.mark.asyncio
@@ -997,6 +1042,46 @@ class TestFetchUsersCoverage:
             await connector._fetch_users()
 
     @pytest.mark.asyncio
+    async def test_bulk_403_returns_partial_and_sets_flag(self):
+        """Regression: 403 on /users/search must NOT raise — it must fall back
+        to whatever the bulk fetch had already collected and flag
+        ``_user_bulk_forbidden`` so Phase 5 can take over."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        # No PipesHub directory candidates → Phase 5 short-circuits, so this
+        # isolates the bulk-fetch fallback specifically.
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(403))
+        mock_ds.find_users = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await connector._fetch_users()
+        assert result == []
+        assert connector._user_bulk_forbidden is True
+        # No PipesHub candidates → reverse lookup must not have been attempted.
+        mock_ds.find_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_bulk_401_also_treated_as_forbidden(self):
+        """401 (unauthenticated against this endpoint) is the same fallback
+        shape as 403; treat them identically."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(401))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await connector._fetch_users()
+        assert result == []
+        assert connector._user_bulk_forbidden is True
+
+    @pytest.mark.asyncio
     async def test_json_parse_failure_breaks(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
@@ -1122,6 +1207,59 @@ class TestFetchUsersPhases:
 
         result = await connector._fetch_users()
         assert len(result) == 0
+
+    @pytest.mark.asyncio
+    async def test_bulk_forbidden_triggers_directory_sweep(self):
+        """Regression: when /users/search is forbidden, Phase 5 must still run
+        against the full PipesHub directory (not be skipped by the
+        ``unresolved_count == 0`` early exit) and resolve users via per-email
+        ``find_users``, which is typically permitted even when the bulk
+        enumeration is not."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        u1 = MagicMock(email="alice@example.com")
+        u2 = MagicMock(email="bob@example.com")
+        connector.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[u1, u2]
+        )
+
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(403))
+        mock_ds.find_users = AsyncMock(side_effect=[
+            _make_mock_response(200, [{"accountId": "acc-alice", "displayName": "Alice"}]),
+            _make_mock_response(200, [{"accountId": "acc-bob", "displayName": "Bob"}]),
+        ])
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await connector._fetch_users()
+
+        assert connector._user_bulk_forbidden is True
+        emails = {u.email for u in result}
+        assert emails == {"alice@example.com", "bob@example.com"}
+        # Both directory candidates must have been swept.
+        assert mock_ds.find_users.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_bulk_forbidden_with_empty_directory_resolves_nothing(self):
+        """With both bulk forbidden AND an empty PipesHub directory, there are
+        no candidates and reverse-lookup is a no-op — sync still returns
+        cleanly without raising."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(403))
+        mock_ds.find_users = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await connector._fetch_users()
+        assert result == []
+        assert connector._user_bulk_forbidden is True
+        mock_ds.find_users.assert_not_awaited()
 
 
 # ===========================================================================
@@ -3531,3 +3669,322 @@ class TestFetchIssuesBatchedFilters:
 
         jql = mock_ds.search_and_reconsile_issues_using_jql_post.call_args[1]["jql"]
         assert "updated <=" in jql
+
+
+# ===========================================================================
+# Patch fix 1 (Cloud): _fallback_permissions_for_forbidden_scheme
+# ===========================================================================
+
+
+class TestFallbackPermissionsForForbiddenSchemeCloud:
+
+    def test_returns_user_permission_when_email_set(self):
+        conn = _make_connector()
+        conn.creator_email = "owner@example.com"
+        result = conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
+        assert len(result) == 1
+        assert result[0].entity_type == EntityType.USER
+        assert result[0].email == "owner@example.com"
+        assert result[0].type == PermissionType.READ
+
+    def test_returns_empty_when_no_email(self):
+        conn = _make_connector()
+        conn.creator_email = None
+        assert conn._fallback_permissions_for_forbidden_scheme("PROJ", 401, "permission scheme") == []
+
+    def test_works_for_both_401_and_403(self):
+        conn = _make_connector()
+        conn.creator_email = "e@x.com"
+        for status in (401, 403):
+            result = conn._fallback_permissions_for_forbidden_scheme("P", status, "grants")
+            assert len(result) == 1
+            assert result[0].entity_type == EntityType.USER
+
+
+# ===========================================================================
+# Patch fix 2 (Cloud): _fetch_project_permission_scheme — 401/403 branches
+# ===========================================================================
+
+
+def _err_resp_cloud(status: int, body: str = "error") -> MagicMock:
+    r = MagicMock()
+    r.status = status
+    r.json = MagicMock(return_value={})
+    r.text = MagicMock(return_value=body)
+    return r
+
+
+class TestFetchProjectPermissionScheme401403Cloud:
+
+    @pytest.mark.asyncio
+    async def test_scheme_401_returns_fallback_with_email(self):
+        conn = _make_connector()
+        conn.creator_email = "admin@example.com"
+        ds = MagicMock()
+        ds.get_assigned_permission_scheme = AsyncMock(return_value=_err_resp_cloud(401, "Unauthorized"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            perms = await conn._fetch_project_permission_scheme("PROJ", {})
+        assert len(perms) == 1
+        assert perms[0].entity_type == EntityType.USER
+        assert perms[0].email == "admin@example.com"
+
+    @pytest.mark.asyncio
+    async def test_scheme_403_returns_fallback_with_email(self):
+        conn = _make_connector()
+        conn.creator_email = "admin@example.com"
+        ds = MagicMock()
+        ds.get_assigned_permission_scheme = AsyncMock(return_value=_err_resp_cloud(403, '{"errorMessages":["No permission"]}'))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            perms = await conn._fetch_project_permission_scheme("PROJ", {})
+        assert len(perms) == 1
+        assert perms[0].email == "admin@example.com"
+
+    @pytest.mark.asyncio
+    async def test_scheme_401_no_email_returns_empty(self):
+        conn = _make_connector()
+        conn.creator_email = None
+        ds = MagicMock()
+        ds.get_assigned_permission_scheme = AsyncMock(return_value=_err_resp_cloud(401, "Unauthorized"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            assert await conn._fetch_project_permission_scheme("PROJ", {}) == []
+
+    @pytest.mark.asyncio
+    async def test_scheme_500_does_not_call_fallback(self):
+        conn = _make_connector()
+        conn.creator_email = "admin@example.com"
+        ds = MagicMock()
+        ds.get_assigned_permission_scheme = AsyncMock(return_value=_err_resp_cloud(500, "Server error"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch.object(conn, "_fallback_permissions_for_forbidden_scheme") as fm:
+                assert await conn._fetch_project_permission_scheme("PROJ", {}) == []
+        fm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_grants_403_returns_fallback(self):
+        conn = _make_connector()
+        conn.creator_email = "admin@example.com"
+        ds = MagicMock()
+        ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response(200, {"id": 7}))
+        ds.get_permission_scheme_grants = AsyncMock(return_value=_err_resp_cloud(403, "Forbidden"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            perms = await conn._fetch_project_permission_scheme("PROJ", {})
+        assert len(perms) == 1
+        assert perms[0].email == "admin@example.com"
+
+    @pytest.mark.asyncio
+    async def test_grants_401_returns_fallback(self):
+        conn = _make_connector()
+        conn.creator_email = "admin@example.com"
+        ds = MagicMock()
+        ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response(200, {"id": 3}))
+        ds.get_permission_scheme_grants = AsyncMock(return_value=_err_resp_cloud(401, "Unauthorized"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            perms = await conn._fetch_project_permission_scheme("PROJ", {})
+        assert len(perms) == 1
+        assert perms[0].email == "admin@example.com"
+
+    @pytest.mark.asyncio
+    async def test_grants_500_does_not_call_fallback(self):
+        conn = _make_connector()
+        conn.creator_email = "admin@example.com"
+        ds = MagicMock()
+        ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response(200, {"id": 5}))
+        ds.get_permission_scheme_grants = AsyncMock(return_value=_err_resp_cloud(500, "Server error"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch.object(conn, "_fallback_permissions_for_forbidden_scheme") as fm:
+                assert await conn._fetch_project_permission_scheme("PROJ", {}) == []
+        fm.assert_not_called()
+
+
+# ===========================================================================
+# Patch fix 3 (Cloud): _get_issue_with_retry
+# ===========================================================================
+
+
+class TestGetIssueWithRetryCloud:
+
+    @pytest.mark.asyncio
+    async def test_happy_path_first_attempt(self):
+        conn = _make_connector()
+        ok = _make_mock_response(200, {"key": "PROJ-1", "fields": {}})
+        ds = MagicMock()
+        ds.get_issue = AsyncMock(return_value=ok)
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            resp = await conn._get_issue_with_retry("10001", fields=["summary"])
+        assert resp.status == HttpStatusCode.OK.value
+        ds.get_issue.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_retries_on_remote_protocol_error_then_succeeds(self):
+        conn = _make_connector()
+        ok = _make_mock_response(200, {"key": "PROJ-1", "fields": {}})
+        ds = MagicMock()
+        ds.get_issue = AsyncMock(side_effect=[httpx.RemoteProtocolError("Server disconnected without sending a response."), ok])
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                resp = await conn._get_issue_with_retry("10001", fields=["summary"])
+        assert resp.status == HttpStatusCode.OK.value
+        assert ds.get_issue.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retries_on_read_timeout(self):
+        conn = _make_connector()
+        ok = _make_mock_response(200, {"key": "PROJ-1", "fields": {}})
+        ds = MagicMock()
+        ds.get_issue = AsyncMock(side_effect=[httpx.ReadTimeout("timed out"), ok])
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                resp = await conn._get_issue_with_retry("10001", fields=["summary"])
+        assert resp.status == HttpStatusCode.OK.value
+
+    @pytest.mark.asyncio
+    async def test_exhausts_retries_and_raises(self):
+        conn = _make_connector()
+        ds = MagicMock()
+        ds.get_issue = AsyncMock(side_effect=httpx.RemoteProtocolError("disconnected"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                with pytest.raises(Exception, match="after 3 attempts"):
+                    await conn._get_issue_with_retry("10001", fields=["summary"], max_attempts=3)
+        assert ds.get_issue.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_non_transport_error_not_retried(self):
+        conn = _make_connector()
+        ds = MagicMock()
+        ds.get_issue = AsyncMock(side_effect=ValueError("unexpected"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with pytest.raises(ValueError, match="unexpected"):
+                await conn._get_issue_with_retry("10001", fields=["summary"])
+        ds.get_issue.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_backoff_sleep_called_between_retries(self):
+        conn = _make_connector()
+        ok = _make_mock_response(200, {"key": "PROJ-1", "fields": {}})
+        ds = MagicMock()
+        ds.get_issue = AsyncMock(side_effect=[httpx.ConnectError("refused"), ok])
+        sleep_calls: list[float] = []
+
+        async def capture(delay: float) -> None:
+            sleep_calls.append(delay)
+
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", side_effect=capture):
+                await conn._get_issue_with_retry("10001", fields=["summary"])
+        assert len(sleep_calls) == 1
+        assert sleep_calls[0] == pytest.approx(0.5)
+
+    @pytest.mark.asyncio
+    async def test_process_issue_blockgroups_uses_retry_internally(self):
+        conn = _make_connector()
+        conn.site_url = "https://company.atlassian.net"
+        issue_data = {"key": "PROJ-1", "fields": {"summary": "T", "description": None, "attachment": [], "comment": {}}}
+        ok = _make_mock_response(200, issue_data)
+        ds = MagicMock()
+        ds.get_issue = AsyncMock(side_effect=[httpx.RemoteProtocolError("gone"), ok])
+        tx = MagicMock()
+        inner = MagicMock()
+        inner.get_record_by_external_id = AsyncMock(return_value=None)
+        tx.__aenter__ = AsyncMock(return_value=inner)
+        tx.__aexit__ = AsyncMock(return_value=None)
+        conn.data_store_provider.transaction = MagicMock(return_value=tx)
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                result = await conn._process_issue_blockgroups_for_streaming(_make_ticket_record())
+        assert isinstance(result, bytes)
+        assert ds.get_issue.await_count == 2
+
+
+# ===========================================================================
+# Patch fix 4 (Cloud): stream_record FILE — 404 propagates as HTTPException(404)
+# ===========================================================================
+
+
+class TestStreamRecordFileCloud:
+
+    @pytest.mark.asyncio
+    async def test_404_raises_http_exception(self):
+        conn = _make_connector()
+        conn.site_url = "https://company.atlassian.net"
+        ds = MagicMock()
+        ds.get_attachment_content = AsyncMock(return_value=_err_resp_cloud(404, "Not Found"))
+        with patch.object(conn, "init", new_callable=AsyncMock):
+            with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+                with pytest.raises(HTTPException) as exc_info:
+                    await conn.stream_record(_make_file_record())
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_500_raises_http_exception_with_upstream_status(self):
+        conn = _make_connector()
+        conn.site_url = "https://company.atlassian.net"
+        ds = MagicMock()
+        ds.get_attachment_content = AsyncMock(return_value=_err_resp_cloud(500, "Internal Error"))
+        with patch.object(conn, "init", new_callable=AsyncMock):
+            with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+                with pytest.raises(HTTPException) as exc_info:
+                    await conn.stream_record(_make_file_record())
+        assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_http_exception_not_swallowed_by_outer_handler(self):
+        conn = _make_connector()
+        conn.site_url = "https://company.atlassian.net"
+        ds = MagicMock()
+        ds.get_attachment_content = AsyncMock(return_value=_err_resp_cloud(404, "gone"))
+        with patch.object(conn, "init", new_callable=AsyncMock):
+            with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+                try:
+                    await conn.stream_record(_make_file_record())
+                    pytest.fail("Expected HTTPException")
+                except HTTPException as exc:
+                    assert exc.status_code == 404
+                except Exception:
+                    pytest.fail("HTTPException was swallowed by the outer handler")
+
+    @pytest.mark.asyncio
+    async def test_ok_returns_streaming_response(self):
+        conn = _make_connector()
+        conn.site_url = "https://company.atlassian.net"
+        ds = MagicMock()
+        ds.get_attachment_content = AsyncMock(return_value=_make_mock_response(200, None))
+        with patch.object(conn, "init", new_callable=AsyncMock):
+            with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+                from fastapi.responses import StreamingResponse
+                result = await conn.stream_record(_make_file_record())
+        assert isinstance(result, StreamingResponse)
+
+
+# ===========================================================================
+# Patch fix 5 (Cloud): stream_record unsupported type → HTTPException(400)
+# ===========================================================================
+
+
+class TestStreamRecordUnsupportedTypeCloud:
+
+    @pytest.mark.asyncio
+    async def test_unsupported_type_raises_400(self):
+        conn = _make_connector()
+        conn.site_url = "https://company.atlassian.net"
+        record = _make_ticket_record()
+        record.record_type = RecordType.MESSAGE
+        with patch.object(conn, "init", new_callable=AsyncMock):
+            with pytest.raises(HTTPException) as exc_info:
+                await conn.stream_record(record)
+        assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
+
+    @pytest.mark.asyncio
+    async def test_unsupported_type_error_not_swallowed(self):
+        conn = _make_connector()
+        conn.site_url = "https://company.atlassian.net"
+        record = _make_ticket_record()
+        record.record_type = RecordType.MESSAGE
+        with patch.object(conn, "init", new_callable=AsyncMock):
+            try:
+                await conn.stream_record(record)
+                pytest.fail("Expected HTTPException")
+            except HTTPException as exc:
+                assert exc.status_code == HttpStatusCode.BAD_REQUEST.value
+            except Exception:
+                pytest.fail("HTTPException(400) was swallowed by the outer handler")

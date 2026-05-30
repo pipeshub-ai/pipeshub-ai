@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { usePathname } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { AlertDialog, Flex, Text, Tabs, Button, DropdownMenu } from '@radix-ui/themes';
@@ -17,6 +17,7 @@ import { extractApiErrorMessage, isProcessedError, processError } from '@/lib/ap
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
+import { fetchInstanceStats } from '../../utils/fetch-instance-stats';
 import type { ConnectorScope, InstancePanelTab } from '../../types';
 import { OverviewTab } from './overview-tab';
 import { SettingsTab } from './settings-tab';
@@ -45,6 +46,7 @@ export function InstanceManagementPanel() {
     removeConnectorInstance,
   } = useConnectorsStore();
 
+  const [statsLoading, setStatsLoading] = useState(false);
   const [triggerHovered, setTriggerHovered] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -132,9 +134,42 @@ export function InstanceManagementPanel() {
     t,
   ]);
 
-  if (!selectedInstance) return null;
+  const instanceId = selectedInstance?._key;
 
-  const instanceId = selectedInstance._key;
+  useEffect(() => {
+    if (!isInstancePanelOpen || !instanceId) {
+      setStatsLoading(false);
+      return;
+    }
+
+    if (instanceStats[instanceId]) {
+      setStatsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setStatsLoading(true);
+    void fetchInstanceStats(instanceId)
+      .catch(() => {
+        if (!cancelled) {
+          addToast({
+            variant: 'error',
+            title: t('workspace.connectors.overview.refreshStatsError'),
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setStatsLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isInstancePanelOpen, instanceId, instanceId ? instanceStats[instanceId] : undefined, addToast, t]);
+
+  if (!selectedInstance) return null;
   const instanceConfig = instanceId ? instanceConfigs[instanceId] : undefined;
   const instanceStat = instanceId ? instanceStats[instanceId] : undefined;
   const localSyncStatus = instanceId ? localSyncStatuses[instanceId] : undefined;
@@ -290,6 +325,7 @@ export function InstanceManagementPanel() {
             <OverviewTab
               instance={selectedInstance}
               stats={instanceStat}
+              statsLoading={statsLoading}
               connectorConfig={instanceConfig}
               localSyncStatus={localSyncStatus}
             />

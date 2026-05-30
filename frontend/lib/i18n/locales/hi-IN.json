@@ -58,6 +58,8 @@
     "embeddingDefaultNotInRegistry": "इस डिप्लॉयमेंट के लिए कोई सिस्टम डिफ़ॉल्ट एम्बेडिंग उपलब्ध नहीं है।",
     "failedToLoadEmbeddingProviders": "एम्बेडिंग प्रदाता लोड नहीं हो सके।",
     "failedToLoadConfiguredModels": "कॉन्फ़िगर किए गए मॉडल लोड नहीं हो सके।",
+    "toastModelAddedAi": "{{name}} को AI मॉडल के रूप में सफलतापूर्वक जोड़ दिया गया है।",
+    "toastModelAddedEmbedding": "{{name}} को एम्बेडिंग मॉडल के रूप में सफलतापूर्वक जोड़ दिया गया है।",
     "nextDisabledEmbeddingHintNoRegistryDefault": "आगे बढ़ने के लिए नीचे एम्बेडिंग प्रदाता जोड़ें",
     "steps": {
       "aiModel": {
@@ -1515,6 +1517,8 @@
       "emptyState": "No connectors found",
       "noInstances": "No instances configured yet",
       "addInstance": "Add Another Instance",
+      "refreshAllInstances": "सभी रीफ़्रेश करें",
+      "refreshInstance": "इंस्टेंस विवरण रीफ़्रेश करें",
       "saveConfig": "Save Configuration",
       "continueToConfiguration": "Continue to configuration →",
       "oauthSigningIn": "Finish signing in with your provider…",
@@ -1530,6 +1534,7 @@
         "syncStartedDescription": "Your records will be available shortly.",
         "syncStartedLongDescription": "This may take a few minutes. You'll be notified when it's done.",
         "syncError": "Failed to start sync",
+        "refreshInstancesError": "कनेक्टर इंस्टेंस रीफ़्रेश नहीं हो सके",
         "configLoadError": "Failed to load connector configuration",
         "createError": "Failed to create connector",
         "createSuccess": "कनेक्टर इंस्टेंस '{{name}}' सफलतापूर्वक बनाया गया",
@@ -1580,6 +1585,16 @@
           "removeInstance": "इस कनेक्टर इंस्टेंस को हटाना",
           "saveConfig": "कॉन्फ़िगरेशन परिवर्तन सहेजना"
         }
+      },
+      "adminAccessDialog": {
+        "title": "एडमिन एक्सेस आवश्यक है",
+        "question": "क्या आपके पास {{appGroup}} में एडमिन एक्सेस है? टीम कनेक्टर के लिए OAuth ऐप पंजीकृत करने और संगठन-व्यापी डेटा सिंक करने के लिए नेटिव ऐप में एडमिन अधिकार आवश्यक हैं।",
+        "yesContinue": "हाँ, सेटअप जारी रखें",
+        "noNotAdmin": "नहीं, मैं एडमिन नहीं हूँ",
+        "redirectTitle": "व्यक्तिगत कनेक्टर का उपयोग करें",
+        "redirectMessage": "टीम {{connectorName}} कनेक्टर के लिए आपके {{appGroup}} इंस्टेंस में एडमिन एक्सेस आवश्यक है। अपने खाते को सिंक करने के लिए {{appGroup}} Personal कनेक्टर का उपयोग करें।",
+        "goToPersonal": "{{appGroup}} Personal पर जाएं",
+        "cancel": "बंद करें"
       },
       "removeInstanceDialog": {
         "title": "कनेक्टर इंस्टेंस हटाएं?",
@@ -1702,6 +1717,27 @@
         "syncStrategy": "सिंक रणनीति",
         "authBannerTitle": "Authenticate Personal Account",
         "authBannerDescription": "Connect your account to enable access and workspace configuration"
+      },
+      "instanceStatus": {
+        "setup": {
+          "kind": "Setup",
+          "rowLabel": "कॉन्फ़िगरेशन",
+          "notConfigured": "अपूर्ण",
+          "notConfiguredTooltip": "कॉन्फ़िगरेशन पूरी नहीं हुई। सिंक और फ़िल्टर सेटिंग्स पूरी करने के लिए सेटअप खोलें।",
+          "needsAuth": "Auth आवश्यक",
+          "needsAuthTooltip": "कॉन्फ़िगरेशन सहेजी गई है, लेकिन इस इंस्टेंस को अभी भी प्रमाणीकरण चाहिए।",
+          "ready": "पूर्ण",
+          "readyTooltip": "कॉन्फ़िगरेशन पूर्ण और प्रमाणित है। सक्षम होने पर सिंक चल सकता है।"
+        },
+        "sync": {
+          "kind": "Sync",
+          "syncing": "सिंक हो रहा है",
+          "syncingTooltip": "इस इंस्टेंस के लिए सिंक जॉब चल रही है।",
+          "fullSyncing": "पूर्ण सिंक",
+          "fullSyncingTooltip": "इस इंस्टेंस के लिए पूर्ण सिंक चल रही है।",
+          "removing": "हटाया जा रहा है",
+          "removingTooltip": "यह इंस्टेंस हटाई जा रही है।"
+        }
       },
       "schemaForm": {
         "tagsPlaceholder": "टैग जोड़ने के लिए टाइप करें और एंटर दबाएँ",

@@ -1,0 +1,54 @@
+name: ticket_layer
+description: TicketRecord fields not on Record
+fields:
+  assignee:
+    required: false
+    type: string
+  assignee_email:
+    required: false
+    type: string
+  assignee_source_id:
+    required: false
+    type: array
+  assignee_source_timestamp:
+    required: false
+    type: integer
+  creator_email:
+    required: false
+    type: string
+  creator_name:
+    required: false
+    type: string
+  creator_source_timestamp:
+    required: false
+    type: integer
+  delivery_status:
+    required: false
+    type: string
+  is_email_hidden:
+    required: false
+    type: boolean
+  labels:
+    required: false
+    type: array
+  priority:
+    required: false
+    type: string
+  reporter_email:
+    required: false
+    type: string
+  reporter_name:
+    required: false
+    type: string
+  reporter_source_id:
+    required: false
+    type: string
+  reporter_source_timestamp:
+    required: false
+    type: integer
+  status:
+    required: false
+    type: string
+  type:
+    required: false
+    type: string

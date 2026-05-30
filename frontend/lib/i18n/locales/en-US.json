@@ -58,6 +58,8 @@
     "embeddingDefaultNotInRegistry": "No system default embedding is available for this deployment.",
     "failedToLoadEmbeddingProviders": "Failed to load embedding providers.",
     "failedToLoadConfiguredModels": "Failed to load configured models.",
+    "toastModelAddedAi": "{{name}} has been added successfully as an AI model.",
+    "toastModelAddedEmbedding": "{{name}} has been added successfully as an embedding model.",
     "nextDisabledEmbeddingHintNoRegistryDefault": "Add an embedding provider below to continue",
     "steps": {
       "aiModel": {
@@ -1519,6 +1521,8 @@
       "emptyState": "No connectors found",
       "noInstances": "No instances configured yet",
       "addInstance": "Add Another Instance",
+      "refreshAllInstances": "Refresh all",
+      "refreshInstance": "Refresh instance details",
       "saveConfig": "Save Configuration",
       "continueToConfiguration": "Continue to configuration →",
       "oauthSigningIn": "Finish signing in with your provider…",
@@ -1534,6 +1538,7 @@
         "syncStartedDescription": "Your records will be available shortly.",
         "syncStartedLongDescription": "This may take a few minutes. You'll be notified when it's done.",
         "syncError": "Failed to start sync",
+        "refreshInstancesError": "Failed to refresh connector instances",
         "configLoadError": "Failed to load connector configuration",
         "createError": "Failed to create connector",
         "createSuccess": "Connector instance '{{name}}' created successfully",
@@ -1584,6 +1589,16 @@
           "removeInstance": "remove this connector instance",
           "saveConfig": "save configuration changes"
         }
+      },
+      "adminAccessDialog": {
+        "title": "Admin access required",
+        "question": "Do you have admin access in {{appGroup}}? The team connector requires admin privileges in the native app to register OAuth applications and sync organization-wide data.",
+        "yesContinue": "Yes, continue setup",
+        "noNotAdmin": "No, I'm not an admin",
+        "redirectTitle": "Use the personal connector instead",
+        "redirectMessage": "The team {{connectorName}} connector requires admin access in your {{appGroup}} instance. Please use the {{appGroup}} Personal connector to sync your own account instead.",
+        "goToPersonal": "Go to {{appGroup}} Personal",
+        "cancel": "Close"
       },
       "removeInstanceDialog": {
         "title": "Remove connector instance?",
@@ -1706,6 +1721,27 @@
         "syncStrategy": "Sync Strategy",
         "authBannerTitle": "Authenticate Personal Account",
         "authBannerDescription": "Connect your account to enable access and workspace configuration"
+      },
+      "instanceStatus": {
+        "setup": {
+          "kind": "Setup",
+          "rowLabel": "Configuration",
+          "notConfigured": "Incomplete",
+          "notConfiguredTooltip": "Configuration is not finished. Open setup to complete sync and filter settings.",
+          "needsAuth": "Needs auth",
+          "needsAuthTooltip": "Configuration is saved but this instance still needs authentication.",
+          "ready": "Complete",
+          "readyTooltip": "Configuration is complete and authenticated. Sync can run when enabled."
+        },
+        "sync": {
+          "kind": "Sync",
+          "syncing": "Syncing",
+          "syncingTooltip": "A sync job is running for this instance.",
+          "fullSyncing": "Full sync",
+          "fullSyncingTooltip": "A full sync is running for this instance.",
+          "removing": "Removing",
+          "removingTooltip": "This instance is being deleted."
+        }
       },
       "schemaForm": {
         "tagsPlaceholder": "Type and press Enter to add tags",

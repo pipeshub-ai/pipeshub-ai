@@ -18,6 +18,7 @@ import {
 } from '../../knowledge-base/utils/tree-builder';
 import { useKnowledgeBaseSidebarAutoExpand } from './use-knowledge-base-sidebar-auto-expand';
 import { refreshKbTree } from '../../knowledge-base/utils/refresh-kb-tree';
+import { fetchAppDirectChildren } from '../../knowledge-base/utils/fetch-app-direct-children';
 import { buildNavUrl, getIsAllRecordsMode } from '../../knowledge-base/utils/nav';
 import { findNodeInCategorized } from '../../knowledge-base/utils/find-node';
 import { useCallback, useMemo, Suspense } from 'react';
@@ -62,7 +63,9 @@ function KnowledgeBaseSidebarSlotContent() {
   } = useKnowledgeBaseStore();
 
   const kbApp = useMemo(() => appNodes.find((n) => n.connector === 'KB'), [appNodes]);
-  const isSidebarTreeLoading = isLoadingFlatCollections || (kbApp ? loadingAppIds.has(kbApp.id) : false);
+  const isSidebarTreeLoading = isAllRecordsMode
+    ? isLoadingFlatCollections
+    : isLoadingFlatCollections || (kbApp ? loadingAppIds.has(kbApp.id) : false);
 
   const pageViewMode = isAllRecordsMode ? 'all-records' : 'collections';
 
@@ -82,6 +85,15 @@ function KnowledgeBaseSidebarSlotContent() {
 
   const handleNodeExpand = useCallback(
     async (nodeId: string, nodeType: NodeType) => {
+      if (nodeType === 'app') {
+        try {
+          await fetchAppDirectChildren(nodeId);
+        } catch (error) {
+          console.error('Failed to expand app', { nodeId, error });
+        }
+        return;
+      }
+
       const {
         categorizedNodes: freshCategorized,
         nodeChildrenCache: freshCache,
@@ -156,17 +168,15 @@ function KnowledgeBaseSidebarSlotContent() {
         addNodes(response.items);
 
         const { setNodeChildrenPagination } = useKnowledgeBaseStore.getState();
-        if (nodeType !== 'app') {
-          setNodeChildrenPagination(
-            nodeId,
-            sidebarNodeChildrenMetaFromResponse(
-              response.pagination,
-              response.items.length,
-              SIDEBAR_PAGINATION_PAGE_SIZE,
-              nodeType
-            )
-          );
-        }
+        setNodeChildrenPagination(
+          nodeId,
+          sidebarNodeChildrenMetaFromResponse(
+            response.pagination,
+            response.items.length,
+            SIDEBAR_PAGINATION_PAGE_SIZE,
+            nodeType
+          )
+        );
 
         const foldersCount =
           response.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;
@@ -207,6 +217,7 @@ function KnowledgeBaseSidebarSlotContent() {
     appNodes,
     appChildrenCache,
     connectorAppTrees,
+    loadingAppIds,
     handleNodeExpand,
     setCurrentFolderId,
     setAllRecordsSidebarSelection,
@@ -318,16 +329,6 @@ function KnowledgeBaseSidebarSlotContent() {
     setPendingSidebarAction({ type: 'create-collection' });
   }, [setPendingSidebarAction]);
 
-  const filteredAppNodes = useMemo(
-    () =>
-      appNodes.filter((app) => {
-        if (loadingAppIds.has(app.id)) return true;
-        const children = appChildrenCache.get(app.id);
-        return children != null && children.length > 0;
-      }),
-    [appNodes, appChildrenCache, loadingAppIds]
-  );
-
   return (
     <KnowledgeBaseSidebar
       pageViewMode={pageViewMode}
@@ -340,7 +341,7 @@ function KnowledgeBaseSidebarSlotContent() {
       onNodeSelect={handleNodeSelect}
       isLoadingNodes={isSidebarTreeLoading || isAutoExpanding}
       loadingNodeIds={loadingNodeIds}
-      appNodes={filteredAppNodes}
+      appNodes={appNodes}
       appChildrenCache={appChildrenCache}
       connectorAppTrees={connectorAppTrees}
       loadingAppIds={loadingAppIds}

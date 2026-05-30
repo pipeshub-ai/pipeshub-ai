@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.connectors.sources.atlassian.jira_cloud.connector import (
@@ -1840,8 +1841,9 @@ class TestStreamRecord:
         record.record_type = RecordType.MESSAGE
         record.external_record_id = "ext-1"
 
-        with pytest.raises(ValueError, match="Unsupported"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_stream_initializes_if_needed(self):

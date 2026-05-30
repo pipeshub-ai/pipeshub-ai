@@ -3,6 +3,7 @@ import {
   validateNoFormatSpecifiers,
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
+import { INTERNAL_CONVERSATION_CHAT_MODE } from '../constants/constants';
 
 // ---------------------------------------------------------------------------
 // Primitive validators
@@ -159,11 +160,10 @@ const enterpriseSearchCreateBodySchema = z.object({
         message: 'Query exceeds maximum length of 100000 characters',
       }),
     recordIds: z.array(objectId('record ID')).optional(),
-    departments: z.array(objectId('department ID')).optional(),
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
     attachments: z.array(attachmentRefSchema).optional(),
-    chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
+    chatMode: z.nativeEnum(INTERNAL_CONVERSATION_CHAT_MODE).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
 });
@@ -258,7 +258,7 @@ const addMessageBodySchema = z.object({
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
     attachments: z.array(attachmentRefSchema).optional(),
-    chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
+    chatMode: z.nativeEnum(INTERNAL_CONVERSATION_CHAT_MODE).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
 });
@@ -310,37 +310,61 @@ const agentToolRefSchema = z
     name: z.string().trim().min(1),
     fullName: z.string().trim().min(1).optional(),
     description: z.string().max(10_000).optional(),
-  })
-  .passthrough();
+  });
+
+/**
+ * Toolset names exposed by the Python registry (non-internal) and used by agent builder payloads.
+ * Keep this list aligned with OpenAPI `AgentCreateToolsetName`.
+ */
+export const AGENT_CREATE_TOOLSET_NAMES = [
+  'calendar',
+  'clickup',
+  'confluence',
+  'drive',
+  'github',
+  'gmail',
+  'jira',
+  'lumos',
+  'mariadb',
+  'onedrive',
+  'outlook',
+  'redshift',
+  'salesforce',
+  'sharepoint',
+  'slack',
+  'teams',
+  'zoom',
+] as const;
+
+const agentToolsetNameSchema = z.enum(AGENT_CREATE_TOOLSET_NAMES, {
+  errorMap: () => ({ message: 'Invalid toolset name' }),
+});
 
 const agentToolsetSchema = z
   .object({
-    name: z.string().trim().min(1),
+    name: z.string().trim().pipe(agentToolsetNameSchema),
     displayName: z.string().max(200).optional(),
     type: z.string().max(100).optional(),
     instanceId: z.string().max(256).optional(),
     instanceName: z.string().max(200).optional(),
     tools: z.array(agentToolRefSchema).optional(),
-  })
-  .passthrough();
+  });
 
 const agentKnowledgeSchema = z
   .object({
     connectorId: z.string().trim().min(1),
     filters: z.union([z.record(z.unknown()), z.string(), z.array(z.unknown())]).optional(),
-  })
-  .passthrough();
+  });
 
 const agentModelEntrySchema = z.union([
   z.string().trim().min(1),
   z
     .object({
-      modelKey: z.string().trim().min(1).optional(),
+      modelKey: z.string().trim().min(1),
       modelName: z.string().optional(),
       isReasoning: z.boolean().optional(),
       provider: z.string().optional(),
-    })
-    .passthrough(),
+    }),
 ]);
 
 const agentWebSearchSchema = z.union([
@@ -351,8 +375,7 @@ const agentWebSearchSchema = z.union([
       providerKey: z.string().max(256).optional(),
       providerLabel: z.string().max(200).optional(),
       iconPath: z.string().max(500).optional(),
-    })
-    .passthrough(),
+    }),
 ]);
 
 const createAgentBodySchema = z
@@ -378,16 +401,12 @@ const createAgentBodySchema = z
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
-    flow: z
-      .object({
-        nodes: z.array(z.unknown()).optional(),
-        edges: z.array(z.unknown()).optional(),
-      })
-      .passthrough()
-      .optional(),
   })
-  .passthrough()
   .superRefine((body, ctx) => {
+    if (!Array.isArray(body.models)) {
+      return;
+    }
+
     let parsedCount = 0;
     let hasReasoningModel = false;
 
@@ -398,10 +417,10 @@ const createAgentBodySchema = z
         }
         continue;
       }
-      const modelKey = model.modelKey?.trim();
+      const modelKey = model?.modelKey?.trim();
       if (modelKey) {
         parsedCount += 1;
-        if (model.isReasoning === true) {
+        if (model?.isReasoning === true) {
           hasReasoningModel = true;
         }
       }
@@ -447,9 +466,29 @@ export const listAgentsQuerySchema = z.object({
   query: z.object({
     page: pageSchema,
     limit: agentListLimitSchema,
-    search: z.string().trim().min(1).max(1000).optional(),
-    sort_by: z.string().trim().min(1).max(100).optional(),
-    sort_order: z.enum(['asc', 'desc']).optional(),
+    search: z
+      .string()
+      .trim()
+      .min(1)
+      .max(1000, { message: 'Search parameter too long (max 1000 characters)' })
+      .optional()
+      .superRefine((value, ctx) => {
+        if (!value) {
+          return;
+        }
+
+        try {
+          validateNoXSS(value, 'search parameter');
+          validateNoFormatSpecifiers(value, 'search parameter');
+        } catch (error: any) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: error.message,
+          });
+        }
+      }),
+    sort_by: z.string().trim().min(1).max(100).optional().default('updatedAtTimestamp'),
+    sort_order: z.enum(['asc', 'desc']).optional().default('desc'),
   }),
 });
 
@@ -676,95 +715,11 @@ export const getAllAgentConversationsQuerySchema = z.object({
         (value) => !value || !isNaN(new Date(value).getTime()),
         'Invalid end date format',
       ),
-    shared: z.enum(['true', 'false', '1', '0', '']).optional(),
     status: z.preprocess(
       (value) => (value === '' ? undefined : value),
       z.string().optional(),
     ),
     isArchived: z.enum(['true', 'false']).optional(),
-  }),
-});
-
-/** Schema for GET /agents/:agentKey/conversations/show/archives — list archived conversations for one agent. */
-export const listAllArchivesAgentConversationQuerySchema = z.object({
-  params: z.object({
-    ...agentKeyParam,
-  }),
-  query: z.object({
-    page: z
-      .preprocess((arg) => {
-        if (arg === undefined || arg === '') {
-          return undefined;
-        }
-        const parsed = parseInt(String(arg), 10);
-        return Number.isNaN(parsed) ? undefined : parsed;
-      }, z.number().optional())
-      .transform((value) => {
-        if (value === undefined || value < 1) {
-          return 1;
-        }
-        return value;
-      }),
-    limit: z
-      .preprocess((arg) => {
-        if (arg === undefined || arg === '') {
-          return undefined;
-        }
-        const parsed = parseInt(String(arg), 10);
-        return Number.isNaN(parsed) ? undefined : parsed;
-      }, z.number().optional())
-      .transform((value) => {
-        if (value === undefined || value < 1 || value > 100) {
-          return 20;
-        }
-        return value;
-      }),
-    sortBy: z
-      .string()
-      .optional()
-      .transform((value) =>
-        value === 'createdAt' || value === 'lastActivityAt' || value === 'title'
-          ? value
-          : undefined,
-      ),
-    sortOrder: z
-      .string()
-      .optional()
-      .transform((value) => (value === 'asc' || value === 'desc' ? value : undefined)),
-    search: z
-      .string()
-      .max(1000, { message: 'Search parameter too long (max 1000 characters)' })
-      .optional()
-      .superRefine((value, ctx) => {
-        if (!value) {
-          return;
-        }
-
-        try {
-          validateNoXSS(value, 'search parameter');
-          validateNoFormatSpecifiers(value, 'search parameter');
-        } catch (error: any) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: error.message,
-          });
-        }
-      }),
-    startDate: z
-      .string()
-      .optional()
-      .refine(
-        (value) => !value || !isNaN(new Date(value).getTime()),
-        'Invalid start date format',
-      ),
-    endDate: z
-      .string()
-      .optional()
-      .refine(
-        (value) => !value || !isNaN(new Date(value).getTime()),
-        'Invalid end date format',
-      ),
-    shared: z.enum(['true', 'false', '1', '0', '']).optional(),
   }),
 });
 

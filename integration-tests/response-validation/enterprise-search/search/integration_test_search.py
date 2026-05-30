@@ -12,14 +12,27 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import uuid
+from pathlib import Path
 
 import pytest
 import requests
 
+_ROOT = Path(__file__).resolve().parents[3]
+_HELPER = _ROOT / "helper"
+_RV_HELPER = _ROOT / "response-validation" / "helper"
+for _p in (_ROOT, _HELPER, _RV_HELPER):
+    s = str(_p)
+    if s not in sys.path:
+        sys.path.insert(0, s)
+
 from openapi_search_validator import (
     assert_matches_component_schema,
-    assert_response_matches_spec,
+)
+from openapi_schema_validator import (
+    assert_response_matches_openapi_operation,
+    assert_response_matches_openapi_ref,
 )
 from pipeshub_client import PipeshubClient
 
@@ -90,7 +103,9 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
             f"records is empty even though we got {len(search_results)} hit(s)."
         )
 
-        assert_response_matches_spec(body, "/search", "POST", 200)
+        assert_response_matches_openapi_operation(
+            body, "search", status_code="200"
+        )
 
     def test_post_search_with_kb_filter_response_matches_spec(self) -> None:
         resp = requests.post(
@@ -146,7 +161,9 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
             f"filters.applied.values missing 'page'/'limit': {applied_values!r}"
         )
 
-        assert_response_matches_spec(body, "/search", "GET", 200)
+        assert_response_matches_openapi_operation(
+            body, "searchHistory", status_code="200"
+        )
 
     def test_get_search_by_id_response_matches_spec(self) -> None:
         # Create a search so we have an id to fetch.
@@ -179,7 +196,9 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
                 f"records[{key!r}] did not decode to an object: {parsed!r}"
             )
 
-        assert_response_matches_spec(body, "/search/{searchId}", "GET", 200)
+        assert_response_matches_openapi_operation(
+            body, "getSearchById", status_code="200"
+        )
 
     def test_patch_search_share_response_matches_spec(self) -> None:
         if not SHARE_TARGET_USER_ID:
@@ -213,7 +232,9 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
             f"share response _id mismatch: expected {search_id!r}, got {body.get('_id')!r}"
         )
 
-        assert_response_matches_spec(body, "/search/{searchId}/share", "PATCH", 200)
+        assert_response_matches_openapi_ref(
+            body, "#/components/schemas/ShareSearchResponse"
+        )
 
     def test_archive_unarchive_lifecycle_matches_spec_and_history(self) -> None:
         def list_active_history() -> list:
@@ -278,8 +299,8 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
         assert archive_body.get("status") == "archived", (
             f"status should be 'archived', got {archive_body.get('status')!r}"
         )
-        assert_response_matches_spec(
-            archive_body, "/search/{searchId}/archive", "PATCH", 200
+        assert_response_matches_openapi_operation(
+            archive_body, "archiveSearch", status_code="200"
         )
 
         # Step 3: list history again — the archived search must be gone.
@@ -312,8 +333,8 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
         assert unarchive_body.get("status") == "unarchived", (
             f"status should be 'unarchived', got {unarchive_body.get('status')!r}"
         )
-        assert_response_matches_spec(
-            unarchive_body, "/search/{searchId}/unarchive", "PATCH", 200
+        assert_response_matches_openapi_operation(
+            unarchive_body, "unarchiveSearch", status_code="200"
         )
 
         # Step 5: list history one more time — the search is back and active.
@@ -381,8 +402,8 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
             f"{body.get('unsharedUsers')!r}"
         )
 
-        assert_response_matches_spec(
-            body, "/search/{searchId}/unshare", "PATCH", 200
+        assert_response_matches_openapi_ref(
+            body, "#/components/schemas/UnshareSearchResponse"
         )
 
     def test_delete_search_by_id_response_matches_spec(self) -> None:
@@ -412,7 +433,9 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
             f"unexpected delete body: {body!r}"
         )
 
-        assert_response_matches_spec(body, "/search/{searchId}", "DELETE", 200)
+        assert_response_matches_openapi_operation(
+            body, "deleteSearchById", status_code="200"
+        )
 
         # The search should be gone from the history list.
         history_resp = requests.get(
@@ -468,7 +491,9 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
             f"unexpected delete body: {body!r}"
         )
 
-        assert_response_matches_spec(body, "/search", "DELETE", 200)
+        assert_response_matches_openapi_operation(
+            body, "deleteSearchHistory", status_code="200"
+        )
 
         # History should now be empty.
         history_resp = requests.get(
@@ -516,7 +541,9 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
             timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        assert_response_matches_spec(resp.json(), "/search", "GET", 200)
+        assert_response_matches_openapi_operation(
+            resp.json(), "searchHistory", status_code="200"
+        )
 
     # Asking for one row of history caps how many come back.
     def test_get_search_history_with_limit_caps_rows(self) -> None:
@@ -541,7 +568,9 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
         body = resp.json()
         rows = body.get("searchHistory") or []
         assert len(rows) <= 1, f"limit=1 should cap rows at 1, got {len(rows)}"
-        assert_response_matches_spec(body, "/search", "GET", 200)
+        assert_response_matches_openapi_operation(
+            body, "searchHistory", status_code="200"
+        )
 
 
 

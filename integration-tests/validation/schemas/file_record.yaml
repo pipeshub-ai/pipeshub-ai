@@ -1,0 +1,33 @@
+name: file_layer
+description: FileRecord fields not on Record
+fields:
+  crc32_hash:
+    required: false
+    type: string
+  ctag:
+    required: false
+    type: string
+  etag:
+    required: false
+    type: string
+  extension:
+    required: false
+    type: string
+  is_file:
+    required: true
+    type: boolean
+  local_fs_relative_path:
+    required: false
+    type: string
+  path:
+    required: false
+    type: string
+  quick_xor_hash:
+    required: false
+    type: string
+  sha1_hash:
+    required: false
+    type: string
+  sha256_hash:
+    required: false
+    type: string

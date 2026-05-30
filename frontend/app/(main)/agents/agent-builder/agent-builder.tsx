@@ -658,8 +658,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           shareWithOrg,
           isServiceAccount
         ),
-        // Persist the visual layout so positions survive subsequent edits.
-        flow: { nodes, edges },
       };
 
       if (loadedAgent) {
@@ -741,7 +739,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           true,
           true
         ),
-        flow: { nodes, edges },
       };
 
       if (currentAgent) {

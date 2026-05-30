@@ -31,6 +31,8 @@ if str(_SAMPLE_DATA_DIR) not in sys.path:
 if str(_BACKEND_PYTHON) not in sys.path:
     sys.path.insert(0, str(_BACKEND_PYTHON))
 
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 # Import after backend path is added to sys.path
 from helper.config_service_fixture import config_service  # noqa: F401, E402
 

@@ -33,6 +33,8 @@ export interface AIModelProvider {
   description: string;
   /** Optional operational warning (e.g. performance); shown in configure UI when set. */
   notice?: string;
+  /** Optional headline for {@link notice}; rendered above the notice body when set. */
+  noticeTitle?: string;
   modelName?: string;
   capabilities: string[];
   iconPath: string;

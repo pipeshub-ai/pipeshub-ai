@@ -8,8 +8,7 @@ it again — so the test session leaves no residue on the backend.
 
 Root ``ai_models_configured`` (``integration-tests/conftest.py``) seeds a
 default non-reasoning LLM for indexing and messaging. Enterprise-search agent
-ITs use ``reasoning_llm_model`` (``enterprise_search/conftest.py``), which
-lists available org LLMs and picks or seeds one with ``isReasoning: true``.
+ITs seed a dedicated reasoning model directly through this helper.
 
 Mirrors the frontend payload in
 ``frontend/src/sections/accountdetails/account-settings/ai-models/services/universal-config.ts``
@@ -17,7 +16,6 @@ Mirrors the frontend payload in
 
 Endpoints:
     GET    /api/v1/configurationManager/ai-models/llm
-    GET    /api/v1/configurationManager/ai-models/available/llm
     POST   /api/v1/configurationManager/ai-models/providers
     DELETE /api/v1/configurationManager/ai-models/providers/{modelType}/{modelKey}
 
@@ -44,7 +42,6 @@ logger = logging.getLogger("ai-models-setup")
 
 _PROVIDERS_PATH = "/api/v1/configurationManager/ai-models/providers"
 _LLM_BY_TYPE_PATH = "/api/v1/configurationManager/ai-models/llm"
-_AVAILABLE_LLM_BY_TYPE_PATH = "/api/v1/configurationManager/ai-models/available/llm"
 
 _DEFAULT_PROVIDER = "openAI"
 _DEFAULT_MODEL_TYPE = "llm"
@@ -87,8 +84,13 @@ def _admin_headers(client: PipeshubClient) -> Dict[str, str]:
     }
 
 
+def _as_dict(value: Any) -> Dict[str, Any]:
+    """Coerce API/entry JSON values to a dict; non-dicts become empty."""
+    return value if isinstance(value, dict) else {}
+
+
 def _parse_model_name_from_config(entry: Dict[str, Any]) -> str:
-    configuration = entry.get("configuration") or {}
+    configuration = _as_dict(entry.get("configuration"))
     raw = configuration.get("model") or entry.get("modelName") or ""
     if isinstance(raw, str) and "," in raw:
         return raw.split(",")[0].strip()
@@ -107,38 +109,11 @@ def list_configured_llm_models(client: PipeshubClient) -> List[Dict[str, Any]]:
         raise RuntimeError(
             f"Failed to list LLM models: HTTP {resp.status_code} {resp.text[:500]}"
         )
-    data = resp.json() or {}
+    data = _as_dict(resp.json())
     models = data.get("models")
     if not isinstance(models, list):
         return []
     return [m for m in models if isinstance(m, dict)]
-
-
-def list_available_llm_models(client: PipeshubClient) -> List[Dict[str, Any]]:
-    """Return flattened available LLM entries from Configuration Manager."""
-    url = client._url(_AVAILABLE_LLM_BY_TYPE_PATH)
-    resp = requests.get(
-        url,
-        headers=client.auth_headers,
-        timeout=client.timeout_seconds,
-    )
-    if resp.status_code >= 300:
-        raise RuntimeError(
-            f"Failed to list available LLM models: HTTP {resp.status_code} {resp.text[:500]}"
-        )
-    data = resp.json() or {}
-    models = data.get("models")
-    if not isinstance(models, list):
-        return []
-    return [m for m in models if isinstance(m, dict)]
-
-
-def pick_reasoning_llm_model(models: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """First reasoning-capable LLM entry, or None."""
-    for entry in models:
-        if entry.get("isReasoning") is True:
-            return entry
-    return None
 
 
 def seeded_model_from_config(entry: Dict[str, Any]) -> SeededAIModel:
@@ -156,27 +131,11 @@ def seeded_model_from_config(entry: Dict[str, Any]) -> SeededAIModel:
     )
 
 
-def seeded_model_from_available(entry: Dict[str, Any]) -> SeededAIModel:
-    """Build ``SeededAIModel`` from a flattened available-model entry."""
-    model_key = entry.get("modelKey")
-    if not isinstance(model_key, str) or not model_key:
-        raise RuntimeError(f"Available LLM entry missing modelKey: {entry!r}")
-    provider = str(entry.get("provider") or _DEFAULT_PROVIDER)
-    model_name = entry.get("modelName")
-    if not isinstance(model_name, str) or not model_name.strip():
-        raise RuntimeError(f"Available LLM entry missing modelName: {entry!r}")
-    return SeededAIModel(
-        model_type=_DEFAULT_MODEL_TYPE,
-        provider=provider,
-        model_name=model_name.strip(),
-        model_key=model_key,
-    )
-
-
 def setup_test_llm_model(
     client: PipeshubClient,
     *,
     is_reasoning: bool = False,
+    is_multimodal: bool = False,
     is_default: bool = True,
     model_name: str | None = None,
 ) -> SeededAIModel:
@@ -206,7 +165,7 @@ def setup_test_llm_model(
             "model": resolved_name,
             "apiKey": api_key,
         },
-        "isMultimodal": False,
+        "isMultimodal": is_multimodal,
         "isReasoning": is_reasoning,
         "isDefault": is_default,
         "contextLength": None,
@@ -229,18 +188,18 @@ def setup_test_llm_model(
         raise RuntimeError(
             f"Failed to configure test LLM model "
             f"(provider={_DEFAULT_PROVIDER}, model={resolved_name}, "
-            f"isReasoning={is_reasoning}): "
+            f"isReasoning={is_reasoning}, isMultimodal={is_multimodal}): "
             f"HTTP {resp.status_code} {body[:500]}"
         )
 
     try:
-        data = resp.json() or {}
+        data = _as_dict(resp.json())
     except ValueError as e:
         raise RuntimeError(
             f"LLM model add returned non-JSON body: {e}"
         ) from e
 
-    details = data.get("details") or {}
+    details = _as_dict(data.get("details"))
     model_key = details.get("modelKey")
     if not model_key:
         raise RuntimeError(
@@ -248,8 +207,8 @@ def setup_test_llm_model(
         )
 
     logger.info(
-        "Configured test LLM model: provider=%s model=%s modelKey=%s isReasoning=%s",
-        _DEFAULT_PROVIDER, resolved_name, model_key, is_reasoning,
+        "Configured test LLM model: provider=%s model=%s modelKey=%s isReasoning=%s isMultimodal=%s",
+        _DEFAULT_PROVIDER, resolved_name, model_key, is_reasoning, is_multimodal,
     )
     return SeededAIModel(
         model_type=_DEFAULT_MODEL_TYPE,

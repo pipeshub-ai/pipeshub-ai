@@ -1244,6 +1244,7 @@ class TestGetMessageContent:
         flattened = []
         record = _make_record_blob(
             virtual_record_id="vr-attachment",
+            record_type="SQL_TABLE",
             block_containers={
                 "blocks": [_make_text_block(index=0, data="Attachment block text")],
                 "block_groups": [],
@@ -5130,6 +5131,60 @@ class TestBuildMessageContentArraySummaryCitation:
             item["text"] for group in contents for item in group if item.get("type") == "text"
         )
         assert "Citation ID for summary:" in text
+
+
+# ===================================================================
+# get_message_content — SQL_TABLE only in vr map (missing from flattened)
+# ===================================================================
+class TestGetMessageContentSqlTableOnlyInMap:
+
+    def test_appends_sql_table_when_virtual_id_only_in_result_map(self):
+        flattened = [_make_flattened_result(
+            virtual_record_id="vr-main",
+            block_index=0,
+            content="chunk from retrieval",
+        )]
+        sql_extra = _make_record_blob(
+            virtual_record_id="vr-sql-only",
+            id="rec-sql",
+            record_type=RecordType.SQL_TABLE.value,
+            context_metadata="ONLY_IN_MAP_SQL_MARKER",
+            block_containers={"blocks": [], "block_groups": []},
+        )
+        main = _make_record_blob(virtual_record_id="vr-main")
+        vr_map = {"vr-main": main, "vr-sql-only": sql_extra}
+        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "ONLY_IN_MAP_SQL_MARKER" in combined
+
+    def test_skips_non_sql_record_only_in_result_map(self):
+        flattened = [_make_flattened_result()]
+        extra = _make_record_blob(
+            virtual_record_id="vr-file-only-map",
+            record_type="FILE",
+            context_metadata="SHOULD_NOT_APPEAR_FOR_FILEONLY",
+            block_containers={"blocks": [], "block_groups": []},
+        )
+        vr_map = {"vr-1": _make_record_blob(), "vr-file-only-map": extra}
+        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "SHOULD_NOT_APPEAR_FOR_FILEONLY" not in combined
+
+    def test_no_tools_mode_does_not_append_sql_only_in_map(self):
+        flattened = [_make_flattened_result()]
+        sql_extra = _make_record_blob(
+            virtual_record_id="vr-sql-map-only",
+            record_type=RecordType.SQL_TABLE.value,
+            context_metadata="NO_TOOLS_SKIP_ME",
+            block_containers={"blocks": [], "block_groups": []},
+        )
+        vr_map = {"vr-1": _make_record_blob(), "vr-sql-map-only": sql_extra}
+        result = get_message_content(flattened, vr_map, "", "query", mode="no_tools")
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "NO_TOOLS_SKIP_ME" not in combined
 
 
 # ===================================================================

@@ -1,10 +1,17 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Flex, Box, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
-import { SECTION_PADDING_BOTTOM, SECTION_HEADER_PADDING, ELEMENT_HEIGHT } from '@/app/components/sidebar';
+import {
+  SECTION_HEADER_PADDING,
+  ELEMENT_HEIGHT,
+  HOVER_BACKGROUND,
+} from '@/app/components/sidebar';
+import { appSectionKey } from '../utils/fetch-app-direct-children';
+
+export { appSectionKey };
 import { FolderTreeItem } from './section-element';
 import { FolderIcon } from '@/app/components/ui';
 import { isKbCollectionsHubApp, mapConnectorType } from '../utils/all-records-transformer';
@@ -16,8 +23,18 @@ import type {
   SidebarReindexHandler,
 } from '../types';
 import { KB_SECTION_HEADER_MARGIN_BOTTOM } from '@/app/components/sidebar/constants';
-import { SidebarListShimmerRows } from './sidebar-list-shimmer';
 import { SidebarLoadMoreButton } from './sidebar-load-more-button';
+
+/** Shift the whole subtree one indent level under the app icon (not the app chevron). */
+function indentAppSectionTreeRoots(nodes: EnhancedFolderTreeNode[]): EnhancedFolderTreeNode[] {
+  return nodes.map((n) => ({
+    ...n,
+    depth: n.depth + 1,
+    children: n.children?.length
+      ? indentAppSectionTreeRoots(n.children as EnhancedFolderTreeNode[])
+      : n.children,
+  }));
+}
 
 /** Convert KnowledgeHubNode to a tree row for FolderTreeItem. */
 export function convertToTreeNode(node: KnowledgeHubNode, depth: number = 0): EnhancedFolderTreeNode {
@@ -73,13 +90,17 @@ interface AppSectionProps {
   appChildListHasMore?: boolean;
   onLoadMoreAppChildren?: () => void;
   appChildLoadMoreDisabled?: boolean;
+
+  /** App section collapsed/expanded (All Records) */
+  isExpanded?: boolean;
+  onChevronClick?: () => void;
+  onAppSelect?: () => void;
 }
 
 /**
  * AppSection — Renders each app as its own section in All Records mode.
  *
- * App header has NO expand chevron (always shows children).
- * Children use the same tree structure as Collections (expand/collapse, tree lines).
+ * Chevron toggles visibility and loads children on first expand; title navigates to the app table.
  */
 export function AppSection({
   app,
@@ -101,8 +122,10 @@ export function AppSection({
   appChildListHasMore,
   onLoadMoreAppChildren,
   appChildLoadMoreDisabled,
+  isExpanded = true,
+  onChevronClick,
+  onAppSelect,
 }: AppSectionProps) {
-  const { t } = useTranslation();
   const isKbApp = isKbCollectionsHubApp(app);
   const connectorType = mapConnectorType(app.connector || app.name);
   const hierarchicalTree = categorizedTree ?? connectorTree;
@@ -120,39 +143,121 @@ export function AppSection({
     !isLoading &&
     Boolean(appChildListHasMore && onLoadMoreAppChildren && !showOverflowMore);
 
+  const showChevron = app.hasChildren === true;
+  const [headerHovered, setHeaderHovered] = useState(false);
+  const hasChildContent =
+    (hierarchicalTree != null && hierarchicalTree.length > 0) || children.length > 0;
+
+  const visibleIndentedTree = useMemo(() => {
+    if (!hierarchicalTree?.length) return [];
+    const sliced = maxVisible ? hierarchicalTree.slice(0, maxVisible) : hierarchicalTree;
+    return indentAppSectionTreeRoots(sliced);
+  }, [hierarchicalTree, maxVisible]);
+
   return (
-    <Box style={{ marginBottom: `${SECTION_PADDING_BOTTOM}px` }}>
-      {/* App Header */}
+    <Box style={{ marginBottom: isExpanded ? 'var(--space-2)' : 0 }}>
+      {/* App Header — chevron expands/collapses; icon+title opens app in table */}
       <Flex
         align="center"
-        gap="1"
-        style={{ padding: SECTION_HEADER_PADDING, marginBottom: KB_SECTION_HEADER_MARGIN_BOTTOM }}
+        gap="2"
+        style={{
+          height: `${ELEMENT_HEIGHT}px`,
+          padding: SECTION_HEADER_PADDING,
+          marginBottom: isExpanded ? KB_SECTION_HEADER_MARGIN_BOTTOM : 0,
+          borderRadius: 'var(--radius-2)',
+          backgroundColor: headerHovered ? HOVER_BACKGROUND : 'transparent',
+          boxSizing: 'border-box',
+        }}
+        onMouseEnter={() => setHeaderHovered(true)}
+        onMouseLeave={() => setHeaderHovered(false)}
       >
-        {isKbApp ? (
-          <FolderIcon variant="default" size={16} color="var(--emerald-11)" style={{ flexShrink: 0 }} />
+        {showChevron ? (
+          <Box
+            role="button"
+            tabIndex={0}
+            aria-expanded={isExpanded}
+            onClick={(e) => {
+              e.stopPropagation();
+              onChevronClick?.();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                onChevronClick?.();
+              }
+            }}
+            style={{
+              width: '16px',
+              height: '16px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            {isLoading ? (
+              <MaterialIcon
+                name="refresh"
+                size={16}
+                color="var(--slate-11)"
+                style={{ animation: 'spin 1s linear infinite' }}
+              />
+            ) : (
+              <MaterialIcon
+                name={isExpanded ? 'expand_more' : 'chevron_right'}
+                size={16}
+                color="var(--slate-11)"
+              />
+            )}
+          </Box>
         ) : (
-          <ConnectorIcon type={connectorType} size={16} color="var(--slate-11)" style={{ flexShrink: 0 }} />
+          <Box
+            aria-hidden
+            style={{
+              width: '16px',
+              height: '16px',
+              flexShrink: 0,
+            }}
+          />
         )}
-        <Text
-          size="2"
-          weight="medium"
-          style={{ color: 'var(--slate-11)', flex: 1 }}
+        <Flex
+          align="center"
+          gap="1"
+          role="button"
+          tabIndex={0}
+          onClick={() => onAppSelect?.()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onAppSelect?.();
+            }
+          }}
+          style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}
         >
-          {app.name}
-        </Text>
+          {isKbApp ? (
+            <FolderIcon variant="default" size={16} color="var(--emerald-11)" style={{ flexShrink: 0 }} />
+          ) : (
+            <ConnectorIcon type={connectorType} size={16} color="var(--slate-11)" style={{ flexShrink: 0 }} />
+          )}
+          <Text
+            size="2"
+            weight="medium"
+            style={{ color: 'var(--slate-11)', flex: 1 }}
+          >
+            {app.name}
+          </Text>
+        </Flex>
       </Flex>
 
       {/* Children — same tree structure as Collections */}
-      <Box
-        className="no-scrollbar"
-        style={{ overflowX: 'auto', marginTop: 'var(--space-1)', minWidth: 0 }}
-      >
+      {isExpanded && (hasChildContent || !isLoading) ? (
+      <Box className="no-scrollbar" style={{ overflowX: 'auto', minWidth: 0 }}>
       <Flex direction="column" gap="0">
-        {isLoading ? (
-          <SidebarListShimmerRows count={3} />
-        ) : hierarchicalTree && hierarchicalTree.length > 0 ? (
+        {visibleIndentedTree.length > 0 ? (
             <>
-              {(maxVisible ? hierarchicalTree.slice(0, maxVisible) : hierarchicalTree).map((node) => (
+              {visibleIndentedTree.map((node) => (
                 <FolderTreeItem
                   key={node.id}
                   node={node}
@@ -184,7 +289,7 @@ export function AppSection({
             {(maxVisible ? children.slice(0, maxVisible) : children).map((child) => (
               <FolderTreeItem
                 key={child.id}
-                node={convertToTreeNode(child, 0)}
+                node={convertToTreeNode(child, 1)}
                 isSelected={currentFolderId === child.id}
                 currentFolderId={currentFolderId}
                 onSelect={(id) => {
@@ -226,12 +331,12 @@ export function AppSection({
             loading={appChildLoadMoreDisabled}
             flexStyle={{
               paddingLeft: 'var(--space-6)',
-              paddingTop: 'var(--space-1)',
             }}
           />
         ) : null}
       </Flex>
       </Box>
+      ) : null}
     </Box>
   );
 }

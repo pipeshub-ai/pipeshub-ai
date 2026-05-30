@@ -569,7 +569,6 @@ class TestGetAllConnectorInstances:
         gp.get_filtered_connector_instances = AsyncMock(return_value=(
             [{"_key": "c1", "type": "Gmail"}],
             1,
-            {"personal": 1, "team": 0}
         ))
         data_store = MagicMock()
         data_store.graph_provider = gp
@@ -588,7 +587,6 @@ class TestGetAllConnectorInstances:
         gp.get_filtered_connector_instances = AsyncMock(return_value=(
             [{"_key": "c1", "type": "UnknownConnector"}],
             1,
-            {"personal": 0, "team": 0}
         ))
         data_store = MagicMock()
         data_store.graph_provider = gp

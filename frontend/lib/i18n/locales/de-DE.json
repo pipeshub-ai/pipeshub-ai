@@ -58,6 +58,8 @@
     "embeddingDefaultNotInRegistry": "Für diese Bereitstellung ist kein systemseitiges Standard-Embedding verfügbar.",
     "failedToLoadEmbeddingProviders": "Embedding-Anbieter konnten nicht geladen werden.",
     "failedToLoadConfiguredModels": "Konfigurierte Modelle konnten nicht geladen werden.",
+    "toastModelAddedAi": "{{name}} wurde erfolgreich als KI-Modell hinzugefügt.",
+    "toastModelAddedEmbedding": "{{name}} wurde erfolgreich als Embedding-Modell hinzugefügt.",
     "nextDisabledEmbeddingHintNoRegistryDefault": "Fügen Sie unten einen Embedding-Anbieter hinzu, um fortzufahren",
     "steps": {
       "aiModel": {
@@ -1517,6 +1519,8 @@
       "emptyState": "Keine Konnektoren gefunden",
       "noInstances": "Noch keine Instanzen konfiguriert",
       "addInstance": "Weitere Instanz hinzufügen",
+      "refreshAllInstances": "Alle aktualisieren",
+      "refreshInstance": "Instanzdetails aktualisieren",
       "saveConfig": "Konfiguration speichern",
       "continueToConfiguration": "Weiter zur Konfiguration →",
       "oauthSigningIn": "Schließen Sie die Anmeldung bei Ihrem Anbieter ab…",
@@ -1532,6 +1536,7 @@
         "syncStartedDescription": "Ihre Datensätze sind in Kürze verfügbar.",
         "syncStartedLongDescription": "Dies kann einige Minuten dauern. Sie werden benachrichtigt, sobald es abgeschlossen ist.",
         "syncError": "Synchronisierung konnte nicht gestartet werden",
+        "refreshInstancesError": "Konnektor-Instanzen konnten nicht aktualisiert werden",
         "configLoadError": "Konnektor-Konfiguration konnte nicht geladen werden",
         "createError": "Konnektor konnte nicht erstellt werden",
         "createSuccess": "Konnektor-Instanz „{{name}}“ wurde erfolgreich erstellt",
@@ -1582,6 +1587,16 @@
           "removeInstance": "diese Connector-Instanz zu entfernen",
           "saveConfig": "Konfigurationsänderungen zu speichern"
         }
+      },
+      "adminAccessDialog": {
+        "title": "Administratorzugriff erforderlich",
+        "question": "Haben Sie Administratorzugriff in {{appGroup}}? Der Team-Connector erfordert Administratorrechte in der nativen App, um OAuth-Anwendungen zu registrieren und organisationsweite Daten zu synchronisieren.",
+        "yesContinue": "Ja, Einrichtung fortsetzen",
+        "noNotAdmin": "Nein, ich bin kein Administrator",
+        "redirectTitle": "Persönlichen Connector verwenden",
+        "redirectMessage": "Der Team-Connector {{connectorName}} erfordert Administratorzugriff in Ihrer {{appGroup}}-Instanz. Bitte verwenden Sie den persönlichen {{appGroup}}-Connector, um stattdessen Ihr eigenes Konto zu synchronisieren.",
+        "goToPersonal": "Zu {{appGroup}} Personal wechseln",
+        "cancel": "Schließen"
       },
       "removeInstanceDialog": {
         "title": "Connector-Instanz entfernen?",
@@ -1704,6 +1719,27 @@
         "syncStrategy": "Synchronisierungsstrategie",
         "authBannerTitle": "Persönliches Konto authentifizieren",
         "authBannerDescription": "Verbinden Sie Ihr Konto, um Zugriff und Arbeitsbereichskonfiguration zu aktivieren"
+      },
+      "instanceStatus": {
+        "setup": {
+          "kind": "Setup",
+          "rowLabel": "Konfiguration",
+          "notConfigured": "Unvollständig",
+          "notConfiguredTooltip": "Die Konfiguration ist nicht abgeschlossen. Öffnen Sie das Setup, um Sync- und Filtereinstellungen zu vervollständigen.",
+          "needsAuth": "Auth nötig",
+          "needsAuthTooltip": "Die Konfiguration ist gespeichert, aber diese Instanz muss noch authentifiziert werden.",
+          "ready": "Abgeschlossen",
+          "readyTooltip": "Konfiguration ist abgeschlossen und authentifiziert. Sync kann bei Aktivierung laufen."
+        },
+        "sync": {
+          "kind": "Sync",
+          "syncing": "Synchronisiert",
+          "syncingTooltip": "Ein Sync-Job läuft für diese Instanz.",
+          "fullSyncing": "Vollsync",
+          "fullSyncingTooltip": "Ein vollständiger Sync läuft für diese Instanz.",
+          "removing": "Entfernen",
+          "removingTooltip": "Diese Instanz wird gelöscht."
+        }
       },
       "schemaForm": {
         "tagsPlaceholder": "Tippen und Enter drücken, um Tags hinzuzufügen",

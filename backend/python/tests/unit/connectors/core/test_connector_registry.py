@@ -568,6 +568,47 @@ class TestBuildConnectorInfo:
         assert result["supportsSync"] is True
         assert result["supportsAgent"] is True
 
+    def test_admin_access_flags_promoted_without_config_blob(self):
+        """isAdminAccessRequired and personalConnectorType are top-level when config is omitted."""
+        registry, _ = _make_registry()
+        metadata = {
+            "appGroup": "GitLab",
+            "config": {
+                "isAdminAccessRequired": True,
+                "personalConnectorType": "GitLab Personal",
+            },
+            "connectorScopes": [ConnectorScope.TEAM.value],
+        }
+
+        result = registry._build_connector_info(
+            "GitLab", metadata, include_config=False
+        )
+
+        assert result["isAdminAccessRequired"] is True
+        assert result["personalConnectorType"] == "GitLab Personal"
+        assert "config" not in result
+
+    def test_admin_access_flags_excluded_from_config_when_included(self):
+        """Promoted admin-access keys are not duplicated inside config."""
+        registry, _ = _make_registry()
+        metadata = {
+            "appGroup": "GitLab",
+            "config": {
+                "isAdminAccessRequired": True,
+                "personalConnectorType": "GitLab Personal",
+                "supportsSync": True,
+            },
+            "connectorScopes": [ConnectorScope.TEAM.value],
+        }
+
+        result = registry._build_connector_info("GitLab", metadata, include_config=True)
+
+        assert result["isAdminAccessRequired"] is True
+        assert result["personalConnectorType"] == "GitLab Personal"
+        assert "isAdminAccessRequired" not in result["config"]
+        assert "personalConnectorType" not in result["config"]
+        assert result["config"]["supportsSync"] is True
+
     def test_instance_data_locked_field(self):
         """isLocked field from instance_data is included."""
         registry, _ = _make_registry()
@@ -1088,7 +1129,6 @@ class TestGetAllConnectorInstances:
         gp.get_filtered_connector_instances.return_value = (
             [{"_key": "c1", "type": "Gmail", "name": "My Gmail", "scope": "personal"}],
             1,
-            {"personal": 1, "team": 0},
         )
 
         mock_data_store = MagicMock()
@@ -1110,7 +1150,6 @@ class TestGetAllConnectorInstances:
         gp.get_filtered_connector_instances.return_value = (
             [{"_key": "c1", "type": "UnknownType", "name": "X"}],
             1,
-            {"personal": 0, "team": 0},
         )
 
         mock_data_store = MagicMock()
@@ -1796,7 +1835,6 @@ class TestGetActiveAgentConnectorInstances:
                  "isAgentActive": True, "isConfigured": False, "scope": "personal"},
             ],
             3,
-            {"personal": 3, "team": 0},
         )
 
         mock_data_store = MagicMock()
@@ -1835,7 +1873,6 @@ class TestGetConfiguredConnectorInstances:
                  "isConfigured": False, "scope": "personal"},
             ],
             2,
-            {"personal": 2, "team": 0},
         )
 
         mock_data_store = MagicMock()

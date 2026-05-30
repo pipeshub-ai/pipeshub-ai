@@ -18,6 +18,7 @@ def AIModelProvider(
     *,
     description: str = "",
     notice: str = "",
+    notice_title: str = "",
     capabilities: list[ModelCapability] | None = None,
     icon_path: str = "/icons/ai-models/default.svg",
     color: str = "#888888",
@@ -41,6 +42,7 @@ def AIModelProvider(
             "providerId": provider_id,
             "description": description,
             "notice": notice,
+            "noticeTitle": notice_title,
             "capabilities": [c.value if isinstance(c, ModelCapability) else c for c in caps],
             "iconPath": icon_path,
             "color": color,
@@ -70,6 +72,7 @@ class AIModelProviderBuilder:
         self._provider_id = provider_id or _default_provider_id(name)
         self._description = ""
         self._notice = ""
+        self._notice_title = ""
         self._capabilities: list[ModelCapability] = []
         self._icon_path = "/icons/ai-models/default.svg"
         self._color = "#888888"
@@ -84,9 +87,10 @@ class AIModelProviderBuilder:
         self._description = desc
         return self
 
-    def with_notice(self, text: str) -> AIModelProviderBuilder:
+    def with_notice(self, text: str, *, title: str = "") -> AIModelProviderBuilder:
         """Short operational warning shown prominently in the UI (e.g. performance)."""
         self._notice = text
+        self._notice_title = title
         return self
 
     def with_capabilities(self, caps: list[ModelCapability]) -> AIModelProviderBuilder:
@@ -143,6 +147,7 @@ class AIModelProviderBuilder:
             provider_id=self._provider_id,
             description=self._description,
             notice=self._notice,
+            notice_title=self._notice_title,
             capabilities=self._capabilities,
             icon_path=self._icon_path,
             color=self._color,
@@ -212,6 +217,7 @@ class AIModelRegistry:
                 p.get("providerId", ""),
                 p.get("description", ""),
                 p.get("notice", ""),
+                p.get("noticeTitle", ""),
                 " ".join(p.get("capabilities", [])),
             ]).lower()
             if q in haystack:

@@ -62,6 +62,7 @@ from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
+from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.sources.local_fs.connector import LocalFsConnector
 from app.connectors.sources.local_fs.file_events import (
     _normalize_connector_type_value,
@@ -2119,17 +2120,28 @@ async def get_connector_instances(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
     search: str | None = Query(None, description="Search by instance name/type/group"),
+    is_authenticated: bool | None = Query(None, alias="isAuthenticated", description="Filter by authentication status"),
+    is_active: bool | None = Query(None, alias="isActive", description="Filter by active status"),
+    connector_type: str | None = Query(None, alias="connectorType", description="Filter by exact connector type (e.g. 'Confluence')"),
 ) -> dict[str, Any]:
     """
     Get all configured connector instances.
 
     This endpoint returns actual configured instances with their status.
+    The response intentionally omits the full connector schema (auth fields,
+    sync config, filter definitions) — use ``GET /registry/{type}/schema``
+    to retrieve that detail when needed.
 
     Args:
         request: FastAPI request object
 
-    Returns:
-        Dictionary with success status and list of connector instances
+    Query parameters:
+        scope: personal | team
+        page / limit: pagination
+        search: full-text search across name, type, appGroup
+        isAuthenticated: true → only authenticated instances; false → only unauthenticated
+        isActive: true → only active instances; false → only inactive
+        connectorType: exact connector type string (e.g. 'Confluence')
     """
     connector_registry = request.app.state.connector_registry
     container = request.app.container
@@ -2161,7 +2173,10 @@ async def get_connector_instances(
             scope=scope,
             page=page,
             limit=limit,
-            search=search
+            search=search,
+            is_authenticated=is_authenticated,
+            is_active=is_active,
+            connector_type=connector_type,
         )
 
         return {
@@ -2460,15 +2475,17 @@ def _apply_confluence_optional_jira_scope(
     auth_config: dict[str, Any],
     scopes: list[str],
 ) -> list[str]:
-    """Append read:jira-user when Confluence Cloud OAuth has includeJiraScope enabled."""
+    """Add or remove read:jira-user based on Confluence Cloud includeJiraScope."""
     normalized = (connector_type or "").replace(" ", "").upper()
     if normalized != Connectors.CONFLUENCE.value:
         return scopes
-    enabled = auth_config.get("includeJiraScope")
     jira_scope = "read:jira-user"
-    if not enabled or jira_scope in scopes:
-        return scopes
-    return [*scopes, jira_scope]
+    enabled = include_jira_scope_enabled(auth_config.get("includeJiraScope"))
+    if enabled:
+        if jira_scope in scopes:
+            return scopes
+        return [*scopes, jira_scope]
+    return [scope for scope in scopes if scope != jira_scope]
 
 
 async def _prepare_connector_config(
@@ -6496,6 +6513,16 @@ async def get_connector_schema(
 
         raw_schema = metadata.get(ConnectorRequestKeys.CONFIG, {})
         cleaned_schema = _clean_schema_for_response(raw_schema)
+
+        # Promoted fields are stripped from the config blob in _build_connector_info.
+        # Re-inject them so the schema endpoint exposes the full connector metadata.
+        for promoted_key in (
+            'documentationLinks',
+            'isAdminAccessRequired',
+            'personalConnectorType',
+        ):
+            if promoted_key in metadata:
+                cleaned_schema[promoted_key] = metadata[promoted_key]
 
         return {
             "success": True,

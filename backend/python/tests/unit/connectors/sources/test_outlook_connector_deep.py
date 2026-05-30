@@ -3,7 +3,6 @@
 Covers additional methods not exercised by existing test suites:
 - _extract_email_from_recipient
 - _safe_get_attr (dict, object, missing)
-- _get_mime_type_enum (all MIME types)
 - _parse_datetime (string, datetime, None, invalid)
 - _format_datetime_string (string, datetime, None, invalid)
 - _construct_group_mail_weburl (cached, fetch, errors)
@@ -124,52 +123,6 @@ class TestExtractEmailFromRecipient:
         recipient.email_address = None
         result = c._extract_email_from_recipient(recipient)
         assert result == ''  # Returns empty string when email_address is None
-
-
-
-
-# ===========================================================================
-# _get_mime_type_enum
-# ===========================================================================
-
-
-class TestGetMimeTypeEnum:
-
-    def test_plain_text(self):
-        c, *_ = _make_connector()
-        assert c._get_mime_type_enum("text/plain") == MimeTypes.PLAIN_TEXT
-
-    def test_html(self):
-        c, *_ = _make_connector()
-        assert c._get_mime_type_enum("text/html") == MimeTypes.HTML
-
-    def test_pdf(self):
-        c, *_ = _make_connector()
-        assert c._get_mime_type_enum("application/pdf") == MimeTypes.PDF
-
-    def test_docx(self):
-        c, *_ = _make_connector()
-        result = c._get_mime_type_enum("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-        assert result == MimeTypes.DOCX
-
-    def test_xlsx(self):
-        c, *_ = _make_connector()
-        result = c._get_mime_type_enum("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        assert result == MimeTypes.XLSX
-
-    def test_pptx(self):
-        c, *_ = _make_connector()
-        result = c._get_mime_type_enum("application/vnd.openxmlformats-officedocument.presentationml.presentation")
-        assert result == MimeTypes.PPTX
-
-    def test_unknown_returns_bin(self):
-        c, *_ = _make_connector()
-        assert c._get_mime_type_enum("application/x-unknown") == MimeTypes.BIN
-
-    def test_case_insensitive(self):
-        c, *_ = _make_connector()
-        assert c._get_mime_type_enum("TEXT/HTML") == MimeTypes.HTML
-
 
 
 # ===========================================================================

@@ -782,8 +782,10 @@ class WebConnector(BaseConnector):
             assert self.url is not None, "URL not set — init() must be called first"
             if self.crawl_type == "recursive":
                 await self._crawl_recursive(self.url, depth=0)
-            else:
+            elif self.crawl_type in ("single", None, ""):
                 await self._crawl_single_page(self.url)
+            else:
+                self.logger.warning(f"Unknown crawl type {self.crawl_type!r}; skipping crawl")
 
             #fetch urls with retryable errors
             await self.process_retry_urls()

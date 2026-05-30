@@ -3063,10 +3063,13 @@ class IGraphDBProvider(ABC):
         exclude_kb: bool = True,
         kb_connector_type: str | None = None,
         is_admin: bool = False,
+        is_authenticated: bool | None = None,
+        is_active: bool | None = None,
+        connector_type_filter: str | None = None,
         transaction: str | None = None,
-    ) -> tuple[list[dict], int, dict[str, int]]:
+    ) -> tuple[list[dict], int]:
         """
-        Get filtered connector instances with pagination and scope counts.
+        Get filtered connector instances with pagination.
 
         Args:
             collection: Collection name (e.g., "apps")
@@ -3079,14 +3082,19 @@ class IGraphDBProvider(ABC):
             limit: Maximum number of items to return
             exclude_kb: Whether to exclude KB connector
             kb_connector_type: KB connector type to exclude
-            is_admin: Whether user is admin (affects team scope access)
+            is_admin: When True the caller sees all team-scoped connectors in the
+                org regardless of edge membership.  When False only connectors
+                reachable via the user's ``userAppRelation`` edge (direct or
+                through team ``PERMISSION`` edges) are returned.
+            is_authenticated: Optional filter on isAuthenticated field
+            is_active: Optional filter on isActive field
+            connector_type_filter: Optional exact match on connector type field
             transaction: Optional transaction ID
 
         Returns:
-            Tuple[List[Dict], int, Dict[str, int]]:
+            Tuple of (documents, total_count):
                 - List of connector documents
-                - Total count
-                - Scope counts dict with "personal" and "team" keys
+                - Total count of matching documents
         """
         pass
 

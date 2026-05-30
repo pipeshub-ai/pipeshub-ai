@@ -13,12 +13,19 @@ import { startConnectorSync } from '../utils/connector-sync-actions';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
+  refreshAllConnectorInstances,
+  refreshConnectorInstanceDetails,
+} from '../utils/refresh-instance-details';
+import {
   ConnectorCatalogLayout,
   ConnectorPanel,
   ConnectorDetailsLayout,
   InstanceManagementPanel,
   ConfigSuccessDialog,
 } from '../components';
+import { AdminAccessRequiredDialog } from '../components/admin-access-required-dialog';
+import type { AdminAccessDialogPhase } from '../components/admin-access-required-dialog';
+import { shouldPromptAdminAccess } from '../utils/admin-access-helpers';
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
 import type { Connector, ConnectorInstance, TeamFilterTab } from '../types';
@@ -73,7 +80,6 @@ function TeamConnectorsPageContent() {
     showConfigSuccessDialog,
     newlyConfiguredConnectorId,
     instanceConfigs,
-    instanceStats,
     setRegistryConnectors,
     setActiveConnectors,
     setSearchQuery,
@@ -85,8 +91,6 @@ function TeamConnectorsPageContent() {
     setIsLoadingInstances,
     setConnectorTypeInfo,
     setInstanceConfig,
-    setInstanceStats,
-    upsertConnectorInstance,
     clearInstanceData,
     openInstancePanel,
     setShowConfigSuccessDialog,
@@ -95,6 +99,15 @@ function TeamConnectorsPageContent() {
     bumpCatalogRefresh,
     setSelectedScope,
   } = useConnectorsStore();
+
+  const [adminAccessDialogOpen, setAdminAccessDialogOpen] = useState(false);
+  const [adminAccessDialogPhase, setAdminAccessDialogPhase] =
+    useState<AdminAccessDialogPhase>('question');
+  const [pendingSetupConnector, setPendingSetupConnector] = useState<Connector | null>(null);
+  const [pendingSetupConnectorId, setPendingSetupConnectorId] = useState<string | undefined>(
+    undefined
+  );
+  const [isRefreshingAllInstances, setIsRefreshingAllInstances] = useState(false);
 
   // Keep catalog scope in store aligned with this route (panel + API use `selectedScope`).
   useLayoutEffect(() => {
@@ -179,7 +192,7 @@ function TeamConnectorsPageContent() {
     setInstances,
   ]);
 
-  // ── Fetch config + stats when instance set or catalog refresh changes (full loader) ──
+  // ── Fetch config when instance set or catalog refresh changes (full loader) ──
   useEffect(() => {
     if (!connectorType) {
       setIsLoadingInstances(false);
@@ -199,16 +212,10 @@ function TeamConnectorsPageContent() {
       try {
         await Promise.allSettled(
           instanceIds.map(async (id) => {
-            const [configRes, statsRes] = await Promise.allSettled([
-              ConnectorsApi.getConnectorConfig(id),
-              ConnectorsApi.getConnectorStats(id),
-            ]);
+            const configRes = await ConnectorsApi.getConnectorConfig(id).catch(() => null);
             if (cancelled) return;
-            if (configRes.status === 'fulfilled') {
-              setInstanceConfig(id, configRes.value);
-            }
-            if (statsRes.status === 'fulfilled') {
-              setInstanceStats(id, statsRes.value.data);
+            if (configRes) {
+              setInstanceConfig(id, configRes);
             }
           })
         );
@@ -230,18 +237,16 @@ function TeamConnectorsPageContent() {
     instanceDetailKeys,
     setIsLoadingInstances,
     setInstanceConfig,
-    setInstanceStats,
   ]);
 
   const refreshConnectorRowQuiet = useCallback(
-    async (connectorId: string) => {
-      const fresh = await ConnectorsApi.getConnectorInstance(connectorId);
-      upsertConnectorInstance(fresh);
-      void ConnectorsApi.getConnectorStats(connectorId)
-        .then((res) => setInstanceStats(connectorId, res.data))
-        .catch(() => {});
-    },
-    [upsertConnectorInstance, setInstanceStats]
+    async (connectorId: string) => refreshConnectorInstanceDetails(connectorId),
+    []
+  );
+
+  const handleRefreshInstanceDetails = useCallback(
+    async (connectorId: string) => refreshConnectorInstanceDetails(connectorId),
+    []
   );
 
   /** Re-sync catalog lists without toggling page `isLoading` (e.g. after sync toggle). */
@@ -251,15 +256,70 @@ function TeamConnectorsPageContent() {
     if (active) setActiveConnectors(active);
   }, [setRegistryConnectors, setActiveConnectors]);
 
-  // ── Handlers (list view) ───────────────────────────────────
-  const handleSetup = useCallback(
-    (connector: Connector) => {
-      // For active connectors (have _key), open in edit mode
-      // For registry connectors (no _key), open in create mode
-      const connectorId = connector._key;
+  const handleRefreshAllInstances = useCallback(async () => {
+    const instanceIds = instanceDetailKeys.split('|').filter(Boolean);
+    if (instanceIds.length === 0 || isRefreshingAllInstances) return;
+
+    setIsRefreshingAllInstances(true);
+    try {
+      await refreshConnectorsListsQuiet();
+      await refreshAllConnectorInstances(instanceIds, refreshConnectorInstanceDetails);
+    } catch {
+      addToast({
+        variant: 'error',
+        title: t('workspace.connectors.toasts.refreshInstancesError'),
+      });
+    } finally {
+      setIsRefreshingAllInstances(false);
+    }
+  }, [
+    instanceDetailKeys,
+    isRefreshingAllInstances,
+    refreshConnectorsListsQuiet,
+    addToast,
+    t,
+  ]);
+
+  const proceedWithSetup = useCallback(
+    (connector: Connector, connectorId?: string) => {
       openPanel(connector, connectorId, 'team');
     },
     [openPanel]
+  );
+
+  const requestSetupOrPromptAdminAccess = useCallback(
+    (connector: Connector, connectorId?: string) => {
+      const isCreateMode = connectorId === undefined;
+
+      if (shouldPromptAdminAccess(connector, isCreateMode)) {
+        setPendingSetupConnector(connector);
+        setPendingSetupConnectorId(connectorId);
+        setAdminAccessDialogPhase('question');
+        setAdminAccessDialogOpen(true);
+        return;
+      }
+
+      proceedWithSetup(connector, connectorId);
+    },
+    [proceedWithSetup]
+  );
+
+  const handleAdminAccessConfirm = useCallback(() => {
+    if (!pendingSetupConnector) return;
+    setAdminAccessDialogOpen(false);
+    setAdminAccessDialogPhase('question');
+    proceedWithSetup(pendingSetupConnector, pendingSetupConnectorId);
+    setPendingSetupConnector(null);
+    setPendingSetupConnectorId(undefined);
+  }, [pendingSetupConnector, pendingSetupConnectorId, proceedWithSetup]);
+
+  // ── Handlers (list view) ───────────────────────────────────
+  const handleSetup = useCallback(
+    (connector: Connector) => {
+      const connectorId = connector._key;
+      requestSetupOrPromptAdminAccess(connector, connectorId);
+    },
+    [requestSetupOrPromptAdminAccess]
   );
 
   /** "+" on catalog cards must create a new instance, not edit whichever instance supplied `_key`. */
@@ -268,9 +328,9 @@ function TeamConnectorsPageContent() {
       const registry = registryConnectors.find((c) => c.type === connector.type);
       const base = registry ?? connector;
       const { _key: _omitInstanceKey, ...template } = base;
-      openPanel(template, undefined, 'team');
+      requestSetupOrPromptAdminAccess(template, undefined);
     },
-    [registryConnectors, openPanel]
+    [registryConnectors, requestSetupOrPromptAdminAccess]
   );
 
   const handleCardClick = useCallback(
@@ -318,8 +378,8 @@ function TeamConnectorsPageContent() {
     const registry = registryConnectors.find((c) => c.type === connectorTypeInfo.type);
     const base = registry ?? connectorTypeInfo;
     const { _key: _omitInstanceKey, ...template } = base;
-    openPanel(template, undefined, 'team');
-  }, [connectorTypeInfo, registryConnectors, openPanel]);
+    requestSetupOrPromptAdminAccess(template, undefined);
+  }, [connectorTypeInfo, registryConnectors, requestSetupOrPromptAdminAccess]);
 
   const handleOpenDocs = useCallback(() => {
     const docUrl = getConnectorDocumentationUrl(connectorTypeInfo);
@@ -411,7 +471,6 @@ function TeamConnectorsPageContent() {
           scopeLabel={t('workspace.sidebar.nav.connectors')}
           instances={instances}
           instanceConfigs={instanceConfigs}
-          instanceStats={instanceStats}
           isLoading={isLoadingInstances}
           onBack={handleBackToList}
           onAddInstance={handleAddInstance}
@@ -419,6 +478,13 @@ function TeamConnectorsPageContent() {
           onManageInstance={handleManageInstance}
           onToggleSyncActive={handleToggleSyncActive}
           onInstanceChevron={handleInstanceChevron}
+          onRefreshAll={handleRefreshAllInstances}
+          isRefreshingAll={isRefreshingAllInstances}
+          onRefreshInstance={(instance) =>
+            instance._key
+              ? handleRefreshInstanceDetails(instance._key)
+              : Promise.resolve()
+          }
         />
         <ConnectorPanel />
         <InstanceManagementPanel />
@@ -427,6 +493,14 @@ function TeamConnectorsPageContent() {
           connectorName={connectorTypeInfo?.name ?? ''}
           onStartSyncing={handleStartSyncingFromDialog}
           onDoLater={handleDoLater}
+        />
+        <AdminAccessRequiredDialog
+          open={adminAccessDialogOpen}
+          onOpenChange={setAdminAccessDialogOpen}
+          connector={pendingSetupConnector}
+          phase={adminAccessDialogPhase}
+          onPhaseChange={setAdminAccessDialogPhase}
+          onConfirmAdmin={handleAdminAccessConfirm}
         />
       </>
     );
@@ -456,6 +530,14 @@ function TeamConnectorsPageContent() {
         isLoading={isLoading}
       />
       <ConnectorPanel />
+      <AdminAccessRequiredDialog
+        open={adminAccessDialogOpen}
+        onOpenChange={setAdminAccessDialogOpen}
+        connector={pendingSetupConnector}
+        phase={adminAccessDialogPhase}
+        onPhaseChange={setAdminAccessDialogPhase}
+        onConfirmAdmin={handleAdminAccessConfirm}
+      />
     </>
   );
 }

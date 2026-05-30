@@ -61,7 +61,7 @@ function modelInfoToOverride(m: ModelInfo): ModelOverride {
   return {
     modelKey: m.modelKey,
     modelName: m.modelName,
-    modelFriendlyName: m.modelFriendlyName ?? m.modelName,
+    modelFriendlyName: m.modelFriendlyName || m.modelName,
   };
 }
 

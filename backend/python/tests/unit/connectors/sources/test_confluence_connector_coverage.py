@@ -1751,12 +1751,14 @@ class TestRunSync:
         space.short_name = "TEST"
         space.name = "Test Space"
         c._sync_spaces = AsyncMock(return_value=[space])
+        c._sync_folders = AsyncMock()
         c._sync_content = AsyncMock()
         c._sync_permission_changes_from_audit_log = AsyncMock()
 
         await c.run_sync()
         c._sync_users.assert_awaited_once()
         c._sync_user_groups.assert_awaited_once()
+        c._sync_folders.assert_awaited_once_with("TEST")
         assert c._sync_content.await_count == 2  # pages + blogposts
 
 

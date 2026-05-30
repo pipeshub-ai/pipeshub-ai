@@ -3,6 +3,7 @@ import { ConnectorsApi } from '../api';
 import type { ConnectorInstance } from '../types';
 import { isLocalFsConnectorType } from './local-fs-helpers';
 import { fullResyncElectronLocalSync } from './electron-local-sync';
+import { refreshConnectorInstanceDetails } from './refresh-instance-details';
 
 /**
  * Where the resync was actually performed. Local-FS connectors are
@@ -27,9 +28,11 @@ export async function runConnectorResync(args: {
       return { kind: 'requires-desktop' };
     }
     await fullResyncElectronLocalSync(connectorId);
+    await refreshConnectorInstanceDetails(connectorId);
     return { kind: 'electron-local' };
   }
   await ConnectorsApi.resyncConnector(connectorId, connectorType, fullSync);
+  await refreshConnectorInstanceDetails(connectorId);
   return { kind: 'backend' };
 }
 
@@ -49,6 +52,7 @@ export async function startConnectorSync(
   const fresh = await ConnectorsApi.getConnectorInstance(instance._key);
   if (!fresh.isActive) {
     await ConnectorsApi.toggleConnector(instance._key, 'sync');
+    await refreshConnectorInstanceDetails(instance._key);
     return null;
   }
   const type = fresh.type || instance.type;
