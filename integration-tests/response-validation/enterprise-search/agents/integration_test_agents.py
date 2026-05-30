@@ -593,26 +593,14 @@ class TestListAgents:
             timeout=self.timeout,
         )
 
-    @staticmethod
-    def _assert_list_response_shape(body: dict[str, Any]) -> list[dict[str, Any]]:
-        assert body.get("success") is True, f"Expected success=true, got: {body!r}"
-        agents = body.get("agents")
-        assert isinstance(agents, list), f"Expected agents list, got: {body!r}"
-
-        pagination = body.get("pagination")
-        assert isinstance(pagination, dict), f"Expected pagination object, got: {body!r}"
-        for key in ("currentPage", "limit", "totalItems", "totalPages", "hasNext", "hasPrev"):
-            assert key in pagination, f"Missing pagination.{key} in {body!r}"
-
-        return agents
-
     def test_list_agents_returns_paginated_envelope(self, agent_session: dict[str, Any]) -> None:
         resp = self._list_agents_raw()
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
-        agents = self._assert_list_response_shape(body)
+        assert_response_matches_openapi_operation(body, "listAgents", status_code="200")
 
+        agents = body["agents"]
         assert any(
             agent.get("_key") == agent_session["primary_agent"] for agent in agents if isinstance(agent, dict)
         ), f"Expected primary session agent in response, got: {body!r}"
@@ -624,8 +612,9 @@ class TestListAgents:
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
-        agents = self._assert_list_response_shape(body)
+        assert_response_matches_openapi_operation(body, "listAgents", status_code="200")
 
+        agents = body["agents"]
         assert len(agents) <= 2, f"Expected at most 2 agents, got {len(agents)}: {body!r}"
         assert body["pagination"]["currentPage"] == 1
         assert body["pagination"]["limit"] == 2
@@ -650,8 +639,9 @@ class TestListAgents:
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
-        agents = self._assert_list_response_shape(body)
+        assert_response_matches_openapi_operation(body, "listAgents", status_code="200")
 
+        agents = body["agents"]
         matching_names = [
             agent.get("name")
             for agent in agents
@@ -672,7 +662,9 @@ class TestListAgents:
         assert resp.status_code == 200, f"[{sort_order}] Expected 200, got {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
-        agents = self._assert_list_response_shape(body)
+        assert_response_matches_openapi_operation(body, "listAgents", status_code="200")
+
+        agents = body["agents"]
         assert len(agents) <= 5
         assert body["pagination"]["limit"] == 5
 
@@ -1574,18 +1566,6 @@ class TestDeleteAgent:
         )
 
     @staticmethod
-    def _assert_delete_agent_success_shape(body: dict[str, Any]) -> None:
-        assert body.get("status") == "success", f"Expected success status, got: {body!r}"
-        assert body.get("message") == "Agent deleted successfully", (
-            f"Expected delete success message, got: {body!r}"
-        )
-        deleted = body.get("deleted")
-        assert isinstance(deleted, dict), f"Expected deleted counts object, got: {body!r}"
-        assert deleted.get("agents") == 1, f"Expected one agent deleted, got: {body!r}"
-        for key in ("toolsets", "tools", "knowledge", "edges"):
-            assert deleted.get(key) == 0, f"Expected deleted.{key}=0, got: {body!r}"
-
-    @staticmethod
     def _assert_get_agent_not_available_after_delete(resp: requests.Response) -> None:
         """Document current gateway behavior for soft-deleted / missing agents."""
         assert resp.status_code == 500, (
@@ -1628,7 +1608,7 @@ class TestDeleteAgent:
             f"Expected 200 on delete, got {del_resp.status_code}: {del_resp.text}"
         )
         del_body = _response_json(del_resp)
-        self._assert_delete_agent_success_shape(del_body)
+        assert_response_matches_openapi_operation(del_body, "deleteAgent", status_code="200")
 
         if agent_key in created_agent_keys:
             created_agent_keys.remove(agent_key)
@@ -1666,6 +1646,7 @@ class TestDeleteAgent:
         assert body["error"]["message"] == "No token provided", (
             f"Expected 'No token provided', got {body['error']['message']!r}"
         )
+        assert_response_matches_openapi_operation(body, "deleteAgent", status_code="401")
 
     def test_delete_agent_unknown_key(self) -> None:
         """Document current gateway behavior for unknown agent key on DELETE."""
@@ -1675,6 +1656,9 @@ class TestDeleteAgent:
         assert resp.status_code == 500, (
             f"Expected current 500 error for unknown agent key, got {resp.status_code}: {resp.text}"
         )
+
+        body = _response_json(resp)
+        assert_response_matches_openapi_operation(body, "deleteAgent", status_code="500")
 
         error_text = _response_text_fragments(resp)
         assert "not found" in error_text or "agent" in error_text, (
@@ -1694,7 +1678,8 @@ class TestDeleteAgent:
 
         first = self._delete_agent_raw(agent_key)
         assert first.status_code == 200, f"{first.status_code}: {first.text}"
-        self._assert_delete_agent_success_shape(_response_json(first))
+        first_body = _response_json(first)
+        assert_response_matches_openapi_operation(first_body, "deleteAgent", status_code="200")
 
         if agent_key in created_agent_keys:
             created_agent_keys.remove(agent_key)
@@ -1703,7 +1688,95 @@ class TestDeleteAgent:
         assert second.status_code == 500, (
             f"Expected current 500 on second delete, got {second.status_code}: {second.text}"
         )
+        second_body = _response_json(second)
+        assert_response_matches_openapi_operation(second_body, "deleteAgent", status_code="500")
         error_text = _response_text_fragments(second)
         assert "not found" in error_text or "agent" in error_text, (
             f"unexpected error payload: {second.text}"
         )
+
+    def test_delete_agent_empty_key_returns_404(self) -> None:
+        """Express routing catches missing path segments before Zod runs.
+
+        ``DELETE /api/v1/agents/`` never matches ``/:agentKey`` because the
+        Express param requires at least one segment, so Express itself returns
+        404 HTML (not a JSON validation error).
+        """
+        resp = requests.delete(
+            f"{self.base_url}/api/v1/agents/",
+            headers=self.headers,
+            timeout=self.timeout,
+            allow_redirects=False,
+        )
+        assert resp.status_code == 404, (
+            f"Expected 404 for empty agent key (Express route mismatch), "
+            f"got {resp.status_code}: {resp.text}"
+        )
+
+    def test_delete_agent_special_chars_in_key(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        agent_key = self._create_agent_for_delete_test(
+            name=f"it-agent-delete-special-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+            created_agent_keys=created_agent_keys,
+        )
+        resp = requests.delete(
+            f"{self.base_url}/api/v1/agents/{agent_key}/extra",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, (
+            f"Expected 404 for extra path segment, got {resp.status_code}: {resp.text}"
+        )
+
+    def test_delete_agent_ignores_query_params(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        agent_key = self._create_agent_for_delete_test(
+            name=f"it-agent-delete-query-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+            created_agent_keys=created_agent_keys,
+        )
+        resp = requests.delete(
+            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}?foo=bar&baz=qux",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200 with ignored query params, got {resp.status_code}: {resp.text}"
+        )
+        body = _response_json(resp)
+        assert_response_matches_openapi_operation(body, "deleteAgent", status_code="200")
+
+        if agent_key in created_agent_keys:
+            created_agent_keys.remove(agent_key)
+
+    def test_delete_agent_ignores_request_body(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        agent_key = self._create_agent_for_delete_test(
+            name=f"it-agent-delete-body-{uuid4().hex[:8]}",
+            seeded_model=reasoning_multimodal_llm_model,
+            created_agent_keys=created_agent_keys,
+        )
+        resp = requests.delete(
+            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
+            headers=self.headers,
+            json={"should": "be", "ignored": True},
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200 with ignored body, got {resp.status_code}: {resp.text}"
+        )
+        body = _response_json(resp)
+        assert_response_matches_openapi_operation(body, "deleteAgent", status_code="200")
+
+        if agent_key in created_agent_keys:
+            created_agent_keys.remove(agent_key)

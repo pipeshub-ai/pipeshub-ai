@@ -410,26 +410,14 @@ class TestListAgents:
             timeout=self.timeout,
         )
 
-    @staticmethod
-    def _assert_list_response_shape(body: dict[str, Any]) -> list[dict[str, Any]]:
-        assert body.get("success") is True, f"Expected success=true, got: {body!r}"
-        agents = body.get("agents")
-        assert isinstance(agents, list), f"Expected agents list, got: {body!r}"
-
-        pagination = body.get("pagination")
-        assert isinstance(pagination, dict), f"Expected pagination object, got: {body!r}"
-        for key in ("currentPage", "limit", "totalItems", "totalPages", "hasNext", "hasPrev"):
-            assert key in pagination, f"Missing pagination.{key} in {body!r}"
-
-        return agents
-
     def test_list_agents_returns_paginated_envelope(self, agent_session: dict[str, Any]) -> None:
         resp = self._list_agents_raw()
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
-        agents = self._assert_list_response_shape(body)
+        assert_response_matches_spec(body, "/agents", "get", status_code=200)
 
+        agents = body["agents"]
         assert any(
             agent.get("_key") == agent_session["primary_agent"] for agent in agents if isinstance(agent, dict)
         ), f"Expected primary session agent in response, got: {body!r}"
@@ -441,8 +429,9 @@ class TestListAgents:
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
-        agents = self._assert_list_response_shape(body)
+        assert_response_matches_spec(body, "/agents", "get", status_code=200)
 
+        agents = body["agents"]
         assert len(agents) <= 2, f"Expected at most 2 agents, got {len(agents)}: {body!r}"
         assert body["pagination"]["currentPage"] == 1
         assert body["pagination"]["limit"] == 2
@@ -467,8 +456,9 @@ class TestListAgents:
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
-        agents = self._assert_list_response_shape(body)
+        assert_response_matches_spec(body, "/agents", "get", status_code=200)
 
+        agents = body["agents"]
         matching_names = [
             agent.get("name")
             for agent in agents
@@ -489,7 +479,9 @@ class TestListAgents:
         assert resp.status_code == 200, f"[{sort_order}] Expected 200, got {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
-        agents = self._assert_list_response_shape(body)
+        assert_response_matches_spec(body, "/agents", "get", status_code=200)
+
+        agents = body["agents"]
         assert len(agents) <= 5
         assert body["pagination"]["limit"] == 5
 

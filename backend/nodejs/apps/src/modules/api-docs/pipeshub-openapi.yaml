@@ -7102,6 +7102,52 @@ components:
           type: string
           example: "Agent updated successfully"
 
+    AgentDeleteResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - message
+        - deleted
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        message:
+          type: string
+          example: "Agent deleted successfully"
+        deleted:
+          type: object
+          additionalProperties: false
+          required:
+            - agents
+            - toolsets
+            - tools
+            - knowledge
+            - edges
+          properties:
+            agents:
+              type: integer
+              minimum: 0
+              example: 1
+            toolsets:
+              type: integer
+              minimum: 0
+              example: 0
+            tools:
+              type: integer
+              minimum: 0
+              example: 0
+            knowledge:
+              type: integer
+              minimum: 0
+              example: 0
+            edges:
+              type: integer
+              minimum: 0
+              example: 0
+
     AgentTemplate:
       type: object
       description: |

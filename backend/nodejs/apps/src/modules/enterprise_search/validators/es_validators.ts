@@ -532,6 +532,14 @@ export const getAgentParamsSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Agent delete schema (DELETE /:agentKey) — path param only; no body/query
+// ---------------------------------------------------------------------------
+
+export const deleteAgentSchema = z.object({
+  params: z.object(agentKeyParam),
+});
+
+// ---------------------------------------------------------------------------
 // Agent list query schema
 // ---------------------------------------------------------------------------
 
