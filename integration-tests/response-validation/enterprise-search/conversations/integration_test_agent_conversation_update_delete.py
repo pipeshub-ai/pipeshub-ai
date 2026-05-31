@@ -118,6 +118,7 @@ class TestAgentConversationTitleUpdate:
         self,
         pipeshub_client: PipeshubClient,
         agent_session: dict[str, Any],
+        reasoning_multimodal_llm_model,
     ) -> None:
         self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
@@ -1337,6 +1338,8 @@ class TestAgentConversationRegenerate:
         self.primary_agent = agent_session["primary_agent"]
         self.secondary_agents = list(agent_session["secondary_agents"])
         self.org_id = pipeshub_client.org_id
+        self.reasoning_model_key = reasoning_multimodal_llm_model.model_key
+        self.reasoning_model_name = reasoning_multimodal_llm_model.model_name
 
     @pytest.fixture
     def created_conversations(self):
@@ -1675,6 +1678,10 @@ class TestAgentConversationRegenerate:
             "knowledgeBase_placeholder",
             f"knowledgeBase_{self.org_id}",
         ))
+        if request_payload.get("modelKey") == "model-key":
+            request_payload["modelKey"] = self.reasoning_model_key
+        if request_payload.get("modelName") == "model-name":
+            request_payload["modelName"] = self.reasoning_model_name
         if label not in {"unknown extra keys", "all optional fields", "filters only"}:
             assert_request_body_matches_openapi_operation(
                 request_payload,
