@@ -343,10 +343,10 @@ export const getStorageConfig =
             .status(200)
             .json({
               storageType,
-              s3AccessKeyId: accessKeyId,
-              s3SecretAccessKey: secretAccessKey,
-              s3Region: region,
-              s3BucketName: bucketName,
+              accessKeyId,
+              secretAccessKey,
+              region,
+              bucketName,
             })
             .end();
           return;

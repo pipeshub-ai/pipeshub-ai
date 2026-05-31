@@ -347,10 +347,10 @@ describe('ConfigurationManager Controller', () => {
       expect(res.json.calledOnce).to.be.true
       expect(res.json.firstCall.args[0]).to.deep.equal({
         storageType: 's3',
-        s3AccessKeyId: 'AK',
-        s3SecretAccessKey: 'SK',
-        s3Region: 'us-east-1',
-        s3BucketName: 'b',
+        accessKeyId: 'AK',
+        secretAccessKey: 'SK',
+        region: 'us-east-1',
+        bucketName: 'b',
       })
     })
 

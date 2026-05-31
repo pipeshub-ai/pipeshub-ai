@@ -29483,16 +29483,16 @@ paths:
                   baseUrl:
                     type: string
                     description: Base URL for files (Local)
-                  s3AccessKeyId:
+                  accessKeyId:
                     type: string
                     description: AWS access key ID (S3)
-                  s3SecretAccessKey:
+                  secretAccessKey:
                     type: string
                     description: AWS secret access key (S3)
-                  s3Region:
+                  region:
                     type: string
                     description: AWS region (S3)
-                  s3BucketName:
+                  bucketName:
                     type: string
                     description: S3 bucket name (S3)
                   containerName:
@@ -29638,7 +29638,7 @@ paths:
                         example: HTTP_BAD_REQUEST
                       message:
                         type: string
-                        example: "S3 health check failed. Verify credentials, bucket name, region, and IAM permissions (s3:ListBucket, s3:PutObject, s3:GetObject, s3:DeleteObject). upload: AccessDenied"
+                        example: "S3 health check failed. Verify credentials, bucket name, region, and IAM permissions (s3:PutObject, s3:GetObject, s3:DeleteObject). upload: AccessDenied"
                       metadata:
                         type: object
                         description: Present in non-production environments
