@@ -145,7 +145,6 @@ class TestListOAuthApps:
         self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
-        self.client = pipeshub_client
         self.url = f"{self.base_url}/api/v1/oauth-clients"
 
     def test_pagination(self, seeded_apps: dict) -> None:
@@ -251,7 +250,6 @@ class TestCreateOAuthApp:
         self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
-        self.client = pipeshub_client
         self.pipeshub_client = pipeshub_client
         self.url = f"{self.base_url}/api/v1/oauth-clients"
 
@@ -317,7 +315,6 @@ class TestListOAuthScopes:
         self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
-        self.client = pipeshub_client
         self.url = f"{self.base_url}/api/v1/oauth-clients/scopes"
 
     def test_response_schema(self) -> None:
@@ -484,7 +481,6 @@ class TestRegenerateOAuthAppSecret:
         self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
-        self.client = pipeshub_client
         self.pipeshub_client = pipeshub_client
 
     def test_response_schema(self) -> None:
@@ -543,7 +539,6 @@ class TestSuspendActivateOAuthApp:
         self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
-        self.client = pipeshub_client
         self.pipeshub_client = pipeshub_client
 
     def _url(self, app_id: str, action: str) -> str:
@@ -714,7 +709,6 @@ class TestRevokeAllOAuthAppTokens:
         self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
-        self.client = pipeshub_client
         self.pipeshub_client = pipeshub_client
 
     def test_response_schema(self) -> None:
@@ -761,7 +755,6 @@ class TestDeleteOAuthApp:
         self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
-        self.client = pipeshub_client
         self.pipeshub_client = pipeshub_client
 
     def test_response_schema(self) -> None:
@@ -845,7 +838,6 @@ class TestOAuthAppRateLimiting:
         self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
-        self.client = pipeshub_client
         self.url = f"{self.base_url}/api/v1/oauth-clients"
 
     def test_rate_limit_error_schema(self) -> None:

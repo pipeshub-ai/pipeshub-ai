@@ -105,7 +105,6 @@ class TestAgentConversationListing:
     ) -> None:
         self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
-        self.client = pipeshub_client
         self.timeout = int(os.getenv("PIPESHUB_TEST_TIMEOUT", "60"))
         stream_override = os.getenv("PIPESHUB_TEST_STREAM_TIMEOUT", "").strip()
         self.stream_timeout = (
@@ -147,9 +146,10 @@ class TestAgentConversationListing:
         query: str,
         created_conversations: list[tuple[str, str]],
     ) -> str:
-        headers = {**self.headers, "Accept": "text/event-stream"}
+        headers = {"Accept": "text/event-stream"}
 
         with self.client.request("POST", self._stream_url(agent_key),
+            headers=headers,
             json={"query": query},
             stream=True,
             timeout=self.stream_timeout) as resp:
@@ -181,7 +181,7 @@ class TestAgentConversationListing:
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
         return self.client.request("GET", self._list_url(agent_key),
-            params=params)
+            params=params, headers=headers)
 
     @staticmethod
     def _all_returned_conversation_ids(body: dict[str, Any]) -> set[str]:

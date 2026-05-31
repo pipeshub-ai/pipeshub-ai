@@ -143,9 +143,9 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
     # ------------------------------------------------------------------------
 
     def _stream_create_conversation_id(self, *, query: str = SEARCH_QUERY) -> str:
-        headers = {**self.headers, "Accept": "text/event-stream"}
+        headers = {"Accept": "text/event-stream"}
 
-        with self.client.request("POST", self.conversation_stream_url, json={"query": query}, stream=True, timeout=self.stream_timeout) as resp:
+        with self.client.request("POST", self.conversation_stream_url, headers=headers, json={"query": query}, stream=True, timeout=self.stream_timeout) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
@@ -176,10 +176,10 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
     def _stream_create_conversation_and_last_bot_message_id(
         self, *, query: str = SEARCH_QUERY
     ) -> tuple[str, str]:
-        headers = {**self.headers, "Accept": "text/event-stream"}
+        headers = {"Accept": "text/event-stream"}
         connected_conv_id: str | None = None
 
-        with self.client.request("POST", self.conversation_stream_url, json={"query": query}, stream=True, timeout=self.stream_timeout) as resp:
+        with self.client.request("POST", self.conversation_stream_url, headers=headers, json={"query": query}, stream=True, timeout=self.stream_timeout) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
@@ -221,9 +221,9 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
     def _stream_create_conversation_bot_and_user_message_ids(
         self, *, query: str = SEARCH_QUERY
     ) -> tuple[str, str, str]:
-        headers = {**self.headers, "Accept": "text/event-stream"}
+        headers = {"Accept": "text/event-stream"}
 
-        with self.client.request("POST", self.conversation_stream_url, json={"query": query}, stream=True, timeout=self.stream_timeout) as resp:
+        with self.client.request("POST", self.conversation_stream_url, headers=headers, json={"query": query}, stream=True, timeout=self.stream_timeout) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
@@ -272,9 +272,9 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
     # ------------------------------------------------------------------------
 
     def test_stream_conversation_response_matches_spec(self) -> None:
-        headers = {**self.headers, "Accept": "text/event-stream"}
+        headers = {"Accept": "text/event-stream"}
 
-        with self.client.request("POST", self.conversation_stream_url, json={"query": SEARCH_QUERY}, stream=True, timeout=self.stream_timeout) as resp:
+        with self.client.request("POST", self.conversation_stream_url, headers=headers, json={"query": SEARCH_QUERY}, stream=True, timeout=self.stream_timeout) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             content_type = (resp.headers.get("Content-Type") or "").lower()
@@ -326,9 +326,9 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         self, chat_mode: str, query: str
     ) -> None:
         # Starts a chat using the chosen search mode and checks the bot replies.
-        headers = {**self.headers, "Accept": "text/event-stream"}
+        headers = {"Accept": "text/event-stream"}
 
-        with self.client.request("POST", self.conversation_stream_url, json={"query": query, "chatMode": chat_mode}, stream=True, timeout=self.stream_timeout) as resp:
+        with self.client.request("POST", self.conversation_stream_url, headers=headers, json={"query": query, "chatMode": chat_mode}, stream=True, timeout=self.stream_timeout) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             accumulated_answer = ""
@@ -378,15 +378,15 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         ],
     )
     def test_stream_conversation_invalid_payload_returns_400(self, payload: dict) -> None:
-        headers = {**self.headers, "Accept": "text/event-stream"}
+        headers = {"Accept": "text/event-stream"}
 
-        resp = self.client.request("POST", self.conversation_stream_url, json=payload)
+        resp = self.client.request("POST", self.conversation_stream_url, headers=headers, json=payload)
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
 
     def test_stream_conversation_missing_auth_returns_401_or_403(self) -> None:
         headers = {"Accept": "text/event-stream"}
 
-        resp = self.client.request("POST", f"{self.base_url}/api/v1/conversations/stream", json={"query": SEARCH_QUERY})
+        resp = self.client.request("POST", f"{self.base_url}/api/v1/conversations/stream", auth=False, json={"query": SEARCH_QUERY})
         assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
 
     def test_get_conversations_includes_two_stream_created(self) -> None:
@@ -466,7 +466,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         )
         url = f"{self.conversations_base_url}/{conversation_id}"
 
-        get_before = self.client.request("GET", url, headers=self.headers, timeout=self.timeout)
+        get_before = self.client.request("GET", url, timeout=self.timeout)
         assert get_before.status_code == 200, (
             f"{get_before.status_code}: {get_before.text}"
         )
@@ -475,7 +475,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             f"conversation.id mismatch before delete: {conv!r}"
         )
 
-        del_resp = self.client.request("DELETE", url, headers=self.headers, timeout=self.timeout)
+        del_resp = self.client.request("DELETE", url, timeout=self.timeout)
         assert del_resp.status_code == 200, f"{del_resp.status_code}: {del_resp.text}"
         del_body = del_resp.json()
         assert del_body.get("status") == "deleted", f"unexpected delete body: {del_body!r}"
@@ -483,7 +483,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             f"delete response id mismatch: {del_body!r}"
         )
 
-        get_after = self.client.request("GET", url, headers=self.headers, timeout=self.timeout)
+        get_after = self.client.request("GET", url, timeout=self.timeout)
         assert get_after.status_code == 404, (
             f"GET after delete should be 404, got "
             f"{get_after.status_code}: {get_after.text}"
@@ -522,7 +522,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             archive_body, "archiveConversation", status_code="200"
         )
 
-        get_after = self.client.request("GET", url, headers=self.headers, timeout=self.timeout)
+        get_after = self.client.request("GET", url, timeout=self.timeout)
         assert get_after.status_code == 404, (
             f"GET after archive should be 404, got "
             f"{get_after.status_code}: {get_after.text}"
@@ -553,7 +553,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             unarchive_body, "unarchiveConversation", status_code="200"
         )
 
-        get_after_unarchive = self.client.request("GET", url, headers=self.headers, timeout=self.timeout)
+        get_after_unarchive = self.client.request("GET", url, timeout=self.timeout)
         assert get_after_unarchive.status_code == 200, (
             f"GET after unarchive should be 200, got "
             f"{get_after_unarchive.status_code}: {get_after_unarchive.text}"
@@ -711,7 +711,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
     def test_get_archived_conversations_search_missing_auth_returns_401_or_403(
         self,
     ) -> None:
-        resp = self.client.request("GET", f"{self.base_url}/api/v1/conversations/show/archives/search", params={"search": "any"})
+        resp = self.client.request("GET", f"{self.base_url}/api/v1/conversations/show/archives/search", auth=False, params={"search": "any"})
         assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
 
     def test_get_archived_conversations_search_active_not_in_results(self) -> None:
@@ -737,7 +737,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
     def test_get_archived_conversations_missing_auth_returns_401_or_403(
         self,
     ) -> None:
-        resp = self.client.request("GET", f"{self.base_url}/api/v1/conversations/show/archives")
+        resp = self.client.request("GET", f"{self.base_url}/api/v1/conversations/show/archives", auth=False)
         assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
 
     def test_get_archived_conversations_invalid_start_date_returns_400(
@@ -894,7 +894,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
     def test_post_share_conversation_missing_auth_returns_401_or_403(
         self,
     ) -> None:
-        resp = self.client.request("POST", f"{self.base_url}/api/v1/conversations/{'0' * 24}/share", json={"userIds": [SHARE_TARGET_USER_ID]})
+        resp = self.client.request("POST", f"{self.base_url}/api/v1/conversations/{'0' * 24}/share", auth=False, json={"userIds": [SHARE_TARGET_USER_ID]})
         assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
 
     # ------------------------------------------------------------------
@@ -966,10 +966,10 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             query="stream-create conversation for message-stream test"
         )
 
-        headers = {**self.headers, "Accept": "text/event-stream"}
+        headers = {"Accept": "text/event-stream"}
         url = self.message_stream_url_tpl.format(conversationId=conversation_id)
 
-        with self.client.request("POST", url, json={"query": "follow-up question"}, stream=True, timeout=self.stream_timeout) as resp:
+        with self.client.request("POST", url, headers=headers, json={"query": "follow-up question"}, stream=True, timeout=self.stream_timeout) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             saw_complete = False
@@ -1010,13 +1010,13 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         conversation_id = self._stream_create_conversation_id(
             query="stream-create conversation for invalid-payload test"
         )
-        headers = {**self.headers, "Accept": "text/event-stream"}
+        headers = {"Accept": "text/event-stream"}
         url = self.message_stream_url_tpl.format(conversationId=conversation_id)
         resp = self.client.request("POST", url, headers=headers, json=payload, timeout=self.timeout)
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
 
     def test_stream_add_message_invalid_conversation_id_returns_400(self) -> None:
-        headers = {**self.headers, "Accept": "text/event-stream"}
+        headers = {"Accept": "text/event-stream"}
         url = self.message_stream_url_tpl.format(conversationId="not-an-objectid")
         resp = self.client.request("POST", url, headers=headers, json={"query": "hi"}, timeout=self.timeout)
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
@@ -1024,14 +1024,14 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
     def test_stream_add_message_missing_auth_returns_401_or_403(self) -> None:
         headers = {"Accept": "text/event-stream"}
         url = f"{self.base_url}/api/v1/conversations/{'0'*24}/messages/stream"
-        resp = self.client.request("POST", url, headers=headers, json={"query": "hi"}, timeout=self.timeout)
+        resp = self.client.request("POST", url, auth=False, headers=headers, json={"query": "hi"}, timeout=self.timeout)
         assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
 
     def test_stream_add_message_nonexistent_conversation_emits_error_event(self) -> None:
-        headers = {**self.headers, "Accept": "text/event-stream"}
+        headers = {"Accept": "text/event-stream"}
         url = self.message_stream_url_tpl.format(conversationId="0" * 24)
 
-        with self.client.request("POST", url, json={"query": "hi"}, stream=True, timeout=self.stream_timeout) as resp:
+        with self.client.request("POST", url, headers=headers, json={"query": "hi"}, stream=True, timeout=self.stream_timeout) as resp:
             if resp.status_code != 200:
                 assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
                 return
@@ -1054,9 +1054,9 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             conversationId=conversation_id,
             messageId=message_id,
         )
-        headers = {**self.headers, "Accept": "text/event-stream"}
+        headers = {"Accept": "text/event-stream"}
 
-        with self.client.request("POST", url, json={}, stream=True, timeout=self.stream_timeout) as resp:
+        with self.client.request("POST", url, headers=headers, json={}, stream=True, timeout=self.stream_timeout) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
             content_type = (resp.headers.get("Content-Type") or "").lower()
             assert "text/event-stream" in content_type, (
@@ -1097,7 +1097,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         url = (
             f"{self.base_url}/api/v1/conversations/{'0' * 24}/message/{'0' * 24}/regenerate"
         )
-        resp = self.client.request("POST", url, json={})
+        resp = self.client.request("POST", url, auth=False, json={})
         assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
 
     def test_regenerate_invalid_path_ids_returns_400(self) -> None:
@@ -1143,9 +1143,9 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             conversationId=conversation_id,
             messageId=user_query_id,
         )
-        headers = {**self.headers, "Accept": "text/event-stream"}
+        headers = {"Accept": "text/event-stream"}
 
-        with self.client.request("POST", url, json={}, stream=True, timeout=self.stream_timeout) as resp:
+        with self.client.request("POST", url, headers=headers, json={}, stream=True, timeout=self.stream_timeout) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
@@ -1184,7 +1184,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
                 "feedbackSessionId": "integration-test-session",
             },
         }
-        resp = self.client.request("POST", url, headers=self.headers, json=payload, timeout=self.timeout)
+        resp = self.client.request("POST", url, json=payload, timeout=self.timeout)
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
         body = resp.json()
         assert body.get("conversationId") == conversation_id
@@ -1203,7 +1203,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             conversationId=conversation_id,
             messageId=user_id,
         )
-        resp = self.client.request("POST", url, headers=self.headers, json={}, timeout=self.timeout)
+        resp = self.client.request("POST", url, json={}, timeout=self.timeout)
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
         lowered = resp.text.lower()
         assert "bot" in lowered or "feedback" in lowered, (

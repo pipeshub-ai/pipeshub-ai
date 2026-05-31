@@ -581,13 +581,13 @@ class PipeshubClient:
         Returns:
             API response with syncFiltersChanged flag
         """
-        if not filters and not sync:
+        if filters is None and sync is None:
             raise PipeshubClientError("Either filters or sync configuration must be provided")
-        
+
         payload: Dict[str, Any] = {}
-        if filters:
+        if filters is not None:
             payload["filters"] = filters
-        if sync:
+        if sync is not None:
             payload["sync"] = sync
         
         return self._request_json(
@@ -718,18 +718,6 @@ class PipeshubClient:
             Response object (caller can iterate over response.iter_content())
         """
         url = self._url(self._stream_record_path(record_id))
-        for attempt in range(2):
-            self._ensure_access_token()
-            resp = requests.get(
-                url,
-                headers=self._headers(),
-                timeout=self.timeout_seconds,
-                stream=True,
-            )
-            if resp.status_code == 401 and attempt == 0:
-                logger.warning("Pipeshub stream returned 401; invalidating token and retrying once")
-                self._invalidate_access_token()
-                continue
-            resp.raise_for_status()
-            return resp
-        raise PipeshubAuthError("stream_record failed after token retry")
+        resp = self.request("GET", url, stream=True)
+        resp.raise_for_status()
+        return resp

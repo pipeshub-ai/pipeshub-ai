@@ -112,7 +112,7 @@ def _env(name: str, fallback: Optional[str] = None) -> Optional[str]:
     return None
 
 
-def _admin_headers(client: PipeshubClient) -> Dict[str, str]:
+def _admin_headers(_client: PipeshubClient) -> Dict[str, str]:
     return {"X-Is-Admin": "true"}
 
 
@@ -290,37 +290,10 @@ def _post_provider(
     raw_data: Optional[str] = None,
 ) -> requests.Response:
     req_headers = headers or _admin_headers(client)
-    if headers is not None:
-        if raw_data is not None:
-            merged = {"Content-Type": "application/json", **req_headers}
-            return client.request(
-                "POST",
-                _providers_url(client),
-                data=raw_data,
-                auth=False,
-                headers=merged,
-            )
-        return client.request(
-            "POST",
-            _providers_url(client),
-            json=payload,
-            auth=False,
-            headers=req_headers,
-        )
     if raw_data is not None:
         merged = {"Content-Type": "application/json", **req_headers}
-        return client.request(
-            "POST",
-            _providers_url(client),
-            data=raw_data,
-            headers=merged,
-        )
-    return client.request(
-        "POST",
-        _providers_url(client),
-        json=payload,
-        headers=req_headers,
-    )
+        return client.request("POST", _providers_url(client), data=raw_data, headers=merged)
+    return client.request("POST", _providers_url(client), json=payload, headers=req_headers)
 
 
 def _put_provider(
@@ -334,11 +307,6 @@ def _put_provider(
 ) -> requests.Response:
     url = client._url(f"{_PROVIDERS_PATH}/{model_type}/{model_key}")
     req_headers = headers or _admin_headers(client)
-    if headers is not None:
-        if raw_data is not None:
-            merged = {"Content-Type": "application/json", **req_headers}
-            return client.request("PUT", url, data=raw_data, auth=False, headers=merged)
-        return client.request("PUT", url, json=payload, auth=False, headers=req_headers)
     if raw_data is not None:
         merged = {"Content-Type": "application/json", **req_headers}
         return client.request("PUT", url, data=raw_data, headers=merged)
@@ -353,13 +321,6 @@ def _delete_provider(
     headers: Optional[Dict[str, str]] = None,
 ) -> requests.Response:
     req_headers = headers or _admin_headers(client)
-    if headers is not None:
-        return client.request(
-            "DELETE",
-            _delete_provider_url(client, model_type, model_key),
-            auth=False,
-            headers=req_headers,
-        )
     return client.request(
         "DELETE",
         _delete_provider_url(client, model_type, model_key),
@@ -373,8 +334,6 @@ def _get_ai_models(
     headers: Optional[Dict[str, str]] = None,
 ) -> requests.Response:
     req_headers = headers or _admin_headers(client)
-    if headers is not None:
-        return client.request("GET", _ai_models_url(client), auth=False, headers=req_headers)
     return client.request("GET", _ai_models_url(client), headers=req_headers)
 
 
@@ -385,18 +344,7 @@ def _get_models_by_type(
     headers: Optional[Dict[str, str]] = None,
 ) -> requests.Response:
     req_headers = headers or _admin_headers(client)
-    if headers is not None:
-        return client.request(
-            "GET",
-            _models_by_type_url(client, model_type),
-            auth=False,
-            headers=req_headers,
-        )
-    return client.request(
-        "GET",
-        _models_by_type_url(client, model_type),
-        headers=req_headers,
-    )
+    return client.request("GET", _models_by_type_url(client, model_type), headers=req_headers)
 
 
 def _assert_all_models_bucket_structure(body: dict, *, label: str) -> None:
@@ -586,7 +534,7 @@ class TestAddAIModelProviderValidation:
             {"model": "gpt-4o-mini", "apiKey": "sk-test"},
         )
         resp = self.client.request("POST", _providers_url(self.client),
-            json=payload)
+            auth=False, json=payload)
         assert resp.status_code in (400, 401), (
             f"Expected 400/401 without Authorization, got {resp.status_code}: {resp.text}"
         )
@@ -941,7 +889,7 @@ class TestUpdateAIModelProviderValidation:
         resp = self.client.request("PUT", self.client._url(
                 f"{_PROVIDERS_PATH}/{_MODEL_TYPE_LLM}/{uuid.uuid4()}"
             ),
-            json=payload)
+            auth=False, json=payload)
         assert resp.status_code in (400, 401), (
             f"Expected 400/401 without Authorization, got {resp.status_code}: {resp.text}"
         )
@@ -1190,7 +1138,7 @@ class TestDeleteAIModelProviderValidation:
         assert body.get("status") == "error" or body.get("error"), body
 
     def test_missing_authorization(self) -> None:
-        resp = self.client.request("DELETE", _delete_provider_url(self.client, _MODEL_TYPE_LLM, str(uuid.uuid4())))
+        resp = self.client.request("DELETE", _delete_provider_url(self.client, _MODEL_TYPE_LLM, str(uuid.uuid4())), auth=False)
         assert resp.status_code in (400, 401), (
             f"Expected 400/401 without Authorization, got {resp.status_code}: {resp.text}"
         )
@@ -1373,7 +1321,7 @@ class TestGetAIModelsProviders:
         )
 
     def test_missing_authorization(self) -> None:
-        resp = self.client.request("GET", _ai_models_url(self.client))
+        resp = self.client.request("GET", _ai_models_url(self.client), auth=False)
         assert resp.status_code in (400, 401), (
             f"Expected 400/401 without Authorization, got {resp.status_code}: {resp.text}"
         )
@@ -1505,7 +1453,7 @@ class TestGetModelsByType:
         )
 
     def test_missing_authorization(self) -> None:
-        resp = self.client.request("GET", _models_by_type_url(self.client, _MODEL_TYPE_LLM))
+        resp = self.client.request("GET", _models_by_type_url(self.client, _MODEL_TYPE_LLM), auth=False)
         assert resp.status_code in (400, 401), (
             f"Expected 400/401 without Authorization, got {resp.status_code}: {resp.text}"
         )

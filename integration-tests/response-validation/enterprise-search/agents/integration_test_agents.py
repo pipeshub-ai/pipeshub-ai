@@ -123,9 +123,7 @@ class TestCreateAgent:
     @pytest.fixture(autouse=True)
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.client = pipeshub_client
-        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
-        self.client = pipeshub_client
         self.org_id = pipeshub_client.org_id
         self.timeout = pipeshub_client.timeout_seconds
 
@@ -383,9 +381,7 @@ class TestListAgents:
     @pytest.fixture(autouse=True)
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.client = pipeshub_client
-        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
-        self.client = pipeshub_client
         self.timeout = pipeshub_client.timeout_seconds
 
     @pytest.fixture
@@ -435,7 +431,13 @@ class TestListAgents:
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return self.client.request("GET", f"{self.base_url}{_AGENTS_LIST_PATH}", params=params)
+        return self.client.request(
+            "GET",
+            f"{self.base_url}{_AGENTS_LIST_PATH}",
+            params=params,
+            headers=headers,
+            auth=(headers is None),
+        )
 
     @staticmethod
     def _assert_list_response_shape(body: dict[str, Any]) -> list[dict[str, Any]]:
@@ -576,9 +578,7 @@ class TestGetAgent:
     @pytest.fixture(autouse=True)
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.client = pipeshub_client
-        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
-        self.client = pipeshub_client
         self.timeout = pipeshub_client.timeout_seconds
 
     @pytest.fixture
@@ -631,7 +631,13 @@ class TestGetAgent:
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return self.client.request("GET", f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}", params=params)
+        return self.client.request(
+            "GET",
+            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
+            params=params,
+            headers=headers,
+            auth=(headers is None),
+        )
 
     @staticmethod
     def _assert_get_agent_response_shape(
@@ -782,9 +788,7 @@ class TestUpdateAgent:
     @pytest.fixture(autouse=True)
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.client = pipeshub_client
-        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
-        self.client = pipeshub_client
         self.timeout = pipeshub_client.timeout_seconds
 
     @pytest.fixture
@@ -835,10 +839,15 @@ class TestUpdateAgent:
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        request_headers = dict(headers if headers is not None else self.headers)
-        if data is not None:
-            request_headers.setdefault("Content-Type", "application/json")
-        return self.client.request("PUT", f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}", json=json_body, data=data, params=params)
+        return self.client.request(
+            "PUT",
+            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
+            json=json_body,
+            data=data,
+            params=params,
+            headers=headers,
+            auth=(headers is None),
+        )
 
     def _get_agent_raw(self, agent_key: str) -> requests.Response:
         return self.client.request("GET", f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}")
@@ -1077,9 +1086,7 @@ class TestDeleteAgent:
     @pytest.fixture(autouse=True)
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.client = pipeshub_client
-        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
-        self.client = pipeshub_client
         self.timeout = pipeshub_client.timeout_seconds
 
     @pytest.fixture
@@ -1129,7 +1136,12 @@ class TestDeleteAgent:
         *,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return self.client.request("GET", f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}")
+        return self.client.request(
+            "GET",
+            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
+            headers=headers,
+            auth=(headers is None),
+        )
 
     def _delete_agent_raw(
         self,
@@ -1137,7 +1149,12 @@ class TestDeleteAgent:
         *,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return self.client.request("DELETE", f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}")
+        return self.client.request(
+            "DELETE",
+            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
+            headers=headers,
+            auth=(headers is None),
+        )
 
     def _list_agents_raw(
         self,

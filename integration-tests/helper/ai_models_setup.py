@@ -73,7 +73,7 @@ def _reasoning_model_name() -> str:
     return _DEFAULT_REASONING_MODEL_NAME
 
 
-def _admin_headers(client: PipeshubClient) -> Dict[str, str]:
+def _admin_headers(_client: PipeshubClient) -> Dict[str, str]:
     return {"X-Is-Admin": "true"}
 
 
