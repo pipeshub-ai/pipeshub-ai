@@ -328,7 +328,10 @@ export interface KnowledgeHubApiResponse {
  */
 export interface EnhancedFolderTreeNode extends FolderTreeNode {
   nodeType: NodeType;
+  /** Sidebar expand chevron — container children visible in the tree. */
   hasChildren: boolean;
+  /** Any descendants (including leaf records) — used for reindex eligibility. */
+  hasDescendants?: boolean;
   isLoading?: boolean;
   permission?: NodePermission;
   origin?: NodeOrigin;
@@ -336,6 +339,7 @@ export interface EnhancedFolderTreeNode extends FolderTreeNode {
   subType?: string;
   extension?: string | null;
   mimeType?: string | null;
+  indexingStatus?: IndexingStatus | null;
 }
 
 export type SidebarSection = 'shared' | 'private';

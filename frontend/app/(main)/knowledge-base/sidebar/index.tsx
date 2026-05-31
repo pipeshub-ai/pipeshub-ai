@@ -338,12 +338,7 @@ function KBSidebarContent({
                     isSelected={currentFolderId === node.id}
                     currentFolderId={currentFolderId}
                     onSelect={(id) => onAllRecordsSelectConnectorItem?.(node.nodeType, id)}
-                    onToggle={(id) => {
-                      toggleFolderExpanded(id);
-                      if (node.hasChildren) {
-                        onNodeExpand?.(id, node.nodeType as NodeType);
-                      }
-                    }}
+                    onToggle={toggleFolderExpanded}
                     expandedFolders={expandedFolders}
                     loadingNodeIds={loadingNodeIds}
                     onNodeExpand={onNodeExpand}
@@ -372,13 +367,7 @@ function KBSidebarContent({
                       onAllRecordsSelectConnectorItem?.(childNode.nodeType, id);
                     }
                   }}
-                  onToggle={(id) => {
-                    toggleFolderExpanded(id);
-                    const childNode = appChildren.find((c) => c.id === id);
-                    if (childNode?.hasChildren) {
-                      onNodeExpand?.(id, childNode.nodeType);
-                    }
-                  }}
+                  onToggle={toggleFolderExpanded}
                   expandedFolders={expandedFolders}
                   loadingNodeIds={loadingNodeIds}
                   onNodeExpand={onNodeExpand}

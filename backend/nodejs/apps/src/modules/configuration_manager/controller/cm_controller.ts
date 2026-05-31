@@ -65,6 +65,10 @@ import {
   maskAiModelsStoredConfig,
   maskAiModelEntry,
 } from '../utils/maskConfigSecrets';
+import {
+  buildS3HealthCheckErrorMessage,
+  validateS3Capabilities,
+} from '../../storage/utils/s3-health-check.util';
 
 const logger = Logger.getInstance({
   service: 'ConfigurationManagerController',
@@ -201,6 +205,21 @@ export const createStorageConfig =
             region: config.s3Region,
             bucketName: config.s3BucketName,
           };
+
+          const s3HealthCheck = await validateS3Capabilities({
+            accessKeyId: s3Config.accessKeyId,
+            secretAccessKey: s3Config.secretAccessKey,
+            region: s3Config.region,
+            bucketName: s3Config.bucketName,
+          });
+
+          if (!s3HealthCheck.success) {
+            throw new BadRequestError(
+              buildS3HealthCheckErrorMessage(s3HealthCheck.checks),
+              { s3HealthCheck: s3HealthCheck.checks },
+            );
+          }
+
           const encryptedS3Config = EncryptionService.getInstance(
             configManagerConfig.algorithm,
             configManagerConfig.secretKey,

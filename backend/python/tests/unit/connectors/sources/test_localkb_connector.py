@@ -293,7 +293,7 @@ class TestKnowledgeBaseService:
 
         result = await svc.get_knowledge_base("kb-1", "user-1")
         assert result["success"] is False
-        assert result["code"] == "403"
+        assert result["code"] == 403
 
     @pytest.mark.asyncio
     async def test_list_user_knowledge_bases(self):
@@ -323,7 +323,7 @@ class TestKnowledgeBaseService:
 
         result = await svc.update_knowledge_base("kb-1", "user-1", {"groupName": "New"})
         assert result["success"] is False
-        assert result["code"] == "403"
+        assert result["code"] == 403
 
     @pytest.mark.asyncio
     async def test_delete_kb_owner_only(self):
@@ -402,7 +402,7 @@ class TestKnowledgeBaseService:
 
         result = await svc.get_folder_contents("kb-1", "folder-1", "user-1")
         assert result["success"] is False
-        assert result["code"] == "403"
+        assert result["code"] == 403
 
 
 # ===================================================================

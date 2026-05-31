@@ -158,7 +158,22 @@ export async function getStorageConfig(): Promise<StorageConfigResponse> {
   const { data } = await apiClient.get<StorageConfigResponse>(
     '/api/v1/configurationManager/storageConfig'
   );
-  return data;
+
+  // Backward compatibility for older API responses that used accessKeyId/region/bucketName.
+  const legacy = data as StorageConfigResponse & {
+    accessKeyId?: string;
+    secretAccessKey?: string;
+    region?: string;
+    bucketName?: string;
+  };
+
+  return {
+    ...data,
+    s3AccessKeyId: data.s3AccessKeyId ?? legacy.accessKeyId,
+    s3SecretAccessKey: data.s3SecretAccessKey ?? legacy.secretAccessKey,
+    s3Region: data.s3Region ?? legacy.region,
+    s3BucketName: data.s3BucketName ?? legacy.bucketName,
+  };
 }
 
 /**

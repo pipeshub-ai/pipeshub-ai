@@ -372,8 +372,17 @@
     "reindexAll": "Re-index all",
     "reindexFailed": "Re-index failed",
     "reindexManual": "Re-index manual",
+    "startIndexing": "Start indexing",
+    "startManualIndex": "Start manual index",
+    "forceReindexing": "Force reindexing",
+    "retryIndexing": "Retry indexing",
     "rename": "Rename",
     "delete": "Delete"
+  },
+  "reindexScope": {
+    "description": "Choose what to index for \"{{name}}\".",
+    "thisItemOnly": "This item only",
+    "withChildren": "This item and all children"
   },
   "kb": {
     "viewToggle": "View Toggle",

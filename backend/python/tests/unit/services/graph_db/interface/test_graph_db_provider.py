@@ -252,6 +252,7 @@ class TestAbstractMethodInventory:
         "get_knowledge_base",
         "update_knowledge_base",
         "delete_knowledge_base",
+        "kb_exists",
         "_validate_folder_creation",
         "find_folder_by_name_in_parent",
         "create_folder",
@@ -394,6 +395,8 @@ class TestAbstractMethodInventory:
         "check_agent_permission",
         "get_agents_by_web_search_provider",
         "get_agents_by_model_key",
+        # Upload validation
+        "validate_folder_for_upload",
     ]
 
     def test_all_expected_methods_are_abstract(self):

@@ -23,13 +23,13 @@ import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import {
   runItemMenuOpenFromMenu,
   shouldHideIndexingStatusForHubRecord,
+  shouldShowDownloadForTableItem,
 } from '../utils/kb-table-item-actions';
 import { useTranslation } from 'react-i18next';
 import {
-  REINDEX_MENU_OPTIONS,
-  canShowReindexMenu,
+  getReindexMenuState,
   getReindexNodeForTableItem,
-  isReindexDisabled,
+  mapReindexOptionsToMenuActions,
 } from '../utils/reindex-label';
 
 // Union type for items that can be displayed
@@ -240,8 +240,10 @@ function TableRow({
   // Determine if item is a folder/container (all navigable container types)
   const isHubNode = isKnowledgeHubNode(item);
   const reindexNode = getReindexNodeForTableItem(item, isHubNode);
-  const showReindexMenu = !!onReindex && canShowReindexMenu(reindexNode);
-  const reindexDisabled = isReindexDisabled(reindexNode);
+  const { options: reindexMenuOptions, showMenu: showReindexMenu } = getReindexMenuState(
+    reindexNode,
+    !!onReindex,
+  );
 
   const isFolder = isHubNode
     ? ['kb', 'app', 'folder', 'recordGroup'].includes(item.nodeType)
@@ -581,15 +583,12 @@ function TableRow({
           onOpenChange={setIsMenuOpen}
           actions={[
             { icon: 'folder_open', label: 'Open', onClick: onOpen },
-            !isFolder && onDownload && { icon: 'file_download', label: 'Download', onClick: () => onDownload(item) },
+            !isFolder && onDownload && shouldShowDownloadForTableItem(item) && { icon: 'file_download', label: 'Download', onClick: () => onDownload(item) },
             onRename && { icon: 'edit', label: 'Rename', onClick: () => startEditing() },
             ...(showReindexMenu
-              ? REINDEX_MENU_OPTIONS.map((option) => ({
-                  icon: option.icon,
-                  label: t(option.labelKey),
-                  disabled: reindexDisabled,
-                  onClick: () => onReindex!(item, option.statusFilters),
-                }))
+              ? mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) =>
+                  onReindex!(item, statusFilters),
+                )
               : []),
             !isFolder && onReplace && { icon: 'drive_folder_upload', label: 'Replace', onClick: () => onReplace(item) },
             onMove && { icon: 'drive_file_move', label: 'Move', onClick: () => onMove(item) },

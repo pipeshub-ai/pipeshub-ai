@@ -1319,13 +1319,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def reset_indexing_status_to_queued_for_record_ids(self, record_ids: list[str]) -> None:
         """
         Bulk-fetch records, then batch upsert indexingStatus=QUEUED where appropriate.
-        Skips missing ids, isInternal records, and docs already QUEUED or EMPTY.
+        Skips missing ids, isInternal records, and docs already QUEUED.
         """
         unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
         if not unique_ids:
             return
         coll = CollectionNames.RECORDS.value
-        skip_status = frozenset({ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value})
+        skip_status = frozenset({ProgressStatus.QUEUED.value})
         try:
             query = """
             FOR doc IN @@collection
@@ -7483,6 +7483,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Check KB permissions
             user_role = await self.get_user_kb_permission(kb_context["kb_id"], user_key, transaction)
+            if not user_role:
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": f"You do not have permission to access this knowledge base"
+                }
             if user_role not in self.connector_delete_permissions[Connectors.KNOWLEDGE_BASE.value]["allowed_roles"]:
                 return {
                     "success": False,
@@ -10364,6 +10370,27 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to check name conflict: {str(e)}")
             return {"has_conflict": False, "conflicts": []}
 
+    async def kb_exists(self, kb_id: str) -> bool:
+        """Return True if a KB document with this id exists, regardless of permissions.
+
+        DB exceptions are intentionally NOT caught here — they must propagate
+        so callers return 500, not a misleading 404, during infrastructure failures.
+        """
+        query = """
+        FOR kb IN @@collection
+            FILTER kb._key == @kb_id
+            LIMIT 1
+            RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query,
+            bind_vars={
+                "kb_id": kb_id,
+                "@collection": CollectionNames.RECORD_GROUPS.value,
+            },
+        )
+        return bool(result)
+
     async def get_knowledge_base(
         self,
         kb_id: str,
@@ -10932,15 +10959,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
             user = await self.get_user_by_user_id(user_id)
             if not user:
                 return {"valid": False, "success": False, "code": 404, "reason": f"User not found: {user_id}"}
-            user_key = user.get("_key")
+            user_key = user.get("_key") or user.get("id")
+            if not user_key:
+                self.logger.error(
+                    f"❌ User record for {user_id} has no '_key' or 'id' field — "
+                    f"keys present: {list(user.keys())}"
+                )
+                return {"valid": False, "success": False, "code": 500, "reason": "Internal error: user record is malformed"}
+            if not await self.kb_exists(kb_id):
+                return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
             user_role = await self.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER"]:
-                return {
-                    "valid": False,
-                    "success": False,
-                    "code": 403,
-                    "reason": f"Insufficient permissions. Role: {user_role}",
-                }
+                kb_name = await self._fetch_kb_name(kb_id)
+                kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
+                if user_role is None:
+                    reason = (
+                        f"You do not have access to knowledge base {kb_label}. "
+                        "OWNER or WRITER role is required to create folders."
+                    )
+                else:
+                    reason = (
+                        f"Insufficient permissions on knowledge base {kb_label}. "
+                        f"OWNER or WRITER role required, but your role is: {user_role}."
+                    )
+                return {"valid": False, "success": False, "code": 403, "reason": reason}
             return {"valid": True, "user": user, "user_key": user_key, "user_role": user_role}
         except Exception as e:
             return {"valid": False, "success": False, "code": 500, "reason": str(e)}
@@ -11985,7 +12027,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Quick validation of inputs
             if not user_ids and not team_ids:
-                return {"success": False, "reason": "No users or teams provided", "code": "400"}
+                return {"success": False, "reason": "No users or teams provided", "code": 400}
 
             # Validate new role
             valid_roles = ["OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER", "COMMENTER", "READER"]
@@ -11993,7 +12035,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return {
                     "success": False,
                     "reason": f"Invalid role. Must be one of: {', '.join(valid_roles)}",
-                    "code": "400"
+                    "code": 400
                 }
 
             # Single atomic operation: check requester permission + get current permissions + update
@@ -12076,7 +12118,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             result = results[0] if results else None
 
             if not result:
-                return {"success": False, "reason": "Query execution failed", "code": "500"}
+                return {"success": False, "reason": "Query execution failed", "code": 500}
 
             # Log the raw result for debugging
             self.logger.debug(f"🔍 Update query result: {result}")
@@ -12084,7 +12126,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Check for validation errors
             if result["validation_error"]:
                 error = result["validation_error"]
-                return {"success": False, "reason": error["error"], "code": error["code"]}
+                return {"success": False, "reason": error["error"], "code": int(error["code"])}
 
             updated_permissions = result["updated_permissions"]
 
@@ -12120,7 +12162,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return {
                 "success": False,
                 "reason": str(e),
-                "code": "500"
+                "code": 500
             }
 
     async def list_kb_permissions(
@@ -12479,6 +12521,28 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Helper to create validation error response."""
         return {"valid": False, "success": False, "code": code, "reason": reason}
 
+    async def _fetch_kb_name(self, kb_id: str) -> str | None:
+        """Fetch just the KB display name for use in error messages. Returns None on any failure."""
+        try:
+            results = await self.execute_query(
+                "FOR kb IN @@col FILTER kb._key == @id RETURN kb.groupName",
+                bind_vars={"@col": CollectionNames.RECORD_GROUPS.value, "id": kb_id},
+            )
+            return results[0] if results else None
+        except Exception:
+            return None
+
+    async def _fetch_record_name(self, record_id: str) -> str | None:
+        """Fetch just a record's display name for use in error messages. Returns None on any failure."""
+        try:
+            results = await self.execute_query(
+                "FOR r IN @@col FILTER r._key == @id RETURN r.recordName",
+                bind_vars={"@col": CollectionNames.RECORDS.value, "id": record_id},
+            )
+            return results[0] if results else None
+        except Exception:
+            return None
+
     async def _validate_upload_context(
         self,
         kb_id: str,
@@ -12494,15 +12558,38 @@ class ArangoHTTPProvider(IGraphDBProvider):
             user_key = user.get("_key") or user.get("id")
             if not user_key:
                 return self._validation_error(404, "User key not found")
+            # Check KB existence before permission so we can return 404 vs 403 accurately
+            if not await self.kb_exists(kb_id):
+                return self._validation_error(404, f"Knowledge base {kb_id} not found")
             user_role = await self.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER"]:
-                return self._validation_error(403, f"Insufficient permissions. Role: {user_role}")
+                kb_name = await self._fetch_kb_name(kb_id)
+                kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
+                if user_role is None:
+                    reason = (
+                        f"You do not have access to knowledge base {kb_label}. "
+                        "OWNER or WRITER role is required to upload files."
+                    )
+                else:
+                    reason = (
+                        f"Insufficient permissions on knowledge base {kb_label}. "
+                        f"OWNER or WRITER role required, but your role is: {user_role}."
+                    )
+                return self._validation_error(403, reason)
             parent_folder = None
             parent_path = "/"
             if parent_folder_id:
                 parent_folder = await self.get_and_validate_folder_in_kb(kb_id, parent_folder_id)
                 if not parent_folder:
-                    return self._validation_error(404, f"Folder {parent_folder_id} not found in KB {kb_id}")
+                    kb_name = await self._fetch_kb_name(kb_id)
+                    folder_name = await self._fetch_record_name(parent_folder_id)
+                    kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
+                    folder_label = f"'{folder_name}' ({parent_folder_id})" if folder_name else parent_folder_id
+                    return self._validation_error(
+                        404,
+                        f"Folder {folder_label} was not found in knowledge base {kb_label}. "
+                        "The folder may not exist or may belong to a different knowledge base.",
+                    )
                 parent_path = parent_folder.get("path", "/")
             return {
                 "valid": True,
@@ -12515,6 +12602,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
         except Exception as e:
             return self._validation_error(500, f"Validation failed: {str(e)}")
+
+    async def validate_folder_for_upload(
+        self,
+        kb_id: str,
+        folder_id: str,
+        user_id: str,
+        org_id: str,
+    ) -> dict:
+        """Public interface method: validate folder membership and user write access before upload."""
+        return await self._validate_upload_context(
+            kb_id=kb_id,
+            user_id=user_id,
+            org_id=org_id,
+            parent_folder_id=folder_id,
+        )
 
     def _analyze_upload_structure(self, files: list[dict], validation_result: dict) -> dict:
         """Analyze folder hierarchy from file paths for upload."""

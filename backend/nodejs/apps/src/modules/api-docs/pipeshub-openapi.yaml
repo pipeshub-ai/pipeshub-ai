@@ -19364,6 +19364,8 @@ paths:
           description: Knowledge base not found
         '413':
           description: File size exceeds maximum allowed
+        '500':
+          description: Failed to verify knowledge base access
 
   /knowledgeBase/{kbId}/folder/{folderId}/upload:
     post:
@@ -19425,6 +19427,8 @@ paths:
           description: Insufficient permissions
         '404':
           description: Folder or knowledge base not found
+        '500':
+          description: Failed to verify knowledge base or folder access
 
   /knowledgeBase/limits:
     get:
@@ -29966,7 +29970,6 @@ paths:
   # ==================== CONFIGURATION MANAGER ENDPOINTS ====================
 
   # -------------------- Storage Configuration --------------------
-  # Local Storage
   /configurationManager/storageConfig:
     get:
       tags:
@@ -30013,8 +30016,161 @@ paths:
                   accountName:
                     type: string
                     description: Storage account name (Azure Blob)
-        '404':
-          description: Storage configuration not found
+                  accountKey:
+                    type: string
+                    description: Storage account key (Azure Blob)
+                  endpointProtocol:
+                    type: string
+                    enum: [http, https]
+                    description: Endpoint protocol (Azure Blob)
+                  endpointSuffix:
+                    type: string
+                    description: Endpoint suffix (Azure Blob)
+        '400':
+          description: Storage type not found in stored configuration
+        '401':
+          description: Unauthorized
+    post:
+      tags:
+        - Storage Configuration
+      summary: Create or update storage configuration
+      description: |
+        Save the storage backend configuration. Supported types: Local, S3, Azure Blob.
+
+        For S3 storage, a live health check is performed before saving. The health check
+        validates bucket access, upload, read, presigned URL generation (GET and PUT).
+        If any capability check fails, the request is rejected with a 400 error containing
+        detailed diagnostics per capability.
+      operationId: createStorageConfig
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      requestBody:
+        required: true
+        description: Storage configuration payload (discriminated by storageType)
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [storageType, s3AccessKeyId, s3SecretAccessKey, s3Region, s3BucketName]
+                  properties:
+                    storageType:
+                      type: string
+                      enum: [s3]
+                    s3AccessKeyId:
+                      type: string
+                      description: AWS access key ID
+                    s3SecretAccessKey:
+                      type: string
+                      description: AWS secret access key
+                    s3Region:
+                      type: string
+                      description: AWS region (e.g. us-east-1)
+                    s3BucketName:
+                      type: string
+                      description: S3 bucket name
+                - type: object
+                  required: [storageType, containerName]
+                  properties:
+                    storageType:
+                      type: string
+                      enum: [azureBlob]
+                    azureBlobConnectionString:
+                      type: string
+                      description: Full connection string (alternative to individual fields)
+                    endpointProtocol:
+                      type: string
+                      enum: [http, https]
+                      default: https
+                    accountName:
+                      type: string
+                    accountKey:
+                      type: string
+                    endpointSuffix:
+                      type: string
+                      default: core.windows.net
+                    containerName:
+                      type: string
+                - type: object
+                  required: [storageType]
+                  properties:
+                    storageType:
+                      type: string
+                      enum: [local]
+                    mountName:
+                      type: string
+                    baseUrl:
+                      type: string
+                      format: uri
+            examples:
+              s3:
+                summary: Amazon S3
+                value:
+                  storageType: s3
+                  s3AccessKeyId: AKIAIOSFODNN7EXAMPLE
+                  s3SecretAccessKey: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                  s3Region: us-east-1
+                  s3BucketName: my-pipeshub-bucket
+              azureBlob:
+                summary: Azure Blob Storage
+                value:
+                  storageType: azureBlob
+                  accountName: mystorageaccount
+                  accountKey: base64-encoded-key
+                  containerName: pipeshub
+              local:
+                summary: Local Storage
+                value:
+                  storageType: local
+                  mountName: PipesHub
+      responses:
+        '200':
+          description: Storage configuration saved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Storage configuration saved successfully
+        '400':
+          description: |
+            Validation error or S3 health-check failure. When storageType is s3, a live
+            capability check runs before saving. If any check fails, the response includes
+            per-capability diagnostics.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        example: HTTP_BAD_REQUEST
+                      message:
+                        type: string
+                        example: "S3 health check failed. Verify credentials, bucket name, region, and IAM permissions (s3:PutObject, s3:GetObject, s3:DeleteObject). upload: AccessDenied"
+                      metadata:
+                        type: object
+                        description: Present in non-production environments
+                        properties:
+                          s3HealthCheck:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                capability:
+                                  type: string
+                                  enum: [bucketAccess, upload, read, signedUrlGet, signedUrlPut]
+                                passed:
+                                  type: boolean
+                                error:
+                                  type: string
+                                  description: Error message when passed is false
         '401':
           description: Unauthorized
 

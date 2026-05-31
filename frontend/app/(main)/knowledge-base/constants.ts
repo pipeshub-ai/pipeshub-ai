@@ -34,4 +34,8 @@ export const PERSONAL_MORE_CONNECTORS: MoreConnectorLink[] = [
   { id: 'nextcloud-link', name: 'Nextcloud', type: 'nextcloud', connectorTypeParam: 'Nextcloud' },
 ];
 
+/** Reindex only the selected node (no descendants). */
+export const REINDEX_SELF_DEPTH = 0;
+
+/** Reindex node and descendants (sidebar / container bulk actions). */
 export const FOLDER_REINDEX_DEPTH = 100;
