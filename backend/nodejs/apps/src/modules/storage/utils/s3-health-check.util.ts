@@ -58,7 +58,8 @@ export function buildS3HealthCheckErrorMessage(
 export async function validateS3Capabilities(
   credentials: S3HealthCheckCredentials,
 ): Promise<S3HealthCheckResult> {
-  const { accessKeyId, secretAccessKey, region, bucketName } = credentials;
+  const { accessKeyId, secretAccessKey, bucketName } = credentials;
+  const region = (credentials.region ?? '').trim().toLowerCase();
   const checks: S3CapabilityCheckResult[] = [];
   const probeId = uuidv4();
   const testKey = `${HEALTH_CHECK_PREFIX}/${probeId}`;
