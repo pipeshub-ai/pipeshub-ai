@@ -44,6 +44,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -119,6 +120,14 @@ FOLDER_EXPAND_PARAMS = (
 # Constant for pseudo-user group prefix
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
+# Confluence v2 space permission access-class principals (ROLES-mode / default ACLs)
+ACCESS_CLASS_LICENSED_USERS = "ALL_LICENSED_USERS"
+ACCESS_CLASS_PRODUCT_ADMINS = "ALL_PRODUCT_ADMINS"
+
+# Ordered fallbacks: first synced group name match wins
+LICENSED_USER_GROUP_NAMES = ("confluence-users",)
+PRODUCT_ADMIN_GROUP_NAMES = ("org-admins", "confluence-administrators", "site-admins")
+
 @ConnectorBuilder("Confluence")\
     .in_group("Atlassian")\
     .with_description("Sync pages, folders, spaces, and users from Confluence Cloud")\
@@ -150,11 +159,12 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
                 ),
                 AuthField(
                     name="includeJiraScope",
-                    display_name="Grant Jira user access (optional)",
-                    description="Enable if your Atlassian OAuth app also has Jira and you have enabled the read:jira-user scope in it. This improves user email resolution when Confluence users does not make their emails visible.",
-                    field_type="CHECKBOX",
-                    required=False,
-                    default_value=False,
+                    display_name="Grant Jira user access",
+                    description="Choose Yes only if your Atlassian OAuth app includes Jira and you have added the read:jira-user scope. Pipeshub will request that scope during authorization and may use Jira to resolve user emails when Confluence profiles hide them. Choose No if you do not use Jira on this site or have not added that scope.",
+                    field_type="SELECT",
+                    required=True,
+                    placeholder="Select...",
+                    options=["no", "yes"],
                     is_secret=False,
                 ),
             ],
@@ -352,6 +362,9 @@ class ConfluenceConnector(BaseConnector):
 
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
+
+        # Lazy cache: lowercased Confluence group name -> external group id (UUID)
+        self._group_name_to_external_id: dict[str, str] | None = None
 
     async def init(self) -> bool:
         """Initialize the Confluence connector with credentials and client."""
@@ -629,14 +642,7 @@ class ConfluenceConnector(BaseConnector):
         auth_config = (config or {}).get("auth") or {}
         auth_type = (auth_config.get("authType") or "OAUTH").upper()
         if auth_type == "OAUTH":
-            flag = auth_config.get("includeJiraScope")
-            if flag is not None and not isinstance(flag, bool):
-                self.logger.warning(
-                    "includeJiraScope expected bool, got %s: %r",
-                    type(flag).__name__,
-                    flag,
-                )
-            if flag is not True:
+            if not include_jira_scope_enabled(auth_config.get("includeJiraScope")):
                 return
 
         datasource = await self._get_fresh_datasource()
@@ -810,6 +816,9 @@ class ConfluenceConnector(BaseConnector):
         """
         try:
             self.logger.info("Starting user group synchronization...")
+
+            # Groups may change between sync runs on a long-lived connector instance.
+            self._group_name_to_external_id = None
 
             # Pagination variables for groups
             batch_size = 50
@@ -1822,7 +1831,14 @@ class ConfluenceConnector(BaseConnector):
                 if not cursor:
                     break
 
-            return permissions
+            deduped = self._dedupe_space_permissions(permissions)
+            self.logger.debug(
+                "Space %s: %s permissions after dedupe (from %s API rows)",
+                space_name,
+                len(deduped),
+                len(permissions),
+            )
+            return deduped
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch permissions for space {space_name}: {e}")
@@ -2449,6 +2465,120 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"Failed to create pseudo-group for {account_id}: {e}")
             return None
 
+    async def _ensure_group_name_cache(self) -> dict[str, str]:
+        """Build name -> external group id map from synced Confluence groups."""
+        if self._group_name_to_external_id is not None:
+            return self._group_name_to_external_id
+
+        name_map: dict[str, str] = {}
+        async with self.data_store_provider.transaction() as tx_store:
+            groups = await tx_store.get_user_groups(
+                connector_id=self.connector_id,
+                org_id=self.data_entities_processor.org_id,
+            )
+        for group in groups:
+            if group.name and group.source_user_group_id:
+                name_map[group.name.lower()] = group.source_user_group_id
+
+        self._group_name_to_external_id = name_map
+        self.logger.debug(
+            "Loaded %s Confluence group name(s) for access-class resolution",
+            len(name_map),
+        )
+        return name_map
+
+    async def _resolve_group_external_id_by_names(
+        self,
+        names: tuple[str, ...],
+    ) -> tuple[str, str] | None:
+        """Return (matched_group_name, external_id) for the first synced group name hit."""
+        name_map = await self._ensure_group_name_cache()
+        for name in names:
+            external_id = name_map.get(name.lower())
+            if external_id:
+                return name, external_id
+        return None
+
+    async def _permission_for_access_class_group_or_org(
+        self,
+        group_names: tuple[str, ...],
+        permission_type: PermissionType,
+    ) -> Permission:
+        """
+        Map an access-class grant to a synced Confluence group, or ORG as fallback.
+
+        ORG fallback may grant all org members access (same tradeoff as Jira Cloud
+        applicationRole → ORG mapping for unresolvable licensed-user grants).
+        """
+        resolved = await self._resolve_group_external_id_by_names(group_names)
+        if resolved:
+            matched_name, external_id = resolved
+            return Permission(
+                entity_type=EntityType.GROUP,
+                external_id=external_id,
+                type=permission_type,
+            )
+
+        self.logger.info(
+            "Mapped access-class to ORG fallback → %s (groups %s not synced)",
+            permission_type.value,
+            group_names,
+        )
+        return Permission(entity_type=EntityType.ORG, type=permission_type)
+
+    async def _transform_access_class_space_permission(
+        self,
+        principal_id: str,
+        operation_key: str,
+        target_type: str,
+    ) -> Optional[Permission]:
+        """Map Confluence access-class principals to group or org permissions."""
+        if (
+            principal_id == ACCESS_CLASS_LICENSED_USERS
+            and operation_key == "read"
+            and target_type == "space"
+        ):
+            return await self._permission_for_access_class_group_or_org(
+                LICENSED_USER_GROUP_NAMES,
+                PermissionType.READ,
+            )
+
+        if (
+            principal_id == ACCESS_CLASS_PRODUCT_ADMINS
+            and operation_key == "administer"
+            and target_type == "space"
+        ):
+            return await self._permission_for_access_class_group_or_org(
+                PRODUCT_ADMIN_GROUP_NAMES,
+                PermissionType.OWNER,
+            )
+
+        self.logger.debug(
+            "Skipping access-class %s for operation %s/%s",
+            principal_id,
+            operation_key,
+            target_type,
+        )
+        return None
+
+    @staticmethod
+    def _dedupe_space_permissions(permissions: list[Permission]) -> list[Permission]:
+        """Collapse duplicate space permission grants (common with access-class ACLs)."""
+        seen: set[tuple[Any, ...]] = set()
+        deduped: list[Permission] = []
+        for permission in permissions:
+            key = (
+                permission.entity_type,
+                permission.external_id or "",
+                permission.email or "",
+                permission.type,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(permission)
+        return deduped
+
     async def _transform_space_permission(self, perm_data: dict[str, Any]) -> Optional[Permission]:
         """
         Transform Confluence space permission to Permission object.
@@ -2478,6 +2608,13 @@ class ConfluenceConnector(BaseConnector):
 
             if not principal_type or not principal_id or not operation_key:
                 return None
+
+            if principal_type == "access-class":
+                return await self._transform_access_class_space_permission(
+                    principal_id,
+                    operation_key,
+                    target_type or "",
+                )
 
             # Map Confluence permission to PermissionType
             permission_type = self._map_confluence_permission(operation_key, target_type)

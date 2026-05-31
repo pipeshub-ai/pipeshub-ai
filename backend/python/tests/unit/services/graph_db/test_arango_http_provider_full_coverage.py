@@ -215,27 +215,29 @@ class TestGetFilteredConnectorInstances:
                 return [5]
             return [{"_key": "d1"}]
         connected_provider.execute_query = mock_query
-        docs, total, scope_counts = await connected_provider.get_filtered_connector_instances(
+        docs, total = await connected_provider.get_filtered_connector_instances(
             "apps", "edges", "org1", "u1", scope="personal"
         )
         assert total == 5
 
     @pytest.mark.asyncio
     async def test_with_team_scope_admin(self, connected_provider):
+        # is_admin=True: no accessible-keys pre-query; count + main only
         async def mock_query(query, bind_vars=None, transaction=None):
             if "COLLECT" in query:
                 return [3]
             return [{"_key": "d1"}]
         connected_provider.execute_query = mock_query
-        docs, total, scope_counts = await connected_provider.get_filtered_connector_instances(
+        docs, total = await connected_provider.get_filtered_connector_instances(
             "apps", "edges", "org1", "u1", scope="team", is_admin=True
         )
-        assert isinstance(scope_counts, dict)
+        assert total == 3
+        assert len(docs) > 0
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("err"))
-        docs, total, scope_counts = await connected_provider.get_filtered_connector_instances(
+        docs, total = await connected_provider.get_filtered_connector_instances(
             "apps", "edges", "org1", "u1"
         )
         assert docs == []

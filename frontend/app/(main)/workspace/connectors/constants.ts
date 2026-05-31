@@ -15,6 +15,8 @@ export const CONNECTOR_SERVICE_ACCOUNT_JSON_FIELD_NAME = 'serviceAccountJson' as
 export const CONNECTOR_INSTANCE_STATUS = {
   DELETING: 'DELETING',
   SYNCING: 'SYNCING',
+  FULL_SYNCING: 'FULL_SYNCING',
+  IDLE: 'IDLE',
 } as const;
 
 // ========================================

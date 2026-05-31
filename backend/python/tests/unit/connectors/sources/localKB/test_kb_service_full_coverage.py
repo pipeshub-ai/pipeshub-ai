@@ -158,7 +158,7 @@ class TestGetKnowledgeBase:
 
         result = await service.get_knowledge_base("kb1", "user1")
         assert result["success"] is False
-        assert result["code"] == "403"
+        assert result["code"] == 403
 
     @pytest.mark.asyncio
     async def test_kb_not_found(self, service):
@@ -168,7 +168,7 @@ class TestGetKnowledgeBase:
 
         result = await service.get_knowledge_base("kb1", "user1")
         assert result["success"] is False
-        assert result["code"] == "404"
+        assert result["code"] == 404
 
     @pytest.mark.asyncio
     async def test_user_key_fallback(self, service):
@@ -184,7 +184,7 @@ class TestGetKnowledgeBase:
         service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=Exception("db error"))
         result = await service.get_knowledge_base("kb1", "user1")
         assert result["success"] is False
-        assert result["code"] == "500"
+        assert result["code"] == 500
 
 
 class TestListUserKnowledgeBases:
@@ -296,7 +296,7 @@ class TestUpdateKnowledgeBase:
 
         result = await service.update_knowledge_base("kb1", "user1", {})
         assert result["success"] is False
-        assert result["code"] == "403"
+        assert result["code"] == 403
 
     @pytest.mark.asyncio
     async def test_insufficient_permission_commenter(self, service):
@@ -314,7 +314,7 @@ class TestUpdateKnowledgeBase:
 
         result = await service.update_knowledge_base("kb1", "user1", {})
         assert result["success"] is False
-        assert result["code"] == "404"
+        assert result["code"] == 404
 
     @pytest.mark.asyncio
     async def test_updates_timestamp_added(self, service):
@@ -553,7 +553,7 @@ class TestGetFolderContents:
 
         result = await service.get_folder_contents("kb1", "f1", "user1")
         assert result["success"] is False
-        assert result["code"] == "403"
+        assert result["code"] == 403
 
     @pytest.mark.asyncio
     async def test_folder_not_found(self, service):
@@ -600,7 +600,7 @@ class TestUpdateFolder:
 
         result = await service.updateFolder("f1", "kb1", "user1", "Name")
         assert result["success"] is False
-        assert result["code"] == "403"
+        assert result["code"] == 403
 
     @pytest.mark.asyncio
     async def test_writer_allowed(self, service):
@@ -621,7 +621,7 @@ class TestUpdateFolder:
 
         result = await service.updateFolder("f1", "kb1", "user1", "Name")
         assert result["success"] is False
-        assert result["code"] == "404"
+        assert result["code"] == 404
 
     @pytest.mark.asyncio
     async def test_name_conflict(self, service):
@@ -680,7 +680,7 @@ class TestDeleteFolder:
 
         result = await service.delete_folder("kb1", "f1", "user1")
         assert result["success"] is False
-        assert result["code"] == "403"
+        assert result["code"] == 403
 
     @pytest.mark.asyncio
     async def test_folder_not_found(self, service):
@@ -690,7 +690,7 @@ class TestDeleteFolder:
 
         result = await service.delete_folder("kb1", "f1", "user1")
         assert result["success"] is False
-        assert result["code"] == "404"
+        assert result["code"] == 404
 
     @pytest.mark.asyncio
     async def test_delete_returns_failure(self, service):
@@ -1002,13 +1002,13 @@ class TestUpdateKbPermission:
     async def test_no_users_or_teams(self, service):
         result = await service.update_kb_permission("kb1", "req1", [], [], "READER")
         assert result["success"] is False
-        assert result["code"] == "400"
+        assert result["code"] == 400
 
     @pytest.mark.asyncio
     async def test_teams_cannot_be_updated(self, service):
         result = await service.update_kb_permission("kb1", "req1", [], ["t1"], "READER")
         assert result["success"] is False
-        assert result["code"] == "400"
+        assert result["code"] == 400
 
     @pytest.mark.asyncio
     async def test_requester_not_found(self, service):
@@ -1024,7 +1024,7 @@ class TestUpdateKbPermission:
 
         result = await service.update_kb_permission("kb1", "req1", ["u1"], [], "READER")
         assert result["success"] is False
-        assert result["code"] == "403"
+        assert result["code"] == 403
 
     @pytest.mark.asyncio
     async def test_invalid_role(self, service):
@@ -1033,7 +1033,7 @@ class TestUpdateKbPermission:
 
         result = await service.update_kb_permission("kb1", "req1", ["u1"], [], "BAD")
         assert result["success"] is False
-        assert result["code"] == "400"
+        assert result["code"] == 400
 
     @pytest.mark.asyncio
     async def test_success_non_owner_users(self, service):
@@ -1060,7 +1060,7 @@ class TestUpdateKbPermission:
 
         result = await service.update_kb_permission("kb1", "req1", ["u1"], [], "WRITER")
         assert result["success"] is False
-        assert result["code"] == "404"
+        assert result["code"] == 404
 
     @pytest.mark.asyncio
     async def test_bulk_owner_operation_rejected(self, service):
@@ -1073,7 +1073,7 @@ class TestUpdateKbPermission:
 
         result = await service.update_kb_permission("kb1", "req1", ["u1", "u2"], [], "READER")
         assert result["success"] is False
-        assert result["code"] == "400"
+        assert result["code"] == 400
 
     @pytest.mark.asyncio
     async def test_single_owner_downgrade_blocked_if_last(self, service):
@@ -1086,7 +1086,7 @@ class TestUpdateKbPermission:
 
         result = await service.update_kb_permission("kb1", "req1", ["u1"], [], "READER")
         assert result["success"] is False
-        assert result["code"] == "400"
+        assert result["code"] == 400
 
     @pytest.mark.asyncio
     async def test_single_owner_downgrade_allowed_if_not_last(self, service):
@@ -1119,7 +1119,7 @@ class TestUpdateKbPermission:
         service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=Exception("err"))
         result = await service.update_kb_permission("kb1", "req1", ["u1"], [], "READER")
         assert result["success"] is False
-        assert result["code"] == "500"
+        assert result["code"] == 500
 
 
 class TestRemoveKbPermission:
@@ -1127,7 +1127,7 @@ class TestRemoveKbPermission:
     async def test_no_users_or_teams(self, service):
         result = await service.remove_kb_permission("kb1", "req1", [], [])
         assert result["success"] is False
-        assert result["code"] == "400"
+        assert result["code"] == 400
 
     @pytest.mark.asyncio
     async def test_requester_not_found(self, service):
@@ -1143,7 +1143,7 @@ class TestRemoveKbPermission:
 
         result = await service.remove_kb_permission("kb1", "req1", ["u1"], [])
         assert result["success"] is False
-        assert result["code"] == "403"
+        assert result["code"] == 403
 
     @pytest.mark.asyncio
     async def test_no_valid_entities(self, service):
@@ -1153,7 +1153,7 @@ class TestRemoveKbPermission:
 
         result = await service.remove_kb_permission("kb1", "req1", ["u1"], ["t1"])
         assert result["success"] is False
-        assert result["code"] == "404"
+        assert result["code"] == 404
         assert "skipped_users" in result
         assert "skipped_teams" in result
 
@@ -1168,7 +1168,7 @@ class TestRemoveKbPermission:
 
         result = await service.remove_kb_permission("kb1", "req1", ["u1"], [])
         assert result["success"] is False
-        assert result["code"] == "400"
+        assert result["code"] == 400
 
     @pytest.mark.asyncio
     async def test_success_with_skipped(self, service):
@@ -1202,7 +1202,7 @@ class TestRemoveKbPermission:
         service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=Exception("err"))
         result = await service.remove_kb_permission("kb1", "req1", ["u1"], [])
         assert result["success"] is False
-        assert result["code"] == "500"
+        assert result["code"] == 500
 
 
 class TestListKbPermissions:
@@ -1230,14 +1230,14 @@ class TestListKbPermissions:
 
         result = await service.list_kb_permissions("kb1", "req1")
         assert result["success"] is False
-        assert result["code"] == "403"
+        assert result["code"] == 403
 
     @pytest.mark.asyncio
     async def test_exception(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=Exception("err"))
         result = await service.list_kb_permissions("kb1", "req1")
         assert result["success"] is False
-        assert result["code"] == "500"
+        assert result["code"] == 500
 
 
 class TestListAllRecords:

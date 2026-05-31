@@ -27,6 +27,12 @@ export interface Connector {
   supportsRealtime: boolean;
   supportsSync: boolean;
   supportsAgent: boolean;
+  /** Documentation links promoted from config; present on list responses. */
+  documentationLinks?: DocumentationLink[];
+  /** Promoted from config; used for team connector admin-access prompt. */
+  isAdminAccessRequired?: boolean;
+  /** Promoted from config; redirect target when user lacks native-app admin access. */
+  personalConnectorType?: string | null;
   scope: string;
   /** Only present on active connectors. */
   isActive: boolean;
@@ -40,6 +46,12 @@ export interface Connector {
   updatedBy?: string;
   authType?: string;
   connectorInfo?: string | Record<string, unknown> | null;
+  /**
+   * @deprecated Full config schema is no longer included in list responses.
+   * Use `GET /registry/{type}/schema` to retrieve auth/sync/filter schemas.
+   * `documentationLinks`, `isAdminAccessRequired`, and `personalConnectorType`
+   * are promoted to top-level fields on list responses.
+   */
   config?: Record<string, unknown>;
   /**
    * Transient operational status from the backend.
@@ -304,11 +316,6 @@ export interface ConnectorFiltersConfig {
   indexing?: FilterCategoryConfig;
   schema?: { fields: FilterSchemaField[] };
   values?: Record<string, unknown>;
-}
-
-export interface ConnectorSchemaConfigFlags {
-  isAdminAccessRequired?: boolean;
-  personalConnectorType?: string | null;
 }
 
 export interface ConnectorSchemaResponse {

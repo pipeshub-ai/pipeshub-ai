@@ -1,0 +1,19 @@
+name: belongs_to_edge
+description: BelongsTo edge document (matches Arango belongsTo collection).
+fields:
+  entityType:
+    required: false
+    type: string
+    enum:
+      - GROUP
+      - DOMAIN
+      - ORGANIZATION
+      - KB
+      - WORKFLOW
+      - USER
+  createdAtTimestamp:
+    required: false
+    type: integer
+  updatedAtTimestamp:
+    required: false
+    type: integer

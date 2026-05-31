@@ -1,0 +1,24 @@
+name: user_app_relation_edge
+description: UserAppRelation edge document (matches Arango userAppRelation collection).
+fields:
+  syncState:
+    required: false
+    type: string
+    enum:
+      - NOT_STARTED
+      - IN_PROGRESS
+      - PAUSED
+      - COMPLETED
+      - FAILED
+  lastSyncUpdate:
+    required: false
+    type: integer
+  sourceUserId:
+    required: false
+    type: string
+  createdAtTimestamp:
+    required: false
+    type: integer
+  updatedAtTimestamp:
+    required: false
+    type: integer

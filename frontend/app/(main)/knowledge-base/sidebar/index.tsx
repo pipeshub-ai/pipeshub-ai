@@ -11,6 +11,7 @@ import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { buildConnectorsUrl } from '@/app/(main)/workspace/connectors/utils/build-connectors-url';
 import { useKnowledgeBaseStore } from '../store';
 import { loadMoreRootAppList, loadMoreAppChildPage } from '../utils/sidebar-paginated-fetch';
+import { fetchAppDirectChildren } from '../utils/fetch-app-direct-children';
 import { useTranslation } from 'react-i18next';
 import { CollectionsMode } from './collections-mode';
 import { AllRecordsMode } from './all-records-mode';
@@ -154,7 +155,7 @@ function KBSidebarContent({
   onSidebarDelete,
   onAllRecordsSelectAll,
   onAllRecordsSelectCollection,
-  onAllRecordsSelectApp: _onAllRecordsSelectApp,
+  onAllRecordsSelectApp,
   onAllRecordsSelectConnectorItem,
 }: KBSidebarProps) {
   const router = useRouter();
@@ -272,12 +273,27 @@ function KBSidebarContent({
     onAllRecordsSelectConnectorItem?.('folder', item.id);
   };
 
+  const handleExpandApp = useCallback((appId: string) => {
+    // Errors are logged inside fetchAppDirectChildren; avoid unhandled rejection on chevron expand.
+    void fetchAppDirectChildren(appId).catch(() => {});
+  }, []);
+
   // Handler for opening "More Folders" panel from connector sections
-  const handleOpenMoreFolders = (appId: string, appName: string, connector: string) => {
-    setMoreFoldersApp({ appId, appName, connector });
-    setIsSecondaryPanelOpen(true);
-    setSecondaryPanelSectionType(null);
-  };
+  const handleOpenMoreFolders = useCallback(
+    async (appId: string, appName: string, connector: string) => {
+      if (!appChildrenCache.has(appId)) {
+        try {
+          await fetchAppDirectChildren(appId);
+        } catch {
+          return;
+        }
+      }
+      setMoreFoldersApp({ appId, appName, connector });
+      setIsSecondaryPanelOpen(true);
+      setSecondaryPanelSectionType(null);
+    },
+    [appChildrenCache]
+  );
 
   // Secondary panel dismiss handler
   const handleDismissSecondaryPanel = () => {
@@ -322,12 +338,7 @@ function KBSidebarContent({
                     isSelected={currentFolderId === node.id}
                     currentFolderId={currentFolderId}
                     onSelect={(id) => onAllRecordsSelectConnectorItem?.(node.nodeType, id)}
-                    onToggle={(id) => {
-                      toggleFolderExpanded(id);
-                      if (node.hasChildren) {
-                        onNodeExpand?.(id, node.nodeType as NodeType);
-                      }
-                    }}
+                    onToggle={toggleFolderExpanded}
                     expandedFolders={expandedFolders}
                     loadingNodeIds={loadingNodeIds}
                     onNodeExpand={onNodeExpand}
@@ -356,13 +367,7 @@ function KBSidebarContent({
                       onAllRecordsSelectConnectorItem?.(childNode.nodeType, id);
                     }
                   }}
-                  onToggle={(id) => {
-                    toggleFolderExpanded(id);
-                    const childNode = appChildren.find((c) => c.id === id);
-                    if (childNode?.hasChildren) {
-                      onNodeExpand?.(id, childNode.nodeType);
-                    }
-                  }}
+                  onToggle={toggleFolderExpanded}
                   expandedFolders={expandedFolders}
                   loadingNodeIds={loadingNodeIds}
                   onNodeExpand={onNodeExpand}
@@ -549,6 +554,8 @@ function KBSidebarContent({
           onRename={onSidebarRename}
           onDelete={onSidebarDelete}
           onOpenMoreFolders={handleOpenMoreFolders}
+          onAppSelect={onAllRecordsSelectApp}
+          onExpandApp={handleExpandApp}
           onLoadMoreRootApps={handleLoadMoreRootApps}
           rootAppListHasNext={appRootListPagination?.hasNext === true}
           isLoadingRootAppListMore={loadingRootAppListMore}

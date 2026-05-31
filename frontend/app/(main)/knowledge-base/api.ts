@@ -682,10 +682,14 @@ export const KnowledgeBaseApi = {
   },
 
   // Reindex record group (folders inside app nodes like Sharepoint, OneDrive)
-  async reindexRecordGroup(recordGroupId: string, statusFilters?: string[]) {
+  async reindexRecordGroup(
+    recordGroupId: string,
+    depth: number = FOLDER_REINDEX_DEPTH,
+    statusFilters?: string[],
+  ) {
     const body: { force: boolean; depth: number; statusFilters?: string[] } = {
       force: false,
-      depth: 100,
+      depth,
     };
     if (statusFilters?.length) {
       body.statusFilters = statusFilters;

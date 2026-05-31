@@ -1,0 +1,21 @@
+name: entity_relations_edge
+description: EntityRelations edge document (matches Arango entityRelations collection).
+fields:
+  edgeType:
+    required: true
+    type: string
+    enum:
+      - ASSIGNED_TO
+      - REPORTED_BY
+      - CREATED_BY
+      - LEAD_BY
+      - RELATED_TO_PERSON
+  createdAtTimestamp:
+    required: true
+    type: integer
+  updatedAtTimestamp:
+    required: false
+    type: integer
+  sourceTimestamp:
+    required: false
+    type: integer

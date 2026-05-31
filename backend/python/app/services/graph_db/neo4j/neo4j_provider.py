@@ -8586,6 +8586,23 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to get user KB permission: {str(e)}")
             raise
 
+    async def kb_exists(self, kb_id: str) -> bool:
+        """Return True if a KB document with this id exists, regardless of permissions.
+
+        DB exceptions are intentionally NOT caught here — they must propagate
+        so callers return 500, not a misleading 404, during infrastructure failures.
+        """
+        query = """
+        MATCH (kb:RecordGroup {id: $kb_id})
+        RETURN 1 AS exists
+        LIMIT 1
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={"kb_id": kb_id},
+        )
+        return bool(results)
+
     async def get_knowledge_base(
         self,
         kb_id: str,
@@ -9713,22 +9730,36 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> dict:
         """Validate user permissions for folder creation"""
         try:
-            # Get user
             user = await self.get_user_by_user_id(user_id=user_id)
             if not user:
                 return {"valid": False, "success": False, "code": 404, "reason": f"User not found: {user_id}"}
 
             user_key = user.get('id') or user.get('_key')
+            if not user_key:
+                self.logger.error(
+                    f"❌ User record for {user_id} has no 'id' or '_key' field — "
+                    f"keys present: {list(user.keys())}"
+                )
+                return {"valid": False, "success": False, "code": 500, "reason": "Internal error: user record is malformed"}
 
-            # Check permissions
+            if not await self.kb_exists(kb_id):
+                return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
+
             user_role = await self.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER"]:
-                return {
-                    "valid": False,
-                    "success": False,
-                    "code": 403,
-                    "reason": f"Insufficient permissions. Role: {user_role}"
-                }
+                kb_name = await self._fetch_kb_name(kb_id)
+                kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
+                if user_role is None:
+                    reason = (
+                        f"You do not have access to knowledge base {kb_label}. "
+                        "OWNER or WRITER role is required to create folders."
+                    )
+                else:
+                    reason = (
+                        f"Insufficient permissions on knowledge base {kb_label}. "
+                        f"OWNER or WRITER role required, but your role is: {user_role}."
+                    )
+                return {"valid": False, "success": False, "code": 403, "reason": reason}
 
             return {
                 "valid": True,
@@ -9808,6 +9839,28 @@ class Neo4jProvider(IGraphDBProvider):
 
     # ==================== Upload Helper Methods ====================
 
+    async def _fetch_kb_name(self, kb_id: str) -> str | None:
+        """Fetch just the KB display name for use in error messages. Returns None on any failure."""
+        try:
+            results = await self.client.execute_query(
+                "MATCH (kb:RecordGroup {id: $kb_id}) RETURN kb.groupName AS name",
+                parameters={"kb_id": kb_id},
+            )
+            return results[0]["name"] if results else None
+        except Exception:
+            return None
+
+    async def _fetch_record_name(self, record_id: str) -> str | None:
+        """Fetch just a record's display name for use in error messages. Returns None on any failure."""
+        try:
+            results = await self.client.execute_query(
+                "MATCH (r:Record {id: $record_id}) RETURN r.recordName AS name",
+                parameters={"record_id": record_id},
+            )
+            return results[0]["name"] if results else None
+        except Exception:
+            return None
+
     async def _validate_upload_context(
         self,
         kb_id: str,
@@ -9817,33 +9870,58 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> dict:
         """Unified validation for all upload scenarios"""
         try:
-            # Get user
             user = await self.get_user_by_user_id(user_id=user_id)
             if not user:
                 return {"valid": False, "success": False, "code": 404, "reason": f"User not found: {user_id}"}
 
             user_key = user.get('id') or user.get('_key')
+            if not user_key:
+                self.logger.error(
+                    f"❌ User record for {user_id} has no 'id' or '_key' field — "
+                    f"keys present: {list(user.keys())}"
+                )
+                return {"valid": False, "success": False, "code": 500, "reason": "Internal error: user record is malformed"}
 
-            # Check KB permissions
-            user_role = await self.get_user_kb_permission(kb_id, user_key)
-            if user_role not in ["OWNER", "WRITER"]:
+            # Check KB existence before permission so we can return 404 vs 403 accurately
+            if not await self.kb_exists(kb_id):
                 return {
                     "valid": False,
                     "success": False,
-                    "code": 403,
-                    "reason": f"Insufficient permissions. Role: {user_role}"
+                    "code": 404,
+                    "reason": f"Knowledge base {kb_id} not found"
                 }
 
-            # Validate target location
+            user_role = await self.get_user_kb_permission(kb_id, user_key)
+            if user_role not in ["OWNER", "WRITER"]:
+                kb_name = await self._fetch_kb_name(kb_id)
+                kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
+                if user_role is None:
+                    reason = (
+                        f"You do not have access to knowledge base {kb_label}. "
+                        "OWNER or WRITER role is required to upload files."
+                    )
+                else:
+                    reason = (
+                        f"Insufficient permissions on knowledge base {kb_label}. "
+                        f"OWNER or WRITER role required, but your role is: {user_role}."
+                    )
+                return {"valid": False, "success": False, "code": 403, "reason": reason}
+
             if parent_folder_id:
-                # Validate folder exists and belongs to KB
                 parent_folder = await self.get_and_validate_folder_in_kb(kb_id, parent_folder_id)
                 if not parent_folder:
+                    kb_name = await self._fetch_kb_name(kb_id)
+                    folder_name = await self._fetch_record_name(parent_folder_id)
+                    kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
+                    folder_label = f"'{folder_name}' ({parent_folder_id})" if folder_name else parent_folder_id
                     return {
                         "valid": False,
                         "success": False,
                         "code": 404,
-                        "reason": f"Parent folder {parent_folder_id} not found in KB {kb_id}"
+                        "reason": (
+                            f"Folder {folder_label} was not found in knowledge base {kb_label}. "
+                            "The folder may not exist or may belong to a different knowledge base."
+                        ),
                     }
                 return {
                     "valid": True,
@@ -9851,21 +9929,34 @@ class Neo4jProvider(IGraphDBProvider):
                     "parent_folder": parent_folder,
                     "user": user,
                     "user_key": user_key,
-                    "user_role": user_role
+                    "user_role": user_role,
                 }
-            else:
-                # KB root upload
-                return {
-                    "valid": True,
-                    "upload_target": "kb_root",
-                    "user": user,
-                    "user_key": user_key,
-                    "user_role": user_role
-                }
+            return {
+                "valid": True,
+                "upload_target": "kb_root",
+                "user": user,
+                "user_key": user_key,
+                "user_role": user_role,
+            }
 
         except Exception as e:
             self.logger.error(f"❌ Upload validation failed: {str(e)}")
             return {"valid": False, "success": False, "code": 500, "reason": str(e)}
+
+    async def validate_folder_for_upload(
+        self,
+        kb_id: str,
+        folder_id: str,
+        user_id: str,
+        org_id: str,
+    ) -> dict:
+        """Public interface method: validate folder membership and user write access before upload."""
+        return await self._validate_upload_context(
+            kb_id=kb_id,
+            user_id=user_id,
+            org_id=org_id,
+            parent_folder_id=folder_id,
+        )
 
     def _analyze_upload_structure(self, files: list[dict], validation_result: dict) -> dict:
         """
@@ -10340,13 +10431,13 @@ class Neo4jProvider(IGraphDBProvider):
     async def reset_indexing_status_to_queued_for_record_ids(self, record_ids: list[str]) -> None:
         """
         Bulk-fetch records, then batch upsert indexingStatus=QUEUED where appropriate.
-        Skips missing ids, isInternal records, and docs already QUEUED or EMPTY.
+        Skips missing ids, isInternal records, and docs already QUEUED.
         """
         unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
         if not unique_ids:
             return
         coll = CollectionNames.RECORDS.value
-        skip_status = frozenset({ProgressStatus.EMPTY.value, ProgressStatus.QUEUED.value})
+        skip_status = frozenset({ProgressStatus.QUEUED.value})
         try:
             label = collection_to_label(coll)
             query = f"""
@@ -12674,6 +12765,56 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Delete parent-child edge failed: {str(e)}")
             return False
 
+    async def _get_user_accessible_team_app_ids(
+        self,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return the ``id`` list of team-scoped apps this user may access.
+
+        Covers two access paths:
+
+        1. **Direct USER_APP_RELATION edge** — ``(User) -[:USER_APP_RELATION]→ (App {scope:'team'})``.
+           Handles connectors explicitly shared with a specific user.
+
+        2. **Team-based edge** — ``(User) -[:PERMISSION {type:'USER'}]→ (Teams)
+           -[:USER_APP_RELATION]→ (App {scope:'team'})``.
+           Handles the standard org-wide pattern:
+           * ``ensure_all_team_with_users`` creates the ``User → Teams`` ``PERMISSION``
+             relationship (``type='USER'``).
+           * ``ensure_team_app_edge`` creates the ``(Teams {id:'all_{org_id}'})-[:USER_APP_RELATION]→
+             (App)`` relationship when a team-scope connector is configured.
+
+        Args:
+            user_id: MongoDB userId value (``user.userId`` in Neo4j).
+            transaction: Optional Neo4j transaction ID.
+
+        Returns:
+            List of app ``id`` strings the user can access (empty list when
+            the user has no accessible team connectors).  Any DB error is
+            propagated to the caller so it is never silently swallowed.
+        """
+        # Match by userId (MongoDB ID) — not by id (the graph-internal key).
+        # Intermediate WITH after the first OPTIONAL MATCH avoids an M×N
+        # Cartesian product when both paths return multiple rows.
+        query = """
+        MATCH (u:User {userId: $user_id})
+        OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(a1:App {scope: $team_scope})
+        WITH u, collect(DISTINCT a1.id) AS direct_ids
+        OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(t:Teams)-[:USER_APP_RELATION]->(a2:App {scope: $team_scope})
+        WITH direct_ids, collect(DISTINCT a2.id) AS team_ids
+        WITH direct_ids + team_ids AS all_ids
+        UNWIND all_ids AS app_id
+        WITH app_id WHERE app_id IS NOT NULL
+        RETURN DISTINCT app_id
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={"user_id": user_id, "team_scope": "team"},
+            txn_id=transaction,
+        )
+        return [r["app_id"] for r in results] if results else []
+
     async def get_filtered_connector_instances(
         self,
         collection: str,
@@ -12688,11 +12829,18 @@ class Neo4jProvider(IGraphDBProvider):
         exclude_kb: bool = True,
         kb_connector_type: str | None = None,
         is_admin: bool = False,
+        is_authenticated: bool | None = None,
+        is_active: bool | None = None,
+        connector_type_filter: str | None = None,
         transaction: str | None = None,
-    ) -> tuple[list[dict], int, dict[str, int]]:
-        """Get filtered connector instances with pagination and scope counts."""
+    ) -> tuple[list[dict], int]:
+        """Get filtered connector instances with pagination."""
         try:
             label = self._get_label(collection)
+
+            # For non-admin team scope we pre-compute which team apps the user
+            # can actually see.
+            accessible_team_ids: list[str] | None = None
 
             # Build WHERE conditions
             conditions = ["doc.id IS NOT NULL"]
@@ -12704,21 +12852,52 @@ class Neo4jProvider(IGraphDBProvider):
                 params["kb_connector_type"] = kb_connector_type
 
             # Scope filter
+            # personal → only the caller's own personal connectors
+            # team (admin)     → all team-scoped connectors in the org
+            # team (non-admin) → only team connectors reachable via the user's
+            #                    USER_APP_RELATION / PERMISSION edges
             if scope == "personal":
-                conditions.append("doc.scope = $scope")
+                conditions.append("doc.scope = $personal_scope")
                 conditions.append("doc.createdBy = $user_id")
-                params["scope"] = scope
+                params["personal_scope"] = "personal"
                 params["user_id"] = user_id
             elif scope == "team":
-                conditions.append("(doc.scope = $team_scope OR doc.createdBy = $user_id)")
+                conditions.append("doc.scope = $team_scope")
                 params["team_scope"] = "team"
-                params["user_id"] = user_id
+                if not is_admin:
+                    accessible_team_ids = await self._get_user_accessible_team_app_ids(
+                        user_id, transaction
+                    )
+                    if not accessible_team_ids:
+                        self.logger.info(
+                            "No accessible team app IDs found for user %s — "
+                            "edge data may be inconsistent (ensure_team_app_edge / "
+                            "ensure_all_team_with_users not yet run for this org).",
+                            user_id,
+                        )
+                    conditions.append("doc.id IN $accessible_team_ids")
+                    params["accessible_team_ids"] = accessible_team_ids
 
             # Search filter
             if search:
                 search_pattern = f"(?i).*{search}.*"
                 conditions.append("(doc.name =~ $search OR doc.type =~ $search OR doc.appGroup =~ $search)")
                 params["search"] = search_pattern
+
+            # is_authenticated filter
+            if is_authenticated is not None:
+                conditions.append("doc.isAuthenticated = $is_authenticated")
+                params["is_authenticated"] = is_authenticated
+
+            # is_active filter
+            if is_active is not None:
+                conditions.append("doc.isActive = $is_active")
+                params["is_active"] = is_active
+
+            # connector type filter
+            if connector_type_filter:
+                conditions.append("doc.type = $connector_type_filter")
+                params["connector_type_filter"] = connector_type_filter
 
             where_clause = " AND ".join(conditions)
 
@@ -12730,42 +12909,6 @@ class Neo4jProvider(IGraphDBProvider):
             """
             count_result = await self.client.execute_query(count_query, parameters=params, txn_id=transaction)
             total_count = count_result[0]["total"] if count_result else 0
-
-            # Scope counts (personal and team)
-            scope_counts = {"personal": 0, "team": 0}
-
-            # Personal count
-            personal_query = f"""
-            MATCH (doc:{label})
-            WHERE doc.id IS NOT NULL
-            AND doc.scope = $personal_scope
-            AND doc.createdBy = $user_id
-            AND doc.isConfigured = true
-            RETURN count(doc) as total
-            """
-            personal_result = await self.client.execute_query(
-                personal_query,
-                parameters={"personal_scope": "personal", "user_id": user_id},
-                txn_id=transaction
-            )
-            scope_counts["personal"] = personal_result[0]["total"] if personal_result else 0
-
-            # Team count (if admin or has team access)
-            if is_admin or scope == "team":
-                team_query = f"""
-                MATCH (doc:{label})
-                WHERE doc.id IS NOT NULL
-                AND doc.type <> $kb_connector_type
-                AND doc.scope = $team_scope
-                AND doc.isConfigured = true
-                RETURN count(doc) as total
-                """
-                team_result = await self.client.execute_query(
-                    team_query,
-                    parameters={"kb_connector_type": kb_connector_type or "", "team_scope": "team"},
-                    txn_id=transaction
-                )
-                scope_counts["team"] = team_result[0]["total"] if team_result else 0
 
             # Main query with pagination
             main_query = f"""
@@ -12781,12 +12924,12 @@ class Neo4jProvider(IGraphDBProvider):
             results = await self.client.execute_query(main_query, parameters=params, txn_id=transaction)
             documents = [self._neo4j_to_arango_node(dict(r["doc"]), collection) for r in results] if results else []
 
-            self.logger.debug(f"✅ Found {len(documents)} connector instances (total: {total_count})")
-            return documents, total_count, scope_counts
+            self.logger.info(f"✅ Found {len(documents)} connector instances (total: {total_count})")
+            return documents, total_count
 
         except Exception as e:
             self.logger.error(f"❌ Get filtered connector instances failed: {str(e)}")
-            return [], 0, {"personal": 0, "team": 0}
+            return [], 0
 
     async def get_kb_permissions(
         self,

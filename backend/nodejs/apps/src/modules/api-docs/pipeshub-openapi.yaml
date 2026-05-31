@@ -1503,9 +1503,14 @@ components:
     CreateOAuthAppRequest:
       type: object
       description: |
-        Request to create a new OAuth app.
-        Redirect URIs are required only when `authorization_code` is included in `allowedGrantTypes`.
-        If `authorization_code` is not enabled, redirect URIs are optional and will be ignored.
+        Request to create a new OAuth app (`createAppSchema` in `oauth.validators.ts`).
+
+        **Required:** `name`, `allowedScopes`. **Optional:** `description`, `redirectUris`, `allowedGrantTypes`,
+        `homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`, `isConfidential`, `accessTokenLifetime`, `refreshTokenLifetime`.
+
+        **Redirect rule (Zod refine):** If the effective grant list includes `authorization_code`
+        (including when `allowedGrantTypes` is omitted — defaults to `authorization_code` + `refresh_token`),
+        at least one redirect URI is required. If grants exclude `authorization_code`, `redirectUris` may be omitted.
       properties:
         name:
           type: string
@@ -1524,8 +1529,8 @@ components:
             type: string
             format: uri
           description: |
-            Allowed redirect URIs (up to 10). Required when `authorization_code` grant type is enabled.
-            Not needed for apps using only `client_credentials` grant type.
+            Allowed redirect URIs (max 10). Required when an effective grant list includes `authorization_code`
+            (including the default when `allowedGrantTypes` is omitted).
           maxItems: 10
           example: ["https://myapp.com/callback", "http://localhost:3000/callback"]
         allowedGrantTypes:
@@ -1534,13 +1539,13 @@ components:
             type: string
             enum: [authorization_code, client_credentials, refresh_token]
           description: |
-            Allowed grant types. Defaults to `["authorization_code", "refresh_token"]` if not specified.
+            Allowed grant types. Defaults to `["authorization_code", "refresh_token"]` if omitted (applied by the service, not Zod).
           example: ["authorization_code", "refresh_token"]
         allowedScopes:
           type: array
           items:
             type: string
-          description: Scopes the app can request
+          description: Scopes the app can request (non-empty)
           minItems: 1
           example: ["openid", "profile", "read:records"]
         homepageUrl:
@@ -1564,18 +1569,18 @@ components:
           default: true
         accessTokenLifetime:
           type: integer
-          description: Access token lifetime in seconds (300-86400)
+          description: Access token lifetime in seconds (300–86400)
           minimum: 300
           maximum: 86400
           default: 3600
           example: 3600
         refreshTokenLifetime:
           type: integer
-          description: Refresh token lifetime in seconds (3600-31536000)
+          description: Refresh token lifetime in seconds (3600–31536000)
           minimum: 3600
           maximum: 31536000
-          default: 604800
-          example: 604800
+          default: 2592000
+          example: 2592000
       required:
         - name
         - allowedScopes
@@ -1583,9 +1588,11 @@ components:
     UpdateOAuthAppRequest:
       type: object
       description: |
-        Request to update an OAuth app.
-        Redirect URIs are required when `authorization_code` grant type is enabled (either already set or being added).
-        Existing redirect URIs are preserved in the database even if `authorization_code` is removed from grant types.
+        Request to update an OAuth app (`updateAppSchema` in `oauth.validators.ts`).
+
+        All fields are optional — include only fields that should change. URL fields (`homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`) accept `null` to clear them (nullable in Zod).
+
+        **Redirect rule (Zod refine):** If `allowedGrantTypes` includes `authorization_code` and `redirectUris` is present in the body, `redirectUris` must contain at least one URI.
       properties:
         name:
           type: string
@@ -1638,7 +1645,24 @@ components:
 
     OAuthAppResponse:
       type: object
-      description: OAuth app details (without secret)
+      description: |
+        OAuth app details (without secret). Fields under `required:` always appear
+        in `toAppResponse` (`oauth.app.service.ts`); optional URL/description fields
+        are only present when set by the caller.
+      required:
+        - id
+        - slug
+        - clientId
+        - name
+        - redirectUris
+        - allowedGrantTypes
+        - allowedScopes
+        - status
+        - isConfidential
+        - accessTokenLifetime
+        - refreshTokenLifetime
+        - createdAt
+        - updatedAt
       properties:
         id:
           type: string
@@ -1659,7 +1683,8 @@ components:
           type: array
           items:
             type: string
-          description: Allowed redirect URIs
+            format: uri
+          description: Allowed redirect URIs (always returned; may be empty)
         allowedGrantTypes:
           type: array
           items:
@@ -1717,9 +1742,93 @@ components:
           required:
             - clientSecret
 
+    CreateOAuthAppResponse:
+      type: object
+      description: |
+        Response body for `POST /oauth-clients` (`oauth.app.controller.ts` `createApp`).
+        The new app (including one-time `clientSecret`) is nested under `app`.
+      required:
+        - message
+        - app
+      properties:
+        message:
+          type: string
+          example: OAuth app created successfully
+        app:
+          $ref: '#/components/schemas/OAuthAppWithSecret'
+
+    RegenerateOAuthAppSecretResponse:
+      type: object
+      description: |
+        Response body for `POST /oauth-clients/{appId}/regenerate-secret` (`regenerateSecret`).
+      required:
+        - message
+        - clientId
+        - clientSecret
+      properties:
+        message:
+          type: string
+          example: Client secret regenerated successfully
+        clientId:
+          type: string
+          description: OAuth client ID (unchanged)
+        clientSecret:
+          type: string
+          description: New client secret (store securely; previous secret is invalidated)
+
+    UpdateOAuthAppResponse:
+      type: object
+      description: |
+        Response body for `PUT /oauth-clients/{appId}` (`oauth.app.controller.ts` `updateApp`).
+        Updated app (never includes `clientSecret`) is nested under `app`.
+      required:
+        - message
+        - app
+      properties:
+        message:
+          type: string
+          example: OAuth app updated successfully
+        app:
+          $ref: '#/components/schemas/OAuthAppResponse'
+
+    SuspendOAuthAppResponse:
+      type: object
+      description: |
+        Response body for `POST /oauth-clients/{appId}/suspend`
+        (`oauth.app.controller.ts` `suspendApp`). Suspended app (never includes
+        `clientSecret`) is nested under `app`.
+      required:
+        - message
+        - app
+      properties:
+        message:
+          type: string
+          example: OAuth app suspended successfully
+        app:
+          $ref: '#/components/schemas/OAuthAppResponse'
+
+    ActivateOAuthAppResponse:
+      type: object
+      description: |
+        Response body for `POST /oauth-clients/{appId}/activate`
+        (`oauth.app.controller.ts` `activateApp`). Re-activated app (never includes
+        `clientSecret`) is nested under `app`.
+      required:
+        - message
+        - app
+      properties:
+        message:
+          type: string
+          example: OAuth app activated successfully
+        app:
+          $ref: '#/components/schemas/OAuthAppResponse'
+
     OAuthAppListResponse:
       type: object
       description: Paginated list of OAuth apps
+      required:
+        - data
+        - pagination
       properties:
         data:
           type: array
@@ -1728,6 +1837,11 @@ components:
           description: List of OAuth apps
         pagination:
           type: object
+          required:
+            - page
+            - limit
+            - total
+            - totalPages
           properties:
             page:
               type: integer
@@ -1749,19 +1863,102 @@ components:
         name:
           type: string
           description: Scope identifier
-          example: "read:records"
+          example: "openid"
         description:
           type: string
           description: Human-readable scope description
-          example: "Read access to records"
+          example: "OpenID Connect authentication"
         category:
           type: string
-          description: Scope category for grouping
-          example: "Records"
+          description: Scope category for grouping (matches the key under `scopes` on list responses)
+          example: "Identity"
+        requiresUserConsent:
+          type: boolean
+          description: Whether end-user consent is required when this scope is requested
+          example: false
+      required:
+        - name
+        - description
+        - category
+        - requiresUserConsent
+
+    OAuthScopesGroupedResponse:
+      type: object
+      description: |
+        OAuth scopes available to the signed-in user for app registration, grouped by category label.
+        Category keys are UI labels (e.g. `Identity`, `Knowledge Base`); each maps to a list of scopes in that group.
+        Categories defined in server config may appear with an **empty array** when every scope in that category is restricted for the caller's role (e.g. non–org-admin users never receive admin-only scopes).
+      properties:
+        scopes:
+          type: object
+          description: Map of category display name to scopes in that category
+          additionalProperties:
+            type: array
+            items:
+              $ref: '#/components/schemas/OAuthScopeInfo'
+      required:
+        - scopes
+
+    OAuthClientManagementRateLimitError:
+      type: object
+      description: JSON body when OAuth client management routes exceed the per-minute rate limit (same limiter as other `/oauth-clients/*` routes).
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              example: TOO_MANY_REQUESTS
+            message:
+              type: string
+              example: Too many OAuth client requests. Please try again later.
+            retryAfter:
+              type: integer
+              nullable: true
+              description: Seconds until the limit window resets (when `Retry-After` is present); may be null.
+
+    ApplicationJsonErrorResponse:
+      type: object
+      description: |
+        Standard JSON error envelope from `ErrorMiddleware` for `BaseError` subclasses (`error.middleware.ts`).
+        Returned for most API 4xx errors (unauthorized, forbidden, not found, validation failures, etc.).
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              description: Machine-readable code (e.g. `HTTP_UNAUTHORIZED`, `HTTP_FORBIDDEN`).
+            message:
+              type: string
+            metadata:
+              type: object
+              description: Optional; may appear in non-production for some errors.
+              additionalProperties: true
 
     OAuthTokenListItem:
       type: object
-      description: Information about an issued token
+      description: |
+        Information about an issued token (one element returned by `listTokensForApp`
+        in `oauth_token.service.ts`). `userId` is omitted for client-credentials access
+        tokens; all other fields are always populated.
+      required:
+        - id
+        - tokenType
+        - scopes
+        - createdAt
+        - expiresAt
+        - isRevoked
       properties:
         id:
           type: string
@@ -1772,7 +1969,7 @@ components:
           description: Type of token
         userId:
           type: string
-          description: User ID (if user-based token)
+          description: User ID (omitted for client-credentials access tokens)
         scopes:
           type: array
           items:
@@ -1789,6 +1986,19 @@ components:
         isRevoked:
           type: boolean
           description: Whether token has been revoked
+
+    OAuthAppTokensListResponse:
+      type: object
+      description: |
+        Response body for `GET /oauth-clients/{appId}/tokens` (`listAppTokens`).
+      required:
+        - tokens
+      properties:
+        tokens:
+          type: array
+          items:
+            $ref: '#/components/schemas/OAuthTokenListItem'
+          description: Active access and refresh tokens for the app
 
     # ==================== USER MANAGEMENT SCHEMAS ====================
     User:
@@ -3370,12 +3580,6 @@ components:
             Limit the AI's knowledge scope to specific records/documents.
             When provided, only these records will be searched for context.
           example: ["507f1f77bcf86cd799439011", "507f1f77bcf86cd799439012"]
-        departments:
-          type: array
-          items:
-            type: string
-            format: objectId
-          description: Filter by department IDs to scope the search
         filters:
           $ref: '#/components/schemas/Filters'
         appliedFilters:
@@ -3403,10 +3607,12 @@ components:
           example: "GPT-4 Turbo"
         chatMode:
           type: string
+          enum:
+            - web_search
+            - internal_search
           description: |
             Chat mode affecting response behavior.
-            Different modes optimize for different use cases.
-          example: "balanced"
+          example: "internal_search"
         timezone:
           type: string
           minLength: 1
@@ -3468,9 +3674,11 @@ components:
 
     AgentStreamCreateConversationRequest:
       type: object
+      additionalProperties: false
       description: |
-        Request body for `POST /agents/{agentKey}/conversations/stream`.
-        Only `query` is required; other fields are optional.
+        Request body for `POST /agents/{agentKey}/conversations/stream`. Only
+        `query` is required; all other fields are optional overrides or routing
+        hints. Unknown fields are stripped during validation.
       required:
         - query
       properties:
@@ -3479,104 +3687,120 @@ components:
           minLength: 1
           maxLength: 100000
           description: |
-            User prompt for this turn.
-            Saved as the first message and sent to the agent backend.
-          example: "Summarise the Q4 board pack and flag any deltas vs. Q3."
-        tools:
-          type: array
-          maxItems: 128
-          items:
-            type: string
-            minLength: 1
-          description: |
-            Allowed tool ids for this turn, such as `jira.create_issue`.
-            Omit for agent defaults; send `[]` to disable tools.
-          example: ["jira.create_issue", "confluence.search_content"]
-        chatMode:
-          type: string
-          minLength: 1
-          default: auto
-          description: |
-            Chat mode hint sent to the agent backend.
-            Common values include `auto` and `agent:auto`.
-          example: "agent:auto"
-        modelKey:
-          type: string
-          minLength: 1
-          description: |
-            AI model configuration id for this turn.
-            Omit to use the agent's default model.
-          example: 05438a37-68f2-4641-a8dc-6c47e63278ca
-        modelName:
-          type: string
-          minLength: 1
-          description: |
-            Provider model name.
-            This is the underlying LLM id.
-          example: gpt-5.4-mini
-        modelFriendlyName:
-          type: string
-          minLength: 1
-          description: |
-            Friendly model label.
-            Intended for UI display.
-          example: mini
-        timezone:
-          type: string
-          minLength: 1
-          description: |
-            Client IANA timezone, such as `America/New_York`.
-            Helps the agent resolve relative dates.
-          example: "America/New_York"
-        currentTime:
-          type: string
-          format: date-time
-          description: |
-            Client time in ISO 8601 / RFC 3339 format.
-            Sent with `timezone` for date-aware responses.
-          example: "2026-04-12T16:00:00+05:30"
-        quickMode:
-          type: boolean
-          default: false
-          description: |
-            Latency hint for the agent backend.
-            `true` favors speed over depth.
-        previousConversations:
-          type: array
-          description: |
-            Optional prior conversation context for this turn.
-            Entries are forwarded to the agent backend as-is.
-          items:
-            type: object
-            additionalProperties: true
+            User prompt for the first turn. Saved as the initial `user_query`
+            message and sent to the agent backend.
         recordIds:
           type: array
           items:
             type: string
             format: objectId
           description: |
-            Optional record or document ids to include for this turn.
-            Forwarded to the agent backend as-is.
-          example: ["507f1f77bcf86cd799439011", "507f1f77bcf86cd799439012"]
+            Optional record ids to include as context for this turn. Each id
+            must be a 24-character MongoDB ObjectId.
         filters:
           allOf:
             - $ref: '#/components/schemas/Filters'
           description: |
-            Optional retrieval scope for this turn.
-            Omit for defaults; `{ "apps": [], "kb": [] }` means no sources.
+            Optional retrieval scope (`apps` / `kb`) for this turn. Each id must
+            be a UUID or a `knowledgeBase_<orgId>` collection id. Omit for
+            agent defaults; send `{ "apps": [], "kb": [] }` to force no
+            knowledge sources for this turn.
         appliedFilters:
           allOf:
             - $ref: '#/components/schemas/AppliedFilters'
           description: |
-            Display or persistence filter state for the saved user message.
-            Not used for retrieval and not sent to the agent backend.
+            UI filter state persisted on the saved user message. Not used for
+            retrieval and not forwarded to the upstream agent backend.
         attachments:
           type: array
           items:
             $ref: '#/components/schemas/ChatAttachmentRef'
           description: |
-            Uploaded attachments for this agent turn (see
-            `POST /agents/{agentKey}/conversations/attachments/upload`).
+            Uploaded attachments to ground this turn. Each entry references a
+            record id returned from the agent attachment upload endpoint.
+        chatMode:
+          type: string
+          enum:
+            - auto
+            - quick
+            - verification
+            - deep
+          description: |
+            Chat mode hint forwarded to the agent backend.
+            - `auto` lets the agent pick its default strategy.
+            - `quick` favors low-latency answers over depth.
+            - `verification` runs additional grounding/verification passes.
+            - `deep` performs deeper retrieval and reasoning.
+        modelKey:
+          type: string
+          minLength: 1
+          description: |
+            AI model configuration id for this turn. Omit to use the agent's
+            default model.
+        modelName:
+          type: string
+          minLength: 1
+          description: Provider model name (the underlying LLM identifier).
+        modelFriendlyName:
+          type: string
+          minLength: 1
+          description: Friendly UI label for the selected model.
+        timezone:
+          type: string
+          minLength: 1
+          description: |
+            Client IANA timezone, such as `America/New_York`. Helps the agent
+            resolve relative date references in the prompt.
+        currentTime:
+          type: string
+          format: date-time
+          description: |
+            Client time in ISO 8601 / RFC 3339 format (UTC `Z` or numeric
+            offset). Sent alongside `timezone` for time-aware answers.
+        tools:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          description: |
+            Allowed tool ids for this turn, such as `jira.create_issue`. Omit
+            to let the agent use its default toolset; send `[]` to disable
+            tools for this turn.
+      example:
+        query: summarize the latest product updates
+        modelKey: 11111111-2222-3333-4444-555555555555
+        modelName: gpt-5.4-mini
+        modelFriendlyName: GPT 5.4 mini
+        chatMode: auto
+        timezone: UTC
+        currentTime: "2026-05-19T07:28:01Z"
+        tools: []
+        filters:
+          apps:
+            - 11111111-aaaa-bbbb-cccc-111111111111
+            - 22222222-aaaa-bbbb-cccc-222222222222
+            - 33333333-aaaa-bbbb-cccc-333333333333
+          kb:
+            - 44444444-aaaa-bbbb-cccc-444444444444
+        appliedFilters:
+          apps:
+            - id: 11111111-aaaa-bbbb-cccc-111111111111
+              name: Product Updates Feed
+              nodeType: app
+              connector: RSS
+            - id: 22222222-aaaa-bbbb-cccc-222222222222
+              name: Engineering Changelog Feed
+              nodeType: app
+              connector: RSS
+            - id: 33333333-aaaa-bbbb-cccc-333333333333
+              name: Support Announcements Feed
+              nodeType: app
+              connector: RSS
+          kb:
+            - id: 44444444-aaaa-bbbb-cccc-444444444444
+              name: Team Knowledge Base
+              nodeType: recordGroup
+              connector: KB
 
     RegenerateRequest:
       type: object
@@ -3673,6 +3897,9 @@ components:
           description: Friendly display name of the model
         chatMode:
           type: string
+          enum:
+            - web_search
+            - internal_search
           description: Chat mode for this message
         timezone:
           type: string
@@ -3747,9 +3974,11 @@ components:
 
     AgentAddMessageStreamRequest:
       type: object
+      additionalProperties: false
       description: |
         Request body for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
-        Only `query` is required. Other fields are optional overrides or routing hints.
+        Only `query` is required; all other fields are optional overrides or
+        routing hints. Unknown fields are stripped during validation.
       required:
         - query
       properties:
@@ -3758,97 +3987,108 @@ components:
           minLength: 1
           description: |
             User follow-up prompt to append to the existing agent conversation.
-            Saved as a new `user_query` message before the upstream AI stream starts.
-          example: "Verify whether the invoice total matches the attached quote."
+            Saved as a new `user_query` message before the upstream AI stream
+            starts.
         filters:
           allOf:
             - $ref: '#/components/schemas/Filters'
           description: |
-            Optional retrieval scope for this turn.
-            Omit to let the agent use its stored defaults; send `{ "apps": [], "kb": [] }`
+            Optional retrieval scope (`apps` / `kb`) for this turn. Each id must
+            be a UUID or a `knowledgeBase_<orgId>` collection id. Omit to let
+            the agent use its stored defaults; send `{ "apps": [], "kb": [] }`
             to force no knowledge sources for this turn.
         appliedFilters:
           allOf:
             - $ref: '#/components/schemas/AppliedFilters'
           description: |
-            UI filter state to persist on the saved user message.
-            This field is not forwarded to the upstream AI service.
+            UI filter state persisted on the saved user message. Not used for
+            retrieval and not forwarded to the upstream agent backend.
         attachments:
           type: array
           items:
             $ref: '#/components/schemas/ChatAttachmentRef'
           description: |
-            Uploaded attachments for this follow-up (see
-            `POST /agents/{agentKey}/conversations/attachments/upload`).
+            Uploaded attachments to ground this turn. Each entry references a
+            record id returned from the agent attachment upload endpoint.
+        chatMode:
+          type: string
+          enum:
+            - auto
+            - quick
+            - verification
+            - deep
+          description: |
+            Chat mode hint forwarded to the agent backend. Defaults to `auto`
+            in the upstream AI payload when omitted.
+            - `auto` lets the agent pick its default strategy.
+            - `quick` favors low-latency answers over depth.
+            - `verification` runs additional grounding/verification passes.
+            - `deep` performs deeper retrieval and reasoning.
         modelKey:
           type: string
           minLength: 1
-          description: Optional model configuration id override for this turn.
-          example: 05438a37-68f2-4641-a8dc-6c47e63278ca
+          description: |
+            AI model configuration id override for this turn. Omit to use the
+            agent's default model.
         modelName:
           type: string
           minLength: 1
-          description: Optional provider model name override for this turn.
-          example: gpt-5.4-mini
+          description: Provider model name (the underlying LLM identifier).
         modelFriendlyName:
           type: string
           minLength: 1
-          description: Optional UI-friendly model label stored on the conversation.
-          example: mini
-        modelProvider:
-          type: string
-          minLength: 1
-          description: |
-            Optional model provider label stored on the conversation metadata.
-            This field is not forwarded to the upstream AI payload by this route.
-          example: openai
-        chatMode:
-          type: string
-          minLength: 1
-          description: |
-            Chat mode hint forwarded to the agent backend.
-            Defaults to `auto` in the upstream AI payload when omitted.
-          example: verification
+          description: Friendly UI label for the selected model.
         timezone:
           type: string
           minLength: 1
           description: |
-            Client IANA timezone, such as `Asia/Calcutta` or `America/New_York`.
-            Helps the agent resolve relative dates.
-          example: Asia/Calcutta
+            Client IANA timezone, such as `America/New_York`. Helps the agent
+            resolve relative date references in the prompt.
         currentTime:
           type: string
           format: date-time
           description: |
-            Client time in ISO 8601 / RFC 3339 format.
-            Sent with `timezone` for time-aware answers.
-          example: "2026-05-12T04:21:17+05:30"
+            Client time in ISO 8601 / RFC 3339 format (UTC `Z` or numeric
+            offset). Sent alongside `timezone` for time-aware answers.
         tools:
           type: array
-          maxItems: 128
           items:
             type: string
             minLength: 1
           description: |
-            Allowed tool ids for this turn, such as `jira.create_issue`.
-            If omitted, the field is omitted from the upstream AI payload.
-            If a non-array value is sent, the implementation currently coerces it to `[]`.
-          example: []
+            Allowed tool ids for this turn, such as `jira.create_issue`. Omit
+            to let the agent use its default toolset; send `[]` to disable
+            tools for this turn.
       example:
-        query: what is asana ?
-        modelKey: 05438a37-68f2-4641-a8dc-6c47e63278ca
+        query: can you expand on the release notes?
+        modelKey: 11111111-2222-3333-4444-555555555555
         modelName: gpt-5.4-mini
-        modelFriendlyName: mini
+        modelFriendlyName: GPT 5.4 mini
         chatMode: verification
-        timezone: Asia/Calcutta
-        currentTime: "2026-05-12T04:21:17+05:30"
+        timezone: UTC
+        currentTime: "2026-05-19T07:28:01Z"
         tools: []
         filters:
-          apps: []
-          kb: []
+          apps:
+            - 11111111-aaaa-bbbb-cccc-111111111111
+            - 22222222-aaaa-bbbb-cccc-222222222222
+          kb:
+            - 44444444-aaaa-bbbb-cccc-444444444444
         appliedFilters:
-          apps: []
-          kb: []
+          apps:
+            - id: 11111111-aaaa-bbbb-cccc-111111111111
+              name: Product Updates Feed
+              nodeType: app
+              connector: RSS
+            - id: 22222222-aaaa-bbbb-cccc-222222222222
+              name: Engineering Changelog Feed
+              nodeType: app
+              connector: RSS
+          kb:
+            - id: 44444444-aaaa-bbbb-cccc-444444444444
+              name: Team Knowledge Base
+              nodeType: recordGroup
+              connector: KB
 
     Message:
       type: object
@@ -5872,14 +6112,26 @@ components:
     # ==================== AGENT SCHEMAS ====================
     Agent:
       type: object
+      additionalProperties: false
       description: |
-        A custom AI agent with specialized capabilities, tools, and knowledge scope.
-        Agents can be configured for specific use cases like customer support,
-        code review, or domain-specific Q&A.
+        Detailed agent projection returned by agent detail-style endpoints such
+        as `GET /agents/{agentKey}`.
       properties:
+        _id:
+          type: string
+          description: Full document id in the backing graph store.
+          example: "agentInstances/e6f848ca-e2ab-4594-9925-e1136629f474"
+        _key:
+          type: string
+          description: Stable agent key used in route params.
+          example: "e6f848ca-e2ab-4594-9925-e1136629f474"
+        _rev:
+          type: string
+          description: Backend document revision token.
+          example: "_lkNlcOm---"
         agentKey:
           type: string
-          description: Unique identifier key for the agent
+          description: Legacy alias for the agent key when emitted by some backends
           example: "customer-support-agent"
         name:
           type: string
@@ -5904,6 +6156,7 @@ components:
           description: Knowledge bases the agent has access to
         modelConfig:
           type: object
+          additionalProperties: false
           properties:
             modelKey:
               type: string
@@ -5937,12 +6190,21 @@ components:
         models:
           type: array
           description: |
-            Configured model entries for this agent (may be strings or objects with
-            `modelKey` / `modelName` / `provider` / `isReasoning`, depending on API version).
+            Configured model entries for this agent.
+          example:
+            - modelType: llm
+              provider: azureOpenAI
+              modelName: gpt-5.4-mini
+              modelKey: f3a4b5b6-5b6c-4e85-9097-3202cfe696fc
+              isMultimodal: true
+              isReasoning: true
+              isDefault: true
+              modelFriendlyName: "GPT 5.4 mini"
           items:
             oneOf:
               - type: string
               - type: object
+                additionalProperties: false
                 properties:
                   modelKey:
                     type: string
@@ -5952,6 +6214,18 @@ components:
                     type: string
                   isReasoning:
                     type: boolean
+                  isMultimodal:
+                    type: boolean
+                  isDefault:
+                    type: boolean
+                  modelType:
+                    type: string
+                    description: |
+                      Model category. Must be `llm` for agent model entries (same
+                      value as `ModelType` for LLMs; string only — enum is not used here).
+                    example: llm
+                  modelFriendlyName:
+                    type: string
         toolsets:
           type: array
           description: |
@@ -5960,6 +6234,7 @@ components:
             and optional `instanceName`.
           items:
             type: object
+            additionalProperties: false
             properties:
               name:
                 type: string
@@ -5981,6 +6256,7 @@ components:
                 type: array
                 items:
                   type: object
+                  additionalProperties: false
                   properties:
                     name:
                       type: string
@@ -6000,29 +6276,846 @@ components:
           description: Knowledge connectors and indexed scopes linked to the agent
           items:
             type: object
+            additionalProperties: false
             properties:
+              _key:
+                type: string
               connectorId:
+                type: string
+              name:
+                type: string
+              type:
+                type: string
+              displayName:
                 type: string
               filters:
                 oneOf:
                   - type: object
                     additionalProperties: true
                   - type: string
+              filtersParsed:
+                type: object
+                additionalProperties: true
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the whole organization
         webSearch:
           type: object
+          additionalProperties: false
           nullable: true
           description: Web search provider attached to this agent. Null when none is configured.
           properties:
             provider:
               type: string
               description: Provider identifier (e.g. "tavily", "serper", "exa", "duckduckgo")
+            providerKey:
+              type: string
+            providerLabel:
+              type: string
           required:
             - provider
           example:
             provider: "serper"
+        tags:
+          type: array
+          items:
+            type: string
+          description: Free-form agent tags.
+        createdAtTimestamp:
+          type: integer
+          format: int64
+          description: Unix epoch timestamp in milliseconds when the agent was created.
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+          description: Unix epoch timestamp in milliseconds when the agent was last updated.
+        updatedBy:
+          type: string
+          nullable: true
+          description: User id of the last updater, if present.
+        isActive:
+          type: boolean
+          description: Whether the agent is active.
+        isDeleted:
+          type: boolean
+          description: Whether the agent has been soft-deleted.
+        isServiceAccount:
+          type: boolean
+          description: Whether this agent is a service-account agent.
+        access_type:
+          type: string
+          description: How the user can access this agent.
+          example: "INDIVIDUAL"
+        user_role:
+          type: string
+          description: Effective role of the current user on this agent.
+          example: "OWNER"
+        can_view:
+          type: boolean
+          description: Effective permission to view the agent.
+        can_share:
+          type: boolean
+          description: Effective permission to share the agent.
+        can_edit:
+          type: boolean
+          description: Effective permission to edit the agent.
+        can_delete:
+          type: boolean
+          description: Effective permission to delete the agent.
+      required:
+        - _id
+        - _key
+        - createdAtTimestamp
+        - createdBy
+        - isActive
+        - isDeleted
+        - isServiceAccount
+        - models
+        - name
+        - tags
+        - updatedAtTimestamp
+        - shareWithOrg
+        - knowledge
+        - toolsets
+        - can_view
+        - can_share
+        - can_edit
+        - can_delete
+        - user_role
+        - access_type
+
+    AgentListItem:
+      type: object
+      additionalProperties: false
+      description: |
+        Agent projection returned by `GET /agents`.
+
+        This is the list-view envelope item emitted by the Python backend and
+        forwarded by the Node gateway. It is not the full detail projection
+        used by `GET /agents/{agentKey}`.
+      properties:
+        _id:
+          type: string
+          description: Full document id in the backing graph store.
+          example: "agentInstances/e6f848ca-e2ab-4594-9925-e1136629f474"
+        _key:
+          type: string
+          description: Stable agent key used in route params.
+          example: "e6f848ca-e2ab-4594-9925-e1136629f474"
+        _rev:
+          type: string
+          description: Backend document revision token.
+          example: "_lkNlcOm---"
+        createdAtTimestamp:
+          type: integer
+          format: int64
+          description: Unix epoch timestamp in milliseconds when the agent was created.
+        createdBy:
+          type: string
+          description: User id of the creator.
+        description:
+          type: string
+          nullable: true
+          description: Short human-readable description of the agent.
+        instructions:
+          type: string
+          nullable: true
+          description: Additional execution instructions stored on the agent.
+        isActive:
+          type: boolean
+          description: Whether the agent is active.
+        isDeleted:
+          type: boolean
+          description: Whether the agent has been soft-deleted.
+        isServiceAccount:
+          type: boolean
+          description: Whether this agent is a service-account agent.
+        models:
+          type: array
+          description: |
+            Model entries configured on the agent.
+
+            For `GET /agents`, the backend returns the stored normalized string
+            representation, typically `modelKey_modelName`.
+          items:
+            type: string
+        name:
+          type: string
+          description: Display name of the agent.
+        startMessage:
+          type: string
+          nullable: true
+          description: Greeting shown at conversation start.
+        systemPrompt:
+          type: string
+          nullable: true
+          description: System prompt stored on the agent.
+        tags:
+          type: array
+          items:
+            type: string
+          description: Free-form agent tags.
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+          description: Unix epoch timestamp in milliseconds when the agent was last updated.
+        updatedBy:
+          type: string
+          nullable: true
+          description: User id of the last updater, if present.
+        webSearch:
+          type: object
+          additionalProperties: false
+          nullable: true
+          description: |
+            Web-search provider attachment for this agent, or `null` when none is attached.
+
+            For `GET /agents`, the response formatter always emits `provider`.
+            It may also emit `providerKey` and `providerLabel` when those values
+            were present on the stored attachment. It does not emit `iconPath`
+            on this response path.
+          properties:
+            provider:
+              type: string
+            providerKey:
+              type: string
+            providerLabel:
+              type: string
+        shareWithOrg:
+          type: boolean
+          description: Whether the agent is shared with the organization.
+        can_view:
+          type: boolean
+          description: Effective permission to view the agent.
+        can_share:
+          type: boolean
+          description: Effective permission to share the agent.
+        can_edit:
+          type: boolean
+          description: Effective permission to edit the agent.
+        can_delete:
+          type: boolean
+          description: Effective permission to delete the agent.
+        user_role:
+          type: string
+          description: Effective role of the current user on this agent.
+          example: "OWNER"
+        access_type:
+          type: string
+          description: How the user can access this agent.
+          example: "INDIVIDUAL"
+      required:
+        - _id
+        - _key
+        - createdAtTimestamp
+        - createdBy
+        - isActive
+        - isDeleted
+        - isServiceAccount
+        - models
+        - name
+        - tags
+        - updatedAtTimestamp
+        - shareWithOrg
+        - can_view
+        - can_share
+        - can_edit
+        - can_delete
+        - user_role
+        - access_type
+
+    AgentListPagination:
+      type: object
+      additionalProperties: false
+      description: Pagination block returned by `GET /agents`.
+      required:
+        - currentPage
+        - limit
+        - totalItems
+        - totalPages
+        - hasNext
+        - hasPrev
+      properties:
+        currentPage:
+          type: integer
+          description: Current 1-based page number.
+          example: 1
+        limit:
+          type: integer
+          description: Page size actually applied by the backend.
+          example: 20
+        totalItems:
+          type: integer
+          description: Total number of matching agents across all pages.
+          example: 2
+        totalPages:
+          type: integer
+          description: Total number of pages for the current query.
+          example: 1
+        hasNext:
+          type: boolean
+          description: Whether a later page exists.
+          example: false
+        hasPrev:
+          type: boolean
+          description: Whether an earlier page exists.
+          example: false
+
+    AgentListResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Paginated response returned by `GET /agents`.
+
+        The Node gateway forwards the Python backend response on success. If
+        the backend returns a non-200 response, the gateway still returns HTTP
+        200 with `success: true`, an empty `agents` array, and a zeroed
+        pagination block derived from the requested `page` / `limit`.
+      required:
+        - success
+        - agents
+        - pagination
+      properties:
+        success:
+          type: boolean
+          example: true
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentListItem'
+        pagination:
+          $ref: '#/components/schemas/AgentListPagination'
+
+    GetAgentResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Success envelope returned by `GET /agents/{agentKey}`.
+
+        The Node gateway forwards the backend response as an envelope with a
+        top-level status/message and the detailed agent projection nested under
+        `agent`.
+      required:
+        - status
+        - message
+        - agent
+      properties:
+        status:
+          type: string
+          example: "success"
+        message:
+          type: string
+          example: "Agent retrieved successfully"
+        agent:
+          $ref: '#/components/schemas/Agent'
+
+    AgentDeleteCounts:
+      type: object
+      additionalProperties: false
+      description: |
+        Counts of graph entities affected by `DELETE /agents/{agentKey}`.
+        The Python backend soft-deletes (tombstones) the agent instance; related
+        toolsets, tools, and knowledge documents remain unless separately removed.
+        A simple agent with no attachments returns `agents: 1` and zero for the
+        other buckets (as asserted by integration tests).
+      required:
+        - agents
+        - toolsets
+        - tools
+        - knowledge
+        - edges
+      properties:
+        agents:
+          type: integer
+          minimum: 0
+          description: Agent instance documents tombstoned (1 on a successful delete).
+          example: 1
+        toolsets:
+          type: integer
+          minimum: 0
+          example: 0
+        tools:
+          type: integer
+          minimum: 0
+          example: 0
+        knowledge:
+          type: integer
+          minimum: 0
+          example: 0
+        edges:
+          type: integer
+          minimum: 0
+          example: 0
+
+    AgentDeleteResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Success envelope returned by `DELETE /agents/{agentKey}` on HTTP 200.
+        The Node gateway proxies `DELETE` to the Python query service and returns
+        the backend JSON body unchanged.
+      required:
+        - status
+        - message
+        - deleted
+      properties:
+        status:
+          type: string
+          enum: [success]
+          example: success
+        message:
+          type: string
+          example: Agent deleted successfully
+        deleted:
+          $ref: '#/components/schemas/AgentDeleteCounts'
+
+    AgentCreateModelEntry:
+      description: |
+        Accepted model entry for `POST /agents/create`.
+        The gateway accepts either a non-empty string model entry or an object entry.
+        At least one entry must be present, and at least one object entry must carry
+        `isReasoning: true` for the request to pass validation.
+      oneOf:
+        - type: string
+          minLength: 1
+        - type: object
+          additionalProperties: false
+          properties:
+            modelKey:
+              type: string
+            modelName:
+              type: string
+            provider:
+              type: string
+            isReasoning:
+              type: boolean
+
+    AgentCreateToolRef:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        fullName:
+          type: string
+        description:
+          type: string
+
+    AgentCreateToolsetName:
+      type: string
+      description: |
+        Normalized toolset identifier (lowercase, no spaces or underscores).
+        Matches the Python toolset registry key and the value sent by the agent builder.
+      enum:
+        - calendar
+        - clickup
+        - confluence
+        - drive
+        - github
+        - gmail
+        - jira
+        - lumos
+        - mariadb
+        - onedrive
+        - outlook
+        - redshift
+        - salesforce
+        - sharepoint
+        - slack
+        - teams
+        - zoom
+      example: jira
+
+    AgentCreateToolset:
+      type: object
+      additionalProperties: false
+      description: |
+        Toolset attachment for agent creation.
+        Use `displayName` for human-readable labels (for example, "Jira").
+      properties:
+        name:
+          $ref: '#/components/schemas/AgentCreateToolsetName'
+        displayName:
+          type: string
+        type:
+          type: string
+        instanceId:
+          type: string
+        instanceName:
+          type: string
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCreateToolRef'
+
+    AgentCreateKnowledge:
+      type: object
+      additionalProperties: false
+      properties:
+        connectorId:
+          type: string
+        filters:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: string
+            - type: array
+              items: {}
+
+    AgentCreateWebSearch:
+      description: |
+        Accepted web-search attachment for `POST /agents/create`.
+        The gateway accepts either a provider string or an object with at least
+        a `provider` field.
+      anyOf:
+        - type: string
+        - type: object
+          additionalProperties: false
+          properties:
+            provider:
+              type: string
+            providerKey:
+              type: string
+            providerLabel:
+              type: string
+            iconPath:
+              type: string
+          required:
+            - provider
+        - type: 'null'
+
+    AgentCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - models
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Agent display name
+          example: "Product Support Agent"
+        description:
+          type: string
+          maxLength: 100000
+          description: What the agent does
+        startMessage:
+          type: string
+          maxLength: 100000
+          description: Initial greeting shown when conversation starts
+        systemPrompt:
+          type: string
+          maxLength: 100000
+          description: System instructions for the agent
+        instructions:
+          type: string
+          maxLength: 100000
+          description: Additional agent execution instructions
+        models:
+          type: array
+          minItems: 1
+          description: |
+            Agent model configuration entries. Gateway validation also requires
+            at least one reasoning-capable model object in the array.
+          items:
+            $ref: '#/components/schemas/AgentCreateModelEntry'
+        tags:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+            maxLength: 100
+        shareWithOrg:
+          type: boolean
+          default: false
+          description: Share agent with the organization
+        isServiceAccount:
+          type: boolean
+          default: false
+          description: Create the agent as a service-account agent
+        toolsets:
+          type: array
+          maxItems: 100
+          description: Toolsets attached to the agent (instance-aware)
+          items:
+            $ref: '#/components/schemas/AgentCreateToolset'
+        knowledge:
+          type: array
+          maxItems: 100
+          description: Knowledge sources connected to the agent
+          items:
+            $ref: '#/components/schemas/AgentCreateKnowledge'
+        webSearch:
+          $ref: '#/components/schemas/AgentCreateWebSearch'
+
+    AgentCreateWarning:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        error:
+          type: string
+
+    AgentCreateResponseTool:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - fullName
+        - key
+      properties:
+        name:
+          type: string
+        fullName:
+          type: string
+        key:
+          type: string
+
+    AgentCreateResponseToolset:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - displayName
+        - key
+        - tools
+      properties:
+        name:
+          type: string
+        displayName:
+          type: string
+        key:
+          type: string
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCreateResponseTool'
+
+    AgentCreateResponseKnowledge:
+      type: object
+      additionalProperties: false
+      required:
+        - connectorId
+        - key
+        - filters
+      properties:
+        connectorId:
+          type: string
+        key:
+          type: string
+        filters:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: string
+            - type: array
+              items: {}
+
+    AgentCreateResponseAgent:
+      type: object
+      additionalProperties: false
+      required:
+        - _key
+        - name
+        - description
+        - startMessage
+        - systemPrompt
+        - instructions
+        - models
+        - tags
+        - webSearch
+        - isActive
+        - isServiceAccount
+        - createdBy
+        - updatedBy
+        - createdAtTimestamp
+        - updatedAtTimestamp
+        - isDeleted
+        - toolsets
+        - knowledge
+      properties:
+        _key:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        startMessage:
+          type: string
+        systemPrompt:
+          type: string
+        instructions:
+          type: string
+          nullable: true
+        models:
+          type: array
+          items:
+            type: string
+        tags:
+          type: array
+          items:
+            type: string
+        webSearch:
+          anyOf:
+            - type: object
+              additionalProperties: false
+              properties:
+                provider:
+                  type: string
+                providerKey:
+                  type: string
+                providerLabel:
+                  type: string
+            - type: 'null'
+        isActive:
+          type: boolean
+        isServiceAccount:
+          type: boolean
+        createdBy:
+          type: string
+        updatedBy:
+          type: string
+          nullable: true
+        createdAtTimestamp:
+          type: integer
+        updatedAtTimestamp:
+          type: integer
+        isDeleted:
+          type: boolean
+        toolsets:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCreateResponseToolset'
+        knowledge:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCreateResponseKnowledge'
+
+    AgentCreateResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - message
+        - agent
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+            - partial_success
+        message:
+          type: string
+        agent:
+          $ref: '#/components/schemas/AgentCreateResponseAgent'
+        warnings:
+          anyOf:
+            - type: array
+              items:
+                $ref: '#/components/schemas/AgentCreateWarning'
+            - type: 'null'
+
+    AgentUpdateRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Partial update payload for `PUT /agents/{agentKey}`.
+
+        All properties are optional; only supplied fields are updated. The Node
+        gateway does not Zod-validate this body (unlike `POST /agents/create`);
+        the Python agent service validates fields when they are present.
+
+        When `models` is included, the backend requires a non-empty array with at
+        least one entry that resolves to a reasoning-capable model object
+        (`isReasoning: true` on an object entry, matching create semantics).
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Agent display name
+        description:
+          type: string
+          maxLength: 100000
+          description: What the agent does
+        startMessage:
+          type: string
+          maxLength: 100000
+          description: Initial greeting shown when conversation starts
+        systemPrompt:
+          type: string
+          maxLength: 100000
+          description: System instructions for the agent
+        instructions:
+          type: string
+          maxLength: 100000
+          nullable: true
+          description: Additional agent execution instructions
+        models:
+          type: array
+          description: |
+            Agent model configuration entries. When this field is sent, the Python
+            backend requires at least one parsed model entry and at least one
+            reasoning-capable model object in the array.
+          items:
+            $ref: '#/components/schemas/AgentCreateModelEntry'
+        tags:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+            maxLength: 100
+        shareWithOrg:
+          type: boolean
+          description: Share agent with the organization
+        isServiceAccount:
+          type: boolean
+          description: |
+            Mark the agent as a service-account agent. A service-account agent
+            cannot be converted back to a regular agent.
+        toolsets:
+          type: array
+          maxItems: 100
+          description: |
+            Toolsets attached to the agent (instance-aware). An empty array
+            removes all toolsets when this field is supplied.
+          items:
+            $ref: '#/components/schemas/AgentCreateToolset'
+        knowledge:
+          type: array
+          maxItems: 100
+          description: |
+            Knowledge sources connected to the agent. An empty array removes all
+            knowledge sources when this field is supplied.
+          items:
+            $ref: '#/components/schemas/AgentCreateKnowledge'
+        webSearch:
+          $ref: '#/components/schemas/AgentCreateWebSearch'
+
+    AgentUpdateResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Success envelope returned by `PUT /agents/{agentKey}`.
+
+        The Node gateway forwards the Python backend response on success. The
+        updated agent projection is not included; use `GET /agents/{agentKey}`
+        to read the persisted configuration.
+      required:
+        - status
+        - message
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+          example: "success"
+        message:
+          type: string
+          example: "Agent updated successfully"
 
     AgentTemplate:
       type: object
@@ -7882,6 +8975,7 @@ components:
 
     AIModelProviderConfig:
       type: object
+      additionalProperties: false
       required:
         - provider
         - configuration
@@ -7890,18 +8984,12 @@ components:
           type: string
           description: AI provider name
         configuration:
-          type: object
-          properties:
-            model:
-              type: string
-              description: Model name(s)
-            apiKey:
-              type: string
-              description: API key for the model
-            endpoint:
-              type: string
-              format: uri
-              description: Endpoint URL for the model
+          $ref: '#/components/schemas/AIModelProviderConfiguration'
+        modelFriendlyName:
+          type: string
+          description: |
+            Display name for this model entry. May duplicate configuration.modelFriendlyName
+            when set on the stored provider record.
         isMultimodal:
           type: boolean
           default: false
@@ -7925,6 +9013,17 @@ components:
 
     AIModelsConfig:
       type: object
+      additionalProperties: false
+      required:
+        - ocr
+        - embedding
+        - slm
+        - llm
+        - reasoning
+        - multiModal
+        - imageGeneration
+        - tts
+        - stt
       properties:
         ocr:
           type: array
@@ -7965,6 +9064,51 @@ components:
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'
       description: Must have at least one model type configured
+
+    GetAIModelsProvidersResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Success response from getAIModelsProviders. Returns the full stored
+        models bucket map (masked when secrets are hidden).
+      required:
+        - status
+        - models
+        - message
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          description: >-
+            Human-readable summary (e.g. "AI models retrieved successfully" or
+            "No AI models found").
+        models:
+          $ref: '#/components/schemas/AIModelsConfig'
+
+    GetModelsByTypeResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Success response from getModelsByType. Returns stored provider entries
+        for a single model type bucket (not the flattened available-models shape).
+      required:
+        - status
+        - models
+        - message
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          description: >-
+            Human-readable summary (e.g. "Found 2 llm models", "No llm models found").
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
 
     # AI Model Registry Schemas (Python backend)
     AIModelRegistryProvider:
@@ -8405,9 +9549,123 @@ components:
           description: Custom system prompt text for AI models
 
     # AI Model Provider Management Schemas
+    AIModelProviderConfiguration:
+      type: object
+      description: |
+        Provider-specific configuration stored on each AI model entry.
+
+        **Passthrough contract:** `additionalProperties` is intentionally `true` at this
+        level only. Node validation uses Zod `configurationSchema` with `.passthrough()`
+        so provider-specific keys reach the Python backend unchanged. The canonical field
+        list for each provider lives in `backend/python/app/config/ai_models/providers/`;
+        new providers may add keys without updating this spec. Do not set
+        `additionalProperties: false` here unless every registry field is enumerated.
+
+        Properties below are the documented union of the Zod base shape and registry-defined
+        configuration keys (all optional unless required by a given provider at runtime).
+      additionalProperties: false
+      properties:
+        model:
+          type: string
+          description: |
+            Model name/identifier. May be comma-separated for multiple models
+            (e.g. `gpt-4o, gpt-4o-mini`).
+          example: "gpt-4"
+        modelFriendlyName:
+          type: string
+          description: |
+            Display name for the model. Only allowed when `model` is a single name
+            (not comma-separated).
+        apiKey:
+          type: string
+          description: API key for the provider
+        endpoint:
+          type: string
+          description: Custom endpoint URL (Azure OpenAI, self-hosted, Wispr override)
+        organizationId:
+          type: string
+          description: Organization ID (OpenAI)
+        deploymentName:
+          type: string
+          description: Deployment name (Azure OpenAI)
+        provider:
+          type: string
+          description: Bedrock model vendor (e.g. anthropic, cohere) or provider name override
+        customProvider:
+          type: string
+          description: Custom Bedrock vendor name when `provider` is `other`
+        awsAccessKeyId:
+          type: string
+          description: AWS access key (Bedrock). Optional - omit to use IAM role credentials.
+        awsAccessSecretKey:
+          type: string
+          description: AWS secret key (Bedrock). Optional - omit to use IAM role credentials.
+        region:
+          type: string
+          description: AWS region (Bedrock)
+        project:
+          type: string
+          description: GCP project ID (Vertex AI)
+        location:
+          type: string
+          description: Vertex AI region (e.g. us-central1)
+        serviceAccountJson:
+          type: string
+          description: |
+            Google Cloud service account JSON key (Vertex AI). Uploaded as a string;
+            treated as a secret at runtime.
+        dimensions:
+          description: |
+            Embedding output dimensions override (when supported by the model).
+            Stored configs may use an empty string when unset (registry default).
+          anyOf:
+            - type: integer
+            - type: string
+              enum: ['']
+        voice:
+          type: string
+          description: Default TTS voice (OpenAI / Gemini audio)
+        responseFormat:
+          type: string
+          description: TTS audio format (e.g. mp3, wav)
+        device:
+          type: string
+          description: Whisper runtime device (auto, cpu, cuda)
+        computeType:
+          type: string
+          description: Whisper numeric precision (e.g. int8, float16)
+        modelDir:
+          type: string
+          description: Whisper model weights cache directory
+        language:
+          type: string
+          description: Wispr Flow default language (ISO 639-1) or empty for auto-detect
+        appType:
+          type: string
+          description: Wispr Flow output formatting (e.g. ai, email)
+        model_kwargs:
+          type: object
+          description: |
+            Optional keyword arguments forwarded to LangChain embedding/LLM clients
+            (mirrors Zod `z.record(z.any())`). Used by HuggingFace (`device`, `api_key`)
+            and Bedrock (`max_tokens`) paths in Python; values are typically string,
+            number, or boolean. Omitted when not configured.
+          additionalProperties: {}
+        encode_kwargs:
+          type: object
+          description: |
+            Optional encoding kwargs for embedding models (mirrors Zod
+            `z.record(z.any())`). Commonly `normalize_embeddings` (boolean) for
+            HuggingFace and SentenceTransformer providers. Omitted when not configured.
+          additionalProperties: {}
+        cache_folder:
+          type: string
+          description: Cache folder for models
+
     AddAIModelProviderRequest:
       type: object
       description: Request to add a new AI model provider
+      additionalProperties: false
       required:
         - modelType
         - provider
@@ -8417,38 +9675,11 @@ components:
           $ref: '#/components/schemas/ModelType'
         provider:
           type: string
-          description: Provider name (e.g., openai, anthropic, azure-openai, aws-bedrock)
-          example: "openai"
+          minLength: 1
+          description: Provider registry ID (e.g. openAI, gemini, azureOpenAI, groq)
+          example: "openAI"
         configuration:
-          type: object
-          description: Provider-specific configuration
-          properties:
-            model:
-              type: string
-              description: Model name/identifier
-              example: "gpt-4"
-            apiKey:
-              type: string
-              description: API key for the provider
-            endpoint:
-              type: string
-              format: uri
-              description: Custom endpoint URL (for Azure, self-hosted)
-            organizationId:
-              type: string
-              description: Organization ID (OpenAI)
-            deploymentName:
-              type: string
-              description: Deployment name (Azure OpenAI)
-            awsAccessKeyId:
-              type: string
-              description: AWS access key (Bedrock). Optional - omit to use IAM role credentials.
-            awsAccessSecretKey:
-              type: string
-              description: AWS secret key (Bedrock). Optional - omit to use IAM role credentials.
-            region:
-              type: string
-              description: AWS region (Bedrock)
+          $ref: '#/components/schemas/AIModelProviderConfiguration'
         isMultimodal:
           type: boolean
           description: Whether the model supports multimodal inputs
@@ -8469,37 +9700,319 @@ components:
     UpdateAIModelProviderRequest:
       type: object
       description: Request to update an existing AI model provider
+      additionalProperties: false
       required:
         - provider
         - configuration
       properties:
         provider:
           type: string
-          description: Provider name
+          minLength: 1
+          description: Provider registry ID (e.g. openAI, gemini, azureOpenAI, groq)
         configuration:
-          type: object
-          description: Updated provider configuration
+          $ref: '#/components/schemas/AIModelProviderConfiguration'
         isMultimodal:
           type: boolean
+          description: Whether the model supports multimodal inputs
+          default: false
         isReasoning:
           type: boolean
+          description: Whether this is a reasoning model
+          default: false
         isDefault:
           type: boolean
+          description: Set as default model for this type
+          default: false
+        contextLength:
+          type: integer
+          description: Maximum context length (tokens)
+          nullable: true
+
+    AIModelProviderAddedDetails:
+      type: object
+      additionalProperties: false
+      description: Summary of the provider entry created by addAIModelProvider
+      required:
+        - modelKey
+        - modelType
+        - provider
+        - isDefault
+      properties:
+        modelKey:
+          type: string
+          format: uuid
+          description: Unique identifier assigned to the new provider configuration
+        modelType:
+          $ref: '#/components/schemas/ModelType'
+        provider:
+          type: string
+          description: Provider registry ID
+        model:
+          type: string
+          description: Model name from `configuration.model`
+        isDefault:
+          type: boolean
+          description: Whether this provider was saved as the default for its type
         contextLength:
           type: integer
           nullable: true
+          description: Context length (tokens), when provided in the request
 
     AIModelProviderResponse:
       type: object
-      description: Response containing AI model provider details
+      additionalProperties: false
+      description: Success response from addAIModelProvider
+      required:
+        - status
+        - message
+        - details
       properties:
         status:
           type: string
-          enum: [success, error]
+          enum: [success]
         message:
           type: string
-        data:
-          $ref: '#/components/schemas/AIModelProviderConfig'
+          example: "LLM provider added successfully"
+        details:
+          $ref: '#/components/schemas/AIModelProviderAddedDetails'
+
+    AIModelProviderSimpleError:
+      type: object
+      additionalProperties: false
+      description: |
+        Controller validation error returned before the Python health-check
+        (e.g. missing required fields or invalid modelType).
+      required:
+        - status
+        - message
+      properties:
+        status:
+          type: string
+          enum: [error]
+        message:
+          type: string
+
+    AIModelProviderHealthCheckBackendDetails:
+      type: object
+      additionalProperties: false
+      description: |
+        Nested diagnostics from the Python query service health-check response
+        (`content.details`). Present on credential, timeout, and embedding-policy failures.
+      properties:
+        provider:
+          type: string
+          description: Provider registry ID (e.g. openai, azure-openai)
+        model:
+          type: string
+          description: Model name from the configuration under test
+        error:
+          type: string
+          description: Underlying provider or multimodal probe error text
+        error_type:
+          type: string
+          description: Python exception class name (e.g. AuthenticationError)
+        timeout_seconds:
+          type: integer
+          description: Health-check invoke timeout in seconds
+        existing_vector_size:
+          type: integer
+          description: Vector dimension of the existing Qdrant collection
+        new_embedding_size:
+          type: integer
+          description: Dimension produced by the candidate embedding model
+        points_count:
+          type: integer
+          description: Number of points in the existing collection
+        current_model:
+          type: string
+          description: Embedding model name already stored for the org collection
+        new_model:
+          type: string
+          description: Candidate embedding model name
+        new_provider:
+          type: string
+          description: Candidate embedding provider ID
+        embedding_model:
+          type: string
+          description: Embedding subsystem status (HTTPException detail payloads)
+        vector_store:
+          type: string
+          description: Vector store subsystem status (HTTPException detail payloads)
+        llm:
+          type: string
+          description: LLM subsystem status (HTTPException detail payloads)
+
+    AIModelProviderHealthCheckBackendPayload:
+      type: object
+      additionalProperties: false
+      description: |
+        Raw JSON body from `POST /api/v1/health-check/{modelType}` on the Python query
+        service, forwarded unchanged as `error.details` by addAIModelProvider and
+        updateAIModelProvider when the health check fails.
+      properties:
+        status:
+          type: string
+          description: Health outcome from Python (e.g. error, not healthy)
+          example: error
+        message:
+          type: string
+          description: Primary human-readable failure reason from Python
+          example: "LLM health check failed: Incorrect API key provided"
+        error:
+          type: string
+          description: Alternate top-level error field (legacy envelopes and HTTPException detail)
+          example: "Health check failed: Connection refused"
+        timestamp:
+          type: integer
+          format: int64
+          description: Epoch milliseconds when the check completed
+        details:
+          $ref: '#/components/schemas/AIModelProviderHealthCheckBackendDetails'
+      example:
+        status: error
+        message: "LLM health check failed: Incorrect API key provided"
+        details:
+          provider: openai
+          model: gpt-4o-mini
+          error_type: AuthenticationError
+
+    AIModelProviderHealthCheckErrorEnvelope:
+      type: object
+      additionalProperties: false
+      description: Health-check failure from the Python AI backend
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required:
+            - status
+            - message
+          properties:
+            status:
+              type: string
+              enum: [error]
+            message:
+              type: string
+              description: |
+                User-facing reason from the Node controller, derived from the Python
+                body (`message`, or `error` / `error.message` when present).
+            details:
+              $ref: '#/components/schemas/AIModelProviderHealthCheckBackendPayload'
+
+    AddAIModelProviderErrorResponse:
+      oneOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - $ref: '#/components/schemas/AIModelProviderSimpleError'
+        - $ref: '#/components/schemas/AIModelProviderHealthCheckErrorEnvelope'
+
+    UpdateAIModelProviderDetails:
+      type: object
+      additionalProperties: false
+      description: Summary of the provider entry returned by updateAIModelProvider
+      required:
+        - modelKey
+        - modelType
+        - provider
+        - isMultimodal
+        - isReasoning
+      properties:
+        modelKey:
+          type: string
+          format: uuid
+          description: Unique identifier for this model configuration
+        modelType:
+          $ref: '#/components/schemas/ModelType'
+        provider:
+          type: string
+          description: Provider registry ID
+        model:
+          type: string
+          description: Model name from `configuration.model`
+        contextLength:
+          type: integer
+          nullable: true
+          description: Context length (tokens)
+        isMultimodal:
+          type: boolean
+          description: Whether the model supports multimodal inputs
+        isReasoning:
+          type: boolean
+          description: Whether this is a reasoning model
+
+    UpdateAIModelProviderResponse:
+      type: object
+      additionalProperties: false
+      description: Success response from updateAIModelProvider
+      required:
+        - status
+        - message
+        - details
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          example: "LLM provider updated successfully"
+        details:
+          $ref: '#/components/schemas/UpdateAIModelProviderDetails'
+
+    UpdateAIModelProviderErrorResponse:
+      oneOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - $ref: '#/components/schemas/AIModelProviderSimpleError'
+        - $ref: '#/components/schemas/AIModelProviderHealthCheckErrorEnvelope'
+
+    DeleteAIModelProviderDetails:
+      type: object
+      additionalProperties: false
+      description: Metadata about the AI model provider entry removed by deleteAIModelProvider
+      required:
+        - modelKey
+        - modelType
+        - provider
+        - wasDefault
+      properties:
+        modelKey:
+          type: string
+          format: uuid
+          description: UUID of the deleted provider configuration
+        modelType:
+          $ref: '#/components/schemas/ModelType'
+        provider:
+          type: string
+          description: Provider registry ID (e.g. openAI, gemini, azureOpenAI)
+        model:
+          type: string
+          description: Model name from `configuration.model` when present
+        wasDefault:
+          type: boolean
+          description: Whether the deleted entry was the default for its model type
+        contextLength:
+          type: integer
+          nullable: true
+          description: Maximum context length (tokens) when configured
+
+    DeleteAIModelProviderResponse:
+      type: object
+      additionalProperties: false
+      description: Success response from deleteAIModelProvider
+      required:
+        - status
+        - message
+        - details
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          description: Human-readable confirmation
+          example: "LLM provider deleted successfully"
+        details:
+          $ref: '#/components/schemas/DeleteAIModelProviderDetails'
 
     # ==================== CRAWLING MANAGER SCHEMAS ====================
     CrawlingScheduleType:
@@ -9367,25 +10880,25 @@ paths:
       summary: Initiate OAuth authorization flow
       description: |
         OAuth 2.0 Authorization Endpoint (RFC 6749 Section 4.1.1).
-        <br><br>
+
         Initiates the authorization code flow. Users are redirected here by OAuth clients
         to authorize access to their account.
-        <br><br>
-        <b>Flow:</b><br>
-        1. Client redirects user to this endpoint with required parameters<br>
-        2. If not logged in, user is redirected to PipesHub login<br>
-        3. User sees consent page with requested scopes<br>
-        4. User grants or denies consent<br>
+
+        **Flow:**
+        1. Client redirects user to this endpoint with required parameters
+        2. If not logged in, user is redirected to PipesHub login
+        3. User sees consent page with requested scopes
+        4. User grants or denies consent
         5. User is redirected back to client with authorization code
-        <br><br>
-        <b>PKCE Support (RFC 7636):</b><br>
-        - Required for public clients (SPA, mobile apps)<br>
-        - Recommended for confidential clients<br>
+
+        **PKCE Support (RFC 7636):**
+        - Required for public clients (SPA, mobile apps)
+        - Recommended for confidential clients
         - Use S256 method (SHA256 hash of code_verifier)
-        <br><br>
-        <b>Security:</b><br>
-        - Always use HTTPS in production<br>
-        - State parameter provides CSRF protection<br>
+
+        **Security:**
+        - Always use HTTPS in production
+        - State parameter provides CSRF protection
         - Redirect URI must match registered URIs exactly
       operationId: oauthAuthorize
       security: []
@@ -9460,19 +10973,19 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthErrorResponse'
+                $ref: '#/components/schemas/ErrorResponse'
     post:
       tags:
         - OAuth Provider
       summary: Submit authorization consent
       description: |
         Submit user's consent decision for OAuth authorization.
-        <br><br>
+
         Called after user reviews the consent page and makes a decision.
         This endpoint generates an authorization code if consent is granted.
-        <br><br>
-        <b>Responses:</b><br>
-        - Consent granted: Redirects to client with authorization code<br>
+
+        **Responses:**
+        - Consent granted: Redirects to client with authorization code
         - Consent denied: Redirects to client with `access_denied` error
       operationId: oauthAuthorizeConsent
       security:
@@ -9501,7 +11014,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthErrorResponse'
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: User not authenticated
         '403':
@@ -9514,25 +11027,26 @@ paths:
       summary: Exchange authorization code for tokens
       description: |
         OAuth 2.0 Token Endpoint (RFC 6749 Section 4.1.3).
-        <br><br>
+
         Exchanges an authorization code, client credentials, or refresh token for access tokens.
-        <br><br>
-        <b>Grant Types:</b><br>
-        - `authorization_code`: Exchange auth code for tokens (user-based)<br>
-        - `client_credentials`: Get tokens for machine-to-machine auth<br>
+
+        **Grant Types:**
+        - `authorization_code`: Exchange auth code for tokens (user-based)
+        - `client_credentials`: Get tokens for machine-to-machine auth
         - `refresh_token`: Get new access token using refresh token
-        <br><br>
+
         For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client). The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the creator (**`createdBy`** claim or OAuth app lookup) and must not trust client-supplied **`x-oauth-user-id`** (stripped on ingress). Downstream Python services accept **`x-oauth-user-id`** only when set by the gateway — see **OAuth Provider** tag.
-        <br><br>
-        <b>Client Authentication:</b><br>
-        Can be provided via:<br>
-        - HTTP Basic auth: `Authorization: Basic base64(client_id:client_secret)`<br>
+
+        **Client Authentication:**
+        Can be provided via:
+        - HTTP Basic auth: `Authorization: Basic base64(client_id:client_secret)`
         - Request body: `client_id` and `client_secret` parameters
-        <br><br>
-        <b>PKCE Verification:</b><br>
+
+        **PKCE Verification:**
         If authorization used PKCE, the `code_verifier` must be provided and will be
         verified against the stored code challenge.
       operationId: oauthToken
+      x-pipeshub-sdk: true
       security: []
       requestBody:
         description: "Request payload"
@@ -9563,13 +11077,19 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthErrorResponse'
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Client authentication failed
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/OAuthErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth2/revoke:
     post:
@@ -9578,18 +11098,19 @@ paths:
       summary: Revoke an access or refresh token
       description: |
         OAuth 2.0 Token Revocation Endpoint (RFC 7009).
-        <br><br>
+
         Revokes an access token or refresh token, preventing further use.
         Revoking a refresh token also invalidates associated access tokens.
-        <br><br>
-        <b>Use Cases:</b><br>
-        - User logs out of third-party app<br>
-        - User revokes app access from account settings<br>
+
+        **Use Cases:**
+        - User logs out of third-party app
+        - User revokes app access from account settings
         - Security incident response
-        <br><br>
-        <b>Note:</b> Returns 200 OK even if token was already revoked or invalid
+
+        **Note:** Returns 200 OK even if token was already revoked or invalid
         (per RFC 7009, to prevent token enumeration).
       operationId: oauthRevoke
+      x-pipeshub-sdk: true
       security: []
       requestBody:
         description: "Request payload"
@@ -9610,6 +11131,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OAuthErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth2/introspect:
     post:
@@ -9618,18 +11145,19 @@ paths:
       summary: Introspect a token
       description: |
         OAuth 2.0 Token Introspection Endpoint (RFC 7662).
-        <br><br>
+
         Check if a token is active and retrieve its metadata.
-        <br><br>
-        <b>Use Cases:</b><br>
-        - Resource servers validating tokens<br>
-        - Debugging token issues<br>
+
+        **Use Cases:**
+        - Resource servers validating tokens
+        - Debugging token issues
         - Checking token scopes before processing requests
-        <br><br>
-        <b>Response:</b><br>
-        - Active token: Returns `active: true` with token metadata<br>
+
+        **Response:**
+        - Active token: Returns `active: true` with token metadata
         - Invalid/expired/revoked token: Returns only `active: false`
       operationId: oauthIntrospect
+      x-pipeshub-sdk: true
       security: []
       requestBody:
         description: "Request payload"
@@ -9671,6 +11199,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OAuthErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth2/userinfo:
     get:
@@ -9679,18 +11213,19 @@ paths:
       summary: Get authenticated user information
       description: |
         OpenID Connect UserInfo Endpoint.
-        <br><br>
+
         Returns claims about the authenticated user. Requires a valid access token
         with the `openid` scope.
-        <br><br>
-        <b>Available Claims:</b><br>
-        - `user_id` - User identifier<br>
-        - `name`, `given_name`, `family_name` - Name claims (with `profile` scope)<br>
+
+        **Available Claims:**
+        - `user_id` - User identifier
+        - `name`, `given_name`, `family_name` - Name claims (with `profile` scope)
         - `email`, `email_verified` - Email claims (with `email` scope)
-        <br><br>
-        <b>Authentication:</b><br>
+
+        **Authentication:**
         Pass the access token as a Bearer token: `Authorization: Bearer {access_token}`
       operationId: oauthUserInfo
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       responses:
@@ -9878,16 +11413,13 @@ paths:
         - OAuth Apps
       summary: List OAuth apps
       description: |
-        List OAuth apps visible to the signed-in user for the organization.
-        <br><br>
-        Returns only apps **created by** the signed-in user (including when that user is an org admin).
-        <br><br>
-        Returns a paginated list of apps with their configuration (excluding secrets).
-        <br><br>
-        <b>Filters:</b><br>
-        - `status` - Filter by app status (active, suspended, revoked)<br>
-        - `search` - Search by app name or description
+        Returns a paginated list of OAuth apps registered by the signed-in user. Access is creator-scoped — even org admins only see apps they created themselves, so this endpoint is safe to use for per-user developer dashboards without leaking org-wide app metadata.
+
+        Each entry carries the full app configuration except the client secret, which is only ever returned at creation time and immediately after a regeneration.
+
+        Use the `status` query parameter to filter by lifecycle state (`active`, `suspended`, `revoked`) and `search` for a case-insensitive substring match against `name` or `description`.
       operationId: listOAuthApps
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -9897,7 +11429,8 @@ paths:
             type: integer
             minimum: 1
             default: 1
-          description: Page number
+          description: |
+            Page number (matches `listAppsQuerySchema`: defaults to `1` when omitted or empty).
         - name: limit
           in: query
           schema:
@@ -9905,7 +11438,8 @@ paths:
             minimum: 1
             maximum: 100
             default: 20
-          description: Items per page
+          description: |
+            Items per page (defaults to `20` when omitted or empty; max 100).
         - name: status
           in: query
           schema:
@@ -9926,26 +11460,37 @@ paths:
                 $ref: '#/components/schemas/OAuthAppListResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — insufficient workspace permission to list OAuth apps
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
     post:
       tags:
         - OAuth Apps
       summary: Create OAuth app
       description: |
-        Create a new OAuth app for the organization (any authenticated org member may create apps).
-        <br><br>
-        <b>Important:</b> The client secret is only returned once during creation.
-        Store it securely - it cannot be retrieved later. If lost, you'll need to
-        regenerate it.
-        <br><br>
-        <b>Scopes:</b> `allowedScopes` must be a subset of scopes returned by `GET /oauth-clients/scopes` for your role (org admins may include additional admin-only scopes).
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Register a new OAuth app for the organization. Any authenticated org member may create apps; the creator is recorded as the app's owner and is the only user who can subsequently read, update, suspend, activate, regenerate the secret of, or delete it.
+
+        The `clientSecret` is returned in this response **only** — it is stored hashed server-side and cannot be retrieved later. Persist it before exiting the create flow; if it is ever lost, rotate via `POST /oauth-clients/{appId}/regenerate-secret`.
+
+        `allowedScopes` is validated against the caller's role-aware scope set (see `GET /oauth-clients/scopes`). Org admins may include admin-only scopes; non-admins requesting a restricted scope receive `400`.
+
+        All `/oauth-clients/*` routes share a per-user rate limiter (default 1000 req/min, configurable via the `MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE` env var).
       operationId: createOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       requestBody:
@@ -9961,15 +11506,31 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthAppWithSecret'
+                $ref: '#/components/schemas/CreateOAuthAppResponse'
         '400':
           description: Invalid request (validation error)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — insufficient workspace permission to create OAuth apps
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/scopes:
     get:
@@ -9977,12 +11538,15 @@ paths:
         - OAuth Apps
       summary: List available scopes
       description: |
-        List OAuth scopes that the signed-in user may register on new or updated apps, grouped by category.
-        <br><br>
-        The set is **role-aware**: org admins see additional admin-only scopes; non-admins see the member scope set.
-        <br><br>
-        Returns scope names, descriptions, categories, and consent flags for the developer-settings UI.
+        Returns the OAuth scopes the signed-in user is permitted to register on new or updated apps, grouped by category. Use this to populate scope-picker UIs and to validate `allowedScopes` client-side before submitting to `createOAuthApp` / `updateOAuthApp`.
+
+        The result is role-aware. Org admins (members of an admin user group) receive every registered scope; everyone else is filtered to exclude admin-only scopes: `org:write`, `org:admin`, `user:invite`, `user:delete`, `usergroup:write`, `team:write`, `config:write`, `crawl:write`, `crawl:delete`.
+
+        Each key in the `scopes` map matches the `category` field on the `OAuthScopeInfo` entries it contains. A category may appear with an empty array when every scope it contains is restricted for the caller — treat empty buckets as "no permitted scopes in this group", not as a missing category.
+
+        Shares the per-user rate limiter applied to every `/oauth-clients/*` route (default 1000 req/min, `MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE`).
       operationId: listOAuthScopes
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       responses:
@@ -9991,30 +11555,40 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  scopes:
-                    type: object
-                    description: Scopes grouped by category
-                    additionalProperties:
-                      type: array
-                      items:
-                        type: object
-                        properties:
-                          name:
-                            type: string
-                          description:
-                            type: string
-                          category:
-                            type: string
-                          requiresUserConsent:
-                            type: boolean
+                $ref: '#/components/schemas/OAuthScopesGroupedResponse'
+              example:
+                scopes:
+                  Identity:
+                    - name: openid
+                      description: OpenID Connect authentication
+                      category: Identity
+                      requiresUserConsent: false
+                    - name: profile
+                      description: User profile information (name, picture)
+                      category: Identity
+                      requiresUserConsent: true
+                  Knowledge Base:
+                    - name: kb:read
+                      description: Read knowledge bases and records
+                      category: Knowledge Base
+                      requiresUserConsent: true
         '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden — insufficient permission to list OAuth scopes in this workspace
+          description: Unauthorized — missing/invalid token, or session invalidated (e.g. password change after token issuance)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
-          description: Rate limit exceeded
+          description: Rate limit exceeded for OAuth client management routes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+              example:
+                error:
+                  code: TOO_MANY_REQUESTS
+                  message: Too many OAuth client requests. Please try again later.
+                  retryAfter: 45
 
   /oauth-clients/{appId}:
     get:
@@ -10022,10 +11596,11 @@ paths:
         - OAuth Apps
       summary: Get OAuth app details
       description: |
-        Get details of an OAuth app **you created** (creator-only; org admins do not access other members' apps).
-        <br><br>
-        Returns app configuration without the client secret.
+        Returns the full configuration of an OAuth app you registered. The `clientSecret` is never echoed back here; if you need a new one, call `POST /oauth-clients/{appId}/regenerate-secret`.
+
+        Access is creator-scoped: even org admins receive `404` for apps owned by other users. This avoids leaking app metadata across org members and keeps the read surface symmetric with `listOAuthApps`.
       operationId: getOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10045,27 +11620,43 @@ paths:
                 $ref: '#/components/schemas/OAuthAppResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
     put:
       tags:
         - OAuth Apps
       summary: Update OAuth app
       description: |
-        Update an OAuth app's configuration (**creator only** — the user who registered the app).
-        <br><br>
-        <b>Scopes:</b> When changing `allowedScopes`, values must remain allowed for your role (same rules as `GET /oauth-clients/scopes`).
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
-        <br><br>
-        <b>Note:</b> To regenerate the client secret, use the
-        `/oauth-clients/{appId}/regenerate-secret` endpoint.
+        Update an OAuth app's configuration. All body fields are optional — supply only what should change. URL fields (`homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`) accept `null` to clear them.
+
+        Creator-only: even org admins cannot edit apps owned by other users.
+
+        When modifying `allowedScopes`, the new set must remain a subset of the caller's role-aware scope list (same rule as `GET /oauth-clients/scopes`). When adding `authorization_code` to `allowedGrantTypes`, `redirectUris` becomes required and must contain at least one URI; otherwise the request is rejected with `400` by the Zod refine on `updateAppSchema`.
+
+        This endpoint never rotates the client secret — use `POST /oauth-clients/{appId}/regenerate-secret` for that.
       operationId: updateOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10089,30 +11680,48 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthAppResponse'
+                $ref: '#/components/schemas/UpdateOAuthAppResponse'
         '400':
           description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
     delete:
       tags:
         - OAuth Apps
       summary: Delete OAuth app
       description: |
-        Delete (soft delete) an OAuth app (**creator only**).
-        <br><br>
-        This marks the app as deleted and revokes all its tokens.
-        The app cannot be restored after deletion.
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Soft-deletes an OAuth app. The app is flagged `isDeleted=true` on the `OAuthApp` document, removed from list/get responses for every caller, and all of its access and refresh tokens are revoked in the same operation. There is no restore endpoint — deletion is final.
+
+        Creator-only: even org admins cannot delete apps owned by other users.
       operationId: deleteOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10136,12 +11745,28 @@ paths:
                     example: "OAuth app deleted successfully"
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/{appId}/regenerate-secret:
     post:
@@ -10149,17 +11774,13 @@ paths:
         - OAuth Apps
       summary: Regenerate client secret
       description: |
-        Regenerate the client secret for an OAuth app.
-        <br><br>
-        The old secret is immediately invalidated. Any clients using the old
-        secret will fail to authenticate until updated with the new secret.
-        <br><br>
-        <b>Important:</b> The new secret is only returned once. Store it securely.
-        <br><br>
-        Caller must be the **creator** (registered owner) of the app.
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Generates a fresh client secret for an OAuth app. The previous secret is invalidated immediately — any client still presenting it will fail token exchange at `POST /oauth2/token` until updated.
+
+        The new secret is returned in this response **only** and cannot be retrieved later. Pair this call with credential propagation to every integration that uses the app. If the rotation was triggered by a suspected leak, also call `POST /oauth-clients/{appId}/revoke-all-tokens` to invalidate already-issued access and refresh tokens instead of waiting for their natural expiry.
+
+        Creator-only: even org admins cannot rotate secrets for other users' apps.
       operationId: regenerateOAuthAppSecret
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10176,15 +11797,31 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthAppWithSecret'
+                $ref: '#/components/schemas/RegenerateOAuthAppSecretResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/{appId}/suspend:
     post:
@@ -10192,15 +11829,13 @@ paths:
         - OAuth Apps
       summary: Suspend OAuth app
       description: |
-        Suspend an OAuth app, preventing it from authenticating or issuing tokens.
-        <br><br>
-        Existing tokens remain valid until they expire, but no new tokens can
-        be obtained. Use this for temporary access suspension.
-        <br><br>
-        Caller must be the **creator** (registered owner) of the app.
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Moves an OAuth app to `status: "suspended"`, blocking new token issuance at `POST /oauth2/token` and the authorization-code consent flow. Tokens that have already been issued remain valid until their natural expiry — call `POST /oauth-clients/{appId}/revoke-all-tokens` immediately afterwards if you need an immediate lockout.
+
+        Use this for temporary suspensions where you intend to reactivate later. For permanent removal, use `DELETE /oauth-clients/{appId}`. Suspending an app that is already suspended returns `400`.
+
+        Creator-only.
       operationId: suspendOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10217,15 +11852,37 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthAppResponse'
+                $ref: '#/components/schemas/SuspendOAuthAppResponse'
+        '400':
+          description: Bad request — e.g. OAuth app is already suspended
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/{appId}/activate:
     post:
@@ -10233,12 +11890,13 @@ paths:
         - OAuth Apps
       summary: Activate suspended OAuth app
       description: |
-        Reactivate a suspended OAuth app, allowing it to authenticate and issue tokens again.
-        <br><br>
-        Caller must be the **creator** (registered owner) of the app.
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Moves a suspended OAuth app back to `status: "active"`, restoring its ability to authenticate and obtain new tokens via `POST /oauth2/token`.
+
+        A revoked app cannot be reactivated (returns `400`); the only path back is to register a new app. Activating an app that is already active also returns `400`.
+
+        Creator-only.
       operationId: activateOAuthApp
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10255,15 +11913,37 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthAppResponse'
+                $ref: '#/components/schemas/ActivateOAuthAppResponse'
+        '400':
+          description: Bad request — e.g. app is already active, or cannot activate a revoked app
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/{appId}/tokens:
     get:
@@ -10271,12 +11951,13 @@ paths:
         - OAuth Apps
       summary: List app tokens
       description: |
-        List all active tokens issued to an OAuth app.
-        <br><br>
-        Useful for monitoring app usage and identifying tokens to revoke.
-        <br><br>
-        Caller must be the **creator** (registered owner) of the app.
+        Lists active access and refresh tokens currently issued to an OAuth app, sorted newest first. Useful for auditing app usage and picking specific tokens to investigate before a targeted revocation.
+
+        Each entry includes the token type (`access` or `refresh`), the user the token was issued for (omitted for client-credentials access tokens), the granted scopes, the issuance and expiry timestamps, and the revocation flag. Each type is capped at 100 most-recent rows server-side (`listTokensForApp` in `oauth_token.service.ts`); revoked and expired tokens are excluded.
+
+        Creator-only.
       operationId: listOAuthAppTokens
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10293,17 +11974,31 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/OAuthTokenListItem'
+                $ref: '#/components/schemas/OAuthAppTokensListResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /oauth-clients/{appId}/revoke-all-tokens:
     post:
@@ -10311,14 +12006,13 @@ paths:
         - OAuth Apps
       summary: Revoke all app tokens
       description: |
-        Revoke all tokens (access and refresh) issued to an OAuth app.
-        <br><br>
-        Use this for emergency access removal or when rotating credentials.
-        <br><br>
-        Caller must be the **creator** (registered owner) of the app.
-        <br><br>
-        <b>Rate Limited:</b> 10 requests per minute.
+        Revokes every access and refresh token currently issued to an OAuth app, in a single operation. Use this for emergency credential rotation, suspected secret leaks, or as a follow-up to `POST /oauth-clients/{appId}/regenerate-secret` when you want existing sessions invalidated immediately rather than letting them expire naturally.
+
+        The response `count` is the total number of tokens revoked across both types. Clients of this app must then obtain new tokens via the standard OAuth flow.
+
+        Creator-only.
       operationId: revokeAllOAuthAppTokens
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -10345,12 +12039,28 @@ paths:
                     description: Number of tokens revoked
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
           description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   # ==================== AUTHENTICATION ENDPOINTS ====================
   /userAccount/initAuth:
@@ -17418,6 +19128,8 @@ paths:
           description: Knowledge base not found
         '413':
           description: File size exceeds maximum allowed
+        '500':
+          description: Failed to verify knowledge base access
 
   /knowledgeBase/{kbId}/folder/{folderId}/upload:
     post:
@@ -17479,6 +19191,8 @@ paths:
           description: Insufficient permissions
         '404':
           description: Folder or knowledge base not found
+        '500':
+          description: Failed to verify knowledge base or folder access
 
   /knowledgeBase/limits:
     get:
@@ -23430,25 +25144,128 @@ paths:
         - Agents
       summary: List agents
       description: |
-        Retrieve all agents available to the authenticated user.<br><br>
-        <b>Overview:</b><br>
-        Returns agents created by the user plus public agents in the organization.
-        Each agent has unique capabilities defined by its tools and knowledge scope.
+        Retrieve a paginated list of agents available to the authenticated user.
+
+        **Overview**
+
+        Returns agents accessible through direct, team, or org-level permissions.
+        Search is performed across agent name, description, and tags. Sorting and
+        pagination are applied by the AI backend and the resulting envelope is
+        forwarded unchanged by the Node gateway.
+
+        **Gateway contract**
+
+        The Node route supports only these query params: `page`, `limit`, `search`,
+        `sort_by`, and `sort_order`.
+
+        The Python backend also understands `isDeleted`, but this gateway route
+        does not forward it, so it is not part of the public API contract here.
       operationId: listAgents
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
+      parameters:
+        - in: query
+          name: page
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: 1-based page number.
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
+          description: Maximum number of agents to return in the current page.
+        - in: query
+          name: search
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 1000
+          description: Case-insensitive search across agent name, description, and tags. Leading/trailing whitespace is trimmed; blank-after-trim values are rejected.
+        - in: query
+          name: sort_by
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+            default: updatedAtTimestamp
+          description: Backend sort field. Leading/trailing whitespace is trimmed. Common value is `updatedAtTimestamp`.
+        - in: query
+          name: sort_order
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: Sort direction.
       responses:
         '200':
-          description: List of agents
+          description: Paginated list of accessible agents.
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Agent'
+                $ref: '#/components/schemas/AgentListResponse'
+              examples:
+                success:
+                  summary: Example paginated response
+                  value:
+                    success: true
+                    agents:
+                      - _id: "agentInstances/11111111-2222-3333-4444-555555555555"
+                        _key: "11111111-2222-3333-4444-555555555555"
+                        _rev: "_exampleRev---"
+                        createdAtTimestamp: 1779792574728
+                        createdBy: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+                        description: "AI agent for customer support workflows"
+                        instructions: null
+                        isActive: true
+                        isDeleted: false
+                        isServiceAccount: false
+                        models:
+                          - "99999999-8888-7777-6666-555555555555_gpt-5.4-mini"
+                        name: "Customer Support Agent"
+                        startMessage: "Hello! How can I help you today?"
+                        systemPrompt: "You are a helpful assistant."
+                        tags: []
+                        updatedAtTimestamp: 1779792574728
+                        updatedBy: null
+                        webSearch: null
+                        shareWithOrg: false
+                        can_view: true
+                        can_share: true
+                        can_edit: true
+                        can_delete: true
+                        user_role: "OWNER"
+                        access_type: "INDIVIDUAL"
+                    pagination:
+                      currentPage: 1
+                      limit: 20
+                      totalItems: 2
+                      totalPages: 1
+                      hasNext: false
+                      hasPrev: false
+        '400':
+          description: Validation failed for one or more query params.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/create:
     post:
@@ -23456,25 +25273,25 @@ paths:
         - Agents
       summary: Create agent
       description: |
-        Create a new custom AI agent.<br><br>
-        <b>Overview:</b><br>
+        Create a new custom AI agent.
+
+        **Overview:**
         Agents are specialized AI assistants configured for specific tasks.
         They can have custom system prompts, access to specific tools, and
-        be limited to certain knowledge bases.<br><br>
-        <b>Agent Configuration:</b><br>
-        <ul>
-        <li><b>System prompt:</b> Instructions that define agent behavior</li>
-        <li><b>Tools:</b> Capabilities like web search, code execution, etc.</li>
-        <li><b>Knowledge bases:</b> Data sources the agent can access</li>
-        <li><b>Model config:</b> AI model settings (temperature, max tokens)</li>
-        </ul>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>Customer support bot with product knowledge</li>
-        <li>Code review assistant with repository access</li>
-        <li>HR assistant with policy documents</li>
-        </ul>
+        be limited to certain knowledge bases.
+
+        **Agent Configuration:**
+        - **System prompt:** Instructions that define agent behavior
+        - **Tools:** Capabilities like web search, code execution, etc.
+        - **Knowledge bases:** Data sources the agent can access
+        - **Model config:** AI model settings (temperature, max tokens)
+
+        **Use Cases:**
+        - Customer support bot with product knowledge
+        - Code review assistant with repository access
+        - HR assistant with policy documents
       operationId: createAgent
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -23484,120 +25301,14 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - name
-              properties:
-                name:
-                  type: string
-                  description: Agent display name
-                  example: "Product Support Agent"
-                description:
-                  type: string
-                  description: What the agent does
-                systemPrompt:
-                  type: string
-                  description: System instructions for the agent
-                startMessage:
-                  type: string
-                  description: Initial greeting shown when conversation starts
-                instructions:
-                  type: string
-                  nullable: true
-                  description: Additional agent execution instructions
-                models:
-                  type: array
-                  description: Agent model configuration entries
-                  items:
-                    oneOf:
-                      - type: string
-                      - type: object
-                        properties:
-                          modelKey:
-                            type: string
-                          modelName:
-                            type: string
-                          provider:
-                            type: string
-                          isReasoning:
-                            type: boolean
-                toolsets:
-                  type: array
-                  description: Toolsets attached to the agent (instance-aware)
-                  items:
-                    type: object
-                    properties:
-                      name:
-                        type: string
-                      displayName:
-                        type: string
-                      type:
-                        type: string
-                      instanceId:
-                        type: string
-                        description: Admin-created toolset instance ID
-                      instanceName:
-                        type: string
-                        description: Human-friendly instance name
-                      tools:
-                        type: array
-                        items:
-                          type: object
-                          properties:
-                            name:
-                              type: string
-                            fullName:
-                              type: string
-                            description:
-                              type: string
-                knowledge:
-                  type: array
-                  description: Knowledge sources connected to the agent
-                  items:
-                    type: object
-                    properties:
-                      connectorId:
-                        type: string
-                      filters:
-                        oneOf:
-                          - type: object
-                            additionalProperties: true
-                          - type: string
-                webSearch:
-                  type: object
-                  nullable: true
-                  description: Web search provider to attach to the agent
-                  properties:
-                    provider:
-                      type: string
-                      description: Provider identifier (e.g. "tavily", "serper", "exa", "duckduckgo")
-                    providerKey:
-                      type: string
-                      description: Stored provider document key (empty string for providers that don't require one)
-                    providerLabel:
-                      type: string
-                      description: Human-readable provider label (e.g. "DuckDuckGo")
-                  required:
-                    - provider
-                  example:
-                    provider: "duckduckgo"
-                    providerKey: ""
-                    providerLabel: "DuckDuckGo"
-                isPublic:
-                  type: boolean
-                  default: false
-                  description: Make agent available to all org users
-                shareWithOrg:
-                  type: boolean
-                  default: false
-                  description: Share agent with the organization
+              $ref: '#/components/schemas/AgentCreateRequest'
       responses:
         '201':
           description: Agent created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Agent'
+                $ref: '#/components/schemas/AgentCreateResponse'
         '400':
           description: Invalid agent configuration
         '401':
@@ -23726,6 +25437,7 @@ paths:
       summary: Get agent
       description: Retrieve agent details by its unique key.
       operationId: getAgent
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
@@ -23743,21 +25455,53 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Agent'
+                $ref: '#/components/schemas/GetAgentResponse'
         '401':
           description: Unauthorized
-        '404':
-          description: Agent not found
+        '500':
+          description: Agent lookup failed
 
     put:
       tags:
         - Agents
       summary: Update agent
       description: |
-        Update an existing agent's configuration.<br><br>
-        <b>Permissions:</b><br>
-        Only the agent creator can update it.
+        Apply a partial update to an existing agent configuration.
+
+        **Gateway contract**
+
+        The Node gateway proxies the JSON body unchanged to the Python agent
+        service. Unlike `POST /agents/create`, this route does not run gateway
+        Zod validation on the request body. Query parameters are not validated and
+        are ignored by the controller.
+
+        **Update semantics**
+
+        Only fields present in the request body are updated. When `models` is
+        included, the Python backend requires at least one parsed model entry and
+        at least one reasoning-capable model object (`isReasoning: true`).
+
+        **Permissions**
+
+        The authenticated user must have `can_edit` on the agent (typically the
+        owner). Service-account and `shareWithOrg` transitions follow additional
+        Python business rules.
+
+        **Success response**
+
+        Returns a lightweight success envelope only. Use
+        `GET /agents/{agentKey}` to read the persisted agent after an update.
+
+        **Observed error behavior**
+
+        Integration tests against the Node gateway commonly receive `500`
+        `ErrorResponse` envelopes for AI-backend validation failures (invalid
+        `models`, unknown `agentKey`, permission errors) because non-200 backend
+        responses are mapped without preserving the upstream HTTP status. The
+        Python service itself returns `400`/`403`/`404` for many of these cases
+        when called directly.
       operationId: updateAgent
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -23765,127 +25509,74 @@ paths:
         - name: agentKey
           in: path
           required: true
+          description: Unique agent identifier
           schema:
             type: string
+            minLength: 1
+          example: "customer-support-agent"
       requestBody:
         required: true
-        description: "Request body for Update agent"
+        description: Partial agent configuration fields to update
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                description:
-                  type: string
-                systemPrompt:
-                  type: string
-                startMessage:
-                  type: string
-                instructions:
-                  type: string
-                  nullable: true
-                models:
-                  type: array
-                  items:
-                    oneOf:
-                      - type: string
-                      - type: object
-                        properties:
-                          modelKey:
-                            type: string
-                          modelName:
-                            type: string
-                          provider:
-                            type: string
-                          isReasoning:
-                            type: boolean
-                toolsets:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      name:
-                        type: string
-                      displayName:
-                        type: string
-                      type:
-                        type: string
-                      instanceId:
-                        type: string
-                      instanceName:
-                        type: string
-                      tools:
-                        type: array
-                        items:
-                          type: object
-                          properties:
-                            name:
-                              type: string
-                            fullName:
-                              type: string
-                            description:
-                              type: string
-                knowledge:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      connectorId:
-                        type: string
-                      filters:
-                        oneOf:
-                          - type: object
-                            additionalProperties: true
-                          - type: string
-                webSearch:
-                  type: object
-                  nullable: true
-                  description: Web search provider to attach to the agent
-                  properties:
-                    provider:
-                      type: string
-                      description: Provider identifier (e.g. "tavily", "serper", "exa", "duckduckgo")
-                    providerKey:
-                      type: string
-                      description: Stored provider document key (empty string for providers that don't require one)
-                    providerLabel:
-                      type: string
-                      description: Human-readable provider label (e.g. "DuckDuckGo")
-                  required:
-                    - provider
-                  example:
-                    provider: "duckduckgo"
-                    providerKey: ""
-                    providerLabel: "DuckDuckGo"
-                isPublic:
-                  type: boolean
-                shareWithOrg:
-                  type: boolean
+              $ref: '#/components/schemas/AgentUpdateRequest'
       responses:
         '200':
-          description: Agent updated
+          description: Agent updated successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Agent'
+                $ref: '#/components/schemas/AgentUpdateResponse'
         '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Only creator can update
-        '404':
-          description: Agent not found
+          description: Missing or invalid authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: |
+            Malformed JSON request body (Express parser). Observed intermittently
+            for syntactically invalid JSON; may also surface as `500`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            AI-backend or gateway failure. Observed for unknown `agentKey`,
+            invalid `models` when sent, permission errors, and other non-200
+            responses from the Python agent service via the Node proxy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
         - Agents
       summary: Delete agent
       description: |
-        Delete an agent.<br><br>
-        <b>Warning:</b><br>
+        Soft-delete an agent (tombstone) in the graph database.
+
+        **Overview:**
+        The Python query service marks the agent instance deleted inside a transaction.
+        List and search endpoints exclude tombstoned agents. Toolsets, tools, and
+        knowledge linked to the agent are not removed by this call.
+
+        **Permissions:**
+        Only the agent owner may delete (`can_delete` on the permission check).
+
+        **Warning:**
         All conversations with this agent will become inaccessible.
+
+        **Observed gateway behavior (localhost integration tests):**
+        Unknown `agentKey`, deleting an already-deleted agent, and `GET /agents/{agentKey}`
+        after delete currently return **HTTP 500** with an `ErrorResponse` body (message
+        often mentions the agent or "not found"), not 404. The Python backend raises 404
+        for not-found when called directly; the Node proxy may surface 500 instead.
       operationId: deleteAgent
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -23893,17 +25584,33 @@ paths:
         - name: agentKey
           in: path
           required: true
+          description: Unique agent identifier (gateway Zod requires non-empty string).
           schema:
             type: string
+            minLength: 1
+          example: customer-support-agent
       responses:
         '200':
-          description: Agent deleted
+          description: Agent soft-deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentDeleteResponse'
         '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Only creator can delete
-        '404':
-          description: Agent not found
+          description: Missing or invalid bearer token (e.g. `No token provided`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Agent not found, already deleted, permission or lookup failure, or other
+            backend error forwarded by the gateway (observed for unknown key, second
+            delete, and GET after delete on localhost).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/permissions:
     get:
@@ -24198,9 +25905,12 @@ paths:
         - Agents
       summary: Create agent conversation with streaming response
       description: |
-        Start a new agent conversation and stream the AI response as Server-Sent
-        Events (SSE), same lifecycle pattern as `POST /conversations/stream`.
+        Start a new conversation with the specified agent and stream the AI
+        response as Server-Sent Events (SSE). The first user message is saved
+        and forwarded to the upstream agent backend; subsequent tokens, tool
+        calls, and lifecycle events are emitted on the open SSE connection.
       operationId: streamAgentConversation
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -24208,8 +25918,10 @@ paths:
         - name: agentKey
           in: path
           required: true
+          description: Stable key identifying the agent that owns this conversation.
           schema:
             type: string
+            minLength: 1
       requestBody:
         required: true
         description: Initial turn payload for the new agent conversation stream.
@@ -24238,6 +25950,7 @@ paths:
         Append a user message to an existing agent conversation and stream the
         assistant reply over SSE.
       operationId: streamAgentConversationMessage
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -24640,6 +26353,7 @@ paths:
         Paginated list of conversations for the agent (owned and shared-with-me),
         excluding archived threads.
       operationId: listAgentConversations
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
@@ -24647,16 +26361,87 @@ paths:
         - name: agentKey
           in: path
           required: true
+          description: Agent identifier used to scope the conversation list.
           schema:
             type: string
         - name: page
           in: query
+          description: 1-based page number. Defaults to `1`.
           schema:
             type: integer
+            minimum: 1
+            default: 1
         - name: limit
           in: query
+          description: Page size. Defaults to `20`; maximum `100`.
           schema:
             type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: sortBy
+          in: query
+          description: |
+            Preferred sort field. Supported values are `createdAt`,
+            `lastActivityAt`, and `title`.
+
+            The current gateway validator preserves legacy behavior: unsupported
+            values are accepted but ignored, and the handler falls back to
+            `lastActivityAt`.
+          schema:
+            type: string
+        - name: sortOrder
+          in: query
+          description: |
+            Preferred sort direction. Supported values are `asc` and `desc`.
+
+            The current gateway validator preserves legacy behavior: unsupported
+            values are accepted but ignored, and the handler falls back to
+            descending order.
+          schema:
+            type: string
+        - name: search
+          in: query
+          description: |
+            Case-insensitive search term applied to conversation `title` and
+            `messages.content`. Maximum length is 1000 characters. HTML/XSS
+            payloads and format specifiers are rejected.
+          schema:
+            type: string
+            maxLength: 1000
+        - name: startDate
+          in: query
+          description: |
+            Inclusive lower bound on `createdAt`. The handler accepts any
+            JavaScript-parseable date string; invalid values return HTTP 400.
+          schema:
+            type: string
+            example: "2026-05-26T00:00:00.000Z"
+        - name: endDate
+          in: query
+          description: |
+            Inclusive upper bound on `createdAt`. The handler accepts any
+            JavaScript-parseable date string; invalid values return HTTP 400.
+          schema:
+            type: string
+            example: "2026-05-27T00:00:00.000Z"
+        - name: status
+          in: query
+          description: |
+            Optional status filter applied to the `sharedWithMeConversations`
+            branch of the response. The main `conversations` list ignores this
+            parameter.
+          schema:
+            type: string
+        - name: isArchived
+          in: query
+          description: |
+            Optional archived flag applied to the `sharedWithMeConversations`
+            branch before the route-level non-archived guard is enforced.
+            Accepted values are `true` and `false`.
+          schema:
+            type: string
+            enum: ['true', 'false']
       responses:
         '200':
           description: Conversation list
@@ -24664,8 +26449,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentConversationListResponse'
+        '400':
+          description: |
+            Invalid path or query parameter.
+
+            This includes Zod validation failures such as invalid pagination,
+            invalid booleans, malformed date values, duplicate `search`
+            parameters, or overlong / invalid `search` input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     post:
       tags:
@@ -24891,9 +26691,11 @@ paths:
         - name: scope
           in: query
           required: false
-          description: Filter by scope (team or personal)
+          description: |
+            Filter by scope. Defaults to <code>team</code> when omitted.
           schema:
             $ref: '#/components/schemas/ConnectorScope'
+          default: team
         - name: page
           in: query
           schema:
@@ -24909,9 +26711,35 @@ paths:
             default: 20
         - name: search
           in: query
-          description: Search by instance name
+          description: Full-text search across instance name, type, and app group
           schema:
             type: string
+        - name: isAuthenticated
+          in: query
+          description: |
+            Filter by authentication status.
+            <code>true</code> returns only authenticated instances;
+            <code>false</code> returns only unauthenticated ones.
+            Omit to return all.
+          schema:
+            type: boolean
+        - name: isActive
+          in: query
+          description: |
+            Filter by active status.
+            <code>true</code> returns only active instances;
+            <code>false</code> returns only inactive ones.
+            Omit to return all.
+          schema:
+            type: boolean
+        - name: connectorType
+          in: query
+          description: |
+            Filter by exact connector type string (e.g. <code>Confluence</code>,
+            <code>GoogleDrive</code>). Case-sensitive.
+          schema:
+            type: string
+            minLength: 1
       responses:
         '200':
           description: Instances retrieved
@@ -28221,6 +30049,7 @@ paths:
       summary: Get models by type
       description: Get all configured models of a specific type.
       operationId: getModelsByType
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -28237,16 +30066,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  message:
-                    type: string
-                  models:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/AIModelProviderConfig'
+                $ref: '#/components/schemas/GetModelsByTypeResponse'
         '401':
           description: Unauthorized
 
@@ -28610,6 +30430,7 @@ paths:
       summary: Add new AI model provider
       description: "Add a new AI model provider configuration. Performs a health check before saving to verify connectivity. Supported providers: openai, anthropic, azure-openai, aws-bedrock, google-vertex, ollama, huggingface."
       operationId: addAIModelProvider
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:write]
@@ -28621,18 +30442,32 @@ paths:
             schema:
               $ref: '#/components/schemas/AddAIModelProviderRequest'
       responses:
-        '201':
+        '200':
           description: AI model provider added successfully
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AIModelProviderResponse'
         '400':
-          description: Invalid configuration or health check failed
+          description: |
+            Invalid request body (Zod validation), controller validation, or
+            health-check failure (invalid credentials or provider config).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddAIModelProviderErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/ai-models/providers/{modelType}/{modelKey}:
     put:
@@ -28641,6 +30476,7 @@ paths:
       summary: Update AI model provider
       description: Update an existing AI model provider configuration.
       operationId: updateAIModelProvider
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:write]
@@ -28655,56 +30491,135 @@ paths:
           required: true
           schema:
             type: string
+            minLength: 1
           description: Unique model key (UUID)
       requestBody:
         required: true
-        description: "Request payload"
+        description: Updated provider configuration (validated by `updateProviderRequestSchema`)
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/UpdateAIModelProviderRequest'
       responses:
         '200':
-          description: AI model provider updated
+          description: AI model provider updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateAIModelProviderResponse'
         '400':
-          description: Invalid configuration
+          description: |
+            Invalid request body (Zod validation), controller validation (e.g. model type
+            mismatch, missing fields), health-check failure, or admin access required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateAIModelProviderErrorResponse'
         '401':
-          description: Unauthorized
-        '403':
-          description: Admin access required
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Model provider not found
+          description: |
+            No AI models configuration in KV store, or no provider with the given modelKey.
+            Health-check runs before KV lookup, so unknown keys with invalid credentials may
+            return 400 from the health-check instead.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelProviderSimpleError'
 
     delete:
       tags:
         - AI Models Providers
       summary: Delete AI model provider
-      description: Remove an AI model provider configuration. Cannot delete the default model if it's the only one.
+      description: |
+        Remove an AI model provider configuration. Fails with 409 when agents still
+        reference the model. If the deleted entry was default, the first remaining
+        entry for that type is promoted to default.
       operationId: deleteAIModelProvider
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
         - name: modelType
           in: path
           required: true
+          description: Model category (ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt)
           schema:
             $ref: '#/components/schemas/ModelType'
         - name: modelKey
           in: path
           required: true
+          description: Unique model key (UUID)
           schema:
             type: string
+            minLength: 1
       responses:
         '200':
           description: AI model provider deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteAIModelProviderResponse'
+              example:
+                status: success
+                message: "LLM provider deleted successfully"
+                details:
+                  modelKey: f3a4b5b6-5b6c-4e85-9097-3202cfe696fc
+                  modelType: llm
+                  provider: openAI
+                  model: gpt-4o-mini
+                  wasDefault: false
+                  contextLength: 128000
         '400':
-          description: Cannot delete default model
+          description: |
+            Model type mismatch — the `modelKey` exists under a different `modelType`
+            than the path parameter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelProviderSimpleError'
+              example:
+                status: error
+                message: "Model key 'f3a4b5b6-5b6c-4e85-9097-3202cfe696fc' belongs to type 'llm', not 'embedding'"
         '401':
           description: Unauthorized
         '403':
           description: Admin access required
         '404':
-          description: Model provider not found
+          description: |
+            Model provider not found, or no AI models configuration exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelProviderSimpleError'
+              examples:
+                modelNotFound:
+                  summary: Unknown modelKey
+                  value:
+                    status: error
+                    message: "Model with key 'f3a4b5b6-5b6c-4e85-9097-3202cfe696fc' not found"
+                noConfig:
+                  summary: No AI models configuration in KV store
+                  value:
+                    status: error
+                    message: "No AI models configuration found"
+        '409':
+          description: |
+            Model is in use by one or more agents. Remove the model from those agents
+            before deleting. Response body is the standard error envelope (`error.code`,
+            `error.message`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: HTTP_CONFLICT
+                  message: "Cannot delete model 'gpt-4o-mini': currently in use by agent 'Research Assistant'. Remove it from the agent first."
 
   /configurationManager/ai-models/default/{modelType}/{modelKey}:
     put:
@@ -29907,8 +31822,11 @@ paths:
         - Configuration Manager
       summary: Get AI model providers
       description: |
-        Retrieve all available AI model providers.
+        Retrieve all configured AI model provider entries grouped by model type
+        (admin-only). Returns the stored KV shape under `models`, not the flattened
+        list from getAvailableModelsByType.
       operationId: getAIModelsProviders
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       responses:
@@ -29917,7 +31835,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                $ref: '#/components/schemas/GetAIModelsProvidersResponse'
         '401':
           description: Unauthorized
         '403':

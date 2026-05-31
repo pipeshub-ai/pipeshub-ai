@@ -11,15 +11,26 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import uuid
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 import requests
 
+_ROOT = Path(__file__).resolve().parents[3]
+_HELPER = _ROOT / "helper"
+_RV_HELPER = _ROOT / "response-validation" / "helper"
+for _p in (_ROOT, _HELPER, _RV_HELPER):
+    s = str(_p)
+    if s not in sys.path:
+        sys.path.insert(0, s)
+
 from openapi_search_validator import (
     assert_matches_component_schema,
-    assert_response_matches_spec,
 )
+from openapi_schema_validator import assert_response_matches_openapi_operation
 from pipeshub_client import PipeshubClient
 
 SEARCH_QUERY = "every year asana undertakes which exercise?"
@@ -27,9 +38,14 @@ SHARE_TARGET_USER_ID = os.getenv("PIPESHUB_TEST_SHARE_TARGET_USER_ID", "").strip
 
 # Cap for runaway SSE; high enough for verbose dev streams before `complete`.
 _SSE_MAX_EVENTS = 10_000
+_SSEEnvelope = dict[str, str]
 
 
-def _iter_sse_envelopes(resp: requests.Response, *, max_events: int = _SSE_MAX_EVENTS):
+def _iter_sse_envelopes(
+    resp: requests.Response,
+    *,
+    max_events: int = _SSE_MAX_EVENTS,
+) -> Iterator[_SSEEnvelope]:
     """
     Minimal SSE parser for frames like:
 
@@ -42,7 +58,7 @@ def _iter_sse_envelopes(resp: requests.Response, *, max_events: int = _SSE_MAX_E
     event_name: str | None = None
     data_lines: list[str] = []
 
-    def flush():
+    def flush() -> _SSEEnvelope | None:
         nonlocal event_name, data_lines
         if event_name is None:
             return None
@@ -52,7 +68,9 @@ def _iter_sse_envelopes(resp: requests.Response, *, max_events: int = _SSE_MAX_E
         return env
 
     emitted = 0
-    for raw in resp.iter_lines(decode_unicode=True):
+    # Use a literal LF delimiter so requests does not split on Unicode
+    # line-separator characters that can appear inside JSON string values.
+    for raw in resp.iter_lines(delimiter="\n", decode_unicode=True):
         if raw is None:
             continue
         line = raw.rstrip("\r")
@@ -153,10 +171,23 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
 
         raise AssertionError("conversation stream ended without a complete event")
 
+    def _get_conversation(self, conversation_id: str) -> dict:
+        resp = requests.get(
+            f"{self.conversations_url}/{conversation_id}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+        body = resp.json()
+        conv = body.get("conversation") or {}
+        assert isinstance(conv, dict), f"conversation payload was not a dict: {body!r}"
+        return conv
+
     def _stream_create_conversation_and_last_bot_message_id(
         self, *, query: str = SEARCH_QUERY
     ) -> tuple[str, str]:
         headers = {**self.headers, "Accept": "text/event-stream"}
+        connected_conv_id: str | None = None
 
         with requests.post(
             self.conversation_stream_url,
@@ -168,34 +199,40 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AssistantStreamSSEEvent")
+                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
+                if envelope["event"] == "connected":
+                    payload = json.loads(envelope["data"])
+                    conv_id = payload.get("conversationId")
+                    if isinstance(conv_id, str) and conv_id:
+                        connected_conv_id = conv_id
+                    continue
                 if envelope["event"] == "error":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(f"stream emitted error event: {payload!r}")
                 if envelope["event"] != "complete":
                     continue
-
-                payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
-                conv_id = conv.get("_id")
-                assert isinstance(conv_id, str) and conv_id, (
-                    f"complete payload missing conversation._id: {payload!r}"
+                assert connected_conv_id, (
+                    f"stream complete arrived without connected conversationId: {envelope!r}"
                 )
-                msgs = conv.get("messages") or []
-                bot_id: str | None = None
-                for m in reversed(msgs if isinstance(msgs, list) else []):
-                    if not isinstance(m, dict):
-                        continue
-                    if m.get("messageType") != "bot_response":
-                        continue
-                    mid = m.get("_id") or m.get("id")
-                    if isinstance(mid, str) and mid:
-                        bot_id = mid
-                        break
-                assert bot_id, f"no bot_response with _id in messages: {msgs!r}"
-                return conv_id, bot_id
+                break
+            else:
+                raise AssertionError("conversation stream ended without a complete event")
 
-        raise AssertionError("conversation stream ended without a complete event")
+        conv_id = connected_conv_id
+        conv = self._get_conversation(conv_id)
+        msgs = conv.get("messages") or []
+        bot_id: str | None = None
+        for m in reversed(msgs if isinstance(msgs, list) else []):
+            if not isinstance(m, dict):
+                continue
+            if m.get("messageType") != "bot_response":
+                continue
+            mid = m.get("_id") or m.get("id")
+            if isinstance(mid, str) and mid:
+                bot_id = mid
+                break
+        assert bot_id, f"no bot_response with _id in messages: {msgs!r}"
+        return conv_id, bot_id
 
     def _stream_create_conversation_bot_and_user_message_ids(
         self, *, query: str = SEARCH_QUERY
@@ -212,7 +249,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AssistantStreamSSEEvent")
+                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
                 if envelope["event"] == "error":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(f"stream emitted error event: {payload!r}")
@@ -277,7 +314,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             saw_complete = False
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AssistantStreamSSEEvent")
+                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
 
                 payload = json.loads(envelope["data"])
                 event = envelope["event"]
@@ -332,7 +369,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             saw_complete = False
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AssistantStreamSSEEvent")
+                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
 
                 payload = json.loads(envelope["data"])
                 event = envelope["event"]
@@ -439,8 +476,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             page += 1
 
         assert first_list_body is not None
-        assert_response_matches_spec(
-            first_list_body, "/conversations", "GET", 200,
+        assert_response_matches_openapi_operation(
+            first_list_body, "getAllConversations", status_code="200"
         )
 
     def test_get_conversations_invalid_source_returns_400(self) -> None:
@@ -469,8 +506,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         assert body.get("meta", {}).get("conversationId") == conversation_id, (
             f"meta.conversationId mismatch: {body.get('meta', {})!r}"
         )
-        assert_response_matches_spec(
-            body, "/conversations/{conversationId}", "GET", 200,
+        assert_response_matches_openapi_operation(
+            body, "getConversationById", status_code="200"
         )
 
     def test_get_conversation_by_id_invalid_conversation_id_returns_400(self) -> None:
@@ -561,11 +598,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             f"status should be 'archived', got {archive_body.get('status')!r}"
         )
 
-        assert_response_matches_spec(
-            archive_body,
-            "/conversations/{conversationId}/archive",
-            "PATCH",
-            200,
+        assert_response_matches_openapi_operation(
+            archive_body, "archiveConversation", status_code="200"
         )
 
         get_after = requests.get(url, headers=self.headers, timeout=self.timeout)
@@ -603,11 +637,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             f"status should be 'unarchived', got {unarchive_body.get('status')!r}"
         )
 
-        assert_response_matches_spec(
-            unarchive_body,
-            "/conversations/{conversationId}/unarchive",
-            "PATCH",
-            200,
+        assert_response_matches_openapi_operation(
+            unarchive_body, "unarchiveConversation", status_code="200"
         )
 
         get_after_unarchive = requests.get(
@@ -679,8 +710,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         )
         assert after.status_code == 200, f"{after.status_code}: {after.text}"
         after_body = after.json()
-        assert_response_matches_spec(
-            after_body, "/conversations/show/archives", "GET", 200,
+        assert_response_matches_openapi_operation(
+            after_body, "getArchivedConversations", status_code="200"
         )
         rows = after_body.get("conversations") or []
         assert len(rows) == 1, f"expected exactly one archived row: {rows!r}"
@@ -703,8 +734,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             body = resp.json()
             if list_body is None:
                 list_body = body
-                assert_response_matches_spec(
-                    list_body, "/conversations/show/archives", "GET", 200,
+                assert_response_matches_openapi_operation(
+                    list_body, "getArchivedConversations", status_code="200"
                 )
             for c in body.get("conversations") or []:
                 if isinstance(c, dict) and c.get("_id") == conversation_id:
@@ -763,8 +794,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             f"{search_resp.status_code}: {search_resp.text}"
         )
         body = search_resp.json()
-        assert_response_matches_spec(
-            body, "/conversations/show/archives/search", "GET", 200,
+        assert_response_matches_openapi_operation(
+            body, "searchArchivedConversations", status_code="200"
         )
         summary = body.get("summary") or {}
         assert summary.get("searchQuery") == token, (
@@ -930,8 +961,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             f"got {conv.get('title')!r}"
         )
 
-        assert_response_matches_spec(
-            body, "/conversations/{conversationId}/title", "PATCH", 200,
+        assert_response_matches_openapi_operation(
+            body, "updateConversationTitle", status_code="200"
         )
 
         get_resp = requests.get(
@@ -1032,8 +1063,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             f"accessLevel should be 'read', got {target.get('accessLevel')!r}"
         )
 
-        assert_response_matches_spec(
-            body, "/conversations/{conversationId}/share", "POST", 200,
+        assert_response_matches_openapi_operation(
+            body, "shareConversation", status_code="200"
         )
 
     @pytest.mark.parametrize(
@@ -1135,8 +1166,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             f"got {body.get('isShared')!r}"
         )
 
-        assert_response_matches_spec(
-            body, "/conversations/{conversationId}/unshare", "POST", 200,
+        assert_response_matches_openapi_operation(
+            body, "unshareConversationById", status_code="200"
         )
 
     @pytest.mark.parametrize(
@@ -1178,7 +1209,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
 
             saw_complete = False
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AssistantStreamSSEEvent")
+                assert_matches_component_schema(envelope, "AgentMessageStreamSSEEvent")
                 if envelope["event"] == "error":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(f"stream emitted error event: {payload!r}")
@@ -1434,11 +1465,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         body = resp.json()
         assert body.get("conversationId") == conversation_id
         assert body.get("messageId") == bot_id
-        assert_response_matches_spec(
-            body,
-            "/conversations/{conversationId}/message/{messageId}/feedback",
-            "POST",
-            200,
+        assert_response_matches_openapi_operation(
+            body, "updateMessageFeedback", status_code="200"
         )
 
     def test_post_message_feedback_on_user_query_returns_400(self) -> None:
@@ -1480,8 +1508,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         assert conv.get("id") == conversation_id, (
             f"conversation.id mismatch: {conv!r}"
         )
-        assert_response_matches_spec(
-            body, "/conversations/{conversationId}", "GET", 200,
+        assert_response_matches_openapi_operation(
+            body, "getConversationById", status_code="200"
         )
 
     # Asking for one message at a time caps how many come back.
@@ -1502,8 +1530,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         assert len(msgs) <= 1, (
             f"limit=1 should cap messages at 1, got {len(msgs)}"
         )
-        assert_response_matches_spec(
-            body, "/conversations/{conversationId}", "GET", 200,
+        assert_response_matches_openapi_operation(
+            body, "getConversationById", status_code="200"
         )
 
     # A small page on archived search returns at most that many rows.
@@ -1537,8 +1565,8 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             assert len(rows) <= 1, (
                 f"limit=1 should cap rows at 1, got {len(rows)}"
             )
-            assert_response_matches_spec(
-                body, "/conversations/show/archives/search", "GET", 200,
+            assert_response_matches_openapi_operation(
+                body, "searchArchivedConversations", status_code="200"
             )
         finally:
             for cid in archived_ids:

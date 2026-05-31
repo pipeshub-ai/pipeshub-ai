@@ -33,6 +33,7 @@ export function nodeToTreeNode(
     nodeType: node.nodeType,
     // Normalize to boolean — API may return null/undefined in some cases
     hasChildren: typeof node.hasChildren === 'boolean' ? node.hasChildren : false,
+    hasDescendants: typeof node.hasChildren === 'boolean' ? node.hasChildren : false,
     isLoading: false,
     permission: node.permission,
     origin: node.origin,
@@ -40,6 +41,7 @@ export function nodeToTreeNode(
     subType: node.subType,
     extension: node.extension,
     mimeType: node.mimeType,
+    indexingStatus: node.indexingStatus,
   };
 }
 
@@ -85,9 +87,24 @@ export function categorizeNodes(nodes: KnowledgeHubNode[], rootParentId: string 
 }
 
 /**
+ * Sidebar expand chevron after an onlyContainers fetch.
+ * Leaf records are omitted from these responses, so an empty list means no
+ * expandable container rows — hide the chevron even when hasDescendants remains
+ * true for reindex.
+ */
+export function effectiveHasChildrenAfterSidebarExpand(containerItems: unknown[]): boolean {
+  return containerItems.length > 0;
+}
+
+/** Descendant flag for reindex — preserved when sidebar expand clears hasChildren. */
+export function getTreeNodeDescendantsFlag(node: EnhancedFolderTreeNode): boolean {
+  return node.hasDescendants ?? node.hasChildren;
+}
+
+/**
  * Merge lazy-loaded children into existing tree.
  * @param effectiveHasChildFolders - When provided, overwrites the parent node's hasChildren
- *   with the value derived from the fresh API response (e.g. counts).
+ *   (sidebar expand chevron only; hasDescendants is preserved for reindex).
  */
 /** True if any node in the tree matches `id` (recursive). */
 export function treeHasNodeWithId(tree: EnhancedFolderTreeNode[], id: string): boolean {

@@ -1,0 +1,9 @@
+name: inherit_permissions_edge
+description: InheritPermissions edge document (matches Arango inheritPermissions collection).
+fields:
+  createdAtTimestamp:
+    required: false
+    type: integer
+  updatedAtTimestamp:
+    required: false
+    type: integer

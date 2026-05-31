@@ -92,12 +92,16 @@ import {
   agentStreamCreateSchema,
   agentAddMessageParamsSchema,
   getAllConversationsQuerySchema,
+  getAllAgentConversationsQuerySchema,
   listAllArchivesConversationQuerySchema,
   searchArchivedConversationsQuerySchema,
   attachmentUploadSchema,
   attachmentRecordIdParamsSchema,
   agentAttachmentUploadSchema,
   agentAttachmentRecordIdParamsSchema,
+  createAgentSchema,
+  getAgentParamsSchema,
+  listAgentsQuerySchema,
 } from '../validators/es_validators';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
@@ -720,6 +724,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(getAllAgentConversationsQuerySchema),
     getAllAgentConversations,
   );
 
@@ -835,6 +840,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(createAgentSchema),
     createAgent(appConfig),
   );
 
@@ -843,6 +849,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(getAgentParamsSchema),
     getAgent(appConfig),
   );
 
@@ -867,6 +874,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(listAgentsQuerySchema),
     listAgents(appConfig),
   );
 

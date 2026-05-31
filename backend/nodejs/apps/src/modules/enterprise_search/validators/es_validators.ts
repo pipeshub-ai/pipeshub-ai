@@ -1,5 +1,9 @@
-// es_schema.ts
 import { z } from 'zod';
+import {
+  validateNoFormatSpecifiers,
+  validateNoXSS,
+} from '../../../utils/xss-sanitization';
+import { INTERNAL_CONVERSATION_CHAT_MODE } from '../constants/constants';
 
 // ---------------------------------------------------------------------------
 // Primitive validators
@@ -31,6 +35,12 @@ const limitSchema = z.preprocess(
   z.number().min(1).max(100).default(10),
 );
 
+/** Limit preprocessor for conversation list endpoints (default 20). */
+const conversationListLimitSchema = z.preprocess(
+  (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
+  z.number().min(1).max(100).default(20),
+);
+
 /** Page preprocessor for archived endpoints (max 1000, default 1). */
 const archivePageSchema = z.preprocess(
   (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
@@ -41,6 +51,12 @@ const archivePageSchema = z.preprocess(
 const archiveLimitSchema = z.preprocess(
   (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
   z.number().min(1).max(100).default(20),
+);
+
+/** Limit preprocessor for agent list endpoint (Python backend allows up to 200). */
+const agentListLimitSchema = z.preprocess(
+  (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
+  z.number().min(1).max(200).default(20),
 );
 
 // ---------------------------------------------------------------------------
@@ -144,11 +160,10 @@ const enterpriseSearchCreateBodySchema = z.object({
         message: 'Query exceeds maximum length of 100000 characters',
       }),
     recordIds: z.array(objectId('record ID')).optional(),
-    departments: z.array(objectId('department ID')).optional(),
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
     attachments: z.array(attachmentRefSchema).optional(),
-    chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
+    chatMode: z.nativeEnum(INTERNAL_CONVERSATION_CHAT_MODE).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
 });
@@ -198,7 +213,7 @@ const addMessageBodySchema = z.object({
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
     attachments: z.array(attachmentRefSchema).optional(),
-    chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
+    chatMode: z.nativeEnum(INTERNAL_CONVERSATION_CHAT_MODE).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
 });
@@ -206,6 +221,19 @@ const addMessageBodySchema = z.object({
 export const addMessageParamsSchema = z.object({
   params: z.object(conversationIdParam),
   body: addMessageBodySchema,
+});
+
+/** Agent follow-up stream chat modes (matches OpenAPI AgentAddMessageStreamRequest). */
+export const AGENT_CHAT_MODES = ['auto', 'quick', 'verification', 'deep'] as const;
+
+const agentChatModeSchema = z
+  .enum(AGENT_CHAT_MODES, {
+    errorMap: () => ({ message: 'Invalid chat mode' }),
+  })
+  .optional();
+
+const agentAddMessageBodySchema = addMessageBodySchema.extend({
+  chatMode: agentChatModeSchema,
 });
 
 // ---------------------------------------------------------------------------
@@ -222,7 +250,201 @@ export const agentAddMessageParamsSchema = z.object({
     ...agentKeyParam,
     ...conversationIdParam,
   }),
-  body: addMessageBodySchema,
+  body: agentAddMessageBodySchema,
+});
+
+// ---------------------------------------------------------------------------
+// Agent create (POST /agents/create) — gateway guardrails; Python enforces semantics
+// ---------------------------------------------------------------------------
+
+/** Defensive max length for long agent text fields (not enforced by Python). */
+const agentLongTextSchema = z.string().max(100_000);
+
+const agentToolRefSchema = z
+  .object({
+    name: z.string().trim().min(1),
+    fullName: z.string().trim().min(1).optional(),
+    description: z.string().max(10_000).optional(),
+  });
+
+/**
+ * Toolset names exposed by the Python registry (non-internal) and used by agent builder payloads.
+ * Keep this list aligned with OpenAPI `AgentCreateToolsetName`.
+ */
+export const AGENT_CREATE_TOOLSET_NAMES = [
+  'calendar',
+  'clickup',
+  'confluence',
+  'drive',
+  'github',
+  'gmail',
+  'jira',
+  'lumos',
+  'mariadb',
+  'onedrive',
+  'outlook',
+  'redshift',
+  'salesforce',
+  'sharepoint',
+  'slack',
+  'teams',
+  'zoom',
+] as const;
+
+const agentToolsetNameSchema = z.enum(AGENT_CREATE_TOOLSET_NAMES, {
+  errorMap: () => ({ message: 'Invalid toolset name' }),
+});
+
+const agentToolsetSchema = z
+  .object({
+    name: z.string().trim().pipe(agentToolsetNameSchema),
+    displayName: z.string().max(200).optional(),
+    type: z.string().max(100).optional(),
+    instanceId: z.string().max(256).optional(),
+    instanceName: z.string().max(200).optional(),
+    tools: z.array(agentToolRefSchema).optional(),
+  });
+
+const agentKnowledgeSchema = z
+  .object({
+    connectorId: z.string().trim().min(1),
+    filters: z.union([z.record(z.unknown()), z.string(), z.array(z.unknown())]).optional(),
+  });
+
+const agentModelEntrySchema = z.union([
+  z.string().trim().min(1),
+  z
+    .object({
+      modelKey: z.string().trim().min(1),
+      modelName: z.string().optional(),
+      isReasoning: z.boolean().optional(),
+      provider: z.string().optional(),
+    }),
+]);
+
+const agentWebSearchSchema = z.union([
+  z.string().trim().min(1),
+  z
+    .object({
+      provider: z.string().trim().min(1),
+      providerKey: z.string().max(256).optional(),
+      providerLabel: z.string().max(200).optional(),
+      iconPath: z.string().max(500).optional(),
+    }),
+]);
+
+const createAgentBodySchema = z
+  .object({
+    name: z
+      .string({ required_error: 'Name is required' })
+      .trim()
+      .min(1, { message: 'Name is required' })
+      .max(200, { message: 'Name must be less than 200 characters' }),
+    models: z
+      .array(agentModelEntrySchema)
+      .min(1, {
+        message:
+          'At least one AI model is required. Please add a model to your configuration.',
+      }),
+    description: agentLongTextSchema.optional(),
+    startMessage: agentLongTextSchema.optional(),
+    systemPrompt: agentLongTextSchema.optional(),
+    instructions: agentLongTextSchema.optional(),
+    tags: z.array(z.string().max(100)).max(50).optional(),
+    shareWithOrg: z.boolean().optional(),
+    isServiceAccount: z.boolean().optional(),
+    toolsets: z.array(agentToolsetSchema).max(100).optional(),
+    knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
+    webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
+  })
+  .superRefine((body, ctx) => {
+    if (!Array.isArray(body.models)) {
+      return;
+    }
+
+    let parsedCount = 0;
+    let hasReasoningModel = false;
+
+    for (const model of body.models) {
+      if (typeof model === 'string') {
+        if (model.trim()) {
+          parsedCount += 1;
+        }
+        continue;
+      }
+      const modelKey = model?.modelKey?.trim();
+      if (modelKey) {
+        parsedCount += 1;
+        if (model?.isReasoning === true) {
+          hasReasoningModel = true;
+        }
+      }
+    }
+
+    if (parsedCount === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'At least one AI model is required. Please add a model to your configuration.',
+        path: ['models'],
+      });
+      return;
+    }
+
+    if (!hasReasoningModel) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'At least one reasoning model is required. Please add a reasoning model to your configuration.',
+        path: ['models'],
+      });
+    }
+  });
+
+export const createAgentSchema = z.object({
+  body: createAgentBodySchema,
+});
+
+// ---------------------------------------------------------------------------
+// Agent get / list query schemas
+// ---------------------------------------------------------------------------
+
+export const getAgentParamsSchema = z.object({
+  params: z.object(agentKeyParam),
+});
+
+// ---------------------------------------------------------------------------
+// Agent list query schema
+// ---------------------------------------------------------------------------
+
+export const listAgentsQuerySchema = z.object({
+  query: z.object({
+    page: pageSchema,
+    limit: agentListLimitSchema,
+    search: z
+      .string()
+      .trim()
+      .min(1)
+      .max(1000, { message: 'Search parameter too long (max 1000 characters)' })
+      .optional()
+      .superRefine((value, ctx) => {
+        if (!value) {
+          return;
+        }
+
+        try {
+          validateNoXSS(value, 'search parameter');
+          validateNoFormatSpecifiers(value, 'search parameter');
+        } catch (error: any) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: error.message,
+          });
+        }
+      }),
+    sort_by: z.string().trim().min(1).max(100).optional().default('updatedAtTimestamp'),
+    sort_order: z.enum(['asc', 'desc']).optional().default('desc'),
+  }),
 });
 
 // ---------------------------------------------------------------------------
@@ -390,6 +612,69 @@ export const getAllConversationsQuerySchema = z.object({
     startDate: z.string().datetime({ offset: true }).optional(),
     endDate: z.string().datetime({ offset: true }).optional(),
     shared: z.enum(['true', 'false', '1', '0']).optional(),
+  }),
+});
+
+/** Schema for GET /:agentKey/conversations — list agent conversations with filters. */
+export const getAllAgentConversationsQuerySchema = z.object({
+  params: z.object({
+    ...agentKeyParam,
+  }),
+  query: z.object({
+    page: pageSchema.optional().default(1),
+    limit: conversationListLimitSchema.optional().default(20),
+    sortBy: z
+      .string()
+      .optional()
+      .transform((value) =>
+        value === 'createdAt' || value === 'lastActivityAt' || value === 'title'
+          ? value
+          : undefined,
+      ),
+    sortOrder: z
+      .string()
+      .optional()
+      .transform((value) =>
+        value === 'asc' || value === 'desc' ? value : undefined,
+      ),
+    search: z
+      .string()
+      .max(1000, { message: 'Search parameter too long (max 1000 characters)' })
+      .optional()
+      .superRefine((value, ctx) => {
+        if (!value) {
+          return;
+        }
+
+        try {
+          validateNoXSS(value, 'search parameter');
+          validateNoFormatSpecifiers(value, 'search parameter');
+        } catch (error: any) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: error.message,
+          });
+        }
+      }),
+    startDate: z
+      .string()
+      .optional()
+      .refine(
+        (value) => !value || !isNaN(new Date(value).getTime()),
+        'Invalid start date format',
+      ),
+    endDate: z
+      .string()
+      .optional()
+      .refine(
+        (value) => !value || !isNaN(new Date(value).getTime()),
+        'Invalid end date format',
+      ),
+    status: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      z.string().optional(),
+    ),
+    isArchived: z.enum(['true', 'false']).optional(),
   }),
 });
 

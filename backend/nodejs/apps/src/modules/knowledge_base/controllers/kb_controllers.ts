@@ -38,6 +38,11 @@ import {
 } from '../../tokens_manager/utils/connector.utils';
 import { NotificationService } from '../../notification/service/notification.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
+
+/** Shape of the KB detail response used during pre-upload permission checks. */
+interface KbCheckData {
+  userRole?: string;
+}
 import {
   validateNoFormatSpecifiers,
   validateNoXSS,
@@ -762,6 +767,32 @@ export const uploadRecordsToKB =
         throw new BadRequestError('Knowledge Base ID and files are required');
       }
 
+      // Verify KB exists and user has write permission before touching storage.
+      // We must check userRole from the response body: the GET /kb endpoint returns
+      // 200 for ANY role (including READER/COMMENTER), so a 200 alone is insufficient.
+      const kbCheckResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
+      if (kbCheckResponse.statusCode === 404) {
+        throw new NotFoundError(`Knowledge base ${kbId} not found`);
+      }
+      if (kbCheckResponse.statusCode === 403) {
+        throw new ForbiddenError(
+          'You do not have permission to upload to this knowledge base',
+        );
+      }
+      if (kbCheckResponse.statusCode !== 200) {
+        throw new InternalServerError('Failed to verify knowledge base access');
+      }
+      const kbUserRole = (kbCheckResponse.data as KbCheckData | undefined)?.userRole;
+      if (!kbUserRole || !['OWNER', 'WRITER'].includes(kbUserRole)) {
+        throw new ForbiddenError(
+          'You do not have permission to upload to this knowledge base',
+        );
+      }
+
       logger.info('Processing file upload to KB', {
         totalFiles: fileBuffers.length,
         kbId,
@@ -1101,6 +1132,46 @@ export const uploadRecordsToFolder =
       if (!kbId || !folderId || fileBuffers.length === 0) {
         throw new BadRequestError(
           'Knowledge Base ID, Folder ID, and files are required',
+        );
+      }
+
+      // Verify KB exists and user has WRITE permission before touching storage.
+      // The GET /kb endpoint returns 200 for any role (READER/COMMENTER included),
+      // so we must also inspect userRole in the response body.
+      const kbCheckResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
+      if (kbCheckResponse.statusCode === 404) {
+        throw new NotFoundError(`Knowledge base ${kbId} not found`);
+      }
+      if (kbCheckResponse.statusCode === 403) {
+        throw new ForbiddenError(
+          'You do not have permission to upload to this knowledge base',
+        );
+      }
+      if (kbCheckResponse.statusCode !== 200) {
+        throw new InternalServerError('Failed to verify knowledge base access');
+      }
+      const kbUserRole = (kbCheckResponse.data as KbCheckData | undefined)?.userRole;
+      if (!kbUserRole || !['OWNER', 'WRITER'].includes(kbUserRole)) {
+        throw new ForbiddenError(
+          'You do not have permission to upload to this knowledge base',
+        );
+      }
+
+      // Validate folder exists and belongs to the KB before creating any placeholders.
+      // This turns the silent background failure (which returned 200) into a proper 404/403.
+      const validationResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/validate`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
+      if (validationResponse.statusCode < 200 || validationResponse.statusCode >= 300) {
+        throw handleBackendError(
+          validationResponse,
+          'validate folder for upload',
         );
       }
 
@@ -1515,15 +1586,13 @@ export const updateRecord =
         },
       );
 
-      const updateRecordResponse = response.data as any;
-
-      if (!updateRecordResponse) {
-        throw new InternalServerError(
-          'Python service indicated failure to update record',
-        );
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw handleBackendError(response, 'update record');
       }
 
-      if (!updateRecordResponse.updatedRecord) {
+      const updateRecordResponse = response.data as any;
+
+      if (!updateRecordResponse || !updateRecordResponse.updatedRecord) {
         throw new InternalServerError(
           'Python service indicated failure to update record',
         );

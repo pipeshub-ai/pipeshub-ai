@@ -569,6 +569,61 @@ async def upload_records_to_folder(
             detail=f"Unexpected error during folder upload: {str(e)}"
         )
 
+@kb_router.get(
+    "/{kb_id}/folder/{folder_id}/validate",
+    response_model=SuccessResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        403: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_UPLOAD))],
+)
+@inject
+async def validate_folder_for_upload(
+    kb_id: str,
+    folder_id: str,
+    request: Request,
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+) -> Union[SuccessResponse, Dict[str, Any]]:
+    """Validate that a folder exists and belongs to the given KB before upload."""
+    try:
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+
+        if not user_id or not org_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="userId and orgId are required",
+            )
+
+        result = await kb_service.validate_folder_for_upload(
+            kb_id=kb_id,
+            folder_id=folder_id,
+            user_id=user_id,
+            org_id=org_id,
+        )
+
+        if not result or result.get("valid") is False:
+            error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR)) if result else HTTP_INTERNAL_SERVER_ERROR
+            error_reason = result.get("reason", "Unknown error") if result else "Service error"
+            raise HTTPException(
+                status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
+                detail=error_reason,
+            )
+
+        return SuccessResponse(message="Folder is valid for upload")
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected error during folder validation: {str(e)}",
+        )
+
+
 @kb_router.post(
     "/{kb_id}/folder",
     response_model=CreateFolderResponse,

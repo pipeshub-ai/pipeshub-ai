@@ -2183,13 +2183,12 @@ class TestGetUserConnectorInstances:
 
 class TestGetFilteredConnectorInstances:
     @pytest.mark.asyncio
-    @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         with patch.object(
             connected_provider, "execute_query",
             new_callable=AsyncMock, side_effect=Exception("fail")
         ):
-            docs, total, scope_counts = await connected_provider.get_filtered_connector_instances(
+            docs, total = await connected_provider.get_filtered_connector_instances(
                 "apps", "orgAppRelation", "org1", "u1"
             )
             assert docs == []
@@ -4746,7 +4745,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        connected_provider.http_client.ensure_persistent_index.assert_awaited_once()
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 14
 
 
 # ---------------------------------------------------------------------------
@@ -5021,29 +5020,27 @@ class TestGetFilteredConnectorInstancesOptions:
             new_callable=AsyncMock,
             side_effect=[
                 [3],  # count
-                [1],  # personal count
                 [{"_key": "c1"}],  # documents
             ]
         ):
-            docs, total, scope_counts = await connected_provider.get_filtered_connector_instances(
+            docs, total = await connected_provider.get_filtered_connector_instances(
                 "apps", "orgAppRelation", "org1", "u1", scope="personal"
             )
             assert total == 3
-            assert scope_counts["personal"] == 1
+            assert len(docs) == 1
 
     @pytest.mark.asyncio
     async def test_team_scope_with_admin(self, connected_provider):
+        # is_admin=True: no accessible-keys pre-query; count + main only
         with patch.object(
             connected_provider, "execute_query",
             new_callable=AsyncMock,
             side_effect=[
                 [5],  # count
-                [2],  # personal count
-                [4],  # team count
                 [{"_key": "c1"}],  # documents
             ]
         ):
-            docs, total, scope_counts = await connected_provider.get_filtered_connector_instances(
+            docs, total = await connected_provider.get_filtered_connector_instances(
                 "apps", "orgAppRelation", "org1", "u1",
                 scope="team", is_admin=True
             )
@@ -5056,11 +5053,10 @@ class TestGetFilteredConnectorInstancesOptions:
             new_callable=AsyncMock,
             side_effect=[
                 [1],  # count
-                [0],  # personal count
                 [{"_key": "c1", "name": "Drive"}],  # documents
             ]
         ):
-            docs, total, scope_counts = await connected_provider.get_filtered_connector_instances(
+            docs, total = await connected_provider.get_filtered_connector_instances(
                 "apps", "orgAppRelation", "org1", "u1",
                 search="drive"
             )
@@ -7370,7 +7366,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        connected_provider.http_client.ensure_persistent_index.assert_awaited_once()
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 14
 
 
 # ---------------------------------------------------------------------------
@@ -10568,7 +10564,7 @@ class TestUpdateKbPermission:
             "kb1", "u1", [], [], "WRITER"
         )
         assert result["success"] is False
-        assert result["code"] == "400"
+        assert result["code"] == 400
 
     @pytest.mark.asyncio
     async def test_invalid_role(self, connected_provider):
@@ -10576,7 +10572,7 @@ class TestUpdateKbPermission:
             "kb1", "u1", ["u2"], [], "INVALID_ROLE"
         )
         assert result["success"] is False
-        assert result["code"] == "400"
+        assert result["code"] == 400
 
     @pytest.mark.asyncio
     async def test_requester_not_owner(self, connected_provider):
@@ -10590,7 +10586,7 @@ class TestUpdateKbPermission:
             "kb1", "u1", ["u2"], [], "WRITER"
         )
         assert result["success"] is False
-        assert result["code"] == "403"
+        assert result["code"] == 403
 
     @pytest.mark.asyncio
     async def test_empty_query_result(self, connected_provider):
@@ -10599,7 +10595,7 @@ class TestUpdateKbPermission:
             "kb1", "u1", ["u2"], [], "WRITER"
         )
         assert result["success"] is False
-        assert result["code"] == "500"
+        assert result["code"] == 500
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
@@ -10608,7 +10604,7 @@ class TestUpdateKbPermission:
             "kb1", "u1", ["u2"], [], "WRITER"
         )
         assert result["success"] is False
-        assert result["code"] == "500"
+        assert result["code"] == 500
 
 
 # ---------------------------------------------------------------------------
@@ -12763,14 +12759,47 @@ class TestValidateFolderCreation:
         assert result["code"] == 404
 
     @pytest.mark.asyncio
-    async def test_insufficient_permission(self, connected_provider):
+    async def test_reader_role_rejected_with_descriptive_message(self, connected_provider):
         connected_provider.get_user_by_user_id = AsyncMock(
             return_value={"_key": "uk1", "userId": "u1"}
         )
         connected_provider.get_user_kb_permission = AsyncMock(return_value="READER")
+        connected_provider._fetch_kb_name = AsyncMock(return_value="My KB")
         result = await connected_provider._validate_folder_creation("kb1", "u1")
         assert result["valid"] is False
         assert result["code"] == 403
+        assert "READER" in result["reason"]
+        assert "My KB" in result["reason"]
+        assert "OWNER or WRITER" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_no_role_rejected_with_no_access_message(self, connected_provider):
+        """User with no KB role at all should get a clear 'no access' message."""
+        connected_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "userId": "u1"}
+        )
+        connected_provider.get_user_kb_permission = AsyncMock(return_value=None)
+        connected_provider._fetch_kb_name = AsyncMock(return_value="My KB")
+        result = await connected_provider._validate_folder_creation("kb1", "u1")
+        assert result["valid"] is False
+        assert result["code"] == 403
+        assert "My KB" in result["reason"]
+        assert "OWNER or WRITER" in result["reason"]
+        # Must NOT say "Role: None"
+        assert "Role: None" not in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_permission_check_falls_back_to_id_when_kb_name_unavailable(self, connected_provider):
+        """If KB name lookup fails, the error still reports the KB id."""
+        connected_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "userId": "u1"}
+        )
+        connected_provider.get_user_kb_permission = AsyncMock(return_value="READER")
+        connected_provider._fetch_kb_name = AsyncMock(return_value=None)
+        result = await connected_provider._validate_folder_creation("kb1", "u1")
+        assert result["valid"] is False
+        assert result["code"] == 403
+        assert "kb1" in result["reason"]
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
@@ -13728,6 +13757,165 @@ class TestValidateUploadContext:
         )
         assert result["valid"] is False
         assert result["code"] == 404
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_500(self, connected_provider):
+        connected_provider.get_user_by_user_id = AsyncMock(
+            side_effect=RuntimeError("db down")
+        )
+        result = await connected_provider._validate_upload_context("kb1", "u1", "org1")
+        assert result["valid"] is False
+        assert result["code"] == 500
+
+
+# ---------------------------------------------------------------------------
+# validate_folder_for_upload (public interface method)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateFolderForUpload:
+    """Tests for the public validate_folder_for_upload method which delegates
+    to _validate_upload_context with parent_folder_id set."""
+
+    @pytest.mark.asyncio
+    async def test_delegates_to_validate_upload_context(self, connected_provider):
+        """Should call _validate_upload_context with the folder id as parent_folder_id."""
+        connected_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "userId": "u1"}
+        )
+        connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        connected_provider.get_and_validate_folder_in_kb = AsyncMock(
+            return_value={"_key": "f1", "path": "/docs"}
+        )
+
+        result = await connected_provider.validate_folder_for_upload(
+            kb_id="kb1", folder_id="f1", user_id="u1", org_id="org1"
+        )
+
+        assert result["valid"] is True
+        assert result["upload_target"] == "folder"
+        connected_provider.get_and_validate_folder_in_kb.assert_awaited_once_with("kb1", "f1")
+
+    @pytest.mark.asyncio
+    async def test_folder_not_in_kb_returns_404_with_names(self, connected_provider):
+        """Folder that exists globally but not in this KB: 404 with KB/folder names."""
+        connected_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "userId": "u1"}
+        )
+        connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        connected_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
+        connected_provider._fetch_kb_name = AsyncMock(return_value="Docs KB")
+        connected_provider._fetch_record_name = AsyncMock(return_value="Reports")
+
+        result = await connected_provider.validate_folder_for_upload(
+            kb_id="kb1", folder_id="other-kb-folder", user_id="u1", org_id="org1"
+        )
+
+        assert result["valid"] is False
+        assert result["code"] == 404
+        assert "other-kb-folder" in result["reason"]
+        assert "Docs KB" in result["reason"]
+        assert "Reports" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_folder_not_in_kb_falls_back_to_ids_when_names_unavailable(self, connected_provider):
+        """When name lookups return None the reason falls back to bare IDs."""
+        connected_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "userId": "u1"}
+        )
+        connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        connected_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
+        connected_provider._fetch_kb_name = AsyncMock(return_value=None)
+        connected_provider._fetch_record_name = AsyncMock(return_value=None)
+
+        result = await connected_provider.validate_folder_for_upload(
+            kb_id="kb1", folder_id="ghost-folder", user_id="u1", org_id="org1"
+        )
+
+        assert result["valid"] is False
+        assert result["code"] == 404
+        assert "ghost-folder" in result["reason"]
+        assert "kb1" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_no_role_returns_403_with_no_access_message(self, connected_provider):
+        """User with no KB role at all: 403 with 'no access' message (not 'Role: None')."""
+        connected_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "userId": "u1"}
+        )
+        connected_provider.get_user_kb_permission = AsyncMock(return_value=None)
+        connected_provider._fetch_kb_name = AsyncMock(return_value="Docs KB")
+
+        result = await connected_provider.validate_folder_for_upload(
+            kb_id="kb1", folder_id="f1", user_id="u1", org_id="org1"
+        )
+
+        assert result["valid"] is False
+        assert result["code"] == 403
+        assert "Role: None" not in result["reason"]
+        assert "Docs KB" in result["reason"]
+        assert "OWNER or WRITER" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_reader_role_returns_403_with_role_in_message(self, connected_provider):
+        """READER role: 403 with the actual role name in the message."""
+        connected_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "userId": "u1"}
+        )
+        connected_provider.get_user_kb_permission = AsyncMock(return_value="READER")
+        connected_provider._fetch_kb_name = AsyncMock(return_value=None)
+
+        result = await connected_provider.validate_folder_for_upload(
+            kb_id="kb1", folder_id="f1", user_id="u1", org_id="org1"
+        )
+
+        assert result["valid"] is False
+        assert result["code"] == 403
+        assert "READER" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_user_not_found_returns_404(self, connected_provider):
+        """Unknown user should return 404."""
+        connected_provider.get_user_by_user_id = AsyncMock(return_value=None)
+
+        result = await connected_provider.validate_folder_for_upload(
+            kb_id="kb1", folder_id="f1", user_id="ghost-user", org_id="org1"
+        )
+
+        assert result["valid"] is False
+        assert result["code"] == 404
+
+    @pytest.mark.asyncio
+    async def test_writer_role_accepted(self, connected_provider):
+        """WRITER (not just OWNER) should be allowed to upload."""
+        connected_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "userId": "u1"}
+        )
+        connected_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
+        connected_provider.get_and_validate_folder_in_kb = AsyncMock(
+            return_value={"_key": "f1", "path": "/shared"}
+        )
+
+        result = await connected_provider.validate_folder_for_upload(
+            kb_id="kb1", folder_id="f1", user_id="u1", org_id="org1"
+        )
+
+        assert result["valid"] is True
+        assert result["user_role"] == "WRITER"
+
+    @pytest.mark.asyncio
+    async def test_db_exception_returns_500(self, connected_provider):
+        """DB failure during validation should return code 500, not raise."""
+        connected_provider.get_user_by_user_id = AsyncMock(
+            side_effect=Exception("connection reset")
+        )
+
+        result = await connected_provider.validate_folder_for_upload(
+            kb_id="kb1", folder_id="f1", user_id="u1", org_id="org1"
+        )
+
+        assert result["valid"] is False
+        assert result["code"] == 500
 
 
 # ---------------------------------------------------------------------------
@@ -18396,27 +18584,28 @@ class TestGetFilteredConnectorInstancesFullCoverage:
                 return [5]
             return [{"_key": "d1"}]
         connected_provider_fullcov.execute_query = mock_query
-        docs, total, scope_counts = await connected_provider_fullcov.get_filtered_connector_instances(
+        docs, total = await connected_provider_fullcov.get_filtered_connector_instances(
             "apps", "edges", "org1", "u1", scope="personal"
         )
         assert total == 5
 
     @pytest.mark.asyncio
     async def test_with_team_scope_admin(self, connected_provider_fullcov):
+        # is_admin=True: no accessible-keys pre-query; count + main only
         async def mock_query(query, bind_vars=None, transaction=None):
             if "COLLECT" in query:
                 return [3]
             return [{"_key": "d1"}]
         connected_provider_fullcov.execute_query = mock_query
-        docs, total, scope_counts = await connected_provider_fullcov.get_filtered_connector_instances(
+        docs, total = await connected_provider_fullcov.get_filtered_connector_instances(
             "apps", "edges", "org1", "u1", scope="team", is_admin=True
         )
-        assert isinstance(scope_counts, dict)
+        assert total == 3
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider_fullcov):
         connected_provider_fullcov.execute_query = AsyncMock(side_effect=Exception("err"))
-        docs, total, scope_counts = await connected_provider_fullcov.get_filtered_connector_instances(
+        docs, total = await connected_provider_fullcov.get_filtered_connector_instances(
             "apps", "edges", "org1", "u1"
         )
         assert docs == []

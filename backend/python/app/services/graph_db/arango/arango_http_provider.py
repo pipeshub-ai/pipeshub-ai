@@ -539,7 +539,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 await self._ensure_edge_definitions_up_to_date(GraphNames.KNOWLEDGE_GRAPH.value)
 
             # 3. Ensure persistent indexes for frequent query patterns
-            # await self._ensure_indexes()
+            await self._ensure_indexes()
 
             # 4. Seed departments collection with predefined department types
             await self._ensure_departments_seed()
@@ -613,12 +613,99 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Edge collections have automatic indexes on _from and _to fields which optimize
         graph traversals. Custom indexes below cover document-lookup hot paths.
         """
+        # ==================== RECORD INDEXES (Highest Priority) ====================
+        # Records are the most queried entity, especially in permission checks
+
         # COMPOSITE: virtualRecordId + orgId
         # Pattern: FOR record IN records FILTER record.virtualRecordId IN @ids AND record.orgId == @orgId
         # Used in: get_records_by_virtual_record_ids (Phase 3 batch fetch after Qdrant search)
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
             ["virtualRecordId", "orgId"],
+        )
+
+        # COMPOSITE: externalRecordId + connectorId (ALWAYS queried together)
+        # Pattern: FOR record IN records FILTER record.externalRecordId == @id AND record.connectorId == @cid
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["externalRecordId", "connectorId"],
+        )
+
+        # SINGLE: orgId (queried independently and with other fields)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["orgId"],
+        )
+
+        # SINGLE: connectorId (queried independently in many patterns)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["connectorId"],
+        )
+
+        # SINGLE: indexingStatus (pipeline queries)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["indexingStatus"],
+        )
+
+        # SINGLE: origin (heavily used in permission WHERE clauses)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["origin"],
+        )
+
+        # SINGLE: md5Checksum (duplicate detection)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["md5Checksum"],
+        )
+
+        # ==================== USER INDEXES (High Priority) ====================
+
+        # SINGLE: email (authentication, lookups)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.USERS.value,
+            ["email"],
+        )
+
+        # SINGLE: userId (user identification)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.USERS.value,
+            ["userId"],
+        )
+
+        # SINGLE: orgId (org-scoped queries)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.USERS.value,
+            ["orgId"],
+        )
+
+        # ==================== RECORDGROUP INDEXES (High Priority) ====================
+
+        # COMPOSITE: externalGroupId + connectorId (ALWAYS queried together)
+        # Pattern: FOR rg IN record_groups FILTER rg.externalGroupId == @id AND rg.connectorId == @cid
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORD_GROUPS.value,
+            ["externalGroupId", "connectorId"],
+        )
+
+        # SINGLE: orgId (org-scoped queries)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORD_GROUPS.value,
+            ["orgId"],
+        )
+
+        # SINGLE: connectorId (cleanup operations, queried independently)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORD_GROUPS.value,
+            ["connectorId"],
+        )
+
+        # SINGLE: groupType (KB filtering)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORD_GROUPS.value,
+            ["groupType"],
         )
 
     async def _ensure_departments_seed(self) -> None:
@@ -981,6 +1068,72 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to get user connector instances: {e}")
             return []
 
+    async def _get_user_accessible_team_app_keys(
+        self,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return the ``_key`` list of team-scoped apps this user may access.
+
+        Covers two access paths:
+
+        1. **Direct userAppRelation edge** — ``(users/{key}) -[userAppRelation]→ (apps/{key})``
+           where ``app.scope == 'team'``.  Handles connectors explicitly shared
+           with a specific user.
+
+        2. **Team-based edge** — ``(users/{key}) -[permission {type:'USER'}]→
+           (teams/{key}) -[userAppRelation]→ (apps/{key})``.
+           Handles the standard org-wide pattern:
+           * ``ensure_all_team_with_users`` creates the user→team ``permission``
+             edge (``type='USER'``).
+           * ``ensure_team_app_edge`` creates the ``teams/all_{org_id} →
+             userAppRelation → apps/{connector_id}`` edge when a team-scope
+             connector is configured.
+
+        Args:
+            user_id: External userId value (as stored in ``user.userId``), NOT
+                     the ArangoDB ``_key``.  The query resolves the ``_key``
+                     internally.
+            transaction: Optional ArangoDB transaction ID.
+
+        Returns:
+            List of app ``_key`` strings the user can access (empty list when
+            the user has no accessible team connectors).  Any DB error is
+            propagated to the caller so it is never silently swallowed.
+        """
+        query = f"""
+        LET user_doc = FIRST(
+            FOR u IN {CollectionNames.USERS.value}
+                FILTER u.userId == @user_id
+                LIMIT 1
+                RETURN u
+        )
+        FILTER user_doc != null
+        LET user_from = CONCAT("{CollectionNames.USERS.value}/", user_doc._key)
+        LET direct_keys = (
+            FOR app IN OUTBOUND user_from {CollectionNames.USER_APP_RELATION.value}
+                FILTER app.scope == @team_scope
+                RETURN app._key
+        )
+        LET team_keys = (
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._from == user_from
+                FILTER perm.type == "USER"
+                FILTER STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
+                FOR app IN OUTBOUND perm._to {CollectionNames.USER_APP_RELATION.value}
+                    FILTER app.scope == @team_scope
+                    RETURN app._key
+        )
+        FOR key IN UNION_DISTINCT(direct_keys, team_keys)
+            RETURN key
+        """
+        results = await self.execute_query(
+            query,
+            bind_vars={"user_id": user_id, "team_scope": "team"},
+            transaction=transaction,
+        )
+        return results or []
+
     async def get_filtered_connector_instances(
         self,
         collection: str,
@@ -995,10 +1148,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
         exclude_kb: bool = True,
         kb_connector_type: str | None = None,
         is_admin: bool = False,
+        is_authenticated: bool | None = None,
+        is_active: bool | None = None,
+        connector_type_filter: str | None = None,
         transaction: str | None = None,
-    ) -> tuple[list[dict], int, dict[str, int]]:
-        """Get filtered connector instances with pagination and scope counts."""
+    ) -> tuple[list[dict], int]:
+        """Get filtered connector instances with pagination."""
         try:
+            # For non-admin team scope we pre-compute which team apps the user
+            # can actually see.  This is done once here so the same list can be
+            # reused for both the main query and the scope-count sub-query.
+            accessible_team_keys: list[str] | None = None
+
             # Build base query
             query = """
             FOR doc IN @@collection
@@ -1014,65 +1175,56 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars["kb_connector_type"] = kb_connector_type
 
             # Scope filter
+            # personal → only the caller's own personal connectors
+            # team (admin)     → all team-scoped connectors in the org
+            # team (non-admin) → only team connectors reachable via the user's
+            #                    userAppRelation / permission edges
             if scope == "personal":
-                query += " FILTER doc.scope == @scope\n"
-                query += " FILTER (doc.createdBy == @user_id)\n"
-                bind_vars["scope"] = scope
+                query += " FILTER doc.scope == @personal_scope\n"
+                query += " FILTER doc.createdBy == @user_id\n"
+                bind_vars["personal_scope"] = "personal"
                 bind_vars["user_id"] = user_id
             elif scope == "team":
-                query += " FILTER (doc.scope == @team_scope) OR (doc.createdBy == @user_id)\n"
+                query += " FILTER doc.scope == @team_scope\n"
                 bind_vars["team_scope"] = "team"
-                bind_vars["user_id"] = user_id
+                if not is_admin:
+                    accessible_team_keys = await self._get_user_accessible_team_app_keys(
+                        user_id, transaction
+                    )
+                    if not accessible_team_keys:
+                        self.logger.info(
+                            "No accessible team app keys found for user %s — "
+                            "edge data may be inconsistent (ensure_team_app_edge / "
+                            "ensure_all_team_with_users not yet run for this org).",
+                            user_id,
+                        )
+                    query += " FILTER doc._key IN @accessible_team_keys\n"
+                    bind_vars["accessible_team_keys"] = accessible_team_keys
 
             # Search filter
             if search:
                 query += " FILTER (LOWER(doc.name) LIKE @search) OR (LOWER(doc.type) LIKE @search) OR (LOWER(doc.appGroup) LIKE @search)\n"
                 bind_vars["search"] = f"%{search.lower()}%"
 
+            # is_authenticated filter
+            if is_authenticated is not None:
+                query += " FILTER doc.isAuthenticated == @is_authenticated\n"
+                bind_vars["is_authenticated"] = is_authenticated
+
+            # is_active filter
+            if is_active is not None:
+                query += " FILTER doc.isActive == @is_active\n"
+                bind_vars["is_active"] = is_active
+
+            # connector type filter
+            if connector_type_filter:
+                query += " FILTER doc.type == @connector_type_filter\n"
+                bind_vars["connector_type_filter"] = connector_type_filter
+
             # Count query
             count_query = query + " COLLECT WITH COUNT INTO total RETURN total"
             count_result = await self.execute_query(count_query, bind_vars=bind_vars, transaction=transaction)
             total_count = count_result[0] if count_result else 0
-
-            # Scope counts (personal and team)
-            scope_counts = {"personal": 0, "team": 0}
-
-            # Personal count
-            personal_count_query = """
-            FOR doc IN @@collection
-                FILTER doc._id != null
-                FILTER doc.scope == @personal_scope
-                FILTER doc.createdBy == @user_id
-                FILTER doc.isConfigured == true
-                COLLECT WITH COUNT INTO total
-                RETURN total
-            """
-            personal_bind_vars = {
-                "@collection": collection,
-                "personal_scope": "personal",
-                "user_id": user_id,
-            }
-            personal_result = await self.execute_query(personal_count_query, bind_vars=personal_bind_vars, transaction=transaction)
-            scope_counts["personal"] = personal_result[0] if personal_result else 0
-
-            # Team count (if admin or has team access)
-            if is_admin or scope == "team":
-                team_count_query = """
-                FOR doc IN @@collection
-                    FILTER doc._id != null
-                    FILTER doc.type != @kb_connector_type
-                    FILTER doc.scope == @team_scope
-                    FILTER doc.isConfigured == true
-                    COLLECT WITH COUNT INTO total
-                    RETURN total
-                """
-                team_bind_vars = {
-                    "@collection": collection,
-                    "kb_connector_type": kb_connector_type or "",
-                    "team_scope": "team",
-                }
-                team_result = await self.execute_query(team_count_query, bind_vars=team_bind_vars, transaction=transaction)
-                scope_counts["team"] = team_result[0] if team_result else 0
 
             # Main query with pagination
             query += " LIMIT @skip, @limit\n RETURN doc"
@@ -1081,11 +1233,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             documents = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction) or []
 
-            return documents, total_count, scope_counts
+            return documents, total_count
 
         except Exception as e:
             self.logger.error(f"Failed to get filtered connector instances: {e}")
-            return [], 0, {"personal": 0, "team": 0}
+            return [], 0
 
     async def reindex_record_group_records(
         self,
@@ -1167,13 +1319,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def reset_indexing_status_to_queued_for_record_ids(self, record_ids: list[str]) -> None:
         """
         Bulk-fetch records, then batch upsert indexingStatus=QUEUED where appropriate.
-        Skips missing ids, isInternal records, and docs already QUEUED or EMPTY.
+        Skips missing ids, isInternal records, and docs already QUEUED.
         """
         unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
         if not unique_ids:
             return
         coll = CollectionNames.RECORDS.value
-        skip_status = frozenset({ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value})
+        skip_status = frozenset({ProgressStatus.QUEUED.value})
         try:
             query = """
             FOR doc IN @@collection
@@ -7331,6 +7483,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Check KB permissions
             user_role = await self.get_user_kb_permission(kb_context["kb_id"], user_key, transaction)
+            if not user_role:
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": f"You do not have permission to access this knowledge base"
+                }
             if user_role not in self.connector_delete_permissions[Connectors.KNOWLEDGE_BASE.value]["allowed_roles"]:
                 return {
                     "success": False,
@@ -10212,6 +10370,27 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to check name conflict: {str(e)}")
             return {"has_conflict": False, "conflicts": []}
 
+    async def kb_exists(self, kb_id: str) -> bool:
+        """Return True if a KB document with this id exists, regardless of permissions.
+
+        DB exceptions are intentionally NOT caught here — they must propagate
+        so callers return 500, not a misleading 404, during infrastructure failures.
+        """
+        query = """
+        FOR kb IN @@collection
+            FILTER kb._key == @kb_id
+            LIMIT 1
+            RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query,
+            bind_vars={
+                "kb_id": kb_id,
+                "@collection": CollectionNames.RECORD_GROUPS.value,
+            },
+        )
+        return bool(result)
+
     async def get_knowledge_base(
         self,
         kb_id: str,
@@ -10780,15 +10959,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
             user = await self.get_user_by_user_id(user_id)
             if not user:
                 return {"valid": False, "success": False, "code": 404, "reason": f"User not found: {user_id}"}
-            user_key = user.get("_key")
+            user_key = user.get("_key") or user.get("id")
+            if not user_key:
+                self.logger.error(
+                    f"❌ User record for {user_id} has no '_key' or 'id' field — "
+                    f"keys present: {list(user.keys())}"
+                )
+                return {"valid": False, "success": False, "code": 500, "reason": "Internal error: user record is malformed"}
+            if not await self.kb_exists(kb_id):
+                return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
             user_role = await self.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER"]:
-                return {
-                    "valid": False,
-                    "success": False,
-                    "code": 403,
-                    "reason": f"Insufficient permissions. Role: {user_role}",
-                }
+                kb_name = await self._fetch_kb_name(kb_id)
+                kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
+                if user_role is None:
+                    reason = (
+                        f"You do not have access to knowledge base {kb_label}. "
+                        "OWNER or WRITER role is required to create folders."
+                    )
+                else:
+                    reason = (
+                        f"Insufficient permissions on knowledge base {kb_label}. "
+                        f"OWNER or WRITER role required, but your role is: {user_role}."
+                    )
+                return {"valid": False, "success": False, "code": 403, "reason": reason}
             return {"valid": True, "user": user, "user_key": user_key, "user_role": user_role}
         except Exception as e:
             return {"valid": False, "success": False, "code": 500, "reason": str(e)}
@@ -11833,7 +12027,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Quick validation of inputs
             if not user_ids and not team_ids:
-                return {"success": False, "reason": "No users or teams provided", "code": "400"}
+                return {"success": False, "reason": "No users or teams provided", "code": 400}
 
             # Validate new role
             valid_roles = ["OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER", "COMMENTER", "READER"]
@@ -11841,7 +12035,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return {
                     "success": False,
                     "reason": f"Invalid role. Must be one of: {', '.join(valid_roles)}",
-                    "code": "400"
+                    "code": 400
                 }
 
             # Single atomic operation: check requester permission + get current permissions + update
@@ -11924,7 +12118,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             result = results[0] if results else None
 
             if not result:
-                return {"success": False, "reason": "Query execution failed", "code": "500"}
+                return {"success": False, "reason": "Query execution failed", "code": 500}
 
             # Log the raw result for debugging
             self.logger.debug(f"🔍 Update query result: {result}")
@@ -11932,7 +12126,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Check for validation errors
             if result["validation_error"]:
                 error = result["validation_error"]
-                return {"success": False, "reason": error["error"], "code": error["code"]}
+                return {"success": False, "reason": error["error"], "code": int(error["code"])}
 
             updated_permissions = result["updated_permissions"]
 
@@ -11968,7 +12162,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return {
                 "success": False,
                 "reason": str(e),
-                "code": "500"
+                "code": 500
             }
 
     async def list_kb_permissions(
@@ -12327,6 +12521,28 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Helper to create validation error response."""
         return {"valid": False, "success": False, "code": code, "reason": reason}
 
+    async def _fetch_kb_name(self, kb_id: str) -> str | None:
+        """Fetch just the KB display name for use in error messages. Returns None on any failure."""
+        try:
+            results = await self.execute_query(
+                "FOR kb IN @@col FILTER kb._key == @id RETURN kb.groupName",
+                bind_vars={"@col": CollectionNames.RECORD_GROUPS.value, "id": kb_id},
+            )
+            return results[0] if results else None
+        except Exception:
+            return None
+
+    async def _fetch_record_name(self, record_id: str) -> str | None:
+        """Fetch just a record's display name for use in error messages. Returns None on any failure."""
+        try:
+            results = await self.execute_query(
+                "FOR r IN @@col FILTER r._key == @id RETURN r.recordName",
+                bind_vars={"@col": CollectionNames.RECORDS.value, "id": record_id},
+            )
+            return results[0] if results else None
+        except Exception:
+            return None
+
     async def _validate_upload_context(
         self,
         kb_id: str,
@@ -12342,15 +12558,38 @@ class ArangoHTTPProvider(IGraphDBProvider):
             user_key = user.get("_key") or user.get("id")
             if not user_key:
                 return self._validation_error(404, "User key not found")
+            # Check KB existence before permission so we can return 404 vs 403 accurately
+            if not await self.kb_exists(kb_id):
+                return self._validation_error(404, f"Knowledge base {kb_id} not found")
             user_role = await self.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER"]:
-                return self._validation_error(403, f"Insufficient permissions. Role: {user_role}")
+                kb_name = await self._fetch_kb_name(kb_id)
+                kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
+                if user_role is None:
+                    reason = (
+                        f"You do not have access to knowledge base {kb_label}. "
+                        "OWNER or WRITER role is required to upload files."
+                    )
+                else:
+                    reason = (
+                        f"Insufficient permissions on knowledge base {kb_label}. "
+                        f"OWNER or WRITER role required, but your role is: {user_role}."
+                    )
+                return self._validation_error(403, reason)
             parent_folder = None
             parent_path = "/"
             if parent_folder_id:
                 parent_folder = await self.get_and_validate_folder_in_kb(kb_id, parent_folder_id)
                 if not parent_folder:
-                    return self._validation_error(404, f"Folder {parent_folder_id} not found in KB {kb_id}")
+                    kb_name = await self._fetch_kb_name(kb_id)
+                    folder_name = await self._fetch_record_name(parent_folder_id)
+                    kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
+                    folder_label = f"'{folder_name}' ({parent_folder_id})" if folder_name else parent_folder_id
+                    return self._validation_error(
+                        404,
+                        f"Folder {folder_label} was not found in knowledge base {kb_label}. "
+                        "The folder may not exist or may belong to a different knowledge base.",
+                    )
                 parent_path = parent_folder.get("path", "/")
             return {
                 "valid": True,
@@ -12363,6 +12602,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
         except Exception as e:
             return self._validation_error(500, f"Validation failed: {str(e)}")
+
+    async def validate_folder_for_upload(
+        self,
+        kb_id: str,
+        folder_id: str,
+        user_id: str,
+        org_id: str,
+    ) -> dict:
+        """Public interface method: validate folder membership and user write access before upload."""
+        return await self._validate_upload_context(
+            kb_id=kb_id,
+            user_id=user_id,
+            org_id=org_id,
+            parent_folder_id=folder_id,
+        )
 
     def _analyze_upload_structure(self, files: list[dict], validation_result: dict) -> dict:
         """Analyze folder hierarchy from file paths for upload."""
@@ -15227,43 +15481,47 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             self.logger.debug(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
 
-            query = f"""
-            LET app = DOCUMENT(CONCAT("apps/", @connector_id))
+            query = """
+            FOR doc IN @@records
+                FILTER doc.connectorId == @connector_id
+                FILTER doc.orgId == @org_id
+                FILTER doc.isInternal != true
 
-            LET allRecordGroups = (
-                FOR rg IN 1..10 INBOUND app._id {CollectionNames.BELONGS_TO.value}
-                    OPTIONS {{ bfs: true, uniqueVertices: "global" }}
-                    FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", rg._id)
-                    RETURN rg._id
-            )
+                LET hasParentRecordGroup = FIRST(
+                    FOR e IN @@belongs_to
+                        FILTER e._from == doc._id
+                        FILTER STARTS_WITH(e._to, @record_group_prefix)
+                        LIMIT 1
+                        RETURN 1
+                )
+                FILTER hasParentRecordGroup == 1
 
-            LET allRecords = (
-                FOR rgId IN allRecordGroups
-                    FOR doc IN 1..1 INBOUND rgId {CollectionNames.BELONGS_TO.value}
-                        FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", doc._id)
-                        FILTER doc.recordType != @drive_record_type
-                        FILTER doc.isInternal != true
+                LET targetInfo = doc.recordType == @file_record_type ? FIRST(
+                    FOR e IN @@is_of_type
+                        FILTER e._from == doc._id
+                        LIMIT 1
+                        LET t = DOCUMENT(e._to)
+                        RETURN t == null ? null : { id: t._id, isFile: t.isFile }
+                ) : null
+                FILTER targetInfo == null
+                    OR PARSE_IDENTIFIER(targetInfo.id).collection != @files_collection
+                    OR targetInfo.isFile == true
 
-                        LET targetDoc = FIRST(
-                            FOR v IN 1..1 OUTBOUND doc._id {CollectionNames.IS_OF_TYPE.value}
-                                LIMIT 1
-                                RETURN v
-                        )
-                        FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
-
-                        RETURN {{ recordType: doc.recordType, indexingStatus: doc.indexingStatus }}
-            )
-
-            FOR r IN allRecords
-                COLLECT recordType = r.recordType, indexingStatus = r.indexingStatus WITH COUNT INTO cnt
-                RETURN {{ recordType, indexingStatus, cnt }}
+                COLLECT recordType = doc.recordType, indexingStatus = doc.indexingStatus WITH COUNT INTO cnt
+                RETURN { recordType, indexingStatus, cnt }
             """
 
             rows = await self.http_client.execute_aql(
                 query,
                 bind_vars={
                     "connector_id": connector_id,
-                    "drive_record_type": RecordTypes.DRIVE.value
+                    "org_id": org_id,
+                    "@records": CollectionNames.RECORDS.value,
+                    "@belongs_to": CollectionNames.BELONGS_TO.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                    "record_group_prefix": f"{CollectionNames.RECORD_GROUPS.value}/",
+                    "file_record_type": RecordTypes.FILE.value,
+                    "files_collection": CollectionNames.FILES.value,
                 },
                 txn_id=transaction
             )

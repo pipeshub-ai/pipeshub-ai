@@ -1,0 +1,36 @@
+name: app_role
+description: Connector app role (matches AppRole.model_dump mode=json).
+fields:
+  app_name:
+    required: true
+    type: string
+  connector_id:
+    required: true
+    type: string
+  created_at:
+    required: false
+    type: integer
+  id:
+    required: false
+    type: string
+  name:
+    required: true
+    type: string
+  org_id:
+    required: false
+    type: string
+  parent_role_id:
+    required: false
+    type: string
+  source_created_at:
+    required: false
+    type: integer
+  source_role_id:
+    required: true
+    type: string
+  source_updated_at:
+    required: false
+    type: integer
+  updated_at:
+    required: false
+    type: integer

@@ -1053,7 +1053,7 @@ class IGraphDBProvider(ABC):
         self, record_ids: list[str]
     ) -> None:
         """
-        Set indexingStatus to QUEUED for each id (deduplicated) if not already QUEUED or EMPTY.
+        Set indexingStatus to QUEUED for each id (deduplicated) if not already QUEUED.
         Skips records with isInternal true. Non-string ids are ignored. Pass a one-element list
         for a single record. Used before reindex (API and batched sync). Skips missing records;
         logs errors without raising.
@@ -1542,6 +1542,11 @@ class IGraphDBProvider(ABC):
             Dict with success, container, folders, records, totalCount, counts,
             availableFilters, paginationMode; or { success: False, reason: str }.
         """
+        pass
+
+    @abstractmethod
+    async def kb_exists(self, kb_id: str) -> bool:
+        """Return True if a KB document with this id exists, regardless of permissions."""
         pass
 
     @abstractmethod
@@ -3063,10 +3068,13 @@ class IGraphDBProvider(ABC):
         exclude_kb: bool = True,
         kb_connector_type: str | None = None,
         is_admin: bool = False,
+        is_authenticated: bool | None = None,
+        is_active: bool | None = None,
+        connector_type_filter: str | None = None,
         transaction: str | None = None,
-    ) -> tuple[list[dict], int, dict[str, int]]:
+    ) -> tuple[list[dict], int]:
         """
-        Get filtered connector instances with pagination and scope counts.
+        Get filtered connector instances with pagination.
 
         Args:
             collection: Collection name (e.g., "apps")
@@ -3079,14 +3087,19 @@ class IGraphDBProvider(ABC):
             limit: Maximum number of items to return
             exclude_kb: Whether to exclude KB connector
             kb_connector_type: KB connector type to exclude
-            is_admin: Whether user is admin (affects team scope access)
+            is_admin: When True the caller sees all team-scoped connectors in the
+                org regardless of edge membership.  When False only connectors
+                reachable via the user's ``userAppRelation`` edge (direct or
+                through team ``PERMISSION`` edges) are returned.
+            is_authenticated: Optional filter on isAuthenticated field
+            is_active: Optional filter on isActive field
+            connector_type_filter: Optional exact match on connector type field
             transaction: Optional transaction ID
 
         Returns:
-            Tuple[List[Dict], int, Dict[str, int]]:
+            Tuple of (documents, total_count):
                 - List of connector documents
-                - Total count
-                - Scope counts dict with "personal" and "team" keys
+                - Total count of matching documents
         """
         pass
 
@@ -4124,5 +4137,30 @@ class IGraphDBProvider(ABC):
         Returns:
             List of dicts with ``{name, _key, creatorName}`` for each matching
             agent.  Returns an empty list when no agents match.
+        """
+        pass
+
+    @abstractmethod
+    async def validate_folder_for_upload(
+        self,
+        kb_id: str,
+        folder_id: str,
+        user_id: str,
+        org_id: str,
+    ) -> dict:
+        """
+        Validate that a folder exists and belongs to the KB, and that the user
+        has write access, before accepting an upload request.
+
+        Args:
+            kb_id:     Knowledge base ID.
+            folder_id: Folder ID to validate.
+            user_id:   Requesting user's external ID.
+            org_id:    Organization ID.
+
+        Returns:
+            Dict with ``valid: True`` and context on success, or
+            ``valid: False, success: False, code: <4xx|5xx>, reason: <str>``
+            on failure.
         """
         pass

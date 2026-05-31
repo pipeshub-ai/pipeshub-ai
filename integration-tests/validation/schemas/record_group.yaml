@@ -1,0 +1,57 @@
+name: record_group
+description: RecordGroup from graph (matches RecordGroup.model_dump mode=json).
+fields:
+  connector_id:
+    required: true
+    type: string
+  connector_name:
+    required: true
+    type: string
+  created_at:
+    required: false
+    type: integer
+  description:
+    required: false
+    type: string
+  external_group_id:
+    required: true
+    type: string
+  group_type:
+    required: true
+    type: string
+  id:
+    required: false
+    type: string
+  inherit_permissions:
+    required: false
+    type: boolean
+  is_internal:
+    required: false
+    type: boolean
+  name:
+    required: true
+    type: string
+  org_id:
+    required: false
+    type: string
+  parent_external_group_id:
+    required: false
+    type: string
+  parent_record_group_id:
+    required: false
+    type: string
+  short_name:
+    required: false
+    type: string
+  source_created_at:
+    required: false
+    type: integer
+  source_updated_at:
+    required: false
+    type: integer
+  updated_at:
+    required: false
+    type: integer
+  web_url:
+    required: false
+    type: string

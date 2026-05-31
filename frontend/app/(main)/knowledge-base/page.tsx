@@ -20,6 +20,7 @@ import {
   BulkDeleteConfirmationDialog,
   DeleteConfirmationDialog,
   FolderDetailsSidebar,
+  ReindexScopeDialog,
 } from './components';
 import type { UploadFileItem } from './components';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
@@ -40,6 +41,7 @@ import type {
 } from './types';
 import {
   categorizeNodes,
+  effectiveHasChildrenAfterSidebarExpand,
   mergeChildrenIntoTree,
   categorizeNode,
   buildConnectorAppSidebarTree,
@@ -64,11 +66,20 @@ import {
   buildNavUrl as buildNavUrlFn,
 } from './url-params';
 import { getIsAllRecordsMode, buildNavUrl as buildCleanNavUrl } from './utils/nav';
-import { FOLDER_REINDEX_DEPTH, SIDEBAR_PAGINATION_PAGE_SIZE } from './constants';
+import { FOLDER_REINDEX_DEPTH, REINDEX_SELF_DEPTH, SIDEBAR_PAGINATION_PAGE_SIZE } from './constants';
 import { sidebarNodeChildrenMetaFromResponse } from './utils/sidebar-child-pagination-meta';
 import { refreshKbTree } from './utils/refresh-kb-tree';
-import { getReindexSuccessTitle } from './utils/reindex-label';
+import {
+  getPrimaryReindexMenuLabelKey,
+  getReindexLoadingTitle,
+  getReindexNodeFromHubItem,
+  getReindexSuccessTitle,
+  needsReindexScopeModal,
+  supportsBulkReindex,
+} from './utils/reindex-label';
+import type { ReindexMenuLabelKey } from './utils/reindex-label';
 import { getCollectionsHubBootstrapFromToken } from './utils/collections-hub-app';
+import { fetchAppDirectChildren } from './utils/fetch-app-direct-children';
 import {
   resolveHubNodeNotFoundNavigation,
   resolvePostDeleteNavigation,
@@ -107,7 +118,6 @@ function KnowledgeBasePageContent() {
     setCurrentFolderId,
     expandFolderExclusive,
     categorizedNodes,
-    setNodes,
     addNodes,
     setCategorizedNodes,
     cacheNodeChildren,
@@ -140,10 +150,6 @@ function KnowledgeBasePageContent() {
     setAllRecordsSearchQuery,
     setAppNodes,
     setAppRootListPagination,
-    setAppChildPagination,
-    cacheAppChildren,
-    setConnectorAppTree,
-    setAppLoading,
     setAllRecordsTableData,
     syncAllRecordsPaginationMeta,
     setIsLoadingAllRecordsTable,
@@ -429,6 +435,13 @@ function KnowledgeBasePageContent() {
   const [itemToDelete, setItemToDelete] = useState<{ id: string; name: string; nodeType?: NodeType; rootKbId?: string } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // Reindex scope dialog (indexable parent records with children)
+  const [reindexScopePending, setReindexScopePending] = useState<{
+    item: KnowledgeHubNode | AllRecordItem;
+    primaryLabelKey: ReindexMenuLabelKey;
+  } | null>(null);
+  const [isReindexSubmitting, setIsReindexSubmitting] = useState(false);
+
   // Bulk delete confirmation dialog state
   const [isBulkDeleteDialogOpen, setIsBulkDeleteDialogOpen] = useState(false);
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
@@ -544,71 +557,23 @@ function KnowledgeBasePageContent() {
     setLoadingFlatCollections,
   ]);
 
-  // Fetch children for each app node (lazy loading); for the KB app, also
-  // populate nodes + categorizedNodes so the Collections sidebar tree is driven
-  // from the same data source.
+  // Collections mode: prefetch KB app children only. All Records loads per-app on expand.
   useEffect(() => {
-    if (appNodes.length === 0) return;
+    if (appNodes.length === 0 || isAllRecordsMode) return;
 
     appNodes.forEach(async (app) => {
-      // Use fresh state to avoid stale closure and prevent effect loops
       const { appChildrenCache: freshCache } = useKnowledgeBaseStore.getState();
       if (freshCache.has(app.id)) return;
 
-      // In Collections mode, only prefetch the KB app's children.
-      // Non-KB connector apps are fetched lazily when the user enters All Records mode.
-      const isKbApp = isKbCollectionsHubApp(app);
-      if (!isKbApp && !isAllRecordsMode) return;
+      if (!isKbCollectionsHubApp(app)) return;
 
-      setAppLoading(app.id, true);
       try {
-        const response = await KnowledgeHubApi.getNodeChildren('app', app.id, {
-          onlyContainers: true,
-          page: 1,
-          limit: SIDEBAR_PAGINATION_PAGE_SIZE,
-          sortBy: 'name',
-          sortOrder: 'asc',
-        });
-        cacheAppChildren(app.id, response.items);
-
-        const pag = response.pagination;
-        setAppChildPagination(
-          app.id,
-          pag
-            ? {
-                hasNext: pag.hasNext,
-                nextPage: pag.hasNext ? pag.page + 1 : pag.page,
-              }
-            : { hasNext: false, nextPage: 1 }
-        );
-
-        if (isKbApp) {
-          setNodes(response.items);
-          const categorized = categorizeNodes(response.items, `apps/${app.id}`);
-          setCategorizedNodes(categorized);
-        } else {
-          addNodes(response.items);
-          const connectorTree = buildConnectorAppSidebarTree(app.id, response.items);
-          setConnectorAppTree(app.id, connectorTree);
-        }
-      } catch (error) {
-        console.error(`Error fetching children for app ${app.name}:`, error);
-      } finally {
-        setAppLoading(app.id, false);
+        await fetchAppDirectChildren(app.id);
+      } catch {
+        // fetchAppDirectChildren logs errors
       }
     });
-  // appChildrenCache intentionally omitted — read fresh via getState() to avoid infinite loop
-  }, [
-    appNodes,
-    isAllRecordsMode,
-    setAppLoading,
-    cacheAppChildren,
-    setAppChildPagination,
-    setNodes,
-    setCategorizedNodes,
-    addNodes,
-    setConnectorAppTree,
-  ]);
+  }, [appNodes, isAllRecordsMode]);
 
   // All Records mode: Fetch table data (reusable callback)
   const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string) => {
@@ -824,9 +789,9 @@ function KnowledgeBasePageContent() {
                   page: 1,
                   limit: 50,
                 });
-                const kbFoldersCount =
-                  kbChildren.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;
-                const kbEffectiveHasChildFolders = kbFoldersCount > 0;
+                const kbEffectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(
+                  kbChildren.items,
+                );
 
                 cacheNodeChildren(kbBreadcrumb.id, kbChildren.items);
                 addNodes(kbChildren.items);
@@ -871,9 +836,9 @@ function KnowledgeBasePageContent() {
                     breadcrumb.id,
                     { onlyContainers: true, page: 1, limit: 50 }
                   );
-                  const foldersCount =
-                    folderChildren.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;
-                  const effectiveHasChildFolders = foldersCount > 0;
+                  const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(
+                    folderChildren.items,
+                  );
 
                   cacheNodeChildren(breadcrumb.id, folderChildren.items);
                   addNodes(folderChildren.items);
@@ -1221,9 +1186,7 @@ function KnowledgeBasePageContent() {
         sortOrder: 'asc',
       });
 
-      const foldersCount =
-        response.counts?.items?.find((x) => x.label === 'folders')?.count ?? response.items.length;
-      const effectiveHasChildFolders = foldersCount > 0;
+      const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(response.items);
       const state = useKnowledgeBaseStore.getState();
       const selectedApp = nodeType === 'app' ? state.appNodes.find((app) => app.id === nodeId) : null;
 
@@ -2094,61 +2057,104 @@ function KnowledgeBasePageContent() {
     [router, isAllRecordsMode, setIsSearchOpen]
   );
 
-  // Handle reindex - directly reindexes the item with loading/success/error toasts
-  const handleReindexClick = useCallback(async (
-    item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem,
-    statusFilters?: string[]
-  ) => {
-
-    const toastId = toast.loading('Re-indexing...', {
-      icon: 'lap_timer',
-    });
-
-    try {
-      const nodeType = (item as KnowledgeHubNode).nodeType;
-
-      if (nodeType === 'recordGroup') {
-        // RecordGroups are connector-app folders — use record-group endpoint
-        await KnowledgeBaseApi.reindexRecordGroup(item.id, statusFilters);
-      } else if (nodeType === 'folder') {
-        // KB folders — reindex all children
-        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH, statusFilters);
-      } else {
-        // Regular records — include children in reindex
-        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH, statusFilters);
-      }
-
-      toast.update(toastId, {
-        variant: 'success',
-        title: getReindexSuccessTitle({
-          nodeType,
-          indexingStatus: (item as KnowledgeHubNode).indexingStatus,
-        }),
+  const executeReindex = useCallback(
+    async (
+      item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem,
+      depth: number,
+      statusFilters?: string[],
+    ) => {
+      const hubItem = item as KnowledgeHubNode;
+      const reindexNode = getReindexNodeFromHubItem({
+        nodeType: hubItem.nodeType,
+        indexingStatus: hubItem.indexingStatus,
+        hasChildren: hubItem.hasChildren,
       });
 
-      await refreshData();
-    } catch (error: unknown) {
-      // Extract error message from ProcessedError or fallback to generic message
-      let errorMessage = 'Failed to start reindexing';
+      const toastId = toast.loading(getReindexLoadingTitle(reindexNode, depth, statusFilters), {
+        icon: 'lap_timer',
+      });
 
-      if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
-        errorMessage = error.message;
-      }
+      try {
+        if (hubItem.nodeType === 'recordGroup') {
+          await KnowledgeBaseApi.reindexRecordGroup(item.id, depth, statusFilters);
+        } else {
+          await KnowledgeBaseApi.reindexItem(item.id, depth, statusFilters);
+        }
 
-      toast.update(toastId, {
-        variant: 'error',
-        title: errorMessage,
-        action: {
-          label: 'Try Again',
-          icon: 'refresh',
-          onClick: () => {
-            toast.dismiss(toastId);
-            handleReindexClick(item, statusFilters);
+        toast.update(toastId, {
+          variant: 'success',
+          title: getReindexSuccessTitle(reindexNode, depth, statusFilters),
+        });
+
+        await refreshData();
+      } catch (error: unknown) {
+        let errorMessage = 'Failed to start reindexing';
+
+        if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
+          errorMessage = error.message;
+        }
+
+        toast.update(toastId, {
+          variant: 'error',
+          title: errorMessage,
+          action: {
+            label: 'Try Again',
+            icon: 'refresh',
+            onClick: () => {
+              toast.dismiss(toastId);
+              void executeReindex(item, depth, statusFilters);
+            },
           },
-        },
+        });
+      }
+    },
+    [refreshData],
+  );
+
+  const handleReindexClick = useCallback(
+    async (
+      item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem,
+      statusFilters?: string[],
+    ) => {
+      const hubItem = item as KnowledgeHubNode;
+      const reindexNode = getReindexNodeFromHubItem({
+        nodeType: hubItem.nodeType,
+        indexingStatus: hubItem.indexingStatus,
+        hasChildren: hubItem.hasChildren,
       });
-    }
-  }, [refreshData]);
+
+      if (statusFilters?.length) {
+        await executeReindex(item, FOLDER_REINDEX_DEPTH, statusFilters);
+        return;
+      }
+
+      if (needsReindexScopeModal(reindexNode)) {
+        setReindexScopePending({
+          item: hubItem,
+          primaryLabelKey: getPrimaryReindexMenuLabelKey(reindexNode),
+        });
+        return;
+      }
+
+      const depth = supportsBulkReindex(reindexNode) ? FOLDER_REINDEX_DEPTH : REINDEX_SELF_DEPTH;
+      await executeReindex(item, depth);
+    },
+    [executeReindex],
+  );
+
+  const handleReindexScopeConfirm = useCallback(
+    async (depth: number) => {
+      if (!reindexScopePending) return;
+      setIsReindexSubmitting(true);
+      try {
+        await executeReindex(reindexScopePending.item, depth);
+        setReindexScopePending(null);
+      } finally {
+        setIsReindexSubmitting(false);
+      }
+    },
+    [reindexScopePending, executeReindex],
+  );
 
   // Handle move - opens the move folder sidebar
   const handleMoveClick = useCallback((item: KnowledgeBaseItem) => {
@@ -2547,6 +2553,19 @@ function KnowledgeBasePageContent() {
 
       {/* Collections mode only dialogs */}
       {/* Delete Confirmation Dialog (sidebar) */}
+      {reindexScopePending && (
+        <ReindexScopeDialog
+          open
+          onOpenChange={(open) => {
+            if (!open && !isReindexSubmitting) setReindexScopePending(null);
+          }}
+          itemName={reindexScopePending.item.name}
+          primaryLabelKey={reindexScopePending.primaryLabelKey}
+          onConfirm={handleReindexScopeConfirm}
+          isSubmitting={isReindexSubmitting}
+        />
+      )}
+
       {itemToDelete && (
         <DeleteConfirmationDialog
           open={isDeleteDialogOpen}

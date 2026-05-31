@@ -2769,6 +2769,159 @@ class TestTransformSpacePermission:
         assert result is None
 
 
+class TestTransformAccessClassSpacePermission:
+    def _access_class_perm(
+        self,
+        principal_id: str,
+        operation_key: str = "read",
+        target_type: str = "space",
+    ) -> dict[str, Any]:
+        return {
+            "principal": {"type": "access-class", "id": principal_id},
+            "operation": {"key": operation_key, "targetType": target_type},
+        }
+
+    def _group(self, name: str, external_id: str) -> AppUserGroup:
+        return AppUserGroup(
+            app_name=Connectors.CONFLUENCE,
+            connector_id="conn-cov-1",
+            source_user_group_id=external_id,
+            name=name,
+            org_id="org-cov-1",
+        )
+
+    def _mock_groups(self, connector: ConfluenceConnector, groups: list[AppUserGroup]) -> None:
+        mock_tx = connector.data_store_provider.transaction.return_value
+        mock_tx.get_user_groups = AsyncMock(return_value=groups)
+
+    @pytest.mark.asyncio
+    async def test_licensed_users_read_space_maps_to_group(self):
+        c = _conn()
+        self._mock_groups(c, [self._group("confluence-users", "grp-licensed-uuid")])
+        result = await c._transform_space_permission(
+            self._access_class_perm("ALL_LICENSED_USERS")
+        )
+        assert result is not None
+        assert result.entity_type == EntityType.GROUP
+        assert result.external_id == "grp-licensed-uuid"
+        assert result.type == PermissionType.READ
+
+    @pytest.mark.asyncio
+    async def test_licensed_users_read_space_org_fallback(self):
+        c = _conn()
+        self._mock_groups(c, [])
+        result = await c._transform_space_permission(
+            self._access_class_perm("ALL_LICENSED_USERS")
+        )
+        assert result is not None
+        assert result.entity_type == EntityType.ORG
+        assert result.type == PermissionType.READ
+
+    @pytest.mark.asyncio
+    async def test_product_admins_administer_space_maps_to_group(self):
+        c = _conn()
+        self._mock_groups(c, [self._group("org-admins", "grp-admin-uuid")])
+        result = await c._transform_space_permission(
+            self._access_class_perm("ALL_PRODUCT_ADMINS", "administer", "space")
+        )
+        assert result is not None
+        assert result.entity_type == EntityType.GROUP
+        assert result.external_id == "grp-admin-uuid"
+        assert result.type == PermissionType.OWNER
+
+    @pytest.mark.asyncio
+    async def test_product_admins_administer_space_org_fallback(self):
+        c = _conn()
+        self._mock_groups(c, [])
+        result = await c._transform_space_permission(
+            self._access_class_perm("ALL_PRODUCT_ADMINS", "administer", "space")
+        )
+        assert result is not None
+        assert result.entity_type == EntityType.ORG
+        assert result.type == PermissionType.OWNER
+
+    @pytest.mark.asyncio
+    async def test_licensed_users_non_read_operation_skipped(self):
+        c = _conn()
+        self._mock_groups(c, [self._group("confluence-users", "grp-licensed-uuid")])
+        result = await c._transform_space_permission(
+            self._access_class_perm("ALL_LICENSED_USERS", "create", "page")
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_access_class_does_not_call_principal_helper(self):
+        c = _conn()
+        c._create_permission_from_principal = AsyncMock()
+        self._mock_groups(c, [])
+        await c._transform_space_permission(self._access_class_perm("ALL_LICENSED_USERS"))
+        c._create_permission_from_principal.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_group_name_cache_refreshes_after_invalidation(self):
+        """Stale cache from a prior sync must not block group resolution on re-sync."""
+        c = _conn()
+        c._group_name_to_external_id = {}
+        self._mock_groups(c, [self._group("confluence-users", "grp-licensed-uuid")])
+
+        stale = await c._transform_space_permission(
+            self._access_class_perm("ALL_LICENSED_USERS")
+        )
+        assert stale is not None
+        assert stale.entity_type == EntityType.ORG
+
+        c._group_name_to_external_id = None
+        fresh = await c._transform_space_permission(
+            self._access_class_perm("ALL_LICENSED_USERS")
+        )
+        assert fresh is not None
+        assert fresh.entity_type == EntityType.GROUP
+        assert fresh.external_id == "grp-licensed-uuid"
+
+
+class TestDedupeSpacePermissions:
+    def test_collapse_duplicate_org_read(self):
+        perms = [
+            Permission(entity_type=EntityType.ORG, type=PermissionType.READ),
+            Permission(entity_type=EntityType.ORG, type=PermissionType.READ),
+        ]
+        result = ConfluenceConnector._dedupe_space_permissions(perms)
+        assert len(result) == 1
+
+    def test_keeps_distinct_permission_types(self):
+        perms = [
+            Permission(entity_type=EntityType.ORG, type=PermissionType.READ),
+            Permission(entity_type=EntityType.ORG, type=PermissionType.OWNER),
+        ]
+        result = ConfluenceConnector._dedupe_space_permissions(perms)
+        assert len(result) == 2
+
+
+class TestFetchSpacePermissionsAccessClassDedupe:
+    @pytest.mark.asyncio
+    async def test_dedupes_identical_access_class_rows(self):
+        connector = _make_connector()
+        row = {
+            "principal": {"type": "access-class", "id": "ALL_LICENSED_USERS"},
+            "operation": {"key": "read", "targetType": "space"},
+        }
+        mock_ds = MagicMock()
+        mock_ds.get_space_permissions_assignments = AsyncMock(
+            return_value=_make_mock_response(
+                200,
+                {"results": [row, row, row], "_links": {}},
+            )
+        )
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        mock_tx = connector.data_store_provider.transaction.return_value
+        mock_tx.get_user_groups = AsyncMock(return_value=[])
+
+        permissions = await connector._fetch_space_permissions("space-1", "IT")
+        assert len(permissions) == 1
+        assert permissions[0].entity_type == EntityType.ORG
+        assert permissions[0].type == PermissionType.READ
+
+
 # ===========================================================================
 # _transform_page_restriction_to_permissions
 # ===========================================================================

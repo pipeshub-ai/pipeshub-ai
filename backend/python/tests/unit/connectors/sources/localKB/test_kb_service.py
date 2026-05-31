@@ -1010,3 +1010,71 @@ class TestUploadRecords:
         service.graph_provider.upload_records = AsyncMock(return_value={"success": True})
         result = await service.upload_records_to_folder("kb1", "f1", "user1", "org1", [{"name": "test.txt"}])
         service.graph_provider.upload_records.assert_awaited_once()
+
+
+# ===========================================================================
+# validate_folder_for_upload
+# ===========================================================================
+
+
+class TestValidateFolderForUpload:
+    @pytest.mark.asyncio
+    async def test_valid_folder_returns_valid(self, service):
+        service.graph_provider.validate_folder_for_upload = AsyncMock(
+            return_value={"valid": True, "upload_target": "folder", "user_role": "OWNER"}
+        )
+
+        result = await service.validate_folder_for_upload("kb1", "f1", "user1", "org1")
+
+        assert result["valid"] is True
+        service.graph_provider.validate_folder_for_upload.assert_awaited_once_with(
+            kb_id="kb1", folder_id="f1", user_id="user1", org_id="org1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_folder_not_in_kb_propagates_404(self, service):
+        service.graph_provider.validate_folder_for_upload = AsyncMock(
+            return_value={"valid": False, "success": False, "code": 404, "reason": "Folder f1 not found in KB kb1"}
+        )
+
+        result = await service.validate_folder_for_upload("kb1", "f1", "user1", "org1")
+
+        assert result["valid"] is False
+        assert result["code"] == 404
+
+    @pytest.mark.asyncio
+    async def test_nonexistent_folder_propagates_404(self, service):
+        service.graph_provider.validate_folder_for_upload = AsyncMock(
+            return_value={"valid": False, "success": False, "code": 404, "reason": "Folder ghost not found"}
+        )
+
+        result = await service.validate_folder_for_upload("kb1", "ghost", "user1", "org1")
+
+        assert result["valid"] is False
+        assert result["code"] == 404
+
+    @pytest.mark.asyncio
+    async def test_insufficient_permission_propagates_403(self, service):
+        service.graph_provider.validate_folder_for_upload = AsyncMock(
+            return_value={"valid": False, "success": False, "code": 403, "reason": "Insufficient permissions"}
+        )
+
+        result = await service.validate_folder_for_upload("kb1", "f1", "user1", "org1")
+
+        assert result["valid"] is False
+        assert result["code"] == 403
+
+    @pytest.mark.asyncio
+    async def test_passes_all_arguments_correctly(self, service):
+        service.graph_provider.validate_folder_for_upload = AsyncMock(
+            return_value={"valid": True, "upload_target": "folder"}
+        )
+
+        await service.validate_folder_for_upload("my-kb", "my-folder", "my-user", "my-org")
+
+        service.graph_provider.validate_folder_for_upload.assert_awaited_once_with(
+            kb_id="my-kb",
+            folder_id="my-folder",
+            user_id="my-user",
+            org_id="my-org",
+        )

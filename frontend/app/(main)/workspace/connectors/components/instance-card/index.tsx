@@ -5,35 +5,20 @@ import { useTranslation } from 'react-i18next';
 import { Flex, Text, IconButton, Avatar, Switch, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
-import { formatRelativeTime, formatEnabledDate } from '@/lib/utils/formatters';
+import { formatRelativeTime } from '@/lib/utils/formatters';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
-import { SyncStatusPill } from './sync-status';
 import {
   InfoRow,
   DotSeparator,
   ConnectButton,
   SyncButton,
   FullSyncButton,
-  ReindexFailedButton,
-  ManualIndexButton,
 } from './primitives';
 import { InlineEditableName } from '../inline-editable-name';
-import {
-  deriveSyncStatusState,
-  getSyncStrategyLabel,
-  getSyncIntervalLabel,
-  getTotalRecords,
-  getSyncedRecords,
-  getFailedRecords,
-  getUnsupportedRecords,
-} from './utils';
+import { InstanceSyncOperationPill, InstanceSetupStatusRow } from './instance-status-badges';
+import { deriveSyncStatusState, getSyncStrategyLabel, getSyncIntervalLabel } from './utils';
 import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
-import type {
-  ConnectorInstance,
-  ConnectorConfig,
-  ConnectorStatsResponse,
-  ConnectorScope,
-} from '../../types';
+import type { ConnectorInstance, ConnectorConfig, ConnectorScope } from '../../types';
 
 // ========================================
 // Props
@@ -45,12 +30,14 @@ interface InstanceCardProps {
   scope: ConnectorScope;
   /** Per-instance config from GET /connectors/{id}/config */
   config?: ConnectorConfig;
-  /** Per-instance stats from GET /knowledgeBase/stats/{id} */
-  stats?: ConnectorStatsResponse['data'];
   onManage?: (instance: ConnectorInstance) => void;
   /** POST …/toggle — flips sync `isActive` */
   onToggleSyncActive?: (instance: ConnectorInstance) => void | Promise<void>;
   onChevronClick?: (instance: ConnectorInstance) => void;
+  /** Refetch instance row + config shown on this card */
+  onRefresh?: () => void | Promise<void>;
+  /** Parent-driven refresh in progress (e.g. per-card or refresh-all) */
+  isRefreshing?: boolean;
 }
 
 // ========================================
@@ -61,26 +48,21 @@ export function InstanceCard({
   instance,
   scope,
   config,
-  stats,
   onManage,
   onToggleSyncActive,
   onChevronClick,
+  onRefresh,
+  isRefreshing = false,
 }: InstanceCardProps) {
   const { t } = useTranslation();
-  // ── Org/User identity state ──
-  const [identityName, setIdentityName] = useState<string>(instance.name);
-  // ── Personal header: optional user avatar from updatedBy (title uses instance name) ──
   const [identityIcon, setIdentityIcon] = useState<string | null>(null);
   const [identityIconError, setIdentityIconError] = useState(false);
-
-  // ── Enabled by user info ──
   const [enabledByName, setEnabledByName] = useState<string | null>(null);
   const [enabledByAvatar, setEnabledByAvatar] = useState<string | null>(null);
   const [syncToggleBusy, setSyncToggleBusy] = useState(false);
 
   const updatedByEntry = useUserDirectoryEntry(instance.updatedBy);
 
-  // ── Apply directory entry → identity (personal) + enabled-by row ──
   useEffect(() => {
     setIdentityIconError(false);
     if (scope === 'personal') {
@@ -103,7 +85,6 @@ export function InstanceCard({
       setIdentityIcon(`/api/v1/users/${resolvedUserId}/dp`);
     }
 
-    // "Viraj Gawde" → "Viraj G"
     const parts = fullName.trim().split(/\s+/);
     const displayName =
       parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1][0]}` : parts[0] || '';
@@ -111,15 +92,11 @@ export function InstanceCard({
     if (resolvedUserId) setEnabledByAvatar(`/api/v1/users/${resolvedUserId}/dp`);
   }, [scope, instance.updatedBy, updatedByEntry]);
 
-  // ── Derived data ──
   const { status: effectiveStatus, oauthAuthIncompleteForSync: oauthAuthIncomplete } =
-    deriveSyncStatusState(instance, stats, config);
-  const failedCount = stats?.stats?.indexingStatus?.FAILED ?? 0;
-  const autoIndexOffCount = stats?.stats?.indexingStatus?.AUTO_INDEX_OFF ?? 0;
+    deriveSyncStatusState(instance, undefined, config);
   const syncStrategy = getSyncStrategyLabel(config);
   const syncInterval = getSyncIntervalLabel(config);
   const lastSynced = formatRelativeTime(instance.updatedAtTimestamp);
-  const enabledDate = formatEnabledDate(instance.createdAtTimestamp);
 
   const canToggleSync =
     Boolean(instance._key) &&
@@ -128,7 +105,6 @@ export function InstanceCard({
     !oauthAuthIncomplete &&
     instance.status !== CONNECTOR_INSTANCE_STATUS.DELETING;
 
-  /** Shown when the sync toggle is disabled for a reason the user can fix or understand. */
   const syncToggleHelp: string | null =
     instance.status === CONNECTOR_INSTANCE_STATUS.DELETING
       ? 'This connector is being removed.'
@@ -175,11 +151,8 @@ export function InstanceCard({
         overflow: 'hidden',
       }}
     >
-      {/* ── Main content ── */}
       <Flex direction="column" gap="4" style={{ padding: 16, minWidth: 325 }}>
-        {/* ── Header row: identity + sync status + chevron ── */}
         <Flex align="center" gap="2" style={{ width: '100%' }}>
-          {/* Identity icon */}
           <Flex
             align="center"
             justify="center"
@@ -207,26 +180,46 @@ export function InstanceCard({
             )}
           </Flex>
 
-          {/* Instance display name — inline editable */}
           <InlineEditableName
             connectorId={instance._key}
             name={instance.name?.trim() || instance.type}
             textSize="2"
             textWeight="medium"
             truncate
-            style={{ flex: 1, overflow: 'hidden' }}
+            style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}
           />
 
-          {/* Sync status pill */}
-          <SyncStatusPill
-            status={effectiveStatus}
-            syncedRecords={getSyncedRecords(stats)}
-            totalRecords={getTotalRecords(stats)}
-            failedRecords={getFailedRecords(stats)}
-            unsupportedRecords={getUnsupportedRecords(stats)}
-          />
+          <InstanceSyncOperationPill instance={instance} />
 
-          {/* Chevron */}
+          {onRefresh ? (
+            <IconButton
+              variant="outline"
+              color="gray"
+              size="1"
+              aria-label={t('workspace.connectors.refreshInstance')}
+              disabled={isRefreshing}
+              onClick={() => {
+                if (!isRefreshing) void onRefresh();
+              }}
+              style={{
+                cursor: isRefreshing ? 'wait' : 'pointer',
+                borderRadius: 'var(--radius-2)',
+                width: 32,
+                height: 32,
+                flexShrink: 0,
+              }}
+            >
+              <span
+                style={{
+                  display: 'inline-flex',
+                  animation: isRefreshing ? 'spin 0.8s linear infinite' : undefined,
+                }}
+              >
+                <MaterialIcon name="refresh" size={18} color="var(--gray-11)" />
+              </span>
+            </IconButton>
+          ) : null}
+
           <IconButton
             variant="outline"
             color="gray"
@@ -238,10 +231,10 @@ export function InstanceCard({
           </IconButton>
         </Flex>
 
-        {/* ── Separator ── */}
         <div style={{ height: 1, backgroundColor: 'var(--gray-a3)' }} />
 
-        {/* ── Sync Strategy ── */}
+        <InstanceSetupStatusRow instance={instance} config={config} />
+
         {syncStrategy ? (
           <Flex align="center" gap="4">
             <Text
@@ -269,7 +262,6 @@ export function InstanceCard({
           <InfoRow label={t('workspace.connectors.instanceCard.syncStrategy')} value="-" />
         )}
 
-        {/* ── Enabled By ── */}
         {enabledByName ? (
           <Flex align="center" gap="4">
             <Text
@@ -298,10 +290,8 @@ export function InstanceCard({
           <InfoRow label={t('workspace.connectors.settingsTab.enabledBy')} value="-" />
         )}
 
-        {/* ── Last Synced ── */}
         <InfoRow label="LAST SYNCED" value={lastSynced} />
 
-        {/* Enable / pause connector sync (backend toggle). */}
         {instance._key && instance.supportsSync && (
           <Flex align="center" gap="4" style={{ marginTop: 2 }}>
             <Text
@@ -337,7 +327,6 @@ export function InstanceCard({
           </Flex>
         )}
 
-        {/* Indexing / sync actions — only when sync is enabled. Header Start Sync is hidden for DELETING via deriveSyncStatusState → sync_disabled. */}
         {showIndexingActions && (
           <Flex
             wrap="wrap"
@@ -351,21 +340,10 @@ export function InstanceCard({
           >
             <SyncButton connectorId={instance._key} connectorType={instance.type} />
             <FullSyncButton connectorId={instance._key} connectorType={instance.type} />
-            <ReindexFailedButton
-              connectorId={instance._key}
-              connectorType={instance.type}
-              failedCount={failedCount}
-            />
-            <ManualIndexButton
-              connectorId={instance._key}
-              connectorType={instance.type}
-              autoIndexOffCount={autoIndexOffCount}
-            />
           </Flex>
         )}
       </Flex>
 
-      {/* ── Auth incomplete banner ── */}
       {effectiveStatus === 'auth_incomplete' && (
         <Flex
           align="center"

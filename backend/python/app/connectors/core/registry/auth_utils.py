@@ -4,6 +4,13 @@ from app.connectors.core.registry.auth_builder import OAuthConfig
 from app.connectors.core.registry.types import AuthField
 
 
+def include_jira_scope_enabled(value: Any) -> bool:
+    """Return True when Confluence OAuth config opts into the optional Jira user scope."""
+    if isinstance(value, str):
+        return value.strip().lower() == "yes"
+    return value is True
+
+
 def auth_field_to_dict(field: AuthField) -> dict[str, Any]:
     """
     Convert AuthField to field config dictionary.
@@ -30,7 +37,7 @@ def auth_field_to_dict(field: AuthField) -> dict[str, Any]:
             r.model_dump(mode="json", by_alias=True, exclude_none=True)
             for r in field.validation_rules
         ]
-    return {
+    result: dict[str, Any] = {
         "name": field.name,
         "displayName": field.display_name,
         "placeholder": field.placeholder,
@@ -42,6 +49,9 @@ def auth_field_to_dict(field: AuthField) -> dict[str, Any]:
         "validation": validation,
         "isSecret": field.is_secret
     }
+    if field.options:
+        result["options"] = field.options
+    return result
 
 
 def auto_add_oauth_fields(

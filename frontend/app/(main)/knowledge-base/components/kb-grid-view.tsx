@@ -10,14 +10,14 @@ import { CARD_ICONS } from './grid-card-icons';
 import {
   runItemMenuOpenFromMenu,
   shouldHideIndexingStatusForHubRecord,
+  shouldShowDownloadForTableItem,
 } from '../utils/kb-table-item-actions';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 import { useTranslation } from 'react-i18next';
 import {
-  REINDEX_MENU_OPTIONS,
-  canShowReindexMenu,
+  getReindexMenuState,
   getReindexNodeForTableItem,
-  isReindexDisabled,
+  mapReindexOptionsToMenuActions,
 } from '../utils/reindex-label';
 
 import type { 
@@ -147,8 +147,10 @@ function GridCard({
   // Determine if item is a folder/container (all navigable container types)
   const isHubNode = isKnowledgeHubNode(item);
   const reindexNode = getReindexNodeForTableItem(item, isHubNode);
-  const showReindexMenu = !!onReindex && canShowReindexMenu(reindexNode);
-  const reindexDisabled = isReindexDisabled(reindexNode);
+  const { options: reindexMenuOptions, showMenu: showReindexMenu } = getReindexMenuState(
+    reindexNode,
+    !!onReindex,
+  );
 
   const isFolder = isHubNode
     ? ['kb', 'app', 'folder', 'recordGroup'].includes(item.nodeType)
@@ -488,7 +490,7 @@ function GridCard({
                     <MaterialIcon name="folder_open" size={16} />
                     Open
                   </DropdownMenu.Item>
-                  {!isFolder && onDownload && (
+                  {!isFolder && onDownload && shouldShowDownloadForTableItem(item) && (
                     <DropdownMenu.Item onClick={(e) => { e.stopPropagation(); onDownload(item); }}>
                       <MaterialIcon name="file_download" size={16} />
                       Download
@@ -501,14 +503,16 @@ function GridCard({
                     </DropdownMenu.Item>
                   )}
                   {showReindexMenu &&
-                    REINDEX_MENU_OPTIONS.map((option) => (
+                    mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) =>
+                      onReindex!(item, statusFilters),
+                    ).map((action) => (
                       <DropdownMenu.Item
-                        key={option.labelKey}
-                        disabled={reindexDisabled}
-                        onClick={() => onReindex!(item, option.statusFilters)}
+                        key={`${action.labelKey}-${action.statusFilters?.join(',') ?? 'all'}`}
+                        disabled={action.disabled}
+                        onClick={action.onClick}
                       >
-                        <MaterialIcon name={option.icon} size={16} />
-                        {t(option.labelKey)}
+                        <MaterialIcon name={action.icon} size={16} />
+                        {action.label}
                       </DropdownMenu.Item>
                     ))}
                   {!isFolder && onReplace && (
