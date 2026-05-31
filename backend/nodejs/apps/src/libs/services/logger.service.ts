@@ -2,6 +2,15 @@ import winston from 'winston';
 import { Request } from 'express';
 import { injectable } from 'inversify';
 import path from 'path';
+import fs from 'fs';
+import { loadLoggingEnv } from '../config/logging.env';
+import {
+  COMBINED_LOG_FILENAME,
+  COMBINED_LOG_MAX_FILES,
+  ERROR_LOG_FILENAME,
+  ERROR_LOG_MAX_FILES,
+  LOG_FILE_MAX_SIZE,
+} from '../constants/logging.constants';
 
 export enum LogLevel {
   Debug = 'debug',
@@ -29,7 +38,8 @@ const customLevels = {
 winston.addColors(customLevels.colors);
 
 export function getLogLevel(): LogLevel {
-  const level = process.env.LOG_LEVEL?.toLowerCase();
+  const { logLevel } = loadLoggingEnv();
+  const level = logLevel.toLowerCase();
   if (Object.values(LogLevel).includes(level as LogLevel)) {
     return level as LogLevel;
   }
@@ -92,6 +102,9 @@ export class Logger {
       })
     );
 
+    const { logDir } = loadLoggingEnv();
+    fs.mkdirSync(logDir, { recursive: true });
+
     return winston.createLogger({
       levels: customLevels.levels,
       level: config?.level || getLogLevel(),
@@ -99,22 +112,24 @@ export class Logger {
       defaultMeta: this.defaultMeta,
       transports: [
         new winston.transports.File({
-          filename: 'error.log',
+          filename: path.join(logDir, ERROR_LOG_FILENAME),
           level: LogLevel.Error,
-          format: winston.format.combine(logFormat, winston.format.json())
+          format: winston.format.combine(logFormat, winston.format.json()),
+          maxsize: LOG_FILE_MAX_SIZE,
+          maxFiles: ERROR_LOG_MAX_FILES,
         }),
         new winston.transports.File({
-          filename: 'combined.log',
-          format: winston.format.combine(logFormat, winston.format.json())
+          filename: path.join(logDir, COMBINED_LOG_FILENAME),
+          format: winston.format.combine(logFormat, winston.format.json()),
+          maxsize: LOG_FILE_MAX_SIZE,
+          maxFiles: COMBINED_LOG_MAX_FILES,
         }),
-        ...(process.env.NODE_ENV !== 'production'
-          ? [new winston.transports.Console({
-            format: winston.format.combine(
-              winston.format.colorize(),
-              logFormat
-            )
-          })]
-          : []),
+        new winston.transports.Console({
+          format: winston.format.combine(
+            winston.format.colorize(),
+            logFormat
+          )
+        }),
       ],
     });
   }

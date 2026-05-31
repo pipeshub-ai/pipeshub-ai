@@ -1,22 +1,41 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import winston from 'winston';
 import { Logger, LogLevel, getLogLevel } from '../../../src/libs/services/logger.service';
+import {
+  COMBINED_LOG_MAX_FILES,
+  DEFAULT_LOG_DIR,
+  ERROR_LOG_MAX_FILES,
+  LOG_FILE_MAX_SIZE,
+} from '../../../src/libs/constants/logging.constants';
 import { envGuard } from '../../helpers/env-guard';
 
 describe('Logger', () => {
   const env = envGuard();
+  let sharedTmpDir: string;
 
   // Reset the singleton between tests
   beforeEach(() => {
     env.snapshot();
     (Logger as any).instance = null;
+    sharedTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'logger-shared-'));
+    process.env.LOG_DIR = sharedTmpDir;
   });
 
   afterEach(() => {
+    const instance = (Logger as any).instance;
+    if (instance) {
+      const winstonLogger = instance.logger;
+      if (winstonLogger?.close) winstonLogger.close();
+    }
     env.restore();
     sinon.restore();
     (Logger as any).instance = null;
+    fs.rmSync(sharedTmpDir, { recursive: true, force: true });
   });
 
   describe('getLogLevel', () => {
@@ -260,6 +279,132 @@ describe('Logger', () => {
       expect(sanitize('hello')).to.equal('hello');
       expect(sanitize(true)).to.be.true;
       expect(sanitize(undefined)).to.be.undefined;
+    });
+  });
+
+  describe('transports', () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'logger-test-'));
+      process.env.LOG_DIR = tmpDir;
+    });
+
+    afterEach(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    function getTransports(): winston.transport[] {
+      const logger = new Logger({ service: 'transport-test' });
+      return (logger as any).logger.transports;
+    }
+
+    it('should always include a Console transport', () => {
+      process.env.NODE_ENV = 'production';
+      const transports = getTransports();
+      const consoleTransport = transports.find(
+        (t: any) => t instanceof winston.transports.Console
+      );
+      expect(consoleTransport).to.exist;
+    });
+
+    it('should include Console transport in development', () => {
+      process.env.NODE_ENV = 'development';
+      const transports = getTransports();
+      const consoleTransport = transports.find(
+        (t: any) => t instanceof winston.transports.Console
+      );
+      expect(consoleTransport).to.exist;
+    });
+
+    it('should include two File transports (error + combined)', () => {
+      const transports = getTransports();
+      const fileTransports = transports.filter(
+        (t: any) => t instanceof winston.transports.File
+      );
+      expect(fileTransports).to.have.length(2);
+    });
+
+    it('should set error file transport to error level', () => {
+      const transports = getTransports();
+      const fileTransports = transports.filter(
+        (t: any) => t instanceof winston.transports.File
+      );
+      const errorTransport = fileTransports.find(
+        (t: any) => t.level === LogLevel.Error
+      );
+      expect(errorTransport).to.exist;
+      expect((errorTransport as any).filename).to.include('error.log');
+    });
+
+    it('should configure maxsize on file transports', () => {
+      const transports = getTransports();
+      const fileTransports = transports.filter(
+        (t: any) => t instanceof winston.transports.File
+      );
+      for (const ft of fileTransports) {
+        expect((ft as any).maxsize).to.equal(LOG_FILE_MAX_SIZE);
+      }
+    });
+
+    it('should configure maxFiles on file transports', () => {
+      const transports = getTransports();
+      const fileTransports = transports.filter(
+        (t: any) => t instanceof winston.transports.File
+      );
+      const errorTransport = fileTransports.find((t: any) => t.level === LogLevel.Error);
+      const combinedTransport = fileTransports.find((t: any) => !t.level);
+      expect((errorTransport as any).maxFiles).to.equal(ERROR_LOG_MAX_FILES);
+      expect((combinedTransport as any).maxFiles).to.equal(COMBINED_LOG_MAX_FILES);
+    });
+
+    it('should have exactly 3 transports total', () => {
+      const transports = getTransports();
+      expect(transports).to.have.length(3);
+    });
+  });
+
+  describe('log directory', () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = path.join(os.tmpdir(), `logger-dir-test-${Date.now()}`);
+    });
+
+    afterEach(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('should create the log directory from LOG_DIR', () => {
+      process.env.LOG_DIR = tmpDir;
+      new Logger({ service: 'dir-test' });
+      expect(fs.existsSync(tmpDir)).to.be.true;
+    });
+
+    it('should create nested log directories', () => {
+      const nested = path.join(tmpDir, 'a', 'b', 'c');
+      process.env.LOG_DIR = nested;
+      new Logger({ service: 'nested-dir-test' });
+      expect(fs.existsSync(nested)).to.be.true;
+    });
+
+    it('should write file transports into the configured LOG_DIR', () => {
+      process.env.LOG_DIR = tmpDir;
+      const logger = new Logger({ service: 'path-test' });
+      const transports = (logger as any).logger.transports;
+      const fileTransports = transports.filter(
+        (t: any) => t instanceof winston.transports.File
+      );
+      for (const ft of fileTransports) {
+        expect((ft as any).dirname).to.equal(tmpDir);
+      }
+    });
+
+    it('should default to cwd/logs when LOG_DIR is not set', () => {
+      delete process.env.LOG_DIR;
+      new Logger({ service: 'default-dir-test' });
+      expect(fs.existsSync(DEFAULT_LOG_DIR)).to.be.true;
+      fs.rmSync(DEFAULT_LOG_DIR, { recursive: true, force: true });
     });
   });
 });
