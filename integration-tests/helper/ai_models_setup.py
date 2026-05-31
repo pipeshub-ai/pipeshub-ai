@@ -34,8 +34,6 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-import requests
-
 from pipeshub_client import PipeshubClient
 
 logger = logging.getLogger("ai-models-setup")
@@ -76,12 +74,7 @@ def _reasoning_model_name() -> str:
 
 
 def _admin_headers(client: PipeshubClient) -> Dict[str, str]:
-    client._ensure_access_token()
-    return {
-        "Authorization": f"Bearer {client._access_token}",
-        "Content-Type": "application/json",
-        "X-Is-Admin": "true",
-    }
+    return {"X-Is-Admin": "true"}
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -100,11 +93,7 @@ def _parse_model_name_from_config(entry: Dict[str, Any]) -> str:
 def list_configured_llm_models(client: PipeshubClient) -> List[Dict[str, Any]]:
     """Return all org-configured LLM entries from Configuration Manager."""
     url = client._url(_LLM_BY_TYPE_PATH)
-    resp = requests.get(
-        url,
-        headers=_admin_headers(client),
-        timeout=client.timeout_seconds,
-    )
+    resp = client.request("GET", url, headers=_admin_headers(client))
     if resp.status_code >= 300:
         raise RuntimeError(
             f"Failed to list LLM models: HTTP {resp.status_code} {resp.text[:500]}"
@@ -172,11 +161,11 @@ def setup_test_llm_model(
     }
 
     url = client._url(_PROVIDERS_PATH)
-    resp = requests.post(
+    resp = client.request(
+        "POST",
         url,
         headers=_admin_headers(client),
         json=payload,
-        timeout=client.timeout_seconds,
     )
 
     if resp.status_code >= 300:
@@ -228,10 +217,10 @@ def teardown_test_llm_model(
         f"{_PROVIDERS_PATH}/{seeded.model_type}/{seeded.model_key}"
     )
     try:
-        resp = requests.delete(
+        resp = client.request(
+            "DELETE",
             url,
             headers=_admin_headers(client),
-            timeout=client.timeout_seconds,
         )
     except Exception as e:
         logger.warning(

@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import requests
 
 # Ensure helpers are importable
 _THIS_DIR = Path(__file__).resolve().parent
@@ -89,34 +88,16 @@ class KBClient:
     def __init__(self, client: PipeshubClient) -> None:
         self._client = client
 
-    def _headers(self, content_type: str | None = "application/json") -> dict[str, str]:
-        self._client._ensure_access_token()
-        headers: dict[str, str] = {
-            "Authorization": f"Bearer {self._client._access_token}",
-        }
-        if content_type:
-            headers["Content-Type"] = content_type
-        return headers
-
     def _url(self, path: str) -> str:
         return self._client._url(f"{self.KB_BASE}{path}")
 
     def create_kb(self, name: str | None = None) -> dict[str, Any]:
         name = name or f"pipeline-test-kb-{uuid.uuid4().hex[:8]}"
-        resp = requests.post(
-            self._url("/"),
-            headers=self._headers(),
-            json={"kbName": name},
-            timeout=self._client.timeout_seconds,
-        )
+        resp = self._client.request("POST", self._url("/"), json={"kbName": name})
         return self._client._handle_response(resp)
 
     def delete_kb(self, kb_id: str) -> dict[str, Any]:
-        resp = requests.delete(
-            self._url(f"/{kb_id}"),
-            headers=self._headers(),
-            timeout=self._client.timeout_seconds,
-        )
+        resp = self._client.request("DELETE", self._url(f"/{kb_id}"))
         return self._client._handle_response(resp)
 
     def upload_file(
@@ -126,11 +107,10 @@ class KBClient:
         file_content: bytes,
     ) -> dict[str, Any]:
         files = [("files", (file_name, io.BytesIO(file_content), "text/plain"))]
-        resp = requests.post(
+        resp = self._client.request(
+            "POST",
             self._url(f"/{kb_id}/upload"),
-            headers=self._headers(content_type=None),
             files=files,
-            timeout=self._client.timeout_seconds,
         )
         return self._client._handle_response(resp)
 
@@ -138,11 +118,7 @@ class KBClient:
         """Fetch a record by ID, retrying on transient 500 errors."""
         last_err = None
         for attempt in range(retries):
-            resp = requests.get(
-                self._url(f"/record/{record_id}"),
-                headers=self._headers(),
-                timeout=self._client.timeout_seconds,
-            )
+            resp = self._client.request("GET", self._url(f"/record/{record_id}"))
             if resp.status_code < 500:
                 return self._client._handle_response(resp)
             last_err = resp
@@ -151,19 +127,11 @@ class KBClient:
         return self._client._handle_response(last_err)
 
     def delete_record(self, record_id: str) -> dict[str, Any]:
-        resp = requests.delete(
-            self._url(f"/record/{record_id}"),
-            headers=self._headers(),
-            timeout=self._client.timeout_seconds,
-        )
+        resp = self._client.request("DELETE", self._url(f"/record/{record_id}"))
         return self._client._handle_response(resp)
 
     def get_kb_records(self, kb_id: str) -> dict[str, Any]:
-        resp = requests.get(
-            self._url(f"/{kb_id}/records"),
-            headers=self._headers(),
-            timeout=self._client.timeout_seconds,
-        )
+        resp = self._client.request("GET", self._url(f"/{kb_id}/records"))
         return self._client._handle_response(resp)
 
 
@@ -524,11 +492,7 @@ class TestRecordCleanupStage:
 
         # Verify record is gone or marked deleted.
         # The API may return 404, 500, or a soft-deleted record — all are valid.
-        resp = requests.get(
-            kb_client._url(f"/record/{record_id}"),
-            headers=kb_client._headers(),
-            timeout=kb_client._client.timeout_seconds,
-        )
+        resp = kb_client._client.request("GET", kb_client._url(f"/record/{record_id}"))
         if resp.status_code in (404, 500):
             logger.info("Record %s correctly returns HTTP %d after delete", record_id, resp.status_code)
         elif resp.status_code < 400:
@@ -665,10 +629,8 @@ class TestRecordFullPipeline:
 
             # Verify API removal (404 or 500 both indicate record is gone)
             time.sleep(2)
-            resp = requests.get(
-                kb_client._url(f"/record/{record_id}"),
-                headers=kb_client._headers(),
-                timeout=kb_client._client.timeout_seconds,
+            resp = kb_client._client.request(
+                "GET", kb_client._url(f"/record/{record_id}")
             )
             if resp.status_code < 400:
                 rec = _get_record_fields(resp.json())

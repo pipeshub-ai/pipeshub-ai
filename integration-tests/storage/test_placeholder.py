@@ -14,7 +14,6 @@ import logging
 from typing import Any
 
 import pytest
-import requests
 
 from storage_client import StorageClient
 
@@ -128,11 +127,10 @@ def test_upload_custom_metadata_preserved(sc: StorageClient):
 @pytest.mark.storage
 def test_placeholder_without_extension(sc: StorageClient):
     """Test 35: POST /placeholder without extension field → 400."""
-    resp = requests.post(
+    resp = sc._c.request(
+        "POST",
         sc._url("/placeholder"),
-        headers=sc._json_headers(),
         json={"documentName": "NoExt", "documentPath": "test"},
-        timeout=sc._c.timeout_seconds,
     )
     assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
 

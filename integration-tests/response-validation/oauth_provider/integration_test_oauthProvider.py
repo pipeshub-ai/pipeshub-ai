@@ -81,6 +81,7 @@ class TestOIDCDiscovery:
 
     @pytest.fixture(autouse=True)
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
 
@@ -93,9 +94,7 @@ class TestOIDCDiscovery:
             ("/.well-known/oauth-protected-resource/mcp", "oauthProtectedResource"),
         ]
         for path, operation_id in tests:
-            resp = requests.get(
-                f"{self.base_url}{path}", timeout=self.timeout,
-            )
+            resp = self.client.request("GET", f"{self.base_url}{path}", timeout=self.timeout, auth=False)
             assert resp.status_code == 200, (
                 f"Expected 200 for {path}, got {resp.status_code}: {resp.text}"
             )
@@ -129,8 +128,7 @@ class TestOAuthAuthorize:
         JSON error responses.  Validation errors (400) are unreachable without
         a browser session behind the redirect middleware.
         """
-        resp = requests.get(
-            self.url,
+        resp = self.client.request("GET", self.url,
             params={
                 "response_type": "code",
                 "client_id": self.client_id,
@@ -138,9 +136,7 @@ class TestOAuthAuthorize:
                 "scope": "openid",
                 "state": "teststate123",
             },
-            timeout=self.timeout,
-            allow_redirects=False,
-        )
+            allow_redirects=False)
         assert resp.status_code in (200, 302, 303), (
             f"Expected 200/302/303, got {resp.status_code}"
         )
@@ -162,33 +158,26 @@ class TestOAuthAuthorizeConsent:
     ) -> None:
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
-        self.headers = pipeshub_client._headers()
+        self.client = pipeshub_client
         self.client_id = oauth_credentials["client_id"]
         self.url = f"{self.base_url}/api/v1/oauth2/authorize"
 
     def test_response_and_errors(self) -> None:
         """401 missing auth, 400 invalid consent body."""
-        resp = requests.post(
-            self.url,
+        resp = self.client.request("POST", self.url,
             json={
                 "client_id": self.client_id,
                 "redirect_uri": "http://localhost/callback",
                 "scope": "openid",
                 "state": "test",
                 "consent": "denied",
-            },
-            timeout=self.timeout,
-        )
+            })
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
         )
 
-        resp = requests.post(
-            self.url,
-            headers=self.headers,
-            json={"consent": "denied"},
-            timeout=self.timeout,
-        )
+        resp = self.client.request("POST", self.url,
+            json={"consent": "denied"})
         assert resp.status_code == 400, (
             f"Expected 400 for missing fields, got {resp.status_code}: {resp.text}"
         )
@@ -219,15 +208,12 @@ class TestOAuthToken:
 
     def test_response_schema(self) -> None:
         """client_credentials grant returns valid OAuthTokenResponse."""
-        resp = requests.post(
-            self.url,
+        resp = self.client.request("POST", self.url,
             json={
                 "grant_type": "client_credentials",
                 "client_id": self.client_id,
                 "client_secret": self.client_secret,
-            },
-            timeout=self.timeout,
-        )
+            })
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -235,15 +221,12 @@ class TestOAuthToken:
 
     def test_error_responses(self) -> None:
         """400 unsupported grant, 400 missing grant_type, 401 bad client."""
-        resp = requests.post(
-            self.url,
+        resp = self.client.request("POST", self.url,
             json={
                 "grant_type": "unsupported_grant",
                 "client_id": self.client_id,
                 "client_secret": self.client_secret,
-            },
-            timeout=self.timeout,
-        )
+            })
         assert resp.status_code == 400, (
             f"Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -251,11 +234,8 @@ class TestOAuthToken:
             resp.json(), "oauthToken", status_code="400"
         )
 
-        resp = requests.post(
-            self.url,
-            json={"client_id": self.client_id},
-            timeout=self.timeout,
-        )
+        resp = self.client.request("POST", self.url,
+            json={"client_id": self.client_id})
         assert resp.status_code == 400, (
             f"Expected 400 missing grant_type, got {resp.status_code}: {resp.text}"
         )
@@ -263,15 +243,12 @@ class TestOAuthToken:
             resp.json(), "oauthToken", status_code="400"
         )
 
-        resp = requests.post(
-            self.url,
+        resp = self.client.request("POST", self.url,
             json={
                 "grant_type": "client_credentials",
                 "client_id": "bad_client_id_000000",
                 "client_secret": "bad_secret",
-            },
-            timeout=self.timeout,
-        )
+            })
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -303,15 +280,12 @@ class TestOAuthIntrospect:
 
     def test_response_and_errors(self) -> None:
         """Valid token → active=true, invalid token → active=false, bad client → 401."""
-        resp = requests.post(
-            self.url,
+        resp = self.client.request("POST", self.url,
             json={
                 "token": self.access_token,
                 "client_id": self.client_id,
                 "client_secret": self.client_secret,
-            },
-            timeout=self.timeout,
-        )
+            })
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -319,15 +293,12 @@ class TestOAuthIntrospect:
         assert_response_matches_openapi_operation(body, "oauthIntrospect")
         assert body["active"] is True, f"Expected active=true, got {body}"
 
-        resp = requests.post(
-            self.url,
+        resp = self.client.request("POST", self.url,
             json={
                 "token": "invalid_token_000000000000000000",
                 "client_id": self.client_id,
                 "client_secret": self.client_secret,
-            },
-            timeout=self.timeout,
-        )
+            })
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -335,15 +306,12 @@ class TestOAuthIntrospect:
         assert_response_matches_openapi_operation(body, "oauthIntrospect")
         assert body["active"] is False, f"Expected active=false, got {body}"
 
-        resp = requests.post(
-            self.url,
+        resp = self.client.request("POST", self.url,
             json={
                 "token": self.access_token,
                 "client_id": "bad_client_id_000000",
                 "client_secret": "bad_secret",
-            },
-            timeout=self.timeout,
-        )
+            })
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -375,28 +343,22 @@ class TestOAuthRevoke:
 
     def test_response_and_errors(self) -> None:
         """Revoke valid token → 200, bad client → 401."""
-        resp = requests.post(
-            self.url,
+        resp = self.client.request("POST", self.url,
             json={
                 "token": self.access_token,
                 "client_id": self.client_id,
                 "client_secret": self.client_secret,
-            },
-            timeout=self.timeout,
-        )
+            })
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
 
-        resp = requests.post(
-            self.url,
+        resp = self.client.request("POST", self.url,
             json={
                 "token": self.access_token,
                 "client_id": "bad_client_id_000000",
                 "client_secret": "bad_secret",
-            },
-            timeout=self.timeout,
-        )
+            })
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -426,16 +388,12 @@ class TestOAuthUserInfo:
 
     def test_error_responses(self) -> None:
         """401 missing auth, 403 with client_credentials token (no openid scope)."""
-        resp = requests.get(self.url, timeout=self.timeout)
+        resp = self.client.request("GET", self.url, timeout=self.timeout, auth=False)
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
         )
 
-        resp = requests.get(
-            self.url,
-            headers={"Authorization": f"Bearer {self.access_token}"},
-            timeout=self.timeout,
-        )
+        resp = self.client.request("GET", self.url, auth=False, headers={"Authorization": f"Bearer {self.access_token}"})
         assert resp.status_code in (401, 403), (
             f"Expected 401 or 403, got {resp.status_code}: {resp.text}"
         )
@@ -466,15 +424,12 @@ class TestOAuthProviderRateLimiting:
         TOTAL = 1010
         rate_limited: list[requests.Response] = []
         for _ in range(TOTAL):
-            resp = requests.post(
-                f"{self.base_url}/api/v1/oauth2/introspect",
+            resp = self.client.request("POST", f"{self.base_url}/api/v1/oauth2/introspect",
                 json={
                     "token": self.access_token,
                     "client_id": self.client_id,
                     "client_secret": self.client_secret,
-                },
-                timeout=self.timeout,
-            )
+                })
             if resp.status_code == 429:
                 rate_limited.append(resp)
             if len(rate_limited) >= 3:

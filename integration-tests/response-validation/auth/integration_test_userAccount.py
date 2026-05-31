@@ -74,6 +74,7 @@ class TestInitAuth:
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
+        self.client = pipeshub_client
 
     def test_init_auth_response_schema(self) -> None:
         """initAuth with test user email — schema, x-session-token, allowedMethods, step 0."""
@@ -99,11 +100,8 @@ class TestInitAuth:
         init_url = f"{self.base_url}/api/v1/userAccount/initAuth"
 
         # Invalid email string — Zod rejects format → 400 Validation failed + ErrorResponse
-        resp = requests.post(
-            init_url,
-            json={"email": "not-a-valid-email"},
-            timeout=self.timeout,
-        )
+        resp = self.client.request("POST", init_url,
+            json={"email": "not-a-valid-email"}, auth=False)
         assert resp.status_code == 400, (
             f"Expected 400 validation error, got {resp.status_code}: {resp.text}"
         )
@@ -127,11 +125,8 @@ class TestInitAuth:
             )
 
         # Email field wrong JSON type (number) → 400 Validation failed + ErrorResponse
-        resp = requests.post(
-            init_url,
-            json={"email": 123},
-            timeout=self.timeout,
-        )
+        resp = self.client.request("POST", init_url,
+            json={"email": 123}, auth=False)
         assert resp.status_code == 400, (
             f"Expected 400 validation error, got {resp.status_code}: {resp.text}"
         )
@@ -172,6 +167,7 @@ class TestAuthenticate:
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
+        self.client = pipeshub_client
 
     def test_authenticate_response_schema(self) -> None:
         """initAuth + password authenticate — OpenAPI schema, accessToken, refreshToken."""
@@ -210,15 +206,12 @@ class TestAuthenticate:
         email, password = require_test_user_credentials()
 
         # No x-session-token header — authSessionMiddleware → 401 Invalid session token
-        resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/authenticate",
+        resp = self.client.request("POST", f"{self.base_url}/api/v1/userAccount/authenticate",
             json={
                 "method": "password",
                 "credentials": {"password": password},
                 "email": email,
-            },
-            timeout=self.timeout,
-        )
+            }, auth=False)
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -242,16 +235,13 @@ class TestAuthenticate:
         session_token = init_resp.headers.get("x-session-token")
         assert session_token
 
-        auth_resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/authenticate",
+        auth_resp = self.client.request("POST", f"{self.base_url}/api/v1/userAccount/authenticate",
             headers={"x-session-token": session_token},
             json={
                 "method": "password",
                 "credentials": {"password": password + "__wrong_suffix__"},
                 "email": email,
-            },
-            timeout=self.timeout,
-        )
+            }, auth=False)
         assert auth_resp.status_code == 400, (
             f"Expected 400, got {auth_resp.status_code}: {auth_resp.text}"
         )
@@ -277,12 +267,9 @@ class TestAuthenticate:
         session_token = init_resp.headers.get("x-session-token")
         assert session_token
 
-        auth_resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/authenticate",
+        auth_resp = self.client.request("POST", f"{self.base_url}/api/v1/userAccount/authenticate",
             headers={"x-session-token": session_token},
-            json={"credentials": {"password": "x"}},
-            timeout=self.timeout,
-        )
+            json={"credentials": {"password": "x"}}, auth=False)
         assert auth_resp.status_code == 400, (
             f"Expected 400 validation error, got {auth_resp.status_code}: {auth_resp.text}"
         )
@@ -309,17 +296,14 @@ class TestAuthenticate:
         session_token = init_resp.headers.get("x-session-token")
         assert session_token
 
-        auth_resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/authenticate",
+        auth_resp = self.client.request("POST", f"{self.base_url}/api/v1/userAccount/authenticate",
             headers={"x-session-token": session_token},
             json={
                 "method": "password",
                 "credentials": {"password": "x"},
                 "email": email,
                 "extraTopLevelField": True,
-            },
-            timeout=self.timeout,
-        )
+            }, auth=False)
         assert auth_resp.status_code == 400, (
             f"Expected 400 (authenticate body is .strict()), got {auth_resp.status_code}: {auth_resp.text}"
         )
@@ -362,19 +346,17 @@ class TestResetPassword:
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
+        self.client = pipeshub_client
 
     def _reset_password(
         self, access_token: str, current: str, new: str,
     ) -> requests.Response:
-        return requests.post(
-            f"{self.base_url}/api/v1/userAccount/password/reset",
+        return self.client.request("POST", f"{self.base_url}/api/v1/userAccount/password/reset",
             headers=session_headers(access_token),
             json={
                 "currentPassword": current,
                 "newPassword": new,
-            },
-            timeout=self.timeout,
-        )
+            }, auth=False)
 
     def test_reset_password_response_schema(self) -> None:
         """Reset password, validate schema, then restore original password."""
@@ -418,14 +400,11 @@ class TestResetPassword:
         reset_url = f"{self.base_url}/api/v1/userAccount/password/reset"
 
         # No Authorization header — userValidator / validateJwt → 400 + ErrorResponse
-        resp = requests.post(
-            reset_url,
+        resp = self.client.request("POST", reset_url,
             json={
                 "currentPassword": "any",
                 "newPassword": "AnyOtherP@ssw0rd!",
-            },
-            timeout=self.timeout,
-        )
+            }, auth=False)
         assert resp.status_code == 400, (
             f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
@@ -448,12 +427,9 @@ class TestResetPassword:
         access_token, _ = login_with_user(
             self.base_url, email, original_password, self.timeout,
         )
-        resp = requests.post(
-            reset_url,
+        resp = self.client.request("POST", reset_url,
             headers=session_headers(access_token),
-            json={},
-            timeout=self.timeout,
-        )
+            json={}, auth=False)
         assert resp.status_code == 400, (
             f"Expected 400 validation error, got {resp.status_code}: {resp.text}"
         )
@@ -484,6 +460,7 @@ class TestLogoutManual:
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
+        self.client = pipeshub_client
 
     def test_logout_returns_200_empty_body(self) -> None:
         """Logout must return 200 with empty body, then re-login succeeds."""
@@ -495,11 +472,8 @@ class TestLogoutManual:
         )
 
         # Logout
-        resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/logout/manual",
-            headers=session_headers(access_token),
-            timeout=self.timeout,
-        )
+        resp = self.client.request("POST", f"{self.base_url}/api/v1/userAccount/logout/manual",
+            headers=session_headers(access_token), auth=False)
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -518,7 +492,7 @@ class TestLogoutManual:
         """Without Authorization — ErrorResponse; success-shaped operation rejects error body."""
         logout_url = f"{self.base_url}/api/v1/userAccount/logout/manual"
         # No Authorization — userValidator → 400 Authorization header not found + ErrorResponse
-        resp = requests.post(logout_url, timeout=self.timeout)
+        resp = self.client.request("POST", logout_url, auth=False)
         assert resp.status_code == 400, (
             f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
@@ -549,6 +523,7 @@ class TestRefreshToken:
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
+        self.client = pipeshub_client
 
     def test_refresh_token_response_schema(self) -> None:
         """Use refreshToken from authenticate as Bearer — response must match schema."""
@@ -560,11 +535,8 @@ class TestRefreshToken:
         )
 
         # Use refreshToken as Bearer to get a new accessToken
-        resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/refresh/token",
-            headers=session_headers(refresh_token),
-            timeout=self.timeout,
-        )
+        resp = self.client.request("POST", f"{self.base_url}/api/v1/userAccount/refresh/token",
+            headers=session_headers(refresh_token), auth=False)
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -578,7 +550,7 @@ class TestRefreshToken:
         refresh_url = f"{self.base_url}/api/v1/userAccount/refresh/token"
 
         # No Authorization — scopedTokenValidator → 401 No token provided + ErrorResponse
-        resp = requests.post(refresh_url, timeout=self.timeout)
+        resp = self.client.request("POST", refresh_url, auth=False)
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -597,14 +569,11 @@ class TestRefreshToken:
             )
 
         # Malformed / unverifiable Bearer JWT — verifyScopedToken → 401 + ErrorResponse
-        resp = requests.post(
-            refresh_url,
+        resp = self.client.request("POST", refresh_url,
             headers={
                 "Authorization": "Bearer not-a-valid-jwt",
                 "Content-Type": "application/json",
-            },
-            timeout=self.timeout,
-        )
+            }, auth=False)
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -624,11 +593,8 @@ class TestRefreshToken:
         _, refresh_token = login_with_user(
             self.base_url, email, password, self.timeout,
         )
-        resp = requests.post(
-            refresh_url,
-            headers=session_headers(refresh_token),
-            timeout=self.timeout,
-        )
+        resp = self.client.request("POST", refresh_url,
+            headers=session_headers(refresh_token), auth=False)
         assert resp.status_code == 200, resp.text
         refresh_token_success_body = resp.json()
         assert_response_matches_openapi_operation(

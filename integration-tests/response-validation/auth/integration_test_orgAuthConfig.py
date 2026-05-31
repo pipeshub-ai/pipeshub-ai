@@ -92,6 +92,7 @@ class TestGetAuthMethods:
         pipeshub_client: PipeshubClient,
         session_access_token: str,
     ) -> None:
+        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
         self.headers = session_headers(session_access_token)
@@ -99,11 +100,7 @@ class TestGetAuthMethods:
 
     def test_get_auth_methods_response_schema(self) -> None:
         """Response must match OpenAPI schema for getAuthMethods."""
-        resp = requests.get(
-            self.url,
-            headers=self.headers,
-            timeout=self.timeout,
-        )
+        resp = self.client.request("GET", self.url, auth=False, headers=self.headers)
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -111,7 +108,7 @@ class TestGetAuthMethods:
 
     def test_get_auth_methods_negative_tests(self) -> None:
         """Missing auth, error-vs-success schema"""
-        resp = requests.get(self.url, timeout=self.timeout)
+        resp = self.client.request("GET", self.url, timeout=self.timeout, auth=False)
         assert resp.status_code == 400, (
             f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
@@ -152,6 +149,7 @@ class TestSetUpAuthConfig:
         pipeshub_client: PipeshubClient,
         session_access_token: str,
     ) -> None:
+        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
         self.headers = session_headers(session_access_token)
@@ -159,11 +157,8 @@ class TestSetUpAuthConfig:
 
     def test_set_up_auth_config_response_schema(self) -> None:
         """Response must match OpenAPI schema for setUpAuthConfig (200)."""
-        resp = requests.post(
-            self.url,
-            headers=self.headers,
-            json={},
-            timeout=self.timeout,
+        resp = self.client.request(
+            "POST", self.url, auth=False, headers=self.headers, json={}
         )
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
@@ -172,7 +167,7 @@ class TestSetUpAuthConfig:
 
     def test_set_up_auth_config_negative_tests(self) -> None:
         """Missing auth: exact message, success schema rejection, ErrorResponse shape."""
-        resp = requests.post(self.url, json={}, timeout=self.timeout)
+        resp = self.client.request("POST", self.url, json={}, timeout=self.timeout)
         assert resp.status_code == 400, (
             f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
@@ -206,6 +201,7 @@ class TestUpdateAuthMethod:
         pipeshub_client: PipeshubClient,
         session_access_token: str,
     ) -> None:
+        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
         self.headers = session_headers(session_access_token)
@@ -218,20 +214,19 @@ class TestUpdateAuthMethod:
 
     def _get_current_auth_method(self) -> list:
         """Fetch current authMethods so we can restore after update."""
-        resp = requests.get(
-            self.auth_methods_url,
-            headers=self.headers,
-            timeout=self.timeout,
+        resp = self.client.request(
+            "GET", self.auth_methods_url, auth=False, headers=self.headers
         )
         assert resp.status_code == 200
         return resp.json()["authMethods"]
 
     def _update_auth_method(self, auth_method: list) -> requests.Response:
-        return requests.post(
+        return self.client.request(
+            "POST",
             self.update_url,
+            auth=False,
             headers=self.headers,
             json={"authMethod": auth_method},
-            timeout=self.timeout,
         )
 
     def test_update_auth_method_response_schema(self) -> None:
@@ -283,11 +278,7 @@ class TestUpdateAuthMethod:
 
     def test_update_auth_method_negative_tests(self) -> None:
         """Missing Authorization and invalid body: exact messages and ErrorResponse shape."""
-        resp = requests.post(
-            self.update_url,
-            json={"authMethod": [{"order": 1, "allowedMethods": [{"type": "password"}]}]},
-            timeout=self.timeout,
-        )
+        resp = self.client.request("POST", self.update_url, json={"authMethod": [{"order": 1, "allowedMethods": [{"type": "password"}]}]})
         assert resp.status_code == 400, (
             f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
@@ -307,12 +298,7 @@ class TestUpdateAuthMethod:
             missing_auth_body, "#/components/schemas/ErrorResponse"
         )
 
-        resp = requests.post(
-            self.update_url,
-            headers=self.headers,
-            json={"authMethod": []},
-            timeout=self.timeout,
-        )
+        resp = self.client.request("POST", self.update_url, json={"authMethod": []})
         assert resp.status_code == 400, (
             f"Expected 400 validation error, got {resp.status_code}: {resp.text}"
         )

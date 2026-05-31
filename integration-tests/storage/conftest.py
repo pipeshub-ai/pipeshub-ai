@@ -10,7 +10,6 @@ from typing import Generator
 from urllib.parse import unquote, urlparse
 
 import pytest
-import requests
 
 _THIS_DIR = Path(__file__).resolve().parent
 _ROOT_DIR = _THIS_DIR.parent
@@ -82,12 +81,7 @@ def _set_storage_backend(client: PipeshubClient, backend: str) -> None:
     """Switch the server's storage backend via the configuration manager API."""
     payload = _build_storage_payload(backend)
     url = client._url(_STORAGE_CONFIG_PATH)
-    resp = requests.post(
-        url,
-        headers=client._headers(),
-        json=payload,
-        timeout=client.timeout_seconds,
-    )
+    resp = client.request("POST", url, json=payload)
     resp.raise_for_status()
     logger.info("Switched storage backend to '%s'", backend)
 
@@ -206,10 +200,9 @@ def s3_cleanup_tracker(
     object_keys: set[str] = set()
     for doc_id in document_ids:
         try:
-            resp = requests.get(
+            resp = pipeshub_client.request(
+                "GET",
                 pipeshub_client._url(f"/api/v1/document/{doc_id}"),
-                headers=pipeshub_client._headers(),
-                timeout=pipeshub_client.timeout_seconds,
             )
             if resp.status_code != 200:
                 logger.warning(
