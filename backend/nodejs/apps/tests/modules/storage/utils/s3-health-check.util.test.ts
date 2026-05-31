@@ -16,7 +16,7 @@ describe('s3-health-check.util', () => {
       expect(message).to.include('S3 health check failed')
       expect(message).to.include('upload: AccessDenied')
       expect(message).to.include('signedUrlPut: AccessDenied')
-      expect(message).to.include('s3:ListBucket')
+      expect(message).to.include('s3:PutObject')
     })
   })
 })
