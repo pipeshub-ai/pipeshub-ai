@@ -314,8 +314,15 @@ export const addComputedFields = (
   conversation: IConversation | IConversationDocument,
   userId: string,
 ) => {
+  const sanitizedConversationErrors = conversation.conversationErrors?.map(
+    ({ _id, ...error }: any) => error,
+  );
+
   return {
     ...conversation,
+    ...(sanitizedConversationErrors
+      ? { conversationErrors: sanitizedConversationErrors }
+      : {}),
     isOwner: conversation.initiator.toString() === userId,
     accessLevel:
       conversation.sharedWith?.find(

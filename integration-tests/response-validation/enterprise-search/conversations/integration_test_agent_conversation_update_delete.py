@@ -230,6 +230,41 @@ class TestAgentConversationTitleUpdate:
         )
         return body
 
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"title": "x"},
+            {"title": "rename-" + ("a" * 193)},
+        ],
+    )
+    def test_patch_agent_conversation_title_request_body_matches_openapi_spec(
+        self,
+        payload: dict[str, Any],
+    ) -> None:
+        assert_request_body_matches_openapi_operation(
+            payload,
+            "updateAgentConversationTitle",
+        )
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            {"title": ""},
+            {"title": "a" * 201},
+            {"title": 123},
+        ],
+    )
+    def test_patch_agent_conversation_title_request_body_rejects_invalid_openapi_payloads(
+        self,
+        payload: dict[str, Any],
+    ) -> None:
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(
+                payload,
+                "updateAgentConversationTitle",
+            )
+
     def test_patch_agent_conversation_title_updates_and_persists(self, created_conversations) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
             self.primary_agent,
@@ -237,11 +272,17 @@ class TestAgentConversationTitleUpdate:
             created_conversations=created_conversations,
         )
         new_title = f"renamed-{uuid4().hex}"
+        payload = {"title": new_title}
+
+        assert_request_body_matches_openapi_operation(
+            payload,
+            "updateAgentConversationTitle",
+        )
 
         resp = requests.patch(
             self._title_url(self.primary_agent, conversation_id),
             headers=self.headers,
-            json={"title": new_title},
+            json=payload,
             timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -324,6 +365,11 @@ class TestAgentConversationTitleUpdate:
         assert conversation.get("title") == new_title, (
             f"[{label}] conversation.title mismatch: {conversation!r}"
         )
+        assert_response_matches_openapi_operation(
+            body,
+            "updateAgentConversationTitle",
+            status_code="200",
+        )
 
     @pytest.mark.parametrize(
         ("label", "conversation_id"),
@@ -348,6 +394,11 @@ class TestAgentConversationTitleUpdate:
         assert body["error"]["metadata"]["errors"], (
             f"[{label}] Expected validation details"
         )
+        assert_response_matches_openapi_operation(
+            body,
+            "updateAgentConversationTitle",
+            status_code="400",
+        )
 
     def test_patch_agent_conversation_title_nonexistent_conversation_returns_404(self) -> None:
         resp = requests.patch(
@@ -357,6 +408,12 @@ class TestAgentConversationTitleUpdate:
             timeout=self.timeout,
         )
         assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
+        body = _response_json(resp)
+        assert_response_matches_openapi_operation(
+            body,
+            "updateAgentConversationTitle",
+            status_code="404",
+        )
 
     def test_patch_agent_conversation_title_for_other_agent_key_returns_404(
         self,
@@ -376,6 +433,12 @@ class TestAgentConversationTitleUpdate:
             timeout=self.timeout,
         )
         assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
+        body = _response_json(resp)
+        assert_response_matches_openapi_operation(
+            body,
+            "updateAgentConversationTitle",
+            status_code="404",
+        )
 
     @pytest.mark.parametrize(
         ("label", "payload"),
@@ -407,6 +470,11 @@ class TestAgentConversationTitleUpdate:
         body = self._assert_validation_error(resp)
         assert body["error"]["metadata"]["errors"], (
             f"[{label}] Expected validation details"
+        )
+        assert_response_matches_openapi_operation(
+            body,
+            "updateAgentConversationTitle",
+            status_code="400",
         )
 
 
