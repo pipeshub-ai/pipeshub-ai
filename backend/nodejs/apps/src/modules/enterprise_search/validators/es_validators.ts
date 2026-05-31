@@ -96,6 +96,10 @@ const modelFieldsSchema = {
     .string()
     .min(1, { message: 'Model name is required' })
     .optional(),
+  modelProvider: z
+    .string()
+    .min(1, { message: 'Model provider is required' })
+    .optional(),
   modelFriendlyName: z
     .string()
     .min(1, { message: 'Model friendly name is required' })
@@ -283,6 +287,10 @@ const agentAddMessageBodySchema = addMessageBodySchema.extend({
 
 const agentStreamCreateBodySchema = enterpriseSearchCreateBodySchema.extend({
   chatMode: agentChatModeSchema,
+  quickMode: z.boolean().optional(),
+  previousConversations: z.array(z.unknown()).optional(),
+  callerDisplayName: z.string().trim().min(1).optional(),
+  callerEmail: z.string().trim().min(1).optional(),
 });
 
 // ---------------------------------------------------------------------------

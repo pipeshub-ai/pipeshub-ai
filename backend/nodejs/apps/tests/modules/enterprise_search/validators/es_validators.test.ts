@@ -433,6 +433,22 @@ describe('enterprise_search/validators/es_validators', () => {
       const result = agentStreamCreateSchema.safeParse(data)
       expect(result.success).to.be.false
     })
+
+    it('should accept optional stream-only controller fields', () => {
+      const data = {
+        params: validParams,
+        body: {
+          query: 'hello',
+          quickMode: true,
+          previousConversations: [{ role: 'user', content: 'prev' }],
+          callerDisplayName: 'Slack User',
+          callerEmail: 'slack-user@example.com',
+          modelProvider: 'openai',
+        },
+      }
+      const result = agentStreamCreateSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
   })
 
   describe('agentAddMessageParamsSchema — chatMode', () => {
