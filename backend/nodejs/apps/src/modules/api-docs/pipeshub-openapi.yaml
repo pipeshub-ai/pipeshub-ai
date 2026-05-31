@@ -3838,8 +3838,8 @@ components:
         Supported fields:
         - `filters` — optional `{ apps?, kb? }` filter object
         - `chatMode` — optional non-empty chat mode string
-        - `modelKey`, `modelName`, `modelFriendlyName` — optional non-empty
-          model override fields
+        - `modelKey`, `modelName`, `modelProvider`, `modelFriendlyName` —
+          optional non-empty model override fields
         - `timezone` — optional non-empty client timezone string
         - `currentTime` — optional ISO 8601 / RFC 3339 datetime string with
           UTC `Z` or a numeric offset
@@ -3860,6 +3860,12 @@ components:
           minLength: 1
           description: Provider model name (e.g. the underlying LLM identifier).
           example: "gpt-5.4-mini"
+        modelProvider:
+          type: string
+          minLength: 1
+          description: |
+            Model provider identifier recorded on the saved conversation
+            metadata for this turn.
         modelFriendlyName:
           type: string
           minLength: 1
@@ -26117,6 +26123,7 @@ paths:
         - `chatMode`
         - `modelKey`
         - `modelName`
+        - `modelProvider`
         - `modelFriendlyName`
         - `timezone`
         - `currentTime`

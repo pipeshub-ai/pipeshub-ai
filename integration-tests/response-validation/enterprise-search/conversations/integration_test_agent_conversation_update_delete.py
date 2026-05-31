@@ -30,11 +30,29 @@ for _p in (_ROOT, _HELPER, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
-from openapi_schema_validator import assert_response_matches_openapi_operation
+from openapi_search_validator import assert_matches_component_schema
+from openapi_schema_validator import (
+    assert_request_body_matches_openapi_operation,
+    assert_response_matches_openapi_operation,
+)
 from pipeshub_client import PipeshubClient
 
 _SSE_MAX_EVENTS = 10_000
 _SSEEnvelope = dict[str, str]
+
+# Rich optional-field body for offline OpenAPI request validation. Omits `filters`
+# because `Filters.apps` / `Filters.kb` use a oneOf that jsonschema rejects for
+# typical test ids (documented OpenAPI/schema quirk; live gateway still accepts them).
+_RICH_REGENERATE_REQUEST_OPENAPI_PAYLOAD: dict[str, Any] = {
+    "chatMode": "answer",
+    "modelKey": "model-key",
+    "modelName": "model-name",
+    "modelProvider": "openai",
+    "modelFriendlyName": "Model Friendly Name",
+    "timezone": "Asia/Kolkata",
+    "currentTime": "2026-05-27T10:30:00+05:30",
+    "tools": ["web_search", "calculator"],
+}
 
 
 def _response_json(resp: requests.Response) -> dict[str, Any]:
@@ -1415,6 +1433,10 @@ class TestAgentConversationRegenerate:
             status_code = resp.status_code
             content_type = (resp.headers.get("Content-Type") or "").lower()
             for envelope in _iter_sse_envelopes(resp):
+                assert_matches_component_schema(
+                    envelope,
+                    "AgentRegenerateSSEEvent",
+                )
                 parsed_data: Any
                 try:
                     parsed_data = json.loads(envelope["data"])
@@ -1505,6 +1527,15 @@ class TestAgentConversationRegenerate:
             conversation_id,
         )
 
+        assert_request_body_matches_openapi_operation(
+            {},
+            "regenerateAgentConversationMessage",
+        )
+        assert_request_body_matches_openapi_operation(
+            _RICH_REGENERATE_REQUEST_OPENAPI_PAYLOAD,
+            "regenerateAgentConversationMessage",
+        )
+
         status_code, content_type, envelopes = self._post_regenerate_stream(
             self.primary_agent,
             conversation_id,
@@ -1532,6 +1563,7 @@ class TestAgentConversationRegenerate:
                     "chatMode": "answer",
                     "modelKey": "model-key",
                     "modelName": "model-name",
+                    "modelProvider": "openai",
                     "modelFriendlyName": "Model Friendly Name",
                     "timezone": "Asia/Kolkata",
                     "currentTime": "2026-05-27T10:30:00+05:30",
@@ -1575,6 +1607,11 @@ class TestAgentConversationRegenerate:
             "knowledgeBase_placeholder",
             f"knowledgeBase_{self.org_id}",
         ))
+        if label not in {"unknown extra keys", "all optional fields", "filters only"}:
+            assert_request_body_matches_openapi_operation(
+                request_payload,
+                "regenerateAgentConversationMessage",
+            )
 
         status_code, content_type, envelopes = self._post_regenerate_stream(
             self.primary_agent,
@@ -1644,6 +1681,7 @@ class TestAgentConversationRegenerate:
             ("empty chatMode", {"chatMode": ""}),
             ("empty modelKey", {"modelKey": ""}),
             ("empty modelName", {"modelName": ""}),
+            ("empty modelProvider", {"modelProvider": ""}),
             ("empty modelFriendlyName", {"modelFriendlyName": ""}),
             ("empty timezone", {"timezone": ""}),
             ("invalid currentTime", {"currentTime": "not-an-iso-datetime"}),
@@ -1757,3 +1795,16 @@ class TestAgentConversationRegenerate:
             envelopes,
             expected_substring="last message",
         )
+
+
+@pytest.mark.integration
+class TestAgentConversationRegenerateOpenApiRequestContract:
+    """Offline OpenAPI request-body checks not covered by live gateway negatives."""
+
+    def test_rejects_extra_top_level_property(self) -> None:
+        payload = {"chatMode": "answer", "unexpectedTopLevelField": "x"}
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(
+                payload,
+                "regenerateAgentConversationMessage",
+            )
