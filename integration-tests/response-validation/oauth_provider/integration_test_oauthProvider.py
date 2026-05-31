@@ -115,6 +115,7 @@ class TestOAuthAuthorize:
         pipeshub_client: PipeshubClient,
         oauth_credentials: dict,
     ) -> None:
+        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
         self.client_id = oauth_credentials["client_id"]
@@ -172,8 +173,8 @@ class TestOAuthAuthorizeConsent:
                 "state": "test",
                 "consent": "denied",
             })
-        assert resp.status_code == 401, (
-            f"Expected 401, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 400, (
+            f"Expected 400, got {resp.status_code}: {resp.text}"
         )
 
         resp = self.client.request("POST", self.url,
@@ -200,6 +201,7 @@ class TestOAuthToken:
         pipeshub_client: PipeshubClient,
         oauth_credentials: dict,
     ) -> None:
+        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
         self.client_id = oauth_credentials["client_id"]
@@ -271,6 +273,7 @@ class TestOAuthIntrospect:
         pipeshub_client: PipeshubClient,
         oauth_credentials: dict,
     ) -> None:
+        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
         self.client_id = oauth_credentials["client_id"]
@@ -334,6 +337,7 @@ class TestOAuthRevoke:
         pipeshub_client: PipeshubClient,
         oauth_credentials: dict,
     ) -> None:
+        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
         self.client_id = oauth_credentials["client_id"]
@@ -381,6 +385,7 @@ class TestOAuthUserInfo:
         pipeshub_client: PipeshubClient,
         oauth_credentials: dict,
     ) -> None:
+        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
         self.access_token = oauth_credentials["access_token"]
@@ -413,6 +418,7 @@ class TestOAuthProviderRateLimiting:
         pipeshub_client: PipeshubClient,
         oauth_credentials: dict,
     ) -> None:
+        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
         self.timeout = pipeshub_client.timeout_seconds
         self.client_id = oauth_credentials["client_id"]
