@@ -17,7 +17,6 @@ import uuid
 from pathlib import Path
 
 import pytest
-import requests
 
 _ROOT = Path(__file__).resolve().parents[3]
 _HELPER = _ROOT / "helper"
@@ -68,7 +67,7 @@ class _BaseEnterpriseSearchIntegration:
         self.feedback_url_tpl = (
             f"{base_url}/api/v1/conversations/{{conversationId}}/message/{{messageId}}/feedback"
         )
-        self.headers = pipeshub_client.auth_headers
+        self.client = pipeshub_client
         self.timeout = int(os.getenv("PIPESHUB_TEST_TIMEOUT", "60"))
         stream_override = os.getenv("PIPESHUB_TEST_STREAM_TIMEOUT", "").strip()
         self.stream_timeout = (
@@ -108,23 +107,18 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
         )
 
     def test_post_search_with_kb_filter_response_matches_spec(self) -> None:
-        resp = requests.post(
-            self.url,
-            headers=self.headers,
+        resp = self.client.request("POST", self.url,
             json={
                 "query": SEARCH_QUERY,
                 "filters": {"kb": [self.kb_id]},
                 "limit": 5,
-            },
-            timeout=self.timeout,
-        )
+            })
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
         self._assert_search_response_ok(resp.json(), SEARCH_QUERY)
 
     # TODO: add connector filter support to tests
     # def test_post_search_with_connector_filter_response_matches_spec(self) -> None:
-    #     resp = requests.post(
-    #         self.url,
+    #     resp = self.client.request("POST", #         self.url,
     #         headers=self.headers,
     #         json={
     #             "query": CONNECTOR_SEARCH_QUERY,
@@ -132,25 +126,17 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
     #             "limit": 5,
     #         },
     #         timeout=self.timeout,
-    #     )
+    #)
     #     assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
     #     self._assert_search_response_ok(resp.json(), CONNECTOR_SEARCH_QUERY)
 
     def test_get_search_history_response_matches_spec(self) -> None:
         # Create a search so history has something to return.
-        post_resp = requests.post(
-            self.url,
-            headers=self.headers,
-            json={"query": SEARCH_QUERY, "limit": 5},
-            timeout=self.timeout,
-        )
+        post_resp = self.client.request("POST", self.url,
+            json={"query": SEARCH_QUERY, "limit": 5})
         assert post_resp.status_code == 200, f"{post_resp.status_code}: {post_resp.text}"
 
-        get_resp = requests.get(
-            self.url,
-            headers=self.headers,
-            timeout=self.timeout,
-        )
+        get_resp = self.client.request("GET", self.url)
         assert get_resp.status_code == 200, f"{get_resp.status_code}: {get_resp.text}"
 
         body = get_resp.json()
@@ -167,21 +153,13 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
 
     def test_get_search_by_id_response_matches_spec(self) -> None:
         # Create a search so we have an id to fetch.
-        post_resp = requests.post(
-            self.url,
-            headers=self.headers,
-            json={"query": SEARCH_QUERY, "limit": 5},
-            timeout=self.timeout,
-        )
+        post_resp = self.client.request("POST", self.url,
+            json={"query": SEARCH_QUERY, "limit": 5})
         assert post_resp.status_code == 200, f"{post_resp.status_code}: {post_resp.text}"
         search_id = post_resp.json().get("searchId")
         assert search_id, "POST /search response missing searchId"
 
-        get_resp = requests.get(
-            f"{self.url}/{search_id}",
-            headers=self.headers,
-            timeout=self.timeout,
-        )
+        get_resp = self.client.request("GET", f"{self.url}/{search_id}")
         assert get_resp.status_code == 200, f"{get_resp.status_code}: {get_resp.text}"
 
         body = get_resp.json()
@@ -205,22 +183,14 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
             pytest.skip("Set PIPESHUB_TEST_SHARE_TARGET_USER_ID to run this test.")
 
         # Create a search to share.
-        post_resp = requests.post(
-            self.url,
-            headers=self.headers,
-            json={"query": SEARCH_QUERY, "limit": 5},
-            timeout=self.timeout,
-        )
+        post_resp = self.client.request("POST", self.url,
+            json={"query": SEARCH_QUERY, "limit": 5})
         assert post_resp.status_code == 200, f"{post_resp.status_code}: {post_resp.text}"
         search_id = post_resp.json().get("searchId")
         assert search_id, "POST /search response missing searchId"
 
-        share_resp = requests.patch(
-            f"{self.url}/{search_id}/share",
-            headers=self.headers,
-            json={"userIds": [SHARE_TARGET_USER_ID], "accessLevel": "read"},
-            timeout=self.timeout,
-        )
+        share_resp = self.client.request("PATCH", f"{self.url}/{search_id}/share",
+            json={"userIds": [SHARE_TARGET_USER_ID], "accessLevel": "read"})
         assert share_resp.status_code == 200, (
             f"{share_resp.status_code}: {share_resp.text}"
         )
@@ -239,12 +209,8 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
     def test_archive_unarchive_lifecycle_matches_spec_and_history(self) -> None:
         def list_active_history() -> list:
             # Ask for a big page so a recently used search is on it.
-            resp = requests.get(
-                self.url,
-                headers=self.headers,
-                params={"limit": 100},
-                timeout=self.timeout,
-            )
+            resp = self.client.request("GET", self.url,
+                params={"limit": 100})
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
             return resp.json().get("searchHistory") or []
 
@@ -259,12 +225,8 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
 
         if not before_history:
             # No prior searches available, so create one to operate on.
-            post_resp = requests.post(
-                self.url,
-                headers=self.headers,
-                json={"query": SEARCH_QUERY, "limit": 5},
-                timeout=self.timeout,
-            )
+            post_resp = self.client.request("POST", self.url,
+                json={"query": SEARCH_QUERY, "limit": 5})
             assert post_resp.status_code == 200, (
                 f"{post_resp.status_code}: {post_resp.text}"
             )
@@ -282,11 +244,7 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
         before_count = len(before_history)
 
         # Step 2: archive the search and check the response shape.
-        archive_resp = requests.patch(
-            f"{self.url}/{search_id}/archive",
-            headers=self.headers,
-            timeout=self.timeout,
-        )
+        archive_resp = self.client.request("PATCH", f"{self.url}/{search_id}/archive")
         assert archive_resp.status_code == 200, (
             f"{archive_resp.status_code}: {archive_resp.text}"
         )
@@ -316,11 +274,7 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
         )
 
         # Step 4: unarchive the search and check the response shape.
-        unarchive_resp = requests.patch(
-            f"{self.url}/{search_id}/unarchive",
-            headers=self.headers,
-            timeout=self.timeout,
-        )
+        unarchive_resp = self.client.request("PATCH", f"{self.url}/{search_id}/unarchive")
         assert unarchive_resp.status_code == 200, (
             f"{unarchive_resp.status_code}: {unarchive_resp.text}"
         )
@@ -361,32 +315,20 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
             pytest.skip("Set PIPESHUB_TEST_SHARE_TARGET_USER_ID to run this test.")
 
         # Create and share a search so we have someone to unshare.
-        post_resp = requests.post(
-            self.url,
-            headers=self.headers,
-            json={"query": SEARCH_QUERY, "limit": 5},
-            timeout=self.timeout,
-        )
+        post_resp = self.client.request("POST", self.url,
+            json={"query": SEARCH_QUERY, "limit": 5})
         assert post_resp.status_code == 200, f"{post_resp.status_code}: {post_resp.text}"
         search_id = post_resp.json().get("searchId")
         assert search_id, "POST /search response missing searchId"
 
-        share_resp = requests.patch(
-            f"{self.url}/{search_id}/share",
-            headers=self.headers,
-            json={"userIds": [SHARE_TARGET_USER_ID], "accessLevel": "read"},
-            timeout=self.timeout,
-        )
+        share_resp = self.client.request("PATCH", f"{self.url}/{search_id}/share",
+            json={"userIds": [SHARE_TARGET_USER_ID], "accessLevel": "read"})
         assert share_resp.status_code == 200, (
             f"{share_resp.status_code}: {share_resp.text}"
         )
 
-        unshare_resp = requests.patch(
-            f"{self.url}/{search_id}/unshare",
-            headers=self.headers,
-            json={"userIds": [SHARE_TARGET_USER_ID]},
-            timeout=self.timeout,
-        )
+        unshare_resp = self.client.request("PATCH", f"{self.url}/{search_id}/unshare",
+            json={"userIds": [SHARE_TARGET_USER_ID]})
         assert unshare_resp.status_code == 200, (
             f"{unshare_resp.status_code}: {unshare_resp.text}"
         )
@@ -408,22 +350,14 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
 
     def test_delete_search_by_id_response_matches_spec(self) -> None:
         # Create a search so we have one to delete.
-        post_resp = requests.post(
-            self.url,
-            headers=self.headers,
-            json={"query": SEARCH_QUERY, "limit": 5},
-            timeout=self.timeout,
-        )
+        post_resp = self.client.request("POST", self.url,
+            json={"query": SEARCH_QUERY, "limit": 5})
         assert post_resp.status_code == 200, f"{post_resp.status_code}: {post_resp.text}"
         search_id = post_resp.json().get("searchId")
         assert search_id, "POST /search response missing searchId"
 
         # Delete that one search.
-        del_resp = requests.delete(
-            f"{self.url}/{search_id}",
-            headers=self.headers,
-            timeout=self.timeout,
-        )
+        del_resp = self.client.request("DELETE", f"{self.url}/{search_id}")
         assert del_resp.status_code == 200, f"{del_resp.status_code}: {del_resp.text}"
 
         body = del_resp.json()
@@ -438,12 +372,8 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
         )
 
         # The search should be gone from the history list.
-        history_resp = requests.get(
-            self.url,
-            headers=self.headers,
-            params={"limit": 100},
-            timeout=self.timeout,
-        )
+        history_resp = self.client.request("GET", self.url,
+            params={"limit": 100})
         assert history_resp.status_code == 200, (
             f"{history_resp.status_code}: {history_resp.text}"
         )
@@ -455,11 +385,7 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
         )
 
         # Deleting the same search a second time should now return a 404.
-        second_resp = requests.delete(
-            f"{self.url}/{search_id}",
-            headers=self.headers,
-            timeout=self.timeout,
-        )
+        second_resp = self.client.request("DELETE", f"{self.url}/{search_id}")
         assert second_resp.status_code == 404, (
             f"second delete should be 404, got "
             f"{second_resp.status_code}: {second_resp.text}"
@@ -468,20 +394,12 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
     def test_delete_search_history_response_matches_spec(self) -> None:
         # WARNING: this test wipes the test user's entire search history.
         # Make sure at least one search exists before we wipe.
-        post_resp = requests.post(
-            self.url,
-            headers=self.headers,
-            json={"query": SEARCH_QUERY, "limit": 5},
-            timeout=self.timeout,
-        )
+        post_resp = self.client.request("POST", self.url,
+            json={"query": SEARCH_QUERY, "limit": 5})
         assert post_resp.status_code == 200, f"{post_resp.status_code}: {post_resp.text}"
 
         # Wipe everything owned by, or shared with, the test user.
-        del_resp = requests.delete(
-            self.url,
-            headers=self.headers,
-            timeout=self.timeout,
-        )
+        del_resp = self.client.request("DELETE", self.url)
         assert del_resp.status_code == 200, f"{del_resp.status_code}: {del_resp.text}"
 
         body = del_resp.json()
@@ -496,12 +414,8 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
         )
 
         # History should now be empty.
-        history_resp = requests.get(
-            self.url,
-            headers=self.headers,
-            params={"limit": 100},
-            timeout=self.timeout,
-        )
+        history_resp = self.client.request("GET", self.url,
+            params={"limit": 100})
         assert history_resp.status_code == 200, (
             f"{history_resp.status_code}: {history_resp.text}"
         )
@@ -509,11 +423,7 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
         assert history == [], f"history should be empty after wipe, got {history!r}"
 
         # Wiping again when nothing matches should return a 404.
-        second_resp = requests.delete(
-            self.url,
-            headers=self.headers,
-            timeout=self.timeout,
-        )
+        second_resp = self.client.request("DELETE", self.url)
         assert second_resp.status_code == 404, (
             f"second wipe should be 404, got "
             f"{second_resp.status_code}: {second_resp.text}"
@@ -524,22 +434,14 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
     def test_get_search_history_with_sort_order_variants(
         self, sort_order: str,
     ) -> None:
-        post_resp = requests.post(
-            self.url,
-            headers=self.headers,
-            json={"query": SEARCH_QUERY, "limit": 5},
-            timeout=self.timeout,
-        )
+        post_resp = self.client.request("POST", self.url,
+            json={"query": SEARCH_QUERY, "limit": 5})
         assert post_resp.status_code == 200, (
             f"{post_resp.status_code}: {post_resp.text}"
         )
 
-        resp = requests.get(
-            self.url,
-            headers=self.headers,
-            params={"sortOrder": sort_order, "limit": 20, "page": 1},
-            timeout=self.timeout,
-        )
+        resp = self.client.request("GET", self.url,
+            params={"sortOrder": sort_order, "limit": 20, "page": 1})
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
         assert_response_matches_openapi_operation(
             resp.json(), "searchHistory", status_code="200"
@@ -548,22 +450,14 @@ class TestSemanticSearch(_BaseEnterpriseSearchIntegration):
     # Asking for one row of history caps how many come back.
     def test_get_search_history_with_limit_caps_rows(self) -> None:
         for _ in range(2):
-            post_resp = requests.post(
-                self.url,
-                headers=self.headers,
-                json={"query": SEARCH_QUERY, "limit": 5},
-                timeout=self.timeout,
-            )
+            post_resp = self.client.request("POST", self.url,
+                json={"query": SEARCH_QUERY, "limit": 5})
             assert post_resp.status_code == 200, (
                 f"{post_resp.status_code}: {post_resp.text}"
             )
 
-        resp = requests.get(
-            self.url,
-            headers=self.headers,
-            params={"limit": 1, "page": 1},
-            timeout=self.timeout,
-        )
+        resp = self.client.request("GET", self.url,
+            params={"limit": 1, "page": 1})
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
         body = resp.json()
         rows = body.get("searchHistory") or []

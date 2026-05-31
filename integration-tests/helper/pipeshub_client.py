@@ -236,6 +236,60 @@ class PipeshubClient:
         }
         return headers
 
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        auth: bool = True,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Single entry point for raw HTTP requests from tests.
+
+        ``auth=True`` (default): ensures the client_credentials access token is
+        valid (refresh if near expiry) before sending, and retries once on a 401
+        by invalidating the cached token and re-issuing — so a token revoked or
+        rotated mid-session is transparently recovered.
+
+        ``auth=False``: sends the request as-is. Caller-supplied ``headers`` are
+        forwarded unchanged (used by negative tests that exercise no-auth or
+        bogus-token paths).
+
+        ``url`` must be fully qualified (the caller builds it from
+        ``self.base_url``). Returns the raw :class:`requests.Response` so tests
+        can inspect status code, headers, and body directly.
+        """
+        kwargs.setdefault("timeout", self.timeout_seconds)
+        extra_headers = headers or {}
+        # When uploading multipart (``files=``), requests sets Content-Type with the
+        # boundary itself; forcing application/json here would break the upload.
+        is_multipart = "files" in kwargs
+
+        if not auth:
+            merged: Dict[str, str] = {} if is_multipart else {"Content-Type": "application/json"}
+            merged.update(extra_headers)
+            return requests.request(method, url, headers=merged, **kwargs)
+
+        last_resp: Optional[requests.Response] = None
+        for attempt in range(2):
+            self._ensure_access_token()
+            merged = {"Authorization": f"Bearer {self._access_token}"}
+            if not is_multipart:
+                merged["Content-Type"] = "application/json"
+            merged.update(extra_headers)
+            last_resp = requests.request(method, url, headers=merged, **kwargs)
+            if last_resp.status_code == 401 and attempt == 0:
+                logger.warning(
+                    "Authed request to %s returned 401; invalidating token and retrying once",
+                    url,
+                )
+                self._invalidate_access_token()
+                continue
+            return last_resp
+        assert last_resp is not None
+        return last_resp
+
     def _request_json(
         self,
         method: str,

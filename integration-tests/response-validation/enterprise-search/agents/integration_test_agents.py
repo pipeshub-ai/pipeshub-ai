@@ -123,8 +123,9 @@ class TestCreateAgent:
     @pytest.fixture(autouse=True)
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.client = pipeshub_client
+        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
-        self.headers = pipeshub_client.auth_headers
+        self.client = pipeshub_client
         self.org_id = pipeshub_client.org_id
         self.timeout = pipeshub_client.timeout_seconds
 
@@ -134,11 +135,7 @@ class TestCreateAgent:
         yield created
         for agent_key in reversed(created):
             try:
-                resp = requests.delete(
-                    f"{self.base_url}/api/v1/agents/{agent_key}",
-                    headers=self.headers,
-                    timeout=self.timeout,
-                )
+                resp = self.client.request("DELETE", f"{self.base_url}/api/v1/agents/{agent_key}")
                 if resp.status_code >= 300:
                     logger.warning(
                         "Agent delete failed for %s: HTTP %s %s",
@@ -149,12 +146,7 @@ class TestCreateAgent:
                 pass
 
     def _create_agent_raw(self, payload: dict[str, Any]) -> requests.Response:
-        return requests.post(
-            f"{self.base_url}{_AGENTS_CREATE_PATH}",
-            headers=self.headers,
-            json=payload,
-            timeout=self.timeout,
-        )
+        return self.client.request("POST", f"{self.base_url}{_AGENTS_CREATE_PATH}", json=payload)
 
     @staticmethod
     def _created_agent_key(resp_json: dict[str, Any]) -> str:
@@ -391,8 +383,9 @@ class TestListAgents:
     @pytest.fixture(autouse=True)
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.client = pipeshub_client
+        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
-        self.headers = pipeshub_client.auth_headers
+        self.client = pipeshub_client
         self.timeout = pipeshub_client.timeout_seconds
 
     @pytest.fixture
@@ -401,11 +394,7 @@ class TestListAgents:
         yield created
         for agent_key in reversed(created):
             try:
-                resp = requests.delete(
-                    f"{self.base_url}/api/v1/agents/{agent_key}",
-                    headers=self.headers,
-                    timeout=self.timeout,
-                )
+                resp = self.client.request("DELETE", f"{self.base_url}/api/v1/agents/{agent_key}")
                 if resp.status_code >= 300:
                     logger.warning(
                         "Agent delete failed for %s: HTTP %s %s",
@@ -415,12 +404,7 @@ class TestListAgents:
                 pass
 
     def _create_agent_raw(self, payload: dict[str, Any]) -> requests.Response:
-        return requests.post(
-            f"{self.base_url}{_AGENTS_CREATE_PATH}",
-            headers=self.headers,
-            json=payload,
-            timeout=self.timeout,
-        )
+        return self.client.request("POST", f"{self.base_url}{_AGENTS_CREATE_PATH}", json=payload)
 
     def _create_agent_for_list_test(
         self,
@@ -451,12 +435,7 @@ class TestListAgents:
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return requests.get(
-            f"{self.base_url}{_AGENTS_LIST_PATH}",
-            headers=headers if headers is not None else self.headers,
-            params=params,
-            timeout=self.timeout,
-        )
+        return self.client.request("GET", f"{self.base_url}{_AGENTS_LIST_PATH}", params=params)
 
     @staticmethod
     def _assert_list_response_shape(body: dict[str, Any]) -> list[dict[str, Any]]:
@@ -597,8 +576,9 @@ class TestGetAgent:
     @pytest.fixture(autouse=True)
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.client = pipeshub_client
+        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
-        self.headers = pipeshub_client.auth_headers
+        self.client = pipeshub_client
         self.timeout = pipeshub_client.timeout_seconds
 
     @pytest.fixture
@@ -607,11 +587,7 @@ class TestGetAgent:
         yield created
         for agent_key in reversed(created):
             try:
-                resp = requests.delete(
-                    f"{self.base_url}/api/v1/agents/{agent_key}",
-                    headers=self.headers,
-                    timeout=self.timeout,
-                )
+                resp = self.client.request("DELETE", f"{self.base_url}/api/v1/agents/{agent_key}")
                 if resp.status_code >= 300:
                     logger.warning(
                         "Agent delete failed for %s: HTTP %s %s",
@@ -621,12 +597,7 @@ class TestGetAgent:
                 pass
 
     def _create_agent_raw(self, payload: dict[str, Any]) -> requests.Response:
-        return requests.post(
-            f"{self.base_url}{_AGENTS_CREATE_PATH}",
-            headers=self.headers,
-            json=payload,
-            timeout=self.timeout,
-        )
+        return self.client.request("POST", f"{self.base_url}{_AGENTS_CREATE_PATH}", json=payload)
 
     def _create_agent_for_get_test(
         self,
@@ -660,12 +631,7 @@ class TestGetAgent:
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return requests.get(
-            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
-            headers=headers if headers is not None else self.headers,
-            params=params,
-            timeout=self.timeout,
-        )
+        return self.client.request("GET", f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}", params=params)
 
     @staticmethod
     def _assert_get_agent_response_shape(
@@ -816,8 +782,9 @@ class TestUpdateAgent:
     @pytest.fixture(autouse=True)
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.client = pipeshub_client
+        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
-        self.headers = pipeshub_client.auth_headers
+        self.client = pipeshub_client
         self.timeout = pipeshub_client.timeout_seconds
 
     @pytest.fixture
@@ -826,11 +793,7 @@ class TestUpdateAgent:
         yield created
         for agent_key in reversed(created):
             try:
-                resp = requests.delete(
-                    f"{self.base_url}/api/v1/agents/{agent_key}",
-                    headers=self.headers,
-                    timeout=self.timeout,
-                )
+                resp = self.client.request("DELETE", f"{self.base_url}/api/v1/agents/{agent_key}")
                 if resp.status_code >= 300:
                     logger.warning(
                         "Agent delete failed for %s: HTTP %s %s",
@@ -840,12 +803,7 @@ class TestUpdateAgent:
                 pass
 
     def _create_agent_raw(self, payload: dict[str, Any]) -> requests.Response:
-        return requests.post(
-            f"{self.base_url}{_AGENTS_CREATE_PATH}",
-            headers=self.headers,
-            json=payload,
-            timeout=self.timeout,
-        )
+        return self.client.request("POST", f"{self.base_url}{_AGENTS_CREATE_PATH}", json=payload)
 
     def _create_agent_for_update_test(
         self,
@@ -880,21 +838,10 @@ class TestUpdateAgent:
         request_headers = dict(headers if headers is not None else self.headers)
         if data is not None:
             request_headers.setdefault("Content-Type", "application/json")
-        return requests.put(
-            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
-            headers=request_headers,
-            json=json_body,
-            data=data,
-            params=params,
-            timeout=self.timeout,
-        )
+        return self.client.request("PUT", f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}", json=json_body, data=data, params=params)
 
     def _get_agent_raw(self, agent_key: str) -> requests.Response:
-        return requests.get(
-            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
-            headers=self.headers,
-            timeout=self.timeout,
-        )
+        return self.client.request("GET", f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}")
 
     @staticmethod
     def _assert_update_agent_response_shape(body: dict[str, Any]) -> None:
@@ -1130,8 +1077,9 @@ class TestDeleteAgent:
     @pytest.fixture(autouse=True)
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.client = pipeshub_client
+        self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
-        self.headers = pipeshub_client.auth_headers
+        self.client = pipeshub_client
         self.timeout = pipeshub_client.timeout_seconds
 
     @pytest.fixture
@@ -1140,11 +1088,7 @@ class TestDeleteAgent:
         yield created
         for agent_key in reversed(created):
             try:
-                resp = requests.delete(
-                    f"{self.base_url}/api/v1/agents/{agent_key}",
-                    headers=self.headers,
-                    timeout=self.timeout,
-                )
+                resp = self.client.request("DELETE", f"{self.base_url}/api/v1/agents/{agent_key}")
                 if resp.status_code >= 300:
                     logger.warning(
                         "Agent delete failed for %s: HTTP %s %s",
@@ -1154,12 +1098,7 @@ class TestDeleteAgent:
                 pass
 
     def _create_agent_raw(self, payload: dict[str, Any]) -> requests.Response:
-        return requests.post(
-            f"{self.base_url}{_AGENTS_CREATE_PATH}",
-            headers=self.headers,
-            json=payload,
-            timeout=self.timeout,
-        )
+        return self.client.request("POST", f"{self.base_url}{_AGENTS_CREATE_PATH}", json=payload)
 
     def _create_agent_for_delete_test(
         self,
@@ -1190,11 +1129,7 @@ class TestDeleteAgent:
         *,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return requests.get(
-            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
-            headers=headers if headers is not None else self.headers,
-            timeout=self.timeout,
-        )
+        return self.client.request("GET", f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}")
 
     def _delete_agent_raw(
         self,
@@ -1202,23 +1137,14 @@ class TestDeleteAgent:
         *,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return requests.delete(
-            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
-            headers=headers if headers is not None else self.headers,
-            timeout=self.timeout,
-        )
+        return self.client.request("DELETE", f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}")
 
     def _list_agents_raw(
         self,
         *,
         params: dict[str, Any] | None = None,
     ) -> requests.Response:
-        return requests.get(
-            f"{self.base_url}{_AGENTS_LIST_PATH}",
-            headers=self.headers,
-            params=params,
-            timeout=self.timeout,
-        )
+        return self.client.request("GET", f"{self.base_url}{_AGENTS_LIST_PATH}", params=params)
 
     @staticmethod
     def _assert_delete_agent_success_shape(body: dict[str, Any]) -> None:

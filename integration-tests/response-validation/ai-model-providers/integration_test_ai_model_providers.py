@@ -113,11 +113,7 @@ def _env(name: str, fallback: Optional[str] = None) -> Optional[str]:
 
 
 def _admin_headers(client: PipeshubClient) -> Dict[str, str]:
-    client._ensure_access_token()
-    return {
-        "Authorization": f"Bearer {client._access_token}",
-        "Content-Type": "application/json",
-    }
+    return {"X-Is-Admin": "true"}
 
 
 def _providers_url(client: PipeshubClient) -> str:
@@ -155,10 +151,10 @@ def _assert_error_envelope_matches_spec(body: dict) -> None:
 
 def _teardown_provider(client: PipeshubClient, created: CreatedProvider) -> None:
     try:
-        resp = requests.delete(
+        resp = client.request(
+            "DELETE",
             _delete_provider_url(client, created.model_type, created.model_key),
             headers=_admin_headers(client),
-            timeout=client.timeout_seconds,
         )
     except Exception as exc:
         logger.warning(
@@ -293,17 +289,38 @@ def _post_provider(
     headers: Optional[Dict[str, str]] = None,
     raw_data: Optional[str] = None,
 ) -> requests.Response:
-    kwargs: Dict[str, Any] = {
-        "url": _providers_url(client),
-        "timeout": client.timeout_seconds,
-    }
+    req_headers = headers or _admin_headers(client)
+    if headers is not None:
+        if raw_data is not None:
+            merged = {"Content-Type": "application/json", **req_headers}
+            return client.request(
+                "POST",
+                _providers_url(client),
+                data=raw_data,
+                auth=False,
+                headers=merged,
+            )
+        return client.request(
+            "POST",
+            _providers_url(client),
+            json=payload,
+            auth=False,
+            headers=req_headers,
+        )
     if raw_data is not None:
-        kwargs["data"] = raw_data
-        kwargs["headers"] = headers or {"Content-Type": "application/json"}
-    else:
-        kwargs["json"] = payload
-        kwargs["headers"] = headers or _admin_headers(client)
-    return requests.post(**kwargs)
+        merged = {"Content-Type": "application/json", **req_headers}
+        return client.request(
+            "POST",
+            _providers_url(client),
+            data=raw_data,
+            headers=merged,
+        )
+    return client.request(
+        "POST",
+        _providers_url(client),
+        json=payload,
+        headers=req_headers,
+    )
 
 
 def _put_provider(
@@ -316,14 +333,16 @@ def _put_provider(
     raw_data: Optional[str] = None,
 ) -> requests.Response:
     url = client._url(f"{_PROVIDERS_PATH}/{model_type}/{model_key}")
-    kwargs: Dict[str, Any] = {"url": url, "timeout": client.timeout_seconds}
+    req_headers = headers or _admin_headers(client)
+    if headers is not None:
+        if raw_data is not None:
+            merged = {"Content-Type": "application/json", **req_headers}
+            return client.request("PUT", url, data=raw_data, auth=False, headers=merged)
+        return client.request("PUT", url, json=payload, auth=False, headers=req_headers)
     if raw_data is not None:
-        kwargs["data"] = raw_data
-        kwargs["headers"] = headers or {"Content-Type": "application/json"}
-    else:
-        kwargs["json"] = payload
-        kwargs["headers"] = headers or _admin_headers(client)
-    return requests.put(**kwargs)
+        merged = {"Content-Type": "application/json", **req_headers}
+        return client.request("PUT", url, data=raw_data, headers=merged)
+    return client.request("PUT", url, json=payload, headers=req_headers)
 
 
 def _delete_provider(
@@ -333,10 +352,18 @@ def _delete_provider(
     *,
     headers: Optional[Dict[str, str]] = None,
 ) -> requests.Response:
-    return requests.delete(
+    req_headers = headers or _admin_headers(client)
+    if headers is not None:
+        return client.request(
+            "DELETE",
+            _delete_provider_url(client, model_type, model_key),
+            auth=False,
+            headers=req_headers,
+        )
+    return client.request(
+        "DELETE",
         _delete_provider_url(client, model_type, model_key),
-        headers=headers or _admin_headers(client),
-        timeout=client.timeout_seconds,
+        headers=req_headers,
     )
 
 
@@ -345,11 +372,10 @@ def _get_ai_models(
     *,
     headers: Optional[Dict[str, str]] = None,
 ) -> requests.Response:
-    return requests.get(
-        _ai_models_url(client),
-        headers=headers or _admin_headers(client),
-        timeout=client.timeout_seconds,
-    )
+    req_headers = headers or _admin_headers(client)
+    if headers is not None:
+        return client.request("GET", _ai_models_url(client), auth=False, headers=req_headers)
+    return client.request("GET", _ai_models_url(client), headers=req_headers)
 
 
 def _get_models_by_type(
@@ -358,10 +384,18 @@ def _get_models_by_type(
     *,
     headers: Optional[Dict[str, str]] = None,
 ) -> requests.Response:
-    return requests.get(
+    req_headers = headers or _admin_headers(client)
+    if headers is not None:
+        return client.request(
+            "GET",
+            _models_by_type_url(client, model_type),
+            auth=False,
+            headers=req_headers,
+        )
+    return client.request(
+        "GET",
         _models_by_type_url(client, model_type),
-        headers=headers or _admin_headers(client),
-        timeout=client.timeout_seconds,
+        headers=req_headers,
     )
 
 
@@ -551,12 +585,8 @@ class TestAddAIModelProviderValidation:
             _PROVIDER_OPENAI,
             {"model": "gpt-4o-mini", "apiKey": "sk-test"},
         )
-        resp = requests.post(
-            _providers_url(self.client),
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout,
-        )
+        resp = self.client.request("POST", _providers_url(self.client),
+            json=payload)
         assert resp.status_code in (400, 401), (
             f"Expected 400/401 without Authorization, got {resp.status_code}: {resp.text}"
         )
@@ -755,12 +785,8 @@ class TestAddAIModelProviderNonAdmin:
             _PROVIDER_OPENAI,
             {"model": "gpt-4o-mini", "apiKey": "sk-test"},
         )
-        resp = requests.post(
-            _providers_url(pipeshub_client),
-            json=payload,
-            headers=session_headers(token),
-            timeout=pipeshub_client.timeout_seconds,
-        )
+        resp = pipeshub_client.request("POST", _providers_url(pipeshub_client),
+            json=payload, auth=False, headers=session_headers(token))
         assert resp.status_code == 400, (
             f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
         )
@@ -912,14 +938,10 @@ class TestUpdateAIModelProviderValidation:
             _PROVIDER_OPENAI,
             {"model": "gpt-4o-mini", "apiKey": "sk-test"},
         )
-        resp = requests.put(
-            self.client._url(
+        resp = self.client.request("PUT", self.client._url(
                 f"{_PROVIDERS_PATH}/{_MODEL_TYPE_LLM}/{uuid.uuid4()}"
             ),
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout,
-        )
+            json=payload)
         assert resp.status_code in (400, 401), (
             f"Expected 400/401 without Authorization, got {resp.status_code}: {resp.text}"
         )
@@ -964,14 +986,10 @@ class TestUpdateAIModelProviderNonAdmin:
             _PROVIDER_OPENAI,
             {"model": "gpt-4o-mini", "apiKey": "sk-test"},
         )
-        resp = requests.put(
-            pipeshub_client._url(
+        resp = pipeshub_client.request("PUT", pipeshub_client._url(
                 f"{_PROVIDERS_PATH}/{_MODEL_TYPE_LLM}/{uuid.uuid4()}"
             ),
-            json=payload,
-            headers=session_headers(token),
-            timeout=pipeshub_client.timeout_seconds,
-        )
+            json=payload, auth=False, headers=session_headers(token))
         assert resp.status_code == 400, (
             f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
         )
@@ -1172,11 +1190,7 @@ class TestDeleteAIModelProviderValidation:
         assert body.get("status") == "error" or body.get("error"), body
 
     def test_missing_authorization(self) -> None:
-        resp = requests.delete(
-            _delete_provider_url(self.client, _MODEL_TYPE_LLM, str(uuid.uuid4())),
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout,
-        )
+        resp = self.client.request("DELETE", _delete_provider_url(self.client, _MODEL_TYPE_LLM, str(uuid.uuid4())))
         assert resp.status_code in (400, 401), (
             f"Expected 400/401 without Authorization, got {resp.status_code}: {resp.text}"
         )
@@ -1204,11 +1218,7 @@ class TestDeleteAIModelProviderNonAdmin:
             os.environ["PIPESHUB_TEST_NON_ADMIN_PASSWORD"].strip(),
             pipeshub_client.timeout_seconds,
         )
-        resp = requests.delete(
-            _delete_provider_url(pipeshub_client, _MODEL_TYPE_LLM, str(uuid.uuid4())),
-            headers=session_headers(token),
-            timeout=pipeshub_client.timeout_seconds,
-        )
+        resp = pipeshub_client.request("DELETE", _delete_provider_url(pipeshub_client, _MODEL_TYPE_LLM, str(uuid.uuid4())), auth=False, headers=session_headers(token))
         assert resp.status_code == 400, (
             f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
         )
@@ -1363,11 +1373,7 @@ class TestGetAIModelsProviders:
         )
 
     def test_missing_authorization(self) -> None:
-        resp = requests.get(
-            _ai_models_url(self.client),
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout,
-        )
+        resp = self.client.request("GET", _ai_models_url(self.client))
         assert resp.status_code in (400, 401), (
             f"Expected 400/401 without Authorization, got {resp.status_code}: {resp.text}"
         )
@@ -1395,11 +1401,7 @@ class TestGetAIModelsProvidersNonAdmin:
             os.environ["PIPESHUB_TEST_NON_ADMIN_PASSWORD"].strip(),
             pipeshub_client.timeout_seconds,
         )
-        resp = requests.get(
-            _ai_models_url(pipeshub_client),
-            headers=session_headers(token),
-            timeout=pipeshub_client.timeout_seconds,
-        )
+        resp = pipeshub_client.request("GET", _ai_models_url(pipeshub_client), auth=False, headers=session_headers(token))
         assert resp.status_code == 400, (
             f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
         )
@@ -1503,11 +1505,7 @@ class TestGetModelsByType:
         )
 
     def test_missing_authorization(self) -> None:
-        resp = requests.get(
-            _models_by_type_url(self.client, _MODEL_TYPE_LLM),
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout,
-        )
+        resp = self.client.request("GET", _models_by_type_url(self.client, _MODEL_TYPE_LLM))
         assert resp.status_code in (400, 401), (
             f"Expected 400/401 without Authorization, got {resp.status_code}: {resp.text}"
         )
@@ -1537,11 +1535,7 @@ class TestGetModelsByTypeNonAdmin:
             os.environ["PIPESHUB_TEST_NON_ADMIN_PASSWORD"].strip(),
             pipeshub_client.timeout_seconds,
         )
-        resp = requests.get(
-            _models_by_type_url(pipeshub_client, _MODEL_TYPE_LLM),
-            headers=session_headers(token),
-            timeout=pipeshub_client.timeout_seconds,
-        )
+        resp = pipeshub_client.request("GET", _models_by_type_url(pipeshub_client, _MODEL_TYPE_LLM), auth=False, headers=session_headers(token))
         assert resp.status_code == 400, (
             f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
         )

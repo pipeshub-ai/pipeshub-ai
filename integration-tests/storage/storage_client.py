@@ -64,13 +64,6 @@ class StorageClient:
         """
         return self._c.org_id
 
-    def _auth_headers(self) -> dict[str, str]:
-        self._c._ensure_access_token()
-        return {"Authorization": f"Bearer {self._c._access_token}"}
-
-    def _json_headers(self) -> dict[str, str]:
-        return {**self._auth_headers(), "Content-Type": "application/json"}
-
     def _url(self, path: str) -> str:
         return self._c._url(f"{DOCUMENT_BASE}{path}")
 
@@ -97,22 +90,13 @@ class StorageClient:
             payload["permissions"] = permissions
         if custom_metadata is not None:
             payload["customMetadata"] = custom_metadata
-        resp = requests.post(
-            self._url("/placeholder"),
-            headers=self._json_headers(),
-            json=payload,
-            timeout=self._c.timeout_seconds,
-        )
+        resp = self._c.request("POST", self._url("/placeholder"), json=payload)
         self._track_document_from_response(resp)
         return resp
 
     def direct_upload(self, document_id: str) -> requests.Response:
         """Get a presigned URL for direct upload to the storage vendor."""
-        resp = requests.post(
-            self._url(f"/{document_id}/directUpload"),
-            headers=self._json_headers(),
-            timeout=self._c.timeout_seconds,
-        )
+        resp = self._c.request("POST", self._url(f"/{document_id}/directUpload"))
         self._track_document_from_response(resp)
         return resp
 
@@ -148,12 +132,11 @@ class StorageClient:
             data["documentPath"] = document_path
 
         files = [("file", (file_name, io.BytesIO(file_content), "text/plain"))]
-        resp = requests.post(
+        resp = self._c.request(
+            "POST",
             self._url("/upload"),
-            headers=self._auth_headers(),
             data=data,
             files=files,
-            timeout=self._c.timeout_seconds,
             allow_redirects=False,
         )
 
@@ -228,12 +211,11 @@ class StorageClient:
             data["nextVersionNote"] = next_version_note
 
         files = [("file", (file_name, io.BytesIO(file_content), "text/plain"))]
-        resp = requests.post(
+        resp = self._c.request(
+            "POST",
             self._url(f"/{document_id}/uploadNextVersion"),
-            headers=self._auth_headers(),
             data=data,
             files=files,
-            timeout=self._c.timeout_seconds,
         )
         self._register_doc_id(document_id)
         self._track_document_from_response(resp)
@@ -245,22 +227,17 @@ class StorageClient:
         version: int,
         note: str = "",
     ) -> requests.Response:
-        resp = requests.post(
+        resp = self._c.request(
+            "POST",
             self._url(f"/{document_id}/rollBack"),
-            headers=self._json_headers(),
             json={"version": version, "note": note},
-            timeout=self._c.timeout_seconds,
         )
         self._register_doc_id(document_id)
         self._track_document_from_response(resp)
         return resp
 
     def get_document(self, document_id: str) -> requests.Response:
-        return requests.get(
-            self._url(f"/{document_id}"),
-            headers=self._json_headers(),
-            timeout=self._c.timeout_seconds,
-        )
+        return self._c.request("GET", self._url(f"/{document_id}"))
 
     def get_document_buffer(
         self, document_id: str, version: int | None = None
@@ -268,11 +245,10 @@ class StorageClient:
         params = {}
         if version is not None:
             params["version"] = version
-        return requests.get(
+        return self._c.request(
+            "GET",
             self._url(f"/{document_id}/buffer"),
-            headers=self._json_headers(),
             params=params,
-            timeout=self._c.timeout_seconds,
         )
 
     def download_document(
@@ -286,11 +262,10 @@ class StorageClient:
             params["version"] = version
         if expiration_seconds is not None:
             params["expirationTimeInSeconds"] = expiration_seconds
-        return requests.get(
+        return self._c.request(
+            "GET",
             self._url(f"/{document_id}/download"),
-            headers=self._json_headers(),
             params=params,
-            timeout=self._c.timeout_seconds,
         )
 
     def update_buffer(
@@ -300,26 +275,17 @@ class StorageClient:
         file_name: str,
     ) -> requests.Response:
         files = [("file", (file_name, io.BytesIO(file_content), "text/plain"))]
-        resp = requests.put(
+        resp = self._c.request(
+            "PUT",
             self._url(f"/{document_id}/buffer"),
-            headers=self._auth_headers(),
             files=files,
-            timeout=self._c.timeout_seconds,
         )
         self._register_doc_id(document_id)
         self._track_document_from_response(resp)
         return resp
 
     def delete_document(self, document_id: str) -> requests.Response:
-        return requests.delete(
-            self._url(f"/{document_id}/"),
-            headers=self._json_headers(),
-            timeout=self._c.timeout_seconds,
-        )
+        return self._c.request("DELETE", self._url(f"/{document_id}/"))
 
     def is_modified(self, document_id: str) -> requests.Response:
-        return requests.get(
-            self._url(f"/{document_id}/isModified"),
-            headers=self._json_headers(),
-            timeout=self._c.timeout_seconds,
-        )
+        return self._c.request("GET", self._url(f"/{document_id}/isModified"))

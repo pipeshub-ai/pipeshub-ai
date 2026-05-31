@@ -73,7 +73,7 @@ class TestCheckOrgExistence:
 
     def test_check_org_existence_response_schema(self) -> None:
         """GET /api/v1/org/exists — response must match OrgCheckExistenceResponse schema."""
-        resp = requests.get(self.url, timeout=self.client.timeout_seconds)
+        resp = self.client.request("GET", self.url, auth=False)
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -82,7 +82,7 @@ class TestCheckOrgExistence:
     def test_check_org_existence_negative_tests(self) -> None:
         """Unsupported methods and other negative paths for GET /api/v1/org/exists."""
         # HTTP method misuse: POST is not defined for this path — server must reject with 4xx.
-        resp = requests.post(self.url, timeout=self.client.timeout_seconds)
+        resp = self.client.request("POST", self.url, auth=False)
         assert resp.status_code >= 400, (
             f"[unsupported POST] Expected 4xx, got {resp.status_code}"
         )
@@ -102,7 +102,7 @@ class TestOrgHealth:
 
     def test_org_health_response_schema(self) -> None:
         """GET /api/v1/org/health — response must match OrgHealthResponse schema."""
-        resp = requests.get(self.url, timeout=self.client.timeout_seconds)
+        resp = self.client.request("GET", self.url, auth=False)
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -111,7 +111,7 @@ class TestOrgHealth:
     def test_org_health_negative_tests(self) -> None:
         """Unsupported methods and other negative paths for GET /api/v1/org/health."""
         # HTTP method misuse: POST is not defined for this path — server must reject with 4xx.
-        resp = requests.post(self.url, timeout=self.client.timeout_seconds)
+        resp = self.client.request("POST", self.url, auth=False)
         assert resp.status_code >= 400, (
             f"[unsupported POST] Expected 4xx, got {resp.status_code}"
         )
@@ -131,11 +131,7 @@ class TestGetOrganizationById:
 
     def test_get_current_organization_response_schema(self) -> None:
         """GET /api/v1/org — response must conform to OrgDocumentResponse (getCurrentOrganization)."""
-        resp = requests.get(
-            self.url,
-            headers=self.client._headers(),
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", self.url)
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -144,7 +140,7 @@ class TestGetOrganizationById:
     def test_get_current_organization_negative_tests(self) -> None:
         """Unauthenticated and invalid-token paths for GET /api/v1/org."""
         # Missing credentials: request without Authorization must be rejected before org lookup.
-        resp = requests.get(self.url, timeout=self.client.timeout_seconds)
+        resp = self.client.request("GET", self.url, auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -160,10 +156,11 @@ class TestGetOrganizationById:
         )
 
         # Bogus Bearer token: must fail auth (do not accept arbitrary strings as sessions).
-        resp = requests.get(
+        resp = self.client.request(
+            "GET",
             self.url,
+            auth=False,
             headers={"Authorization": "Bearer this-is-not-a-valid-token"},
-            timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 401, (
             f"[invalid token] Expected 401, got {resp.status_code}: {resp.text}"
@@ -193,21 +190,12 @@ class TestUpdateOrganizationDetails:
         self.url = f"{pipeshub_client.base_url}/api/v1/org"
 
     def _get_current_org(self) -> dict[str, object]:
-        resp = requests.get(
-            self.url,
-            headers=self.client._headers(),
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", self.url)
         assert resp.status_code == 200
         return resp.json()
 
     def _put_org(self, body: dict[str, object]) -> requests.Response:
-        return requests.put(
-            self.url,
-            headers=self.client._headers(),
-            json=body,
-            timeout=self.client.timeout_seconds,
-        )
+        return self.client.request("PUT", self.url, json=body)
 
     def test_update_org_single_field_response_schemas(self) -> None:
         """Partial PUTs — one logical field per step; response must match updateOrganization."""
@@ -426,10 +414,11 @@ class TestUpdateOrganizationDetails:
             )
 
         # Missing credentials: PUT must not mutate org without Authorization.
-        resp = requests.put(
+        resp = self.client.request(
+            "PUT",
             self.url,
+            auth=False,
             json={"registeredName": "Should Not Update"},
-            timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
@@ -446,11 +435,12 @@ class TestUpdateOrganizationDetails:
         )
 
         # Bogus Bearer token: same as GET — unauthorized updates must not apply.
-        resp = requests.put(
+        resp = self.client.request(
+            "PUT",
             self.url,
+            auth=False,
             headers={"Authorization": "Bearer not-a-real-token"},
             json={"registeredName": "Should Not Update"},
-            timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 401, (
             f"[invalid token] Expected 401, got {resp.status_code}: {resp.text}"
@@ -481,11 +471,7 @@ class TestGetOnboardingStatus:
 
     def test_get_onboarding_status_response_schema(self) -> None:
         """GET /api/v1/org/onboarding-status — response must match OrgGetOnboardingStatusResponse."""
-        resp = requests.get(
-            self.url,
-            headers=self.client._headers(),
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", self.url)
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -494,7 +480,7 @@ class TestGetOnboardingStatus:
     def test_get_onboarding_status_negative_tests(self) -> None:
         """Unauthenticated paths for GET /api/v1/org/onboarding-status."""
         # Missing credentials: onboarding status is org-scoped and must require auth.
-        resp = requests.get(self.url, timeout=self.client.timeout_seconds)
+        resp = self.client.request("GET", self.url, auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -523,21 +509,12 @@ class TestUpdateOnboardingStatus:
         self.url = f"{pipeshub_client.base_url}/api/v1/org/onboarding-status"
 
     def _get_current_status(self) -> str:
-        resp = requests.get(
-            self.url,
-            headers=self.client._headers(),
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", self.url)
         assert resp.status_code == 200
         return resp.json()["status"]
 
     def _put_status(self, status: str) -> requests.Response:
-        return requests.put(
-            self.url,
-            headers=self.client._headers(),
-            json={"status": status},
-            timeout=self.client.timeout_seconds,
-        )
+        return self.client.request("PUT", self.url, json={"status": status})
 
     def test_update_onboarding_status_allowed_values_response_schema(self) -> None:
         """Each allowed onboarding status updates cleanly — 200, OpenAPI, echo; restore after each."""
@@ -594,12 +571,7 @@ class TestUpdateOnboardingStatus:
         )
 
         # Required field missing: empty JSON body should not satisfy onboarding status payload.
-        resp = requests.put(
-            self.url,
-            headers=self.client._headers(),
-            json={},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("PUT", self.url, json={})
         assert resp.status_code == 400, (
             f"[empty body] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -615,12 +587,7 @@ class TestUpdateOnboardingStatus:
         )
 
         # Type / schema violation: null is not a valid string status.
-        resp = requests.put(
-            self.url,
-            headers=self.client._headers(),
-            json={"status": None},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("PUT", self.url, json={"status": None})
         assert resp.status_code == 400, (
             f"[null status] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -636,10 +603,11 @@ class TestUpdateOnboardingStatus:
         )
 
         # Missing credentials (after validation cases): anonymous PUT must not change status.
-        resp = requests.put(
+        resp = self.client.request(
+            "PUT",
             self.url,
+            auth=False,
             json={"status": "configured"},
-            timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
@@ -674,14 +642,12 @@ class TestUpdateOrgLogo:
         filename: str,
         content_type: str,
     ) -> requests.Response:
-        headers = self.client._headers()
-        # Remove Content-Type — requests sets it with the multipart boundary
-        headers.pop("Content-Type", None)
-        return requests.put(
+        # ``request`` drops Content-Type when ``files=`` is passed so multipart
+        # boundary handling stays with the ``requests`` library.
+        return self.client.request(
+            "PUT",
             self.url,
-            headers=headers,
             files={"file": (filename, file_bytes, content_type)},
-            timeout=self.client.timeout_seconds,
         )
 
     def test_upload_org_logo_png_response_schemas(self) -> None:
@@ -712,10 +678,11 @@ class TestUpdateOrgLogo:
     def test_upload_org_logo_negative_tests(self) -> None:
         """Auth and upload validation failures for PUT /api/v1/org/logo."""
         # Missing credentials: multipart upload must still require Authorization.
-        resp = requests.put(
+        resp = self.client.request(
+            "PUT",
             self.url,
+            auth=False,
             files={"file": ("logo.png", _TINY_PNG, "image/png")},
-            timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
@@ -732,12 +699,7 @@ class TestUpdateOrgLogo:
         )
 
         # Wrong content shape: JSON body instead of multipart file field — expect client error.
-        resp = requests.put(
-            self.url,
-            headers=self.client._headers(),
-            json={},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("PUT", self.url, json={})
         assert resp.status_code == 400, (
             f"[no file] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -785,13 +747,10 @@ class TestRemoveOrgLogo:
 
     def _ensure_logo_exists(self) -> None:
         """Upload a logo so that DELETE has something to remove."""
-        headers = self.client._headers()
-        headers.pop("Content-Type", None)
-        resp = requests.put(
+        resp = self.client.request(
+            "PUT",
             self.logo_url,
-            headers=headers,
             files={"file": ("logo.png", _TINY_PNG, "image/png")},
-            timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 201, (
             f"Logo setup failed: {resp.status_code}: {resp.text}"
@@ -801,11 +760,7 @@ class TestRemoveOrgLogo:
         """DELETE /api/v1/org/logo — upload setup then delete; response must match deleteOrganizationLogo."""
         self._ensure_logo_exists()
 
-        resp = requests.delete(
-            self.logo_url,
-            headers=self.client._headers(),
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("DELETE", self.logo_url)
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -814,10 +769,7 @@ class TestRemoveOrgLogo:
     def test_delete_org_logo_negative_tests(self) -> None:
         """Unauthenticated paths for DELETE /api/v1/org/logo."""
         # Missing credentials: logo removal must not succeed without Authorization.
-        resp = requests.delete(
-            self.logo_url,
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("DELETE", self.logo_url, auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -846,13 +798,10 @@ class TestGetOrgLogo:
         self.url = f"{pipeshub_client.base_url}/api/v1/org/logo"
 
     def _upload_logo(self) -> None:
-        headers = self.client._headers()
-        headers.pop("Content-Type", None)
-        resp = requests.put(
+        resp = self.client.request(
+            "PUT",
             self.url,
-            headers=headers,
             files={"file": ("logo.png", _TINY_PNG, "image/png")},
-            timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 201, (
             f"Logo upload setup failed: {resp.status_code}: {resp.text}"
@@ -860,15 +809,11 @@ class TestGetOrgLogo:
 
     def _delete_logo(self) -> None:
         """Remove the logo if one exists; silently tolerates 404 (no logo record)."""
-        requests.delete(
-            self.url,
-            headers=self.client._headers(),
-            timeout=self.client.timeout_seconds,
-        )
+        self.client.request("DELETE", self.url)
 
     def test_get_org_logo_unauthenticated(self) -> None:
         """GET /api/v1/org/logo without auth → 401 with ErrorResponse schema."""
-        resp = requests.get(self.url, timeout=self.client.timeout_seconds)
+        resp = self.client.request("GET", self.url, auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -886,11 +831,7 @@ class TestGetOrgLogo:
     def test_get_org_logo_with_logo_returns_binary(self) -> None:
         """GET /api/v1/org/logo after upload → 200 with binary content and correct Content-Type."""
         self._upload_logo()
-        resp = requests.get(
-            self.url,
-            headers=self.client._headers(),
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", self.url)
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -903,11 +844,7 @@ class TestGetOrgLogo:
     def test_get_org_logo_no_logo_returns_204(self) -> None:
         """GET /api/v1/org/logo when no logo exists → 204 No Content with empty body."""
         self._delete_logo()
-        resp = requests.get(
-            self.url,
-            headers=self.client._headers(),
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", self.url)
         assert resp.status_code == 204, (
             f"Expected 204, got {resp.status_code}: {resp.text}"
         )
@@ -939,11 +876,8 @@ class TestCreateOrganization:
         self.url = f"{pipeshub_client.base_url}/api/v1/org"
 
     def _post_org(self, body: dict[str, object]) -> requests.Response:
-        return requests.post(
-            self.url,
-            json=body,
-            timeout=self.client.timeout_seconds,
-        )
+        # Org creation is the bootstrap path — no bearer required.
+        return self.client.request("POST", self.url, auth=False, json=body)
 
     # ------------------------------------------------------------------
     # Valid shapes — org already exists → 500

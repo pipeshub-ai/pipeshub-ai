@@ -33,11 +33,10 @@ def _random_email() -> str:
 def _create_test_user(pipeshub_client: PipeshubClient, timeout: int) -> dict:
     email = _random_email()
     full_name = f"Integration Test {uuid.uuid4().hex[:8]}"
-    resp = requests.post(
+    resp = pipeshub_client.request(
+        "POST",
         f"{pipeshub_client.base_url}/api/v1/users",
-        headers=pipeshub_client._headers(),
         json={"fullName": full_name, "email": email},
-        timeout=timeout,
     )
     if resp.status_code >= 400:
         raise RuntimeError(
@@ -142,10 +141,9 @@ def _create_oauth_app(base_url: str, access_token: str, timeout: int) -> tuple[s
 
 def _delete_user(pipeshub_client: PipeshubClient, user_id: str, timeout: int) -> None:
     try:
-        requests.delete(
+        pipeshub_client.request(
+            "DELETE",
             f"{pipeshub_client.base_url}/api/v1/users/{user_id}",
-            headers=pipeshub_client._headers(),
-            timeout=timeout,
         )
     except Exception:  # noqa: BLE001
         logger.warning("Failed to delete test user %s", user_id)
@@ -205,10 +203,9 @@ def second_pipeshub_client(
 
             # Clean up the second user's OAuth app
             try:
-                requests.delete(
+                pipeshub_client.request(
+                    "DELETE",
                     f"{pipeshub_client.base_url}/api/v1/oauth-clients/{app_id}",
-                    headers=pipeshub_client._headers(),
-                    timeout=timeout,
                 )
             except Exception:  # noqa: BLE001
                 pass

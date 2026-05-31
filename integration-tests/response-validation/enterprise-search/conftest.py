@@ -118,11 +118,10 @@ def session_kb(
         # Upload directly so the multipart tuple carries the real mimetype
         # (KBClient.upload_file hardcodes text/plain).
         files = [("files", (originalname, io.BytesIO(buffer), mimetype))]
-        resp = requests.post(
+        resp = pipeshub_client.request(
+            "POST",
             kb_client._url(f"/{kb_id}/upload"),
-            headers=kb_client._headers(content_type=None),
             files=files,
-            timeout=pipeshub_client.timeout_seconds,
         )
         upload_resp = pipeshub_client._handle_response(resp)
         record_id = _extract_record_id(upload_resp)
@@ -197,12 +196,7 @@ def _create_agent(
     payload: dict[str, Any],
 ) -> str:
     url = f"{client.base_url}{_AGENTS_CREATE_PATH}"
-    resp = requests.post(
-        url,
-        headers=client.auth_headers,
-        json=payload,
-        timeout=client.timeout_seconds,
-    )
+    resp = client.request("POST", url, json=payload)
     if resp.status_code >= 300:
         raise AssertionError(
             f"Agent create failed: HTTP {resp.status_code} {resp.text[:500]}"
@@ -212,11 +206,7 @@ def _create_agent(
 
 def _delete_agent(client: PipeshubClient, agent_key: str) -> None:
     url = f"{client.base_url}/api/v1/agents/{agent_key}"
-    resp = requests.delete(
-        url,
-        headers=client.auth_headers,
-        timeout=client.timeout_seconds,
-    )
+    resp = client.request("DELETE", url)
     if resp.status_code >= 300:
         raise RuntimeError(
             f"Agent delete failed for {agent_key}: HTTP {resp.status_code} {resp.text[:300]}"

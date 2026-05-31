@@ -105,7 +105,7 @@ class TestAgentConversationListing:
     ) -> None:
         self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
-        self.headers = pipeshub_client.auth_headers
+        self.client = pipeshub_client
         self.timeout = int(os.getenv("PIPESHUB_TEST_TIMEOUT", "60"))
         stream_override = os.getenv("PIPESHUB_TEST_STREAM_TIMEOUT", "").strip()
         self.stream_timeout = (
@@ -122,14 +122,10 @@ class TestAgentConversationListing:
         yield created
         for agent_key, conversation_id in reversed(created):
             try:
-                resp = requests.delete(
-                    (
+                resp = self.client.request("DELETE", (
                         f"{self.base_url}/api/v1/agents/{agent_key}"
                         f"/conversations/{conversation_id}"
-                    ),
-                    headers=self.headers,
-                    timeout=self.timeout,
-                )
+                    ))
                 if resp.status_code >= 300:
                     logger.warning(
                         "Conversation delete failed for %s: HTTP %s %s",
@@ -153,13 +149,10 @@ class TestAgentConversationListing:
     ) -> str:
         headers = {**self.headers, "Accept": "text/event-stream"}
 
-        with requests.post(
-            self._stream_url(agent_key),
-            headers=headers,
+        with self.client.request("POST", self._stream_url(agent_key),
             json={"query": query},
             stream=True,
-            timeout=self.stream_timeout,
-        ) as resp:
+            timeout=self.stream_timeout) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
@@ -187,12 +180,8 @@ class TestAgentConversationListing:
         params: Any | None = None,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return requests.get(
-            self._list_url(agent_key),
-            headers=headers or self.headers,
-            params=params,
-            timeout=self.timeout,
-        )
+        return self.client.request("GET", self._list_url(agent_key),
+            params=params)
 
     @staticmethod
     def _all_returned_conversation_ids(body: dict[str, Any]) -> set[str]:
@@ -363,7 +352,7 @@ class TestAgentConversationListing:
             )
 
     def test_list_agent_conversations_without_auth_returns_401(self) -> None:
-        resp = requests.get(self._list_url(self.primary_agent), timeout=self.timeout)
+        resp = self.client.request("GET", self._list_url(self.primary_agent), timeout=self.timeout, auth=False)
         assert resp.status_code == 401, f"{resp.status_code}: {resp.text}"
 
     @pytest.mark.parametrize(

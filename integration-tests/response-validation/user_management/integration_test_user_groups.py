@@ -66,37 +66,19 @@ def _url(client: PipeshubClient, path: str = "") -> str:
 
 
 def _get(client: PipeshubClient, path: str = "") -> requests.Response:
-    return requests.get(
-        _url(client, path),
-        headers=client._headers(),
-        timeout=client.timeout_seconds,
-    )
+    return client.request("GET", _url(client, path))
 
 
 def _post(client: PipeshubClient, path: str = "", json: object = None) -> requests.Response:
-    return requests.post(
-        _url(client, path),
-        headers=client._headers(),
-        json=json,
-        timeout=client.timeout_seconds,
-    )
+    return client.request("POST", _url(client, path), json=json)
 
 
 def _put(client: PipeshubClient, path: str = "", json: object = None) -> requests.Response:
-    return requests.put(
-        _url(client, path),
-        headers=client._headers(),
-        json=json,
-        timeout=client.timeout_seconds,
-    )
+    return client.request("PUT", _url(client, path), json=json)
 
 
 def _delete(client: PipeshubClient, path: str = "") -> requests.Response:
-    return requests.delete(
-        _url(client, path),
-        headers=client._headers(),
-        timeout=client.timeout_seconds,
-    )
+    return client.request("DELETE", _url(client, path))
 
 
 def _delete_group(client: PipeshubClient, group_id: str) -> None:
@@ -166,12 +148,8 @@ def _find_user_ids(client: PipeshubClient, min_count: int = 2) -> Optional[list[
                 if len(seen) >= min_count:
                     return list(seen)[:min_count]
 
-    users_resp = requests.get(
-        f"{client.base_url}/api/v1/users",
-        headers=client._headers(),
-        params={"page": 1, "limit": max(min_count, 10)},
-        timeout=client.timeout_seconds,
-    )
+    users_resp = self.client.request("GET", f"{client.base_url}/api/v1/users",
+        params={"page": 1, "limit": max(min_count, 10)})
     if users_resp.status_code == 200:
         for u in users_resp.json().get("users", []):
             uid = str(u.get("id") or u.get("_id") or "")
@@ -188,15 +166,11 @@ def _find_user_ids(client: PipeshubClient, min_count: int = 2) -> Optional[list[
 def _create_test_user(client: PipeshubClient) -> str:
     """Create a disposable user for integration tests; returns ObjectId string."""
     unique = uuid.uuid4().hex[:8]
-    resp = requests.post(
-        f"{client.base_url}/api/v1/users",
-        headers=client._headers(),
+    resp = client.request("POST", f"{client.base_url}/api/v1/users",
         json={
             "fullName": f"RV User Groups Test {unique}",
             "email": f"rv-user-groups-{unique}@test-pipeshub.com",
-        },
-        timeout=client.timeout_seconds,
-    )
+        })
     assert resp.status_code == 201, (
         f"Failed to create test user: {resp.status_code}: {resp.text}"
     )
@@ -208,11 +182,7 @@ def _create_test_user(client: PipeshubClient) -> str:
 
 def _delete_test_user(client: PipeshubClient, user_id: str, label: str = "test user") -> None:
     """Delete a user created for integration tests."""
-    resp = requests.delete(
-        f"{client.base_url}/api/v1/users/{user_id}",
-        headers=client._headers(),
-        timeout=client.timeout_seconds,
-    )
+    resp = self.client.request("DELETE", f"{client.base_url}/api/v1/users/{user_id}")
     assert resp.status_code == 200, (
         f"[{label} cleanup] Expected 200 deleting user {user_id}, "
         f"got {resp.status_code}: {resp.text}"
@@ -274,7 +244,7 @@ class TestUserGroupHealth:
 
     def test_user_groups_health_response_schema(self) -> None:
         """Response must match UserGroupHealthResponse schema."""
-        resp = requests.get(self.url, timeout=self.client.timeout_seconds)
+        resp = self.client.request("GET", self.url, timeout=self.client.timeout_seconds, auth=False)
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -282,7 +252,7 @@ class TestUserGroupHealth:
 
     def test_unsupported_method_returns_4xx(self) -> None:
         """POST to /health is not a registered method — must return 4xx."""
-        resp = requests.post(self.url, timeout=self.client.timeout_seconds)
+        resp = self.client.request("POST", self.url, timeout=self.client.timeout_seconds, auth=False)
         assert resp.status_code >= 400, (
             f"Expected 4xx for unsupported POST method, got {resp.status_code}"
         )
@@ -314,12 +284,8 @@ class TestGetAllUserGroups:
         assert_response_matches_openapi_operation(body, "getAllUserGroups")
 
         # Explicit page + limit — pagination metadata must reflect the requested values.
-        resp = requests.get(
-            _url(self.client),
-            headers=self.client._headers(),
-            params={"page": 1, "limit": 5},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", _url(self.client),
+            params={"page": 1, "limit": 5})
         assert resp.status_code == 200, (
             f"[page=1,limit=5] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -333,12 +299,8 @@ class TestGetAllUserGroups:
         )
 
         # limit=1 — smallest valid page; response still satisfies schema.
-        resp = requests.get(
-            _url(self.client),
-            headers=self.client._headers(),
-            params={"page": 1, "limit": 1},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", _url(self.client),
+            params={"page": 1, "limit": 1})
         assert resp.status_code == 200, (
             f"[limit=1] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -351,12 +313,8 @@ class TestGetAllUserGroups:
         any_group = _find_any_group(self.client)
         if any_group:
             search_term = str(any_group["name"])[:3]
-            resp = requests.get(
-                _url(self.client),
-                headers=self.client._headers(),
-                params={"search": search_term},
-                timeout=self.client.timeout_seconds,
-            )
+            resp = self.client.request("GET", _url(self.client),
+                params={"search": search_term})
             assert resp.status_code == 200, (
                 f"[search] Expected 200, got {resp.status_code}: {resp.text}"
             )
@@ -368,24 +326,16 @@ class TestGetAllUserGroups:
                 )
 
         # page=2 — may return empty groups array if total ≤ limit; schema must still pass.
-        resp = requests.get(
-            _url(self.client),
-            headers=self.client._headers(),
-            params={"page": 2, "limit": 100},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", _url(self.client),
+            params={"page": 2, "limit": 100})
         assert resp.status_code == 200, (
             f"[page=2] Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_openapi_operation(resp.json(), "getAllUserGroups")
 
         # createdAfter — future date typically matches no groups; empty list is valid.
-        resp = requests.get(
-            _url(self.client),
-            headers=self.client._headers(),
-            params={"createdAfter": "2099-01-01"},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", _url(self.client),
+            params={"createdAfter": "2099-01-01"})
         assert resp.status_code == 200, (
             f"[createdAfter] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -394,12 +344,8 @@ class TestGetAllUserGroups:
         assert isinstance(body["groups"], list)
 
         # createdBefore — date before any groups; empty list is valid.
-        resp = requests.get(
-            _url(self.client),
-            headers=self.client._headers(),
-            params={"createdBefore": "1970-01-01"},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", _url(self.client),
+            params={"createdBefore": "1970-01-01"})
         assert resp.status_code == 200, (
             f"[createdBefore] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -408,12 +354,8 @@ class TestGetAllUserGroups:
         assert isinstance(body["groups"], list)
 
         # createdAfter + createdBefore — narrow future window; empty list is valid.
-        resp = requests.get(
-            _url(self.client),
-            headers=self.client._headers(),
-            params={"createdAfter": "2099-06-01", "createdBefore": "2099-06-30"},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", _url(self.client),
+            params={"createdAfter": "2099-06-01", "createdBefore": "2099-06-30"})
         assert resp.status_code == 200, (
             f"[createdAfter+createdBefore] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -422,12 +364,8 @@ class TestGetAllUserGroups:
         assert isinstance(body["groups"], list)
 
         # Wide historical range — may include groups or be empty; schema must still pass.
-        resp = requests.get(
-            _url(self.client),
-            headers=self.client._headers(),
-            params={"createdAfter": "2000-01-01", "createdBefore": "2099-12-31"},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", _url(self.client),
+            params={"createdAfter": "2000-01-01", "createdBefore": "2099-12-31"})
         assert resp.status_code == 200, (
             f"[date range] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -436,7 +374,7 @@ class TestGetAllUserGroups:
     def test_get_all_user_groups_negative_tests(self) -> None:
         """Unauthenticated request must be rejected with 401."""
         # Missing Authorization header — server must reject before querying any groups.
-        resp = requests.get(_url(self.client), timeout=self.client.timeout_seconds)
+        resp = self.client.request("GET", _url(self.client), timeout=self.client.timeout_seconds, auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -478,7 +416,7 @@ class TestGetUserGroupById:
         assert group is not None, "No groups found to test"
 
         # Missing Authorization header — auth check runs before DB lookup.
-        resp = requests.get(_url(self.client, f"/{group['_id']}"), timeout=self.client.timeout_seconds)
+        resp = self.client.request("GET", _url(self.client, f"/{group['_id']}"), timeout=self.client.timeout_seconds, auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -549,11 +487,8 @@ class TestCreateUserGroup:
     def test_create_user_group_negative_tests(self) -> None:
         """401 no auth · 400 missing name · 400 missing type · 400 unknown type · 400 reserved name/type (admin/everyone/standard) · 400 duplicate name."""
         # Missing Authorization header — auth middleware rejects before Zod validation.
-        resp = requests.post(
-            _url(self.client),
-            json={"name": "rv-test-no-auth", "type": "custom"},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("POST", _url(self.client),
+            json={"name": "rv-test-no-auth", "type": "custom"})
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -779,11 +714,8 @@ class TestUpdateUserGroup:
         assert group is not None, "No groups found to test"
 
         # Missing Authorization header.
-        resp = requests.put(
-            _url(self.client, f"/{group['_id']}"),
-            json={"name": "rv-test-no-auth-rename"},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("PUT", _url(self.client, f"/{group['_id']}"),
+            json={"name": "rv-test-no-auth-rename"})
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -899,7 +831,7 @@ class TestDeleteUserGroup:
         assert group is not None, "No groups found to test"
 
         # Missing Authorization header.
-        resp = requests.delete(_url(self.client, f"/{group['_id']}"), timeout=self.client.timeout_seconds)
+        resp = self.client.request("DELETE", _url(self.client, f"/{group['_id']}"), timeout=self.client.timeout_seconds, auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -981,12 +913,8 @@ class TestGetUsersInGroup:
         assert_response_matches_openapi_operation(resp.json(), "getUsersInGroup")
 
         # Explicit page + limit — pagination metadata must reflect requested values.
-        resp = requests.get(
-            _url(self.client, f"/{group['_id']}/users"),
-            headers=self.client._headers(),
-            params={"page": 1, "limit": 5},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", _url(self.client, f"/{group['_id']}/users"),
+            params={"page": 1, "limit": 5})
         assert resp.status_code == 200, (
             f"[limit=5] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -996,12 +924,8 @@ class TestGetUsersInGroup:
         assert len(body["users"]) <= 5
 
         # limit=1 — smallest valid page size.
-        resp = requests.get(
-            _url(self.client, f"/{group['_id']}/users"),
-            headers=self.client._headers(),
-            params={"page": 1, "limit": 1},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", _url(self.client, f"/{group['_id']}/users"),
+            params={"page": 1, "limit": 1})
         assert resp.status_code == 200, (
             f"[limit=1] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -1010,24 +934,16 @@ class TestGetUsersInGroup:
         assert len(body["users"]) <= 1
 
         # search="" empty string — equivalent to no filter; must still return valid schema.
-        resp = requests.get(
-            _url(self.client, f"/{group['_id']}/users"),
-            headers=self.client._headers(),
-            params={"search": ""},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", _url(self.client, f"/{group['_id']}/users"),
+            params={"search": ""})
         assert resp.status_code == 200, (
             f"[search=''] Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_openapi_operation(resp.json(), "getUsersInGroup")
 
         # page=2, limit=100 — may return empty users array; schema still valid.
-        resp = requests.get(
-            _url(self.client, f"/{group['_id']}/users"),
-            headers=self.client._headers(),
-            params={"page": 2, "limit": 100},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", _url(self.client, f"/{group['_id']}/users"),
+            params={"page": 2, "limit": 100})
         assert resp.status_code == 200, (
             f"[page=2] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -1039,7 +955,7 @@ class TestGetUsersInGroup:
         assert group is not None, "No groups found to test"
 
         # Missing Authorization header.
-        resp = requests.get(_url(self.client, f"/{group['_id']}/users"), timeout=self.client.timeout_seconds)
+        resp = self.client.request("GET", _url(self.client, f"/{group['_id']}/users"), timeout=self.client.timeout_seconds, auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -1146,10 +1062,7 @@ class TestGetGroupsForUser:
         user_id = _find_user_id(self.client) or _NONEXISTENT_ID
 
         # Missing Authorization header.
-        resp = requests.get(
-            _url(self.client, f"/users/{user_id}"),
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", _url(self.client, f"/users/{user_id}"), auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -1459,11 +1372,8 @@ class TestAddAndRemoveUsersFromGroups:
     def test_add_users_negative_tests(self) -> None:
         """401 no auth · 400 Zod validation on body."""
         # Missing Authorization header — auth check runs before validation.
-        resp = requests.post(
-            _url(self.client, "/add-users"),
-            json={"userIds": [_NONEXISTENT_ID], "groupIds": [_NONEXISTENT_ID]},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("POST", _url(self.client, "/add-users"),
+            json={"userIds": [_NONEXISTENT_ID], "groupIds": [_NONEXISTENT_ID]})
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -1517,11 +1427,8 @@ class TestAddAndRemoveUsersFromGroups:
     def test_remove_users_negative_tests(self) -> None:
         """401 no auth · 400 Zod validation on body."""
         # Missing Authorization header.
-        resp = requests.post(
-            _url(self.client, "/remove-users"),
-            json={"userIds": [_NONEXISTENT_ID], "groupIds": [_NONEXISTENT_ID]},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("POST", _url(self.client, "/remove-users"),
+            json={"userIds": [_NONEXISTENT_ID], "groupIds": [_NONEXISTENT_ID]})
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -1590,10 +1497,7 @@ class TestGetGroupStatistics:
     def test_get_group_statistics_negative_tests(self) -> None:
         """GET /stats/list without Bearer token must return 401."""
         # Missing Authorization header.
-        resp = requests.get(
-            _url(self.client, "/stats/list"),
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.client.request("GET", _url(self.client, "/stats/list"), auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )

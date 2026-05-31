@@ -239,7 +239,6 @@ def test_rollback_nonexistent_version(sc: StorageClient):
 @pytest.mark.storage
 def test_rollback_without_note(sc: StorageClient):
     """Test 32: POST /rollBack without note field → 400."""
-    import requests as req_lib
 
     resp = sc.upload(
         file_content=b"versioned content",
@@ -253,11 +252,10 @@ def test_rollback_without_note(sc: StorageClient):
     # Upload v1 so there's something to roll back to
     sc.upload_next_version(doc_id, b"v1 content", "rb_nonote.txt")
 
-    rb_resp = req_lib.post(
+    rb_resp = sc._c.request(
+        "POST",
         sc._url(f"/{doc_id}/rollBack"),
-        headers=sc._json_headers(),
         json={"version": 0},  # missing 'note' field
-        timeout=sc._c.timeout_seconds,
     )
     assert rb_resp.status_code == 400, (
         f"Expected 400 without note, got {rb_resp.status_code}: {rb_resp.text}"

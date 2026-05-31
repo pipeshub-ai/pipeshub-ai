@@ -28,7 +28,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import requests
 
 _THIS_DIR = Path(__file__).resolve().parent
 _ROOT_DIR = _THIS_DIR.parent
@@ -58,32 +57,18 @@ class UserClient:
     def __init__(self, client: PipeshubClient) -> None:
         self._client = client
 
-    def _headers(self, content_type: str = "application/json") -> dict[str, str]:
-        self._client._ensure_access_token()
-        headers: dict[str, str] = {
-            "Authorization": f"Bearer {self._client._access_token}",
-        }
-        if content_type:
-            headers["Content-Type"] = content_type
-        return headers
-
     def _url(self, path: str) -> str:
         return self._client._url(path)
 
     def get_org(self) -> dict[str, Any]:
-        resp = requests.get(
-            self._url(f"{self.ORG_BASE}/"),
-            headers=self._headers(),
-            timeout=self._client.timeout_seconds,
-        )
+        resp = self._client.request("GET", self._url(f"{self.ORG_BASE}/"))
         return self._client._handle_response(resp)
 
     def update_org(self, registered_name: str) -> dict[str, Any]:
-        resp = requests.patch(
+        resp = self._client.request(
+            "PATCH",
             self._url(f"{self.ORG_BASE}/"),
-            headers=self._headers(),
             json={"registeredName": registered_name},
-            timeout=self._client.timeout_seconds,
         )
         return self._client._handle_response(resp)
 
@@ -99,47 +84,33 @@ class UserClient:
         }
         if designation:
             body["designation"] = designation
-        resp = requests.post(
+        resp = self._client.request(
+            "POST",
             self._url(f"{self.USERS_BASE}/"),
-            headers=self._headers(),
             json=body,
-            timeout=self._client.timeout_seconds,
         )
         data = self._client._handle_response(resp)
         logger.info("Add user response: %s", data)
         return data
 
     def get_user(self, user_id: str) -> dict[str, Any]:
-        resp = requests.get(
-            self._url(f"{self.USERS_BASE}/{user_id}"),
-            headers=self._headers(),
-            timeout=self._client.timeout_seconds,
-        )
+        resp = self._client.request("GET", self._url(f"{self.USERS_BASE}/{user_id}"))
         return self._client._handle_response(resp)
 
     def update_user(self, user_id: str, **fields: Any) -> dict[str, Any]:
-        resp = requests.put(
+        resp = self._client.request(
+            "PUT",
             self._url(f"{self.USERS_BASE}/{user_id}"),
-            headers=self._headers(),
             json=fields,
-            timeout=self._client.timeout_seconds,
         )
         return self._client._handle_response(resp)
 
     def delete_user(self, user_id: str) -> dict[str, Any]:
-        resp = requests.delete(
-            self._url(f"{self.USERS_BASE}/{user_id}"),
-            headers=self._headers(),
-            timeout=self._client.timeout_seconds,
-        )
+        resp = self._client.request("DELETE", self._url(f"{self.USERS_BASE}/{user_id}"))
         return self._client._handle_response(resp)
 
     def list_users(self) -> dict[str, Any]:
-        resp = requests.get(
-            self._url(f"{self.USERS_BASE}/"),
-            headers=self._headers(),
-            timeout=self._client.timeout_seconds,
-        )
+        resp = self._client.request("GET", self._url(f"{self.USERS_BASE}/"))
         return self._client._handle_response(resp)
 
 
@@ -295,10 +266,8 @@ class TestUserFullPipeline:
             logger.info("Stage 5 (delete): user %s deleted", user_id)
 
             time.sleep(2)
-            resp = requests.get(
-                user_client._url(f"{user_client.USERS_BASE}/{user_id}"),
-                headers=user_client._headers(),
-                timeout=user_client._client.timeout_seconds,
+            resp = user_client._client.request(
+                "GET", user_client._url(f"{user_client.USERS_BASE}/{user_id}")
             )
             if resp.status_code >= 400:
                 logger.info("Stage 5 (API): user returns HTTP %d after delete", resp.status_code)
