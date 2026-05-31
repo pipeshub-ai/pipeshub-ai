@@ -8,6 +8,7 @@ import { InfoBanner } from './info-banner';
 import { useOnboardingStore } from '../store';
 import { getStorageConfig, saveStorageConfig } from '../api';
 import { extractApiErrorMessage } from '@/lib/api/api-error';
+import { extractStorageSaveErrorMessage } from '../utils/storage-save-error';
 import { toast } from '@/lib/store/toast-store';
 import type { StorageFormData, StorageProviderType, OnboardingStepId } from '../types';
 
@@ -47,29 +48,15 @@ export function StepStorage({
   const [showSecret, setShowSecret] = useState(false);
   const [showAccountKey, setShowAccountKey] = useState(false);
   const [loadingConfig, setLoadingConfig] = useState(true);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const isDirtyRef = useRef(false);
 
-  // Mark step as pre-completed when GET data is available (and user hasn't edited)
+  // Mark step as pre-completed only for local storage (S3 requires successful save + health check).
   useEffect(() => {
-    if (!loadingConfig && !isDirtyRef.current) {
-      const s3Complete =
-        form.providerType === 's3' &&
-        (form.s3AccessKeyId?.trim() ?? '') !== '' &&
-        (form.s3SecretAccessKey?.trim() ?? '') !== '' &&
-        (form.s3Region?.trim() ?? '') !== '' &&
-        (form.s3BucketName?.trim() ?? '') !== '';
-      const azureComplete =
-        form.providerType === 'azureBlob' &&
-        (form.accountName?.trim() ?? '') !== '' &&
-        (form.accountKey?.trim() ?? '') !== '' &&
-        (form.containerName?.trim() ?? '') !== '';
-      const preComplete =
-        form.providerType === 'local' || s3Complete || azureComplete;
-      if (preComplete) {
-        markStepCompleted('storage');
-      }
+    if (!loadingConfig && !isDirtyRef.current && form.providerType === 'local') {
+      markStepCompleted('storage');
     }
-  }, [form, loadingConfig]);
+  }, [form.providerType, loadingConfig, markStepCompleted]);
 
   useEffect(() => {
     getStorageConfig()
@@ -96,6 +83,7 @@ export function StepStorage({
 
   const handleChange = <K extends keyof StorageFormData>(field: K, value: StorageFormData[K]) => {
     isDirtyRef.current = true;
+    setSaveError(null);
     unmarkStepCompleted('storage');
     setForm((prev) => ({ ...prev, [field]: value }));
   };
@@ -103,6 +91,7 @@ export function StepStorage({
   const handleSubmit = async () => {
     setSubmitting(true);
     setSubmitStatus('loading');
+    setSaveError(null);
     setStorage(form);
 
     try {
@@ -117,11 +106,15 @@ export function StepStorage({
       onSuccess(null);
     } catch (err) {
       setSubmitStatus('error');
+      unmarkStepCompleted('storage');
       const apiErr =
         err instanceof AxiosError
-          ? extractApiErrorMessage(err.response?.data)
+          ? extractStorageSaveErrorMessage(err.response?.data) ??
+            extractApiErrorMessage(err.response?.data)
           : null;
-      toast.error(apiErr ?? t('onboarding.stepStorage.saveErrorFallback'));
+      const message = apiErr ?? t('onboarding.stepStorage.saveErrorFallback');
+      setSaveError(message);
+      toast.error(message);
     } finally {
       setSubmitting(false);
     }
@@ -206,6 +199,12 @@ export function StepStorage({
       <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px' }}>
         <Flex direction="column" gap="6">
         <InfoBanner message={t('onboarding.stepStorage.infoBanner')} />
+
+        {saveError && (
+          <Text size="2" style={{ color: 'var(--red-11)' }}>
+            {saveError}
+          </Text>
+        )}
 
         {/* Provider Type */}
         <Flex direction="column" gap="1">
