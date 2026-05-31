@@ -3457,6 +3457,7 @@ components:
 
     Filters:
       type: object
+      additionalProperties: false
       description: |
         App connector instance ids and knowledge-base / record-group ids that narrow retrieval
         for a turn. For **org assistant** chat streams, send explicit `apps` / `kb` lists.
@@ -3468,14 +3469,18 @@ components:
         apps:
           type: array
           items:
-            type: string
-            format: uuid
+            oneOf:
+              - type: string
+                format: uuid
+              - type: string
           description: Filter by application connector instance IDs
         kb:
           type: array
           items:
-            type: string
-            format: uuid
+            oneOf:
+              - type: string
+                format: uuid
+              - type: string
           description: Filter by knowledge base IDs
 
     AppliedFilterNode:
@@ -3498,6 +3503,7 @@ components:
 
     AppliedFilters:
       type: object
+      additionalProperties: false
       description: |
         Rich filter state selected by the user, used for display and persistence only.
         This mirrors the active selection shown in the UI and is distinct from the
@@ -3516,6 +3522,7 @@ components:
 
     ChatAttachmentRef:
       type: object
+      additionalProperties: false
       description: |
         Reference to an attachment produced by `POST /conversations/attachments/upload`
         (or the equivalent agent route). Include in create/stream/message bodies
@@ -3695,14 +3702,6 @@ components:
           description: |
             Optional record ids to include as context for this turn. Each id
             must be a 24-character MongoDB ObjectId.
-        departments:
-          type: array
-          items:
-            type: string
-            format: objectId
-          description: |
-            Optional department ids used to scope retrieval. Each id must be a
-            24-character MongoDB ObjectId.
         filters:
           allOf:
             - $ref: '#/components/schemas/Filters'
@@ -3747,10 +3746,27 @@ components:
           type: string
           minLength: 1
           description: Provider model name (the underlying LLM identifier).
+        modelProvider:
+          type: string
+          minLength: 1
+          description: |
+            Model provider identifier recorded on the saved conversation
+            metadata for this turn.
         modelFriendlyName:
           type: string
           minLength: 1
           description: Friendly UI label for the selected model.
+        quickMode:
+          type: boolean
+          description: |
+            Optional low-latency execution hint forwarded to the agent backend.
+            When `true`, the backend may favor faster responses over depth.
+        previousConversations:
+          type: array
+          items: {}
+          description: |
+            Optional prior conversation turns forwarded to the agent backend as
+            additional context for this streamed first turn.
         timezone:
           type: string
           minLength: 1
@@ -3776,8 +3792,11 @@ components:
         query: what are some latest tech news?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
         modelName: gpt-5.4-mini
+        modelProvider: openai
         modelFriendlyName: GPT 5.4 mini
+        quickMode: false
         chatMode: auto
+        previousConversations: []
         timezone: Asia/Kolkata
         currentTime: "2026-05-19T12:58:01+05:30"
         tools: []
@@ -4048,6 +4067,12 @@ components:
           type: string
           minLength: 1
           description: Provider model name (the underlying LLM identifier).
+        modelProvider:
+          type: string
+          minLength: 1
+          description: |
+            Model provider identifier recorded on the saved conversation
+            metadata for this turn.
         modelFriendlyName:
           type: string
           minLength: 1

@@ -283,6 +283,8 @@ const agentChatModeSchema = z
 
 const agentAddMessageBodySchema = addMessageBodySchema.extend({
   chatMode: agentChatModeSchema,
+  callerDisplayName: z.string().trim().min(1).optional(),
+  callerEmail: z.string().trim().min(1).optional(),
 });
 
 const agentStreamCreateBodySchema = enterpriseSearchCreateBodySchema.extend({
