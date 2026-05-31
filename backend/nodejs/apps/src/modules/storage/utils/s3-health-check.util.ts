@@ -90,7 +90,7 @@ export async function validateS3Capabilities(
   const s3 = new S3({
     accessKeyId,
     secretAccessKey,
-    region: region.trim().toLowerCase(),
+    region,
   });
 
   try {
