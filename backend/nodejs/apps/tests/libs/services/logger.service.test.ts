@@ -35,7 +35,7 @@ describe('Logger', () => {
     env.restore();
     sinon.restore();
     (Logger as any).instance = null;
-    fs.rmSync(sharedTmpDir, { recursive: true, force: true });
+    try { fs.rmSync(sharedTmpDir, { recursive: true, force: true }); } catch {}
   });
 
   describe('getLogLevel', () => {
@@ -291,7 +291,7 @@ describe('Logger', () => {
     });
 
     afterEach(() => {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
     });
 
     function getTransports(): winston.transport[] {
@@ -372,7 +372,7 @@ describe('Logger', () => {
     });
 
     afterEach(() => {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
     });
 
     it('should create the log directory from LOG_DIR', () => {
@@ -405,6 +405,25 @@ describe('Logger', () => {
       new Logger({ service: 'default-dir-test' });
       expect(fs.existsSync(DEFAULT_LOG_DIR)).to.be.true;
       fs.rmSync(DEFAULT_LOG_DIR, { recursive: true, force: true });
+    });
+
+    it('should fall back to console-only when log directory cannot be created', () => {
+      const mkdirStub = sinon.stub(fs, 'mkdirSync').throws(new Error('EACCES'));
+      const warnStub = sinon.stub(console, 'warn');
+      try {
+        const logger = new Logger({ service: 'fallback-test' });
+        const transports = (logger as any).logger.transports;
+        const fileTransports = transports.filter(
+          (t: any) => t instanceof winston.transports.File
+        );
+        expect(fileTransports).to.have.length(0);
+        expect(transports).to.have.length(1);
+        expect(transports[0]).to.be.instanceOf(winston.transports.Console);
+        expect(warnStub.calledOnce).to.be.true;
+      } finally {
+        mkdirStub.restore();
+        warnStub.restore();
+      }
     });
   });
 });

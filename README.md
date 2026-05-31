@@ -224,19 +224,26 @@ Want to join our community of developers? Please check out our [Contributing Gui
 
 ## FAQ
 
-### What is PipesHub?
+<details>
+<summary><strong>What is PipesHub?</strong></summary>
 
 PipesHub is an open-source, self-hosted AI-native execution layer that connects enterprise knowledge, delivers explainable search with citations, and automates workflows across your systems. It provides a unified context layer for search, Q&A, deep research, web search, and AI agents.
+</details>
 
-### How is PipesHub different from other workplace AI tools?
+<details>
+<summary><strong>How is PipesHub different from other workplace AI tools?</strong></summary>
 
 PipesHub is fully open-source (Apache 2.0) and self-hostable — your data never leaves your infrastructure. It features permission-aware search that enforces source-level access controls, and delivers explainable answers with precise block citations to original documents.
+</details>
 
-### What connectors does PipesHub support?
+<details>
+<summary><strong>What connectors does PipesHub support?</strong></summary>
 
 PipesHub has 30+ enterprise connectors with real-time and scheduled indexing. It supports file formats like PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, images, audio, and video.
+</details>
 
-### How do I deploy PipesHub?
+<details>
+<summary><strong>How do I deploy PipesHub?</strong></summary>
 
 ```bash
 # Clone the repository
@@ -249,46 +256,82 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
 ```
 
 Note: Use HTTPS for cloud deployments. HTTP may cause frontend security blocks.
+</details>
 
-### What LLM providers does PipesHub support?
+<details>
+<summary><strong>What LLM providers does PipesHub support?</strong></summary>
 
 PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models. The tech stack includes LangChain and LangGraph for LLM pipelines and workflows.
+</details>
 
-### What is the Knowledge Graph Retrieval feature?
+<details>
+<summary><strong>What is the Knowledge Graph Retrieval feature?</strong></summary>
 
 PipesHub uses graph-backed retrieval that captures relationships across enterprise data. It uses Neo4j or ArangoDB as graph databases, combined with Qdrant for vector similarity search.
+</details>
 
-### Does PipesHub have an MCP server?
+<details>
+<summary><strong>Does PipesHub have an MCP server?</strong></summary>
 
 Yes. PipesHub provides an MCP server for integration with any MCP-compatible client. Repository: [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/).
+</details>
 
-### What SDKs are available?
+<details>
+<summary><strong>What SDKs are available?</strong></summary>
 
 PipesHub provides SDKs for:
 - **Python**: [pipeshub-ai/pipeshub-sdk-python](https://github.com/pipeshub-ai/pipeshub-sdk-python)
 - **TypeScript**: [pipeshub-ai/pipeshub-sdk-typescript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript)
 - **Go**: [pipeshub-ai/pipeshub-sdk-go](https://github.com/pipeshub-ai/pipeshub-sdk-go)
+</details>
 
-### Can I build AI agents without coding?
+<details>
+<summary><strong>Can I build AI agents without coding?</strong></summary>
 
 Yes. PipesHub has a no-code agent builder. You can build agents visually and execute actions across enterprise tools without writing code.
+</details>
 
-### What is the multimodal support?
+<details>
+<summary><strong>What is the multimodal support?</strong></summary>
 
 PipesHub supports image, diagram, and scanned-file understanding, plus voice-based interaction. It uses Docling and PyMuPDF for document parsing, and Azure Document Intelligence or a multimodal LLM (VLM) for scanned PDF OCR.
+</details>
 
-### How do I troubleshoot deployment issues?
+<details>
+<summary><strong>Where are logs stored in Docker?</strong></summary>
+
+**Console logs (stdout):** Visible via `docker compose logs` or `docker logs pipeshub-ai`. All services (Node.js and Python) always write to stdout regardless of `NODE_ENV`.
+
+**File logs:** Written to `/data/pipeshub/logs/` inside the container, which is backed by the `pipeshub_data` Docker volume. These persist across container restarts and recreations.
+
+```bash
+# View live console logs
+docker compose -f docker-compose.prod.yml -p pipeshub-ai logs -f pipeshub-ai
+
+# Access file logs inside the container
+docker exec pipeshub-ai ls /data/pipeshub/logs/
+docker exec pipeshub-ai cat /data/pipeshub/logs/combined.log
+```
+
+File logs are automatically rotated at 20 MB per file to prevent unbounded disk growth. Override the log directory by setting the `LOG_DIR` environment variable.
+</details>
+
+<details>
+<summary><strong>How do I troubleshoot deployment issues?</strong></summary>
 
 1. Ensure HTTPS is configured for cloud deployments
 2. Check Docker compose logs: `docker compose logs`
 3. Verify environment variables in env.template
 4. Consult [docs.pipeshub.com](https://docs.pipeshub.com/) for detailed guides
+</details>
 
-### Where can I get help?
+<details>
+<summary><strong>Where can I get help?</strong></summary>
 
 - [Discord](https://discord.com/invite/K5RskzJBm2) — Ask questions and get help
 - [GitHub Issues](https://github.com/pipeshub-ai/pipeshub-ai/issues) — Report bugs or request features
 - [PipesHub Docs](https://docs.pipeshub.com/) — Read the documentation
+</details>
 
 
 <hr>

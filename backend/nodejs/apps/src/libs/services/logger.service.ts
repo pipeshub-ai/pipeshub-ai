@@ -37,9 +37,8 @@ const customLevels = {
 
 winston.addColors(customLevels.colors);
 
-export function getLogLevel(): LogLevel {
-  const { logLevel } = loadLoggingEnv();
-  const level = logLevel.toLowerCase();
+export function getLogLevel(overrideLevel?: string): LogLevel {
+  const level = (overrideLevel ?? loadLoggingEnv().logLevel).toLowerCase();
   if (Object.values(LogLevel).includes(level as LogLevel)) {
     return level as LogLevel;
   }
@@ -102,15 +101,20 @@ export class Logger {
       })
     );
 
-    const { logDir } = loadLoggingEnv();
-    fs.mkdirSync(logDir, { recursive: true });
+    const { logDir, logLevel } = loadLoggingEnv();
 
-    return winston.createLogger({
-      levels: customLevels.levels,
-      level: config?.level || getLogLevel(),
-      format: logFormat,
-      defaultMeta: this.defaultMeta,
-      transports: [
+    const transports: winston.transport[] = [
+      new winston.transports.Console({
+        format: winston.format.combine(
+          ...(process.stdout.isTTY ? [winston.format.colorize()] : []),
+          logFormat
+        )
+      }),
+    ];
+
+    try {
+      fs.mkdirSync(logDir, { recursive: true });
+      transports.push(
         new winston.transports.File({
           filename: path.join(logDir, ERROR_LOG_FILENAME),
           level: LogLevel.Error,
@@ -124,13 +128,17 @@ export class Logger {
           maxsize: LOG_FILE_MAX_SIZE,
           maxFiles: COMBINED_LOG_MAX_FILES,
         }),
-        new winston.transports.Console({
-          format: winston.format.combine(
-            winston.format.colorize(),
-            logFormat
-          )
-        }),
-      ],
+      );
+    } catch {
+      console.warn(`Failed to create log directory "${logDir}", falling back to console-only logging`);
+    }
+
+    return winston.createLogger({
+      levels: customLevels.levels,
+      level: config?.level || getLogLevel(logLevel),
+      format: logFormat,
+      defaultMeta: this.defaultMeta,
+      transports,
     });
   }
 

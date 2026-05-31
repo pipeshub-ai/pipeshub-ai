@@ -1,13 +1,20 @@
 """Unit tests for app.utils.logger module."""
 
 import logging
+import logging.handlers
 import os
 import sys
+import tempfile
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.utils.logger import ColoredFormatter, create_logger
+from app.utils.logger import (
+    ColoredFormatter,
+    create_logger,
+    LOG_FILE_MAX_BYTES,
+    LOG_FILE_BACKUP_COUNT,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +112,7 @@ class TestCreateLogger:
             logger = create_logger("test_service_handlers")
         assert len(logger.handlers) >= 2  # file + console
         handler_types = [type(h) for h in logger.handlers]
-        assert logging.FileHandler in handler_types
+        assert logging.handlers.RotatingFileHandler in handler_types
         assert logging.StreamHandler in handler_types
         logger.handlers.clear()
 
@@ -162,14 +169,19 @@ class TestCreateLogger:
     def test_file_handler_uses_utf8(self):
         with patch.dict(os.environ, {}, clear=False):
             logger = create_logger("test_service_utf8")
-        file_handlers = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
+        file_handlers = [h for h in logger.handlers if isinstance(h, logging.handlers.RotatingFileHandler)]
         assert len(file_handlers) >= 1
         assert file_handlers[0].encoding == "utf-8"
         logger.handlers.clear()
 
-    def test_console_handler_uses_colored_formatter(self):
-        with patch.dict(os.environ, {}, clear=False):
-            logger = create_logger("test_service_colored")
+    def test_console_handler_uses_colored_formatter_when_tty(self):
+        existing = logging.getLogger("test_service_colored_tty")
+        existing.handlers.clear()
+        mock_stdout = MagicMock()
+        mock_stdout.isatty.return_value = True
+        with patch.dict(os.environ, {}, clear=False), \
+             patch.object(sys, "stdout", mock_stdout):
+            logger = create_logger("test_service_colored_tty")
         stream_handlers = [
             h for h in logger.handlers
             if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
@@ -178,13 +190,111 @@ class TestCreateLogger:
         assert isinstance(stream_handlers[0].formatter, ColoredFormatter)
         logger.handlers.clear()
 
+    def test_console_handler_uses_plain_formatter_when_not_tty(self):
+        existing = logging.getLogger("test_service_plain")
+        existing.handlers.clear()
+        mock_stdout = MagicMock()
+        mock_stdout.isatty.return_value = False
+        with patch.dict(os.environ, {}, clear=False), \
+             patch.object(sys, "stdout", mock_stdout):
+            logger = create_logger("test_service_plain")
+        stream_handlers = [
+            h for h in logger.handlers
+            if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+        ]
+        assert len(stream_handlers) >= 1
+        assert not isinstance(stream_handlers[0].formatter, ColoredFormatter)
+        logger.handlers.clear()
+
     def test_file_handler_path(self):
         with patch.dict(os.environ, {}, clear=False):
             logger = create_logger("test_service_path")
-        file_handlers = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
+        file_handlers = [h for h in logger.handlers if isinstance(h, logging.handlers.RotatingFileHandler)]
         assert len(file_handlers) >= 1
         assert "test_service_path.log" in file_handlers[0].baseFilename
         logger.handlers.clear()
+
+
+# ---------------------------------------------------------------------------
+# Rotation config
+# ---------------------------------------------------------------------------
+class TestRotationConfig:
+    """Tests for RotatingFileHandler configuration."""
+
+    def test_file_handler_is_rotating(self):
+        existing = logging.getLogger("test_service_rotating")
+        existing.handlers.clear()
+        with patch.dict(os.environ, {}, clear=False):
+            logger = create_logger("test_service_rotating")
+        file_handlers = [h for h in logger.handlers if isinstance(h, logging.handlers.RotatingFileHandler)]
+        assert len(file_handlers) >= 1
+        logger.handlers.clear()
+
+    def test_file_handler_maxbytes(self):
+        existing = logging.getLogger("test_service_maxbytes")
+        existing.handlers.clear()
+        with patch.dict(os.environ, {}, clear=False):
+            logger = create_logger("test_service_maxbytes")
+        file_handlers = [h for h in logger.handlers if isinstance(h, logging.handlers.RotatingFileHandler)]
+        assert file_handlers[0].maxBytes == LOG_FILE_MAX_BYTES
+        logger.handlers.clear()
+
+    def test_file_handler_backup_count(self):
+        existing = logging.getLogger("test_service_backups")
+        existing.handlers.clear()
+        with patch.dict(os.environ, {}, clear=False):
+            logger = create_logger("test_service_backups")
+        file_handlers = [h for h in logger.handlers if isinstance(h, logging.handlers.RotatingFileHandler)]
+        assert file_handlers[0].backupCount == LOG_FILE_BACKUP_COUNT
+        logger.handlers.clear()
+
+
+# ---------------------------------------------------------------------------
+# Log directory fallback
+# ---------------------------------------------------------------------------
+class TestLogDirFallback:
+    """Tests for graceful fallback when log directory cannot be created."""
+
+    def test_fallback_to_console_only(self):
+        import importlib
+        import app.utils.logger as logger_mod
+
+        with patch("os.makedirs", side_effect=OSError("EACCES")):
+            importlib.reload(logger_mod)
+
+        existing = logging.getLogger("test_service_fallback")
+        existing.handlers.clear()
+        logger = logger_mod.create_logger("test_service_fallback")
+        file_handlers = [h for h in logger.handlers if isinstance(h, logging.handlers.RotatingFileHandler)]
+        assert len(file_handlers) == 0
+        assert len(logger.handlers) == 1
+        assert isinstance(logger.handlers[0], logging.StreamHandler)
+        logger.handlers.clear()
+
+        # Restore normal state
+        importlib.reload(logger_mod)
+
+    def test_custom_log_dir_from_env(self):
+        import importlib
+        import app.utils.logger as logger_mod
+
+        tmp_dir = tempfile.mkdtemp(prefix="logger-test-")
+        try:
+            with patch.dict(os.environ, {"LOG_DIR": tmp_dir}, clear=False):
+                importlib.reload(logger_mod)
+            assert logger_mod.LOG_DIR == tmp_dir
+
+            existing = logging.getLogger("test_service_custom_dir")
+            existing.handlers.clear()
+            logger = logger_mod.create_logger("test_service_custom_dir")
+            file_handlers = [h for h in logger.handlers if isinstance(h, logging.handlers.RotatingFileHandler)]
+            assert len(file_handlers) >= 1
+            assert tmp_dir in file_handlers[0].baseFilename
+            logger.handlers.clear()
+        finally:
+            import shutil
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            importlib.reload(logger_mod)
 
 
 # ---------------------------------------------------------------------------

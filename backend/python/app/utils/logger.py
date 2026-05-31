@@ -1,10 +1,22 @@
 import logging
+import logging.handlers
 import os
 import sys
 
+LOG_DIR = os.getenv("LOG_DIR", os.path.join(os.getcwd(), "logs"))
+LOG_FILE_MAX_BYTES = 20 * 1024 * 1024
+LOG_FILE_BACKUP_COUNT = 10
+LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s"
+
+_log_dir_available = False
+try:
+    os.makedirs(LOG_DIR, exist_ok=True)
+    _log_dir_available = True
+except OSError:
+    print(f'WARNING: Failed to create log directory "{LOG_DIR}", falling back to console-only logging', file=sys.stderr)
+
 
 class ColoredFormatter(logging.Formatter):
-    """Formatter that adds colors for WARNING (yellow) and ERROR (red) in console output."""
 
     YELLOW = "\033[33m"
     RED = "\033[31m"
@@ -23,9 +35,6 @@ class ColoredFormatter(logging.Formatter):
             return f"{color}{formatted}{self.RESET}"
         return formatted
 
-# Ensure log directory exists
-log_dir = "logs"
-os.makedirs(log_dir, exist_ok=True)
 
 # Force UTF-8 for stdout/stderr in Windows
 if sys.platform == "win32":
@@ -39,7 +48,7 @@ if sys.platform == "win32":
 # Configure base logging settings
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s",
+    format=LOG_FORMAT,
     encoding="utf-8",
 )
 
@@ -47,14 +56,10 @@ logging.basicConfig(
 data_store = os.getenv("DATA_STORE", "arangodb").lower()
 if data_store == "neo4j":
     neo4j_notifications_logger = logging.getLogger("neo4j.notifications")
-    neo4j_notifications_logger.setLevel(logging.ERROR)  # Only show errors, suppress warnings
+    neo4j_notifications_logger.setLevel(logging.ERROR)
 
 
 def create_logger(service_name: str) -> logging.Logger:
-    """
-    Create a logger for a specific service with file and console handlers
-    """
-    # Create logger
     logging_level = os.getenv("LOG_LEVEL", "info").lower()
     logger = logging.getLogger(service_name)
     if logging_level == "debug":
@@ -62,24 +67,23 @@ def create_logger(service_name: str) -> logging.Logger:
     else:
         logger.setLevel(logging.INFO)
 
-    # Prevent DUPLICATE handlers
     if not logger.handlers:
-        # Enhanced format with filename and line number
-        log_format = "%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s"
+        if _log_dir_available:
+            file_handler = logging.handlers.RotatingFileHandler(
+                os.path.join(LOG_DIR, f"{service_name}.log"),
+                maxBytes=LOG_FILE_MAX_BYTES,
+                backupCount=LOG_FILE_BACKUP_COUNT,
+                encoding="utf-8",
+            )
+            file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+            logger.addHandler(file_handler)
 
-        # File handler with enhanced format
-        file_handler = logging.FileHandler(
-            os.path.join(log_dir, f"{service_name}.log"),
-            encoding="utf-8",  # Explicitly set encoding here too
-        )
-        file_handler.setFormatter(logging.Formatter(log_format))
-
-        # Console handler with colored format
         console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(ColoredFormatter(log_format))
+        if sys.stdout.isatty():
+            console_handler.setFormatter(ColoredFormatter(LOG_FORMAT))
+        else:
+            console_handler.setFormatter(logging.Formatter(LOG_FORMAT))
 
-        # Add handlers
-        logger.addHandler(file_handler)
         logger.addHandler(console_handler)
         logger.propagate = False
 
