@@ -118,7 +118,6 @@ class TestAgentConversationTitleUpdate:
         self,
         pipeshub_client: PipeshubClient,
         agent_session: dict[str, Any],
-        reasoning_multimodal_llm_model,
     ) -> None:
         self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
@@ -1324,6 +1323,7 @@ class TestAgentConversationRegenerate:
         self,
         pipeshub_client: PipeshubClient,
         agent_session: dict[str, Any],
+        reasoning_multimodal_llm_model,
     ) -> None:
         self.client = pipeshub_client
         self.base_url = pipeshub_client.base_url
