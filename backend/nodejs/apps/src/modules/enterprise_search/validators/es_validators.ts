@@ -281,13 +281,17 @@ const agentAddMessageBodySchema = addMessageBodySchema.extend({
   chatMode: agentChatModeSchema,
 });
 
+const agentStreamCreateBodySchema = enterpriseSearchCreateBodySchema.extend({
+  chatMode: agentChatModeSchema,
+});
+
 // ---------------------------------------------------------------------------
 // Agent stream: create + add message
 // ---------------------------------------------------------------------------
 
 export const agentStreamCreateSchema = z.object({
   params: z.object(agentKeyParam),
-  body: enterpriseSearchCreateBodySchema,
+  body: agentStreamCreateBodySchema,
 });
 
 export const agentAddMessageParamsSchema = z.object({

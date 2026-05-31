@@ -411,6 +411,30 @@ describe('enterprise_search/validators/es_validators', () => {
     })
   })
 
+  describe('agentStreamCreateSchema — chatMode', () => {
+    const validParams = { agentKey: 'slack-bot-agent' }
+
+    for (const chatMode of AGENT_CHAT_MODES) {
+      it(`should accept chatMode ${chatMode}`, () => {
+        const data = {
+          params: validParams,
+          body: { query: 'hello', chatMode },
+        }
+        const result = agentStreamCreateSchema.safeParse(data)
+        expect(result.success, `chatMode ${chatMode} should be accepted`).to.be.true
+      })
+    }
+
+    it('should reject assistant-style chatMode internal_search', () => {
+      const data = {
+        params: validParams,
+        body: { query: 'hello', chatMode: 'internal_search' },
+      }
+      const result = agentStreamCreateSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+  })
+
   describe('agentAddMessageParamsSchema — chatMode', () => {
     const validParams = {
       agentKey: 'slack-bot-agent',
