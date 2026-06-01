@@ -282,17 +282,11 @@ const agentChatModeSchema = z
   .optional();
 
 const agentAddMessageBodySchema = addMessageBodySchema.extend({
-  chatMode: agentChatModeSchema,
-  callerDisplayName: z.string().trim().min(1).optional(),
-  callerEmail: z.string().trim().min(1).optional(),
+  chatMode: agentChatModeSchema 
 });
 
 const agentStreamCreateBodySchema = enterpriseSearchCreateBodySchema.extend({
-  chatMode: agentChatModeSchema,
-  quickMode: z.boolean().optional(),
-  previousConversations: z.array(z.unknown()).optional(),
-  callerDisplayName: z.string().trim().min(1).optional(),
-  callerEmail: z.string().trim().min(1).optional(),
+  chatMode: agentChatModeSchema, // TODO: remove this
 });
 
 // ---------------------------------------------------------------------------

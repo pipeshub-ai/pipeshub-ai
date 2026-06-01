@@ -3469,19 +3469,21 @@ components:
         apps:
           type: array
           items:
-            oneOf:
-              - type: string
-                format: uuid
-              - type: string
-          description: Filter by application connector instance IDs
+            type: string
+          description: |
+            Connector instance ids to scope retrieval for this turn. Each element
+            must be a UUID (connector instance id, record-group id, etc.) or the
+            org knowledge-base collection sentinel `knowledgeBase_<orgId>`
+            (pattern `knowledgeBase_[a-zA-Z0-9_-]+`). Gateway validation matches
+            Zod `appOrKbIdSchema`.
         kb:
           type: array
           items:
-            oneOf:
-              - type: string
-                format: uuid
-              - type: string
-          description: Filter by knowledge base IDs
+            type: string
+          description: |
+            Knowledge-base / record-group ids to scope retrieval for this turn.
+            Each element uses the same accepted formats as `apps`: a UUID or
+            `knowledgeBase_<orgId>` (pattern `knowledgeBase_[a-zA-Z0-9_-]+`).
 
     AppliedFilterNode:
       type: object
