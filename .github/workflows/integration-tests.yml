@@ -558,31 +558,31 @@ jobs:
                   ],
                   "rows": [
                     [
-                      { "type": "raw_text", "text": "Suite"                  },
-                      { "type": "raw_text", "text": "Total"                  },
-                      { "type": "raw_text", "text": "Passed :white_check_mark:" },
-                      { "type": "raw_text", "text": "Failed :x:"             },
-                      { "type": "raw_text", "text": "Errors :warning:"       },
-                      { "type": "raw_text", "text": "Skipped :fast_forward:" },
-                      { "type": "raw_text", "text": "Pass Rate"              }
+                      { "type": "raw_text", "text": "Suite"     },
+                      { "type": "raw_text", "text": "Total"     },
+                      { "type": "raw_text", "text": "Passed"    },
+                      { "type": "raw_text", "text": "Failed"    },
+                      { "type": "raw_text", "text": "Errors"    },
+                      { "type": "raw_text", "text": "Skipped"   },
+                      { "type": "raw_text", "text": "Pass Rate" }
                     ],
                     [
-                      { "type": "raw_text",   "text":  "Backend (pytest)"                                           },
-                      { "type": "raw_number", "value": ${{ steps.test-results.outputs.TOTAL_TESTS    }}             },
-                      { "type": "raw_number", "value": ${{ steps.test-results.outputs.TOTAL_PASSED   }}             },
-                      { "type": "raw_number", "value": ${{ steps.test-results.outputs.TOTAL_FAILED   }}             },
-                      { "type": "raw_number", "value": ${{ steps.test-results.outputs.TOTAL_ERRORS   }}             },
-                      { "type": "raw_number", "value": ${{ steps.test-results.outputs.TOTAL_SKIPPED  }}             },
-                      { "type": "raw_text",   "text":  "${{ steps.test-results.outputs.PASS_RATE }}%" }
+                      { "type": "raw_text", "text": "Backend (pytest)"                                              },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.TOTAL_TESTS }}"                },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.TOTAL_PASSED }}"               },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.TOTAL_FAILED }}"               },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.TOTAL_ERRORS }}"               },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.TOTAL_SKIPPED }}"              },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.PASS_RATE }}%"                 }
                     ],
                     [
-                      { "type": "raw_text",   "text":  "Frontend (Playwright)"                                      },
-                      { "type": "raw_number", "value": ${{ steps.test-results.outputs.PW_TESTS   }}                 },
-                      { "type": "raw_number", "value": ${{ steps.test-results.outputs.PW_PASSED  }}                 },
-                      { "type": "raw_number", "value": ${{ steps.test-results.outputs.PW_FAILED  }}                 },
-                      { "type": "raw_number", "value": ${{ steps.test-results.outputs.PW_ERRORS  }}                 },
-                      { "type": "raw_number", "value": ${{ steps.test-results.outputs.PW_SKIPPED }}                 },
-                      { "type": "raw_text",   "text":  "${{ steps.test-results.outputs.PW_PASS_RATE }}%" }
+                      { "type": "raw_text", "text": "Frontend (Playwright)"                                         },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.PW_TESTS }}"                   },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.PW_PASSED }}"                  },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.PW_FAILED }}"                  },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.PW_ERRORS }}"                  },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.PW_SKIPPED }}"                 },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.PW_PASS_RATE }}%"              }
                     ]
                   ]
                 },
