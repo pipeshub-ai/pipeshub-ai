@@ -879,7 +879,6 @@ export const listAllArchivesAgentConversationQuerySchema = z.object({
         (value) => !value || !isNaN(new Date(value).getTime()),
         'Invalid end date format',
       ),
-    shared: z.enum(['true', 'false', '1', '0', '']).optional(),
   }),
 });
 

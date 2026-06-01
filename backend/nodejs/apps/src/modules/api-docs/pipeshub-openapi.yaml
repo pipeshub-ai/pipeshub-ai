@@ -25860,11 +25860,6 @@ paths:
           schema:
             type: string
             format: date-time
-        - name: shared
-          in: query
-          schema:
-            type: string
-            enum: ['true', 'false', '1', '0', '']
       responses:
         '200':
           description: Archived conversations for the agent

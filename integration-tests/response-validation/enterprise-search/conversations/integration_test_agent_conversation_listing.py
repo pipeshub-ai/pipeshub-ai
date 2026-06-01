@@ -434,7 +434,6 @@ class TestAgentConversationListing:
                 "limit": "20",
                 "sortBy": "lastActivityAt",
                 "sortOrder": "desc",
-                "shared": "false",
                 "status": "Complete",
                 "isArchived": "false",
             },
@@ -937,7 +936,6 @@ class TestAgentConversationListing:
                 "sortOrder": "desc",
                 "startDate": start_date,
                 "endDate": end_date,
-                "shared": "false",
             },
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -1098,6 +1096,7 @@ class TestAgentConversationListing:
     @pytest.mark.parametrize(
         ("label", "params"),
         [
+            # Rejected by controller validateBooleanParam, not Zod (shared not in contract).
             ("invalid shared", {"shared": "maybe"}),
             ("invalid startDate", {"startDate": "not-a-date"}),
             ("invalid endDate", {"endDate": "still-not-a-date"}),
