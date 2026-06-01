@@ -32,6 +32,24 @@ class TestRetriableErrors:
             openai.BadRequestError("bad request", response=response, body=None)
         )
 
+    def test_500_is_not_retriable(self):
+        response = MagicMock()
+        response.status_code = 500
+        assert not _is_retriable_embedding_error(
+            openai.InternalServerError(
+                "Failed to generate embeddings: trust_remote_code required",
+                response=response,
+                body={"detail": "trust_remote_code=True required"},
+            )
+        )
+
+    def test_502_is_retriable(self):
+        response = MagicMock()
+        response.status_code = 502
+        assert _is_retriable_embedding_error(
+            openai.APIStatusError("bad gateway", response=response, body=None)
+        )
+
 
 class TestEmbeddingServerEmbeddingsRetry:
     def test_call_with_retry_retries_transient_failure(self):
@@ -92,3 +110,23 @@ class TestEmbeddingServerEmbeddingsRetry:
 
         with pytest.raises(openai.BadRequestError):
             _call_with_retry(_fn, max_retries=3, operation="embed_query")
+
+    def test_call_with_retry_does_not_retry_500_application_errors(self):
+        calls = {"count": 0}
+
+        def _fn():
+            calls["count"] += 1
+            response = MagicMock()
+            response.status_code = 500
+            raise openai.InternalServerError(
+                "Error code: 500 - trust_remote_code=True required",
+                response=response,
+                body={"detail": "trust_remote_code=True required"},
+            )
+
+        from app.utils.embedding_server_client import _call_with_retry
+
+        with pytest.raises(openai.InternalServerError):
+            _call_with_retry(_fn, max_retries=5, operation="embed_documents")
+
+        assert calls["count"] == 1

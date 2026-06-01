@@ -105,7 +105,10 @@ class TestGetDefaultEmbeddingModel:
         """Default embeddings route through the local embedding server."""
         mock_cls.return_value = MagicMock()
         result = get_default_embedding_model()
-        mock_cls.assert_called_once_with(model=DEFAULT_EMBEDDING_MODEL)
+        mock_cls.assert_called_once_with(
+            model=DEFAULT_EMBEDDING_MODEL,
+            trust_remote_code=False,
+        )
         assert result is mock_cls.return_value
 
 

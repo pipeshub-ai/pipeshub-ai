@@ -56,19 +56,26 @@ def _embedding_server_timeout() -> float:
         return EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS
 
 
+_RETRIABLE_HTTP_STATUS_CODES = frozenset({429, 502, 503, 504})
+
+
 def _is_retriable_embedding_error(exc: BaseException) -> bool:
+    """Return True only for transient embedding-server failures worth retrying.
+
+    Application-level 500 responses (e.g. missing trust_remote_code, bad model
+    name) are not retried — they will fail the same way on every attempt.
+    """
     if isinstance(
         exc,
         (
             openai.APIConnectionError,
             openai.APITimeoutError,
             openai.RateLimitError,
-            openai.InternalServerError,
         ),
     ):
         return True
     if isinstance(exc, openai.APIStatusError):
-        return exc.status_code in {429, 502, 503, 504}
+        return exc.status_code in _RETRIABLE_HTTP_STATUS_CODES
     return False
 
 

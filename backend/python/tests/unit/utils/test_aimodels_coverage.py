@@ -36,7 +36,7 @@ from app.utils.aimodels import (
 
 
 class TestGetDefaultEmbeddingModelException:
-    @patch("langchain_openai.embeddings.OpenAIEmbeddings")
+    @patch("app.utils.embedding_server_client.EmbeddingServerEmbeddings")
     def test_exception_is_reraised(self, mock_cls):
         """When the embedding server client fails to construct, propagate."""
         mock_cls.side_effect = RuntimeError("client init failed")
