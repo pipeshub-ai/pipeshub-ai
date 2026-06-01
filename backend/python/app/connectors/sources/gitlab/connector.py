@@ -512,7 +512,7 @@ class GitLabConnector(BaseConnector):
         # which is the only way they can search records they have access
         # to on GitLab. See _resolve_creator_identity / Patch #4.
         self._gitlab_user_id: int | None = None
-        self._code_file_timestamp_backfill_tasks: dict[int, asyncio.Task[None]] = {}
+        self._code_file_timestamp_backfill_task: asyncio.Task[None] | None = None
         # GitLab user-level access flags, captured from ``GET /user``.
         # ``is_admin``: all editions; ``is_auditor``: Premium/Ultimate only.
         # GitLab OMITS both attributes from the response when the caller
@@ -1616,6 +1616,7 @@ class GitLabConnector(BaseConnector):
             # TODO: what to consider these groups then link projects to these groups ?
             self.logger.info("🕛🕛 Starting sync of projects")
             await self._sync_all_project()
+            self._schedule_code_file_timestamp_backfill_after_sync()
         except Exception as e:
             self.logger.error(f"Error in GitLab sync: {e}", exc_info=True)
             raise
@@ -2602,36 +2603,41 @@ class GitLabConnector(BaseConnector):
         return results
 
     async def _cancel_code_file_timestamp_backfill(self) -> None:
-        """Stop in-flight per-project backfills before starting a new sync."""
-        if not self._code_file_timestamp_backfill_tasks:
+        """Stop the in-flight connector-wide backfill before starting a new sync."""
+        task = self._code_file_timestamp_backfill_task
+        self._code_file_timestamp_backfill_task = None
+        if task is None or task.done():
             return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
-        tasks = list(self._code_file_timestamp_backfill_tasks.values())
-        self._code_file_timestamp_backfill_tasks.clear()
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    def _schedule_code_file_timestamp_backfill_for_project(
-        self, project_id: int
-    ) -> None:
-        """Backfill timestamps for one project while sync continues on others."""
-        existing = self._code_file_timestamp_backfill_tasks.get(project_id)
+    def _schedule_code_file_timestamp_backfill_after_sync(self) -> None:
+        """Fetch null-timestamp code files and backfill in one background task."""
+        existing = self._code_file_timestamp_backfill_task
         if existing is not None and not existing.done():
             return
 
-        self._code_file_timestamp_backfill_tasks[project_id] = asyncio.create_task(
-            self._backfill_code_file_timestamps_for_project(project_id),
-            name=f"gitlab_code_file_ts_backfill_{self.connector_id}_{project_id}",
+        self._code_file_timestamp_backfill_task = asyncio.create_task(
+            self._backfill_code_file_timestamps_after_sync(),
+            name=f"gitlab_code_file_ts_backfill_{self.connector_id}",
         )
 
-    async def _backfill_code_file_timestamps_for_project(self, project_id: int) -> None:
-        """Background job: backfill commit-history timestamps for one project."""
+    async def _backfill_code_file_timestamps_after_sync(self) -> None:
+        """Background job: backfill commit-history timestamps for all synced projects."""
         try:
-            await self._run_code_file_timestamp_backfill(project_id)
+            await self._refresh_token_if_needed()
+            projects = await self._resolve_projects_with_filters()
+            for project in projects:
+                await self._run_code_file_timestamp_backfill(project.id)
+        except Exception as e:
+            self.logger.error(
+                "Code file timestamp backfill failed for connector %s: %s",
+                self.connector_id,
+                e,
+                exc_info=True,
+            )
         finally:
-            self._code_file_timestamp_backfill_tasks.pop(project_id, None)
+            self._code_file_timestamp_backfill_task = None
 
     async def _run_code_file_timestamp_backfill(self, project_id: int) -> None:
         batch_size = 100
@@ -2677,6 +2683,11 @@ class GitLabConnector(BaseConnector):
                 path_to_record: dict[str, CodeFileRecord] = {}
                 for record in page:
                     if not isinstance(record, CodeFileRecord):
+                        continue
+                    if (
+                        record.source_created_at is not None
+                        or record.source_updated_at is not None
+                    ):
                         continue
                     file_path = (
                         record.file_path
@@ -3474,8 +3485,6 @@ class GitLabConnector(BaseConnector):
             if not after_cursor:
                 break
 
-        self._schedule_code_file_timestamp_backfill_for_project(project_id)
-
     async def build_code_file_records(
         self, code_file_list: list[dict[str, Any]], project_id: int, project_path: str
     ) -> None:
@@ -3488,10 +3497,9 @@ class GitLabConnector(BaseConnector):
         # Code files are always synced so the repo tree, parent folders, and
         # permissions stay in the graph regardless of the indexing toggle.
         code_files_enabled = self._code_files_indexing_enabled()
-        # Use current sync time during ingest (no per-file GitLab commit API calls).
-        # Real commit-history timestamps are filled in by the per-project backfill
-        # scheduled at the end of _sync_repo_main.
-        current_timestamp = get_epoch_timestamp_in_ms()
+        # Leave source timestamps null during ingest (no per-file GitLab commit API).
+        # Commit-history timestamps are filled in by the background backfill that
+        # runs after the full connector sync completes.
 
         for file in code_file_list:
             file_path = file.get("path") or ""
@@ -3568,8 +3576,8 @@ class GitLabConnector(BaseConnector):
                     RecordType.FILE if parent_external_record_id else None
                 ),
                 weburl=weburl,
-                source_created_at=current_timestamp,
-                source_updated_at=current_timestamp,
+                source_created_at=None,
+                source_updated_at=None,
             )
             if not code_files_enabled:
                 code_file_record.indexing_status = (
