@@ -15,7 +15,7 @@ import type { AIModelProvider, AIModelProviderField, ConfiguredModel } from '../
 import { CAPABILITY_TO_MODEL_TYPE } from '../types';
 import { AIModelsApi } from '../api';
 
-const COMPAT_FIELD_NAMES = ['isReasoning', 'isMultimodal'] as const;
+const COMPAT_FIELD_NAMES = ['isReasoning', 'isMultimodal', 'trustRemoteCode'] as const;
 
 const READONLY_ROW_STYLE: React.CSSProperties = {
   display: 'flex',
@@ -98,6 +98,7 @@ function allRequiredFieldsValid(fields: AIModelProviderField[], values: Record<s
 function compatIcon(fieldName: string): string {
   if (fieldName === 'isReasoning') return 'lightbulb';
   if (fieldName === 'isMultimodal') return 'image';
+  if (fieldName === 'trustRemoteCode') return 'verified_user';
   return 'tune';
 }
 
@@ -488,7 +489,8 @@ function ModelConfigFormBody({
         (f) =>
           f.name !== 'modelFriendlyName' &&
           f.name !== 'isReasoning' &&
-          f.name !== 'isMultimodal'
+          f.name !== 'isMultimodal' &&
+          f.name !== 'trustRemoteCode'
       ),
     [fields]
   );

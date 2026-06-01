@@ -198,6 +198,8 @@ python -m spacy download en_core_web_sm
 python -c "import nltk; nltk.download('punkt')"
 
 # Run each service in a separate terminal: First, cd backend/python and activate the existing virtual environment
+# Start the embedding server before indexing and query when using default local embeddings (HuggingFace / SentenceTransformers).
+python -m app.embedding_main
 python -m app.connectors_main
 python -m app.indexing_main
 python -m app.query_main
@@ -220,10 +222,14 @@ Our project consists of three main components:
 
 1. **Frontend**: Next.js application for the user interface
 2. **Node.js Backend**: Handles API requests, authentication, and business logic
-3. **Python Services**: Three microservices for:
-   - Connectors: Handles data source connections
-   - Indexing: Manages document indexing and processing
-   - Query: Processes search and retrieval requests
+3. **Python Services**: Five microservices for:
+   - **Embedding** (port 8002): Serves local HuggingFace / SentenceTransformer models via an OpenAI-compatible API (`app.embedding_main`). Indexing and query call this service for default dense embeddings.
+   - **Connectors** (port 8088): Handles data source connections
+   - **Indexing** (port 8091): Manages document indexing and processing
+   - **Query** (port 8000): Processes search and retrieval requests
+   - **Docling** (port 8081): Advanced PDF/document parsing for complex formats
+
+When running services locally with `make`, start **embedding** before **indexing** and **query** if you rely on the built-in local embedding model (`BAAI/bge-large-en-v1.5`). Cloud/API embedding providers (OpenAI, Cohere, etc.) do not require the embedding server.
 
 ## Contribution Workflow
 

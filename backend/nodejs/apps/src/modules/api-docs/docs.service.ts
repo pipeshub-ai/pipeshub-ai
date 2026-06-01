@@ -278,6 +278,16 @@ export class ApiDocsService {
         source: 'python',
         order: 14,
       },
+      {
+        id: 'embedding-service',
+        name: 'Embedding Service',
+        description: 'Local dense embedding server (Port 8002). OpenAI-compatible /v1/embeddings. Internal only.',
+        version: '1.0.0',
+        basePath: 'http://localhost:8002',
+        tags: ['Embedding Service'],
+        source: 'python',
+        order: 15,
+      },
     ];
   }
 
@@ -388,7 +398,7 @@ export class ApiDocsService {
         id: 'internal-services',
         name: 'Internal Services',
         description: 'Internal PipesHub microservices (requires scoped token)',
-        modules: this.modules.filter(m => ['query-service', 'indexing-service', 'connector-service-internal', 'docling-service'].includes(m.id)),
+        modules: this.modules.filter(m => ['query-service', 'indexing-service', 'connector-service-internal', 'docling-service', 'embedding-service'].includes(m.id)),
       },
     ];
   }
@@ -465,6 +475,9 @@ export class ApiDocsService {
     if (pathLower.startsWith('/docling/')) {
       return 'docling-service';
     }
+    if (pathLower.startsWith('/v1/embeddings') || pathLower.startsWith('/embedding/')) {
+      return 'embedding-service';
+    }
 
     // Check summary for service indicators
     if (summaryLower.includes('[query service]')) {
@@ -478,6 +491,9 @@ export class ApiDocsService {
     }
     if (summaryLower.includes('[docling service]')) {
       return 'docling-service';
+    }
+    if (summaryLower.includes('[embedding service]')) {
+      return 'embedding-service';
     }
 
     // Default to query service for unmatched internal endpoints
@@ -494,12 +510,13 @@ export class ApiDocsService {
     }
 
     // For internal service modules, filter from merged spec by tags or path/summary patterns
-    const internalServiceIds = ['query-service', 'indexing-service', 'connector-service-internal', 'docling-service'];
+    const internalServiceIds = ['query-service', 'indexing-service', 'connector-service-internal', 'docling-service', 'embedding-service'];
     const internalServiceTags: Record<string, string> = {
       'query-service': 'Query Service',
       'indexing-service': 'Indexing Service',
       'connector-service-internal': 'Connector Service',
       'docling-service': 'Docling Service',
+      'embedding-service': 'Embedding Service',
     };
 
     if (internalServiceIds.includes(moduleId)) {

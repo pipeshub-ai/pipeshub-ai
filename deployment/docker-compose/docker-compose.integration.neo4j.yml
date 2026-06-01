@@ -52,6 +52,7 @@ services:
       - QUERY_BACKEND=http://localhost:8000
       - CONNECTOR_BACKEND=http://localhost:8088
       - INDEXING_BACKEND=http://localhost:8091
+      - EMBEDDING_SERVER_URL=http://localhost:8002
 
       # Key-Value Store Configuration
       - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}

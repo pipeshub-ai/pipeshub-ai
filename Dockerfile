@@ -103,10 +103,12 @@ set -e
 LOG_FILE="/app/process_monitor.log"
 CHECK_INTERVAL=${CHECK_INTERVAL:-20}
 NODEJS_PORT=${NODEJS_PORT:-3000}
+EMBEDDING_PORT=${EMBEDDING_SERVER_PORT:-8002}
 
 # PIDs of child processes
 NODEJS_PID=""
 SLACKBOT_PID=""
+EMBEDDING_PID=""
 DOCLING_PID=""
 INDEXING_PID=""
 CONNECTOR_PID=""
@@ -150,6 +152,34 @@ start_slackbot() {
     node dist/integrations/slack-bot/src/index.js &
     SLACKBOT_PID=$!
     log "Slack Bot started with PID: $SLACKBOT_PID"
+}
+
+start_embedding() {
+    log "Starting Embedding service..."
+    cd /app/python
+    python -m app.embedding_main &
+    EMBEDDING_PID=$!
+    log "Embedding service started with PID: $EMBEDDING_PID"
+
+    log "Waiting for Embedding service health check..."
+    local MAX_RETRIES=120
+    local RETRY_COUNT=0
+    local HEALTH_CHECK_URL="http://localhost:${EMBEDDING_PORT}/health"
+
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        if curl -s -f "$HEALTH_CHECK_URL" > /dev/null 2>&1; then
+            log "Embedding service health check passed!"
+            break
+        fi
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        log "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 2 seconds..."
+        sleep 2
+    done
+
+    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+        log "ERROR: Embedding service health check failed after $MAX_RETRIES attempts"
+        return 1
+    fi
 }
 
 start_docling() {
@@ -220,6 +250,7 @@ cleanup() {
     
     [ -n "$NODEJS_PID" ] && kill "$NODEJS_PID" 2>/dev/null || true
     [ -n "$SLACKBOT_PID" ] && kill "$SLACKBOT_PID" 2>/dev/null || true
+    [ -n "$EMBEDDING_PID" ] && kill "$EMBEDDING_PID" 2>/dev/null || true
     [ -n "$DOCLING_PID" ] && kill "$DOCLING_PID" 2>/dev/null || true
     [ -n "$INDEXING_PID" ] && kill "$INDEXING_PID" 2>/dev/null || true
     [ -n "$CONNECTOR_PID" ] && kill "$CONNECTOR_PID" 2>/dev/null || true
@@ -235,6 +266,7 @@ trap cleanup SIGTERM SIGINT SIGQUIT
 log "=== Process Monitor Starting ==="
 start_nodejs
 start_slackbot
+start_embedding
 start_connector
 start_indexing
 start_query
@@ -251,6 +283,10 @@ while true; do
     
     if [ -n "$SLACKBOT_PID" ] && ! check_process "$SLACKBOT_PID" "Slack Bot"; then
         start_slackbot
+    fi
+
+    if ! check_process "$EMBEDDING_PID" "Embedding"; then
+        start_embedding
     fi
     
     if ! check_process "$DOCLING_PID" "Docling"; then
@@ -273,6 +309,6 @@ EOF
 
 RUN chmod +x /app/process_monitor.sh
 
-EXPOSE 3000
+EXPOSE 3000 8002
 
 CMD ["/app/process_monitor.sh"]

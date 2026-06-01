@@ -17,6 +17,7 @@ from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
     AzureOpenAILLM,
 )
+from app.utils.embedding_server_client import get_embedding_server_embeddings
 from app.utils.logger import create_logger
 
 
@@ -90,18 +91,7 @@ MAX_OUTPUT_TOKENS = 4096
 MAX_OUTPUT_TOKENS_CLAUDE_4_5 = 64000
 
 def get_default_embedding_model() -> Embeddings:
-    from langchain_huggingface import HuggingFaceEmbeddings
-
-    try:
-        model_name = DEFAULT_EMBEDDING_MODEL
-        encode_kwargs = {'normalize_embeddings': True}
-        return HuggingFaceEmbeddings(
-            model_name=model_name,
-            model_kwargs={"device": "cpu"},
-            encode_kwargs=encode_kwargs,
-        )
-    except Exception  as e:
-        raise e
+    return get_embedding_server_embeddings(DEFAULT_EMBEDDING_MODEL)
 
 logger = create_logger("aimodels")
 
@@ -265,23 +255,9 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
         return GoogleGenerativeAIEmbeddings(**gemini_kwargs)
 
     elif provider == EmbeddingProvider.HUGGING_FACE.value:
-        from langchain_community.embeddings import HuggingFaceEmbeddings
-
-        model_kwargs = configuration.get('model_kwargs', {}).copy()
-        # Hugging Face embedding models typically don't use API keys in the same way
-        # but we include it in case it's needed for private models
-        if configuration.get('apiKey'):
-            model_kwargs["api_key"] = configuration['apiKey']
-
-        # Set default encoding parameters
-        encode_kwargs = configuration.get('encode_kwargs', {}).copy()
-        if "normalize_embeddings" not in encode_kwargs:
-            encode_kwargs["normalize_embeddings"] = True
-
-        return HuggingFaceEmbeddings(
-            model_name=model_name,
-            model_kwargs=model_kwargs,
-            encode_kwargs=encode_kwargs
+        return get_embedding_server_embeddings(
+            model_name,
+            trust_remote_code=bool(configuration.get("trustRemoteCode")),
         )
 
     elif provider == EmbeddingProvider.JINA_AI.value:
@@ -332,14 +308,9 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
         )
 
     elif provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value:
-        from langchain_community.embeddings import SentenceTransformerEmbeddings
-
-        encode_kwargs = configuration.get('encode_kwargs', {}).copy()
-
-        return SentenceTransformerEmbeddings(
-            model_name=model_name,
-            cache_folder=configuration.get('cache_folder', None),
-            encode_kwargs=encode_kwargs
+        return get_embedding_server_embeddings(
+            model_name,
+            trust_remote_code=bool(configuration.get("trustRemoteCode")),
         )
 
     elif provider == EmbeddingProvider.OPENAI_COMPATIBLE.value:

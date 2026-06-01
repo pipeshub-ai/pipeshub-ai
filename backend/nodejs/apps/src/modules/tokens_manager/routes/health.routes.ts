@@ -276,7 +276,7 @@ export function createHealthRouter(
     }
   });
 
-  // Combined services health check (Python query + connector + indexing + docling services)
+  // Combined services health check (Python query + connector + indexing + docling + embedding services)
   router.get('/services', async (_req, res, _next) => {
     try {
       const aiHealthUrl = `${appConfig.aiBackend}/health`;
@@ -284,12 +284,15 @@ export function createHealthRouter(
       const indexingHealthUrl = `${appConfig.indexingBackend}/health`;
       const doclingBackend = process.env.DOCLING_BACKEND || 'http://localhost:8081';
       const doclingHealthUrl = `${doclingBackend}/health`;
+      const embeddingBackend = process.env.EMBEDDING_SERVER_URL || 'http://localhost:8002';
+      const embeddingHealthUrl = `${embeddingBackend}/health`;
 
-      const [aiResp, connectorResp, indexingResp, doclingResp] = await Promise.allSettled([
+      const [aiResp, connectorResp, indexingResp, doclingResp, embeddingResp] = await Promise.allSettled([
         axios.get(aiHealthUrl, { timeout: 3000 }),
         axios.get(connectorHealthUrl, { timeout: 3000 }),
         axios.get(indexingHealthUrl, { timeout: 3000 }),
         axios.get(doclingHealthUrl, { timeout: 3000 }),
+        axios.get(embeddingHealthUrl, { timeout: 3000 }),
       ]);
 
       const isServiceHealthy = (res: PromiseSettledResult<any>) =>
@@ -301,6 +304,7 @@ export function createHealthRouter(
       const connectorOk = isServiceHealthy(connectorResp);
       const indexingOk = isServiceHealthy(indexingResp);
       const doclingOk = isServiceHealthy(doclingResp);
+      const embeddingOk = isServiceHealthy(embeddingResp);
 
       // Critical services: query + connector (required for core functionality)
       const overallHealthy = aiOk && connectorOk;
@@ -313,6 +317,7 @@ export function createHealthRouter(
           connector: connectorOk ? 'healthy' : 'unhealthy',
           indexing: indexingOk ? 'healthy' : 'unhealthy',
           docling: doclingOk ? 'healthy' : 'unhealthy',
+          embedding: embeddingOk ? 'healthy' : 'unhealthy',
         },
       });
     } catch (error: any) {
@@ -325,6 +330,7 @@ export function createHealthRouter(
           connector: 'unknown',
           indexing: 'unknown',
           docling: 'unknown',
+          embedding: 'unknown',
         },
       });
     }

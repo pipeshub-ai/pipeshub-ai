@@ -3,7 +3,7 @@
 from app.config.ai_models.registry import AIModelProviderBuilder
 from app.config.ai_models.types import ModelCapability
 
-from .common_fields import API_KEY, EMBEDDING_COMMON_TAIL, model_field
+from .common_fields import API_KEY, EMBEDDING_COMMON_TAIL, TRUST_REMOTE_CODE, model_field
 
 
 # ---------------------------------------------------------------------------
@@ -37,10 +37,11 @@ class DefaultEmbeddingProvider:
     .with_capabilities([ModelCapability.EMBEDDING]) \
     .with_icon("/icons/ai-models/sentence-transformers.png") \
     .with_color("#0078D4") \
-    .add_field(model_field("e.g., all-MiniLM-L6-v2")) \
+    .add_field(model_field("e.g., nomic-ai/nomic-embed-text-v2-moe")) \
     .add_field(EMBEDDING_COMMON_TAIL[0]) \
     .add_field(EMBEDDING_COMMON_TAIL[1]) \
     .add_field(EMBEDDING_COMMON_TAIL[2]) \
+    .add_field(TRUST_REMOTE_CODE) \
     .build_decorator()
 class SentenceTransformersProvider:
     pass
@@ -93,10 +94,11 @@ class VoyageProvider:
     .with_capabilities([ModelCapability.EMBEDDING]) \
     .with_icon("/icons/ai-models/huggingface-color.svg") \
     .with_color("#FFD21E") \
-    .add_field(model_field("e.g., sentence-transformers/all-MiniLM-L6-v2")) \
+    .add_field(model_field("e.g., nomic-ai/nomic-embed-text-v2-moe")) \
     .add_field(EMBEDDING_COMMON_TAIL[0]) \
     .add_field(EMBEDDING_COMMON_TAIL[1]) \
     .add_field(EMBEDDING_COMMON_TAIL[2]) \
+    .add_field(TRUST_REMOTE_CODE) \
     .build_decorator()
 class HuggingFaceProvider:
     pass

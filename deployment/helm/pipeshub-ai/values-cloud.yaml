@@ -43,7 +43,7 @@
 #
 # What to expose publicly:
 #   - Default and recommended: ONLY port 3001 (UI + Node API). Everything else
-#     (query 8000, indexing 8091, docling 8081, connector 8088) stays in-cluster
+#     (query 8000, indexing 8091, embedding 8002, docling 8081, connector 8088) stays in-cluster
 #     because the Node API calls them via the ClusterIP Service.
 #   - Add a SECOND ingress host on port 8088 ONLY if you use OAuth-based
 #     connectors (Google/Microsoft/Slack/...) or receive provider webhooks.
@@ -112,7 +112,7 @@ podSecurityContext:
 #
 # Default exposure model: ONLY port 3001 is reachable from the public
 # internet. The Node API on 3001 proxies/calls the Python services (query
-# 8000, indexing 8091, docling 8081, connector 8088) over the in-cluster
+# 8000, indexing 8091, embedding 8002, docling 8081, connector 8088) over the in-cluster
 # ClusterIP Service, so those ports stay private.
 #
 # If you enable OAuth-based connectors or receive provider webhooks, add a
