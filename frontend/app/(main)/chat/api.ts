@@ -33,7 +33,6 @@ export interface FeedbackPayload {
   comments?: {
     positive?: string;
     negative?: string;
-    suggestions?: string;
   };
 }
 

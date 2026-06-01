@@ -631,19 +631,11 @@ export const FEEDBACK_CATEGORIES = [
 
 const feedbackBodySchema = z.object({
   isHelpful: z.boolean().optional(),
-  ratings: z.record(z.string(), z.number().min(1).max(5)).optional(),
   categories: z.array(z.enum(FEEDBACK_CATEGORIES)).optional(),
   comments: z
     .object({
       positive: z.string().optional(),
       negative: z.string().optional(),
-      suggestions: z.string().optional(),
-    })
-    .optional(),
-  metrics: z
-    .object({
-      userInteractionTime: z.number().optional(),
-      feedbackSessionId: z.string().optional(),
     })
     .optional(),
 });
