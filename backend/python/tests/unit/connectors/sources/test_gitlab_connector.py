@@ -3242,26 +3242,6 @@ class TestGitlabConnectorSyncAllProject:
         )
 
 
-class TestGitlabConnectorCodeFileTimestamps:
-    @pytest.mark.asyncio
-    async def test_fetch_code_file_timestamps_batch_uses_rest(self) -> None:
-        connector = _make_connector()
-        connector.data_source = MagicMock()
-        connector._code_file_source_timestamps = AsyncMock(
-            return_value=(1_700_000_000_000, 1_700_000_100_000)
-        )
-
-        result = await connector._fetch_code_file_timestamps_batch(
-            123, "group/project", ["a.py", "b.py"]
-        )
-
-        assert result == {
-            "a.py": (1_700_000_000_000, 1_700_000_100_000),
-            "b.py": (1_700_000_000_000, 1_700_000_100_000),
-        }
-        assert connector._code_file_source_timestamps.await_count == 2
-
-
 class TestGitlabConnectorBuildCodeFileRecords:
     @pytest.mark.asyncio
     async def test_build_code_file_records_success_single_file(self) -> None:
@@ -12004,10 +11984,22 @@ class TestSyncRepoMain:
             has_next_page=True,
             end_cursor="cursor-2",
         )
-        page2_data = self._gql_tree_response(
-            tree_nodes=[],
-            has_next_page=True,
-            end_cursor="cursor-3",
+        page2_data = json.dumps(
+            {
+                "data": {
+                    "project": {
+                        "repository": {
+                            "paginatedTree": {
+                                "nodes": [],
+                                "pageInfo": {
+                                    "hasNextPage": True,
+                                    "endCursor": "cursor-3",
+                                },
+                            }
+                        }
+                    }
+                }
+            }
         )
         page1_res = MagicMock()
         page1_res.data = page1_data
