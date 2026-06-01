@@ -123,6 +123,33 @@ def _mock_code_file_record(**kwargs) -> MagicMock:
     return record
 
 
+def _null_timestamp_code_file_node(
+    *,
+    record_id: str = "rec-1",
+    file_path: str = "src/main.py",
+    external_group_id: str = "123-code-repository",
+) -> dict:
+    """Raw records-collection node returned by get_nodes_by_filters."""
+    web_path = f"/{_GITLAB_TEST_NS}/-/blob/{_GITLAB_TEST_REF}/{file_path}"
+    return {
+        "_key": record_id,
+        "orgId": "org-1",
+        "recordName": file_path.rsplit("/", 1)[-1],
+        "recordType": RecordType.CODE_FILE.value,
+        "connectorName": Connectors.GITLAB.value,
+        "connectorId": "gitlab-conn-1",
+        "externalRecordId": web_path,
+        "externalGroupId": external_group_id,
+        "version": 0,
+        "origin": OriginTypes.CONNECTOR.value,
+        "webUrl": f"https://gitlab.com{web_path}",
+        "createdAtTimestamp": 1_700_000_000_000,
+        "updatedAtTimestamp": 1_700_000_000_000,
+        "sourceCreatedAtTimestamp": None,
+        "sourceLastModifiedTimestamp": None,
+    }
+
+
 class TestGitlabHelperFunctions:
     @pytest.mark.asyncio
     async def test_parse_gitlab_uploads_clean_test_only_text(self) -> None:
@@ -1360,29 +1387,9 @@ class TestGitlabConnectorCodeFileTimestamps:
         connector = _make_connector()
         connector._refresh_token_if_needed = AsyncMock()
 
-        record = CodeFileRecord(
-            id="rec-1",
-            org_id="org-1",
-            record_name="main.py",
-            record_type=RecordType.CODE_FILE.value,
-            connector_name=Connectors.GITLAB.value,
-            connector_id="gitlab-conn-1",
-            external_record_id="/project/src/main.py",
-            external_record_group_id="123-code-repository",
-            version=0,
-            origin=OriginTypes.CONNECTOR.value,
-            file_path="src/main.py",
-            source_created_at=None,
-            source_updated_at=None,
-        )
-
         mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_group_by_external_id = AsyncMock(
-            return_value=MagicMock(id="rg-123")
-        )
-        mock_tx_store.txn = "txn-1"
-        mock_tx_store.graph_provider.get_records_by_record_group = AsyncMock(
-            side_effect=[[record], []]
+        mock_tx_store.get_nodes_by_filters = AsyncMock(
+            return_value=[_null_timestamp_code_file_node()]
         )
         connector.data_store_provider.transaction = MagicMock()
         connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
@@ -1396,6 +1403,16 @@ class TestGitlabConnectorCodeFileTimestamps:
 
         await connector._run_code_file_timestamp_backfill(123)
 
+        mock_tx_store.get_nodes_by_filters.assert_awaited_once_with(
+            collection="records",
+            filters={
+                "connectorId": "gitlab-conn-1",
+                "recordType": RecordType.CODE_FILE.value,
+                "externalGroupId": "123-code-repository",
+                "sourceCreatedAtTimestamp": None,
+                "sourceLastModifiedTimestamp": None,
+            },
+        )
         connector.data_entities_processor.on_record_metadata_update.assert_awaited_once()
         updated = connector.data_entities_processor.on_record_metadata_update.await_args.args[0]
         assert updated.source_created_at == 1_700_000_000_000
@@ -1406,29 +1423,9 @@ class TestGitlabConnectorCodeFileTimestamps:
         connector = _make_connector()
         connector._refresh_token_if_needed = AsyncMock()
 
-        record = CodeFileRecord(
-            id="rec-1",
-            org_id="org-1",
-            record_name="main.py",
-            record_type=RecordType.CODE_FILE.value,
-            connector_name=Connectors.GITLAB.value,
-            connector_id="gitlab-conn-1",
-            external_record_id="/project/src/main.py",
-            external_record_group_id="123-code-repository",
-            version=0,
-            origin=OriginTypes.CONNECTOR.value,
-            file_path="src/main.py",
-            source_created_at=1_700_000_000_000,
-            source_updated_at=1_700_000_100_000,
-        )
-
         mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_group_by_external_id = AsyncMock(
-            return_value=MagicMock(id="rg-123")
-        )
-        mock_tx_store.txn = "txn-1"
-        mock_tx_store.graph_provider.get_records_by_record_group = AsyncMock(
-            side_effect=[[record], []]
+        mock_tx_store.get_nodes_by_filters = AsyncMock(
+            return_value=[_null_timestamp_code_file_node()]
         )
         connector.data_store_provider.transaction = MagicMock()
         connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
@@ -1437,7 +1434,7 @@ class TestGitlabConnectorCodeFileTimestamps:
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock()
 
         connector._fetch_code_file_timestamps_batch = AsyncMock(
-            return_value={"src/main.py": (1_700_000_000_000, 1_700_000_100_000)}
+            return_value={"src/main.py": (None, None)}
         )
 
         await connector._run_code_file_timestamp_backfill(123)
@@ -1482,30 +1479,8 @@ class TestGitlabConnectorCodeFileTimestamps:
         connector = _make_connector()
         connector._refresh_token_if_needed = AsyncMock()
 
-        record = CodeFileRecord(
-            id="rec-1",
-            org_id="org-1",
-            record_name="main.py",
-            record_type=RecordType.CODE_FILE.value,
-            connector_name=Connectors.GITLAB.value,
-            connector_id="gitlab-conn-1",
-            external_record_id="/project/src/main.py",
-            external_record_group_id="123-code-repository",
-            version=0,
-            origin=OriginTypes.CONNECTOR.value,
-            file_path="src/main.py",
-            source_created_at=1_700_000_000_000,
-            source_updated_at=1_700_000_100_000,
-        )
-
         mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_group_by_external_id = AsyncMock(
-            return_value=MagicMock(id="rg-123")
-        )
-        mock_tx_store.txn = "txn-1"
-        mock_tx_store.graph_provider.get_records_by_record_group = AsyncMock(
-            side_effect=[[record], []]
-        )
+        mock_tx_store.get_nodes_by_filters = AsyncMock(return_value=[])
         connector.data_store_provider.transaction = MagicMock()
         connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
             return_value=mock_tx_store

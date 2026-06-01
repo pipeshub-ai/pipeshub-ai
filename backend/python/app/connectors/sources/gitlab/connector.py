@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    CollectionNames,
     Connectors,
     ExtensionTypes,
     MimeTypes,
@@ -2641,109 +2642,85 @@ class GitLabConnector(BaseConnector):
 
     async def _run_code_file_timestamp_backfill(self, project_id: int) -> None:
         batch_size = 100
-        offset = 0
 
         try:
             await self._refresh_token_if_needed()
             external_group_id = f"{project_id}-code-repository"
             async with self.data_store_provider.transaction() as tx_store:
-                record_group = await tx_store.get_record_group_by_external_id(
-                    self.connector_id,
-                    external_group_id,
+                nodes = await tx_store.get_nodes_by_filters(
+                    collection=CollectionNames.RECORDS.value,
+                    filters={
+                        "connectorId": self.connector_id,
+                        "recordType": RecordType.CODE_FILE.value,
+                        "externalGroupId": external_group_id,
+                        "sourceCreatedAtTimestamp": None,
+                        "sourceLastModifiedTimestamp": None,
+                    },
                 )
-            if record_group is None:
-                self.logger.warning(
-                    "No code-repository record group for connector %s project %s "
-                    "(external_group_id=%s); skipping timestamp backfill",
-                    self.connector_id,
-                    project_id,
-                    external_group_id,
+
+            path_to_record: dict[str, CodeFileRecord] = {}
+            for node in nodes:
+                if node.get("isDeleted"):
+                    continue
+                code_file = CodeFileRecord.from_arango_record({}, node)
+                file_path = code_file.file_path or self._repo_path_from_blob_web_url(
+                    code_file.weburl
                 )
-                return
+                if not file_path:
+                    continue
+                path_to_record[file_path] = code_file
 
-            status_filters = [status.value for status in ProgressStatus]
-
-            while True:
+            file_paths = list(path_to_record.keys())
+            for offset in range(0, len(file_paths), batch_size):
                 await self._refresh_token_if_needed()
-                async with self.data_store_provider.transaction() as tx_store:
-                    page = await tx_store.graph_provider.get_records_by_record_group(
-                        record_group_id=record_group.id,
-                        connector_id=self.connector_id,
-                        org_id=self.data_entities_processor.org_id,
-                        depth=1,
-                        limit=batch_size,
-                        offset=offset,
-                        status_filters=status_filters,
-                        transaction=tx_store.txn,
+                batch_paths = file_paths[offset : offset + batch_size]
+                batch_records = {path: path_to_record[path] for path in batch_paths}
+
+                try:
+                    timestamp_by_path = await self._fetch_code_file_timestamps_batch(
+                        project_id, batch_paths
                     )
+                except Exception as e:
+                    self.logger.warning(
+                        "Failed to fetch timestamps for connector %s project %s: %s",
+                        self.connector_id,
+                        project_id,
+                        e,
+                    )
+                    continue
 
-                if not page:
-                    break
-
-                path_to_record: dict[str, CodeFileRecord] = {}
-                for record in page:
-                    if not isinstance(record, CodeFileRecord):
+                for file_path, record in batch_records.items():
+                    created_ms, updated_ms = timestamp_by_path.get(
+                        file_path, (None, None)
+                    )
+                    if created_ms is None and updated_ms is None:
                         continue
                     if (
-                        record.source_created_at is not None
-                        or record.source_updated_at is not None
+                        record.source_created_at == created_ms
+                        and record.source_updated_at == updated_ms
                     ):
                         continue
-                    file_path = (
-                        record.file_path
-                        or self._repo_path_from_blob_web_url(record.weburl)
-                    )
-                    if not file_path:
-                        continue
-                    path_to_record[file_path] = record
 
-                if path_to_record:
                     try:
-                        timestamp_by_path = await self._fetch_code_file_timestamps_batch(
-                            project_id, list(path_to_record.keys())
+                        updated_record = record.model_copy(
+                            update={
+                                "source_created_at": created_ms,
+                                "source_updated_at": updated_ms,
+                            }
+                        )
+                        await self.data_entities_processor.on_record_metadata_update(
+                            updated_record
                         )
                     except Exception as e:
                         self.logger.warning(
-                            "Failed to fetch timestamps for connector %s project %s: %s",
+                            "Failed to update timestamps for connector %s project %s "
+                            "record %s path %s: %s",
                             self.connector_id,
                             project_id,
+                            record.id,
+                            file_path,
                             e,
                         )
-                    else:
-                        for file_path, record in path_to_record.items():
-                            created_ms, updated_ms = timestamp_by_path.get(
-                                file_path, (None, None)
-                            )
-                            if created_ms is None and updated_ms is None:
-                                continue
-                            if (
-                                record.source_created_at == created_ms
-                                and record.source_updated_at == updated_ms
-                            ):
-                                continue
-
-                            try:
-                                updated_record = record.model_copy(
-                                    update={
-                                        "source_created_at": created_ms,
-                                        "source_updated_at": updated_ms,
-                                    }
-                                )
-                                await self.data_entities_processor.on_record_metadata_update(
-                                    updated_record
-                                )
-                            except Exception as e:
-                                self.logger.warning(
-                                    "Failed to update timestamps for connector %s project %s "
-                                    "record %s path %s: %s",
-                                    self.connector_id,
-                                    project_id,
-                                    record.id,
-                                    file_path,
-                                    e,
-                                )
-
-                offset += len(page)
 
         except Exception as e:
             self.logger.error(
