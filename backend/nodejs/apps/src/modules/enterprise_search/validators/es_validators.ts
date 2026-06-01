@@ -96,10 +96,6 @@ const modelFieldsSchema = {
     .string()
     .min(1, { message: 'Model name is required' })
     .optional(),
-  modelProvider: z
-    .string()
-    .min(1, { message: 'Model provider is required' })
-    .optional(),
   modelFriendlyName: z
     .string()
     .min(1, { message: 'Model friendly name is required' })

@@ -443,7 +443,6 @@ describe('enterprise_search/validators/es_validators', () => {
           previousConversations: [{ role: 'user', content: 'prev' }],
           callerDisplayName: 'Slack User',
           callerEmail: 'slack-user@example.com',
-          modelProvider: 'openai',
         },
       }
       const result = agentStreamCreateSchema.safeParse(data)

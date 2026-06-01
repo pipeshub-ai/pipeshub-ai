@@ -47,7 +47,6 @@ _RICH_REGENERATE_REQUEST_OPENAPI_PAYLOAD: dict[str, Any] = {
     "chatMode": "answer",
     "modelKey": "model-key",
     "modelName": "model-name",
-    "modelProvider": "openai",
     "modelFriendlyName": "Model Friendly Name",
     "timezone": "Asia/Kolkata",
     "currentTime": "2026-05-27T10:30:00+05:30",
@@ -1634,7 +1633,6 @@ class TestAgentConversationRegenerate:
                     "chatMode": "answer",
                     "modelKey": "model-key",
                     "modelName": "model-name",
-                    "modelProvider": "openai",
                     "modelFriendlyName": "Model Friendly Name",
                     "timezone": "Asia/Kolkata",
                     "currentTime": "2026-05-27T10:30:00+05:30",
@@ -1756,7 +1754,6 @@ class TestAgentConversationRegenerate:
             ("empty chatMode", {"chatMode": ""}),
             ("empty modelKey", {"modelKey": ""}),
             ("empty modelName", {"modelName": ""}),
-            ("empty modelProvider", {"modelProvider": ""}),
             ("empty modelFriendlyName", {"modelFriendlyName": ""}),
             ("empty timezone", {"timezone": ""}),
             ("invalid currentTime", {"currentTime": "not-an-iso-datetime"}),
@@ -1881,5 +1878,12 @@ class TestAgentConversationRegenerateOpenApiRequestContract:
         with pytest.raises(AssertionError):
             assert_request_body_matches_openapi_operation(
                 payload,
+                "regenerateAgentConversationMessage",
+            )
+
+    def test_rejects_model_provider_top_level(self) -> None:
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(
+                {"modelProvider": "openai"},
                 "regenerateAgentConversationMessage",
             )

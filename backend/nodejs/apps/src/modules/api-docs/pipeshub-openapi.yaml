@@ -3748,12 +3748,6 @@ components:
           type: string
           minLength: 1
           description: Provider model name (the underlying LLM identifier).
-        modelProvider:
-          type: string
-          minLength: 1
-          description: |
-            Model provider identifier recorded on the saved conversation
-            metadata for this turn.
         modelFriendlyName:
           type: string
           minLength: 1
@@ -3794,7 +3788,6 @@ components:
         query: what are some latest tech news?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
         modelName: gpt-5.4-mini
-        modelProvider: openai
         modelFriendlyName: GPT 5.4 mini
         quickMode: false
         chatMode: auto
@@ -3840,7 +3833,7 @@ components:
         Supported fields:
         - `filters` — optional `{ apps?, kb? }` filter object
         - `chatMode` — optional non-empty chat mode string
-        - `modelKey`, `modelName`, `modelProvider`, `modelFriendlyName` —
+        - `modelKey`, `modelName`, `modelFriendlyName` —
           optional non-empty model override fields
         - `timezone` — optional non-empty client timezone string
         - `currentTime` — optional ISO 8601 / RFC 3339 datetime string with
@@ -3862,12 +3855,6 @@ components:
           minLength: 1
           description: Provider model name (e.g. the underlying LLM identifier).
           example: "gpt-5.4-mini"
-        modelProvider:
-          type: string
-          minLength: 1
-          description: |
-            Model provider identifier recorded on the saved conversation
-            metadata for this turn.
         modelFriendlyName:
           type: string
           minLength: 1
@@ -4075,12 +4062,6 @@ components:
           type: string
           minLength: 1
           description: Provider model name (the underlying LLM identifier).
-        modelProvider:
-          type: string
-          minLength: 1
-          description: |
-            Model provider identifier recorded on the saved conversation
-            metadata for this turn.
         modelFriendlyName:
           type: string
           minLength: 1
@@ -26148,7 +26129,6 @@ paths:
         - `chatMode`
         - `modelKey`
         - `modelName`
-        - `modelProvider`
         - `modelFriendlyName`
         - `timezone`
         - `currentTime`
