@@ -7619,13 +7619,11 @@ components:
         oldestArchive:
           type: string
           format: date-time
-          nullable: true
-          description: Archive timestamp of the first item in the current page
+          description: Archive timestamp of the first item in the current page. Omitted when the page is empty.
         newestArchive:
           type: string
           format: date-time
-          nullable: true
-          description: Archive timestamp of the last item in the current page
+          description: Archive timestamp of the last item in the current page. Omitted when the page is empty.
 
     AgentArchivedConversationListResponse:
       type: object
