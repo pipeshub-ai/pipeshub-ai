@@ -15220,7 +15220,38 @@ class TestGetKnowledgeHubChildren:
         assert result == {"nodes": [], "total": 0}
 
 
+class TestKnowledgeHubSearchTwoPhase:
+    @pytest.mark.asyncio
+    async def test_search_two_phase_calls_hydration(self, connected_provider):
+        connected_provider._build_knowledge_hub_filter_conditions = MagicMock(
+            return_value=([], {})
+        )
+        connected_provider._build_scope_filters = MagicMock(
+            return_value=("", "", "true", "true")
+        )
+        connected_provider._build_children_intersection_aql = MagicMock(return_value="")
+        connected_provider.get_user_app_ids = AsyncMock(return_value=[])
+
+        async def execute_side_effect(query, **kwargs):
+            if "paginated_refs" in (kwargs.get("bind_vars") or {}):
+                return [{"nodes": [{"id": "r1", "name": "Doc", "nodeType": "record"}]}]
+            return [{"total": 1, "paginated_refs": [{"id": "r1", "nodeType": "record"}]}]
+
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=execute_side_effect)
+        result = await connected_provider.get_knowledge_hub_search(
+            "org1", "uk1", skip=0, limit=10, sort_field="name", sort_dir="ASC"
+        )
+        assert connected_provider.http_client.execute_aql.await_count == 2
+        assert result["total"] == 1
+        assert len(result["nodes"]) == 1
+        assert result["nodes"][0]["id"] == "r1"
+
+
 class TestGetKnowledgeHubSearch:
+    @pytest.fixture(autouse=True)
+    def _kh_search_user_apps(self, connected_provider):
+        connected_provider.get_user_app_ids = AsyncMock(return_value=[])
+
     @pytest.mark.asyncio
     async def test_global_search(self, connected_provider):
         connected_provider._build_knowledge_hub_filter_conditions = MagicMock(
@@ -15231,7 +15262,7 @@ class TestGetKnowledgeHubSearch:
         )
         connected_provider._build_children_intersection_aql = MagicMock(return_value="")
         connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"nodes": [{"id": "r1"}], "total": 1, "availableFilters": {}}]
+            return_value=[{"total": 1, "paginated_refs": []}]
         )
         result = await connected_provider.get_knowledge_hub_search(
             "org1", "uk1", skip=0, limit=10,
@@ -15246,7 +15277,7 @@ class TestGetKnowledgeHubSearch:
         )
         connected_provider._build_children_intersection_aql = MagicMock(return_value="")
         connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"nodes": [], "total": 0, "availableFilters": {}}]
+            return_value=[{"total": 0, "paginated_refs": []}]
         )
         result = await connected_provider.get_knowledge_hub_search(
             "org1", "uk1", skip=0, limit=10,
@@ -15263,7 +15294,7 @@ class TestGetKnowledgeHubSearch:
         connected_provider._build_children_intersection_aql = MagicMock(return_value="")
         connected_provider.get_document = AsyncMock(return_value={"connectorId": "c1"})
         connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"nodes": [], "total": 0, "availableFilters": {}}]
+            return_value=[{"total": 0, "paginated_refs": []}]
         )
         result = await connected_provider.get_knowledge_hub_search(
             "org1", "uk1", skip=0, limit=10,
@@ -15282,7 +15313,7 @@ class TestGetKnowledgeHubSearch:
         )
         connected_provider._build_children_intersection_aql = MagicMock(return_value="")
         connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"nodes": [], "total": 0, "availableFilters": {}}]
+            return_value=[{"total": 0, "paginated_refs": []}]
         )
         result = await connected_provider.get_knowledge_hub_search(
             "org1", "uk1", skip=0, limit=10,
@@ -15301,7 +15332,7 @@ class TestGetKnowledgeHubSearch:
         )
         connected_provider._build_children_intersection_aql = MagicMock(return_value="")
         connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"nodes": [], "total": 0, "availableFilters": {}}]
+            return_value=[{"total": 0, "paginated_refs": []}]
         )
         result = await connected_provider.get_knowledge_hub_search(
             "org1", "uk1", skip=0, limit=10,
