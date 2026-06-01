@@ -469,6 +469,10 @@ function KnowledgeBasePageContent() {
   // Upload store actions
   const { addItems: addUploadItems, startUpload, completeUpload, failUpload, bulkUpdateItemStatus } = useUploadStore();
 
+  /**
+   * Tracks last page we fetched for so filter/sort resets (page → 1) do not trigger a
+   * duplicate fetch from the pagination effect when page actually changes (e.g. 2 → 1).
+   */
   const prevAllRecordsPageRef = useRef(allRecordsPagination.page);
   const accessToken = useAuthStore((s) => s.accessToken);
 
@@ -659,23 +663,29 @@ function KnowledgeBasePageContent() {
       isFirstFilterSortFetch.current = false;
       return;
     }
+    // setAllRecordsFilter / setAllRecordsSort reset page to 1; sync ref so pagination effect
+    // does not duplicate-fetch when page changes (e.g. 2 → 1), without a skip flag that can
+    // stick when page stays 1 and the pagination effect never runs.
+    prevAllRecordsPageRef.current =
+      useKnowledgeBaseStore.getState().allRecordsPagination.page;
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [allRecordsFilter, allRecordsSort]);
 
   // All Records mode: Re-fetch when pagination page changes
   useEffect(() => {
-    if (isAllRecordsMode) {
-      if (allRecordsPagination.page === prevAllRecordsPageRef.current) return;
-      prevAllRecordsPageRef.current = allRecordsPagination.page;
-      fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
-    }
+    if (!isAllRecordsMode) return;
+    if (allRecordsPagination.page === prevAllRecordsPageRef.current) return;
+    prevAllRecordsPageRef.current = allRecordsPagination.page;
+    fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [allRecordsPagination.page]);
 
   // All Records mode: Re-fetch when pagination limit changes
   useEffect(() => {
-    if (isAllRecordsMode && allRecordsPagination.limit !== DEFAULT_PAGE_SIZE) {
-      fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
-    }
+    if (!isAllRecordsMode || allRecordsPagination.limit === DEFAULT_PAGE_SIZE) return;
+    // setAllRecordsLimit resets page to 1; keep pagination ref in sync (same as filter effect).
+    prevAllRecordsPageRef.current =
+      useKnowledgeBaseStore.getState().allRecordsPagination.page;
+    fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [allRecordsPagination.limit]);
 
   // All Records mode: Transform API response items to include source display info
@@ -1018,7 +1028,9 @@ function KnowledgeBasePageContent() {
       hasSearchedAllRecords.current = true;
     }
 
-    // Pass parent context to ensure scoped search when inside a parent node
+    // setAllRecordsSearchQuery resets page to 1; keep pagination ref in sync (same as filter effect).
+    prevAllRecordsPageRef.current =
+      useKnowledgeBaseStore.getState().allRecordsPagination.page;
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [debouncedAllRecordsSearchQuery, isAllRecordsMode]);
 
@@ -1131,6 +1143,8 @@ function KnowledgeBasePageContent() {
     setIsSearchOpen(false);
     if (isAllRecordsMode) {
       setAllRecordsSearchQuery('');
+      prevAllRecordsPageRef.current =
+        useKnowledgeBaseStore.getState().allRecordsPagination.page;
       // Immediate refetch when clearing search (bypasses debounce).
       // Preserve drill-down: fetchAllRecordsTableData() with no args loads the global root only.
       const nt = searchParams.get('nodeType');
