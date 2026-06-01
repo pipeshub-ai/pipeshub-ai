@@ -6494,10 +6494,12 @@ components:
             additionalProperties: false
             properties:
               name:
-                type: string
-                description: Integration / toolset type key
+                allOf:
+                  - $ref: '#/components/schemas/AgentCreateToolsetName'
+                description: Integration / toolset type key.
               displayName:
                 type: string
+                description: Human-readable toolset product label (for example `Jira` or `Slack`).
               type:
                 type: string
               instanceId:
@@ -7105,9 +7107,10 @@ components:
         - tools
       properties:
         name:
-          type: string
+          $ref: '#/components/schemas/AgentCreateToolsetName'
         displayName:
           type: string
+          description: Human-readable toolset product label (for example `Jira` or `Slack`).
         key:
           type: string
         tools:
