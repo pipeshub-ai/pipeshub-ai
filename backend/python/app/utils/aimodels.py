@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import os
 import re
+import threading
+from collections import OrderedDict
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict
 
@@ -89,18 +91,78 @@ class STTProvider(Enum):
 MAX_OUTPUT_TOKENS = 4096
 MAX_OUTPUT_TOKENS_CLAUDE_4_5 = 64000
 
+# ---------------------------------------------------------------------------
+# Thread-safe LRU cache for local embedding models (HuggingFace / SentenceTransformers).
+# Loading these models from disk costs 300 ms–1 s and ~400 MB+ of RAM each, so
+# we keep a small number of recently-used instances alive for the process lifetime.
+#
+# Design notes:
+#   - OrderedDict gives O(1) move-to-end on cache hit (LRU touch).
+#   - A threading.Lock serialises all reads and writes so concurrent Uvicorn
+#     worker threads can't race on eviction (KeyError) or double-load.
+#   - Cache keys are built with _make_hf_key(), which converts dict values to
+#     a sorted tuple of (k, repr(v)) pairs so nested/unhashable values don't
+#     raise TypeError.
+# ---------------------------------------------------------------------------
+
+_HF_EMBEDDING_MODEL_CACHE: OrderedDict[tuple, Any] = OrderedDict()
+_HF_EMBEDDING_MODEL_LOCK = threading.Lock()
+_HF_MAX_CACHED_MODELS = 5
+
+
+def _make_hf_key(*parts: Any) -> tuple:
+    """Build a hashable cache key from arbitrary parts.
+
+    Dict values are serialised via repr() so unhashable nested structures
+    (lists, dicts) don't cause a TypeError.
+    """
+    def _normalise(v: Any) -> Any:
+        if isinstance(v, dict):
+            return tuple(sorted((k, repr(val)) for k, val in v.items()))
+        return v
+
+    return tuple(_normalise(p) for p in parts)
+
+
+def _hf_cache_get(key: tuple) -> Any | None:
+    """Return a cached model and mark it as most-recently used, or None."""
+    with _HF_EMBEDDING_MODEL_LOCK:
+        model = _HF_EMBEDDING_MODEL_CACHE.get(key)
+        if model is not None:
+            _HF_EMBEDDING_MODEL_CACHE.move_to_end(key)
+        return model
+
+
+def _hf_cache_put(key: tuple, model: Any) -> None:
+    """Insert model into the LRU cache, evicting the least-recently used entry when full."""
+    with _HF_EMBEDDING_MODEL_LOCK:
+        if key in _HF_EMBEDDING_MODEL_CACHE:
+            _HF_EMBEDDING_MODEL_CACHE.move_to_end(key)
+        else:
+            if len(_HF_EMBEDDING_MODEL_CACHE) >= _HF_MAX_CACHED_MODELS:
+                _HF_EMBEDDING_MODEL_CACHE.popitem(last=False)  # evict LRU (front)
+            _HF_EMBEDDING_MODEL_CACHE[key] = model
+
+
 def get_default_embedding_model() -> Embeddings:
     from langchain_huggingface import HuggingFaceEmbeddings
 
+    model_name = DEFAULT_EMBEDDING_MODEL
+    key = _make_hf_key("default", model_name, "cpu", True)
+    cached = _hf_cache_get(key)
+    if cached is not None:
+        return cached
+
     try:
-        model_name = DEFAULT_EMBEDDING_MODEL
         encode_kwargs = {'normalize_embeddings': True}
-        return HuggingFaceEmbeddings(
+        model = HuggingFaceEmbeddings(
             model_name=model_name,
             model_kwargs={"device": "cpu"},
             encode_kwargs=encode_kwargs,
         )
-    except Exception  as e:
+        _hf_cache_put(key, model)
+        return model
+    except Exception as e:
         raise e
 
 logger = create_logger("aimodels")
@@ -278,11 +340,18 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
         if "normalize_embeddings" not in encode_kwargs:
             encode_kwargs["normalize_embeddings"] = True
 
-        return HuggingFaceEmbeddings(
+        key = _make_hf_key(EmbeddingProvider.HUGGING_FACE.value, model_name, model_kwargs, encode_kwargs)
+        cached = _hf_cache_get(key)
+        if cached is not None:
+            return cached
+
+        model = HuggingFaceEmbeddings(
             model_name=model_name,
             model_kwargs=model_kwargs,
-            encode_kwargs=encode_kwargs
+            encode_kwargs=encode_kwargs,
         )
+        _hf_cache_put(key, model)
+        return model
 
     elif provider == EmbeddingProvider.JINA_AI.value:
         from langchain_community.embeddings.jina import JinaEmbeddings
@@ -335,12 +404,20 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
         from langchain_community.embeddings import SentenceTransformerEmbeddings
 
         encode_kwargs = configuration.get('encode_kwargs', {}).copy()
+        cache_folder = configuration.get('cache_folder', None)
 
-        return SentenceTransformerEmbeddings(
+        key = _make_hf_key(EmbeddingProvider.SENTENCE_TRANSFOMERS.value, model_name, cache_folder, encode_kwargs)
+        cached = _hf_cache_get(key)
+        if cached is not None:
+            return cached
+
+        model = SentenceTransformerEmbeddings(
             model_name=model_name,
-            cache_folder=configuration.get('cache_folder', None),
-            encode_kwargs=encode_kwargs
+            cache_folder=cache_folder,
+            encode_kwargs=encode_kwargs,
         )
+        _hf_cache_put(key, model)
+        return model
 
     elif provider == EmbeddingProvider.OPENAI_COMPATIBLE.value:
         from langchain_openai.embeddings import OpenAIEmbeddings
