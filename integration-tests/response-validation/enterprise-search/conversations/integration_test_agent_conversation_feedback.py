@@ -40,14 +40,6 @@ _MINIMAL_FEEDBACK_PAYLOAD: dict[str, Any] = {
     "categories": ["excellent_answer"],
 }
 
-_RICH_FEEDBACK_PAYLOAD: dict[str, Any] = {
-    "isHelpful": True,
-    "categories": ["excellent_answer"],
-    "comments": {
-        "positive": "Clear and useful.",
-    },
-}
-
 
 def _iter_sse_envelopes(
     resp: requests.Response,
@@ -117,7 +109,11 @@ class TestAgentConversationMessageFeedbackOpenApiRequestContract:
 
     def test_rich_request_body_matches_openapi_spec(self) -> None:
         assert_request_body_matches_openapi_operation(
-            _RICH_FEEDBACK_PAYLOAD,
+            {
+                "isHelpful": True,
+                "categories": ["excellent_answer"],
+                "comments": {"positive": "Clear and useful."},
+            },
             "updateAgentConversationMessageFeedback",
         )
 
@@ -363,8 +359,13 @@ class TestAgentConversationMessageFeedback:
         self,
         created_conversations,
     ) -> None:
+        payload = {
+            "isHelpful": True,
+            "categories": ["excellent_answer"],
+            "comments": {"positive": "Clear and useful."},
+        }
         assert_request_body_matches_openapi_operation(
-            _RICH_FEEDBACK_PAYLOAD,
+            payload,
             "updateAgentConversationMessageFeedback",
         )
 
@@ -379,7 +380,7 @@ class TestAgentConversationMessageFeedback:
         resp = requests.post(
             url,
             headers=self.headers,
-            json=_RICH_FEEDBACK_PAYLOAD,
+            json=payload,
             timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
