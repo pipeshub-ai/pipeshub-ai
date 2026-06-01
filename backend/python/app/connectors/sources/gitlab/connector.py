@@ -2658,7 +2658,7 @@ class GitLabConnector(BaseConnector):
                     },
                 )
 
-            path_to_record: dict[str, CodeFileRecord] = {}
+            path_to_records: dict[str, list[CodeFileRecord]] = {}
             for node in nodes:
                 if node.get("isDeleted"):
                     continue
@@ -2668,13 +2668,12 @@ class GitLabConnector(BaseConnector):
                 )
                 if not file_path:
                     continue
-                path_to_record[file_path] = code_file
+                path_to_records.setdefault(file_path, []).append(code_file)
 
-            file_paths = list(path_to_record.keys())
+            file_paths = list(path_to_records.keys())
             for offset in range(0, len(file_paths), batch_size):
                 await self._refresh_token_if_needed()
                 batch_paths = file_paths[offset : offset + batch_size]
-                batch_records = {path: path_to_record[path] for path in batch_paths}
 
                 try:
                     timestamp_by_path = await self._fetch_code_file_timestamps_batch(
@@ -2689,38 +2688,40 @@ class GitLabConnector(BaseConnector):
                     )
                     continue
 
-                for file_path, record in batch_records.items():
+                for file_path in batch_paths:
                     created_ms, updated_ms = timestamp_by_path.get(
                         file_path, (None, None)
                     )
                     if created_ms is None and updated_ms is None:
                         continue
-                    if (
-                        record.source_created_at == created_ms
-                        and record.source_updated_at == updated_ms
-                    ):
-                        continue
 
-                    try:
-                        updated_record = record.model_copy(
-                            update={
-                                "source_created_at": created_ms,
-                                "source_updated_at": updated_ms,
-                            }
-                        )
-                        await self.data_entities_processor.on_record_metadata_update(
-                            updated_record
-                        )
-                    except Exception as e:
-                        self.logger.warning(
-                            "Failed to update timestamps for connector %s project %s "
-                            "record %s path %s: %s",
-                            self.connector_id,
-                            project_id,
-                            record.id,
-                            file_path,
-                            e,
-                        )
+                    for record in path_to_records[file_path]:
+                        if (
+                            record.source_created_at == created_ms
+                            and record.source_updated_at == updated_ms
+                        ):
+                            continue
+
+                        try:
+                            updated_record = record.model_copy(
+                                update={
+                                    "source_created_at": created_ms,
+                                    "source_updated_at": updated_ms,
+                                }
+                            )
+                            await self.data_entities_processor.on_record_metadata_update(
+                                updated_record
+                            )
+                        except Exception as e:
+                            self.logger.warning(
+                                "Failed to update timestamps for connector %s project %s "
+                                "record %s path %s: %s",
+                                self.connector_id,
+                                project_id,
+                                record.id,
+                                file_path,
+                                e,
+                            )
 
         except Exception as e:
             self.logger.error(
