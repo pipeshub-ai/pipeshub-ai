@@ -4782,6 +4782,33 @@ class TestGetRecordsByRecordGroupPagination:
         )
         assert len(result) == 1
 
+    @pytest.mark.asyncio
+    async def test_depth_zero_omits_nested_traversal(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [
+            {"record": _make_full_arango_record(), "typeDoc": _make_minimal_file_type_doc()}
+        ]
+        result = await connected_provider.get_records_by_record_group(
+            "rg1", "c1", "org1", depth=0
+        )
+        assert len(result) == 1
+        query = connected_provider.http_client.execute_aql.call_args[0][0]
+        bind_vars = connected_provider.http_client.execute_aql.call_args[0][1]
+        assert "LET allRecordGroups = [recordGroup]" in query
+        assert "1..@max_depth" not in query
+        assert "max_depth" not in bind_vars
+
+    @pytest.mark.asyncio
+    async def test_depth_one_includes_nested_traversal(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = []
+        await connected_provider.get_records_by_record_group(
+            "rg1", "c1", "org1", depth=1
+        )
+        query = connected_provider.http_client.execute_aql.call_args[0][0]
+        bind_vars = connected_provider.http_client.execute_aql.call_args[0][1]
+        assert "1..@max_depth" in query
+        assert "UNION_DISTINCT" in query
+        assert bind_vars["max_depth"] == 1
+
 
 # ---------------------------------------------------------------------------
 # get_records_by_parent_record with options
