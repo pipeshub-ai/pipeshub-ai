@@ -3,7 +3,7 @@ import {
   validateNoFormatSpecifiers,
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
-import { INTERNAL_CONVERSATION_CHAT_MODE } from '../constants/constants';
+import { PIPESHUB_CHAT_MODE } from '../constants/constants';
 
 // ---------------------------------------------------------------------------
 // Primitive validators
@@ -163,7 +163,7 @@ const enterpriseSearchCreateBodySchema = z.object({
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
     attachments: z.array(attachmentRefSchema).optional(),
-    chatMode: z.nativeEnum(INTERNAL_CONVERSATION_CHAT_MODE).optional(),
+    chatMode: z.nativeEnum(PIPESHUB_CHAT_MODE).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
 });
@@ -213,7 +213,7 @@ const addMessageBodySchema = z.object({
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
     attachments: z.array(attachmentRefSchema).optional(),
-    chatMode: z.nativeEnum(INTERNAL_CONVERSATION_CHAT_MODE).optional(),
+    chatMode: z.nativeEnum(PIPESHUB_CHAT_MODE).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
 });

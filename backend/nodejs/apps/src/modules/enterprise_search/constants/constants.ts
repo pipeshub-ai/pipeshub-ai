@@ -38,7 +38,11 @@ export const FAIL_REASON_TYPE = {
 export type FailReasonType =
   (typeof FAIL_REASON_TYPE)[keyof typeof FAIL_REASON_TYPE];
 
-export const INTERNAL_CONVERSATION_CHAT_MODE = {
+export const PIPESHUB_CHAT_MODE = {
   WEB_SEARCH: 'web_search',
   INTERNAL_SEARCH: 'internal_search',
+  DEEP: 'deep',
+  QUICK: 'quick',
+  VERIFY: 'verify',
+  AUTO: 'auto',
 } as const;
