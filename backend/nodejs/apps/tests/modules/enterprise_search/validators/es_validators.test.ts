@@ -434,7 +434,7 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
-    it('should accept optional stream-only controller fields', () => {
+    it('should strip quickMode and caller context from agent stream create body', () => {
       const data = {
         params: validParams,
         body: {
@@ -446,6 +446,11 @@ describe('enterprise_search/validators/es_validators', () => {
       }
       const result = agentStreamCreateSchema.safeParse(data)
       expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body).to.not.have.property('quickMode')
+        expect(result.data.body).to.not.have.property('callerDisplayName')
+        expect(result.data.body).to.not.have.property('callerEmail')
+      }
     })
   })
 

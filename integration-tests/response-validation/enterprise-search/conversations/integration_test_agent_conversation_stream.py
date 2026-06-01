@@ -333,6 +333,13 @@ class TestAgentConversationStreamOpenApiRequestContract:
                 "streamAgentConversation",
             )
 
+    def test_rejects_quick_mode_offline(self) -> None:
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(
+                {"query": "hi", "quickMode": True},
+                "streamAgentConversation",
+            )
+
 
 @pytest.mark.integration
 class TestAgentConversationStream(_AgentStreamTestBase):

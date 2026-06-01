@@ -3752,11 +3752,6 @@ components:
           type: string
           minLength: 1
           description: Friendly UI label for the selected model.
-        quickMode:
-          type: boolean
-          description: |
-            Optional low-latency execution hint forwarded to the agent backend.
-            When `true`, the backend may favor faster responses over depth.
         timezone:
           type: string
           minLength: 1
@@ -3783,7 +3778,6 @@ components:
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
         modelName: gpt-5.4-mini
         modelFriendlyName: GPT 5.4 mini
-        quickMode: false
         chatMode: auto
         timezone: Asia/Kolkata
         currentTime: "2026-05-19T12:58:01+05:30"
