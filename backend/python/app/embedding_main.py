@@ -37,6 +37,11 @@ DEFAULT_NORMALIZE = os.getenv("EMBEDDING_SERVER_NORMALIZE", "true").lower() in (
 )
 MAX_CONCURRENT_EMBEDDINGS = int(os.getenv("EMBEDDING_SERVER_MAX_CONCURRENCY", "4"))
 
+# Bound any Hub HTTP call so a slow/blocked network can never hang model load
+# indefinitely. huggingface_hub reads this on import, so set it before the
+# library is imported inside ``_load``.
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
+
 
 class EmbeddingRequest(BaseModel):
     model: str
@@ -134,7 +139,27 @@ class ModelManager:
                 load_kwargs: dict[str, Any] = {"device": self._device}
                 if trust_remote_code:
                     load_kwargs["trust_remote_code"] = True
-                return SentenceTransformer(model_name, **load_kwargs)
+
+                # Prefer cached weights: loading with local_files_only avoids the
+                # Hub round-trip that can hang for a long time on a slow/blocked
+                # network even when the model is already in the HF cache. Only
+                # reach out to the network when the model is not cached yet.
+                try:
+                    return SentenceTransformer(
+                        model_name,
+                        local_files_only=True,
+                        **load_kwargs,
+                    )
+                except Exception:
+                    logger.info(
+                        "Model '%s' not found in local cache; downloading from Hub",
+                        model_name,
+                    )
+                    return SentenceTransformer(
+                        model_name,
+                        local_files_only=False,
+                        **load_kwargs,
+                    )
 
             model = await asyncio.to_thread(_load)
             self._models[cache_key] = model

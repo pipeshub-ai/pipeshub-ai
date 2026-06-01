@@ -143,6 +143,9 @@ services:
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
+      # Persist the HuggingFace model cache so models pulled at runtime survive
+      # container recreation instead of being re-downloaded on every restart.
+      - pipeshub_hf_cache:/root/.cache/huggingface
       - /var/run/docker.sock:/var/run/docker.sock  # Required for SANDBOX_MODE=docker
 
     extra_hosts:
@@ -314,4 +317,6 @@ volumes:
   pipeshub_data:
     driver: local
   pipeshub_root_local:
+    driver: local
+  pipeshub_hf_cache:
     driver: local

@@ -157,6 +157,9 @@ services:
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
+      # Persist the HuggingFace model cache so models pulled at runtime survive
+      # container recreation instead of being re-downloaded on every restart.
+      - pipeshub_hf_cache:/root/.cache/huggingface
       # ── Hot Reload: bind-mount source code so watchers pick up file saves ──
       - ../scripts/dev_process_monitor.sh:/app/dev_process_monitor.sh
       - ../../../backend/python/app:/app/python/app
@@ -342,4 +345,6 @@ volumes:
   pipeshub_data:
     driver: local
   pipeshub_root_local:
+    driver: local
+  pipeshub_hf_cache:
     driver: local
