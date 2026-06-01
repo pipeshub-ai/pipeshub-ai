@@ -22,6 +22,7 @@ import type { DateFilterType } from '@/app/components/ui/date-range-picker';
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import type { FilterSchemaField } from '../../types';
+import { isMeaningfulFilterRow } from '../../utils/sync-filter-save-guards';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 
 type FilterSection = 'sync' | 'indexing';
@@ -240,45 +241,6 @@ function hasActiveFilterRow(raw: unknown): boolean {
   if (raw === undefined || raw === null) return false;
   if (!isFilterRowValue(raw)) return false;
   return Boolean(String(raw.operator || '').trim());
-}
-
-/** Whether saved form state counts as a configured filter (for summary chips). */
-function isMeaningfulCommitted(field: FilterSchemaField, raw: unknown): boolean {
-  if (raw === undefined || raw === null) return false;
-  if (!isFilterRowValue(raw) || !raw.operator?.trim()) return false;
-  const row = raw;
-  const ft = String(field.filterType ?? '').toLowerCase();
-  if (ft === 'list' || ft === 'multiselect' || isListLikeField(field)) {
-    if (Array.isArray(row.value)) {
-      if (row.value.length > 0 || field.defaultOperator) {
-        return true;
-      }
-    }
-    return false;
-  }
-  if (ft === 'boolean') {
-    return row.value === true || row.value === false;
-  }
-  if (ft === 'datetime') {
-    const op = row.operator.toLowerCase();
-    if (op.startsWith('last_')) return true;
-    const v = row.value as { start?: unknown; end?: unknown } | null;
-    if (!v || typeof v !== 'object') return false;
-    const startOk =
-      v.start !== undefined &&
-      v.start !== null &&
-      v.start !== '' &&
-      !(typeof v.start === 'number' && (v.start <= 0 || Number.isNaN(v.start)));
-    const endOk =
-      v.end !== undefined &&
-      v.end !== null &&
-      v.end !== '' &&
-      !(typeof v.end === 'number' && (v.end <= 0 || Number.isNaN(v.end)));
-    return startOk || endOk;
-  }
-  if (row.value === '' || row.value === undefined || row.value === null) return false;
-  if (typeof row.value === 'string' && !row.value.trim()) return false;
-  return true;
 }
 
 function summarizeCommittedFilter(
@@ -807,7 +769,7 @@ export function FiltersSection() {
 
     // Every indexing schema field gets default operator/value in form state, EXCEPT:
     //  - datetime fields with no explicit defaultOperator (operators[0] = "last_7_days"
-    //    would pass isMeaningfulCommitted and cause spurious auto-selection)
+    //    would pass isMeaningfulFilterRow and cause spurious auto-selection)
     //  - boolean fields with no explicit defaultValue (booleanDefaultValue() falls back
     //    to false; hasActiveFilterRow sees the implicit "is" operator and shows the row
     //    even when no real default was intended — operator "is" is always implicit for
@@ -837,7 +799,7 @@ export function FiltersSection() {
       if (existing === undefined) {
         if (field.filterType === 'datetime' && !field.defaultOperator?.trim()) continue;
         // Boolean: skip unless backend explicitly provided a defaultValue (true or false).
-        // booleanDefaultValue() silently falls back to false which makes isMeaningfulCommitted
+        // booleanDefaultValue() silently falls back to false which makes isMeaningfulFilterRow
         // return true even with no real default, causing the filter to appear auto-selected.
         if (field.filterType === 'boolean' && typeof field.defaultValue !== 'boolean') continue;
         const row = getRow(field, undefined);
@@ -852,14 +814,14 @@ export function FiltersSection() {
 
     const { formData: fd } = useConnectorsStore.getState();
     const seedSync = (fields: FilterSchemaField[], vals: Record<string, unknown>) =>
-      fields.filter((f) => isMeaningfulCommitted(f, vals[f.name])).map((f) => f.name);
+      fields.filter((f) => isMeaningfulFilterRow(f, vals[f.name])).map((f) => f.name);
     // Datetime indexing filters are only auto-selected when they have a real saved value
     // or a last_* relative operator — matching the same strictness as sync filters.
     // All other indexing filter types (boolean, list, string) keep the legacy always-on
     // behaviour via hasActiveFilterRow (operator presence is enough for those).
     const seedIndexingActive = (fields: FilterSchemaField[], vals: Record<string, unknown>) =>
       fields.filter((f) => {
-        if (f.filterType === 'datetime') return isMeaningfulCommitted(f, vals[f.name]);
+        if (f.filterType === 'datetime') return isMeaningfulFilterRow(f, vals[f.name]);
         return hasActiveFilterRow(vals[f.name]);
       }).map((f) => f.name);
 
@@ -977,7 +939,7 @@ function FilterCategoryBlock({
         const field = fields.find((f) => f.name === name);
         if (!field) return null;
         const raw = values[name];
-        if (!isMeaningfulCommitted(field, raw)) return null;
+        if (!isMeaningfulFilterRow(field, raw)) return null;
         const row = getRow(field, raw);
         if (isListLikeField(field)) {
           const ids = listFilterIds(row.value);
