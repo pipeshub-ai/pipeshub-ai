@@ -10,6 +10,7 @@ function isFilterRow(raw: unknown): raw is FilterRow {
   return (
     typeof raw === 'object' &&
     raw !== null &&
+    !Array.isArray(raw) &&
     'operator' in raw &&
     typeof (raw as FilterRow).operator === 'string'
   );
@@ -46,7 +47,7 @@ export function isMeaningfulFilterRow(field: FilterSchemaField, raw: unknown): b
     const op = operator.toLowerCase();
     if (op.startsWith('last_')) return true;
     const v = value as { start?: unknown; end?: unknown } | null;
-    if (!v || typeof v !== 'object') return false;
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
     const startOk =
       v.start !== undefined &&
       v.start !== null &&
