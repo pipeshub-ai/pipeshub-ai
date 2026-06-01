@@ -91,19 +91,20 @@ def _call_with_retry(
     operation: str,
 ) -> T:
     last_exc: BaseException | None = None
-    for attempt in range(1, max_retries + 1):
+    total_attempts = max(1, max_retries)
+    for attempt in range(1, total_attempts + 1):
         try:
             return fn()
         except Exception as exc:
             last_exc = exc
-            if not _is_retriable_embedding_error(exc) or attempt >= max_retries:
+            if not _is_retriable_embedding_error(exc) or attempt >= total_attempts:
                 raise
             delay = _retry_delay_seconds(attempt)
             logger.warning(
                 "Embedding server %s failed (attempt %d/%d): %s; retrying in %.1fs",
                 operation,
                 attempt,
-                max_retries,
+                total_attempts,
                 exc,
                 delay,
             )
@@ -120,19 +121,20 @@ async def _await_with_retry(
     operation: str,
 ) -> T:
     last_exc: BaseException | None = None
-    for attempt in range(1, max_retries + 1):
+    total_attempts = max(1, max_retries)
+    for attempt in range(1, total_attempts + 1):
         try:
             return await fn()
         except Exception as exc:
             last_exc = exc
-            if not _is_retriable_embedding_error(exc) or attempt >= max_retries:
+            if not _is_retriable_embedding_error(exc) or attempt >= total_attempts:
                 raise
             delay = _retry_delay_seconds(attempt)
             logger.warning(
                 "Embedding server %s failed (attempt %d/%d): %s; retrying in %.1fs",
                 operation,
                 attempt,
-                max_retries,
+                total_attempts,
                 exc,
                 delay,
             )

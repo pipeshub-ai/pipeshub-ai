@@ -182,7 +182,7 @@ def _format_embedding_vector(
 ) -> list[float] | str:
     """Format a single embedding per OpenAI encoding_format semantics."""
     if encoding_format == "base64":
-        packed = struct.pack(f"{len(vector)}f", *vector)
+        packed = struct.pack(f"<{len(vector)}f", *vector)
         return base64.b64encode(packed).decode("ascii")
     if encoding_format == "float":
         return vector

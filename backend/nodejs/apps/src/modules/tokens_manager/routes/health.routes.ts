@@ -284,7 +284,7 @@ export function createHealthRouter(
       const indexingHealthUrl = `${appConfig.indexingBackend}/health`;
       const doclingBackend = process.env.DOCLING_BACKEND || 'http://localhost:8081';
       const doclingHealthUrl = `${doclingBackend}/health`;
-      const embeddingBackend = process.env.EMBEDDING_SERVER_URL || 'http://localhost:8002';
+      const embeddingBackend = (process.env.EMBEDDING_SERVER_URL || 'http://localhost:8002').replace(/\/v1\/?$/, '');
       const embeddingHealthUrl = `${embeddingBackend}/health`;
 
       const [aiResp, connectorResp, indexingResp, doclingResp, embeddingResp] = await Promise.allSettled([
