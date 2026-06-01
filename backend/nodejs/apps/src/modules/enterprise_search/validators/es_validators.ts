@@ -382,6 +382,36 @@ const agentWebSearchSchema = z.union([
     }),
 ]);
 
+const AGENT_MODEL_REQUIRED_MESSAGE =
+  'At least one AI model is required. Please add a model to your configuration.';
+const AGENT_REASONING_MODEL_REQUIRED_MESSAGE =
+  'At least one reasoning model is required. Please add a reasoning model to your configuration.';
+
+const hasReasoningModel = (
+  models: Array<z.infer<typeof agentModelEntrySchema>>,
+): boolean =>
+  models.some(
+    (model) =>
+      typeof model === 'object' &&
+      model !== null &&
+      'isReasoning' in model &&
+      model.isReasoning === true,
+  );
+
+const agentModelsSchema = z
+  .array(agentModelEntrySchema)
+  .min(1, {
+    message: AGENT_MODEL_REQUIRED_MESSAGE,
+  })
+  .superRefine((models, ctx) => {
+    if (!hasReasoningModel(models)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: AGENT_REASONING_MODEL_REQUIRED_MESSAGE,
+      });
+    }
+  });
+
 const createAgentBodySchema = z
   .object({
     name: z
@@ -389,12 +419,7 @@ const createAgentBodySchema = z
       .trim()
       .min(1, { message: 'Name is required' })
       .max(200, { message: 'Name must be less than 200 characters' }),
-    models: z
-      .array(agentModelEntrySchema)
-      .min(1, {
-        message:
-          'At least one AI model is required. Please add a model to your configuration.',
-      }),
+    models: agentModelsSchema,
     description: agentLongTextSchema.optional(),
     startMessage: agentLongTextSchema.optional(),
     systemPrompt: agentLongTextSchema.optional(),
@@ -423,7 +448,7 @@ const updateAgentBodySchema = z
       .min(1, { message: 'Name is required' })
       .max(200, { message: 'Name must be less than 200 characters' })
       .optional(),
-    models: z.array(agentModelEntrySchema).min(1).optional(),
+    models: agentModelsSchema.optional(),
     description: agentLongTextSchema.optional(),
     startMessage: agentLongTextSchema.optional(),
     systemPrompt: agentLongTextSchema.optional(),
@@ -793,7 +818,7 @@ export const listAllArchivesAgentConversationQuerySchema = z.object({
         (value) => !value || !isNaN(new Date(value).getTime()),
         'Invalid end date format',
       ),
-  }),
+  }).strict(),
 });
 
 /** Schema for GET /conversations/show/archives — list archived conversations. */

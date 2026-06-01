@@ -21,6 +21,7 @@ import {
   updateAgentFeedbackParamsSchema,
   getAllConversationsQuerySchema,
   listAllArchivesConversationQuerySchema,
+  listAllArchivesAgentConversationQuerySchema,
   searchArchivedConversationsQuerySchema,
   FEEDBACK_CATEGORIES,
   attachmentUploadSchema,
@@ -1048,6 +1049,52 @@ describe('enterprise_search/validators/es_validators', () => {
   })
 
   // ---------------------------------------------------------------------------
+  // listAllArchivesAgentConversationQuerySchema
+  // ---------------------------------------------------------------------------
+
+  describe('listAllArchivesAgentConversationQuerySchema', () => {
+    const base = {
+      params: { agentKey: 'test-agent-key' },
+    }
+
+    it('should accept empty query (pagination defaults apply)', () => {
+      const result = listAllArchivesAgentConversationQuerySchema.safeParse({
+        ...base,
+        query: {},
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.query.page).to.equal(1)
+        expect(result.data.query.limit).to.equal(20)
+      }
+    })
+
+    it('should reject unknown query keys such as shared', () => {
+      const result = listAllArchivesAgentConversationQuerySchema.safeParse({
+        ...base,
+        query: { shared: 'maybe' },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject invalid startDate format', () => {
+      const result = listAllArchivesAgentConversationQuerySchema.safeParse({
+        ...base,
+        query: { startDate: 'not-a-date' },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject invalid endDate format', () => {
+      const result = listAllArchivesAgentConversationQuerySchema.safeParse({
+        ...base,
+        query: { endDate: 'still-not-a-date' },
+      })
+      expect(result.success).to.be.false
+    })
+  })
+
+  // ---------------------------------------------------------------------------
   // attachmentRecordIdParamsSchema
   // ---------------------------------------------------------------------------
   describe('attachmentRecordIdParamsSchema', () => {
@@ -1390,21 +1437,21 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
-    it('should accept models without isReasoning at Zod layer (enforced downstream)', () => {
+    it('should reject models without isReasoning true', () => {
       const result = createAgentSchema.safeParse({
         body: {
           name: 'Agent',
           models: [{ modelKey: 'mk1', modelName: 'mn1' }],
         },
       })
-      expect(result.success).to.be.true
+      expect(result.success).to.be.false
     })
 
-    it('should accept string-only model entries at Zod layer (enforced downstream)', () => {
+    it('should reject string-only model entries without a reasoning model', () => {
       const result = createAgentSchema.safeParse({
         body: { name: 'Agent', models: ['mk1_mn1'] },
       })
-      expect(result.success).to.be.true
+      expect(result.success).to.be.false
     })
 
     it('should reject models with dict entries missing modelKey', () => {
@@ -1503,7 +1550,7 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
-    it('should accept models without isReasoning at Zod layer (enforced downstream)', () => {
+    it('should reject models without isReasoning true', () => {
       const result = updateAgentSchema.safeParse({
         params: { agentKey: 'my-agent' },
         body: {
@@ -1516,15 +1563,15 @@ describe('enterprise_search/validators/es_validators', () => {
           ],
         },
       })
-      expect(result.success).to.be.true
+      expect(result.success).to.be.false
     })
 
-    it('should accept string-only models at Zod layer (enforced downstream)', () => {
+    it('should reject string-only models without a reasoning model', () => {
       const result = updateAgentSchema.safeParse({
         params: { agentKey: 'my-agent' },
         body: { models: ['some-model-string'] },
       })
-      expect(result.success).to.be.true
+      expect(result.success).to.be.false
     })
 
     it('should reject name exceeding max length', () => {

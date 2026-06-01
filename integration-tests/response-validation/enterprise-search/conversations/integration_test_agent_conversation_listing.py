@@ -1096,7 +1096,7 @@ class TestAgentConversationListing:
     @pytest.mark.parametrize(
         ("label", "params"),
         [
-            # Rejected by controller validateBooleanParam, not Zod (shared not in contract).
+            # Unknown query keys are rejected by strict Zod (shared is not in the contract).
             ("invalid shared", {"shared": "maybe"}),
             ("invalid startDate", {"startDate": "not-a-date"}),
             ("invalid endDate", {"endDate": "still-not-a-date"}),

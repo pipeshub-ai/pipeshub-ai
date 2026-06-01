@@ -25506,8 +25506,8 @@ paths:
         **Update semantics**
 
         Only fields present in the request body are updated. When `models` is
-        included, the Zod middleware (and Python backend) requires at least one
-        model entry and at least one object entry with `isReasoning: true`.
+        included, the gateway Zod middleware requires at least one model entry
+        and at least one object entry with `isReasoning: true`.
 
         **Permissions**
 
@@ -25865,6 +25865,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentArchivedConversationListResponse'
+        '400':
+          description: Invalid query parameters (gateway validation)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
 

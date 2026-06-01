@@ -1327,12 +1327,11 @@ class TestUpdateAgent:
             f"unexpected error payload: {resp.text}"
         )
 
-    def test_update_agent_returns_current_error_status_for_models_without_reasoning_flag(
+    def test_update_agent_rejects_models_without_reasoning_flag(
         self,
         reasoning_multimodal_llm_model: SeededAIModel,
         created_agent_keys: list[str],
     ) -> None:
-        """Document current gateway behavior when models omit the reasoning flag."""
         agent_key = self._create_agent_for_update_test(
             name=f"it-agent-update-no-reasoning-{uuid4().hex[:8]}",
             seeded_model=reasoning_multimodal_llm_model,
