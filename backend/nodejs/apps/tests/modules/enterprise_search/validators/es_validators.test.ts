@@ -440,7 +440,6 @@ describe('enterprise_search/validators/es_validators', () => {
         body: {
           query: 'hello',
           quickMode: true,
-          previousConversations: [{ role: 'user', content: 'prev' }],
           callerDisplayName: 'Slack User',
           callerEmail: 'slack-user@example.com',
         },
