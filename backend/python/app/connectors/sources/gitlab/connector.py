@@ -3131,7 +3131,7 @@ class GitLabConnector(BaseConnector):
                 f"❗❗appended {len(file_path_nodes)} file path nodes via GQL"
             )
             continue_paging, after_cursor = self._should_continue_repo_tree_pagination(
-                len(project_nodes), len(tree_list), page_info
+                len(file_path_nodes), len(tree_list), page_info
             )
             if not continue_paging:
                 if page_info.get("hasNextPage"):
@@ -3307,7 +3307,7 @@ class GitLabConnector(BaseConnector):
                 )
                 blobs_processed += len(file_path_nodes)
             continue_paging, after_cursor = self._should_continue_repo_tree_pagination(
-                len(project_nodes), blobs_processed, page_info
+                len(file_path_nodes), blobs_processed, page_info
             )
             if not continue_paging:
                 if not page_info.get("hasNextPage"):

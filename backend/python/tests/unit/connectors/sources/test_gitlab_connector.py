@@ -11984,22 +11984,10 @@ class TestSyncRepoMain:
             has_next_page=True,
             end_cursor="cursor-2",
         )
-        page2_data = json.dumps(
-            {
-                "data": {
-                    "project": {
-                        "repository": {
-                            "paginatedTree": {
-                                "nodes": [],
-                                "pageInfo": {
-                                    "hasNextPage": True,
-                                    "endCursor": "cursor-3",
-                                },
-                            }
-                        }
-                    }
-                }
-            }
+        page2_data = self._gql_tree_response(
+            tree_nodes=[],
+            has_next_page=True,
+            end_cursor="cursor-3",
         )
         page1_res = MagicMock()
         page1_res.data = page1_data
