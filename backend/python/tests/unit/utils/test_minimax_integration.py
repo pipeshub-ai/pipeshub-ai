@@ -16,7 +16,7 @@ from app.utils.aimodels import LLMProvider, get_generator_model
 class TestMiniMaxIntegration:
     """Integration tests for MiniMax LLM provider."""
 
-    def _minimax_config(self, model="MiniMax-M2.7", temperature=None):
+    def _minimax_config(self, model="MiniMax-M3", temperature=None):
         config = {
             "configuration": {
                 "model": model,
@@ -37,6 +37,24 @@ class TestMiniMaxIntegration:
         mock_cls.assert_called_once()
         call_kwargs = mock_cls.call_args.kwargs
         assert call_kwargs["base_url"] == "https://api.minimax.io/v1"
+        assert call_kwargs["model"] == "MiniMax-M3"
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_minimax_m3_model(self, mock_cls):
+        """MiniMax-M3 model should be accepted as the new default."""
+        mock_cls.return_value = MagicMock()
+        config = self._minimax_config("MiniMax-M3")
+        result = get_generator_model(LLMProvider.MINIMAX.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["model"] == "MiniMax-M3"
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_minimax_m27_model(self, mock_cls):
+        """MiniMax-M2.7 should still work for backward compatibility."""
+        mock_cls.return_value = MagicMock()
+        config = self._minimax_config("MiniMax-M2.7")
+        result = get_generator_model(LLMProvider.MINIMAX.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
         assert call_kwargs["model"] == "MiniMax-M2.7"
 
     @patch("langchain_openai.ChatOpenAI")

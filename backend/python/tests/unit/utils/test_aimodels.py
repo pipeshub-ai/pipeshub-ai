@@ -499,11 +499,11 @@ class TestGetGeneratorModel:
     @patch("langchain_openai.ChatOpenAI")
     def test_minimax(self, mock_cls):
         mock_cls.return_value = MagicMock()
-        config = self._base_config("MiniMax-M2.7")
+        config = self._base_config("MiniMax-M3")
         result = get_generator_model(LLMProvider.MINIMAX.value, config)
         mock_cls.assert_called_once()
         call_kwargs = mock_cls.call_args.kwargs
-        assert call_kwargs["model"] == "MiniMax-M2.7"
+        assert call_kwargs["model"] == "MiniMax-M3"
         assert call_kwargs["base_url"] == "https://api.minimax.io/v1"
         assert call_kwargs["stream_usage"] is True
         assert result is mock_cls.return_value
@@ -511,7 +511,7 @@ class TestGetGeneratorModel:
     @patch("langchain_openai.ChatOpenAI")
     def test_minimax_temperature_clamping(self, mock_cls):
         mock_cls.return_value = MagicMock()
-        config = self._base_config("MiniMax-M2.7")
+        config = self._base_config("MiniMax-M3")
         config["configuration"]["temperature"] = 0.0
         result = get_generator_model(LLMProvider.MINIMAX.value, config)
         call_kwargs = mock_cls.call_args.kwargs
@@ -521,7 +521,7 @@ class TestGetGeneratorModel:
     @patch("langchain_openai.ChatOpenAI")
     def test_minimax_temperature_upper_bound(self, mock_cls):
         mock_cls.return_value = MagicMock()
-        config = self._base_config("MiniMax-M2.7")
+        config = self._base_config("MiniMax-M3")
         config["configuration"]["temperature"] = 2.0
         result = get_generator_model(LLMProvider.MINIMAX.value, config)
         call_kwargs = mock_cls.call_args.kwargs
