@@ -28,23 +28,24 @@ function isListLikeFilterField(field: FilterSchemaField): boolean {
 export function isMeaningfulFilterRow(field: FilterSchemaField, raw: unknown): boolean {
   if (raw === undefined || raw === null) return false;
   if (!isFilterRow(raw) || !raw.operator?.trim()) return false;
-  const row = raw;
+  const operator = raw.operator.trim();
+  const { value } = raw;
   const ft = String(field.filterType ?? '').toLowerCase();
   if (ft === 'list' || ft === 'multiselect' || isListLikeFilterField(field)) {
-    if (Array.isArray(row.value)) {
-      if (row.value.length > 0 || field.defaultOperator) {
+    if (Array.isArray(value)) {
+      if (value.length > 0 || field.defaultOperator) {
         return true;
       }
     }
     return false;
   }
   if (ft === 'boolean') {
-    return row.value === true || row.value === false;
+    return value === true || value === false;
   }
   if (ft === 'datetime') {
-    const op = row.operator.toLowerCase();
+    const op = operator.toLowerCase();
     if (op.startsWith('last_')) return true;
-    const v = row.value as { start?: unknown; end?: unknown } | null;
+    const v = value as { start?: unknown; end?: unknown } | null;
     if (!v || typeof v !== 'object') return false;
     const startOk =
       v.start !== undefined &&
@@ -58,8 +59,8 @@ export function isMeaningfulFilterRow(field: FilterSchemaField, raw: unknown): b
       !(typeof v.end === 'number' && (v.end <= 0 || Number.isNaN(v.end)));
     return startOk || endOk;
   }
-  if (row.value === '' || row.value === undefined || row.value === null) return false;
-  if (typeof row.value === 'string' && !row.value.trim()) return false;
+  if (value === '' || value === undefined || value === null) return false;
+  if (typeof value === 'string' && !value.trim()) return false;
   return true;
 }
 
