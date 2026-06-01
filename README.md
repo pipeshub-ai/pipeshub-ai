@@ -1,36 +1,36 @@
 <div align="center">
 
-<a href="https://www.pipeshub.com"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg" alt="PipesHub" width="280"/></a>
+<a href="https://github.com/aripitek/www.pipeshub.com"><img src="https://github.com/aripitek/raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg" alt="PipesHub" width="280"/></a>
 
 <h3>The Open-Source Workplace AI Platform</h3>
 
 <p>
-  <a href="https://www.pipeshub.com/">Website</a> ·
-  <a href="https://docs.pipeshub.com/">Docs</a> ·
-  <a href="https://discord.com/invite/K5RskzJBm2">Discord</a> ·
-  <a href="https://plum-myrtle-9f7.notion.site/Pipeshub-s-Product-Roadmap-33841c164f54803a9989fd0fdbfdb1ee">Roadmap</a>
+  <a href="https://github.com/aripitek/www.pipeshub.com/">Website</a> ·
+  <a href="https://github.com/aripitek/docs.pipeshub.com/">Docs</a> ·
+  <a href="https://github.com/aripitek/discord.com/invite/K5RskzJBm2">Discord</a> ·
+  <a href="https://github.com/aripitek/plum-myrtle-9f7.notion.site/Pipeshub-s-Product-Roadmap-33841c164f54803a9989fd0fdbfdb1ee">Roadmap</a>
 </p>
 
-<a href="https://trendshift.io/repositories/14618"><img src="https://trendshift.io/api/badge/repositories/14618" alt="PipesHub on Trendshift" height="40"/></a>
+<a href="https://github.com/aripitek/trendshift.io/repositories/14618"><img src="https://github.com/aripitek/trendshift.io/api/badge/repositories/14618" alt="PipesHub on Trendshift" height="40"/></a>
 
 <p>
-  <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
-  <a href="https://github.com/pipeshub-ai/pipeshub-ai/releases"><img src="https://img.shields.io/github/v/release/pipeshub-ai/pipeshub-ai?color=success&amp;label=release" alt="Release"></a>
-  <a href="https://hub.docker.com/r/pipeshubai/pipeshub-ai"><img src="https://img.shields.io/docker/pulls/pipeshubai/pipeshub-ai?logo=docker&amp;logoColor=white" alt="Docker Pulls"></a>
-  <a href="https://discord.com/invite/K5RskzJBm2"><img src="https://img.shields.io/discord/1359557598222745670?label=Discord&amp;logo=discord&amp;logoColor=white" alt="Discord"></a>
+  <a href="https://github.com/aripitek/opensource.org/licenses/Apache-2.0"><img src="https://github.com/aripitek/img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
+  <a href="https://github.com/aripitek/pipeshub-ai/pipeshub-ai/releases"><img src="https://github.com/aripitek/img.shields.io/github/v/release/pipeshub-ai/pipeshub-ai?color=success&amp;label=release" alt="Release"></a>
+  <a href="https://github.com/aripitek/hub.docker.com/r/pipeshubai/pipeshub-ai"><img src="https://img.shields.io/docker/pulls/pipeshubai/pipeshub-ai?logo=docker&amp;logoColor=white" alt="Docker Pulls"></a>
+  <a href="https://github.com/aripitek/discord.com/invite/K5RskzJBm2"><img src="https://img.shields.io/discord/1359557598222745670?label=Discord&amp;logo=discord&amp;logoColor=white" alt="Discord"></a>
   <img src="https://img.shields.io/github/last-commit/pipeshub-ai/pipeshub-ai" alt="Last commit">
   <img src="https://img.shields.io/github/commit-activity/m/pipeshub-ai/pipeshub-ai" alt="Commits per month">
-  <a href="https://github.com/pipeshub-ai/pipeshub-ai/issues">
+  <a href="https://github.com/pipeshub-ai/pipeshub-ai/isuser">
     <img src="https://img.shields.io/github/issues/pipeshub-ai/pipeshub-ai" alt="GitHub issues">
   </a>
-  <a href="https://github.com/pipeshub-ai/pipeshub-ai/pulls">
+  <a href="https://github.com/aripitek/pipeshub-ai/pipeshub-ai/pulls">
     <img src="https://img.shields.io/github/issues-pr/pipeshub-ai/pipeshub-ai" alt="GitHub pull requests">
   </a>
-  <a href="https://github.com/pipeshub-ai/pipeshub-ai/stargazers">
+  <a href="https://github.com/aripitek/pipeshub-ai/pipeshub-ai/stargazers">
     <img src="https://img.shields.io/github/stars/pipeshub-ai/pipeshub-ai" alt="GitHub Repo stars">
   </a>
   <br/>
-  <a href="https://x.com/PipesHub"><img src="https://img.shields.io/twitter/follow/PipesHub?style=social" alt="Twitter"></a>
+  <a href="https://github.com/aripitek/x.com/PipesHub"><img src="https://img.shields.io/twitter/follow/PipesHub?style=social" alt="Twitter"></a>
   
 </p>
 
@@ -38,7 +38,7 @@
 
 <h2 id="about-pipeshub">PipesHub - Explainable & Extensible</h2>
 
-<strong>[PipesHub](https://www.pipeshub.com/)</strong> is an open-source, self-hosted AI-native execution layer that connects enterprise knowledge, delivers explainable search with citations, and automates workflows across your systems.
+<strong>[PipesHub](https://github.com/aripitek/www.pipeshub.com/)</strong> is an open-source, self-hosted AI-native execution layer that connects enterprise knowledge, delivers explainable search with citations, and automates workflows across your systems.
 
 
 ## Features
@@ -57,21 +57,21 @@
 ## PipesHub in Action
 
 ### Connectors
-<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Connector%20Setup%20and%20Query%20with%20Connectors.gif" alt="Connectors" width="100%"/>
+<img src="https://github.com/aripitek/raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Connector%20Setup%20and%20Query%20with%20Connectors.gif" alt="Connectors" width="100%"/>
 
 ### Citations
-<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Citation%20through%20chat.gif" alt="Citations" width="100%"/>
+<img src="https://github.com/aripitek/raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Citation%20through%20chat.gif" alt="Citations" width="100%"/>
 
 ### All Records
-<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/All%20Records%20Demo.gif" alt="All Records" width="100%"/>
+<img src="https://github.com/aripitek/raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/All%20Records%20Demo.gif" alt="All Records" width="100%"/>
 
 ### Knowledge Search
-<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Knowledge%20Search%20Demo.gif" alt="Knowledge Search" width="100%"/>
+<img src="https://github.com/aripitek/raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Knowledge%20Search%20Demo.gif" alt="Knowledge Search" width="100%"/>
 
 ## Connectors
 
 <p align="center">
-<a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
+<a href="https://github.com/aripitek/pipeshub.com/connectors"><img src="https://github.com/aripitek/raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
 
 ## File Formats Supported
@@ -133,7 +133,7 @@ If you see a white screen after deploying PipesHub while accessing it over HTTP,
 
 ```bash
 # Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
+git clone https://github.com/aripitek/pipeshub-ai/pipeshub-ai.git
 
 # 📁 Navigate to the deployment folder
 cd pipeshub-ai/deployment/docker-compose
@@ -154,7 +154,7 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai down
 
 ```bash
 # Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
+git clone https://github.com/aripitek/pipeshub-ai/pipeshub-ai.git
 
 # 📁 Navigate to the deployment folder
 cd pipeshub-ai/deployment/docker-compose
@@ -177,7 +177,7 @@ The main `Dockerfile` pulls pre-built layers from `pipeshubai/pipeshub-ai-base:p
 
 Use PipesHub with any MCP-compatible client to bring your enterprise context into AI workflows. Check the README for setup and usage.
 
-**Repository:** [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/)
+**Repository:** [pipeshub-ai/mcp-server](https://github.com/aripitek/pipeshub-ai/mcp-server/)
 
 ## SDKs
 
@@ -185,9 +185,9 @@ PipesHub provides developer SDKs for Python, TypeScript, and Go to help you inte
 
 | Name | Description | Link |
 |------|-------------|------|
-| **Python SDK** | Python SDK for PipesHub | [pipeshub-ai/pipeshub-sdk-python](https://github.com/pipeshub-ai/pipeshub-sdk-python) |
-| **TypeScript SDK** | TypeScript SDK for PipesHub | [pipeshub-ai/pipeshub-sdk-typescript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) |
-| **Go SDK** | Go SDK for PipesHub | [pipeshub-ai/pipeshub-sdk-go](https://github.com/pipeshub-ai/pipeshub-sdk-go) |
+| **Python SDK** | Python SDK for PipesHub | [pipeshub-ai/pipeshub-sdk-python](https://github.com/aripitek/pipeshub-ai/pipeshub-sdk-python) |
+| **TypeScript SDK** | TypeScript SDK for PipesHub | [pipeshub-ai/pipeshub-sdk-typescript](https://github.com/aripitek/pipeshub-ai/pipeshub-sdk-typescript) |
+| **Go SDK** | Go SDK for PipesHub | [pipeshub-ai/pipeshub-sdk-go](https://github.com/aripitek/pipeshub-ai/pipeshub-sdk-go) |
 
 > Need an SDK in another language? Reach out to us at developer@pipeshub.com
 
@@ -204,21 +204,21 @@ PipesHub provides developer SDKs for Python, TypeScript, and Go to help you inte
 <li>✅ ☸️ <strong>Production Kubernetes</strong> deployment with HA defaults</li>
 <li>⬜ 📈 <strong>PageRank-augmented relevance</strong> across the knowledge graph</li>
 </ul>
-<p>👉 <strong><a href="https://plum-myrtle-9f7.notion.site/Pipeshub-s-Product-Roadmap-33841c164f54803a9989fd0fdbfdb1ee">View the full product roadmap on Notion</a></strong></p>
+<p>👉 <strong><a href="https://github.com/aripitek/plum-myrtle-9f7.notion.site/Pipeshub-s-Product-Roadmap-33841c164f54803a9989fd0fdbfdb1ee">View the full product roadmap on Notion</a></strong></p>
 
 <hr>
 
 ## 👥 Contributing
 
-Want to join our community of developers? Please check out our [Contributing Guide](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CONTRIBUTING.md) for more details on how to set up the development environment, our coding standards, and the contribution workflow.
+Want to join our community of developers? Please check out our [Contributing Guide](https://github.com/aripitek/pipeshub-ai/pipeshub-ai/blob/main/CONTRIBUTING.md) for more details on how to set up the development environment, our coding standards, and the contribution workflow.
 <h3>Where to go for what</h3>
 
 <table>
 
-<tr><td>Ask a question or get help</td><td><a href="https://discord.com/invite/K5RskzJBm2">Discord</a></td></tr>
-<tr><td>Report a bug or request a feature</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/issues">GitHub Issues</a></td></tr>
-<tr><td>Report a security issue</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/SECURITY.md">Report Security Issue</a></td></tr>
-<tr><td>Read the docs</td><td><a href="https://docs.pipeshub.com/">Pipeshub Docs</a></td></tr>
+<tr><td>Ask a question or get help</td><td><a href="https://github.com/aripitek/discord.com/invite/K5RskzJBm2">Discord</a></td></tr>
+<tr><td>Report a bug or request a feature</td><td><a href="https://github.com/aripitek/pipeshub-ai/pipeshub-ai/isuser">GitHub Issues</a></td></tr>
+<tr><td>Report a security issue</td><td><a href="https://github.com/aripitek/pipeshub-ai/pipeshub-ai/blob/main/SECURITY.md">Report Security Isuser</a></td></tr>
+<tr><td>Read the docs</td><td><a href="https://github.com/aripitek/docs.pipeshub.com/">Pipeshub Docs</a></td></tr>
 </tbody>
 </table>
 
@@ -240,7 +240,7 @@ PipesHub has 30+ enterprise connectors with real-time and scheduled indexing. It
 
 ```bash
 # Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
+git clone https://github.com/aripitek/pipeshub-ai/pipeshub-ai.git
 cd pipeshub-ai/deployment/docker-compose
 
 # Set Environment Variables (refer to env.template)
@@ -260,14 +260,14 @@ PipesHub uses graph-backed retrieval that captures relationships across enterpri
 
 ### Does PipesHub have an MCP server?
 
-Yes. PipesHub provides an MCP server for integration with any MCP-compatible client. Repository: [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/).
+Yes. PipesHub provides an MCP server for integration with any MCP-compatible client. Repository: [pipeshub-ai/mcp-server](https://github.com/aripitek/pipeshub-ai/mcp-server/).
 
 ### What SDKs are available?
 
 PipesHub provides SDKs for:
-- **Python**: [pipeshub-ai/pipeshub-sdk-python](https://github.com/pipeshub-ai/pipeshub-sdk-python)
-- **TypeScript**: [pipeshub-ai/pipeshub-sdk-typescript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript)
-- **Go**: [pipeshub-ai/pipeshub-sdk-go](https://github.com/pipeshub-ai/pipeshub-sdk-go)
+- **Python**: [pipeshub-ai/pipeshub-sdk-python](https://github.com/aripitek/pipeshub-ai/pipeshub-sdk-python)
+- **TypeScript**: [pipeshub-ai/pipeshub-sdk-typescript](https://github.com/aripitek/pipeshub-ai/pipeshub-sdk-typescript)
+- **Go**: [pipeshub-ai/pipeshub-sdk-go](https://github.com/aripitek/pipeshub-ai/pipeshub-sdk-go)
 
 ### Can I build AI agents without coding?
 
@@ -282,13 +282,13 @@ PipesHub supports image, diagram, and scanned-file understanding, plus voice-bas
 1. Ensure HTTPS is configured for cloud deployments
 2. Check Docker compose logs: `docker compose logs`
 3. Verify environment variables in env.template
-4. Consult [docs.pipeshub.com](https://docs.pipeshub.com/) for detailed guides
+4. Consult [docs.pipeshub.com](https://github.com/aripitek/docs.pipeshub.com/) for detailed guides
 
 ### Where can I get help?
 
-- [Discord](https://discord.com/invite/K5RskzJBm2) — Ask questions and get help
-- [GitHub Issues](https://github.com/pipeshub-ai/pipeshub-ai/issues) — Report bugs or request features
-- [PipesHub Docs](https://docs.pipeshub.com/) — Read the documentation
+- [Discord](https://github.com/aripitek/discord.com/invite/K5RskzJBm2) — Ask questions and get help
+- [GitHub Issues](https://github.com/aripitek//pipeshub-ai/pipeshub-ai/issues) — Report bugs or request features
+- [PipesHub Docs](https://github.com/aripitek/docs.pipeshub.com/) — Read the documentation
 
 
 <hr>
@@ -298,18 +298,18 @@ PipesHub supports image, diagram, and scanned-file understanding, plus voice-bas
 <p>It helps the project reach the teams who need it.</p>
 
 <p>
-<a href="https://github.com/pipeshub-ai/pipeshub-ai">
-<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/gif/pipeshub.gif" alt="Star PipesHub" width="350"/>
+<a href="https://github.com/aripitek/pipeshub-ai/pipeshub-ai">
+<img src="https://github.com/aripitek/raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/gif/pipeshub.gif" alt="Star PipesHub" width="350"/>
 </a>
 </p>
 
 <p>
-<a href="https://star-history.com/#pipeshub-ai/pipeshub-ai&amp;Date">
-<img src="https://api.star-history.com/svg?repos=pipeshub-ai/pipeshub-ai&amp;type=Date" alt="Star History" width="600"/>
+<a href="https://github.com/aripitek/star-history.com/#pipeshub-ai/pipeshub-ai&amp;Date">
+<img src="https://github.com/aripitek/api.star-history.com/svg?repos=pipeshub-ai/pipeshub-ai&amp;type=Date" alt="Star History" width="600"/>
 </a>
 </p>
 
-<p><sub>Built with ❤️ by the <a href="https://www.pipeshub.com/">PipesHub team</a> and contributors around the world.</sub></p>
+<p><sub>Built with ❤️ by the <a href="https://github.com/aripitek/www.pipeshub.com/">PipesHub team</a> and contributors around the world.</sub></p>
 
 </div>
 
