@@ -42,16 +42,9 @@ _MINIMAL_FEEDBACK_PAYLOAD: dict[str, Any] = {
 
 _RICH_FEEDBACK_PAYLOAD: dict[str, Any] = {
     "isHelpful": True,
-    "ratings": {"accuracy": 5, "relevance": 4},
     "categories": ["excellent_answer"],
     "comments": {
         "positive": "Clear and useful.",
-        "negative": "",
-        "suggestions": "More examples would help.",
-    },
-    "metrics": {
-        "userInteractionTime": 1200,
-        "feedbackSessionId": "integration-test-session",
     },
 }
 
@@ -138,6 +131,14 @@ class TestAgentConversationMessageFeedbackOpenApiRequestContract:
 
     def test_rejects_invalid_category_offline(self) -> None:
         payload = {"isHelpful": False, "categories": ["citation_issues"]}
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(
+                payload,
+                "updateAgentConversationMessageFeedback",
+            )
+
+    def test_rejects_removed_ratings_field_offline(self) -> None:
+        payload = {**_MINIMAL_FEEDBACK_PAYLOAD, "ratings": {"accuracy": 5}}
         with pytest.raises(AssertionError):
             assert_request_body_matches_openapi_operation(
                 payload,
@@ -476,26 +477,6 @@ class TestAgentConversationMessageFeedback:
             url,
             headers=self.headers,
             json=_MINIMAL_FEEDBACK_PAYLOAD,
-            timeout=self.timeout,
-        )
-        self._assert_validation_error(resp)
-
-    def test_post_agent_message_feedback_invalid_ratings_range_returns_400(
-        self,
-        created_conversations,
-    ) -> None:
-        conversation_id, bot_id, _user_id = (
-            self._stream_create_agent_conversation_bot_and_user_message_ids(
-                self.primary_agent,
-                query=f"integration: agent message feedback bad ratings-{uuid4().hex}",
-                created_conversations=created_conversations,
-            )
-        )
-        url = self._feedback_url(self.primary_agent, conversation_id, bot_id)
-        resp = requests.post(
-            url,
-            headers=self.headers,
-            json={"isHelpful": False, "ratings": {"accuracy": 6}},
             timeout=self.timeout,
         )
         self._assert_validation_error(resp)

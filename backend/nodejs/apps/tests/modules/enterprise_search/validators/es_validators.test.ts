@@ -602,28 +602,27 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
 
-    it('should accept feedback with suggestions comment', () => {
-      const data = {
-        params: validParams,
-        body: {
-          isHelpful: false,
-          comments: { suggestions: 'Include more details' },
-        },
-      }
-      const result = updateFeedbackParamsSchema.safeParse(data)
-      expect(result.success).to.be.true
-    })
-
-    it('should accept feedback with metrics', () => {
+    it('should strip removed submit fields from parsed body', () => {
       const data = {
         params: validParams,
         body: {
           isHelpful: true,
+          categories: ['excellent_answer'],
+          ratings: { accuracy: 5 },
           metrics: { userInteractionTime: 5000, feedbackSessionId: 'session-1' },
+          comments: {
+            positive: 'Clear and useful.',
+            suggestions: 'Include more details',
+          },
         },
       }
       const result = updateFeedbackParamsSchema.safeParse(data)
       expect(result.success).to.be.true
+      expect(result.data?.body).to.deep.equal({
+        isHelpful: true,
+        categories: ['excellent_answer'],
+        comments: { positive: 'Clear and useful.' },
+      })
     })
 
     it('should reject invalid conversationId format', () => {
@@ -696,7 +695,7 @@ describe('enterprise_search/validators/es_validators', () => {
         body: {
           isHelpful: false,
           categories: ['poor_citations', 'unclear_explanation'],
-          comments: { negative: 'Citations were wrong', suggestions: 'Improve sources' },
+          comments: { negative: 'Citations were wrong' },
         },
       }
       const result = updateAgentFeedbackParamsSchema.safeParse(data)
