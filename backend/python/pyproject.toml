@@ -233,7 +233,6 @@ dependencies = [
     "lxml>=4.9.0",
     "mail-parser-reply==1.36",
     "markdown==3.8.1",
-    "megablocks>=0.10.0",
     "mmh3==4.1.0",
     "monday-api-python-sdk>=0.1.0",
     "msgspec==0.20.0",
