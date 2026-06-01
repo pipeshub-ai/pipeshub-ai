@@ -201,9 +201,17 @@ class TestArangoSearchRecordGroupProjection:
 
         async def capture(query, **_kwargs):
             captured_queries.append(query)
-            return [{"nodes": [], "total": 0, "availableFilters": {}}]
+            bind_vars = _kwargs.get("bind_vars") or {}
+            # Phase 2 runs only when phase 1 returns non-empty paginated_refs.
+            if "paginated_refs" in bind_vars:
+                return [{"nodes": []}]
+            return [{
+                "total": 1,
+                "paginated_refs": [{"id": "rg1", "nodeType": "recordGroup"}],
+            }]
 
         arango_provider.http_client.execute_aql = AsyncMock(side_effect=capture)
+        arango_provider.get_user_app_ids = AsyncMock(return_value=[])
 
         await arango_provider.get_knowledge_hub_search(
             "org1", "user1",
@@ -214,17 +222,70 @@ class TestArangoSearchRecordGroupProjection:
 
         assert captured_queries, "search did not invoke execute_aql"
 
-        # Search projects against `rg`; locate the AQL that contains the rg.*
-        # recordGroup projection (others may be helper queries).
+        # Phase 1 uses minimal rg projection; phase 2 hydrates full rg with KB timestamps.
         rg_aql = next(
-            (q for q in captured_queries if 'rg.connectorName == "KB"' in _normalize(q)),
+            (q for q in captured_queries if "sharingStatus" in q and 'rg.connectorName == "KB"' in _normalize(q)),
             None,
         )
         assert rg_aql is not None, (
-            "Expected at least one captured AQL with the rg.* KB conditional; "
+            "Expected phase-2 hydration AQL with full rg KB conditional; "
             f"captured {len(captured_queries)} queries."
         )
         _assert_arango_kb_conditional(rg_aql, var="rg")
+
+        phase1_aql = captured_queries[0]
+        assert "sharingStatus" not in phase1_aql, "phase 1 must not compute sharingStatus"
+        assert "path1_seed_rgs" in phase1_aql, "phase 1 uses unified seed recordGroup paths"
+        assert "FOR seed IN seed_rgs" in phase1_aql, "phase 1 uses single inherit traversal"
+        # Search must not filter permission seeds (would block inheritPermissions).
+        flat_p1 = _normalize(phase1_aql)
+        path1_slice = flat_p1.split("path2_seed_rgs")[0]
+        assert "LOWER(rg.groupName)" not in path1_slice, (
+            "search must not prefilter seed record groups in path1"
+        )
+        assert "LET sorted_nodes" not in flat_p1, (
+            "phase 1 should count filtered_nodes without materializing sorted_nodes"
+        )
+        assert "LENGTH(filtered_nodes)" in flat_p1
+        assert "LIMIT @skip, @limit" in flat_p1
+
+
+class TestKnowledgeHubPrefilterBuilders:
+    """Traversal vs seed prefilter split and projected timestamp expressions."""
+
+    def test_seed_prefilter_empty(self, arango_provider):
+        assert arango_provider._build_knowledge_hub_seed_prefilter_aql() == ""
+
+    def test_direct_record_date_uses_source_projection(self, arango_provider):
+        block = arango_provider._build_knowledge_hub_direct_record_prefilter_aql(
+            "record",
+            search_query=None,
+            origins=None,
+            connector_ids=None,
+            record_types=None,
+            indexing_status=None,
+            created_at={"gte": 1, "lte": None},
+            updated_at=None,
+            size=None,
+        )
+        flat = _normalize(block)
+        assert "record.sourceCreatedAtTimestamp" in flat
+        assert "record.createdAtTimestamp" not in flat
+
+    def test_traversal_rg_prefilter_has_no_raw_timestamp_fields(self, arango_provider):
+        block = arango_provider._build_knowledge_hub_traversal_document_prefilter_aql(
+            "inherited_node",
+            is_record_group=True,
+            search_query="x",
+            origins=["CONNECTOR"],
+            connector_ids=None,
+            record_types=None,
+            indexing_status=None,
+            size=None,
+        )
+        flat = _normalize(block)
+        assert "createdAtTimestamp" not in flat
+        assert "updatedAtTimestamp" not in flat
 
 
 # ---------------------------------------------------------------------------
