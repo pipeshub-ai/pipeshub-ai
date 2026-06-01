@@ -59,7 +59,6 @@ export interface ToolsetReference {
 }
 
 export interface KnowledgeReference {
-  id: string;
   connectorId: string;
   filters?: Record<string, unknown>;
 }
