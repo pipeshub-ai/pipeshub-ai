@@ -1,6 +1,7 @@
 import { apiClient } from '@/lib/api';
 import type { ShareAdapter, SharedMember, ShareSubmission, ShareRole, ShareUser } from '@/app/components/share/types';
 import { useAuthStore } from '@/lib/store/auth-store';
+import { useUserStore } from '@/lib/store/user-store';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
 
 const BASE = '/api/v1/knowledgeBase';
@@ -10,7 +11,10 @@ const BASE = '/api/v1/knowledgeBase';
  * Supports full CRUD permissions — roles and teams.
  */
 export function createKBShareAdapter(kbId: string): ShareAdapter {
-  const currentUserId = useAuthStore.getState().user?.id;
+  const profile = useUserStore.getState().profile;
+  const authUser = useAuthStore.getState().user;
+  const currentUserId = (profile?.userId ?? authUser?.id ?? '').trim();
+  const currentUserEmail = (profile?.email ?? authUser?.email ?? '').trim().toLowerCase();
 
   return {
     entityType: 'collection',
@@ -28,6 +32,10 @@ export function createKBShareAdapter(kbId: string): ShareAdapter {
         const isTeam = (p.type as string)?.toUpperCase() === 'TEAM';
         // p.id is the UUID for both users and teams
         const id = p.id as string;
+        const memberEmail = ((p.email as string) ?? '').trim().toLowerCase();
+        const isCurrentUser =
+          (currentUserId && id === currentUserId) ||
+          Boolean(currentUserEmail && memberEmail && memberEmail === currentUserEmail);
         return {
           id,
           type: (isTeam ? 'team' : 'user') as 'user' | 'team',
@@ -37,7 +45,7 @@ export function createKBShareAdapter(kbId: string): ShareAdapter {
           memberCount: p.memberCount as number | undefined,
           role: ((p.role as string) ?? (p.relationship as string) ?? 'READER') as ShareRole,
           isOwner: ((p.role as string) ?? (p.relationship as string)) === 'OWNER',
-          isCurrentUser: (p.id as string) === currentUserId,
+          isCurrentUser,
         };
       });
     },

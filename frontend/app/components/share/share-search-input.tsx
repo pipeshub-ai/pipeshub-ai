@@ -40,6 +40,7 @@ export function ShareSearchInput({
 }: ShareSearchInputProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const roleAnchorRef = useRef<HTMLDivElement>(null);
+  const hasUserSelection = selections.some((s) => s.type === 'user');
 
   return (
     <Flex
@@ -133,8 +134,8 @@ export function ShareSearchInput({
         />
       </Flex>
 
-      {/* Role picker - fixed on the right (shown when items are selected and roles are supported) */}
-      {selections.length > 0 && supportsRoles && (
+      {/* Role picker — users only; teams do not have share roles */}
+      {hasUserSelection && supportsRoles && (
         <Box ref={roleAnchorRef} style={{ flexShrink: 0, paddingRight: 4 }}>
           <RoleDropdownMenu
             role={selectedRole}

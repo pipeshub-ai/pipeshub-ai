@@ -43,6 +43,6 @@ export const PIPESHUB_CHAT_MODE = {
   INTERNAL_SEARCH: 'internal_search',
   DEEP: 'deep',
   QUICK: 'quick',
-  VERIFY: 'verify',
+  VERIFICATION: 'verification',
   AUTO: 'auto',
 } as const;
