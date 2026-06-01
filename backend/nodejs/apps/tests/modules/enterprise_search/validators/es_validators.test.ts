@@ -1390,29 +1390,21 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
-    it('should reject models without reasoning flag', () => {
+    it('should accept models without isReasoning at Zod layer (enforced downstream)', () => {
       const result = createAgentSchema.safeParse({
         body: {
           name: 'Agent',
           models: [{ modelKey: 'mk1', modelName: 'mn1' }],
         },
       })
-      expect(result.success).to.be.false
-      if (!result.success) {
-        const messages = result.error.issues.map((i) => i.message).join(' ')
-        expect(messages).to.include('reasoning model')
-      }
+      expect(result.success).to.be.true
     })
 
-    it('should reject models with only string entries', () => {
+    it('should accept string-only model entries at Zod layer (enforced downstream)', () => {
       const result = createAgentSchema.safeParse({
         body: { name: 'Agent', models: ['mk1_mn1'] },
       })
-      expect(result.success).to.be.false
-      if (!result.success) {
-        const messages = result.error.issues.map((i) => i.message).join(' ')
-        expect(messages).to.include('reasoning model')
-      }
+      expect(result.success).to.be.true
     })
 
     it('should reject models with dict entries missing modelKey', () => {
@@ -1511,7 +1503,7 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
-    it('should reject models without a reasoning model', () => {
+    it('should accept models without isReasoning at Zod layer (enforced downstream)', () => {
       const result = updateAgentSchema.safeParse({
         params: { agentKey: 'my-agent' },
         body: {
@@ -1524,15 +1516,15 @@ describe('enterprise_search/validators/es_validators', () => {
           ],
         },
       })
-      expect(result.success).to.be.false
+      expect(result.success).to.be.true
     })
 
-    it('should reject string-only models without a reasoning entry', () => {
+    it('should accept string-only models at Zod layer (enforced downstream)', () => {
       const result = updateAgentSchema.safeParse({
         params: { agentKey: 'my-agent' },
         body: { models: ['some-model-string'] },
       })
-      expect(result.success).to.be.false
+      expect(result.success).to.be.true
     })
 
     it('should reject name exceeding max length', () => {

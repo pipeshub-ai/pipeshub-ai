@@ -405,49 +405,6 @@ const createAgentBodySchema = z
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
-  })
-  .superRefine((body, ctx) => {
-    if (!Array.isArray(body.models)) {
-      return;
-    }
-
-    let parsedCount = 0;
-    let hasReasoningModel = false;
-
-    for (const model of body.models) {
-      if (typeof model === 'string') {
-        if (model.trim()) {
-          parsedCount += 1;
-        }
-        continue;
-      }
-      const modelKey = model?.modelKey?.trim();
-      if (modelKey) {
-        parsedCount += 1;
-        if (model?.isReasoning === true) {
-          hasReasoningModel = true;
-        }
-      }
-    }
-
-    if (parsedCount === 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          'At least one AI model is required. Please add a model to your configuration.',
-        path: ['models'],
-      });
-      return;
-    }
-
-    if (!hasReasoningModel) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          'At least one reasoning model is required. Please add a reasoning model to your configuration.',
-        path: ['models'],
-      });
-    }
   });
 
 export const createAgentSchema = z.object({
@@ -477,49 +434,6 @@ const updateAgentBodySchema = z
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
-  })
-  .superRefine((body, ctx) => {
-    if (!Array.isArray(body.models)) {
-      return;
-    }
-
-    let parsedCount = 0;
-    let hasReasoningModel = false;
-
-    for (const model of body.models) {
-      if (typeof model === 'string') {
-        if (model.trim()) {
-          parsedCount += 1;
-        }
-        continue;
-      }
-      const modelKey = model?.modelKey?.trim();
-      if (modelKey) {
-        parsedCount += 1;
-        if (model?.isReasoning === true) {
-          hasReasoningModel = true;
-        }
-      }
-    }
-
-    if (parsedCount === 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          'At least one AI model is required. Please add a model to your configuration.',
-        path: ['models'],
-      });
-      return;
-    }
-
-    if (!hasReasoningModel) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          'At least one reasoning model is required. Please add a reasoning model to your configuration.',
-        path: ['models'],
-      });
-    }
   });
 
 export const updateAgentSchema = z.object({
