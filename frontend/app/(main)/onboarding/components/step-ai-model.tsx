@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/store/toast-store';
@@ -13,20 +13,30 @@ import type { MainSection } from '@/app/(main)/workspace/ai-models/store';
 import {
   ProviderGrid,
   ModelConfigDialog,
+  ModelRolesSection,
   type ModelConfigSaveResult,
 } from '@/app/(main)/workspace/ai-models/components';
-/** Longer than default success toasts so users can read the model name before continuing. */
+
 const MODEL_ADDED_TOAST_DURATION_MS = 6000;
 
 interface StepAiModelProps {
   systemStepIndex: number;
   totalSystemSteps: number;
+  /**
+   * Ref whose `.current` is set to a gate function while validation is pending.
+   * The parent page calls this before navigating; returning `false` blocks navigation.
+   */
+  nextGateRef?: React.MutableRefObject<(() => boolean) | null>;
 }
 
-export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelProps) {
+export function StepAiModel({ systemStepIndex, totalSystemSteps, nextGateRef }: StepAiModelProps) {
   const { t } = useTranslation();
   const { markStepCompleted, unmarkStepCompleted } = useOnboardingStore();
   const [isDeleting, setIsDeleting] = useState(false);
+
+  const [rolesAcknowledged, setRolesAcknowledged] = useState(false);
+  const [rolesHighlighted, setRolesHighlighted] = useState(false);
+  const rolesSectionRef = useRef<HTMLDivElement>(null);
 
   const [providers, setProviders] = useState<AIModelProvider[]>([]);
   const [configuredModels, setConfiguredModels] = useState<Record<string, ConfiguredModel[]>>({});
@@ -91,6 +101,31 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
       unmarkStepCompleted('ai-model');
     }
   }, [configuredModels, modelsLoaded, markStepCompleted, unmarkStepCompleted]);
+
+  // Register/unregister the Next-button gate whenever the roles acknowledgment
+  // state or LLM count changes.
+  const llmCountForGate = (configuredModels.llm ?? []).length;
+  useEffect(() => {
+    if (!nextGateRef) return;
+    if (llmCountForGate > 0 && !rolesAcknowledged) {
+      nextGateRef.current = () => {
+        // Scroll the roles section into view and highlight it
+        rolesSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        setRolesHighlighted(true);
+        return false;
+      };
+    } else {
+      nextGateRef.current = null;
+    }
+    return () => {
+      if (nextGateRef) nextGateRef.current = null;
+    };
+  }, [llmCountForGate, rolesAcknowledged, nextGateRef]);
+
+  // Clear the highlight ring once the user acknowledges
+  useEffect(() => {
+    if (rolesAcknowledged) setRolesHighlighted(false);
+  }, [rolesAcknowledged]);
 
   const closeDialog = useCallback(() => {
     setDialogOpen(false);
@@ -240,6 +275,19 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps }: StepAiModelPr
             isLoading={isLoading}
             onRefresh={handleRefresh}
           />
+
+          {/* Show role assignment once at least one LLM is configured */}
+          {llmCount > 0 && (
+            <Box ref={rolesSectionRef} style={{ marginTop: '16px' }}>
+              <ModelRolesSection
+                configuredModels={configuredModels}
+                onRolesUpdated={loadModels}
+                variant="onboarding"
+                highlighted={rolesHighlighted}
+                onAcknowledgedChange={(v) => setRolesAcknowledged(v)}
+              />
+            </Box>
+          )}
         </Box>
       </Box>
 

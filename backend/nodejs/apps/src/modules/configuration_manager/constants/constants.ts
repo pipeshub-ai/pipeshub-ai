@@ -41,6 +41,17 @@ export const aiModelsTypes = {
   IMAGE_GENERATION: 'imageGeneration',
 };
 
+/**
+ * Named model roles. Each key maps to a role that can be independently
+ * assigned to a configured model via PUT /ai-models/roles.
+ * When a role is not assigned, services fall back to the isDefault model.
+ */
+export const MODEL_ROLES = {
+  INDEXING: 'indexing',
+} as const;
+
+export type ModelRoleName = (typeof MODEL_ROLES)[keyof typeof MODEL_ROLES];
+
 export const dbTypes = {
   MONGO_DB: 'mongodb',
   ARANGO_DB: 'arangodb',

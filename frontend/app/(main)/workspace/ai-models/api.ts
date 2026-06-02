@@ -2,6 +2,8 @@ import { apiClient } from '@/lib/api';
 import type {
   AllModelsResponse,
   CapabilitiesResponse,
+  ModelRoleAssignment,
+  ModelRolesResponse,
   ModelsByTypeResponse,
   ProviderSchemaResponse,
   RegistryResponse,
@@ -96,6 +98,17 @@ export const AIModelsApi = {
     const { data } = await apiClient.put(
       `${BASE}/ai-models/default/${modelType}/${modelKey}`
     );
+    return data;
+  },
+
+  // Model roles endpoints
+  getRoles: async () => {
+    const { data } = await apiClient.get<ModelRolesResponse>(`${BASE}/ai-models/roles`);
+    return data;
+  },
+
+  updateRoles: async (roles: Record<string, ModelRoleAssignment>) => {
+    const { data } = await apiClient.put(`${BASE}/ai-models/roles`, { roles });
     return data;
   },
 };

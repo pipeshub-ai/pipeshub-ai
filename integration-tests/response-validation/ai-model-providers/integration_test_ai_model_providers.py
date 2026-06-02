@@ -210,7 +210,7 @@ def _live_provider_specs() -> List[LiveProviderSpec]:
             api_key_env="TEST_GEMINI_API_KEY",
             api_key_fallback=None,
             model_env="TEST_GEMINI_LLM_MODEL",
-            default_model="gemini-2.0-flash",
+            default_model="gemini-2.5-flash",
             build_configuration=_gemini_config,
         ),
         LiveProviderSpec(
@@ -583,7 +583,7 @@ class TestAddAIModelProviderHealthCheckFailure:
             ),
             (
                 _PROVIDER_GEMINI,
-                {"model": "gemini-2.0-flash", "apiKey": "invalid-gemini-key"},
+                {"model": "gemini-2.5-flash", "apiKey": "invalid-gemini-key"},
             ),
             (
                 _PROVIDER_GROQ,
@@ -1089,7 +1089,7 @@ class TestUpdateAIModelProviderLive:
             bad_config = {"model": "gpt-4o-mini", "apiKey": "sk-invalid-update-test"}
             if spec.provider_id == _PROVIDER_GEMINI:
                 bad_config = {
-                    "model": "gemini-2.0-flash",
+                    "model": "gemini-2.5-flash",
                     "apiKey": "invalid-gemini-key",
                 }
             elif spec.provider_id == _PROVIDER_GROQ:

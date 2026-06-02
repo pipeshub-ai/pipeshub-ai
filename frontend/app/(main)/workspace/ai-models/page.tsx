@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Text } from '@radix-ui/themes';
+import { Box, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import { toast } from '@/lib/store/toast-store';
@@ -13,7 +13,7 @@ import { AIModelsApi } from './api';
 import type { AIModelProvider, ConfiguredModel } from './types';
 import { CAPABILITY_TO_MODEL_TYPE } from './types';
 import { DestructiveTypedConfirmationDialog } from '@/app/(main)/workspace/components';
-import { ProviderGrid, ModelConfigDialog } from './components';
+import { ProviderGrid, ModelConfigDialog, ModelRolesSection } from './components';
 
 export default function AIModelsPage() {
   const { t } = useTranslation();
@@ -122,8 +122,28 @@ export default function AIModelsPage() {
 
   if (!isProfileInitialized || isAdmin === false) return null;
 
+  const pagePaddingX = 'clamp(var(--space-4), 4vw, 100px)';
+  const pagePaddingY = 'clamp(var(--space-6), 3vw, 64px)';
+
   return (
     <ServiceGate services={['query']}>
+      {/* Role assignments sit above the provider grid, sharing the same page margins */}
+      {store.capabilitySection === 'text_generation' && (
+        <Box
+          style={{
+            paddingTop: pagePaddingY,
+            paddingLeft: pagePaddingX,
+            paddingRight: pagePaddingX,
+            paddingBottom: 0,
+          }}
+        >
+          <ModelRolesSection
+            configuredModels={store.configuredModels}
+            onRolesUpdated={handleRefresh}
+          />
+        </Box>
+      )}
+
       <ProviderGrid
         providers={store.providers}
         configuredModels={store.configuredModels}

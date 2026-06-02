@@ -2640,6 +2640,9 @@ export const getAIModelsProviders =
           aiModels[key] = [];
         }
       }
+      if (!aiModels.modelRoles) {
+        aiModels.modelRoles = {};
+      }
 
       const hideSecrets = shouldHideSecrets();
       res.status(200).json({
@@ -2963,6 +2966,9 @@ export const addAIModelProvider =
         if (!(key in aiModels)) {
           aiModels[key] = [];
         }
+      }
+      if (!(aiModels as any).modelRoles) {
+        (aiModels as any).modelRoles = {};
       }
 
       // Generate unique model key with collision check
@@ -3400,6 +3406,15 @@ export const deleteAIModelProvider =
       // If the deleted model was default, set the first remaining model as default
       if (wasDefault && aiModels[targetModelType].length > 0) {
         aiModels[targetModelType][0].isDefault = true;
+      }
+
+      // Remove any role assignments that reference this deleted modelKey
+      if (aiModels.modelRoles) {
+        for (const roleName of Object.keys(aiModels.modelRoles)) {
+          if (aiModels.modelRoles[roleName].modelKey === modelKey) {
+            delete aiModels.modelRoles[roleName];
+          }
+        }
       }
 
       // Encrypt and save the updated configuration
@@ -4473,6 +4488,129 @@ export const updateDefaultWebSearchProvider =
       });
     } catch (error: any) {
       logger.error('Error updating default web search provider', { error });
+      next(error);
+    }
+  };
+
+// ---------------------------------------------------------------------------
+// Model Roles endpoints
+// ---------------------------------------------------------------------------
+
+export const getModelRoles =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedAIConfig = await keyValueStoreService.get<string>(
+        configPaths.aiModels,
+      );
+
+      if (!encryptedAIConfig) {
+        res.status(200).json({ status: 'success', modelRoles: {} });
+        return;
+      }
+
+      const aiModels: AIModelsConfig = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedAIConfig),
+      );
+
+      res.status(200).json({
+        status: 'success',
+        modelRoles: aiModels.modelRoles ?? {},
+      });
+    } catch (error: any) {
+      logger.error('Error getting model roles', { error });
+      next(error);
+    }
+  };
+
+export const updateModelRoles =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { roles } = req.body as {
+        roles: Record<string, { modelType: string; modelKey: string }>;
+      };
+
+      if (!roles || typeof roles !== 'object' || Array.isArray(roles)) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Request body must contain a "roles" object',
+        });
+        return;
+      }
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedAIConfig = await keyValueStoreService.get<string>(
+        configPaths.aiModels,
+      );
+
+      let aiModels: AIModelsConfig = {};
+      if (encryptedAIConfig) {
+        aiModels = JSON.parse(
+          EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).decrypt(encryptedAIConfig),
+        );
+      }
+
+      // Validate each role assignment: the modelKey must exist in the
+      // specified modelType array, and modelType must be a valid bucket.
+      const validModelTypes = [
+        'llm', 'slm', 'embedding', 'ocr', 'reasoning', 'multiModal',
+        'imageGeneration', 'tts', 'stt',
+      ];
+
+      for (const [roleName, assignment] of Object.entries(roles)) {
+        const { modelType, modelKey } = assignment;
+
+        if (!modelType || !modelKey) {
+          res.status(400).json({
+            status: 'error',
+            message: `Role "${roleName}" must have both modelType and modelKey`,
+          });
+          return;
+        }
+
+        if (!validModelTypes.includes(modelType)) {
+          res.status(400).json({
+            status: 'error',
+            message: `Role "${roleName}": modelType "${modelType}" is not valid`,
+          });
+          return;
+        }
+
+        const bucket = (aiModels as any)[modelType] as AIModelConfiguration[] | undefined;
+        const exists = Array.isArray(bucket) && bucket.some((m) => m.modelKey === modelKey);
+        if (!exists) {
+          res.status(400).json({
+            status: 'error',
+            message: `Role "${roleName}": no model with key "${modelKey}" found in "${modelType}"`,
+          });
+          return;
+        }
+      }
+
+      aiModels.modelRoles = { ...(aiModels.modelRoles ?? {}), ...roles };
+
+      const encryptedUpdated = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(aiModels));
+
+      await keyValueStoreService.set<string>(configPaths.aiModels, encryptedUpdated);
+
+      res.status(200).json({
+        status: 'success',
+        message: 'Model roles updated successfully',
+        modelRoles: aiModels.modelRoles,
+      });
+    } catch (error: any) {
+      logger.error('Error updating model roles', { error });
       next(error);
     }
   };

@@ -36,6 +36,49 @@ async def get_llm(config_service: ConfigurationService, llm_configs = None) -> T
 
     raise ValueError("No LLM found")
 
+
+async def get_llm_for_role(
+    config_service: ConfigurationService,
+    role: str,
+) -> Tuple[BaseChatModel, dict]:
+    """Return the LLM assigned to *role*, falling back to the default LLM.
+
+    Reads ``modelRoles`` from the AI models config blob. If the role is
+    assigned to a specific model (identified by ``modelKey`` within a
+    ``modelType`` bucket), that model is instantiated and returned.
+
+    Falls back to :func:`get_llm` when:
+    - the role is not assigned, or
+    - the assigned ``modelKey`` / ``modelType`` cannot be resolved.
+
+    This ensures full backward compatibility: existing deployments without
+    ``modelRoles`` in their config are unaffected.
+    """
+    try:
+        ai_models = await config_service.get_config(
+            config_node_constants.AI_MODELS.value, use_cache=False
+        )
+        model_roles: dict = (ai_models or {}).get("modelRoles") or {}
+        assignment = model_roles.get(role)
+
+        if assignment:
+            model_type: str = assignment.get("modelType", "")
+            model_key: str = assignment.get("modelKey", "")
+            bucket: list = (ai_models or {}).get(model_type, []) or []
+            matched = next(
+                (cfg for cfg in bucket if cfg.get("modelKey") == model_key), None
+            )
+            if matched:
+                llm = await asyncio.to_thread(
+                    get_generator_model, matched["provider"], matched
+                )
+                if llm:
+                    return llm, matched
+    except Exception:
+        pass
+
+    return await get_llm(config_service)
+
 async def get_embedding_model_config(config_service: ConfigurationService) -> dict|None:
         try:
             ai_models = await config_service.get_config(

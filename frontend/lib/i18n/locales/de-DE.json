@@ -1133,6 +1133,28 @@
       "actionSetDefault": "Als Standard setzen",
       "actionDelete": "Löschen",
       "moreOptions": "Weitere Optionen",
+      "roles": {
+        "sectionTitle": "Modell-Rollenzuweisungen",
+        "sectionDescription": "Weisen Sie bestimmten Aufgaben dedizierte Modelle zu. Wenn keine Zuweisung erfolgt, wird das Standardmodell verwendet.",
+        "onboardingTitle": "Wie werden Ihre Modelle eingesetzt?",
+        "onboardingTip": "Verwenden Sie ein kleines, kostengünstiges Modell (z. B. gpt-5.4-mini, gemini-2.5-flash) für Indizierungsaufgaben wie Zusammenfassung und Klassifizierung. Behalten Sie Ihr leistungsstärkstes Modell (z. B. gpt-5.5, claude-sonnet) für Abfragen und Agenten, wo Reasoning-Qualität am meisten zählt.",
+        "queryRole": "Abfrage & Chat",
+        "queryRoleSubtitle": "Suche, Agenten & Konversationen",
+        "queryRoleDescription": "Beantwortet Suchanfragen, Fragen und KI-Agentenantworten. Verwenden Sie hier Ihr leistungsfähigstes Modell.",
+        "queryRoleDefault": "Standardmodell",
+        "defaultBadge": "Standard",
+        "indexingRole": "Indizierungsmodell",
+        "indexingRoleSubtitle": "Dokumentenverarbeitung",
+        "indexingRoleDescription": "Modell für Dokumentzusammenfassung, Klassifizierung und Datenextraktion während der Indizierung. Ein kleineres, kostengünstigeres Modell reduziert Kosten.",
+        "indexingRoleAssigned": "Verwende {{model}} für die Indizierung",
+        "indexingRoleFallback": "Nicht gesetzt – fällt auf Ihr Abfragemodell zurück.",
+        "requiredHint": "Bitte wählen Sie das Verhalten des Indizierungsmodells, um fortzufahren.",
+        "useDefaultModel": "Wie Abfragemodell",
+        "selectModel": "Modell auswählen",
+        "noModelsConfigured": "Noch keine LLM-Modelle konfiguriert. Fügen Sie oben ein Modell hinzu, um Rollen zuzuweisen.",
+        "toastSaved": "Modell-Rollenzuweisung gespeichert",
+        "toastSaveError": "Fehler beim Speichern der Modell-Rollenzuweisung"
+      },
       "capabilities": {
         "text_generation": {
           "label": "LLM",

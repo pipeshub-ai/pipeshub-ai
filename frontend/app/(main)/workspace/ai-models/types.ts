@@ -82,6 +82,28 @@ export interface ConfiguredModel {
   modelFriendlyName?: string;
 }
 
+// ========================================
+// Model Roles types
+// ========================================
+
+/** Assignment of a specific configured model to a named role. */
+export interface ModelRoleAssignment {
+  modelType: string;
+  modelKey: string;
+}
+
+/** Well-known role names. Extensible — future roles (summarization, ner, …) are additional keys. */
+export const MODEL_ROLE_NAMES = {
+  INDEXING: 'indexing',
+} as const;
+
+export type ModelRoleName = (typeof MODEL_ROLE_NAMES)[keyof typeof MODEL_ROLE_NAMES];
+
+export interface ModelRolesResponse {
+  status: string;
+  modelRoles: Record<string, ModelRoleAssignment>;
+}
+
 export interface AllModelsResponse {
   status: string;
   models: {
@@ -95,6 +117,7 @@ export interface AllModelsResponse {
     tts?: ConfiguredModel[];
     stt?: ConfiguredModel[];
   };
+  modelRoles?: Record<string, ModelRoleAssignment>;
   message: string;
 }
 

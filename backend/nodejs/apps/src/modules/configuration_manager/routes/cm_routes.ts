@@ -64,6 +64,8 @@ import {
   getAIModelRegistry,
   getAIModelRegistryCapabilities,
   getAIModelProviderSchema,
+  getModelRoles,
+  updateModelRoles,
 } from '../controller/cm_controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -848,6 +850,38 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     getAIModelsProviders(keyValueStoreService),
+  );
+
+  /**
+   * @route GET /api/v1/configurationManager/ai-models/roles
+   * @desc Get all model role assignments (e.g. indexing role)
+   * @access Private (admin)
+   * NOTE: Must be registered before /ai-models/:modelType to avoid Express
+   * matching "roles" as the :modelType param.
+   */
+  router.get(
+    '/ai-models/roles',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    metricsMiddleware(container),
+    getModelRoles(keyValueStoreService),
+  );
+
+  /**
+   * @route PUT /api/v1/configurationManager/ai-models/roles
+   * @desc Assign models to named roles (e.g. indexing)
+   * @access Private (admin)
+   * @body { roles: Record<string, { modelType: string; modelKey: string }> }
+   * NOTE: Must be registered before /ai-models/default/:modelType/:modelKey.
+   */
+  router.put(
+    '/ai-models/roles',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    metricsMiddleware(container),
+    updateModelRoles(keyValueStoreService),
   );
 
   /**
