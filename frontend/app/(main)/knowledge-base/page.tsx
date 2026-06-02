@@ -2204,12 +2204,12 @@ function KnowledgeBasePageContent() {
   const handleForceReindexConfirm = useCallback(async () => {
     if (!forceReindexPending) return;
     const pending = forceReindexPending;
-    setForceReindexPending(null);
     setIsReindexSubmitting(true);
     try {
       await proceedWithReindex(pending.item, pending.statusFilters);
     } finally {
       setIsReindexSubmitting(false);
+      setForceReindexPending(null);
     }
   }, [forceReindexPending, proceedWithReindex]);
 
