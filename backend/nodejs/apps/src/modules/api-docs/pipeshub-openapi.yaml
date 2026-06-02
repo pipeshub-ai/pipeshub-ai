@@ -26328,7 +26328,6 @@ paths:
       summary: Add message to agent conversation
       description: Append a user message and wait for the full non-streaming AI response.
       operationId: addAgentConversationMessage
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -26821,7 +26820,6 @@ paths:
         Create a new conversation with the agent using an initial user query;
         returns the persisted conversation after the first AI response (non-streaming).
       operationId: createAgentConversation
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
