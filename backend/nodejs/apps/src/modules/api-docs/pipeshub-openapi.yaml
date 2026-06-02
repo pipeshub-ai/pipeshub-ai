@@ -30546,7 +30546,6 @@ paths:
       summary: Get models by type
       description: Get all configured models of a specific type.
       operationId: getModelsByType
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:read]
