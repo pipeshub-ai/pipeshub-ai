@@ -25083,34 +25083,6 @@ paths:
           description: Unauthorized
 
   /agents/template/{templateId}:
-    delete:
-      tags:
-        - Agent Templates
-      summary: Delete agent template
-      description: |
-        Delete an agent template.<br><br>
-        <b>Note:</b><br>
-        Existing agents created from this template are not affected.
-      operationId: deleteAgentTemplate
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: templateId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Template deleted
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Only creator can delete
-        '404':
-          description: Template not found
-
   # -------------------- Agents --------------------
   /agents:
     get:

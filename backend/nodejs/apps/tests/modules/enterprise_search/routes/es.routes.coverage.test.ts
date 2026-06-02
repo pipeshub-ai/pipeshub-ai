@@ -185,7 +185,6 @@ describe('Enterprise Search Routes - handler coverage', () => {
         .filter((layer: any) => layer.route)
         .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
 
-      expect(routes.find((r: any) => r.path === '/template/:templateId' && r.methods.delete)).to.exist
       expect(routes.find((r: any) => r.path === '/template' && r.methods.get)).to.exist
     })
 

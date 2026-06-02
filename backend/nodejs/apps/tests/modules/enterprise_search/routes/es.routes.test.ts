@@ -300,7 +300,7 @@ describe('Enterprise Search Routes', () => {
       .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
     const paths = routes.map((r: any) => r.path)
 
-    expect(paths).to.include('/template/:templateId')
+    expect(paths).to.include('/template')
   })
 
   it('should register agents CRUD routes', () => {
