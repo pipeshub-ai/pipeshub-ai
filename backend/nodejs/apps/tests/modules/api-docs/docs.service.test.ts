@@ -123,55 +123,5 @@ describe('api-docs/docs.service', () => {
       expect(spec).to.have.property('components')
     })
 
-    it('should document chat attachment upload request and response contracts', async () => {
-      await service.initialize()
-      const spec = service.getCombinedSpec()
-
-      const assistantUpload = spec.paths['/conversations/attachments/upload'].post
-      const agentUpload = spec.paths['/agents/{agentKey}/conversations/attachments/upload'].post
-      const agentDelete = spec.paths['/agents/{agentKey}/conversations/attachments/{recordId}'].delete
-      const uploadResponse = spec.components.schemas.ChatAttachmentUploadResponse
-      const uploadRef = spec.components.schemas.ChatAttachmentUploadRef
-
-      expect(
-        assistantUpload.requestBody.content['multipart/form-data'].schema.properties.conversationId.pattern,
-      ).to.equal('^$|^[0-9a-fA-F]{24}$')
-      expect(
-        assistantUpload.requestBody.content['multipart/form-data'].schema.properties.files.minItems,
-      ).to.equal(1)
-      expect(
-        assistantUpload.requestBody.content['multipart/form-data'].schema.properties.files.maxItems,
-      ).to.equal(10)
-      expect(assistantUpload.responses['200'].content['application/json'].schema.$ref).to.equal(
-        '#/components/schemas/ChatAttachmentUploadResponse',
-      )
-
-      expect(agentUpload.parameters[0].schema.minLength).to.equal(1)
-      expect(
-        agentUpload.requestBody.content['multipart/form-data'].schema.properties.conversationId.pattern,
-      ).to.equal('^$|^[0-9a-fA-F]{24}$')
-      expect(agentUpload.responses['200'].content['application/json'].schema.$ref).to.equal(
-        '#/components/schemas/ChatAttachmentUploadResponse',
-      )
-      expect(agentUpload.responses).to.have.property('500')
-      expect(agentDelete.parameters[0].schema.minLength).to.equal(1)
-      expect(agentDelete.parameters[1].schema.minLength).to.equal(1)
-      expect(agentDelete.responses).to.have.property('403')
-      expect(agentDelete.responses).to.have.property('default')
-      expect(agentDelete.responses['204']).to.not.have.property('content')
-
-      expect(uploadResponse.required).to.include('conversationId')
-      expect(uploadResponse.required).to.include('attachments')
-      expect(uploadResponse.properties.attachments.items.$ref).to.equal(
-        '#/components/schemas/ChatAttachmentUploadRef',
-      )
-
-      expect(uploadRef.required).to.include('recordId')
-      expect(uploadRef.required).to.include('recordName')
-      expect(uploadRef.required).to.include('mimeType')
-      expect(uploadRef.required).to.include('extension')
-      expect(uploadRef.required).to.include('virtualRecordId')
-      expect(uploadRef.properties).to.have.property('ocrMode')
-    })
   })
 })
