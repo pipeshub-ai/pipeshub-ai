@@ -247,6 +247,216 @@ class TestImages:
         assert container.blocks[0].data == "See  here"
         assert container.blocks[1].type == BlockType.IMAGE
 
+    # ------------------------------------------------------------------
+    # No alt text
+    # ------------------------------------------------------------------
+
+    def test_image_no_alt_text_uses_url(self, converter: MarkdownToBlocksConverter):
+        """![](url) — no alt text → empty captions, data uses URL, TXT format."""
+        container = converter.convert("![](https://example.com/img.png)\n")
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+        assert len(image_blocks) == 1
+        block = image_blocks[0]
+        assert block.data == {"url": "https://example.com/img.png"}
+        assert block.format == DataFormat.TXT
+        assert block.image_metadata is not None
+        assert block.image_metadata.captions == []
+
+    def test_image_no_alt_no_src_has_none_data(self, converter: MarkdownToBlocksConverter):
+        """![]() — empty alt and empty src → data is None."""
+        container = converter.convert("![]() \n")
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+        assert len(image_blocks) == 1
+        assert image_blocks[0].data is None
+
+    # ------------------------------------------------------------------
+    # caption_map lookup behaviour
+    # ------------------------------------------------------------------
+
+    def test_caption_map_miss_falls_back_to_url(self, converter: MarkdownToBlocksConverter):
+        """A caption_map present but key doesn't match → falls back to URL."""
+        container = converter.convert(
+            "![Image_1](https://example.com/img.png)\n",
+            caption_map={"Image_2": "data:image/png;base64,xyz"},
+        )
+        image_block = _blocks_by_type(container, BlockType.IMAGE)[0]
+        assert image_block.data == {"url": "https://example.com/img.png"}
+        assert image_block.format == DataFormat.TXT
+
+    def test_caption_map_lookup_is_case_sensitive(self, converter: MarkdownToBlocksConverter):
+        """caption_map lookup uses the exact alt-text string (case-sensitive)."""
+        container = converter.convert(
+            "![Image_1](https://example.com/img.png)\n",
+            caption_map={"image_1": "data:image/png;base64,xyz"},
+        )
+        image_block = _blocks_by_type(container, BlockType.IMAGE)[0]
+        # Lower-case key must not match title-case alt text
+        assert image_block.data == {"url": "https://example.com/img.png"}
+
+    # ------------------------------------------------------------------
+    # Multiple images
+    # ------------------------------------------------------------------
+
+    def test_multiple_images_standalone_produce_multiple_blocks(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        """Two consecutive images each produce their own IMAGE block."""
+        md = (
+            "![Image_1](https://example.com/a.png)\n\n"
+            "![Image_2](https://example.com/b.png)\n"
+        )
+        container = converter.convert(
+            md,
+            caption_map={
+                "Image_1": "data:image/png;base64,AAA",
+                "Image_2": "data:image/png;base64,BBB",
+            },
+        )
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+        assert len(image_blocks) == 2
+        assert image_blocks[0].data == {"uri": "data:image/png;base64,AAA"}
+        assert image_blocks[1].data == {"uri": "data:image/png;base64,BBB"}
+
+    def test_two_images_inline_one_in_map_one_not(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        """Mixed caption_map: first image resolved via map, second falls back to URL."""
+        md = "![Image_1](https://a.com/1.png) and ![Image_2](https://b.com/2.png)\n"
+        container = converter.convert(
+            md, caption_map={"Image_1": "data:image/png;base64,AAA"}
+        )
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+        assert len(image_blocks) == 2
+        assert image_blocks[0].data == {"uri": "data:image/png;base64,AAA"}
+        assert image_blocks[0].format == DataFormat.BASE64
+        assert image_blocks[1].data == {"url": "https://b.com/2.png"}
+        assert image_blocks[1].format == DataFormat.TXT
+
+    def test_image_only_paragraph_produces_no_text_block(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        """A paragraph that is purely an image should not produce a text block."""
+        container = converter.convert("![Image_1](https://example.com/img.png)\n")
+        text_blocks = [b for b in container.blocks if b.type == BlockType.TEXT]
+        assert text_blocks == []
+        assert len(_blocks_by_type(container, BlockType.IMAGE)) == 1
+
+    # ------------------------------------------------------------------
+    # parent_index inside groups
+    # ------------------------------------------------------------------
+
+    def test_image_inside_blockquote_has_correct_parent(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        """Image inside a blockquote should have parent_index pointing at the quote group."""
+        container = converter.convert("> ![Image_1](https://example.com/img.png)\n")
+        assert len(container.block_groups) == 1
+        quote_group = container.block_groups[0]
+        assert quote_group.type == GroupType.TEXT_SECTION
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+        assert len(image_blocks) == 1
+        assert image_blocks[0].parent_index == quote_group.index
+
+    def test_image_inside_list_has_correct_parent(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        """Image inside a list item should have parent_index pointing at the list group."""
+        container = converter.convert("- ![Image_1](https://example.com/img.png)\n")
+        assert len(container.block_groups) == 1
+        list_group = container.block_groups[0]
+        assert list_group.type == GroupType.LIST
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+        assert len(image_blocks) == 1
+        assert image_blocks[0].parent_index == list_group.index
+
+    # ------------------------------------------------------------------
+    # Full pipeline: extract_and_replace_images → parse_to_blocks
+    # ------------------------------------------------------------------
+
+    def test_full_pipeline_extract_then_parse(self, converter: MarkdownToBlocksConverter):
+        """
+        Simulates the real indexing pipeline:
+        1. extract_and_replace_images normalises alt text to Image_N.
+        2. URL is resolved to base64 and stored in caption_map.
+        3. parse_to_blocks produces an IMAGE block with BASE64 data.
+        """
+        from app.modules.parsers.markdown.docling_markdown_parser import (
+            _extract_and_replace_images,
+        )
+
+        # Heading + standalone image (no inline text around the image)
+        original_md = "# Report\n\n![chart](https://cdn.example.com/chart.png)\n"
+        modified_md, images = _extract_and_replace_images(original_md)
+
+        assert len(images) == 1
+        new_alt = images[0]["new_alt_text"]   # "Image_1"
+        assert new_alt == "Image_1"
+        assert images[0]["url"] == "https://cdn.example.com/chart.png"
+
+        # Simulate URL-to-base64 resolution done by the processor
+        fake_base64 = "data:image/png;base64,CHARTDATA"
+        caption_map = {new_alt: fake_base64}
+
+        container = converter.convert(modified_md, caption_map=caption_map)
+
+        # Heading block + one image block; no spurious paragraph block
+        text_blocks = [b for b in container.blocks if b.type == BlockType.TEXT]
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+        assert len(text_blocks) == 1
+        assert text_blocks[0].sub_type == BlockSubType.HEADING
+        assert len(image_blocks) == 1
+        assert image_blocks[0].data == {"uri": fake_base64}
+        assert image_blocks[0].format == DataFormat.BASE64
+        assert image_blocks[0].image_metadata.captions == ["Image_1"]
+
+    def test_full_pipeline_multiple_images(self, converter: MarkdownToBlocksConverter):
+        """extract_and_replace_images assigns sequential Image_N labels."""
+        from app.modules.parsers.markdown.docling_markdown_parser import (
+            _extract_and_replace_images,
+        )
+
+        original_md = (
+            "![logo](https://cdn.example.com/logo.png) "
+            "and ![banner](https://cdn.example.com/banner.png)\n"
+        )
+        modified_md, images = _extract_and_replace_images(original_md)
+
+        assert len(images) == 2
+        assert images[0]["new_alt_text"] == "Image_1"
+        assert images[1]["new_alt_text"] == "Image_2"
+
+        caption_map = {
+            "Image_1": "data:image/png;base64,LOGO",
+            "Image_2": "data:image/png;base64,BANNER",
+        }
+        container = converter.convert(modified_md, caption_map=caption_map)
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+        assert len(image_blocks) == 2
+        assert image_blocks[0].data == {"uri": "data:image/png;base64,LOGO"}
+        assert image_blocks[1].data == {"uri": "data:image/png;base64,BANNER"}
+
+    def test_full_pipeline_image_url_not_converted_to_base64(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        """When base64 conversion fails (None from urls_to_base64), no caption_map
+        entry is added and the image block falls back to the original URL."""
+        from app.modules.parsers.markdown.docling_markdown_parser import (
+            _extract_and_replace_images,
+        )
+
+        original_md = "![photo](https://cdn.example.com/photo.png)\n"
+        modified_md, images = _extract_and_replace_images(original_md)
+
+        # Simulate processor skipping None base64 (as it does with `if base64_urls[i]`)
+        caption_map: dict[str, str] = {}
+
+        container = converter.convert(modified_md, caption_map=caption_map)
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+        assert len(image_blocks) == 1
+        # Falls back to the URL embedded in the modified markdown
+        assert image_blocks[0].data == {"url": "https://cdn.example.com/photo.png"}
+        assert image_blocks[0].format == DataFormat.TXT
+
 
 class TestBlockquotes:
     def test_blockquote_produces_text_section_group(self, converter: MarkdownToBlocksConverter):
