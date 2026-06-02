@@ -3,7 +3,7 @@
 Covers:
 - ``DoclingMarkdownParser``: parse_string, parse_file, extract_and_replace_images
 - ``MarkdownItParser``:      parse_to_blocks, extract_and_replace_images
-- ``markdown_parser`` shim:  MarkdownParser is MarkdownItParser
+- ``markdown_parser`` shim:  MarkdownParser is DoclingMarkdownParser (current default)
 """
 
 from unittest.mock import MagicMock, patch
@@ -302,22 +302,22 @@ class TestMarkdownItParserImageExtraction:
 # ===========================================================================
 
 class TestMarkdownParserShim:
-    def test_markdown_parser_is_markdownit_parser(self):
+    def test_markdown_parser_is_docling_parser(self):
         with patch.dict("sys.modules", _DOCLING_MOCKS):
             from app.modules.parsers.markdown.markdown_parser import (
                 MarkdownParser,
             )
 
-        assert MarkdownParser.__name__ == "MarkdownItParser"
+        assert MarkdownParser.__name__ == "DoclingMarkdownParser"
         assert MarkdownParser.__module__ == (
-            "app.modules.parsers.markdown.markdown_it_parser"
+            "app.modules.parsers.markdown.docling_markdown_parser"
         )
 
-    def test_markdown_parser_has_parse_to_blocks(self):
+    def test_markdown_parser_has_parse_string(self):
         with patch.dict("sys.modules", _DOCLING_MOCKS):
             from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 
         parser = MarkdownParser()
-        result = parser.parse_to_blocks("# Hello\n")
-        assert result is not None
-        assert len(result.blocks) == 1
+        result = parser.parse_string("# Hello\n")
+        assert isinstance(result, bytes)
+        assert len(result) > 0

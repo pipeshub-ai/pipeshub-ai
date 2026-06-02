@@ -967,7 +967,7 @@ class TestProcessMdImageUrlConversion:
             "# Hello ![img](image_alt_text)",
             [{"url": "https://example.com/img.png", "new_alt_text": "image_alt_text"}],
         )
-        md_parser.parse_to_blocks.return_value = MagicMock(blocks=[], block_groups=[])
+        md_parser.parse_string.return_value = b"<html><p>content</p></html>"
 
         image_parser = MagicMock()
         image_parser.urls_to_base64 = AsyncMock(
@@ -980,7 +980,12 @@ class TestProcessMdImageUrlConversion:
             return_value=_mock_record_dict(recordName="test.md")
         )
 
-        with patch("app.events.processor.IndexingPipeline") as MockPipeline:
+        with patch("app.events.processor.DoclingProcessor") as MockDP, \
+             patch("app.events.processor.IndexingPipeline") as MockPipeline:
+            MockDP.return_value.parse_document = AsyncMock(return_value=MagicMock())
+            MockDP.return_value.create_blocks = AsyncMock(
+                return_value=MagicMock(blocks=[], block_groups=[])
+            )
             MockPipeline.return_value.apply = AsyncMock()
 
             events = await _collect_events(
@@ -1011,6 +1016,7 @@ class TestProcessMdImageBlockCaptionMapping:
             "# Doc\n![cap1](cap1)",
             [{"url": "https://example.com/img.png", "new_alt_text": "cap1"}],
         )
+        md_parser.parse_string.return_value = b"<html><p>Doc</p></html>"
 
         img_block = Block(
             index=0,
@@ -1020,7 +1026,6 @@ class TestProcessMdImageBlockCaptionMapping:
             image_metadata=ImageMetadata(captions=["cap1"]),
         )
         mock_blocks = BlocksContainer(blocks=[img_block], block_groups=[])
-        md_parser.parse_to_blocks.return_value = mock_blocks
 
         image_parser = MagicMock()
         image_parser.urls_to_base64 = AsyncMock(
@@ -1033,7 +1038,10 @@ class TestProcessMdImageBlockCaptionMapping:
             return_value=_mock_record_dict(recordName="test.md")
         )
 
-        with patch("app.events.processor.IndexingPipeline") as MockPipeline:
+        with patch("app.events.processor.DoclingProcessor") as MockDP, \
+             patch("app.events.processor.IndexingPipeline") as MockPipeline:
+            MockDP.return_value.parse_document = AsyncMock(return_value=MagicMock())
+            MockDP.return_value.create_blocks = AsyncMock(return_value=mock_blocks)
             MockPipeline.return_value.apply = AsyncMock()
 
             events = await _collect_events(
@@ -1056,6 +1064,7 @@ class TestProcessMdImageBlockCaptionMapping:
             "# Doc\n![missing_cap](missing_cap)",
             [{"url": "https://example.com/img.png", "new_alt_text": "different_cap"}],
         )
+        md_parser.parse_string.return_value = b"<html><p>Doc</p></html>"
 
         img_block = Block(
             index=0,
@@ -1065,7 +1074,6 @@ class TestProcessMdImageBlockCaptionMapping:
             image_metadata=ImageMetadata(captions=["missing_cap"]),
         )
         mock_blocks = BlocksContainer(blocks=[img_block], block_groups=[])
-        md_parser.parse_to_blocks.return_value = mock_blocks
 
         image_parser = MagicMock()
         image_parser.urls_to_base64 = AsyncMock(
@@ -1078,7 +1086,10 @@ class TestProcessMdImageBlockCaptionMapping:
             return_value=_mock_record_dict(recordName="test.md")
         )
 
-        with patch("app.events.processor.IndexingPipeline") as MockPipeline:
+        with patch("app.events.processor.DoclingProcessor") as MockDP, \
+             patch("app.events.processor.IndexingPipeline") as MockPipeline:
+            MockDP.return_value.parse_document = AsyncMock(return_value=MagicMock())
+            MockDP.return_value.create_blocks = AsyncMock(return_value=mock_blocks)
             MockPipeline.return_value.apply = AsyncMock()
 
             events = await _collect_events(
@@ -1099,6 +1110,7 @@ class TestProcessMdImageBlockCaptionMapping:
             "# Doc\n![cap1](cap1)",
             [{"url": "https://example.com/img.png", "new_alt_text": "cap1"}],
         )
+        md_parser.parse_string.return_value = b"<html><p>Doc</p></html>"
 
         # Image block with non-dict data
         img_block = Block(
@@ -1109,7 +1121,6 @@ class TestProcessMdImageBlockCaptionMapping:
             image_metadata=ImageMetadata(captions=["cap1"]),
         )
         mock_blocks = BlocksContainer(blocks=[img_block], block_groups=[])
-        md_parser.parse_to_blocks.return_value = mock_blocks
 
         image_parser = MagicMock()
         image_parser.urls_to_base64 = AsyncMock(
@@ -1122,7 +1133,10 @@ class TestProcessMdImageBlockCaptionMapping:
             return_value=_mock_record_dict(recordName="test.md")
         )
 
-        with patch("app.events.processor.IndexingPipeline") as MockPipeline:
+        with patch("app.events.processor.DoclingProcessor") as MockDP, \
+             patch("app.events.processor.IndexingPipeline") as MockPipeline:
+            MockDP.return_value.parse_document = AsyncMock(return_value=MagicMock())
+            MockDP.return_value.create_blocks = AsyncMock(return_value=mock_blocks)
             MockPipeline.return_value.apply = AsyncMock()
 
             events = await _collect_events(
@@ -1385,20 +1399,25 @@ class TestCreateTransformContextCalledByProcessMethods:
     @pytest.mark.asyncio
     async def test_process_md_calls_create_transform_context(self):
         """process_md_document uses _create_transform_context with event_type."""
+        from app.models.blocks import BlocksContainer
         proc = _make_processor()
 
         md_parser = MagicMock()
         md_parser.extract_and_replace_images.return_value = ("# Hello", [])
-        from app.models.blocks import BlocksContainer
-        md_parser.parse_to_blocks.return_value = BlocksContainer(blocks=[], block_groups=[])
+        md_parser.parse_string.return_value = b"<html><h1>Hello</h1></html>"
         proc.parsers = {"md": md_parser}
 
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="test.md")
         )
 
-        with patch("app.events.processor.IndexingPipeline") as MockPipeline, \
+        with patch("app.events.processor.DoclingProcessor") as MockDP, \
+             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch.object(proc, "_create_transform_context", wraps=proc._create_transform_context) as mock_ctx:
+            MockDP.return_value.parse_document = AsyncMock(return_value=MagicMock())
+            MockDP.return_value.create_blocks = AsyncMock(
+                return_value=BlocksContainer(blocks=[], block_groups=[])
+            )
             MockPipeline.return_value.apply = AsyncMock()
 
             await _collect_events(

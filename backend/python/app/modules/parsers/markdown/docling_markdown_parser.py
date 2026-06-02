@@ -111,7 +111,7 @@ def _extract_and_replace_images(
 ) -> Tuple[str, List[Dict[str, str]]]:
     """Module-level implementation shared by both markdown parser backends."""
     images: List[Dict[str, str]] = []
-    image_counter = [1]
+    image_counter = 1
 
     markdown_img_pattern = r'!\[([^\]]*)\]\(([^\s)]+)(?:\s+"[^"]*")?\)'
     reference_usage_pattern = r'!\[([^\]]*)\]\[([^\]]+)\]'
@@ -119,17 +119,18 @@ def _extract_and_replace_images(
 
     reference_map: Dict[str, str] = {}
     for match in re.finditer(reference_def_pattern, md_content, re.MULTILINE):
-        reference_map[match.group(1)] = match.group(2).strip()
+        reference_map[match.group(1).lower()] = match.group(2).strip()
 
     reference_positions: set[int] = set()
     for match in re.finditer(reference_usage_pattern, md_content):
         reference_positions.add(match.start())
 
-    def replace_reference_image(match: re.Match) -> str:  # type: ignore[type-arg]
+    def replace_reference_image(match: re.Match[str]) -> str:
+        nonlocal image_counter
         original_alt = match.group(1)
         ref_id = match.group(2)
-        url = reference_map.get(ref_id, f"[unknown reference: {ref_id}]")
-        new_alt = f"Image_{image_counter[0]}"
+        url = reference_map.get(ref_id.lower(), f"[unknown reference: {ref_id}]")
+        new_alt = f"Image_{image_counter}"
         images.append({
             "original_text": match.group(0),
             "url": url,
@@ -137,15 +138,16 @@ def _extract_and_replace_images(
             "new_alt_text": new_alt,
             "image_type": "reference",
         })
-        image_counter[0] += 1
+        image_counter += 1
         return f"![{new_alt}][{ref_id}]"
 
-    def replace_markdown_image(match: re.Match) -> str:  # type: ignore[type-arg]
+    def replace_markdown_image(match: re.Match[str]) -> str:
+        nonlocal image_counter
         if match.start() in reference_positions:
             return match.group(0)
         original_alt = match.group(1)
         url = match.group(2)
-        new_alt = f"Image_{image_counter[0]}"
+        new_alt = f"Image_{image_counter}"
         images.append({
             "original_text": match.group(0),
             "url": url,
@@ -153,16 +155,17 @@ def _extract_and_replace_images(
             "new_alt_text": new_alt,
             "image_type": "markdown",
         })
-        image_counter[0] += 1
+        image_counter += 1
         return f"![{new_alt}]({url})"
 
     def process_html_images(content: str) -> str:
+        nonlocal image_counter
         soup = BeautifulSoup(content, "html.parser")
         for img_tag in soup.find_all("img"):
             src = img_tag.get("src", "")
             original_alt = img_tag.get("alt", "")
             original_text = str(img_tag)
-            new_alt = f"Image_{image_counter[0]}"
+            new_alt = f"Image_{image_counter}"
             img_tag["alt"] = new_alt
             images.append({
                 "original_text": original_text,
@@ -171,7 +174,7 @@ def _extract_and_replace_images(
                 "new_alt_text": new_alt,
                 "image_type": "html",
             })
-            image_counter[0] += 1
+            image_counter += 1
         return str(soup)
 
     modified = re.sub(reference_usage_pattern, replace_reference_image, md_content)

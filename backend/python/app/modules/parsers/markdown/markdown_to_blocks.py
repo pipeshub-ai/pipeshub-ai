@@ -77,19 +77,17 @@ class _TokenWalker:
         token = tokens[index]
 
         if token.type == "heading_open":
-            inline_token = tokens[index + 1]
-            self._add_text_blocks_from_inline(
-                inline_token,
-                BlockSubType.HEADING,
-                heading_level=token.tag,
-            )
-            return index + 2
+            if index + 1 < len(tokens) and tokens[index + 1].type == "inline":
+                self._add_text_blocks_from_inline(tokens[index + 1], BlockSubType.HEADING)
+                return index + 2
+            return index + 1
 
         if token.type == "paragraph_open":
-            inline_token = tokens[index + 1]
-            sub_type = BlockSubType.LIST_ITEM if self.list_item_depth > 0 else BlockSubType.PARAGRAPH
-            self._add_text_blocks_from_inline(inline_token, sub_type)
-            return index + 2
+            if index + 1 < len(tokens) and tokens[index + 1].type == "inline":
+                sub_type = BlockSubType.LIST_ITEM if self.list_item_depth > 0 else BlockSubType.PARAGRAPH
+                self._add_text_blocks_from_inline(tokens[index + 1], sub_type)
+                return index + 2
+            return index + 1
 
         if token.type == "fence":
             self._add_code_block(token.content.rstrip("\n"), token.info.strip() or None)
@@ -147,11 +145,13 @@ class _TokenWalker:
             return index
 
         if token.type in {"th_open", "td_open"}:
-            inline_token = tokens[index + 1]
-            cell_text = self._render_inline(inline_token).strip()
-            if self.table_state is not None:
-                self.table_state.current_row.append(cell_text)
-            return index + 2
+            if index + 1 < len(tokens) and tokens[index + 1].type == "inline":
+                inline_token = tokens[index + 1]
+                cell_text = self._render_inline(inline_token).strip()
+                if self.table_state is not None:
+                    self.table_state.current_row.append(cell_text)
+                return index + 2
+            return index + 1
 
         if token.type == "tr_close":
             if self.table_state is not None and self.table_state.current_row:
@@ -258,9 +258,7 @@ class _TokenWalker:
         self,
         inline_token: Token,
         sub_type: BlockSubType,
-        heading_level: str | None = None,
     ) -> None:
-        del heading_level
         text, image_tokens = self._split_inline_content(inline_token)
 
         if text:
@@ -350,8 +348,11 @@ class _TokenWalker:
         rows = self.table_state.rows
         group = self.block_groups[self.table_state.group_index]
 
-        if headers and not rows and self.table_state.current_row:
-            headers = self.table_state.current_row
+        if self.table_state.current_row:
+            if not headers:
+                headers = self.table_state.current_row
+            else:
+                rows.append(self.table_state.current_row)
 
         row_block_indices: list[int] = []
         for row_number, row_cells in enumerate(rows, start=1):

@@ -5,7 +5,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.models.blocks import (
+    Block,
     BlockGroup,
+    BlocksContainer,
     BlockSubType,
     BlockType,
     DataFormat,
@@ -20,11 +22,11 @@ def converter() -> MarkdownToBlocksConverter:
     return MarkdownToBlocksConverter()
 
 
-def _groups_by_type(container, group_type: GroupType) -> list[BlockGroup]:
+def _groups_by_type(container: BlocksContainer, group_type: GroupType) -> list[BlockGroup]:
     return [group for group in container.block_groups if group.type == group_type]
 
 
-def _blocks_by_type(container, block_type: BlockType):
+def _blocks_by_type(container: BlocksContainer, block_type: BlockType) -> list[Block]:
     return [block for block in container.blocks if block.type == block_type]
 
 
