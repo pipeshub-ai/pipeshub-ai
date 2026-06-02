@@ -114,6 +114,7 @@ services:
       - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
+      - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
 
       # Slack Bot config
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
@@ -150,6 +151,16 @@ services:
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          curl -sf http://localhost:3000/api/v1/health/services -o /tmp/hc.json &&
+          python3 -c "import json,sys; d=json.load(open('/tmp/hc.json')); s=d.get('services',{}) or {}; required=('query','connector','indexing','docling'); sys.exit(0 if all(s.get(k)=='healthy' for k in required) and s.get('embedding') in ('healthy','starting') else 1)"
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
 
   mongodb:
     image: mongo:8.0.17

@@ -42,6 +42,29 @@ MAX_CONCURRENT_EMBEDDINGS = int(os.getenv("EMBEDDING_SERVER_MAX_CONCURRENCY", "4
 # library is imported inside ``_load``.
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
 
+# ---------------------------------------------------------------------------
+# Server-side security policy (evaluated once at startup)
+# ---------------------------------------------------------------------------
+
+# EMBEDDING_SERVER_ALLOW_REMOTE_CODE=true must be explicitly opt-in.
+# When false (the default), any request that sets trust_remote_code=true is
+# rejected with 403 — a compromised internal caller cannot trigger RCE via a
+# malicious model repo.
+ALLOW_REMOTE_CODE: bool = os.getenv(
+    "EMBEDDING_SERVER_ALLOW_REMOTE_CODE", "false"
+).lower() in ("1", "true", "yes")
+
+# EMBEDDING_SERVER_ALLOWED_MODELS is an optional comma-separated allowlist.
+# When set, only listed model names are accepted; requests for any other model
+# are rejected with 403, preventing disk-exhaustion DoS via arbitrary Hub
+# downloads. When unset, any model name is allowed (original behaviour).
+_allowed_models_raw = os.getenv("EMBEDDING_SERVER_ALLOWED_MODELS", "").strip()
+ALLOWED_MODELS: frozenset[str] | None = (
+    frozenset(m.strip() for m in _allowed_models_raw.split(",") if m.strip())
+    if _allowed_models_raw
+    else None
+)
+
 
 class EmbeddingRequest(BaseModel):
     model: str
@@ -225,6 +248,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         DEFAULT_EMBEDDING_MODEL,
         MAX_CONCURRENT_EMBEDDINGS,
     )
+    logger.info(
+        "Security policy: allow_remote_code=%s, allowed_models=%s",
+        ALLOW_REMOTE_CODE,
+        sorted(ALLOWED_MODELS) if ALLOWED_MODELS is not None else "unrestricted",
+    )
     try:
         await model_manager.warmup(DEFAULT_EMBEDDING_MODEL)
         logger.info("Default embedding model ready")
@@ -286,6 +314,21 @@ async def list_models() -> ModelListResponse:
 
 @app.post("/v1/embeddings")
 async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
+    # --- server-side policy checks (fail fast, before any I/O) ---
+    if ALLOWED_MODELS is not None and request.model not in ALLOWED_MODELS:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Model '{request.model}' is not in the server's allowed model list.",
+        )
+    if request.trust_remote_code and not ALLOW_REMOTE_CODE:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "trust_remote_code is disabled on this server. "
+                "Set environment variable EMBEDDING_SERVER_ALLOW_REMOTE_CODE=true to enable it."
+            ),
+        )
+
     texts = _normalize_input(request.input)
     encoding_format = request.encoding_format or "float"
 

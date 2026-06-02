@@ -94,27 +94,83 @@ class TestEmbeddingServerRoutes:
         assert response.status_code == 200
         body = response.json()
         expected = base64.b64encode(
-            struct.pack("3f", 0.1, 0.2, 0.3)
+            struct.pack("<3f", 0.1, 0.2, 0.3)
         ).decode("ascii")
         assert body["data"][0]["embedding"] == expected
         assert isinstance(body["data"][0]["embedding"], str)
 
     def test_create_embeddings_passes_trust_remote_code(self, client):
         test_client, mock_manager = client
-        response = test_client.post(
-            "/v1/embeddings",
-            json={
-                "model": "nomic-ai/nomic-embed-text-v2-moe",
-                "input": "hello",
-                "trust_remote_code": True,
-            },
-        )
+        with patch("app.embedding_main.ALLOW_REMOTE_CODE", True):
+            response = test_client.post(
+                "/v1/embeddings",
+                json={
+                    "model": "nomic-ai/nomic-embed-text-v2-moe",
+                    "input": "hello",
+                    "trust_remote_code": True,
+                },
+            )
         assert response.status_code == 200
         mock_manager.encode.assert_awaited_once_with(
             "nomic-ai/nomic-embed-text-v2-moe",
             ["hello"],
             trust_remote_code=True,
         )
+
+
+class TestEmbeddingServerSecurityPolicy:
+    def test_trust_remote_code_rejected_by_default(self, client):
+        test_client, _ = client
+        with patch("app.embedding_main.ALLOW_REMOTE_CODE", False):
+            response = test_client.post(
+                "/v1/embeddings",
+                json={
+                    "model": DEFAULT_EMBEDDING_MODEL,
+                    "input": "hello",
+                    "trust_remote_code": True,
+                },
+            )
+        assert response.status_code == 403
+        assert "trust_remote_code" in response.json()["detail"]
+
+    def test_trust_remote_code_false_always_allowed(self, client):
+        test_client, _ = client
+        with patch("app.embedding_main.ALLOW_REMOTE_CODE", False):
+            response = test_client.post(
+                "/v1/embeddings",
+                json={"model": DEFAULT_EMBEDDING_MODEL, "input": "hello"},
+            )
+        assert response.status_code == 200
+
+    def test_model_not_in_allowlist_rejected(self, client):
+        test_client, _ = client
+        allowlist = frozenset([DEFAULT_EMBEDDING_MODEL])
+        with patch("app.embedding_main.ALLOWED_MODELS", allowlist):
+            response = test_client.post(
+                "/v1/embeddings",
+                json={"model": "some-other/model", "input": "hello"},
+            )
+        assert response.status_code == 403
+        assert "some-other/model" in response.json()["detail"]
+
+    def test_model_in_allowlist_passes(self, client):
+        test_client, _ = client
+        allowlist = frozenset([DEFAULT_EMBEDDING_MODEL])
+        with patch("app.embedding_main.ALLOWED_MODELS", allowlist):
+            response = test_client.post(
+                "/v1/embeddings",
+                json={"model": DEFAULT_EMBEDDING_MODEL, "input": "hello"},
+            )
+        assert response.status_code == 200
+
+    def test_no_allowlist_permits_any_model(self, client):
+        test_client, _ = client
+        with patch("app.embedding_main.ALLOWED_MODELS", None):
+            response = test_client.post(
+                "/v1/embeddings",
+                json={"model": "any/model-name", "input": "hello"},
+            )
+        assert response.status_code == 200
 
 
 class TestEmbeddingServerBaseUrl:
