@@ -179,15 +179,6 @@ describe('Enterprise Search Routes - handler coverage', () => {
       expect(routes.find((r: any) => r.path === '/:agentKey/conversations/:conversationId' && r.methods.delete)).to.exist
     })
 
-    it('should register template routes', () => {
-      const router = createAgentConversationalRouter(container)
-      const routes = router.stack
-        .filter((layer: any) => layer.route)
-        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
-
-      expect(routes.find((r: any) => r.path === '/template' && r.methods.get)).to.exist
-    })
-
     it('should register agent CRUD routes', () => {
       const router = createAgentConversationalRouter(container)
       const routes = router.stack

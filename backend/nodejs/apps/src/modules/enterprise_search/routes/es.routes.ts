@@ -39,7 +39,6 @@ import {
   getAllAgentConversations,
   getAgentConversationById,
   deleteAgentConversationById,
-  listAgentTemplates,
   createAgent,
   getAgent,
   deleteAgent,
@@ -800,14 +799,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     ValidationMiddleware.validate(listAllArchivesAgentConversationQuerySchema),
     listAllArchivesAgentConversation(),
   ); 
-
-  router.get(
-    '/template',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
-    listAgentTemplates(appConfig),
-  );
 
   router.post(
     '/create',

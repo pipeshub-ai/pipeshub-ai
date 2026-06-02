@@ -34,7 +34,6 @@ import {
   getAllAgentConversations,
   getAgentConversationById,
   deleteAgentConversationById,
-  listAgentTemplates,
   createAgent,
   getAgent,
   deleteAgent,
@@ -2331,48 +2330,6 @@ describe('Enterprise Search Controller', () => {
     })
   })
 
-  // -----------------------------------------------------------------------
-  // Agent Templates
-  // -----------------------------------------------------------------------
-  describe('listAgentTemplates', () => {
-    it('should return a handler function', () => {
-      const handler = listAgentTemplates(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should list agent templates successfully', async () => {
-      const handler = listAgentTemplates(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: [{ name: 'Template1' }],
-      } as any)
-
-      const req = createMockRequest({
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next when orgId is missing', async () => {
-      const handler = listAgentTemplates(createMockAppConfig())
-      const req = createMockRequest({ user: { userId: VALID_OID } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
   describe('shareAgentTemplate', () => {
     it('should return a handler function', () => {
       const handler = shareAgentTemplate(createMockAppConfig())
@@ -4571,23 +4528,6 @@ describe('Enterprise Search Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('should handle backend error with detail field in listAgentTemplates', async () => {
-      const handler = listAgentTemplates(createMockAppConfig())
-
-      const detailError: any = new Error('Detail error')
-      detailError.detail = 'Detailed error description'
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(detailError)
-
-      const req = createMockRequest({
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
   })
 
   // -----------------------------------------------------------------------
@@ -6270,22 +6210,6 @@ describe('Enterprise Search Controller', () => {
       const writeArgs = res.write.args.map((a: any) => a[0]).join('')
       expect(writeArgs).to.include('error')
       expect(res.end.called).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // Additional listAgentTemplates validation branches
-  // -----------------------------------------------------------------------
-  describe('listAgentTemplates (validation branches)', () => {
-    it('should throw when userId is missing', async () => {
-      const handler = listAgentTemplates(createMockAppConfig())
-      const req = createMockRequest({ user: { orgId: VALID_OID2 } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
     })
   })
 
@@ -8164,79 +8088,6 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
 
   // -----------------------------------------------------------------------
-  // handleBackendError: ECONNREFUSED via error.cause.code
-  // -----------------------------------------------------------------------
-  describe('handleBackendError - ECONNREFUSED via cause.code', () => {
-    it('should return ServiceUnavailableError for ECONNREFUSED in cause', async () => {
-      const handler = listAgentTemplates(createMockAppConfig())
-
-      const connError: any = new Error('Connection refused')
-      connError.cause = { code: 'ECONNREFUSED' }
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(connError)
-
-      const req = createMockRequest({
-        body: { name: 'template' },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-      const err = next.firstCall.args[0]
-      expect(err.message).to.include('unavailable')
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // handleBackendError: fetch failed without ECONNREFUSED cause
-  // -----------------------------------------------------------------------
-  describe('handleBackendError - fetch failed without ECONNREFUSED', () => {
-    it('should return ServiceUnavailableError when error message includes fetch failed', async () => {
-      const handler = listAgentTemplates(createMockAppConfig())
-
-      const fetchError = new Error('fetch failed')
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(fetchError)
-
-      const req = createMockRequest({
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-      const err = next.firstCall.args[0]
-      expect(err.message).to.include('unavailable')
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // handleBackendError: error.response.data with only 'message' field
-  // -----------------------------------------------------------------------
-  describe('handleBackendError - data.message fallback', () => {
-    it('should use Unknown error when detail, reason, and message are all absent', async () => {
-      const handler = listAgentTemplates(createMockAppConfig())
-
-      const err: any = new Error('No details')
-      err.response = { status: 500, data: {} }
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(err)
-
-      const req = createMockRequest({
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
   // startAIStream: catch branch
   // -----------------------------------------------------------------------
   describe('startAIStream - error mapping', () => {
@@ -9777,31 +9628,7 @@ describe('Enterprise Search Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // listAgentTemplates: AI response non-200
-  // -----------------------------------------------------------------------
-  describe('listAgentTemplates - AI response non-200', () => {
-    it('should throw handleBackendError when AI response is non-200', async () => {
-      const handler = listAgentTemplates(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 500,
-        data: { detail: 'Template listing failed' },
-      } as any)
-
-      const req = createMockRequest({
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // listAgentTemplates: AI response non-200
+  // getAgent: AI response non-200
   // -----------------------------------------------------------------------
   describe('getAgent - AI response non-200', () => {
     it('should throw when AI response is non-200', async () => {
@@ -9993,27 +9820,6 @@ describe('Enterprise Search Controller', () => {
 
       const req = createMockRequest({
         params: { templateId: VALID_OID },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('listAgentTemplates - AI response non-200', () => {
-    it('should throw when AI response is non-200', async () => {
-      const handler = listAgentTemplates(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 404,
-        data: { detail: 'Template listing failed' },
-      } as any)
-
-      const req = createMockRequest({
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()

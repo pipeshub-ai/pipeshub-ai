@@ -25050,38 +25050,6 @@ paths:
           description: |
             Unexpected server error while unarchiving the search.
 
-  /agents/template:
-    get:
-      tags:
-        - Agent Templates
-      summary: List agent templates
-      description: |
-        Retrieve all available agent templates.<br><br>
-        <b>Overview:</b><br>
-        Agent templates provide pre-configured starting points for creating
-        custom AI agents. Templates include system prompts, recommended tools,
-        and configuration schemas.<br><br>
-        <b>Template Types:</b><br>
-        <ul>
-        <li>Public templates available to all organization users</li>
-        <li>Private templates created by individual users</li>
-        </ul>
-      operationId: listAgentTemplates
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      responses:
-        '200':
-          description: List of agent templates
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/AgentTemplate'
-        '401':
-          description: Unauthorized
-
   /agents/template/{templateId}:
   # -------------------- Agents --------------------
   /agents:
