@@ -25948,6 +25948,7 @@ paths:
         chat (`POST /conversations/attachments/upload`): up to 10 files, 5 MiB each. Proxies to
         the AI backend. Optional `conversationId` associates uploads with an existing agent thread.
       operationId: uploadAgentConversationChatAttachments
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -26021,6 +26022,7 @@ paths:
         with a small JSON error object. Same fire-and-forget semantics as
         `DELETE /conversations/attachments/{recordId}` on the client.
       operationId: deleteAgentConversationChatAttachment
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -26191,6 +26193,7 @@ paths:
         conversation lookup or regenerate rules are reported as SSE `error`
         events after stream initialization.
       operationId: regenerateAgentConversationMessage
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -26264,6 +26267,7 @@ paths:
         `updateMessageFeedback` (helpfulness, categories, comments). Feedback
         can only be submitted on `bot_response` messages.
       operationId: updateAgentConversationMessageFeedback
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -26324,6 +26328,7 @@ paths:
       summary: Add message to agent conversation
       description: Append a user message and wait for the full non-streaming AI response.
       operationId: addAgentConversationMessage
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -26367,6 +26372,7 @@ paths:
       summary: Archive an agent conversation
       description: Marks the conversation as archived for the authenticated owner.
       operationId: archiveAgentConversation
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -26416,6 +26422,7 @@ paths:
       summary: Unarchive an agent conversation
       description: Restores an archived agent conversation to the active list.
       operationId: unarchiveAgentConversation
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -26474,6 +26481,7 @@ paths:
         title can therefore still return HTTP 400 even if the raw string is
         non-empty.
       operationId: updateAgentConversationTitle
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -26550,6 +26558,7 @@ paths:
         - deleting through a different `agentKey` returns success with `null`
         - deleting an already deleted conversation returns success with `null`
       operationId: deleteAgentConversationById
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -26812,6 +26821,7 @@ paths:
         Create a new conversation with the agent using an initial user query;
         returns the persisted conversation after the first AI response (non-streaming).
       operationId: createAgentConversation
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
