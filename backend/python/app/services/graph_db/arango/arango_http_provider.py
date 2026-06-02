@@ -3291,8 +3291,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "record_group_id": record_group_id,
                 "connector_id": connector_id,
                 "org_id": org_id,
-                "max_depth": max_depth,
             }
+            if max_depth > 0:
+                bind_vars["max_depth"] = max_depth
             if status_filters:
                 bind_vars["status_filters"] = status_filters
 
@@ -3372,14 +3373,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 rg_permission_filter = ""
                 record_permission_filter = ""
 
-            query = f"""
-            LET recordGroup = DOCUMENT(@@record_group_collection, @record_group_id)
-            FILTER recordGroup != null
-            FILTER recordGroup.orgId == @org_id
-
-            // Collect all record groups: starting group + nested groups up to max_depth
-            // Using belongsTo edges (child -> parent direction, so INBOUND from parent)
-            LET allRecordGroups = @max_depth > 0 ? UNION_DISTINCT(
+            # ArangoDB rejects 1..0 at parse time; build traversal only when max_depth > 0
+            if max_depth == 0:
+                all_record_groups_aql = "LET allRecordGroups = [recordGroup]"
+            else:
+                all_record_groups_aql = f"""
+            LET allRecordGroups = UNION_DISTINCT(
                 [recordGroup],
                 (FOR nestedRg IN (
                     FOR v IN 1..@max_depth INBOUND recordGroup._id {CollectionNames.BELONGS_TO.value}
@@ -3390,7 +3389,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     {rg_permission_filter}
                     RETURN nestedRg
                 )
-            ) : [recordGroup]
+            )"""
+
+            query = f"""
+            LET recordGroup = DOCUMENT(@@record_group_collection, @record_group_id)
+            FILTER recordGroup != null
+            FILTER recordGroup.orgId == @org_id
+
+            // Collect all record groups: starting group + nested groups up to max_depth
+            // Using belongsTo edges (child -> parent direction, so INBOUND from parent)
+            {all_record_groups_aql}
 
             // Get all records from all record groups via belongsTo edges
             LET allRecordsRaw = (
