@@ -187,7 +187,14 @@ export function FolderTreeItem({
   const menuActions: (MenuAction | false)[] = [
     ...(showReindexMenu
       ? mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) =>
-          onReindex!(node.id, enhancedNode.nodeType, node.name, statusFilters),
+          onReindex!(
+            node.id,
+            enhancedNode.nodeType,
+            node.name,
+            statusFilters,
+            enhancedNode.indexingStatus,
+            hasDescendants,
+          ),
         )
       : []),
     canEdit && !!onRename && { icon: 'edit', label: t('menu.rename'), onClick: handleRenameStart },

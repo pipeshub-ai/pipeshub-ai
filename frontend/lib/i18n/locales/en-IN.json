@@ -374,10 +374,15 @@
     "reindexManual": "Re-index manual",
     "startIndexing": "Start indexing",
     "startManualIndex": "Start manual index",
-    "forceReindexing": "Force reindexing",
+    "forceReindexing": "Force reindex",
     "retryIndexing": "Retry indexing",
     "rename": "Rename",
     "delete": "Delete"
+  },
+  "forceReindexConfirm": {
+    "title": "Start force reindex?",
+    "message": "This re-indexes the document from scratch and may incur extra cost. Use this when search results are stale, or the document is not searchable even after indexing is complete.",
+    "confirm": "Confirm"
   },
   "kb": {
     "viewToggle": "View Toggle",
@@ -1206,7 +1211,7 @@
         "developerSettings": "Developer Settings",
         "oauth2": "OAuth 2.0 Apps",
         "profile": "Profile",
-        "yourConnectors": "Your Connectors",
+        "yourConnectors": "Your Personal Connectors",
         "yourActions": "Your actions",
         "archivedChats": "Archived Chats",
         "users": "Users",
@@ -1562,6 +1567,11 @@
         "wideSyncMessage": "This process could sync a large number of records. Are you sure you want to start the sync? Consider adding filters through the Filters section to reduce the number of records to sync.",
         "confirm": "Confirm",
         "cancel": "Cancel"
+      },
+      "fullSyncConfirm": {
+        "title": "Start full sync?",
+        "message": "Overwrites and re-syncs all data from scratch and is slower than normal Sync. Use full sync when content is missing, duplicated, or doesn't match the source. For routine updates, use Sync instead.",
+        "confirm": "Confirm"
       },
       "disableFirstDialog": {
         "title": "Connector is currently enabled",

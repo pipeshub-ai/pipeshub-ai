@@ -275,13 +275,22 @@ function KnowledgeBaseSidebarSlotContent() {
   );
 
   const handleSidebarReindex = useCallback(
-    (nodeId: string, nodeType: NodeType, name: string, statusFilters?: string[]) => {
+    (
+      nodeId: string,
+      nodeType: NodeType,
+      name: string,
+      statusFilters?: string[],
+      indexingStatus?: string | null,
+      hasChildren?: boolean,
+    ) => {
       setPendingSidebarAction({
         type: 'reindex',
         nodeId,
         nodeName: name,
         nodeType,
         statusFilters,
+        indexingStatus,
+        hasChildren,
       });
     },
     [setPendingSidebarAction]

@@ -154,6 +154,8 @@ interface KnowledgeBaseState {
         nodeType?: NodeType;
         rootKbId?: string;
         statusFilters?: string[];
+        indexingStatus?: string | null;
+        hasChildren?: boolean;
       }
     | { type: 'create-collection' }
     | null;
@@ -303,6 +305,8 @@ interface KnowledgeBaseActions {
           nodeType?: NodeType;
           rootKbId?: string;
           statusFilters?: string[];
+          indexingStatus?: string | null;
+          hasChildren?: boolean;
         }
       | { type: 'create-collection' }
       | null

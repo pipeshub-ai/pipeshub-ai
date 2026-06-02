@@ -374,10 +374,15 @@
     "reindexManual": "Manuelle neu indizieren",
     "startIndexing": "Indizierung starten",
     "startManualIndex": "Manuelle Indizierung starten",
-    "forceReindexing": "Indizierung erzwingen",
+    "forceReindexing": "Reindex erzwingen",
     "retryIndexing": "Indizierung wiederholen",
     "rename": "Umbenennen",
     "delete": "Löschen"
+  },
+  "forceReindexConfirm": {
+    "title": "Erzwungene Neuindizierung starten?",
+    "message": "Das Dokument wird von Grund auf neu indiziert; dies kann zusätzliche Kosten verursachen. Verwenden Sie dies, wenn Suchergebnisse veraltet sind oder das Dokument nach abgeschlossener Indizierung nicht durchsuchbar ist.",
+    "confirm": "Bestätigen"
   },
   "kb": {
     "viewToggle": "Ansicht wechseln",
@@ -1208,7 +1213,7 @@
         "developerSettings": "Entwicklereinstellungen",
         "oauth2": "OAuth 2.0 Apps",
         "profile": "Profil",
-        "yourConnectors": "Ihre Konnektoren",
+        "yourConnectors": "Ihre persönlichen Konnektoren",
         "yourActions": "Ihre Aktionen",
         "archivedChats": "Archivierte Chats",
         "users": "Benutzer",
@@ -1577,6 +1582,11 @@
         "wideSyncMessage": "Dieser Vorgang kann eine große Anzahl von Datensätzen synchronisieren. Möchten Sie die Synchronisation wirklich starten? Erwägen Sie Filter unter „Filter“, um die Datenmenge zu reduzieren.",
         "confirm": "Bestätigen",
         "cancel": "Abbrechen"
+      },
+      "fullSyncConfirm": {
+        "title": "Vollständige Synchronisation starten?",
+        "message": "Überschreibt und synchronisiert alle Daten von Grund auf neu; langsamer als die normale Synchronisation. Verwenden Sie die vollständige Synchronisation, wenn Inhalte fehlen, doppelt vorhanden sind oder nicht mit der Quelle übereinstimmen. Für routinemäßige Updates nutzen Sie stattdessen Synchronisieren.",
+        "confirm": "Bestätigen"
       },
       "disableFirstDialog": {
         "title": "Connector ist derzeit aktiviert",
@@ -2403,7 +2413,7 @@
     "openFullscreen": "Vollbild öffnen",
     "exitFullscreen": "Vollbild beenden",
     "close": "Schließen",
-    "forceReindex": "Neu indizieren",
+    "forceReindex": "Reindex erzwingen",
     "retryIndexing": "Indizierung wiederholen",
     "startIndexing": "Indizierung starten",
     "resumeIndexing": "Indizierung fortsetzen",

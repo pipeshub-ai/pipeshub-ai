@@ -378,6 +378,11 @@
     "rename": "Renombrar",
     "delete": "Eliminar"
   },
+  "forceReindexConfirm": {
+    "title": "¿Iniciar reindexación forzada?",
+    "message": "Esto reindexa el documento desde cero y puede generar costos adicionales. Úselo cuando los resultados de búsqueda estén desactualizados o el documento no sea buscable incluso después de completar la indexación.",
+    "confirm": "Confirmar"
+  },
   "kb": {
     "viewToggle": "Alternar vista",
     "collectionsView": "Vista de colecciones",
@@ -1205,7 +1210,7 @@
         "developerSettings": "Configuración de desarrollador",
         "oauth2": "Apps de OAuth 2.0",
         "profile": "Perfil",
-        "yourConnectors": "Tus conectores",
+        "yourConnectors": "Tus conectores personales",
         "yourActions": "Tus acciones",
         "archivedChats": "Chats archivados",
         "users": "Usuarios",
@@ -1574,6 +1579,11 @@
         "wideSyncMessage": "Este proceso podría sincronizar una gran cantidad de registros. ¿Está seguro de que desea iniciar la sincronización? Considere añadir filtros a través de la sección Filtros para reducir el número de registros a sincronizar.",
         "confirm": "Confirmar",
         "cancel": "Cancelar"
+      },
+      "fullSyncConfirm": {
+        "title": "¿Iniciar sincronización completa?",
+        "message": "Sobrescribe y vuelve a sincronizar todos los datos desde cero; es más lento que la sincronización normal. Use la sincronización completa cuando falte contenido, esté duplicado o no coincida con el origen. Para actualizaciones rutinarias, use Sincronizar.",
+        "confirm": "Confirmar"
       },
       "disableFirstDialog": {
         "title": "El conector está actualmente habilitado",

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useCallback, useState, useMemo, useRef, Suspense } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex } from '@radix-ui/themes';
 import { ServiceGate } from '@/app/components/ui/service-gate';
@@ -75,8 +76,10 @@ import {
   getReindexNodeFromHubItem,
   getReindexSuccessTitle,
   needsReindexScopeModal,
+  requiresForceReindexConfirmation,
   supportsBulkReindex,
 } from './utils/reindex-label';
+import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
 import type { ReindexMenuLabelKey } from './utils/reindex-label';
 import { getCollectionsHubBootstrapFromToken } from './utils/collections-hub-app';
 import { fetchAppDirectChildren } from './utils/fetch-app-direct-children';
@@ -98,6 +101,7 @@ import { useDebouncedSearch } from './hooks/use-debounced-search';
 import { ErrorType, isProcessedError } from '@/lib/api/api-error';
 
 function KnowledgeBasePageContent() {
+  const { t } = useTranslation();
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -439,6 +443,10 @@ function KnowledgeBasePageContent() {
   const [reindexScopePending, setReindexScopePending] = useState<{
     item: KnowledgeHubNode | AllRecordItem;
     primaryLabelKey: ReindexMenuLabelKey;
+  } | null>(null);
+  const [forceReindexPending, setForceReindexPending] = useState<{
+    item: KnowledgeHubNode | AllRecordItem;
+    statusFilters?: string[];
   } | null>(null);
   const [isReindexSubmitting, setIsReindexSubmitting] = useState(false);
 
@@ -1038,27 +1046,6 @@ function KnowledgeBasePageContent() {
   useEffect(() => {
     setCurrentViewMode(pageViewMode);
   }, [pageViewMode, setCurrentViewMode]);
-
-  // Bridge: consume pending sidebar actions (reindex/delete/create-collection) and open corresponding dialogs
-  useEffect(() => {
-    if (!pendingSidebarAction) return;
-    if (pendingSidebarAction.type === 'create-collection') {
-      setCreateFolderContext({ type: 'collection' });
-      setIsCreateFolderDialogOpen(true);
-    } else {
-      const { type, nodeId, nodeName, nodeType, rootKbId, statusFilters } = pendingSidebarAction;
-      if (type === 'reindex') {
-        handleReindexClick(
-          { id: nodeId, name: nodeName, nodeType } as KnowledgeHubNode,
-          statusFilters
-        );
-      } else if (type === 'delete') {
-        setItemToDelete({ id: nodeId, name: nodeName, nodeType, rootKbId });
-        setIsDeleteDialogOpen(true);
-      }
-    }
-    clearPendingSidebarAction();
-  }, [pendingSidebarAction, clearPendingSidebarAction]);
 
   // Clear search when switching between Collections and All Records modes
   // Skip initial mount to avoid clearing URL-hydrated search/pagination values
@@ -2125,7 +2112,7 @@ function KnowledgeBasePageContent() {
     [refreshData],
   );
 
-  const handleReindexClick = useCallback(
+  const proceedWithReindex = useCallback(
     async (
       item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem,
       statusFilters?: string[],
@@ -2155,6 +2142,76 @@ function KnowledgeBasePageContent() {
     },
     [executeReindex],
   );
+
+  const handleReindexClick = useCallback(
+    async (
+      item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem,
+      statusFilters?: string[],
+    ) => {
+      const hubItem = item as KnowledgeHubNode;
+      const reindexNode = getReindexNodeFromHubItem({
+        nodeType: hubItem.nodeType,
+        indexingStatus: hubItem.indexingStatus,
+        hasChildren: hubItem.hasChildren,
+      });
+
+      if (requiresForceReindexConfirmation(reindexNode, statusFilters)) {
+        setForceReindexPending({ item: hubItem, statusFilters });
+        return;
+      }
+
+      await proceedWithReindex(item, statusFilters);
+    },
+    [proceedWithReindex],
+  );
+
+  // Bridge: consume pending sidebar actions (reindex/delete/create-collection) and open corresponding dialogs
+  useEffect(() => {
+    if (!pendingSidebarAction) return;
+    if (pendingSidebarAction.type === 'create-collection') {
+      setCreateFolderContext({ type: 'collection' });
+      setIsCreateFolderDialogOpen(true);
+    } else {
+      const {
+        type,
+        nodeId,
+        nodeName,
+        nodeType,
+        rootKbId,
+        statusFilters,
+        indexingStatus,
+        hasChildren,
+      } = pendingSidebarAction;
+      if (type === 'reindex') {
+        void handleReindexClick(
+          {
+            id: nodeId,
+            name: nodeName,
+            nodeType,
+            indexingStatus,
+            hasChildren,
+          } as KnowledgeHubNode,
+          statusFilters,
+        );
+      } else if (type === 'delete') {
+        setItemToDelete({ id: nodeId, name: nodeName, nodeType, rootKbId });
+        setIsDeleteDialogOpen(true);
+      }
+    }
+    clearPendingSidebarAction();
+  }, [pendingSidebarAction, clearPendingSidebarAction, handleReindexClick]);
+
+  const handleForceReindexConfirm = useCallback(async () => {
+    if (!forceReindexPending) return;
+    const pending = forceReindexPending;
+    setForceReindexPending(null);
+    setIsReindexSubmitting(true);
+    try {
+      await proceedWithReindex(pending.item, pending.statusFilters);
+    } finally {
+      setIsReindexSubmitting(false);
+    }
+  }, [forceReindexPending, proceedWithReindex]);
 
   const handleReindexScopeConfirm = useCallback(
     async (depth: number) => {
@@ -2565,8 +2622,24 @@ function KnowledgeBasePageContent() {
         } */}
       </Flex>
 
-      {/* Collections mode only dialogs */}
-      {/* Delete Confirmation Dialog (sidebar) */}
+      {/* Force reindex confirmation (table, grid, and sidebar) */}
+      <ConfirmationDialog
+        open={forceReindexPending !== null}
+        onOpenChange={(open) => {
+          if (!open && !isReindexSubmitting) setForceReindexPending(null);
+        }}
+        title={t('forceReindexConfirm.title', { defaultValue: 'Start force reindex?' })}
+        message={t('forceReindexConfirm.message', {
+          defaultValue:
+            'This re-indexes the document from scratch and may incur extra cost. Use this when search results are stale, or the document is not searchable even after indexing is complete.',
+        })}
+        confirmLabel={t('forceReindexConfirm.confirm', { defaultValue: 'Confirm' })}
+        cancelLabel={t('common.cancel', { defaultValue: 'Cancel' })}
+        confirmVariant="primary"
+        isLoading={isReindexSubmitting}
+        onConfirm={() => void handleForceReindexConfirm()}
+      />
+
       {reindexScopePending && (
         <ReindexScopeDialog
           open
