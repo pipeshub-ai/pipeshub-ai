@@ -373,6 +373,7 @@ class TestOAuthRevoke:
         self.access_token = oauth_credentials["access_token"]
         self.pipeshub_client = pipeshub_client
         self.url = f"{self.base_url}/api/v1/oauth2/revoke"
+        self.oauth_credentials = oauth_credentials
 
     def test_response_and_errors(self) -> None:
         """Revoke valid token → 200, bad client → 401."""
@@ -398,13 +399,14 @@ class TestOAuthRevoke:
             },
             timeout=self.timeout,
         )
-        self.pipeshub_client._fetch_access_token()
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_openapi_operation(
             resp.json(), "oauthRevoke", status_code="401"
         )
+        self.pipeshub_client._fetch_access_token()
+        self.oauth_credentials["access_token"] = self.pipeshub_client._access_token
 
 
 # ====================================================================
