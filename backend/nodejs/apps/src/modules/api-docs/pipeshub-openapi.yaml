@@ -32323,7 +32323,6 @@ paths:
         (admin-only). Returns the stored KV shape under `models`, not the flattened
         list from getAvailableModelsByType.
       operationId: getAIModelsProviders
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       responses:
