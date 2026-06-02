@@ -46,6 +46,12 @@ class AgentSession(TypedDict):
     secondary_agents: list[str]
 
 
+class AsanaPdfBlob(TypedDict):
+    buffer: bytes
+    originalname: str
+    mimetype: str
+
+
 ASANA_PDF_BLOB_URL = (
     "https://github.com/pipeshub-ai/integration-test/blob/main/"
     "sample-data/entities/enterprise-search/"
@@ -92,10 +98,27 @@ def _fetch_url_bytes(
 
 
 @pytest.fixture(scope="session")
+def asana_pdf_blob() -> AsanaPdfBlob:
+    """Session-scoped shared Asana DR PDF fixture used by enterprise-search ITs."""
+    raw_url = _github_blob_to_raw(ASANA_PDF_BLOB_URL)
+    buffer, originalname, mimetype = _fetch_url_bytes(raw_url)
+    logger.info(
+        "Fetched shared Asana PDF fixture %s (%s, %d bytes)",
+        originalname, mimetype, len(buffer),
+    )
+    return {
+        "buffer": buffer,
+        "originalname": originalname,
+        "mimetype": mimetype,
+    }
+
+
+@pytest.fixture(scope="session")
 def session_kb(
     pipeshub_client: PipeshubClient,
     ai_models_configured,
     reasoning_multimodal_llm_model: SeededAIModel,
+    asana_pdf_blob: AsanaPdfBlob,
 ):
     """Session-scoped KB with the Asana DR PDF uploaded and indexed.
 
@@ -112,8 +135,9 @@ def session_kb(
     logger.info("Created KB %s for enterprise search IT", kb_id)
 
     try:
-        raw_url = _github_blob_to_raw(ASANA_PDF_BLOB_URL)
-        buffer, originalname, mimetype = _fetch_url_bytes(raw_url)
+        buffer = asana_pdf_blob["buffer"]
+        originalname = asana_pdf_blob["originalname"]
+        mimetype = asana_pdf_blob["mimetype"]
 
         # Upload directly so the multipart tuple carries the real mimetype
         # (KBClient.upload_file hardcodes text/plain).

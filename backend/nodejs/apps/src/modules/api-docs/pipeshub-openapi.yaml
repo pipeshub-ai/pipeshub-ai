@@ -3553,6 +3553,66 @@ components:
           minLength: 1
           description: Optional synthetic record id used by the graph layer.
 
+    ChatAttachmentUploadRef:
+      type: object
+      additionalProperties: false
+      description: |
+        Concrete attachment metadata returned by `POST /conversations/attachments/upload`
+        (or the equivalent agent route).
+      required:
+        - recordId
+        - recordName
+        - mimeType
+        - extension
+        - virtualRecordId
+      properties:
+        recordId:
+          type: string
+          minLength: 1
+          description: Server-assigned attachment record id.
+        recordName:
+          type: string
+          minLength: 1
+          description: Original filename stored for the attachment.
+        mimeType:
+          type: string
+          minLength: 1
+          description: MIME type of the uploaded file.
+        extension:
+          type: string
+          minLength: 1
+          description: File extension derived by the backend.
+        virtualRecordId:
+          type: string
+          minLength: 1
+          description: Synthetic record id used by the graph layer.
+        ocrMode:
+          type: string
+          minLength: 1
+          description: Optional backend-reported processing mode for the attachment.
+
+    ChatAttachmentUploadResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Success envelope returned by `POST /conversations/attachments/upload`
+        and `POST /agents/{agentKey}/conversations/attachments/upload`.
+      required:
+        - conversationId
+        - attachments
+      properties:
+        conversationId:
+          type: string
+          nullable: true
+          description: >
+            Existing conversation id echoed from the request when the upload is tied to a thread;
+            otherwise `null`.
+        attachments:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ChatAttachmentUploadRef'
+
     # ==================== ENTERPRISE SEARCH SCHEMAS ====================
     CreateConversationRequest:
       type: object
@@ -21026,29 +21086,33 @@ paths:
               properties:
                 conversationId:
                   type: string
+                  pattern: '^$|^[0-9a-fA-F]{24}$'
                   description: >
-                    Optional. When provided and non-empty after trim, included in the JSON body sent
-                    to the AI backend; otherwise sent as null.
+                    Optional existing conversation id. Empty string is treated as unset; any
+                    non-empty value must be a 24-character ObjectId.
                 files:
                   type: array
-                  description: One or more files; part name must be `files`.
+                  minItems: 1
+                  maxItems: 10
+                  description: >
+                    One or more files; part name must be `files`. Accepted MIME types:
+                    `application/pdf`, `image/jpeg`, `image/jpg`, `image/png`. Max 5 MiB each.
                   items:
                     type: string
                     format: binary
       responses:
         '200':
           description: >
-            Typical success. The HTTP status code and JSON body are those returned by the query
-            service (this route proxies the response).
+            Success. The gateway proxies the AI-backend JSON envelope after transforming the
+            multipart upload into the backend attachment payload.
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
           description: >
-            No files, unsupported MIME type (not PDF/JPEG/PNG), or Multer rejection (e.g. file too
-            large).
+            Invalid `conversationId`, no files, unsupported MIME type (not PDF/JPEG/PNG), or
+            Multer rejection (e.g. file too large).
         '401':
           description: Unauthorized
         '403':
@@ -25893,6 +25957,7 @@ paths:
           required: true
           schema:
             type: string
+            minLength: 1
       requestBody:
         required: true
         description: Multipart form with attachment files and optional `conversationId`.
@@ -25905,27 +25970,41 @@ paths:
               properties:
                 conversationId:
                   type: string
-                  description: Optional existing agent conversation id to attach files to.
+                  pattern: '^$|^[0-9a-fA-F]{24}$'
+                  description: >
+                    Optional existing agent conversation id. Empty string is treated as unset; any
+                    non-empty value must be a 24-character ObjectId.
                 files:
                   type: array
-                  description: One or more PDF/JPEG/PNG files (field name `files`).
+                  minItems: 1
+                  maxItems: 10
+                  description: >
+                    One or more files; field name must be `files`. Accepted MIME types:
+                    `application/pdf`, `image/jpeg`, `image/jpg`, `image/png`. Max 5 MiB each.
                   items:
                     type: string
                     format: binary
       responses:
         '200':
-          description: Upload result from the AI backend (shape defined by the query service).
+          description: >
+            Success. The gateway proxies the AI-backend JSON envelope after transforming the
+            multipart upload into the backend attachment payload.
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
-          description: No files, unsupported MIME type, or file too large.
+          description: >
+            Invalid `conversationId`, no files, unsupported MIME type (not PDF/JPEG/PNG), or
+            Multer rejection (e.g. file too large).
         '401':
           description: Unauthorized
         '403':
           description: Missing `agent:execute` scope
+        '500':
+          description: >
+            Gateway fallback when the upstream call does not return a status
+            (implementation default).
 
   /agents/{agentKey}/conversations/attachments/{recordId}:
     delete:
@@ -25933,9 +26012,14 @@ paths:
         - Agents
       summary: Delete an agent chat attachment
       description: |
-        Removes a previously uploaded attachment for agent chat (graph cleanup). Proxies the
-        Python query service; response may be `204` with an empty body. Same fire-and-forget
-        semantics as `DELETE /conversations/attachments/{recordId}` on the client.
+        Deletes a previously uploaded attachment by proxying `DELETE` to the query service
+        (`/api/v1/chat/attachments/{recordId}`). The Node handler always ends the response **without
+        a JSON body** on success (empty body); the **status code** is the upstream status, or **204**
+        if none is returned.
+
+        On validation failure in the gateway (invalid / blank path params), the response is **400**
+        with a small JSON error object. Same fire-and-forget semantics as
+        `DELETE /conversations/attachments/{recordId}` on the client.
       operationId: deleteAgentConversationChatAttachment
       security:
         - bearerAuth: []
@@ -25944,23 +26028,41 @@ paths:
         - name: agentKey
           in: path
           required: true
+          description: Agent key path parameter. Must be non-empty.
           schema:
             type: string
+            minLength: 1
         - name: recordId
           in: path
           required: true
-          description: Attachment record id returned from the upload endpoint.
+          description: Attachment record id (from the upload response). Must be non-blank after trim.
           schema:
             type: string
+            minLength: 1
       responses:
         '204':
-          description: Attachment deleted (or upstream returned no content).
+          description: Success with no content (typical when upstream returns 204).
         '400':
-          description: Missing or blank `recordId`.
+          description: Invalid or blank path params (`agentKey` or `recordId`).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - error
+                properties:
+                  error:
+                    type: string
+                    example: recordId is required
         '401':
           description: Unauthorized
         '403':
           description: Missing `agent:execute` scope
+        default:
+          description: >
+            Other status codes are forwarded from the query service (e.g. 404) with an **empty**
+            response body from this route.
 
   /agents/{agentKey}/conversations/stream:
     post:
