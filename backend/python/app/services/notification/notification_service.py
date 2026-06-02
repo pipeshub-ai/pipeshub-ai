@@ -23,12 +23,16 @@ class NotificationService:
     async def publish_notification(
         self,
         *,
-        user_id: str,
         org_id: str,
-        payload: dict[str, Any],
-        type: NotificationType,
         origin: NotificationOrigin,
-        severity: NotificationSeverity = NotificationSeverity.INFO,
+        type: NotificationType,
+        severity: NotificationSeverity,
+        title: str,
+        message: str,
+        payload: dict[str, Any],
+        redirect_link: str | None = None,
+        recipient_user_ids: list[str],
+        recipient_roles: list[str],
     ) -> None:
         """Publish a user-visible connector notification. Swallows broker errors after logging."""
         try:
@@ -37,9 +41,13 @@ class NotificationService:
                 "type": type.value,
                 "severity": severity.value,
                 "status": "unread",
-                "origin": origin.value,
-                "assignedTo": user_id,
+                "originService": origin.value,
+                "title": title,
+                "message": message,
+                "redirectLink": redirect_link,
                 "payload": payload,
+                "recipientUserIds": recipient_user_ids or [],
+                "recipientRoles": recipient_roles or [],
                 "isDeleted": False,
             }
             await self._kafka_service.publish_notification(document)

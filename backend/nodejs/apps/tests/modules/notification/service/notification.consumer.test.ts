@@ -1,9 +1,11 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
+import mongoose from 'mongoose';
 import { NotificationConsumer } from '../../../../src/modules/notification/service/notification.consumer';
 import { NotificationService } from '../../../../src/modules/notification/service/notification.service';
 import * as NotificationSchema from '../../../../src/modules/notification/schema/notification.schema';
+import * as RecipientResolver from '../../../../src/modules/notification/utils/notification-recipient.resolver';
 
 describe('notification/service/notification.consumer', () => {
   let consumer: NotificationConsumer;
@@ -109,27 +111,66 @@ describe('notification/service/notification.consumer', () => {
       expect(mockConsumer.consume.calledOnce).to.be.true;
     });
 
-    it('persists then sendToUser then runs user handler', async () => {
+    it('fans out to each recipientUserId and dispatches websocket', async () => {
       mockConsumer.isConnected.returns(true);
       const userHandler = sinon.stub().resolves();
-      const createStub = sinon.stub(NotificationSchema.Notifications, 'create').resolves({
+      const orgId = new mongoose.Types.ObjectId().toString();
+      const user1 = new mongoose.Types.ObjectId().toString();
+      const user2 = new mongoose.Types.ObjectId().toString();
+      const resolveStub = sinon
+        .stub(RecipientResolver, 'resolveNotificationRecipientUserIds')
+        .resolves([
+          new mongoose.Types.ObjectId(user1),
+          new mongoose.Types.ObjectId(user2),
+        ]);
+      const createStub = sinon.stub(NotificationSchema.Notifications, 'create');
+      createStub.onFirstCall().resolves({
         _id: 'nid1',
-        assignedTo: { toString: () => 'user-oid-1' },
-        toObject: () => ({ _id: 'nid1', title: 't' }),
+        assignedTo: new mongoose.Types.ObjectId(user1),
+        toObject: () => ({ _id: 'nid1', assignedTo: user1 }),
+      } as any);
+      createStub.onSecondCall().resolves({
+        _id: 'nid2',
+        assignedTo: new mongoose.Types.ObjectId(user2),
+        toObject: () => ({ _id: 'nid2', assignedTo: user2 }),
       } as any);
 
       await consumer.consume(userHandler);
       const wrapped = mockConsumer.consume.firstCall.args[0];
-      await wrapped({ value: { title: 't' } });
+      await wrapped({
+        value: {
+          orgId,
+          type: 'CONNECTOR_SYNC_ERROR',
+          recipientUserIds: [user1, user2],
+          recipientRoles: [],
+        },
+      });
 
-      expect(createStub.calledOnce).to.be.true;
-      expect(
-        (mockNotificationService.sendToUser as sinon.SinonStub).calledWith(
-          'user-oid-1',
-          'newNotification',
-          { _id: 'nid1', title: 't' },
-        ),
-      ).to.be.true;
+      expect(resolveStub.calledOnce).to.be.true;
+      expect(createStub.calledTwice).to.be.true;
+      expect((mockNotificationService.sendToUser as sinon.SinonStub).callCount).to.equal(2);
+      expect(userHandler.calledOnce).to.be.true;
+    });
+
+    it('skips persist when event has no valid recipients', async () => {
+      mockConsumer.isConnected.returns(true);
+      const userHandler = sinon.stub().resolves();
+      const createStub = sinon.stub(NotificationSchema.Notifications, 'create');
+      sinon.stub(RecipientResolver, 'resolveNotificationRecipientUserIds').resolves([]);
+
+      await consumer.consume(userHandler);
+      const wrapped = mockConsumer.consume.firstCall.args[0];
+      await wrapped({
+        value: {
+          orgId: new mongoose.Types.ObjectId().toString(),
+          type: 'CONNECTOR_SYNC_ERROR',
+          recipientUserIds: [],
+          recipientRoles: [],
+        },
+      });
+
+      expect(createStub.called).to.be.false;
+      expect(mockLogger.warn.called).to.be.true;
       expect(userHandler.calledOnce).to.be.true;
     });
   });

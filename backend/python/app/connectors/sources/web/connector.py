@@ -57,6 +57,7 @@ from app.models.entities import (
     RecordType,
     User,
 )
+from app.services.notification.types import NotificationSeverity, NotificationType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.utils.streaming import create_stream_record_response
@@ -820,9 +821,27 @@ class WebConnector(BaseConnector):
                     await self.data_entities_processor.on_new_records([pair])
                     self.processed_urls += 1
                 self.logger.info(f"✅ Indexed single page: {url}")
+                payload = {
+                    "url": url,
+                    "record_name": file_record.record_name,
+                    "record_id": file_record.id,
+                }
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SUCCESS,
+                    title="Web page indexed",
+                    message=f"Web page {file_record.record_name} indexed successfully",
+                    severity=NotificationSeverity.SUCCESS,
+                    payload=payload,
+                )
 
         except Exception as e:
             self.logger.error(f"❌ Error crawling single page {url}: {e}", exc_info=True)
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                title="Error crawling web page",
+                message=f"Error crawling web page {url}: {e}",
+                severity=NotificationSeverity.ERROR,
+            )
 
     async def _create_ancestor_placeholder_records(self, start_url: str) -> None:
         """Create and upsert placeholder WEBPAGE records for every intermediate path

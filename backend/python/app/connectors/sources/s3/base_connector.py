@@ -415,14 +415,9 @@ class S3CompatibleBaseConnector(BaseConnector):
                     self.logger.error(f"Failed to list buckets: {err}")
                     await self.notify(
                         type=NotificationType.CONNECTOR_SYNC_ERROR,
-                        payload={
-                            "title": "Failed to list S3 buckets",
-                            "message": f"Failed to list S3 buckets: {err}. "
-                            "Check credentials and s3:ListAllMyBuckets / bucket access.",
-                            "connectorId": self.connector_id,
-                            "connectorName": self.connector_name.value,
-                            "redirectLink": f"workspace/connectors/{self.scope}/?connectorType={self.connector_name.value}",
-                        },
+                        title="Failed to list S3 buckets",
+                        message=f"Failed to list S3 buckets: {err}. "
+                        "Check credentials and s3:ListAllMyBuckets / bucket access.",
                         severity=NotificationSeverity.ERROR,
                     )
                     return
@@ -737,14 +732,9 @@ class S3CompatibleBaseConnector(BaseConnector):
                             )
                             await self.notify(
                                 type=NotificationType.CONNECTOR_AUTH_ERROR,
-                                payload={
-                                    "title": "Access denied",
-                                    "message": f"Access denied when listing objects in bucket '{bucket_name}'. "
-                                    f"Verify IAM permissions (s3:ListBucket, s3:GetObject). Details: {error_msg}",
-                                    "connectorId": self.connector_id,
-                                    "connectorName": self.connector_name.value,
-                                    "redirectLink": f"workspace/connectors/{self.scope}/?connectorType={self.connector_name.value}",
-                                },
+                                title="Access denied",
+                                message=f"Access denied when listing objects in bucket '{bucket_name}'. "
+                                f"Verify IAM permissions (s3:ListBucket, s3:GetObject). Details: {error_msg}",
                                 severity=NotificationSeverity.ERROR,
                             )
                         else:
@@ -753,13 +743,8 @@ class S3CompatibleBaseConnector(BaseConnector):
                             )
                             await self.notify(
                                 type=NotificationType.CONNECTOR_SYNC_ERROR,
-                                payload={
-                                    "title": "Failed to list objects in bucket",
-                                    "message": f"Failed to list objects in bucket '{bucket_name}': {error_msg}",
-                                    "connectorId": self.connector_id,
-                                    "connectorName": self.connector_name.value,
-                                    "redirectLink": f"workspace/connectors/{self.scope}/?connectorType={self.connector_name.value}",
-                                },
+                                title="Failed to list objects in bucket",
+                                message=f"Failed to list objects in bucket '{bucket_name}': {error_msg}",
                                 severity=NotificationSeverity.ERROR,
                             )
                         has_more = False

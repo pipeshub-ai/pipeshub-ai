@@ -72,9 +72,9 @@ export function NotificationRow({
 }) {
   const timeLabel = formatRelativeTime(n.createdAt);
   const severity = n.severity ?? 'error';
-  const title = n.payload?.title ?? '';
-  const message = n.payload?.message ?? '';
-  const href = notificationHref(n.payload?.redirectLink ?? '');
+  const title = n.title ?? '';
+  const message = n.message ?? '';
+  const href = notificationHref(n.redirectLink ?? '');
 
   const isRead = n.status === 'read';
   const titleStyle = { color: 'var(--slate-12)' };

@@ -15,7 +15,7 @@ class NotificationOrigin(str, Enum):
     AI = "AI Service"
 
 
-class NotificationType(str, Enum):
+class   NotificationType(str, Enum):
     CONNECTOR_AUTH_ERROR = "CONNECTOR_AUTH_ERROR"
     CONNECTOR_SYNC_ERROR = "CONNECTOR_SYNC_ERROR"
     CONNECTOR_USER_SYNC_ERROR = "CONNECTOR_USER_SYNC_ERROR"

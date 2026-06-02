@@ -317,23 +317,35 @@ class BaseConnector(ABC):
         self,
         type: NotificationType,
         severity: NotificationSeverity,
-        payload: dict[str, Any],
+        title: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+        recipient_user_ids: list[str] | None = None,
+        recipient_roles: list[str] | None = None,
     ) -> None:
         """Fire-and-forget: publish a user-visible connector notification to the broker."""
         svc = self._notification_service
         if not svc or not self.created_by:
-            self.logger.debug("notify skipped: no notification service or created_by associated with connector: %s, connector id: %s", self.connector_name, self.connector_id)
+            self.logger.debug("notify skipped: no notification service or created_by associated with connector: %s, connector id: %s \n Info: self.created_by: %s, self.notification_service: %s", self.connector_name, self.connector_id, self.created_by, bool(self._notification_service))
             return
         org_id = getattr(self.data_entities_processor, "org_id", None) or ""
+        redirect_link = f"workspace/connectors/{self.scope}/?connectorType={self.connector_name.value}"
+
+        if not recipient_user_ids and not recipient_roles:
+            recipient_user_ids = [self.created_by]
 
         async def _run() -> None:
             await svc.publish_notification(
-                user_id=self.created_by,
                 org_id=str(org_id),
-                payload=payload,
-                type=type,
                 origin=NotificationOrigin.CONNECTOR,
+                type=type,
                 severity=severity,
+                title=title,
+                message=message,
+                payload=payload,
+                redirect_link=redirect_link,
+                recipient_user_ids=recipient_user_ids,
+                recipient_roles=recipient_roles,
             )
 
         try:

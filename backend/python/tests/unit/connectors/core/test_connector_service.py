@@ -100,17 +100,19 @@ class TestBaseConnectorNotifyError:
         await c.notify(
             type=NotificationType.CONNECTOR_SYNC_ERROR,
             severity=NotificationSeverity.ERROR,
+            title="Sync failed",
+            message="something failed",
             payload=payload,
         )
         await asyncio.sleep(0)
 
         mock_svc.publish_notification.assert_awaited_once()
         kwargs = mock_svc.publish_notification.await_args.kwargs
-        assert kwargs["user_id"] == "test-user-id"
+        assert kwargs["recipient_user_ids"] == ["test-user-id"]
         assert kwargs["org_id"] == "org-xyz"
         assert kwargs["type"] is NotificationType.CONNECTOR_SYNC_ERROR
         assert kwargs["payload"]["connectorId"] == "conn-1"
-        assert kwargs["payload"]["message"] == "something failed"
+        assert kwargs["message"] == "something failed"
         assert kwargs["severity"] is NotificationSeverity.ERROR
         assert kwargs["payload"]["errorCode"] == "E1"
 
@@ -121,7 +123,9 @@ class TestBaseConnectorNotifyError:
         await c.notify(
             type=NotificationType.CONNECTOR_SYNC_ERROR,
             severity=NotificationSeverity.ERROR,
-            payload={"title": "x", "message": "x"},
+            title="x",
+            message="x",
+            payload={},
         )
         # no crash
 
@@ -150,7 +154,9 @@ class TestBaseConnectorNotifyError:
         await c.notify(
             type=NotificationType.CONNECTOR_SYNC_ERROR,
             severity=NotificationSeverity.ERROR,
-            payload={"title": "x", "message": "x"},
+            title="x",
+            message="x",
+            payload={},
         )
         await asyncio.sleep(0)
         mock_svc.publish_notification.assert_not_called()

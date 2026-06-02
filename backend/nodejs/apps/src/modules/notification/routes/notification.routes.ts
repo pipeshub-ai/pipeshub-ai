@@ -11,7 +11,7 @@ import {
   decodeCursor,
   InvalidNotificationCursorError,
   paginateResults,
-} from '../utils/notification.utils';
+} from '../utils/notification-api.utils';
 
 export function createNotificationRouter(
   userManagerContainer: Container,

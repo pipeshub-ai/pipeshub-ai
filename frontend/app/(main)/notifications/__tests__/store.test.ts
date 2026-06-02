@@ -8,9 +8,9 @@ function makeNotification(
   return {
     type: 'CONNECTOR_ERROR',
     severity: 'error',
+    title: 'Title',
+    message: 'Message',
     payload: {
-      title: 'Title',
-      message: 'Message',
       connectorId: 'conn-1',
       connectorName: 'S3',
     },
@@ -48,23 +48,17 @@ describe('useNotificationStore', () => {
       makeNotification({
         _id: '1',
         status: 'unread',
-        payload: {
-          title: 'A',
-          message: 'Message A',
-          connectorId: 'c1',
-          connectorName: 'S3',
-        },
+        title: 'A',
+        message: 'Message A',
+        payload: { connectorId: 'c1', connectorName: 'S3' },
       }),
       makeNotification({
         _id: '2',
         status: 'read',
         severity: 'warning',
-        payload: {
-          title: 'B',
-          message: 'Message B',
-          connectorId: 'c2',
-          connectorName: 'Slack',
-        },
+        title: 'B',
+        message: 'Message B',
+        payload: { connectorId: 'c2', connectorName: 'Slack' },
       }),
     ];
     useNotificationStore.getState().setInitialPage(
@@ -105,15 +99,12 @@ describe('useNotificationStore', () => {
       makeNotification({
         _id: '1',
         status: 'unread',
-        payload: {
-          title: 'New',
-          message: 'New message',
-          connectorId: 'c1',
-          connectorName: 'S3',
-        },
+        title: 'New',
+        message: 'New message',
+        payload: { connectorId: 'c1', connectorName: 'S3' },
       }),
     );
-    expect(useNotificationStore.getState().notifications[0].payload?.title).toBe('New');
+    expect(useNotificationStore.getState().notifications[0].title).toBe('New');
     expect(useNotificationStore.getState().notifications).toHaveLength(1);
     expect(useNotificationStore.getState().unreadCount).toBe(1);
   });
