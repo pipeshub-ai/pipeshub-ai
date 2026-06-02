@@ -9497,7 +9497,87 @@ components:
           description: Speech-to-Text providers used to transcribe chat audio.
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'
+        modelRoles:
+          type: object
+          description: >-
+            Optional map of named role → model assignment. Each key is a role
+            name (e.g. `indexing`) and the value identifies which configured
+            model handles that role. When a role is absent the corresponding
+            service skips LLM-based processing for that role.
+          additionalProperties:
+            $ref: '#/components/schemas/ModelRoleAssignment'
       description: Must have at least one model type configured
+
+    ModelRoleAssignment:
+      type: object
+      description: Identifies which configured model is assigned to a named role.
+      required:
+        - modelType
+        - modelKey
+      properties:
+        modelType:
+          type: string
+          description: >-
+            The model-type bucket the assigned model lives in
+            (e.g. `llm`, `slm`, `multiModal`).
+          example: slm
+        modelKey:
+          type: string
+          description: UUID of the model entry within the bucket.
+          example: 3f2a1c8e-0000-0000-0000-000000000001
+
+    GetModelRolesResponse:
+      type: object
+      description: Current model role assignments for the organisation.
+      required:
+        - status
+        - modelRoles
+      properties:
+        status:
+          type: string
+          enum: [success]
+        modelRoles:
+          type: object
+          description: Map of role name → assignment. Empty object when no roles are configured.
+          additionalProperties:
+            $ref: '#/components/schemas/ModelRoleAssignment'
+
+    UpdateModelRolesRequest:
+      type: object
+      description: >-
+        Replaces the entire model role assignment map. Roles absent from this
+        object are deleted — send an empty `roles` object to clear all role
+        assignments.
+      required:
+        - roles
+      properties:
+        roles:
+          type: object
+          description: >-
+            The complete desired role map. Replaces the stored map in full;
+            omit a key to delete that role assignment.
+          additionalProperties:
+            $ref: '#/components/schemas/ModelRoleAssignment'
+
+    UpdateModelRolesResponse:
+      type: object
+      description: Updated model role assignments after the write.
+      required:
+        - status
+        - message
+        - modelRoles
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          example: Model roles updated successfully
+        modelRoles:
+          type: object
+          description: The full role map after the update.
+          additionalProperties:
+            $ref: '#/components/schemas/ModelRoleAssignment'
 
     GetAIModelsProvidersResponse:
       type: object
@@ -32336,6 +32416,97 @@ paths:
           description: Unauthorized
         '403':
           description: Forbidden - Admin access required
+
+  # -------------------- AI Model Role Assignments --------------------
+  /configurationManager/ai-models/roles:
+    get:
+      tags:
+        - Configuration Manager
+      summary: Get model role assignments
+      description: |
+        Returns the current role-to-model assignments for the organisation.
+
+        Each key in `modelRoles` is a named role (e.g. `indexing`); the value
+        identifies which configured model handles that role via its `modelType`
+        bucket and `modelKey` UUID.
+
+        Returns an empty `modelRoles` object when no roles have been configured.
+      operationId: getModelRoles
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Role assignments retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetModelRolesResponse'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden — admin access required
+
+    put:
+      tags:
+        - Configuration Manager
+      summary: Update model role assignments
+      description: |
+        Replaces the entire role-to-model assignment map with the supplied
+        `roles` object. Roles absent from the request body are deleted — this
+        is how the caller unsets a role (e.g. the frontend omits a key to
+        remove a previously assigned indexing model).
+
+        **Validation rules:**
+        - `modelType` must be one of: `llm`, `slm`, `embedding`, `ocr`,
+          `reasoning`, `multiModal`, `imageGeneration`, `tts`, `stt`.
+        - `modelKey` must refer to an existing provider entry within that
+          `modelType` bucket. A 400 is returned if the model cannot be found.
+        - Both `modelType` and `modelKey` are required for every role entry.
+      operationId: updateModelRoles
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateModelRolesRequest'
+            examples:
+              assignIndexingModel:
+                summary: Assign a small model for the indexing role
+                value:
+                  roles:
+                    indexing:
+                      modelType: slm
+                      modelKey: 3f2a1c8e-0000-0000-0000-000000000001
+      responses:
+        '200':
+          description: Role assignments updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateModelRolesResponse'
+        '400':
+          description: |
+            Bad request. Possible causes:
+            - `roles` field missing or not an object
+            - A role entry is missing `modelType` or `modelKey`
+            - `modelType` is not a recognised bucket
+            - `modelKey` does not exist within the specified `modelType` bucket
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [error]
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden — admin access required
 
   # -------------------- AI Model Registry (Python backend proxy) --------------------
   /configurationManager/ai-models/registry:

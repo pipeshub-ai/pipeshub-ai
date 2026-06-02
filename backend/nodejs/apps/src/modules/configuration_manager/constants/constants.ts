@@ -50,8 +50,6 @@ export const MODEL_ROLES = {
   INDEXING: 'indexing',
 } as const;
 
-export type ModelRoleName = (typeof MODEL_ROLES)[keyof typeof MODEL_ROLES];
-
 export const dbTypes = {
   MONGO_DB: 'mongodb',
   ARANGO_DB: 'arangodb',

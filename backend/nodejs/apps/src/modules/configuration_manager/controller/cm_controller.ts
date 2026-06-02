@@ -2967,8 +2967,8 @@ export const addAIModelProvider =
           aiModels[key] = [];
         }
       }
-      if (!(aiModels as any).modelRoles) {
-        (aiModels as any).modelRoles = {};
+      if (!aiModels.modelRoles) {
+        aiModels.modelRoles = {};
       }
 
       // Generate unique model key with collision check
@@ -4566,6 +4566,14 @@ export const updateModelRoles =
       ];
 
       for (const [roleName, assignment] of Object.entries(roles)) {
+        if (!assignment || typeof assignment !== 'object' || Array.isArray(assignment)) {
+          res.status(400).json({
+            status: 'error',
+            message: `Role "${roleName}" assignment must be an object`,
+          });
+          return;
+        }
+
         const { modelType, modelKey } = assignment;
 
         if (!modelType || !modelKey) {
@@ -4595,7 +4603,7 @@ export const updateModelRoles =
         }
       }
 
-      aiModels.modelRoles = { ...(aiModels.modelRoles ?? {}), ...roles };
+      aiModels.modelRoles = roles;
 
       const encryptedUpdated = EncryptionService.getInstance(
         configManagerConfig.algorithm,
