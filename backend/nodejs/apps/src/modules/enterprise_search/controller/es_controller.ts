@@ -4894,50 +4894,6 @@ export const deleteSearchHistory = async (
 
 /////////////////////// AGENT ///////////////////////
 
-export const createAgentTemplate =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/template/create`,
-        method: HttpMethod.POST,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-        body: req.body,
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      if (!aiResponse) {
-        throw new InternalServerError('Failed to get response from AI service');
-      }
-      if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Create Agent Template');
-      }
-      const agentTemplate = aiResponse.data;
-      res.status(HTTP_STATUS.CREATED).json(agentTemplate);
-    } catch (error: any) {
-      logger.error('Error creating agent template', {
-        requestId,
-        message: 'Error creating agent template',
-        error: error.message,
-      });
-      const backendError = handleBackendError(error, 'Create Agent Template');
-      next(backendError);
-    }
-  };
-
 export const getAgentTemplate =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
