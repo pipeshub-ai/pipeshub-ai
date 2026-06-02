@@ -154,20 +154,12 @@ class TestProcessMdDocument:
 
         md_parser = MagicMock()
         md_parser.extract_and_replace_images.return_value = ("# Hello", [])
-        md_parser.parse_string.return_value = b"# Hello"
+        md_parser.parse_to_blocks.return_value = MagicMock(blocks=[], block_groups=[])
         proc.parsers = {"md": md_parser}
-
-        mock_processor = AsyncMock()
-        mock_conv_res = MagicMock()
-        mock_processor.parse_document = AsyncMock(return_value=mock_conv_res)
-        mock_blocks = MagicMock()
-        mock_blocks.blocks = []
-        mock_processor.create_blocks = AsyncMock(return_value=mock_blocks)
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="test.md"))
 
-        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
+        with patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch("app.events.processor.TransformContext"):
             MockPipeline.return_value.apply = AsyncMock()
             events = await _collect_events(
@@ -198,21 +190,14 @@ class TestProcessMdDocument:
 
         md_parser = MagicMock()
         md_parser.extract_and_replace_images.return_value = ("text", [])
-        md_parser.parse_string.return_value = b"text"
+        md_parser.parse_to_blocks.return_value = MagicMock(blocks=[], block_groups=[])
         proc.parsers = {"md": md_parser}
-
-        mock_processor = AsyncMock()
-        mock_processor.parse_document = AsyncMock(return_value=MagicMock())
-        mock_blocks = MagicMock()
-        mock_blocks.blocks = []
-        mock_processor.create_blocks = AsyncMock(return_value=mock_blocks)
 
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
-        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor):
-            events = await _collect_events(
-                proc.process_md_document("test.md", "r1", b"text", "vr1")
-            )
+        events = await _collect_events(
+            proc.process_md_document("test.md", "r1", b"text", "vr1")
+        )
 
         assert any(e.event == "indexing_complete" for e in events)
 
@@ -1416,21 +1401,14 @@ class TestRunIndexingPipeline:
 
         md_parser = MagicMock()
         md_parser.extract_and_replace_images.return_value = ("# Hello", [])
-        md_parser.parse_string.return_value = b"# Hello"
+        md_parser.parse_to_blocks.return_value = MagicMock(blocks=[], block_groups=[])
         proc.parsers = {"md": md_parser}
-
-        mock_processor = AsyncMock()
-        mock_processor.parse_document = AsyncMock(return_value=MagicMock())
-        mock_blocks = MagicMock()
-        mock_blocks.blocks = []
-        mock_processor.create_blocks = AsyncMock(return_value=mock_blocks)
 
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="test.md")
         )
 
-        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
+        with patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch("app.events.processor.TransformContext"):
             MockPipeline.return_value.apply = AsyncMock(
                 side_effect=RuntimeError("pipeline error")
