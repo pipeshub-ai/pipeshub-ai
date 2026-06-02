@@ -25228,39 +25228,6 @@ paths:
         '401':
           description: Unauthorized
 
-  /agents/tools/list:
-    get:
-      tags:
-        - Agents
-      summary: List available tools
-      description: |
-        Get all tools that can be assigned to agents.<br><br>
-        <b>Overview:</b><br>
-        Tools extend agent capabilities beyond basic Q&A. Each tool
-        has specific inputs and outputs defined by its schema.<br><br>
-        <b>Common Tools:</b><br>
-        <ul>
-        <li><b>web-search:</b> Search the internet</li>
-        <li><b>code-interpreter:</b> Execute code snippets</li>
-        <li><b>file-reader:</b> Read uploaded files</li>
-        <li><b>api-caller:</b> Make external API requests</li>
-        </ul>
-      operationId: listAgentTools
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      responses:
-        '200':
-          description: List of available tools
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/AgentTool'
-        '401':
-          description: Unauthorized
-
   /agents/web-search-usage/{provider}:
     get:
       tags:
@@ -25565,46 +25532,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/permissions:
-    get:
-      tags:
-        - Agents
-      summary: Get agent permissions
-      description: Get the current permission configuration for an agent.
-      operationId: getAgentPermissions
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Permission configuration
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  isPublic:
-                    type: boolean
-                  sharedWith:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        userId:
-                          type: string
-                        accessLevel:
-                          type: string
-                          enum: [read, use, edit]
-        '401':
-          description: Unauthorized
-        '404':
-          description: Agent not found
-
     put:
       tags:
         - Agents
@@ -25648,43 +25575,6 @@ paths:
           description: Unauthorized
         '403':
           description: Forbidden - Only owner can update permissions
-        '404':
-          description: Agent not found
-
-  /agents/{agentKey}/share:
-    post:
-      tags:
-        - Agents
-      summary: Share agent
-      description: Share an agent with specific users.
-      operationId: shareAgent
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request body for Share agent"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ShareRequest'
-      responses:
-        '200':
-          description: Agent shared
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Agent'
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Only owner can share
         '404':
           description: Agent not found
 

@@ -5305,50 +5305,6 @@ export const deleteAgent =
     }
   };
 
-  export const shareAgent =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      const agentKey = req.params.agentKey;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/share`,
-        method: HttpMethod.POST,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-        body: req.body,
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      if (!aiResponse) {
-        throw new InternalServerError('Failed to get response from AI service');
-      }
-      if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Share Agent');
-      }
-      const agent = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(agent);
-    } catch (error: any) {
-      logger.error('Error sharing agent', {
-        requestId,
-        message: 'Error sharing agent',
-        error: error.message,
-      });
-      const backendError = handleBackendError(error, 'Share Agent');
-      next(backendError);
-    }
-  };
-
 export const unshareAgent =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -7723,77 +7679,6 @@ export const updateAgentFeedback = async (
     }
   }
 };
-
-export const getAvailableTools =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-  const requestId = req.context?.requestId;
-  try {
-    const aiCommandOptions: AICommandOptions = {
-      uri: `${appConfig.aiBackend}/api/v1/tools/`,
-      method: HttpMethod.GET,
-      headers: {
-        ...(req.headers as Record<string, string>),
-        'Content-Type': 'application/json',
-      },
-    };
-    const aiCommand = new AIServiceCommand(aiCommandOptions);
-    const aiResponse = await aiCommand.execute();
-    if (!aiResponse) {
-      throw new InternalServerError('Failed to get response from AI service');
-    }
-    if (aiResponse.statusCode !== 200) {
-      throw handleBackendError(aiResponse.data, 'Get Available Tools');
-    }
-    const tools = aiResponse.data;
-    res.status(HTTP_STATUS.OK).json(tools);
-  } catch (error: any) {
-    logger.error('Error getting available tools', {
-      requestId,
-      message: 'Error getting available tools',
-      error: error.message,
-    });
-    const backendError = handleBackendError(error, 'Get Available Tools');
-    next(backendError);
-  }
-};
-
-export const getAgentPermissions =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-  const requestId = req.context?.requestId;
-  const { agentKey } = req.params;
-
-  try {
-    const aiCommandOptions: AICommandOptions = {
-      uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/permissions`,
-      method: HttpMethod.GET,
-      headers: {
-        ...(req.headers as Record<string, string>),
-        'Content-Type': 'application/json',
-      },
-    };
-    const aiCommand = new AIServiceCommand(aiCommandOptions);
-    const aiResponse = await aiCommand.execute();
-    if (!aiResponse) {
-      throw new InternalServerError('Failed to get response from AI service');
-    }
-    if (aiResponse.statusCode !== 200) {
-      throw handleBackendError(aiResponse.data, 'Get Agent Permissions');
-    }
-    const permissions = aiResponse.data;
-    res.status(200).json(permissions);    
-  } catch (error: any) {
-    logger.error('Error getting agent permissions', {
-      requestId,
-      message: 'Error getting agent permissions',
-      error: error.message,
-    });
-    const backendError = handleBackendError(error, 'Get Agent Permissions');
-    next(backendError);
-  }
-};
-
 
 /**
  * GET /api/v1/agents/conversations/show/archives

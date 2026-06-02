@@ -198,19 +198,8 @@ describe('Enterprise Search Routes - handler coverage', () => {
         .filter((layer: any) => layer.route)
         .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
 
-      expect(routes.find((r: any) => r.path === '/:agentKey/share' && r.methods.post)).to.exist
       expect(routes.find((r: any) => r.path === '/:agentKey/unshare' && r.methods.post)).to.exist
-      expect(routes.find((r: any) => r.path === '/:agentKey/permissions' && r.methods.get)).to.exist
       expect(routes.find((r: any) => r.path === '/:agentKey/permissions' && r.methods.put)).to.exist
-    })
-
-    it('should register tools list route', () => {
-      const router = createAgentConversationalRouter(container)
-      const routes = router.stack
-        .filter((layer: any) => layer.route)
-        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
-
-      expect(routes.find((r: any) => r.path === '/tools/list' && r.methods.get)).to.exist
     })
 
     it('should register internal stream routes', () => {

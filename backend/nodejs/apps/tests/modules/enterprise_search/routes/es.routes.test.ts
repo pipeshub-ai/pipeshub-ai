@@ -396,7 +396,6 @@ describe('Enterprise Search Routes', () => {
       .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
     const paths = routes.map((r: any) => r.path)
 
-    expect(paths).to.include('/:agentKey/share')
     expect(paths).to.include('/:agentKey/unshare')
   })
 
@@ -418,16 +417,6 @@ describe('Enterprise Search Routes', () => {
     const paths = routes.map((r: any) => r.path)
 
     expect(paths).to.include('/:agentKey/conversations/:conversationId/message/:messageId/regenerate')
-  })
-
-  it('should register agent tools route', () => {
-    const router = createAgentConversationalRouter(container)
-    const routes = router.stack
-      .filter((layer: any) => layer.route)
-      .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
-    const paths = routes.map((r: any) => r.path)
-
-    expect(paths).to.include('/tools/list')
   })
 
   it('should register search share/unshare routes', () => {
