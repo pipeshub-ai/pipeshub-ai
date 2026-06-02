@@ -352,57 +352,58 @@ class TestOAuthIntrospect:
         )
 
 
-# # ====================================================================
-# # POST /api/v1/oauth2/revoke — oauthRevoke
-# # ====================================================================
-# @pytest.mark.integration
-# @pytest.mark.oauth_provider
-# class TestOAuthRevoke:
-#     """POST /api/v1/oauth2/revoke — token revocation."""
+# ====================================================================
+# POST /api/v1/oauth2/revoke — oauthRevoke
+# ====================================================================
+@pytest.mark.integration
+@pytest.mark.oauth_provider
+@pytest.mark.skip(reason="Temporarily disabled due to 401 failures")
+class TestOAuthRevoke:
+    """POST /api/v1/oauth2/revoke — token revocation."""
 
-#     @pytest.fixture(autouse=True)
-#     def _setup(
-#         self,
-#         pipeshub_client: PipeshubClient,
-#         oauth_credentials: dict,
-#     ) -> None:
-#         self.base_url = pipeshub_client.base_url
-#         self.timeout = pipeshub_client.timeout_seconds
-#         self.client_id = oauth_credentials["client_id"]
-#         self.client_secret = oauth_credentials["client_secret"]
-#         self.access_token = oauth_credentials["access_token"]
-#         self.url = f"{self.base_url}/api/v1/oauth2/revoke"
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self,
+        pipeshub_client: PipeshubClient,
+        oauth_credentials: dict,
+    ) -> None:
+        self.base_url = pipeshub_client.base_url
+        self.timeout = pipeshub_client.timeout_seconds
+        self.client_id = oauth_credentials["client_id"]
+        self.client_secret = oauth_credentials["client_secret"]
+        self.access_token = oauth_credentials["access_token"]
+        self.url = f"{self.base_url}/api/v1/oauth2/revoke"
 
-#     def test_response_and_errors(self) -> None:
-#         """Revoke valid token → 200, bad client → 401."""
-#         resp = requests.post(
-#             self.url,
-#             json={
-#                 "token": self.access_token,
-#                 "client_id": self.client_id,
-#                 "client_secret": self.client_secret,
-#             },
-#             timeout=self.timeout,
-#         )
-#         assert resp.status_code == 200, (
-#             f"Expected 200, got {resp.status_code}: {resp.text}"
-#         )
+    def test_response_and_errors(self) -> None:
+        """Revoke valid token → 200, bad client → 401."""
+        resp = requests.post(
+            self.url,
+            json={
+                "token": self.access_token,
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+            },
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 200, (
+            f"Expected 200, got {resp.status_code}: {resp.text}"
+        )
 
-#         resp = requests.post(
-#             self.url,
-#             json={
-#                 "token": self.access_token,
-#                 "client_id": "bad_client_id_000000",
-#                 "client_secret": "bad_secret",
-#             },
-#             timeout=self.timeout,
-#         )
-#         assert resp.status_code == 401, (
-#             f"Expected 401, got {resp.status_code}: {resp.text}"
-#         )
-#         assert_response_matches_openapi_operation(
-#             resp.json(), "oauthRevoke", status_code="401"
-#         )
+        resp = requests.post(
+            self.url,
+            json={
+                "token": self.access_token,
+                "client_id": "bad_client_id_000000",
+                "client_secret": "bad_secret",
+            },
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 401, (
+            f"Expected 401, got {resp.status_code}: {resp.text}"
+        )
+        assert_response_matches_openapi_operation(
+            resp.json(), "oauthRevoke", status_code="401"
+        )
 
 
 # ====================================================================
@@ -444,49 +445,50 @@ class TestOAuthUserInfo:
 # ====================================================================
 # Rate limiting
 # ====================================================================
-# @pytest.mark.integration
-# @pytest.mark.oauth_provider
-# class TestOAuthProviderRateLimiting:
-#     """Rate-limited token/introspect/revoke routes return 429 on burst."""
+@pytest.mark.integration
+@pytest.mark.oauth_provider
+@pytest.mark.skip(reason="Temporarily disabled due to rate limiting test issues")
+class TestOAuthProviderRateLimiting:
+    """Rate-limited token/introspect/revoke routes return 429 on burst."""
 
-#     @pytest.fixture(autouse=True)
-#     def _setup(
-#         self,
-#         pipeshub_client: PipeshubClient,
-#         oauth_credentials: dict,
-#     ) -> None:
-#         self.base_url = pipeshub_client.base_url
-#         self.timeout = pipeshub_client.timeout_seconds
-#         self.client_id = oauth_credentials["client_id"]
-#         self.client_secret = oauth_credentials["client_secret"]
-#         self.access_token = oauth_credentials["access_token"]
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self,
+        pipeshub_client: PipeshubClient,
+        oauth_credentials: dict,
+    ) -> None:
+        self.base_url = pipeshub_client.base_url
+        self.timeout = pipeshub_client.timeout_seconds
+        self.client_id = oauth_credentials["client_id"]
+        self.client_secret = oauth_credentials["client_secret"]
+        self.access_token = oauth_credentials["access_token"]
 
-#     def test_token_rate_limit(self) -> None:
-#         """Burst token endpoint and validate any 429 error schema."""
-#         TOTAL = 1010
-#         rate_limited: list[requests.Response] = []
-#         for _ in range(TOTAL):
-#             resp = requests.post(
-#                 f"{self.base_url}/api/v1/oauth2/introspect",
-#                 json={
-#                     "token": self.access_token,
-#                     "client_id": self.client_id,
-#                     "client_secret": self.client_secret,
-#                 },
-#                 timeout=self.timeout,
-#             )
-#             if resp.status_code == 429:
-#                 rate_limited.append(resp)
-#             if len(rate_limited) >= 3:
-#                 break
+    def test_token_rate_limit(self) -> None:
+        """Burst token endpoint and validate any 429 error schema."""
+        TOTAL = 1010
+        rate_limited: list[requests.Response] = []
+        for _ in range(TOTAL):
+            resp = requests.post(
+                f"{self.base_url}/api/v1/oauth2/introspect",
+                json={
+                    "token": self.access_token,
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                },
+                timeout=self.timeout,
+            )
+            if resp.status_code == 429:
+                rate_limited.append(resp)
+            if len(rate_limited) >= 3:
+                break
 
-#         if not rate_limited:
-#             pytest.skip(
-#                 f"No 429 responses from {TOTAL} sequential requests — "
-#                 f"rate limiter window may be fresh"
-#             )
+        if not rate_limited:
+            pytest.skip(
+                f"No 429 responses from {TOTAL} sequential requests — "
+                f"rate limiter window may be fresh"
+            )
 
-#         for resp in rate_limited:
-#             assert_response_matches_openapi_operation(
-#                 resp.json(), "oauthIntrospect", status_code="429"
-#             )
+        for resp in rate_limited:
+            assert_response_matches_openapi_operation(
+                resp.json(), "oauthIntrospect", status_code="429"
+            )
