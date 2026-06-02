@@ -6810,6 +6810,75 @@ components:
         pagination:
           $ref: '#/components/schemas/AgentListPagination'
 
+    AgentModelUsageAgent:
+      type: object
+      additionalProperties: false
+      description: Lightweight agent reference returned by `GET /agents/model-usage/{model_key}`.
+      required:
+        - _key
+        - name
+        - creatorName
+      properties:
+        _key:
+          type: string
+          description: Stable agent key used in route params.
+          example: "e6f848ca-e2ab-4594-9925-e1136629f474"
+        name:
+          type: string
+          description: Display name of the agent.
+          example: "Customer Support Assistant"
+        creatorName:
+          type: string
+          nullable: true
+          description: Human-readable creator display name when available.
+          example: "Jane Doe"
+
+    GetModelUsageResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Success envelope returned by `GET /agents/model-usage/{model_key}`.
+
+        The Node gateway returns this envelope on HTTP 200. If the upstream
+        AI backend does not return HTTP 200, the gateway still responds with
+        HTTP 200 and an empty `agents` array.
+      required:
+        - success
+        - agents
+      properties:
+        success:
+          type: boolean
+          description: Whether the usage check request was processed.
+          example: true
+        agents:
+          type: array
+          description: Agents currently referencing the requested model key.
+          items:
+            $ref: '#/components/schemas/AgentModelUsageAgent'
+
+    GetWebSearchProviderUsageResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Success envelope returned by `GET /agents/web-search-usage/{provider}`.
+
+        The Node gateway returns this envelope on HTTP 200. If the upstream
+        AI backend does not return HTTP 200, the gateway still responds with
+        HTTP 200 and an empty `agents` array.
+      required:
+        - success
+        - agents
+      properties:
+        success:
+          type: boolean
+          description: Whether the usage check request was processed.
+          example: true
+        agents:
+          type: array
+          description: Agents currently referencing the requested web-search provider.
+          items:
+            $ref: '#/components/schemas/AgentModelUsageAgent'
+
     GetAgentResponse:
       type: object
       additionalProperties: false
@@ -25248,18 +25317,35 @@ paths:
           required: true
           schema:
             type: string
-          description: The web search provider identifier (e.g. "google", "bing", "brave")
+          description: |
+            Web search provider identifier. The backend normalizes value casing
+            and returns `200` with an empty `agents` array when the provider is
+            unsupported.
+          examples:
+            duckduckgo:
+              value: duckduckgo
+            serper:
+              value: serper
+            tavily:
+              value: tavily
+            exa:
+              value: exa
       responses:
         '200':
-          description: Web search provider usage data
+          description: |
+            List of agents using the specified web-search provider.
+            Returns an empty `agents` array when the provider is unsupported or
+            when the downstream AI backend responds with a non-200 status.
           content:
             application/json:
               schema:
-                type: object
+                $ref: '#/components/schemas/GetWebSearchProviderUsageResponse'
         '400':
           description: Bad request - provider or organization ID missing
         '401':
           description: Unauthorized
+        '500':
+          description: Internal server error while checking web search provider usage
 
   /agents/model-usage/{model_key}:
     get:
@@ -25267,8 +25353,9 @@ paths:
         - Agents
       summary: Get AI model usage
       description: |
-        Retrieve the list of agents in the organization that reference a specific AI model.<br><br>
-        <b>Overview:</b><br>
+        Retrieve the list of agents in the organization that reference a specific AI model.
+
+        **Overview:**
         Used as a pre-deletion check when an admin attempts to delete an AI model
         configuration. Returns the agents currently configured to use the model so
         the caller can block deletion (HTTP 409 from the deleting service) when the
@@ -25283,29 +25370,16 @@ paths:
           required: true
           schema:
             type: string
-          description: The model key (URL-encoded; typically the modelKey assigned at create time).
+          description: URL-encoded model key (typically the `modelKey` assigned at model creation time).
       responses:
         '200':
-          description: List of agents using the model. Empty array when the model is not in use or the key is blank.
+          description: Model usage lookup result. Returns an empty `agents` array when the model is not in use or when the upstream AI backend returns a non-200 response.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  agents:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        name:
-                          type: string
-                        _key:
-                          type: string
-                        creatorName:
-                          type: string
-                          nullable: true
+                $ref: '#/components/schemas/GetModelUsageResponse'
+        '400':
+          description: Bad request - organization ID or model key missing
         '401':
           description: Unauthorized
         '500':
