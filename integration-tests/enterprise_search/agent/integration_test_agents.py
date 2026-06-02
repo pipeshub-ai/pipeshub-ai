@@ -625,7 +625,7 @@ class TestGetAgent:
         agent = body.get("agent")
         assert isinstance(agent, dict), f"Expected body.agent object, got: {body!r}"
 
-        actual_key = agent.get("_key", agent.get("agentKey"))
+        actual_key = agent.get("_key")
         assert actual_key == expected_agent_key, (
             f"Expected agent key {expected_agent_key!r}, got: {body!r}"
         )

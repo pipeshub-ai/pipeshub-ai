@@ -6378,10 +6378,6 @@ components:
           type: string
           description: Backend document revision token.
           example: "_lkNlcOm---"
-        agentKey:
-          type: string
-          description: Legacy alias for the agent key when emitted by some backends
-          example: "customer-support-agent"
         name:
           type: string
           description: Display name of the agent
@@ -6392,43 +6388,9 @@ components:
         systemPrompt:
           type: string
           description: System instructions that define agent behavior
-        tools:
-          type: array
-          items:
-            type: string
-          description: List of tool keys the agent can use
-        knowledgeBases:
-          type: array
-          items:
-            type: string
-            format: uuid
-          description: Knowledge bases the agent has access to
-        modelConfig:
-          type: object
-          additionalProperties: false
-          properties:
-            modelKey:
-              type: string
-            temperature:
-              type: number
-            maxTokens:
-              type: integer
-          description: AI model configuration
-        isPublic:
-          type: boolean
-          description: Whether agent is available to all org users
         createdBy:
           type: string
           format: objectId
-        orgId:
-          type: string
-          format: objectId
-        createdAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
         startMessage:
           type: string
           description: Initial greeting shown when a conversation with this agent starts
