@@ -25083,34 +25083,6 @@ paths:
           description: Unauthorized
 
   /agents/template/{templateId}:
-    get:
-      tags:
-        - Agent Templates
-      summary: Get agent template
-      description: Retrieve a specific agent template by ID.
-      operationId: getAgentTemplate
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      parameters:
-        - name: templateId
-          in: path
-          required: true
-          description: Template identifier
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Template details
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AgentTemplate'
-        '401':
-          description: Unauthorized
-        '404':
-          description: Template not found
-
     put:
       tags:
         - Agent Templates
