@@ -198,7 +198,9 @@ class TestUpdateOrganizationDetails:
             headers=self.client._headers(),
             timeout=self.client.timeout_seconds,
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 200, (
+            f"GET /org failed: expected 200, got {resp.status_code}: {resp.text}"
+        )
         return resp.json()
 
     def _put_org(self, body: dict[str, object]) -> requests.Response:
@@ -528,7 +530,9 @@ class TestUpdateOnboardingStatus:
             headers=self.client._headers(),
             timeout=self.client.timeout_seconds,
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 200, (
+            f"GET /org/onboarding-status failed: expected 200, got {resp.status_code}: {resp.text}"
+        )
         return resp.json()["status"]
 
     def _put_status(self, status: str) -> requests.Response:

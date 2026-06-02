@@ -85,7 +85,9 @@ def _get_first_user_id(client: PipeshubClient) -> str:
         headers=client._headers(),
         timeout=client.timeout_seconds,
     )
-    assert resp.status_code == 200, f"Failed to list users: {resp.status_code}"
+    assert resp.status_code == 200, (
+        f"Failed to list users: expected 200, got {resp.status_code}: {resp.text}"
+    )
     data = resp.json()
     users = data["users"]
     assert len(users) > 0, "No users found — cannot run user-specific tests"
@@ -99,7 +101,9 @@ def _get_user_by_id(client: PipeshubClient, user_id: str) -> dict:
         headers=client._headers(),
         timeout=client.timeout_seconds,
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 200, (
+        f"Failed to get user {user_id}: expected 200, got {resp.status_code}: {resp.text}"
+    )
     return resp.json()
 
 
