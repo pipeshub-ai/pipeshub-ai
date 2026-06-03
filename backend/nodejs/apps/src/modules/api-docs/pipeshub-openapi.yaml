@@ -9921,37 +9921,67 @@ components:
 
     WebSearchProviderItem:
       type: object
-      description: Web search provider configuration item
+      additionalProperties: false
+      description: Web search provider configuration item returned by getWebSearchProviders
+      required:
+        - provider
+        - providerKey
+        - configuration
+        - isDefault
       properties:
         provider:
-          type: string
+          $ref: '#/components/schemas/WebSearchProviderType'
         providerKey:
           type: string
+          description: Unique key for the provider configuration
         configuration:
           type: object
+          description: |
+            Provider-specific configuration as stored and returned by the gateway (open record).
+            Serper, Tavily, and Exa typically include `apiKey`; additional keys may be present.
           additionalProperties: true
         isDefault:
           type: boolean
 
+    WebSearchSettings:
+      type: object
+      additionalProperties: false
+      description: Normalized web search global settings returned by getWebSearchProviders
+      required:
+        - includeImages
+        - maxImages
+      properties:
+        includeImages:
+          type: boolean
+          description: Whether to include images in search results
+        maxImages:
+          type: integer
+          minimum: 1
+          maximum: 500
+          description: Maximum number of images to return
+
     WebSearchProvidersResponse:
       type: object
-      description: Response for get web search providers
+      additionalProperties: false
+      description: Response for getWebSearchProviders
+      required:
+        - status
+        - providers
+        - settings
+        - message
       properties:
         status:
           type: string
+          enum: [success]
         providers:
           type: array
           items:
             $ref: '#/components/schemas/WebSearchProviderItem'
         settings:
-          type: object
-          properties:
-            includeImages:
-              type: boolean
-            maxImages:
-              type: integer
+          $ref: '#/components/schemas/WebSearchSettings'
         message:
           type: string
+          description: Human-readable status (empty list vs populated providers)
 
     # Metrics Collection Schemas
     MetricsCollectionConfig:
@@ -31196,11 +31226,17 @@ paths:
       tags:
         - Web Search
       summary: Get all web search providers
-      description: Retrieve all configured web search providers and current web search settings.
+      description: |
+        Retrieve all configured web search providers and current web search settings.
+
+        **Authentication:** Session JWT or OAuth 2.0 access token via `Authorization: Bearer`
+        (same header for both; see `bearerAuth` / `oauth2` security schemes). The gateway does
+        not enforce OAuth scopes or admin role on this route.
       operationId: getWebSearchProviders
+      x-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [config:read]
+        - oauth2: []
       responses:
         '200':
           description: Web search providers and settings retrieved
@@ -31209,9 +31245,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/WebSearchProvidersResponse'
         '401':
-          description: Unauthorized
-        '403':
-          description: Admin access required
+          description: Missing or invalid Bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/web-search/settings:
     put:
