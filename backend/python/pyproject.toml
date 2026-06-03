@@ -187,7 +187,7 @@ dependencies = [
     "dependency-injector==4.44.0",
     "discord.py==2.6.3",
     "docker>=7.0.0",
-    "docling==2.60.0",
+    "docling==2.91.0",
     "einops>=0.8.0",
     "dropbox==12.0.2",
     "docx2python==3.5.0",
