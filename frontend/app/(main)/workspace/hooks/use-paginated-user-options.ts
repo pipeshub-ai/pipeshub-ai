@@ -9,10 +9,8 @@ const DEFAULT_LIMIT = 25;
 interface UsePaginatedUserOptionsConfig {
   /** When true, the first page is fetched. Use this to trigger loading when a panel/mode opens. */
   enabled: boolean;
-  /** Which field to use as the option id. 'id' = graph UUID (for teams), 'userId' = MongoDB _id (for groups). */
+  /** Which field to use as the option id (default MongoDB userId). */
   idField?: 'id' | 'userId';
-  /** API source. 'mongodb' (default) uses fetchMergedUsers, 'graph' uses listGraphUsers (returns graph UUIDs). */
-  source?: 'mongodb' | 'graph';
   /** Page size (default 25) */
   limit?: number;
 }
@@ -37,7 +35,6 @@ interface UsePaginatedUserOptionsReturn {
 export function usePaginatedUserOptions({
   enabled,
   idField = 'userId',
-  source = 'mongodb',
   limit = DEFAULT_LIMIT,
 }: UsePaginatedUserOptionsConfig): UsePaginatedUserOptionsReturn {
   const [options, setOptions] = useState<CheckboxOption[]>([]);
@@ -50,10 +47,7 @@ export function usePaginatedUserOptions({
     async (query: string, pageNum: number, append: boolean) => {
       setIsLoading(true);
       try {
-        const fetcher = source === 'graph'
-          ? UsersApi.listGraphUsers
-          : UsersApi.fetchMergedUsers;
-        const { users, totalCount } = await fetcher({
+        const { users, totalCount } = await UsersApi.fetchMergedUsers({
           page: pageNum,
           limit,
           search: query || undefined,
@@ -72,7 +66,7 @@ export function usePaginatedUserOptions({
         setIsLoading(false);
       }
     },
-    [limit, idField, source]
+    [limit, idField]
   );
 
   // Load first page when enabled; reset state when disabled

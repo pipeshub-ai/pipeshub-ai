@@ -242,6 +242,25 @@ class TestValidateAndFilterOwnerUpdates:
 # create_team
 # ---------------------------------------------------------------------------
 
+CREATOR_MONGO_ID = "507f1f77bcf86cd799439011"
+MEMBER_MONGO_ID_2 = "507f1f77bcf86cd799439012"
+MEMBER_MONGO_ID_3 = "507f1f77bcf86cd799439013"
+
+
+def _mock_get_graph_user_keys_by_mongo_user_ids(user_ids, org_id=None, chunk_size=500):
+    mapping = {
+        CREATOR_MONGO_ID: "user-key-1",
+        "user-1": "user-key-1",
+        MEMBER_MONGO_ID_2: "graph-key-2",
+        MEMBER_MONGO_ID_3: "graph-key-3",
+    }
+    resolved = {mid: mapping[mid] for mid in user_ids if mid in mapping}
+    missing = [mid for mid in user_ids if mid not in resolved]
+    if missing:
+        raise ValueError(f"Users not found in graph: {missing}")
+    return resolved
+
+
 class TestCreateTeam:
     @pytest.mark.asyncio
     async def test_success_basic(self):
@@ -304,10 +323,11 @@ class TestCreateTeam:
 
     @pytest.mark.asyncio
     async def test_legacy_format_user_ids(self):
-        body = {"name": "Team", "userIds": ["u2", "u3"], "role": "EDITOR"}
+        body = {"name": "Team", "userIds": [MEMBER_MONGO_ID_2, MEMBER_MONGO_ID_3], "role": "EDITOR"}
         req = _make_request(body)
         gp = _graph_provider(req)
         gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
+        gp.get_graph_user_keys_by_mongo_user_ids.side_effect = _mock_get_graph_user_keys_by_mongo_user_ids
         gp.begin_transaction.return_value = "tx-1"
         gp.batch_upsert_nodes.return_value = True
         gp.batch_create_edges.return_value = True
@@ -316,24 +336,25 @@ class TestCreateTeam:
 
         resp = await create_team(req)
         assert resp.status_code == 200
-        # batch_create_edges should be called with edges for creator + u2, u3
         call_args = gp.batch_create_edges.call_args_list[0]
         edges = call_args[0][0]
-        # Creator edge + 2 user edges = 3
         assert len(edges) == 3
+        member_edges = [e for e in edges if e["role"] != "OWNER"]
+        assert {e["from_id"] for e in member_edges} == {"graph-key-2", "graph-key-3"}
 
     @pytest.mark.asyncio
     async def test_user_roles_format(self):
         body = {
             "name": "Team",
             "userRoles": [
-                {"userId": "u2", "role": "EDITOR"},
-                {"userId": "u3", "role": "READER"},
+                {"userId": MEMBER_MONGO_ID_2, "role": "EDITOR"},
+                {"userId": MEMBER_MONGO_ID_3, "role": "READER"},
             ],
         }
         req = _make_request(body)
         gp = _graph_provider(req)
         gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
+        gp.get_graph_user_keys_by_mongo_user_ids.side_effect = _mock_get_graph_user_keys_by_mongo_user_ids
         gp.begin_transaction.return_value = "tx-1"
         gp.batch_upsert_nodes.return_value = True
         gp.batch_create_edges.return_value = True
@@ -342,9 +363,52 @@ class TestCreateTeam:
 
         resp = await create_team(req)
         assert resp.status_code == 200
+        edges = gp.batch_create_edges.call_args_list[0][0][0]
+        assert len(edges) == 3
 
     @pytest.mark.asyncio
     async def test_creator_not_duplicated_in_user_roles(self):
+        req = _make_request({
+            "name": "Team",
+            "userRoles": [{"userId": CREATOR_MONGO_ID, "role": "READER"}],
+        })
+        req.state.user = {"userId": CREATOR_MONGO_ID, "orgId": "org-1"}
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
+        gp.get_graph_user_keys_by_mongo_user_ids.return_value = {}
+        gp.begin_transaction.return_value = "tx-1"
+        gp.batch_upsert_nodes.return_value = True
+        gp.batch_create_edges.return_value = True
+        gp.commit_transaction.return_value = True
+        gp.get_team_with_users.return_value = {}
+
+        resp = await create_team(req)
+        assert resp.status_code == 200
+        edges = gp.batch_create_edges.call_args_list[0][0][0]
+        assert len(edges) == 1
+        assert edges[0]["role"] == "OWNER"
+        gp.get_graph_user_keys_by_mongo_user_ids.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_member_raises_400(self):
+        body = {
+            "name": "Team",
+            "userRoles": [{"userId": MEMBER_MONGO_ID_2, "role": "READER"}],
+        }
+        req = _make_request(body)
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
+        gp.get_graph_user_keys_by_mongo_user_ids.side_effect = ValueError(
+            f"Users not found in graph: [{MEMBER_MONGO_ID_2}]"
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await create_team(req)
+        assert exc.value.status_code == 400
+        assert "Users not found in graph" in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_unknown_user_id_raises_400(self):
         body = {
             "name": "Team",
             "userRoles": [{"userId": "user-key-1", "role": "READER"}],
@@ -352,18 +416,14 @@ class TestCreateTeam:
         req = _make_request(body)
         gp = _graph_provider(req)
         gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
-        gp.begin_transaction.return_value = "tx-1"
-        gp.batch_upsert_nodes.return_value = True
-        gp.batch_create_edges.return_value = True
-        gp.commit_transaction.return_value = True
-        gp.get_team_with_users.return_value = {}
+        gp.get_graph_user_keys_by_mongo_user_ids.side_effect = ValueError(
+            "Users not found in graph: ['user-key-1']"
+        )
 
-        resp = await create_team(req)
-        assert resp.status_code == 200
-        # Only creator OWNER edge, no duplicate
-        edges = gp.batch_create_edges.call_args_list[0][0][0]
-        assert len(edges) == 1
-        assert edges[0]["role"] == "OWNER"
+        with pytest.raises(HTTPException) as exc:
+            await create_team(req)
+        assert exc.value.status_code == 400
+        assert "Users not found in graph" in exc.value.detail
 
     @pytest.mark.asyncio
     async def test_empty_user_id_in_roles_skipped(self):
@@ -564,6 +624,9 @@ class TestUpdateTeam:
         gp.get_edge.return_value = {"role": "OWNER"}
         gp.update_node.return_value = True
         gp.get_team_with_users.return_value = {"team": "updated"}
+        gp.get_graph_user_keys_by_mongo_user_ids.side_effect = (
+            _mock_get_graph_user_keys_by_mongo_user_ids
+        )
         return req, gp
 
     @pytest.mark.asyncio
@@ -626,7 +689,10 @@ class TestUpdateTeam:
 
     @pytest.mark.asyncio
     async def test_remove_users(self):
-        body = {"name": "T", "removeUserIds": ["u2", "u3"]}
+        body = {
+            "name": "T",
+            "removeUserIds": [MEMBER_MONGO_ID_2, MEMBER_MONGO_ID_3],
+        }
         req, gp = self._setup_authorized_request(body)
         gp.get_team_owner_removal_info.return_value = {
             "owners_being_removed": [],
@@ -636,57 +702,85 @@ class TestUpdateTeam:
 
         resp = await update_team(req, "team-1")
         assert resp.status_code == 200
-        gp.delete_team_member_edges.assert_called_once()
+        gp.delete_team_member_edges.assert_called_once_with(
+            team_id="team-1",
+            user_ids=["graph-key-2", "graph-key-3"],
+        )
 
     @pytest.mark.asyncio
     async def test_add_users_legacy_format(self):
-        body = {"name": "T", "addUserIds": ["u2"], "role": "EDITOR"}
+        body = {"name": "T", "addUserIds": [MEMBER_MONGO_ID_2], "role": "EDITOR"}
         req, gp = self._setup_authorized_request(body)
         gp.batch_create_edges.return_value = True
 
         resp = await update_team(req, "team-1")
         assert resp.status_code == 200
         gp.batch_create_edges.assert_called_once()
+        edges = gp.batch_create_edges.call_args[0][0]
+        assert edges[0]["from_id"] == "graph-key-2"
 
     @pytest.mark.asyncio
     async def test_add_users_new_format(self):
-        body = {"name": "T", "addUserRoles": [{"userId": "u2", "role": "READER"}]}
+        body = {
+            "name": "T",
+            "addUserRoles": [{"userId": MEMBER_MONGO_ID_2, "role": "READER"}],
+        }
         req, gp = self._setup_authorized_request(body)
         gp.batch_create_edges.return_value = True
 
         resp = await update_team(req, "team-1")
         assert resp.status_code == 200
+        edges = gp.batch_create_edges.call_args[0][0]
+        assert edges[0]["from_id"] == "graph-key-2"
 
     @pytest.mark.asyncio
     async def test_add_user_skips_creator(self):
         body = {
             "name": "T",
-            "addUserRoles": [{"userId": "user-key-1", "role": "READER"}],
+            "addUserRoles": [{"userId": "user-1", "role": "READER"}],
         }
         req, gp = self._setup_authorized_request(body)
 
         resp = await update_team(req, "team-1")
         assert resp.status_code == 200
-        # batch_create_edges should NOT be called since only creator was in add list
+        gp.get_graph_user_keys_by_mongo_user_ids.assert_called_once()
         gp.batch_create_edges.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_add_users_missing_member_raises_400(self):
+        body = {
+            "name": "T",
+            "addUserRoles": [{"userId": MEMBER_MONGO_ID_2, "role": "READER"}],
+        }
+        req, gp = self._setup_authorized_request(body)
+        gp.get_graph_user_keys_by_mongo_user_ids.side_effect = ValueError(
+            f"Users not found in graph: [{MEMBER_MONGO_ID_2}]"
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await update_team(req, "team-1")
+        assert exc.value.status_code == 400
+        assert "Users not found in graph" in exc.value.detail
 
     @pytest.mark.asyncio
     async def test_update_user_roles(self):
         body = {
             "name": "T",
-            "updateUserRoles": [{"userId": "u2", "role": "EDITOR"}],
+            "updateUserRoles": [{"userId": MEMBER_MONGO_ID_2, "role": "EDITOR"}],
         }
         req, gp = self._setup_authorized_request(body)
         gp.get_team_permissions_and_owner_count.return_value = {
             "team": {"_key": "team-1"},
-            "permissions": {"u2": "READER"},
+            "permissions": {"graph-key-2": "READER"},
             "owner_count": 1,
         }
-        gp.batch_update_team_member_roles.return_value = [{"userId": "u2"}]
+        gp.batch_update_team_member_roles.return_value = [{"userId": "graph-key-2"}]
 
         resp = await update_team(req, "team-1")
         assert resp.status_code == 200
         gp.batch_update_team_member_roles.assert_called_once()
+        user_roles = gp.batch_update_team_member_roles.call_args.kwargs["user_roles"]
+        assert user_roles[0]["userId"] == "graph-key-2"
 
     @pytest.mark.asyncio
     async def test_update_user_roles_invalid_entries_skipped(self):
@@ -705,12 +799,12 @@ class TestUpdateTeam:
     async def test_update_user_roles_no_changes_needed(self):
         body = {
             "name": "T",
-            "updateUserRoles": [{"userId": "u1", "role": "OWNER"}],
+            "updateUserRoles": [{"userId": MEMBER_MONGO_ID_2, "role": "OWNER"}],
         }
         req, gp = self._setup_authorized_request(body)
         gp.get_team_permissions_and_owner_count.return_value = {
             "team": {"_key": "team-1"},
-            "permissions": {"u1": "OWNER"},
+            "permissions": {"graph-key-2": "OWNER"},
             "owner_count": 1,
         }
 
@@ -721,12 +815,12 @@ class TestUpdateTeam:
     async def test_update_user_roles_batch_error(self):
         body = {
             "name": "T",
-            "updateUserRoles": [{"userId": "u2", "role": "EDITOR"}],
+            "updateUserRoles": [{"userId": MEMBER_MONGO_ID_2, "role": "EDITOR"}],
         }
         req, gp = self._setup_authorized_request(body)
         gp.get_team_permissions_and_owner_count.return_value = {
             "team": {"_key": "team-1"},
-            "permissions": {"u2": "READER"},
+            "permissions": {"graph-key-2": "READER"},
             "owner_count": 1,
         }
         gp.batch_update_team_member_roles.side_effect = RuntimeError("db fail")
@@ -737,12 +831,12 @@ class TestUpdateTeam:
 
     @pytest.mark.asyncio
     async def test_add_user_roles_with_empty_user_id(self):
-        """Cover line 452: continue when userId is empty in addUserRoles."""
+        """Continue when userId is empty in addUserRoles."""
         body = {
             "name": "T",
             "addUserRoles": [
                 {"userId": "", "role": "READER"},
-                {"userId": "u2", "role": "READER"},
+                {"userId": MEMBER_MONGO_ID_2, "role": "READER"},
             ],
         }
         req, gp = self._setup_authorized_request(body)
@@ -751,16 +845,15 @@ class TestUpdateTeam:
         resp = await update_team(req, "team-1")
         assert resp.status_code == 200
         edges = gp.batch_create_edges.call_args[0][0]
-        # Only u2 should be added, empty userId is skipped
         assert len(edges) == 1
-        assert edges[0]["from_id"] == "u2"
+        assert edges[0]["from_id"] == "graph-key-2"
 
     @pytest.mark.asyncio
     async def test_add_users_batch_create_returns_falsy(self):
-        """Cover branch 468->472: batch_create_edges returns falsy."""
+        """Cover branch: batch_create_edges returns falsy."""
         body = {
             "name": "T",
-            "addUserRoles": [{"userId": "u2", "role": "READER"}],
+            "addUserRoles": [{"userId": MEMBER_MONGO_ID_2, "role": "READER"}],
         }
         req, gp = self._setup_authorized_request(body)
         gp.batch_create_edges.return_value = None
@@ -772,7 +865,7 @@ class TestUpdateTeam:
     @pytest.mark.asyncio
     async def test_remove_users_returns_empty(self):
         """Cover branch 412->416: deleted_list is empty/falsy."""
-        body = {"name": "T", "removeUserIds": ["u2"]}
+        body = {"name": "T", "removeUserIds": [MEMBER_MONGO_ID_2]}
         req, gp = self._setup_authorized_request(body)
         gp.get_team_owner_removal_info.return_value = {
             "owners_being_removed": [],
@@ -782,6 +875,38 @@ class TestUpdateTeam:
 
         resp = await update_team(req, "team-1")
         assert resp.status_code == 200
+        gp.delete_team_member_edges.assert_called_once_with(
+            team_id="team-1",
+            user_ids=["graph-key-2"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_combined_member_ops_single_resolve(self):
+        body = {
+            "name": "T",
+            "removeUserIds": [MEMBER_MONGO_ID_2],
+            "updateUserRoles": [{"userId": MEMBER_MONGO_ID_3, "role": "WRITER"}],
+            "addUserRoles": [{"userId": MEMBER_MONGO_ID_3, "role": "READER"}],
+        }
+        req, gp = self._setup_authorized_request(body)
+        gp.get_team_owner_removal_info.return_value = {
+            "owners_being_removed": [],
+            "total_owner_count": 1,
+        }
+        gp.delete_team_member_edges.return_value = ["e1"]
+        gp.get_team_permissions_and_owner_count.return_value = {
+            "team": {"_key": "team-1"},
+            "permissions": {"graph-key-3": "READER"},
+            "owner_count": 1,
+        }
+        gp.batch_update_team_member_roles.return_value = [{"userId": "graph-key-3"}]
+        gp.batch_create_edges.return_value = True
+
+        resp = await update_team(req, "team-1")
+        assert resp.status_code == 200
+        gp.get_graph_user_keys_by_mongo_user_ids.assert_called_once()
+        resolved_ids = set(gp.get_graph_user_keys_by_mongo_user_ids.call_args[0][0])
+        assert resolved_ids == {MEMBER_MONGO_ID_2, MEMBER_MONGO_ID_3}
 
     @pytest.mark.asyncio
     async def test_generic_exception_raises_500(self):
@@ -1289,10 +1414,10 @@ class TestGetUserTeams:
     async def test_success(self):
         req = _make_request()
         gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+        gp.get_user_by_user_id.return_value = {"_key": "uk", "orgId": "org-1"}
         gp.get_user_teams.return_value = ([{"name": "T1"}], 1)
 
-        resp = await get_user_teams(req, search=None, page=1, limit=100)
+        resp = await get_user_teams(req, search=None, page=1, limit=100, created_by=None)
         assert resp.status_code == 200
         content = json.loads(resp.body.decode())
         assert len(content["teams"]) == 1
@@ -1316,28 +1441,71 @@ class TestGetUserTeams:
         gp.get_user_by_user_id.return_value = None
 
         with pytest.raises(HTTPException) as exc:
-            await get_user_teams(req, search=None, page=1, limit=100)
+            await get_user_teams(req, search=None, page=1, limit=100, created_by=None)
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_exception_raises_500(self):
         req = _make_request()
         gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+        gp.get_user_by_user_id.return_value = {"_key": "uk", "orgId": "org-1"}
         gp.get_user_teams.side_effect = RuntimeError("db")
 
         with pytest.raises(HTTPException) as exc:
-            await get_user_teams(req, search=None, page=1, limit=100)
+            await get_user_teams(req, search=None, page=1, limit=100, created_by=None)
         assert exc.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_created_by_mongo_id_resolved_to_graph_key(self):
+        req = _make_request()
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.side_effect = [
+            {"_key": "uk", "orgId": "org-1"},
+            {"_key": "graph-key-2", "userId": MEMBER_MONGO_ID_2, "orgId": "org-1"},
+        ]
+        gp.get_user_teams.return_value = ([{"name": "T1"}], 1)
+
+        resp = await get_user_teams(
+            req,
+            search=None,
+            page=1,
+            limit=100,
+            created_by=MEMBER_MONGO_ID_2,
+        )
+        assert resp.status_code == 200
+        assert gp.get_user_by_user_id.call_count == 2
+        call_kwargs = gp.get_user_teams.call_args[1]
+        assert call_kwargs["created_by"] == "graph-key-2"
+
+    @pytest.mark.asyncio
+    async def test_created_by_unknown_mongo_id_raises_400(self):
+        req = _make_request()
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.side_effect = [
+            {"_key": "uk", "orgId": "org-1"},
+            None,
+        ]
+
+        with pytest.raises(HTTPException) as exc:
+            await get_user_teams(
+                req,
+                search=None,
+                page=1,
+                limit=100,
+                created_by=MEMBER_MONGO_ID_2,
+            )
+        assert exc.value.status_code == 400
+        assert "Users not found in graph" in exc.value.detail
+        gp.get_user_teams.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_pagination(self):
         req = _make_request()
         gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+        gp.get_user_by_user_id.return_value = {"_key": "uk", "orgId": "org-1"}
         gp.get_user_teams.return_value = ([{"name": "T"}] * 5, 15)
 
-        resp = await get_user_teams(req, search=None, page=2, limit=5)
+        resp = await get_user_teams(req, search=None, page=2, limit=5, created_by=None)
         content = json.loads(resp.body.decode())
         assert content["pagination"]["pages"] == 3
         assert content["pagination"]["hasNext"] is True

@@ -12,6 +12,8 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter(prefix="/api/v1/entity", tags=["Entity"])
 
+MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE = 500
+
 async def get_services(request: Request) -> Dict[str, Any]:
     """Get all required services from the container"""
     container = request.app.container
@@ -170,6 +172,7 @@ async def create_team(request: Request) -> JSONResponse:
     logger.info(f"Creating team with users: body_dict: {body_dict}")
     user_team_edges = []
     creator_key = user['_key']
+    creator_mongo_id = user_info.get("userId")
 
     # First, ensure creator always gets OWNER role
     creator_permission = {
@@ -184,23 +187,37 @@ async def create_team(request: Request) -> JSONResponse:
     }
     user_team_edges.append(creator_permission)
 
-    # Add other users (excluding creator to avoid duplicate)
+    member_mongo_ids = [
+        user_role.get("userId")
+        for user_role in user_roles
+        if user_role.get("userId") and user_role.get("userId") != creator_mongo_id
+    ]
+    mongo_to_key: dict[str, str] = {}
+    if member_mongo_ids:
+        try:
+            mongo_to_key = await graph_provider.get_graph_user_keys_by_mongo_user_ids(
+                member_mongo_ids,
+                org_id=user_info.get("orgId"),
+                chunk_size=MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     for user_role in user_roles:
-        user_id = user_role.get("userId")
+        mongo_id = user_role.get("userId")
         role = user_role.get("role", "READER")
-        if not user_id:
+        if not mongo_id or mongo_id == creator_mongo_id:
             continue
-        if user_id != creator_key:  # Skip creator as they already have OWNER role
-            user_team_edges.append({
-                "from_id": user_id,
-                "from_collection": CollectionNames.USERS.value,
-                "to_id": team_key,
-                "to_collection": CollectionNames.TEAMS.value,
-                "type": "USER",
-                "role": role,
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            })
+        user_team_edges.append({
+            "from_id": mongo_to_key[mongo_id],
+            "from_collection": CollectionNames.USERS.value,
+            "to_id": team_key,
+            "to_collection": CollectionNames.TEAMS.value,
+            "type": "USER",
+            "role": role,
+            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        })
     logger.info(f"User team edges: {user_team_edges}")
     transaction_id = None
     try:
@@ -394,42 +411,66 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
 
-        # Handle member additions and removals
+        # Handle member additions and removals (Mongo userId on wire; resolve once)
         add_user_roles = body_dict.get("addUserRoles", [])  # Array of {userId, role}
-        remove_user_ids = body_dict.get("removeUserIds", [])
+        remove_user_mongo_ids = body_dict.get("removeUserIds", [])
+        update_user_roles = body_dict.get("updateUserRoles", [])  # Array of {userId, role}
         # Support legacy format for backward compatibility
         if not add_user_roles and body_dict.get("addUserIds"):
             default_role = body_dict.get("role", "READER")
             add_user_roles = [{"userId": uid, "role": default_role} for uid in body_dict.get("addUserIds", [])]
 
+        unique_mongo_ids: set[str] = set()
+        unique_mongo_ids.update(remove_user_mongo_ids)
+        for user_role in update_user_roles:
+            mongo_id = user_role.get("userId")
+            if mongo_id:
+                unique_mongo_ids.add(mongo_id)
+        for user_role in add_user_roles:
+            mongo_id = user_role.get("userId")
+            if mongo_id:
+                unique_mongo_ids.add(mongo_id)
+
+        mongo_to_key: dict[str, str] = {}
+        if unique_mongo_ids:
+            try:
+                mongo_to_key = await graph_provider.get_graph_user_keys_by_mongo_user_ids(
+                    list(unique_mongo_ids),
+                    org_id=user_info.get("orgId"),
+                    chunk_size=MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
         # Remove users if specified
-        if remove_user_ids:
-            await _validate_owner_removal(graph_provider, team_id, remove_user_ids, logger)
+        if remove_user_mongo_ids:
+            remove_graph_keys = [mongo_to_key[mid] for mid in remove_user_mongo_ids]
+            await _validate_owner_removal(graph_provider, team_id, remove_graph_keys, logger)
             deleted_list = await graph_provider.delete_team_member_edges(
                 team_id=team_id,
-                user_ids=remove_user_ids
+                user_ids=remove_graph_keys
             )
             if deleted_list:
                 logger.info(f"Removed {len(deleted_list)} users from team {team_id}")
 
         # Update individual user roles if specified (batch update)
-        update_user_roles = body_dict.get("updateUserRoles", [])  # Array of {userId, role}
         if update_user_roles:
-            # Filter out invalid entries early
             valid_user_roles = [
-                user_role for user_role in update_user_roles
+                {
+                    "userId": mongo_to_key[user_role.get("userId")],
+                    "role": user_role.get("role"),
+                }
+                for user_role in update_user_roles
                 if user_role.get("userId") and user_role.get("role")
             ]
 
             if not valid_user_roles:
                 logger.warning("No valid user roles to update")
             else:
-                # Validate and filter owner updates using shared helper
                 filtered_updates, total_owner_count = await _validate_and_filter_owner_updates(
                     graph_provider, team_id, valid_user_roles, logger
                 )
 
-                # Process filtered updates
                 if filtered_updates:
                     try:
                         updated_permissions = await graph_provider.batch_update_team_member_roles(
@@ -444,24 +485,23 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
 
         # Add users if specified (excluding creator to preserve OWNER role)
         if add_user_roles:
+            creator_mongo_id = user_info.get("userId")
             user_team_edges = []
             for user_role in add_user_roles:
-                user_id = user_role.get("userId")
+                mongo_id = user_role.get("userId")
                 role = user_role.get("role", "READER")
-                if not user_id:
+                if not mongo_id or mongo_id == creator_mongo_id:
                     continue
-                # Skip if trying to add creator - they already have OWNER role
-                if user_id != user['_key']:
-                    user_team_edges.append({
-                        "from_id": user_id,
-                        "from_collection": CollectionNames.USERS.value,
-                        "to_id": team_id,
-                        "to_collection": CollectionNames.TEAMS.value,
-                        "type": "USER",
-                        "role": role,
-                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                    })
+                user_team_edges.append({
+                    "from_id": mongo_to_key[mongo_id],
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": team_id,
+                    "to_collection": CollectionNames.TEAMS.value,
+                    "type": "USER",
+                    "role": role,
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                })
 
             if user_team_edges:
                 result = await graph_provider.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value)
@@ -815,7 +855,7 @@ async def get_user_teams(
     search: Optional[str] = Query(None, description="Search teams by name"),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(100, ge=1, le=100, description="Number of items per page"),
-    created_by: Optional[str] = Query(None, description="Filter by creator user key"),
+    created_by: Optional[str] = Query(None, description="Filter by creator Mongo userId"),
     created_after: Optional[int] = Query(None, description="Filter teams created after this timestamp (ms)"),
     created_before: Optional[int] = Query(None, description="Filter teams created before this timestamp (ms)")
 ) -> JSONResponse:
@@ -834,13 +874,28 @@ async def get_user_teams(
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
+        graph_created_by = created_by
+        if created_by:
+            creator_user = await graph_provider.get_user_by_user_id(created_by)
+            org_id = user_info.get("orgId")
+            creator_org = creator_user.get("orgId") if creator_user else None
+            if (
+                not creator_user
+                or (org_id and creator_org and creator_org != org_id)
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Users not found in graph: [{created_by}]",
+                )
+            graph_created_by = creator_user["_key"]
+
         # Use interface method to get user teams
         result_list, total_count = await graph_provider.get_user_teams(
             user_key=user['_key'],
             search=search,
             page=page,
             limit=limit,
-            created_by=created_by,
+            created_by=graph_created_by,
             created_after=created_after,
             created_before=created_before
         )
@@ -880,6 +935,8 @@ async def get_user_teams(
                 }
             }
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch user teams")

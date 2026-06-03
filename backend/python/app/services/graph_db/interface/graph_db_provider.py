@@ -1366,6 +1366,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_graph_user_keys_by_mongo_user_ids(
+        self,
+        user_ids: list[str],
+        org_id: str | None = None,
+        *,
+        chunk_size: int,
+    ) -> dict[str, str]:
+        """
+        Look up graph user document keys for Mongo user IDs.
+
+        Args:
+            user_ids: Mongo user IDs (user.userId)
+            org_id: Optional organization ID to scope results
+            chunk_size: Max IDs per graph query batch
+
+        Returns:
+            Mapping of Mongo userId -> graph _key
+
+        Raises:
+            ValueError: If any user_id was not found in the graph for org_id
+        """
+        pass
+
+    @abstractmethod
     async def get_account_type(
         self,
         org_id: str,

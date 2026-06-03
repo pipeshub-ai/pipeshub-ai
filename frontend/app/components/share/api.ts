@@ -1,4 +1,6 @@
 import { apiClient } from '@/lib/api';
+import { UsersApi } from '@/app/(main)/workspace/users/api';
+import { toShareUsers } from './utils';
 import type { ShareTeam, ShareUser } from './types';
 
 /**
@@ -23,21 +25,11 @@ export const ShareCommonApi = {
   },
 
   /**
-   * Get all org users. Returns UUID as id — used by endpoints that expect UUIDs
-   * (e.g. collections/KB permissions). For MongoDB-ID endpoints use the
-   * adapter's getSharingUsers() override instead.
+   * First page of org users (Mongo userId). Used when an adapter has no paginated override.
    */
   async getAllUsers(): Promise<ShareUser[]> {
-    const { data } = await apiClient.get('/api/v1/users/graph/list');
-    const users = Array.isArray(data) ? data : data.users ?? [];
-    return users.map((u: Record<string, unknown>) => ({
-      id: u.id as string,
-      uuid: u.id as string,
-      name: (u.name as string) ?? '',
-      email: (u.email as string) ?? undefined,
-      avatarUrl: (u.avatarUrl as string) || undefined,
-      isInOrg: true,
-    }));
+    const { users } = await UsersApi.fetchMergedUsers({ page: 1, limit: 100 });
+    return toShareUsers(users);
   },
 
   /**
@@ -50,7 +42,6 @@ export const ShareCommonApi = {
     const users = Array.isArray(data) ? data : data.users ?? [];
     return users.map((u: Record<string, unknown>) => ({
       id: u.id as string,
-      uuid: u.id as string,
       name: (u.name as string) ?? (u.fullName as string) ?? '',
       email: (u.email as string) ?? undefined,
       avatarUrl: (u.avatarUrl as string) || undefined,

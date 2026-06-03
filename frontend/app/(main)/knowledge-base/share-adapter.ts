@@ -1,8 +1,8 @@
 import { apiClient } from '@/lib/api';
-import type { ShareAdapter, SharedMember, ShareSubmission, ShareRole, ShareUser } from '@/app/components/share/types';
+import type { ShareAdapter, SharedMember, ShareSubmission, ShareRole } from '@/app/components/share/types';
 import { useAuthStore } from '@/lib/store/auth-store';
 import { useUserStore } from '@/lib/store/user-store';
-import { UsersApi } from '@/app/(main)/workspace/users/api';
+import { fetchShareUsersPaginated } from '@/app/components/share/utils';
 
 const BASE = '/api/v1/knowledgeBase';
 
@@ -14,7 +14,6 @@ export function createKBShareAdapter(kbId: string): ShareAdapter {
   const profile = useUserStore.getState().profile;
   const authUser = useAuthStore.getState().user;
   const currentUserId = (profile?.userId ?? authUser?.id ?? '').trim();
-  const currentUserEmail = (profile?.email ?? authUser?.email ?? '').trim().toLowerCase();
 
   return {
     entityType: 'collection',
@@ -25,17 +24,11 @@ export function createKBShareAdapter(kbId: string): ShareAdapter {
 
     async getSharedMembers(): Promise<SharedMember[]> {
       const { data } = await apiClient.get(`${BASE}/${kbId}/permissions`, { suppressErrorToast: true });
-      // Transform API response to SharedMember[]
       const permissions = Array.isArray(data) ? data : data.permissions ?? [];
       return permissions.map((p: Record<string, unknown>) => {
-        // Use the API's own type field — "TEAM" for teams, "USER" for users
         const isTeam = (p.type as string)?.toUpperCase() === 'TEAM';
-        // p.id is the UUID for both users and teams
-        const id = p.id as string;
-        const memberEmail = ((p.email as string) ?? '').trim().toLowerCase();
-        const isCurrentUser =
-          (currentUserId && id === currentUserId) ||
-          Boolean(currentUserEmail && memberEmail && memberEmail === currentUserEmail);
+        const mongoUserId = p.userId as string | undefined;
+        const id = isTeam ? (p.id as string) : (mongoUserId ?? (p.id as string));
         return {
           id,
           type: (isTeam ? 'team' : 'user') as 'user' | 'team',
@@ -45,7 +38,7 @@ export function createKBShareAdapter(kbId: string): ShareAdapter {
           memberCount: p.memberCount as number | undefined,
           role: ((p.role as string) ?? (p.relationship as string) ?? 'READER') as ShareRole,
           isOwner: ((p.role as string) ?? (p.relationship as string)) === 'OWNER',
-          isCurrentUser,
+          isCurrentUser: !isTeam && id === currentUserId,
         };
       });
     },
@@ -74,27 +67,6 @@ export function createKBShareAdapter(kbId: string): ShareAdapter {
       await apiClient.delete(`${BASE}/${kbId}/permissions`, { data: payload, suppressErrorToast: true });
     },
 
-    async getSharingUsersPaginated(params: {
-      page: number;
-      limit: number;
-      search?: string;
-    }): Promise<{ users: ShareUser[]; totalCount: number }> {
-      const result = await UsersApi.listGraphUsers({
-        page: params.page,
-        limit: params.limit,
-        search: params.search,
-      });
-      return {
-        users: result.users.map((u) => ({
-          id: u.id,
-          uuid: u.id,
-          name: u.name ?? u.email ?? '',
-          email: u.email,
-          avatarUrl: undefined,
-          isInOrg: true,
-        })),
-        totalCount: result.totalCount,
-      };
-    },
+    getSharingUsersPaginated: fetchShareUsersPaginated,
   };
 }

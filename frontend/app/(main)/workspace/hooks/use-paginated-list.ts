@@ -5,6 +5,21 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 const DEFAULT_LIMIT = 25;
 const DEFAULT_SEARCH_DEBOUNCE_MS = 300;
 
+/** Drop duplicate rows when paginated fetches overlap (append races, load-more). */
+function dedupeItemsWithId<T>(items: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of items) {
+    const id = (item as { id?: string }).id;
+    if (typeof id === 'string' && id.length > 0) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+    }
+    out.push(item);
+  }
+  return out;
+}
+
 export interface PaginatedFetchResult<T> {
   items: T[];
   totalCount: number;
@@ -61,6 +76,7 @@ export function usePaginatedList<T>({
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fetchGenerationRef = useRef(0);
   const hasMore = page * limit < totalCount;
 
   // Refs so fetchItems stays stable across renders even when callbacks are inline
@@ -71,6 +87,11 @@ export function usePaginatedList<T>({
 
   const fetchItems = useCallback(
     async (query: string, pageNum: number, append: boolean) => {
+      if (!append) {
+        fetchGenerationRef.current += 1;
+      }
+      const generation = fetchGenerationRef.current;
+
       if (append) {
         setIsLoadingMore(true);
       } else {
@@ -78,9 +99,12 @@ export function usePaginatedList<T>({
       }
       try {
         const result = await fetcherRef.current(query || undefined, pageNum, limit);
+        if (generation !== fetchGenerationRef.current) return;
+
         let updated: T[] = [];
         setItems((prev) => {
-          updated = append ? [...prev, ...result.items] : result.items;
+          const merged = append ? [...prev, ...result.items] : result.items;
+          updated = dedupeItemsWithId(merged);
           return updated;
         });
         setTotalCount(result.totalCount);
@@ -88,8 +112,10 @@ export function usePaginatedList<T>({
       } catch {
         // handled by global interceptor
       } finally {
-        setIsLoading(false);
-        setIsLoadingMore(false);
+        if (generation === fetchGenerationRef.current) {
+          setIsLoading(false);
+          setIsLoadingMore(false);
+        }
       }
     },
     [limit]
@@ -128,6 +154,7 @@ export function usePaginatedList<T>({
   }, [fetchItems]);
 
   const reset = useCallback(() => {
+    fetchGenerationRef.current += 1;
     if (searchTimerRef.current) {
       clearTimeout(searchTimerRef.current);
       searchTimerRef.current = null;

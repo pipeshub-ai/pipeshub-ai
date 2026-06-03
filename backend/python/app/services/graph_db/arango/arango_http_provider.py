@@ -4179,6 +4179,42 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
             return None
 
+    async def get_graph_user_keys_by_mongo_user_ids(
+        self,
+        user_ids: list[str],
+        org_id: str | None = None,
+        *,
+        chunk_size: int,
+    ) -> dict[str, str]:
+        """Return graph user _key for each Mongo userId (batched lookup)."""
+        if not user_ids:
+            return {}
+
+        mongo_to_key: dict[str, str] = {}
+        for i in range(0, len(user_ids), chunk_size):
+            chunk = user_ids[i:i + chunk_size]
+            query = f"""
+                FOR user IN {CollectionNames.USERS.value}
+                    FILTER user.userId IN @user_ids
+                    FILTER @org_id == null OR user.orgId == @org_id
+                    RETURN {{ userId: user.userId, _key: user._key }}
+            """
+            result = await self.http_client.execute_aql(
+                query,
+                bind_vars={"user_ids": chunk, "org_id": org_id},
+            )
+            for user in result or []:
+                mongo_id = user.get("userId")
+                graph_key = user.get("_key")
+                if mongo_id and graph_key:
+                    mongo_to_key[mongo_id] = graph_key
+
+        missing = [user_id for user_id in user_ids if user_id not in mongo_to_key]
+        if missing:
+            raise ValueError(f"Users not found in graph: {missing}")
+
+        return mongo_to_key
+
     async def get_user_apps(self, user_id: str, transaction: str | None = None) -> list[dict]:
         """Get all apps (connectors) associated with a user by user document key (_key).
 
@@ -18382,6 +18418,62 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     # ==================== Team Operations ====================
 
+    async def _enrich_teams_with_created_by_user(
+        self,
+        teams: list[dict],
+        transaction: str | None = None,
+    ) -> None:
+        if not teams:
+            return
+
+        creator_keys: set[str] = set()
+        for team in teams:
+            if not team:
+                continue
+            creator_key = team.get("createdBy")
+            if creator_key and creator_key != "system":
+                creator_keys.add(creator_key)
+
+        users_by_key: dict[str, dict] = {}
+        if creator_keys:
+            query = f"""
+                FOR u IN {CollectionNames.USERS.value}
+                    FILTER u._key IN @keys
+                    RETURN {{
+                        _key: u._key,
+                        userId: u.userId,
+                        fullName: u.fullName,
+                        email: u.email
+                    }}
+            """
+            result = await self.execute_query(
+                query,
+                bind_vars={"keys": list(creator_keys)},
+                transaction=transaction,
+            )
+            users_by_key = {
+                user["_key"]: user
+                for user in (result or [])
+                if user.get("_key")
+            }
+
+        for team in teams:
+            if not team:
+                continue
+            creator_key = team.get("createdBy")
+            if not creator_key or creator_key == "system":
+                team["createdByUser"] = None
+                continue
+            user_doc = users_by_key.get(creator_key)
+            if not user_doc or not user_doc.get("userId"):
+                team["createdByUser"] = None
+            else:
+                team["createdByUser"] = {
+                    "userId": user_doc["userId"],
+                    "name": user_doc.get("fullName") or "",
+                    "email": user_doc.get("email") or "",
+                }
+
     async def get_teams(
         self,
         org_id: str,
@@ -18474,7 +18566,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 teams_params["search"] = f"%{search.lower()}%"
 
             result_list = await self.execute_query(teams_query, bind_vars=teams_params, transaction=transaction)
-            return result_list if result_list else [], total_count
+            result_list = result_list if result_list else []
+            await self._enrich_teams_with_created_by_user(result_list, transaction=transaction)
+            return result_list, total_count
 
         except Exception as e:
             self.logger.error(f"Error in get_teams: {str(e)}", exc_info=True)
@@ -18538,7 +18632,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 },
                 transaction=transaction
             )
-            return result_list[0] if result_list else None
+            team = result_list[0] if result_list else None
+            if team:
+                await self._enrich_teams_with_created_by_user([team], transaction=transaction)
+            return team
 
         except Exception as e:
             self.logger.error(f"Error in get_team_with_users: {str(e)}", exc_info=True)
@@ -18663,7 +18760,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
 
             result_list = await self.execute_query(user_teams_query, bind_vars=teams_params, transaction=transaction)
-            return result_list if result_list else [], total_count
+            result_list = result_list if result_list else []
+            await self._enrich_teams_with_created_by_user(result_list, transaction=transaction)
+            return result_list, total_count
 
         except Exception as e:
             self.logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
@@ -18800,7 +18899,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 teams_params["search"] = f"%{search.lower()}%"
 
             result_list = await self.execute_query(created_teams_query, bind_vars=teams_params, transaction=transaction)
-            return result_list if result_list else [], total_count
+            result_list = result_list if result_list else []
+            await self._enrich_teams_with_created_by_user(result_list, transaction=transaction)
+            return result_list, total_count
 
         except Exception as e:
             self.logger.error(f"Error in get_user_created_teams: {str(e)}", exc_info=True)
@@ -18888,7 +18989,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars=bind_vars,
                 transaction=transaction
             )
-            return result_list[0] if result_list else None
+            team = result_list[0] if result_list else None
+            if team:
+                await self._enrich_teams_with_created_by_user([team], transaction=transaction)
+            return team
 
         except Exception as e:
             self.logger.error(f"Error in get_team_users: {str(e)}", exc_info=True)
@@ -18962,7 +19066,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 },
                 transaction=transaction
             )
-            return result if result else []
+            result = result if result else []
+            await self._enrich_teams_with_created_by_user(
+                [item["team"] for item in result if item.get("team")],
+                transaction=transaction,
+            )
+            return result
 
         except Exception as e:
             self.logger.error(f"Error in search_teams: {str(e)}", exc_info=True)

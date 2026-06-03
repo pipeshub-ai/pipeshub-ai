@@ -674,6 +674,116 @@ class TestGetUserByUserId:
 
 
 # ---------------------------------------------------------------------------
+# get_graph_user_keys_by_mongo_user_ids
+# ---------------------------------------------------------------------------
+
+
+class TestGetGraphUserKeysByMongoUserIds:
+    @pytest.mark.asyncio
+    async def test_multiple_users_resolved(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [
+            {"userId": "507f1f77bcf86cd799439011", "_key": "u1"},
+            {"userId": "507f1f77bcf86cd799439012", "_key": "u2"},
+        ]
+        result = await connected_provider.get_graph_user_keys_by_mongo_user_ids(
+            ["507f1f77bcf86cd799439011", "507f1f77bcf86cd799439012"],
+            org_id="org-1",
+            chunk_size=500,
+        )
+        assert result == {
+            "507f1f77bcf86cd799439011": "u1",
+            "507f1f77bcf86cd799439012": "u2",
+        }
+        bind_vars = connected_provider.http_client.execute_aql.call_args[1]["bind_vars"]
+        assert bind_vars["org_id"] == "org-1"
+        assert len(bind_vars["user_ids"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_empty_list_returns_without_query(self, connected_provider):
+        result = await connected_provider.get_graph_user_keys_by_mongo_user_ids(
+            [], chunk_size=500
+        )
+        assert result == {}
+        connected_provider.http_client.execute_aql.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_chunking_uses_caller_chunk_size(self, connected_provider):
+        ids = [f"{i:024x}" for i in range(501)]
+        connected_provider.http_client.execute_aql.return_value = [
+            {"userId": mongo_id, "_key": f"key-{mongo_id}"} for mongo_id in ids
+        ]
+
+        result = await connected_provider.get_graph_user_keys_by_mongo_user_ids(
+            ids, chunk_size=500
+        )
+
+        assert len(result) == 501
+        assert connected_provider.http_client.execute_aql.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_missing_user_raises_value_error(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = []
+        with pytest.raises(ValueError, match="Users not found in graph"):
+            await connected_provider.get_graph_user_keys_by_mongo_user_ids(
+                ["507f1f77bcf86cd799439011"], chunk_size=500
+            )
+
+    @pytest.mark.asyncio
+    async def test_exception_propagates(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_graph_user_keys_by_mongo_user_ids(
+                ["507f1f77bcf86cd799439011"], chunk_size=500
+            )
+
+
+# ---------------------------------------------------------------------------
+# createdByUser enrichment helpers
+# ---------------------------------------------------------------------------
+
+
+class TestCreatedByUserEnrichment:
+    @pytest.mark.asyncio
+    async def test_enrich_teams_with_created_by_user(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [
+            {
+                "_key": "creator-1",
+                "userId": "507f1f77bcf86cd799439011",
+                "fullName": "Alice",
+                "email": "alice@test.com",
+            },
+        ]
+        teams = [
+            {"id": "t1", "createdBy": "creator-1"},
+            {"id": "t2", "createdBy": "creator-1"},
+            {"id": "t3", "createdBy": "system"},
+            {"id": "t4", "createdBy": "missing-creator"},
+        ]
+        await connected_provider._enrich_teams_with_created_by_user(teams)
+
+        assert teams[0]["createdByUser"] == {
+            "userId": "507f1f77bcf86cd799439011",
+            "name": "Alice",
+            "email": "alice@test.com",
+        }
+        assert teams[1]["createdByUser"] == teams[0]["createdByUser"]
+        assert teams[2]["createdByUser"] is None
+        assert teams[3]["createdByUser"] is None
+        bind_vars = connected_provider.http_client.execute_aql.call_args[0][1]
+        assert set(bind_vars["keys"]) == {"creator-1", "missing-creator"}
+
+    @pytest.mark.asyncio
+    async def test_enrich_teams_empty_or_system_only_skips_query(self, connected_provider):
+        teams = [{"id": "t1", "createdBy": "system"}]
+        await connected_provider._enrich_teams_with_created_by_user(teams)
+        assert teams[0]["createdByUser"] is None
+        connected_provider.http_client.execute_aql.assert_not_called()
+
+        await connected_provider._enrich_teams_with_created_by_user([])
+        connected_provider.http_client.execute_aql.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # get_accessible_virtual_record_ids
 # ---------------------------------------------------------------------------
 

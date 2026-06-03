@@ -20,7 +20,6 @@ import { TeamsApi } from '../api';
 import type { TeamMember, TeamMemberRole } from '../types';
 import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
 import { TEAM_ROLE_LABELS } from '../constants';
-import { UsersApi } from '../../users/api';
 import { RoleDropdownMenu } from '@/app/components/share';
 
 // ========================================
@@ -57,7 +56,7 @@ export function TeamDetailSidebar({
 
   const [isDeleting, setIsDeleting] = useState(false);
   const [addMemberRole, setAddMemberRole] = useState<TeamMemberRole>('READER');
-  // Pending per-member role updates (applied on Save Edits as updateUserRoles)
+  // Pending per-member role updates (Mongo userId; applied on Save as updateUserRoles)
   const [pendingUpdateRoles, setPendingUpdateRoles] = useState<Map<string, TeamMemberRole>>(
     new Map()
   );
@@ -69,7 +68,6 @@ export function TeamDetailSidebar({
   const membersListRef = useRef<PaginatedMembersListHandle>(null);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [existingMemberIds, setExistingMemberIds] = useState<Set<string>>(new Set());
-  const [creatorUser, setCreatorUser] = useState<{ id: string; name?: string; email?: string; profilePicture?: string } | null>(null);
   // Prefer the profile store for identity; auth store user is not always
   // populated after refresh in some routes.
   const normalizedCurrentUserId = (profile?.userId ?? currentUser?.id ?? '').trim();
@@ -107,13 +105,13 @@ export function TeamDetailSidebar({
     }
 
     let cancelled = false;
-    const seed = new Set((detailTeam.members ?? []).map((m) => m.id));
+    const seed = new Set((detailTeam.members ?? []).map((m) => m.userId));
 
     const loadAllMemberIds = async () => {
       try {
         const pageSize = 100;
         const first = await TeamsApi.getTeamUsers(detailTeam.id, { page: 1, limit: pageSize });
-        first.members.forEach((m) => seed.add(m.id));
+        first.members.forEach((m) => seed.add(m.userId));
 
         const totalPages = Math.max(
           1,
@@ -128,7 +126,7 @@ export function TeamDetailSidebar({
             )
           );
           for (const res of rest) {
-            res.members.forEach((m) => seed.add(m.id));
+            res.members.forEach((m) => seed.add(m.userId));
           }
         }
       } catch {
@@ -143,34 +141,6 @@ export function TeamDetailSidebar({
       cancelled = true;
     };
   }, [isDetailPanelOpen, detailTeam, isEditMode]);
-
-  // Resolve "Created By" by graph UUID from users API.
-  useEffect(() => {
-    if (!isDetailPanelOpen || !detailTeam?.createdBy) {
-      setCreatorUser(null);
-      return;
-    }
-
-    let cancelled = false;
-    UsersApi.getGraphUsersByIds([detailTeam.createdBy]).then((resolved) => {
-      if (cancelled) return;
-      const user = resolved[detailTeam.createdBy];
-      if (!user) {
-        setCreatorUser(null);
-        return;
-      }
-      setCreatorUser({
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        profilePicture: user.profilePicture,
-      });
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isDetailPanelOpen, detailTeam?.createdBy]);
 
   // Track member UUIDs marked for removal (deferred until Save Edits)
   const [pendingRemoveUserIds, setPendingRemoveUserIds] = useState<Set<string>>(
@@ -197,21 +167,20 @@ export function TeamDetailSidebar({
     onLoadMore: handleUserLoadMore,
   } = usePaginatedUserOptions({
     enabled: isDetailPanelOpen && isEditMode,
-    idField: 'id',
-    source: 'graph',
+    idField: 'userId',
   });
 
   // Exclude already-added members from the options
   const availableUserOptions: CheckboxOption[] = useMemo(() => {
     if (!detailTeam) return [];
-    const memberUuids = new Set(existingMemberIds);
+    const memberMongoIds = new Set(existingMemberIds);
     // Keep local page data merged in too (helps before full fetch finishes).
-    teamMembers.forEach((m) => memberUuids.add(m.id));
+    teamMembers.forEach((m) => memberMongoIds.add(m.userId));
     // Do not show users already selected in "Add Members".
     const pendingAddIds = new Set(editAddUserIds);
 
     return userOptions.filter(
-      (o) => !memberUuids.has(o.id) && !pendingAddIds.has(o.id)
+      (o) => !memberMongoIds.has(o.id) && !pendingAddIds.has(o.id)
     );
   }, [userOptions, teamMembers, existingMemberIds, editAddUserIds, detailTeam]);
 
@@ -317,7 +286,7 @@ export function TeamDetailSidebar({
     []
   );
 
-  // Stage a per-member role change (applied on Save Edits as updateUserRoles)
+  // Stage a per-member role change (Mongo userId; applied on Save as updateUserRoles)
   const handleMemberRoleChange = useCallback(
     (memberId: string, role: TeamMemberRole, originalRole: TeamMemberRole | string) => {
       setPendingUpdateRoles((prev) => {
@@ -478,9 +447,10 @@ export function TeamDetailSidebar({
 
   const panelTitle = detailTeam?.name || 'Team';
 
+  const creatorUser = detailTeam?.createdByUser ?? null;
   const creatorEmail = (creatorUser?.email ?? '').trim().toLowerCase();
   const isCreatorSelf = Boolean(
-    (normalizedCurrentUserId && creatorUser?.id === normalizedCurrentUserId) ||
+    (normalizedCurrentUserId && creatorUser?.userId === normalizedCurrentUserId) ||
     (normalizedCurrentUserEmail && creatorEmail === normalizedCurrentUserEmail)
   );
 
@@ -634,7 +604,7 @@ export function TeamDetailSidebar({
               email={creatorUser.email}
               avatarSize={32}
               isSelf={isCreatorSelf}
-              profilePicture={creatorUser.profilePicture}
+              profilePicture={creatorUser.profilePicture ?? undefined}
             />
           ) : (
             <Text size="2" style={{ color: 'var(--slate-11)' }}>
@@ -674,8 +644,8 @@ export function TeamDetailSidebar({
             listClassName="team-member-scroll-area"
             onFetched={(items) => setTeamMembers(items)}
             renderItem={(member) => {
-              const isPendingRemove = pendingRemoveUserIds.has(member.id);
-              const effectiveRole = (pendingUpdateRoles.get(member.id) ?? member.role) as TeamMemberRole | string;
+              const isPendingRemove = pendingRemoveUserIds.has(member.userId);
+              const effectiveRole = (pendingUpdateRoles.get(member.userId) ?? member.role) as TeamMemberRole | string;
               const isCurrentMemberUser = isSameAsCurrentUser(member);
               const canEditRole = isEditMode && !isCurrentMemberUser && !isPendingRemove;
               return (
@@ -703,7 +673,7 @@ export function TeamDetailSidebar({
                         role={effectiveRole as TeamMemberRole}
                         onRoleChange={(r) =>
                           handleMemberRoleChange(
-                            member.id,
+                            member.userId,
                             r as TeamMemberRole,
                             member.role as TeamMemberRole
                           )
@@ -718,7 +688,7 @@ export function TeamDetailSidebar({
                     {isEditMode && !isCurrentMemberUser && (
                       <Text
                         size="1"
-                        onClick={() => handleRemoveUser(member.id)}
+                        onClick={() => handleRemoveUser(member.userId)}
                         style={{
                           color: isPendingRemove
                             ? 'var(--accent-11)'

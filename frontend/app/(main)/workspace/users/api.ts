@@ -1,6 +1,5 @@
 import { apiClient } from '@/lib/api';
 import type {
-  GraphUsersListResponse,
   User,
   UserByIdsDoc,
   UsersListResponse,
@@ -69,26 +68,6 @@ export const UsersApi = {
   },
 
   /**
-   * List users from the graph API (returns graph UUID as `id`).
-   * Use this when you need the graph key that matches team.createdBy.
-   * GET /api/v1/users/graph/list
-   */
-  async listGraphUsers(params?: {
-    page?: number;
-    limit?: number;
-    search?: string;
-  }): Promise<{ users: User[]; totalCount: number }> {
-    const { data } = await apiClient.get<GraphUsersListResponse>(
-      `${BASE_URL}/graph/list`,
-      { params }
-    );
-    return {
-      users: data.users ?? [],
-      totalCount: data.pagination?.total ?? data.users?.length ?? 0,
-    };
-  },
-
-  /**
    * Fetch users with their group memberships and hasLoggedIn status.
    * GET /api/v1/users/fetch/with-groups
    */
@@ -126,36 +105,6 @@ export const UsersApi = {
   async getUser(id: string): Promise<User> {
     const { data } = await apiClient.get<User>(`${BASE_URL}/${id}`);
     return data;
-  },
-
-  /**
-   * Resolve graph users by graph UUIDs using the graph list endpoint.
-   * Paginates until all requested IDs are found (or data is exhausted).
-   */
-  async getGraphUsersByIds(ids: string[]): Promise<Record<string, User | null>> {
-    const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
-    const result: Record<string, User | null> = {};
-    for (const id of uniqueIds) result[id] = null;
-    if (uniqueIds.length === 0) return result;
-
-    const remaining = new Set(uniqueIds);
-    let page = 1;
-    const limit = 100;
-    let totalPages = 1;
-
-    while (page <= totalPages && remaining.size > 0) {
-      const { users, totalCount } = await UsersApi.listGraphUsers({ page, limit });
-      totalPages = Math.max(1, Math.ceil((totalCount || 0) / limit));
-
-      for (const user of users) {
-        if (!user.id || !remaining.has(user.id)) continue;
-        result[user.id] = user;
-        remaining.delete(user.id);
-      }
-      page += 1;
-    }
-
-    return result;
   },
 
   /**

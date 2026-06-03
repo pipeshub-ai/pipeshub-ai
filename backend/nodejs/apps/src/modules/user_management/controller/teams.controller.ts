@@ -21,7 +21,8 @@ import { inject, injectable } from 'inversify';
 import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
 import { UserDisplayPicture } from '../schema/userDp.schema';
 import type {
-  TeamMemberResponse,
+  TeamCreatedByUser,
+  TeamResponse,
   TeamUsersResponse,
   TeamsListResponse,
 } from '../types/user_management.types';
@@ -107,6 +108,54 @@ const handleAIServiceResponse = (
   res.status(successStatus).json(responseData);
 };
 
+async function enrichTeamsProfilePictures(
+  orgId: string,
+  teams: TeamResponse[],
+): Promise<void> {
+  const userIds: string[] = [];
+  for (const team of teams) {
+    if (team.members) {
+      for (const member of team.members) {
+        if (member.userId) userIds.push(member.userId);
+      }
+    }
+    const createdByUser = team.createdByUser as TeamCreatedByUser | null | undefined;
+    if (createdByUser?.userId) {
+      userIds.push(createdByUser.userId);
+    }
+  }
+  if (userIds.length === 0) return;
+
+  const uniqueIds = [...new Set(userIds)];
+  const dpDocs = await UserDisplayPicture.find({
+    orgId,
+    userId: { $in: uniqueIds },
+    pic: { $ne: null },
+  }).lean().exec();
+
+  const dpMap = new Map<string, string>();
+  for (const dp of dpDocs) {
+    if (dp.userId && dp.pic) {
+      const mime = dp.mimeType || 'image/jpeg';
+      dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
+    }
+  }
+
+  for (const team of teams) {
+    if (team.members) {
+      for (const member of team.members) {
+        if (member.userId && dpMap.has(member.userId)) {
+          member.profilePicture = dpMap.get(member.userId);
+        }
+      }
+    }
+    const createdByUser = team.createdByUser as TeamCreatedByUser | null | undefined;
+    if (createdByUser?.userId && dpMap.has(createdByUser.userId)) {
+      createdByUser.profilePicture = dpMap.get(createdByUser.userId);
+    }
+  }
+}
+
 @injectable()
 export class TeamsController {
   constructor(
@@ -145,13 +194,18 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      handleAIServiceResponse(
-        aiResponse,
-        res,
-        'Creating team',
-        'Team creation failed',
-        HTTP_STATUS.CREATED,
-      );
+      if (
+        aiResponse &&
+        aiResponse.statusCode !== HTTP_STATUS.CREATED &&
+        aiResponse.statusCode !== HTTP_STATUS.OK
+      ) {
+        throw handleBackendError(aiResponse, 'Creating team');
+      }
+      const teamData = aiResponse.data as TeamResponse | undefined;
+      if (teamData) {
+        await enrichTeamsProfilePictures(orgId, [teamData]);
+      }
+      res.status(HTTP_STATUS.CREATED).json(teamData);
     } catch (error: any) {
       this.logger.error('Error creating team', {
         requestId,
@@ -189,12 +243,15 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      handleAIServiceResponse(
-        aiResponse,
-        res,
-        'Getting team',
-        'Team not found',
-      );
+      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
+        res.status(aiResponse.statusCode).json(aiResponse.data);
+        return;
+      }
+      const teamData = aiResponse.data as TeamResponse | undefined;
+      if (teamData) {
+        await enrichTeamsProfilePictures(orgId, [teamData]);
+      }
+      res.status(HTTP_STATUS.OK).json(teamData);
     } catch (error: any) {
       this.logger.error('Error getting team', {
         requestId,
@@ -254,14 +311,18 @@ export class TeamsController {
         },
         method: HttpMethod.GET,
       };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiCommand = new AIServiceCommand<TeamsListResponse>(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      handleAIServiceResponse(
-        aiResponse,
-        res,
-        'Getting teams',
-        'Teams not found',
-      );
+      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
+        res.status(aiResponse.statusCode).json(aiResponse.data);
+        return;
+      }
+      const teamsData = aiResponse.data as TeamsListResponse | undefined;
+      const teams = teamsData?.teams ?? [];
+      if (teams.length > 0) {
+        await enrichTeamsProfilePictures(orgId, teams);
+      }
+      res.status(HTTP_STATUS.OK).json(teamsData);
     } catch (error: any) {
       this.logger.error('Error getting teams', {
         requestId,
@@ -344,12 +405,14 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      handleAIServiceResponse(
-        aiResponse,
-        res,
-        'Updating team',
-        'Failed to update team',
-      );
+      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
+        throw handleBackendError(aiResponse, 'Updating team');
+      }
+      const teamData = aiResponse.data as TeamResponse | undefined;
+      if (teamData) {
+        await enrichTeamsProfilePictures(orgId, [teamData]);
+      }
+      res.status(HTTP_STATUS.OK).json(teamData);
     } catch (error: any) {
       this.logger.error('Error updating team', {
         requestId,
@@ -490,30 +553,9 @@ export class TeamsController {
 
       const data = aiResponse.data as any;
       const teamData = data?.team ?? data;
-      const members: TeamMemberResponse[] = teamData?.members ?? [];
 
-      // Inject profilePicture into each member
-      const memberUserIds = members.map((m) => m.userId).filter(Boolean);
-      if (memberUserIds.length > 0) {
-        const dpDocs = await UserDisplayPicture.find({
-          orgId,
-          userId: { $in: memberUserIds },
-          pic: { $ne: null },
-        }).lean().exec();
-
-        const dpMap = new Map<string, string>();
-        for (const dp of dpDocs) {
-          if (dp.userId && dp.pic) {
-            const mime = dp.mimeType || 'image/jpeg';
-            dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
-          }
-        }
-
-        for (const member of members) {
-          if (member.userId && dpMap.has(member.userId)) {
-            member.profilePicture = dpMap.get(member.userId);
-          }
-        }
+      if (teamData) {
+        await enrichTeamsProfilePictures(orgId, [teamData as TeamResponse]);
       }
 
       res.status(HTTP_STATUS.OK).json(data);
@@ -587,42 +629,9 @@ export class TeamsController {
       }
       const teamsData = aiResponse.data;
 
-      // Enrich team members with profile pictures
       const teams = teamsData?.teams ?? [];
-      const allMemberUserIds: string[] = [];
-      for (const team of teams) {
-        if (team.members) {
-          for (const m of team.members) {
-            if (m.userId) allMemberUserIds.push(m.userId);
-          }
-        }
-      }
-
-      if (allMemberUserIds.length > 0) {
-        const uniqueIds = [...new Set(allMemberUserIds)];
-        const dpDocs = await UserDisplayPicture.find({
-          orgId,
-          userId: { $in: uniqueIds },
-          pic: { $ne: null },
-        }).lean().exec();
-
-        const dpMap = new Map<string, string>();
-        for (const dp of dpDocs) {
-          if (dp.userId && dp.pic) {
-            const mime = dp.mimeType || 'image/jpeg';
-            dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
-          }
-        }
-
-        for (const team of teams) {
-          if (team.members) {
-            for (const member of team.members) {
-              if (member.userId && dpMap.has(member.userId)) {
-                member.profilePicture = dpMap.get(member.userId);
-              }
-            }
-          }
-        }
+      if (teams.length > 0) {
+        await enrichTeamsProfilePictures(orgId, teams);
       }
 
       res.status(HTTP_STATUS.OK).json(teamsData);

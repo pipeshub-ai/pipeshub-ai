@@ -4,6 +4,13 @@
 
 export type TeamMemberRole = 'OWNER' | 'READER' | 'WRITER';
 
+export interface TeamCreatedByUser {
+  userId: string;
+  name: string;
+  email: string;
+  profilePicture?: string | null;
+}
+
 export interface Team {
   /** UUID primary key */
   id: string;
@@ -11,6 +18,7 @@ export interface Team {
   description: string | null;
   /** UUID of the user who created the team */
   createdBy: string;
+  createdByUser?: TeamCreatedByUser | null;
   orgId: string;
   createdAtTimestamp: number;
   updatedAtTimestamp: number;
@@ -60,7 +68,7 @@ export interface TeamPermission {
 // ========================================
 
 export interface CreateTeamUserRole {
-  /** User UUID (not MongoDB ObjectId) */
+  /** MongoDB ObjectId (not graph UUID) */
   userId: string;
   role: TeamMemberRole;
 }
@@ -71,12 +79,25 @@ export interface CreateTeamPayload {
   userRoles?: CreateTeamUserRole[];
 }
 
+/** MongoDB ObjectId — used in addUserRoles when updating a team */
+export interface TeamAddMemberRole {
+  userId: string;
+  role: TeamMemberRole;
+}
+
+/** MongoDB ObjectId — used in updateUserRoles when updating a team */
+export interface TeamMemberRoleUpdate {
+  userId: string;
+  role: TeamMemberRole;
+}
+
 export interface UpdateTeamPayload {
   name?: string;
   description?: string;
-  addUserRoles?: CreateTeamUserRole[];
+  addUserRoles?: TeamAddMemberRole[];
+  /** MongoDB ObjectId of members to remove */
   removeUserIds?: string[];
-  updateUserRoles?: CreateTeamUserRole[];
+  updateUserRoles?: TeamMemberRoleUpdate[];
 }
 
 // ========================================

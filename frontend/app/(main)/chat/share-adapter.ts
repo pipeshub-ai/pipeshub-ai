@@ -1,7 +1,8 @@
 import { apiClient } from '@/lib/api';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
 import type { User } from '@/app/(main)/workspace/users/types';
-import type { ShareAdapter, SharedMember, ShareSubmission, ShareUser } from '@/app/components/share/types';
+import { fetchShareUsersPaginated } from '@/app/components/share/utils';
+import type { ShareAdapter, SharedMember, ShareSubmission } from '@/app/components/share/types';
 import { useUserStore } from '@/lib/store/user-store';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import type { SharedWithEntry } from './types';
@@ -132,38 +133,8 @@ export function createChatShareAdapter(
       });
     },
 
-    /**
-     * Returns paginated users with MongoDB ObjectIDs as id — required by the chat
-     * /share endpoint. Enables infinite scroll in the share sidebar.
-     *
-     * Uses listGraphUsers (GET /api/v1/users/graph/list), which returns both the
-     * graph UUID (u.id) and the MongoDB ObjectId (u.userId). We expose MongoDB
-     * as `id` for /share, and the graph UUID as `uuid` for team creation. The
-     * plain /api/v1/users endpoint can't be used here: it sets both id and userId
-     * to the MongoDB _id, leaving team creation with no valid UUID to submit.
-     */
-    async getSharingUsersPaginated(params: {
-      page: number;
-      limit: number;
-      search?: string;
-    }): Promise<{ users: ShareUser[]; totalCount: number }> {
-      const result = await UsersApi.listGraphUsers({
-        page: params.page,
-        limit: params.limit,
-        search: params.search,
-      });
-      return {
-        users: result.users.map((u) => ({
-          id: u.userId,   // MongoDB ObjectID — what /share expects
-          uuid: u.id,     // Graph UUID — required by team creation
-          name: u.name ?? u.email ?? '',
-          email: u.email,
-          avatarUrl: undefined,
-          isInOrg: true,
-        })),
-        totalCount: result.totalCount,
-      };
-    },
+    /** Paginated org users (Mongo userId) for chat /share. */
+    getSharingUsersPaginated: fetchShareUsersPaginated,
 
     // No updateRole — supportsRoles is false
   };

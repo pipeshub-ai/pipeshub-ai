@@ -14,11 +14,13 @@ export const TeamsApi = {
    * List teams for the current user.
    * GET /api/v1/teams/user/teams
    * Supports pagination and search via query params.
+   * `created_by` is the creator's Mongo userId (resolved to graph key on the server).
    */
   async listTeams(params?: {
     page?: number;
     limit?: number;
     search?: string;
+    /** Mongo userId of team creator */
     created_by?: string;
     created_after?: number;
     created_before?: number;
@@ -61,8 +63,9 @@ export const TeamsApi = {
 
   /**
    * Update an existing team.
-   * PUT /api/v1/teams/:id (UUID)
-   * Body: { name?, description?, updateUserRoles?: [{ userId (UUID), role }] }
+   * PUT /api/v1/teams/:id
+   * Body: { name?, description?, addUserRoles?: [{ userId (Mongo), role }],
+   *   removeUserIds?: [Mongo userId], updateUserRoles?: [{ userId (Mongo), role }] }
    */
   async updateTeam(id: string, payload: UpdateTeamPayload): Promise<Team> {
     const { data } = await apiClient.put<{ team: Team } | Team>(
