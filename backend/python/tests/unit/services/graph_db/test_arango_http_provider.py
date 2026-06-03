@@ -744,7 +744,7 @@ class TestGetGraphUserKeysByMongoUserIds:
 
 class TestCreatedByUserEnrichment:
     @pytest.mark.asyncio
-    async def test_enrich_teams_with_created_by_user(self, connected_provider):
+    async def test_enrich_created_by_user(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = [
             {
                 "_key": "creator-1",
@@ -753,34 +753,55 @@ class TestCreatedByUserEnrichment:
                 "email": "alice@test.com",
             },
         ]
-        teams = [
+        entities = [
             {"id": "t1", "createdBy": "creator-1"},
             {"id": "t2", "createdBy": "creator-1"},
             {"id": "t3", "createdBy": "system"},
             {"id": "t4", "createdBy": "missing-creator"},
         ]
-        await connected_provider._enrich_teams_with_created_by_user(teams)
+        await connected_provider._enrich_created_by_user(entities)
 
-        assert teams[0]["createdByUser"] == {
+        assert entities[0]["createdByUser"] == {
             "userId": "507f1f77bcf86cd799439011",
             "name": "Alice",
             "email": "alice@test.com",
         }
-        assert teams[1]["createdByUser"] == teams[0]["createdByUser"]
-        assert teams[2]["createdByUser"] is None
-        assert teams[3]["createdByUser"] is None
+        assert entities[1]["createdByUser"] == entities[0]["createdByUser"]
+        assert entities[2]["createdByUser"] is None
+        assert entities[3]["createdByUser"] is None
         bind_vars = connected_provider.http_client.execute_aql.call_args[0][1]
         assert set(bind_vars["keys"]) == {"creator-1", "missing-creator"}
 
     @pytest.mark.asyncio
-    async def test_enrich_teams_empty_or_system_only_skips_query(self, connected_provider):
-        teams = [{"id": "t1", "createdBy": "system"}]
-        await connected_provider._enrich_teams_with_created_by_user(teams)
-        assert teams[0]["createdByUser"] is None
+    async def test_enrich_empty_or_system_only_skips_query(self, connected_provider):
+        entities = [{"id": "t1", "createdBy": "system"}]
+        await connected_provider._enrich_created_by_user(entities)
+        assert entities[0]["createdByUser"] is None
         connected_provider.http_client.execute_aql.assert_not_called()
 
-        await connected_provider._enrich_teams_with_created_by_user([])
+        await connected_provider._enrich_created_by_user([])
         connected_provider.http_client.execute_aql.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_enrich_created_by_user_agent_records(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [
+            {
+                "_key": "creator-1",
+                "userId": "507f1f77bcf86cd799439011",
+                "fullName": "Bob",
+                "email": "bob@test.com",
+            },
+        ]
+        agents = [
+            {"_key": "agent-1", "name": "Support Bot", "createdBy": "creator-1"},
+        ]
+        await connected_provider._enrich_created_by_user(agents)
+
+        assert agents[0]["createdByUser"] == {
+            "userId": "507f1f77bcf86cd799439011",
+            "name": "Bob",
+            "email": "bob@test.com",
+        }
 
 
 # ---------------------------------------------------------------------------

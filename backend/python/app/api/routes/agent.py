@@ -2452,6 +2452,8 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         if not agent:
             raise AgentNotFoundError(agent_id)
 
+        await services["graph_provider"]._enrich_created_by_user([agent])
+
         agent.update(perm)
 
         _mark_deprecated_tools(agent, services["logger"])
@@ -2518,6 +2520,11 @@ async def get_agents(
         for agent in agents:
             if isinstance(agent, dict):
                 agent["webSearch"] = _format_web_search_for_response(agent.get("webSearch"))
+
+        if agents:
+            await services["graph_provider"]._enrich_created_by_user(
+                [a for a in agents if isinstance(a, dict)]
+            )
 
         # Build pagination envelope
         current_page = page

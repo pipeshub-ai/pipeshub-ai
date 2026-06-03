@@ -18418,19 +18418,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     # ==================== Team Operations ====================
 
-    async def _enrich_teams_with_created_by_user(
+    async def _enrich_created_by_user(
         self,
-        teams: list[dict],
+        entities: list[dict],
         transaction: str | None = None,
     ) -> None:
-        if not teams:
+        """Attach createdByUser (Mongo userId, name, email) from graph createdBy keys."""
+        if not entities:
             return
 
         creator_keys: set[str] = set()
-        for team in teams:
-            if not team:
+        for entity in entities:
+            if not entity:
                 continue
-            creator_key = team.get("createdBy")
+            creator_key = entity.get("createdBy")
             if creator_key and creator_key != "system":
                 creator_keys.add(creator_key)
 
@@ -18457,18 +18458,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if user.get("_key")
             }
 
-        for team in teams:
-            if not team:
+        for entity in entities:
+            if not entity:
                 continue
-            creator_key = team.get("createdBy")
+            creator_key = entity.get("createdBy")
             if not creator_key or creator_key == "system":
-                team["createdByUser"] = None
+                entity["createdByUser"] = None
                 continue
             user_doc = users_by_key.get(creator_key)
             if not user_doc or not user_doc.get("userId"):
-                team["createdByUser"] = None
+                entity["createdByUser"] = None
             else:
-                team["createdByUser"] = {
+                entity["createdByUser"] = {
                     "userId": user_doc["userId"],
                     "name": user_doc.get("fullName") or "",
                     "email": user_doc.get("email") or "",
@@ -18567,7 +18568,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             result_list = await self.execute_query(teams_query, bind_vars=teams_params, transaction=transaction)
             result_list = result_list if result_list else []
-            await self._enrich_teams_with_created_by_user(result_list, transaction=transaction)
+            await self._enrich_created_by_user(result_list, transaction=transaction)
             return result_list, total_count
 
         except Exception as e:
@@ -18634,7 +18635,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             team = result_list[0] if result_list else None
             if team:
-                await self._enrich_teams_with_created_by_user([team], transaction=transaction)
+                await self._enrich_created_by_user([team], transaction=transaction)
             return team
 
         except Exception as e:
@@ -18761,7 +18762,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             result_list = await self.execute_query(user_teams_query, bind_vars=teams_params, transaction=transaction)
             result_list = result_list if result_list else []
-            await self._enrich_teams_with_created_by_user(result_list, transaction=transaction)
+            await self._enrich_created_by_user(result_list, transaction=transaction)
             return result_list, total_count
 
         except Exception as e:
@@ -18900,7 +18901,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             result_list = await self.execute_query(created_teams_query, bind_vars=teams_params, transaction=transaction)
             result_list = result_list if result_list else []
-            await self._enrich_teams_with_created_by_user(result_list, transaction=transaction)
+            await self._enrich_created_by_user(result_list, transaction=transaction)
             return result_list, total_count
 
         except Exception as e:
@@ -18991,7 +18992,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             team = result_list[0] if result_list else None
             if team:
-                await self._enrich_teams_with_created_by_user([team], transaction=transaction)
+                await self._enrich_created_by_user([team], transaction=transaction)
             return team
 
         except Exception as e:
@@ -19067,7 +19068,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 transaction=transaction
             )
             result = result if result else []
-            await self._enrich_teams_with_created_by_user(
+            await self._enrich_created_by_user(
                 [item["team"] for item in result if item.get("team")],
                 transaction=transaction,
             )

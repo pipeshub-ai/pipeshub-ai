@@ -15881,19 +15881,20 @@ class Neo4jProvider(IGraphDBProvider):
 
     # ==================== Team Operations ====================
 
-    async def _enrich_teams_with_created_by_user(
+    async def _enrich_created_by_user(
         self,
-        teams: list[dict],
+        entities: list[dict],
         transaction: str | None = None,
     ) -> None:
-        if not teams:
+        """Attach createdByUser (Mongo userId, name, email) from graph createdBy keys."""
+        if not entities:
             return
 
         creator_keys: set[str] = set()
-        for team in teams:
-            if not team:
+        for entity in entities:
+            if not entity:
                 continue
-            creator_key = team.get("createdBy")
+            creator_key = entity.get("createdBy")
             if creator_key and creator_key != "system":
                 creator_keys.add(creator_key)
 
@@ -15916,18 +15917,18 @@ class Neo4jProvider(IGraphDBProvider):
                 if user.get("_key")
             }
 
-        for team in teams:
-            if not team:
+        for entity in entities:
+            if not entity:
                 continue
-            creator_key = team.get("createdBy")
+            creator_key = entity.get("createdBy")
             if not creator_key or creator_key == "system":
-                team["createdByUser"] = None
+                entity["createdByUser"] = None
                 continue
             user_doc = users_by_key.get(creator_key)
             if not user_doc or not user_doc.get("userId"):
-                team["createdByUser"] = None
+                entity["createdByUser"] = None
             else:
-                team["createdByUser"] = {
+                entity["createdByUser"] = {
                     "userId": user_doc["userId"],
                     "name": user_doc.get("fullName") or "",
                     "email": user_doc.get("email") or "",
@@ -16050,7 +16051,7 @@ class Neo4jProvider(IGraphDBProvider):
                     team_data["currentUserPermission"] = None
                 converted_results.append(team_data)
 
-            await self._enrich_teams_with_created_by_user(converted_results, transaction=transaction)
+            await self._enrich_created_by_user(converted_results, transaction=transaction)
             return converted_results if converted_results else [], total_count
 
         except Exception as e:
@@ -16132,7 +16133,7 @@ class Neo4jProvider(IGraphDBProvider):
             else:
                 team_data["currentUserPermission"] = None
 
-            await self._enrich_teams_with_created_by_user([team_data], transaction=transaction)
+            await self._enrich_created_by_user([team_data], transaction=transaction)
             return team_data
 
         except Exception as e:
@@ -16270,7 +16271,7 @@ class Neo4jProvider(IGraphDBProvider):
                     team_data["currentUserPermission"] = perm_data
                 converted_results.append(team_data)
 
-            await self._enrich_teams_with_created_by_user(converted_results, transaction=transaction)
+            await self._enrich_created_by_user(converted_results, transaction=transaction)
             return converted_results if converted_results else [], total_count
 
         except Exception as e:
@@ -16399,7 +16400,7 @@ class Neo4jProvider(IGraphDBProvider):
                     team_data["currentUserPermission"] = None
                 converted_results.append(team_data)
 
-            await self._enrich_teams_with_created_by_user(converted_results, transaction=transaction)
+            await self._enrich_created_by_user(converted_results, transaction=transaction)
             return converted_results if converted_results else [], total_count
 
         except Exception as e:
@@ -16497,7 +16498,7 @@ class Neo4jProvider(IGraphDBProvider):
             else:
                 team_data["currentUserPermission"] = None
 
-            await self._enrich_teams_with_created_by_user([team_data], transaction=transaction)
+            await self._enrich_created_by_user([team_data], transaction=transaction)
             return team_data
 
         except Exception as e:
@@ -16593,7 +16594,7 @@ class Neo4jProvider(IGraphDBProvider):
                     result["currentUserPermission"] = None
                 converted_results.append(result)
 
-            await self._enrich_teams_with_created_by_user(
+            await self._enrich_created_by_user(
                 [item["team"] for item in converted_results if item.get("team")],
                 transaction=transaction,
             )

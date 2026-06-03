@@ -2266,6 +2266,23 @@ components:
           nullable: true
           description: Base64-encoded data URI of the creator profile picture, if available
 
+    AgentCreatedByUser:
+      type: object
+      properties:
+        userId:
+          type: string
+          description: MongoDB user ID of the agent creator
+        name:
+          type: string
+          description: Creator display name
+        email:
+          type: string
+          description: Creator email
+        profilePicture:
+          type: string
+          nullable: true
+          description: Base64-encoded data URI of the creator profile picture, if available
+
     TeamMember:
       type: object
       properties:
@@ -6459,7 +6476,9 @@ components:
           description: System instructions that define agent behavior
         createdBy:
           type: string
-          format: objectId
+          description: Graph user key of the agent creator (permissions and ownership)
+        createdByUser:
+          $ref: '#/components/schemas/AgentCreatedByUser'
         startMessage:
           type: string
           description: Initial greeting shown when a conversation with this agent starts
@@ -6705,7 +6724,9 @@ components:
           description: Unix epoch timestamp in milliseconds when the agent was created.
         createdBy:
           type: string
-          description: User id of the creator.
+          description: Graph user key of the agent creator (permissions and ownership)
+        createdByUser:
+          $ref: '#/components/schemas/AgentCreatedByUser'
         description:
           type: string
           nullable: true

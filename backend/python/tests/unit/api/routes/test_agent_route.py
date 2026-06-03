@@ -1370,3 +1370,75 @@ class TestGetWebSearchProviderUsage:
 
         assert exc_info.value.status_code == 403
         assert exc_info.value.detail == "forbidden"
+
+
+# =============================================================================
+# createdByUser enrichment on GET agent routes
+# =============================================================================
+
+
+class TestGetAgentCreatedByUserEnrichment:
+    @pytest.mark.asyncio
+    async def test_get_agent_calls_enrich_created_by_user(self) -> None:
+        from app.api.routes.agent import get_agent
+
+        agent = {"_key": "agent-1", "name": "Bot", "createdBy": "creator-key"}
+
+        async def _enrich_created_by_user(entities, transaction=None):
+            entities[0]["createdByUser"] = {
+                "userId": "507f1f77bcf86cd799439011",
+                "name": "Creator",
+                "email": "creator@test.com",
+            }
+
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
+        graph_provider.check_agent_permission = AsyncMock(return_value={"role": "OWNER"})
+        graph_provider.get_agent = AsyncMock(return_value=agent)
+        graph_provider._enrich_created_by_user = AsyncMock(side_effect=_enrich_created_by_user)
+
+        services = {
+            "graph_provider": graph_provider,
+            "config_service": AsyncMock(),
+            "logger": MagicMock(),
+        }
+
+        request = MagicMock()
+        request.state.user = {"userId": "u1", "orgId": "org-1"}
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}), \
+             patch("app.api.routes.agent._enrich_agent_models", new_callable=AsyncMock), \
+             patch("app.api.routes.agent._mark_deprecated_tools"):
+            response = await get_agent(request, "agent-1")
+
+        graph_provider._enrich_created_by_user.assert_awaited_once()
+        body = json.loads(response.body)
+        assert body["agent"]["createdByUser"]["userId"] == "507f1f77bcf86cd799439011"
+
+    @pytest.mark.asyncio
+    async def test_get_agents_calls_enrich_created_by_user(self) -> None:
+        from app.api.routes.agent import get_agents
+
+        agents = [{"_key": "a1", "name": "A", "createdBy": "ck1"}]
+
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
+        graph_provider.get_all_agents = AsyncMock(
+            return_value={"agents": agents, "totalItems": 1}
+        )
+        graph_provider._enrich_created_by_user = AsyncMock()
+
+        services = {
+            "graph_provider": graph_provider,
+            "logger": MagicMock(),
+        }
+
+        request = MagicMock()
+        request.state.user = {"userId": "u1", "orgId": "org-1"}
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
+            await get_agents(request, page=1, limit=20)
+
+        graph_provider._enrich_created_by_user.assert_awaited_once_with(agents)

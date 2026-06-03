@@ -45,7 +45,6 @@ import { toast } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { SIDEBAR_CONVERSATIONS_PAGE_SIZE } from './constants';
-import { useGraphUserEntry } from '@/lib/hooks/use-graph-user-entry';
 
 // Space reserved below content views to clear the absolutely-positioned chat input.
 const CHAT_INPUT_OFFSET = { mobile: 120, desktop: 128 };
@@ -389,7 +388,7 @@ function ChatContent() {
             deprecatedToolNames,
           });
           store.setAgentContextDisplayName(agent?.name?.trim() || null);
-          store.setAgentContextCreatedBy(agent?.createdBy ?? null);
+          store.setAgentContextCreatedByUser(agent?.createdByUser ?? null);
 
           // Warn when any tool attached to this agent has been removed from
           // server code since the agent was last saved (deprecated=true is
@@ -444,13 +443,13 @@ function ChatContent() {
             console.error('Failed to fetch agent details:', error);
             store.hydrateAgentChatResources(null);
             store.setAgentContextDisplayName(null);
-            store.setAgentContextCreatedBy(null);
+            store.setAgentContextCreatedByUser(null);
           }
         }
       } else {
         store.hydrateAgentChatResources(null);
         store.setAgentContextDisplayName(null);
-        store.setAgentContextCreatedBy(null);
+        store.setAgentContextCreatedByUser(null);
       }
 
       try {
@@ -883,11 +882,15 @@ function ChatContent() {
 
   const isMobile = useIsMobile();
   const agentContextDisplayName = useChatStore((s) => s.agentContextDisplayName);
-  const agentContextCreatedBy = useChatStore((s) => s.agentContextCreatedBy);
-  const agentCreatorEntry = useGraphUserEntry(historyAndShareAgentId ? agentContextCreatedBy : null);
+  const agentContextCreatedByUser = useChatStore((s) => s.agentContextCreatedByUser);
+  const agentCreatorName = historyAndShareAgentId
+    ? agentContextCreatedByUser?.name?.trim() || null
+    : null;
   const agentCreatorAvatarUrl =
-    agentCreatorEntry?.profilePicture ??
-    (agentCreatorEntry?.mongoId ? `/api/v1/users/${agentCreatorEntry.mongoId}/dp` : undefined);
+    agentContextCreatedByUser?.profilePicture ??
+    (agentContextCreatedByUser?.userId
+      ? `/api/v1/users/${agentContextCreatedByUser.userId}/dp`
+      : undefined);
 
   // Render decisions
   /** Profile from GET /api/v1/users/:id — auth-store `user` is often null (not persisted with tokens). */
@@ -1152,7 +1155,7 @@ function ChatContent() {
       )}
 
       {/* Agent creator chip */}
-      {historyAndShareAgentId && agentCreatorEntry?.fullName && (
+      {historyAndShareAgentId && agentCreatorName && (
         <Box
           style={{
             position: 'absolute',
@@ -1161,7 +1164,7 @@ function ChatContent() {
             zIndex: 19,
           }}
         >
-          <Tooltip content={`${t('agentBuilder.createdBy')}: ${agentCreatorEntry.fullName}`}>
+          <Tooltip content={`${t('agentBuilder.createdBy')}: ${agentCreatorName}`}>
             <Flex
               align="center"
               gap="2"
@@ -1176,7 +1179,7 @@ function ChatContent() {
             >
               <Avatar
                 size="1"
-                fallback={agentCreatorEntry.fullName.charAt(0).toUpperCase()}
+                fallback={agentCreatorName.charAt(0).toUpperCase()}
                 src={agentCreatorAvatarUrl}
                 radius="full"
                 style={{ flexShrink: 0 }}
@@ -1190,7 +1193,7 @@ function ChatContent() {
                   whiteSpace: 'nowrap',
                 }}
               >
-                {agentCreatorEntry.fullName}
+                {agentCreatorName}
               </Text>
             </Flex>
           </Tooltip>
