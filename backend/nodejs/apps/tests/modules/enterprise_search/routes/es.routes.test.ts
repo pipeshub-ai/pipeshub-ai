@@ -389,26 +389,6 @@ describe('Enterprise Search Routes', () => {
     expect(paths).to.include('/:agentKey/conversations/internal/:conversationId/messages/stream')
   })
 
-  it('should register agent share/unshare routes', () => {
-    const router = createAgentConversationalRouter(container)
-    const routes = router.stack
-      .filter((layer: any) => layer.route)
-      .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
-    const paths = routes.map((r: any) => r.path)
-
-    expect(paths).to.include('/:agentKey/unshare')
-  })
-
-  it('should register agent permissions routes', () => {
-    const router = createAgentConversationalRouter(container)
-    const routes = router.stack
-      .filter((layer: any) => layer.route)
-      .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
-    const paths = routes.map((r: any) => r.path)
-
-    expect(paths).to.include('/:agentKey/permissions')
-  })
-
   it('should register agent regenerate route', () => {
     const router = createAgentConversationalRouter(container)
     const routes = router.stack

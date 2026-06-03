@@ -25605,53 +25605,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /agents/{agentKey}/permissions:
-    put:
-      tags:
-        - Agents
-      summary: Update agent permissions
-      description: Update who can access and use the agent.
-      operationId: updateAgentPermissions
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request body for Update agent permissions"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                isPublic:
-                  type: boolean
-                sharedWith:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      userId:
-                        type: string
-                        format: objectId
-                      accessLevel:
-                        type: string
-                        enum: [read, use, edit]
-      responses:
-        '200':
-          description: Permissions updated
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Only owner can update permissions
-        '404':
-          description: Agent not found
-
   /agents/conversations/show/archives:
     get:
       tags:
@@ -26681,41 +26634,6 @@ paths:
           description: Invalid request
         '401':
           description: Unauthorized
-
-  /agents/{agentKey}/unshare:
-    post:
-      tags:
-        - Agents
-      summary: Unshare agent
-      description: Remove share grants for the given users (proxied to the AI backend).
-      operationId: unshareAgent
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: Users to remove from the agent share list.
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ShareRequest'
-      responses:
-        '200':
-          description: Updated agent document
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Agent'
-        '401':
-          description: Unauthorized
-        '404':
-          description: Agent not found
 
   # ==================== CONNECTOR MANAGER ENDPOINTS ====================
 

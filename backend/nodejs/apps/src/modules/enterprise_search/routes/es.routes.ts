@@ -46,8 +46,6 @@ import {
   listAgents,
   getWebSearchProviderUsage,
   getModelUsage,
-  unshareAgent,
-  updateAgentPermissions,
   regenerateAgentAnswers,
   streamChatInternal,
   addMessageStreamInternal,
@@ -856,22 +854,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
     getModelUsage(appConfig),
-  );
-
-  router.post(
-    '/:agentKey/unshare',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
-    unshareAgent(appConfig),
-  );
-
-  router.put(
-    '/:agentKey/permissions',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
-    updateAgentPermissions(appConfig),
   );
 
   return router;

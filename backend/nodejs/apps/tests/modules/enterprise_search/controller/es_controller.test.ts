@@ -41,14 +41,12 @@ import {
   listAgents,
   getModelUsage,
   shareAgentTemplate,
-  unshareAgent,
   streamAgentConversation,
   streamAgentConversationInternal,
   addMessageToAgentConversation,
   addMessageStreamToAgentConversation,
   addMessageStreamToAgentConversationInternal,
   regenerateAgentAnswers,
-  updateAgentPermissions,
   updateAgentFeedback,
   uploadChatAttachments,
   uploadChatAttachmentsInternal,
@@ -2686,50 +2684,6 @@ describe('Enterprise Search Controller', () => {
       const req = createMockRequest({
         params: { agentKey: 'agent-1' },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('unshareAgent', () => {
-    it('should return a handler function', () => {
-      const handler = unshareAgent(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should unshare agent successfully', async () => {
-      const handler = unshareAgent(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { unshared: true },
-      } as any)
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        body: { userIds: [VALID_OID2] },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next when orgId is missing', async () => {
-      const handler = unshareAgent(createMockAppConfig())
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        user: { userId: VALID_OID },
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -5382,106 +5336,6 @@ describe('Enterprise Search Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // updateAgentPermissions (previously untested)
-  // -----------------------------------------------------------------------
-  describe('updateAgentPermissions', () => {
-    it('should return a handler function', () => {
-      const handler = updateAgentPermissions(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should update agent permissions successfully', async () => {
-      const handler = updateAgentPermissions(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { canEdit: true, canDelete: true },
-      } as any)
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        body: { permissions: { canEdit: true } },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next when orgId is missing', async () => {
-      const handler = updateAgentPermissions(createMockAppConfig())
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        user: { userId: VALID_OID },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when userId is missing', async () => {
-      const handler = updateAgentPermissions(createMockAppConfig())
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        user: { orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when AI backend returns non-200', async () => {
-      const handler = updateAgentPermissions(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 400,
-        data: { detail: 'Invalid permissions' },
-      } as any)
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        body: { permissions: {} },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when AI backend throws error', async () => {
-      const handler = updateAgentPermissions(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('Permissions update failed'))
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        body: { permissions: {} },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
   // createConversation - service request path (lines 578-634)
   // -----------------------------------------------------------------------
   describe('createConversation (service request path)', () => {
@@ -6119,25 +5973,6 @@ describe('Enterprise Search Controller', () => {
       const handler = shareAgentTemplate(createMockAppConfig())
       const req = createMockRequest({
         params: { templateId: VALID_OID },
-        user: { orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // unshareAgent validation branches
-  // -----------------------------------------------------------------------
-  describe('unshareAgent (validation branches)', () => {
-    it('should throw when userId is missing', async () => {
-      const handler = unshareAgent(createMockAppConfig())
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
         user: { orgId: VALID_OID2 },
       })
       const res = createMockResponse()
@@ -9465,52 +9300,6 @@ describe('Enterprise Search Controller', () => {
 
       const req = createMockRequest({
         params: { agentKey: 'agent-1' },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('unshareAgent - AI response non-200', () => {
-    it('should throw when AI response is non-200', async () => {
-      const handler = unshareAgent(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 400,
-        data: { detail: 'Invalid unshare request' },
-      } as any)
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        body: { userIds: [VALID_OID2] },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('updateAgentPermissions - AI response non-200', () => {
-    it('should throw when AI response is non-200', async () => {
-      const handler = updateAgentPermissions(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 500,
-        data: { detail: 'Permissions update failed' },
-      } as any)
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        body: { permissions: {} },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()
