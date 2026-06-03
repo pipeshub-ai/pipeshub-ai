@@ -23,6 +23,11 @@ export function connectNotificationSocket(accessToken: string | null): Socket | 
   const url = getSocketBaseUrl();
   if (!url) return null;
 
+  if (socket) {
+    socket.disconnect();
+    socket.removeAllListeners();
+  }
+
   socket = io(url, {
     path: '/socket.io',
     transports: ['websocket', 'polling'],

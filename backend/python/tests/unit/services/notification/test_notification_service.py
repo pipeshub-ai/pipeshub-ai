@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.services.notification.notification_service import NotificationService
-from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin
+from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin, NotificationRecipientRole
 
 
 @pytest.mark.asyncio
@@ -63,7 +63,7 @@ async def test_publish_error_warning_type() -> None:
         message="Rate limited",
         payload={"connectorId": "c", "connectorName": "S3"},
         recipient_user_ids=["507f1f77bcf86cd799439011"],
-        recipient_roles=["admin"],
+        recipient_roles=[NotificationRecipientRole.ADMIN],
     )
 
     doc = kafka_service.publish_notification.await_args.args[0]

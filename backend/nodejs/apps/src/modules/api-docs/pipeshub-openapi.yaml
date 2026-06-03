@@ -10648,41 +10648,96 @@ components:
     InAppNotification:
       type: object
       description: |
-        A user notification record (MongoDB). May include connector diagnostics in `payload`
-        for types such as `CONNECTOR_ERROR` or `CONNECTOR_WARNING`.
-      additionalProperties: true
+        A user notification record persisted by `NotificationConsumer` in MongoDB
+        (`notification.schema.ts`). The document is scoped to a single user via
+        `assignedTo` and expires automatically after 30 days (TTL index).
+      required:
+        - _id
+        - orgId
+        - type
+        - status
+        - assignedTo
+        - isDeleted
+        - createdAt
+        - updatedAt
       properties:
         _id:
           type: string
-          description: Notification document ID
-        title:
-          type: string
-        type:
-          type: string
-          example: CONNECTOR_ERROR
-        link:
-          type: string
-        status:
-          type: string
-          enum: [Read, Unread, Archived]
-        origin:
-          type: string
+          format: objectId
+          description: MongoDB ObjectId of the notification document
+          example: "507f1f77bcf86cd799439011"
         orgId:
           type: string
+          format: objectId
+          description: Organisation the notification belongs to
+          example: "507f191e810c19729de860ea"
+        type:
+          type: string
+          description: |
+            Notification type discriminator. Connector-originated values include
+            `CONNECTOR_AUTH_ERROR`, `CONNECTOR_SYNC_ERROR`, `CONNECTOR_WARNING`,
+            `CONNECTOR_INFO`, `CONNECTOR_SUCCESS`, etc.
+          example: "CONNECTOR_SYNC_ERROR"
+        title:
+          type: string
+          description: Short human-readable heading
+          example: "S3: Bucket access denied"
+        message:
+          type: string
+          description: Full notification body text
+          example: "The S3 connector could not access bucket 'my-bucket'. Check IAM permissions."
+        severity:
+          type: string
+          enum: [info, warning, error, critical, success]
+          description: Visual severity level
+          example: "error"
+        status:
+          type: string
+          enum: [read, unread, archived]
+          default: unread
+          description: Read/unread state of the notification for this user
+          example: "unread"
+        originService:
+          type: string
+          enum:
+            - Connector Service
+            - Indexing Service
+            - AI Service
+            - External Service
+          description: Service that generated the notification
+          example: "Connector Service"
         assignedTo:
           type: string
-        appName:
+          format: objectId
+          description: MongoDB ObjectId of the user this notification is assigned to
+          example: "507f1f77bcf86cd799439011"
+        redirectLink:
           type: string
-        appId:
-          type: string
+          description: Optional deep-link URL the user should be sent to when clicking the notification
+          example: "/connectors/workspace/?connectorType=Gmail"
         payload:
           type: object
           additionalProperties: true
+          description: |
+            Arbitrary structured data attached by the originating service.
+            Connector notifications typically include `connectorId`, `connectorName`,
+            and `errorCode` keys.
+          example:
+            connectorId: "conn-abc123"
+            connectorName: "S3"
+            errorCode: "FORBIDDEN"
         isDeleted:
           type: boolean
+          default: false
+          description: Soft-delete flag; deleted notifications are excluded from all list queries
+        deletedBy:
+          type: string
+          format: objectId
+          description: ObjectId of the user who dismissed the notification (set on soft-delete)
         createdAt:
           type: string
           format: date-time
+          description: ISO 8601 timestamp — documents are TTL-expired 30 days after this value
         updatedAt:
           type: string
           format: date-time
@@ -10722,6 +10777,15 @@ paths:
       security:
         - bearerAuth: []
       parameters:
+        - name: status
+          in: query
+          required: false
+          description: |
+            Filter by notification status. When omitted (or any value other than
+            `read`, `unread`, or `archived`), all non-deleted notifications are returned.
+          schema:
+            type: string
+            enum: [read, unread, archived]
         - name: limit
           in: query
           required: false
@@ -10734,7 +10798,7 @@ paths:
         - name: cursor
           in: query
           required: false
-          description: Opaque cursor from a previous response's cursor field
+          description: Opaque base64url cursor from a previous response's `cursor` field
           schema:
             type: string
       responses:

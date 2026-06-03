@@ -120,12 +120,13 @@ export function NotificationsPanel() {
       const el = panelRef.current;
       if (!el) return;
 
+      const rect = el.getBoundingClientRect();
+
       setIsResizingPanel(true);
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
 
       const onMouseMove = (ev: MouseEvent) => {
-        const rect = el.getBoundingClientRect();
         const next = Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, ev.clientX - rect.left));
         widthRef.current = next;
         el.style.width = `${next}px`;

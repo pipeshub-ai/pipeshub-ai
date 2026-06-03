@@ -41,7 +41,7 @@ class NotificationService:
                 "redirectLink": redirect_link,
                 "payload": payload,
                 "recipientUserIds": recipient_user_ids or [],
-                "recipientRoles": [role.value for role in recipient_roles] or [],
+                "recipientRoles": [role.value for role in recipient_roles] if recipient_roles else [],
                 "isDeleted": False,
             }
             await self._kafka_service.publish_notification(document)

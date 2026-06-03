@@ -64,6 +64,7 @@ class BaseConnector(ABC):
         # shared internal group instead of a direct user grant.
         self._connector_group_permission: Optional[Permission] = None
         self._notification_service = None
+        self._background_tasks: set[asyncio.Task] = set()
 
     @abstractmethod
     async def init(self) -> bool:
@@ -352,7 +353,9 @@ class BaseConnector(ABC):
 
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(_run())
+            task = loop.create_task(_run())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
         except RuntimeError:
             # No running loop (e.g. sync tests) — skip scheduling
             self.logger.debug("notify skipped: no running asyncio loop for connector: %s, connector id: %s", self.connector_name, self.connector_id)
