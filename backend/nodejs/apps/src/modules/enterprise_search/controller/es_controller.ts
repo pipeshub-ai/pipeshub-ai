@@ -93,6 +93,7 @@ import {
 import { getSlackBotStore } from '../../configuration_manager/controller/cm_controller';
 import { Org } from '../../user_management/schema/org.schema';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
+import { getWebSearchProviderUsageResponseSchema } from '../validators/es_validators';
 
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
@@ -5103,7 +5104,8 @@ export const getWebSearchProviderUsage =
         res.status(HTTP_STATUS.OK).json({ success: true, agents: [] });
         return;
       }
-      res.status(HTTP_STATUS.OK).json(aiResponse.data);
+      const validatedResponse = getWebSearchProviderUsageResponseSchema.parse(aiResponse.data);
+      res.status(HTTP_STATUS.OK).json(validatedResponse);
     } catch (error: any) {
       logger.error('Error checking web search provider usage', {
         requestId,

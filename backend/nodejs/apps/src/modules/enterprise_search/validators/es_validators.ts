@@ -140,6 +140,13 @@ const messageIdParam = { messageId: objectId('message ID') };
 const agentKeyParam = {
   agentKey: z.string().min(1, { message: 'Agent key is required' }),
 };
+const webSearchProviderParam = {
+  provider: z
+    .string()
+    .trim()
+    .min(1, { message: 'Provider is required' })
+    .transform((value) => value.toLowerCase()),
+};
 
 // ---------------------------------------------------------------------------
 // Enterprise search: create
@@ -474,6 +481,11 @@ export const getAgentParamsSchema = z.object({
   params: z.object(agentKeyParam),
 });
 
+export const getWebSearchProviderUsageRequestSchema = z.object({
+  params: z.object(webSearchProviderParam),
+  query: z.object({}).strict(),
+});
+
 // ---------------------------------------------------------------------------
 // Agent delete schema (DELETE /:agentKey) — path param only; no body/query
 // ---------------------------------------------------------------------------
@@ -515,6 +527,25 @@ export const listAgentsQuerySchema = z.object({
     sort_order: z.enum(['asc', 'desc']).optional().default('desc'),
   }),
 });
+
+// ---------------------------------------------------------------------------
+// Agent usage lookup response schemas
+// ---------------------------------------------------------------------------
+
+export const agentUsageAgentSchema = z
+  .object({
+    _key: z.string().trim().min(1, { message: 'Agent key is required' }),
+    name: z.string().trim().min(1, { message: 'Agent name is required' }),
+    creatorName: z.string().nullable(),
+  })
+  .strict();
+
+export const getWebSearchProviderUsageResponseSchema = z
+  .object({
+    success: z.boolean(),
+    agents: z.array(agentUsageAgentSchema),
+  })
+  .strict();
 
 // ---------------------------------------------------------------------------
 // Message params

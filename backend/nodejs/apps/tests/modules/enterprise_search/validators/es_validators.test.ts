@@ -29,6 +29,8 @@ import {
   agentAttachmentUploadSchema,
   agentAttachmentRecordIdParamsSchema,
   createAgentSchema,
+  getWebSearchProviderUsageRequestSchema,
+  getWebSearchProviderUsageResponseSchema,
   updateAgentSchema,
   listAgentsQuerySchema,
 } from '../../../../src/modules/enterprise_search/validators/es_validators'
@@ -310,6 +312,72 @@ describe('enterprise_search/validators/es_validators', () => {
     it('should reject search with format specifiers', () => {
       const result = listAgentsQuerySchema.safeParse({
         query: { search: 'hello %s' },
+      })
+
+      expect(result.success).to.be.false
+    })
+  })
+
+  describe('getWebSearchProviderUsageRequestSchema', () => {
+    it('should normalize a valid provider path param', () => {
+      const result = getWebSearchProviderUsageRequestSchema.safeParse({
+        params: { provider: '  Serper  ' },
+        query: {},
+      })
+
+      expect(result.success).to.be.true
+      expect(result.data?.params.provider).to.equal('serper')
+      expect(result.data?.query).to.deep.equal({})
+    })
+
+    it('should reject an empty provider path param', () => {
+      const result = getWebSearchProviderUsageRequestSchema.safeParse({
+        params: { provider: '   ' },
+        query: {},
+      })
+
+      expect(result.success).to.be.false
+    })
+
+    it('should reject unexpected query params', () => {
+      const result = getWebSearchProviderUsageRequestSchema.safeParse({
+        params: { provider: 'tavily' },
+        query: { page: '1' },
+      })
+
+      expect(result.success).to.be.false
+    })
+  })
+
+  describe('getWebSearchProviderUsageResponseSchema', () => {
+    it('should accept a valid usage response with nullable creatorName', () => {
+      const result = getWebSearchProviderUsageResponseSchema.safeParse({
+        success: true,
+        agents: [
+          { _key: 'agent-1', name: 'Agent One', creatorName: 'Alice' },
+          { _key: 'agent-2', name: 'Agent Two', creatorName: null },
+        ],
+      })
+
+      expect(result.success).to.be.true
+    })
+
+    it('should reject agent entries missing nested required fields', () => {
+      const result = getWebSearchProviderUsageResponseSchema.safeParse({
+        success: true,
+        agents: [
+          { name: 'Agent One', creatorName: 'Alice' },
+        ],
+      })
+
+      expect(result.success).to.be.false
+    })
+
+    it('should reject unexpected top-level response properties', () => {
+      const result = getWebSearchProviderUsageResponseSchema.safeParse({
+        success: true,
+        agents: [],
+        pagination: { page: 1 },
       })
 
       expect(result.success).to.be.false

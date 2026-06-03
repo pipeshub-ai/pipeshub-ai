@@ -232,6 +232,15 @@ describe('Enterprise Search Routes - handler coverage', () => {
 
       expect(routes.find((r: any) => r.path === '/model-usage/:model_key' && r.methods.get)).to.exist
     })
+
+    it('should register web search usage route', () => {
+      const router = createAgentConversationalRouter(container)
+      const routes = router.stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
+
+      expect(routes.find((r: any) => r.path === '/web-search-usage/:provider' && r.methods.get)).to.exist
+    })
   })
 
   describe('createConversationalRouter - additional coverage', () => {

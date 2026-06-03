@@ -628,6 +628,17 @@ describe('Enterprise Search Routes', () => {
       expect(modelUsageRoute?.stack.length ?? 0).to.be.greaterThanOrEqual(4)
     })
 
+    it('agent router should register web search usage route with validation middleware', () => {
+      const router = createAgentConversationalRouter(container)
+      const routes = router.stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods, stack: layer.route.stack }))
+
+      const webSearchUsageRoute = routes.find((r: any) => r.path === '/web-search-usage/:provider' && r.methods.get)
+      expect(webSearchUsageRoute).to.exist
+      expect(webSearchUsageRoute?.stack.length ?? 0).to.be.greaterThanOrEqual(5)
+    })
+
     it('search router should register all search CRUD operations', () => {
       const router = createSemanticSearchRouter(container)
       const routes = router.stack
