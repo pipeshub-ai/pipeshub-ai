@@ -13,9 +13,9 @@ import {
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
   NOTIFICATION_RETENTION_DAYS,
-} from '../../../src/modules/notification/utils/notification.utils';
+} from '../../../src/modules/notification/utils/notification-api.utils';
 
-describe('notification/notification.utils', () => {
+describe('notification/notification-api.utils', () => {
   it('retentionCutoff subtracts retention days', () => {
     const now = new Date('2026-05-26T12:00:00.000Z');
     const cutoff = retentionCutoff(now);
@@ -35,6 +35,13 @@ describe('notification/notification.utils', () => {
     const cutoffMs = createdAtFilter.$gte.getTime();
     expect(cutoffMs).to.be.at.least(before);
     expect(cutoffMs).to.be.at.most(after);
+    expect(filter.status).to.be.undefined;
+  });
+
+  it('buildRetentionFilter includes status when provided', () => {
+    const userOid = new mongoose.Types.ObjectId();
+    const filter = buildRetentionFilter(userOid, 'unread');
+    expect(filter.status).to.equal('unread');
   });
 
   it('clampPageSize defaults and caps', () => {
@@ -43,6 +50,13 @@ describe('notification/notification.utils', () => {
     expect(clampPageSize('0')).to.equal(DEFAULT_PAGE_SIZE);
     expect(clampPageSize('25')).to.equal(25);
     expect(clampPageSize(String(MAX_PAGE_SIZE + 10))).to.equal(MAX_PAGE_SIZE);
+  });
+
+  it('clampPageSize handles negative and float inputs', () => {
+    expect(clampPageSize(-5)).to.equal(DEFAULT_PAGE_SIZE);
+    expect(clampPageSize('3.9')).to.equal(3);
+    expect(clampPageSize(1)).to.equal(1);
+    expect(clampPageSize(null)).to.equal(DEFAULT_PAGE_SIZE);
   });
 
   it('encodeCursor and decodeCursor round-trip', () => {
@@ -61,6 +75,20 @@ describe('notification/notification.utils', () => {
       'base64url',
     );
     expect(() => decodeCursor(badId)).to.throw(InvalidNotificationCursorError);
+  });
+
+  it('decodeCursor rejects missing c field', () => {
+    const missingC = Buffer.from(
+      JSON.stringify({ i: new mongoose.Types.ObjectId().toString() }),
+    ).toString('base64url');
+    expect(() => decodeCursor(missingC)).to.throw(InvalidNotificationCursorError);
+  });
+
+  it('decodeCursor rejects invalid date in c field', () => {
+    const badDate = Buffer.from(
+      JSON.stringify({ c: 'not-a-date', i: new mongoose.Types.ObjectId().toString() }),
+    ).toString('base64url');
+    expect(() => decodeCursor(badDate)).to.throw(InvalidNotificationCursorError);
   });
 
   it('buildCursorFilter uses $or tie-break', () => {
@@ -93,6 +121,20 @@ describe('notification/notification.utils', () => {
     };
     const page = paginateResults([row], 20);
     expect(page.hasMore).to.be.false;
+    expect(page.cursor).to.be.null;
+  });
+
+  it('paginateResults returns null cursor for empty array', () => {
+    const page = paginateResults([], 20);
+    expect(page.hasMore).to.be.false;
+    expect(page.notifications).to.have.lengthOf(0);
+    expect(page.cursor).to.be.null;
+  });
+
+  it('paginateResults returns null cursor when last item lacks valid _id or createdAt', () => {
+    const rows = [{ foo: 'bar' }, { foo: 'baz' }];
+    const page = paginateResults(rows, 1);
+    expect(page.hasMore).to.be.true;
     expect(page.cursor).to.be.null;
   });
 });

@@ -9,7 +9,7 @@ import mongoose from 'mongoose';
 import { createNotificationRouter } from '../../../../src/modules/notification/routes/notification.routes';
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
 import { Notifications } from '../../../../src/modules/notification/schema/notification.schema';
-import { encodeCursor } from '../../../../src/modules/notification/utils/notification.utils';
+import { encodeCursor } from '../../../../src/modules/notification/utils/notification-api.utils';
 
 describe('notification/routes/notification.routes', () => {
   let container: Container;

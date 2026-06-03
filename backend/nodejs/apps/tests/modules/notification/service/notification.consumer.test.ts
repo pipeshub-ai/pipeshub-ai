@@ -123,17 +123,19 @@ describe('notification/service/notification.consumer', () => {
           new mongoose.Types.ObjectId(user1),
           new mongoose.Types.ObjectId(user2),
         ]);
-      const createStub = sinon.stub(NotificationSchema.Notifications, 'create');
-      createStub.onFirstCall().resolves({
-        _id: 'nid1',
-        assignedTo: new mongoose.Types.ObjectId(user1),
-        toObject: () => ({ _id: 'nid1', assignedTo: user1 }),
-      } as any);
-      createStub.onSecondCall().resolves({
-        _id: 'nid2',
-        assignedTo: new mongoose.Types.ObjectId(user2),
-        toObject: () => ({ _id: 'nid2', assignedTo: user2 }),
-      } as any);
+      // create() is called once with an array of docs (batched insert)
+      const createStub = sinon.stub(NotificationSchema.Notifications, 'create').resolves([
+        {
+          _id: 'nid1',
+          assignedTo: new mongoose.Types.ObjectId(user1),
+          toObject: () => ({ _id: 'nid1', assignedTo: user1 }),
+        },
+        {
+          _id: 'nid2',
+          assignedTo: new mongoose.Types.ObjectId(user2),
+          toObject: () => ({ _id: 'nid2', assignedTo: user2 }),
+        },
+      ] as any);
 
       await consumer.consume(userHandler);
       const wrapped = mockConsumer.consume.firstCall.args[0];
@@ -147,7 +149,7 @@ describe('notification/service/notification.consumer', () => {
       });
 
       expect(resolveStub.calledOnce).to.be.true;
-      expect(createStub.calledTwice).to.be.true;
+      expect(createStub.calledOnce).to.be.true;
       expect((mockNotificationService.sendToUser as sinon.SinonStub).callCount).to.equal(2);
       expect(userHandler.calledOnce).to.be.true;
     });

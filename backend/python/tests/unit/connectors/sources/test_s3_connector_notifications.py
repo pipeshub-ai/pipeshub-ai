@@ -67,4 +67,4 @@ async def test_s3_init_missing_config_calls_notify_error(
     await asyncio.sleep(0)
 
     notif.publish_notification.assert_awaited()
-    assert "not found" in notif.publish_notification.await_args.kwargs["payload"]["message"].lower()
+    assert "not found" in notif.publish_notification.await_args.kwargs["message"].lower()

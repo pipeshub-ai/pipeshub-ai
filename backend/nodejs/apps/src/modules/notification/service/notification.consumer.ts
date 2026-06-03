@@ -49,55 +49,62 @@ export class NotificationConsumer {
   ): Promise<void> {
     if (this.consumer.isConnected()) {
       await this.consumer.consume(async (message: StreamMessage<INotification>) => {
-        const event = toBrokerMessage(message.value);
-        if (!event) {
-          this.logger.warn('Notification event skipped: invalid orgId or type', {
-            value: message.value,
-          });
-          await handler(message);
-          return;
-        }
+        try {
+          const event = toBrokerMessage(message.value);
+          if (!event) {
+            this.logger.warn('Notification event skipped: invalid orgId or type', {
+              value: message.value,
+            });
+            return;
+          }
 
-        const orgOid = new mongoose.Types.ObjectId(String(event.orgId));
-        let recipientUserIds = await resolveNotificationRecipientUserIds(
-          orgOid,
-          event.recipientUserIds,
-          event.recipientRoles,
-        );
+          const orgOid = new mongoose.Types.ObjectId(String(event.orgId));
+          let recipientUserIds = await resolveNotificationRecipientUserIds(
+            orgOid,
+            event.recipientUserIds,
+            event.recipientRoles,
+          );
 
-        if (recipientUserIds.length === 0) {
-          this.logger.warn('Notification event skipped: no recipients', {
+          if (recipientUserIds.length === 0) {
+            this.logger.warn('Notification event skipped: no recipients', {
+              orgId: event.orgId,
+              type: event.type,
+            });
+            return;
+          }
+
+          const docs = recipientUserIds.map((userOid) => buildNotificationDocForUser(event, userOid));
+          const savedDocs = await Notifications.create(docs);
+
+          const savedIds: string[] = [];
+          const dispatchedUserIds: string[] = [];
+
+          for (const saved of savedDocs) {
+            const userId = String(saved.assignedTo);
+            const payload =
+              typeof (saved as { toObject?: () => object }).toObject === 'function'
+                ? (saved as { toObject: () => object }).toObject()
+                : saved;
+            this.notificationService.sendToUser(userId, 'newNotification', payload);
+            savedIds.push(String(saved._id));
+            dispatchedUserIds.push(userId);
+          }
+
+          this.logger.info('Notification saved and dispatched', {
             orgId: event.orgId,
             type: event.type,
+            recipientCount: dispatchedUserIds.length,
+            notificationIds: savedIds,
+            userIds: dispatchedUserIds,
           });
+        } catch (error) {
+          this.logger.error('Failed to process notification message', {
+            error: error instanceof Error ? error.message : String(error),
+            messageValue: message.value,
+          });
+        } finally {
           await handler(message);
-          return;
         }
-
-        const savedIds: string[] = [];
-        const dispatchedUserIds: string[] = [];
-
-        for (const userOid of recipientUserIds) {
-          const doc = buildNotificationDocForUser(event, userOid);
-          const saved = await Notifications.create(doc);
-          const userId = String(saved.assignedTo);
-          const payload =
-            typeof (saved as { toObject?: () => object }).toObject === 'function'
-              ? (saved as { toObject: () => object }).toObject()
-              : saved;
-          this.notificationService.sendToUser(userId, 'newNotification', payload);
-          savedIds.push(String(saved._id));
-          dispatchedUserIds.push(userId);
-        }
-
-        this.logger.info('Notification saved and dispatched', {
-          orgId: event.orgId,
-          type: event.type,
-          recipientCount: dispatchedUserIds.length,
-          notificationIds: savedIds,
-          userIds: dispatchedUserIds,
-        });
-        await handler(message);
       });
     } else {
       this.logger.error('Cannot consume notifications: MessageConsumer is not connected');
