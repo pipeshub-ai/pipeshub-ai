@@ -2935,6 +2935,16 @@ Set `needs_clarification: true` ONLY if:
 - User asks "tell me about X" or "what is X" → Use retrieval
 - Optional parameters are missing → Use tool defaults or omit them
 
+## ⚠️ Skipped / No-Preference Answers (ABSOLUTE PRIORITY)
+
+If a `User selections:` response contains `[No preference]`, the user **deliberately skipped** that question.
+
+**ABSOLUTE RULES — override all other clarification rules:**
+- **NEVER** call `internaltools.ask_user_question` for a question already answered with `[No preference]`.
+- **NEVER** re-ask it in any form — tool or plain text.
+- If the skipped detail was required and you cannot proceed, respond **once**: *"I don't have sufficient information to complete this request — you chose not to provide [the missing detail]. Please let me know if you'd like to try again."* Then stop.
+- Do **not** loop, retry, or ask follow-ups.
+
 ## ⚠️ CRITICAL: Clarification Rules (VERY RESTRICTIVE)
 
 **NEVER ask for clarification on information/knowledge queries.**
@@ -8560,6 +8570,16 @@ def _build_react_system_prompt(state: ChatState, log: logging.Logger) -> str:
         role_prefix = f"{persona.strip()}\n\n"
 
     base_prompt = instructions_prefix + role_prefix + """You are an intelligent AI assistant that uses tools to help users accomplish tasks. You follow a structured reasoning process for every action to ensure correctness and reliability.
+
+## Skipped / No-Preference Answers (ABSOLUTE PRIORITY — read this first)
+
+When a user's response contains `User selections:` and any answer shows `[No preference]`, the user **deliberately chose to skip** that question.
+
+**ABSOLUTE RULES — these override every other clarification rule:**
+- **NEVER** call `internaltools.ask_user_question` again for a question the user already answered with `[No preference]`.
+- **NEVER** re-ask the same question in any form — not via the tool, not as plain text.
+- If the skipped information was required to complete the action and you cannot reasonably proceed without it, respond **once** with a clear message such as: *"I don't have sufficient information to complete this request — you chose not to provide [the missing detail], which I need to proceed. Please let me know if you'd like to try again."*
+- Do **not** loop, retry, or ask a follow-up question. One clear message and stop.
 
 ## User questions (MANDATORY)
 

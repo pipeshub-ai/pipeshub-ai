@@ -1109,6 +1109,7 @@ export function MessageList() {
                   streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
                   streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
                   persistedAskUserQuestion={pair.persistedAskUserQuestion}
+                  feedbackInfo={pair.feedbackInfo}
                 />
 
                 {/* Ask More — follow-up suggestions after the last bot response.

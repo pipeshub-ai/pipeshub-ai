@@ -522,7 +522,7 @@ export interface ToolCallEntry {
 
 export interface ConversationMessage {
   _id: string;
-  messageType: 'user_query' | 'bot_response' | 'tool_call';
+  messageType: 'user_query' | 'bot_response' | 'tool_call' | 'error';
   content: string;
   contentFormat: 'MARKDOWN';
   citations: CitationApiResponse[];

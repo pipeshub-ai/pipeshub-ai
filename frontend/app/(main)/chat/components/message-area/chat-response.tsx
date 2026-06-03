@@ -63,6 +63,16 @@ function formatMessageTime(isoString: string): string {
   });
 }
 
+function buildQuestionCardReadAloudText(payload: AskUserQuestionPayload): string {
+  const parts: string[] = [];
+  if (payload.userIntent) parts.push(payload.userIntent);
+  payload.questions.forEach((q, i) => {
+    parts.push(`Question ${i + 1}: ${q.question}`);
+    q.options.forEach((opt) => parts.push(`Option: ${opt.label}`));
+  });
+  return parts.join('. ');
+}
+
 interface FeedbackInfo {
   value?: 'like' | 'dislike';
 }
@@ -101,6 +111,8 @@ interface ChatResponseProps {
   attachments?: AttachmentRef[];
   /** Persisted ask_user_question payload from a historical tool_call — renders read-only question card */
   persistedAskUserQuestion?: AskUserQuestionPayload;
+  /** Persisted feedback value from the backend — initialises the like/dislike button state */
+  feedbackInfo?: { value?: 'like' | 'dislike' };
 }
 
 export const ChatResponse = React.memo(function ChatResponse({
@@ -123,6 +135,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   citationMessageRowKey,
   createdAt,
   persistedAskUserQuestion,
+  feedbackInfo,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
@@ -502,6 +515,12 @@ export const ChatResponse = React.memo(function ChatResponse({
     });
   }, [messageId, question, isStreaming]);
 
+  // When the active question card owns this row, read aloud the question text
+  // and its options instead of the hidden bot response.
+  const speakContent = askQuestionMatchesRow && pendingAskUserQuestion
+    ? buildQuestionCardReadAloudText(pendingAskUserQuestion?.payload)
+    : displayContent;
+
   const shell = (
     <Box style={{ width: '100%' }}>
       {/* Question Header with hover edit icon */}
@@ -673,14 +692,15 @@ export const ChatResponse = React.memo(function ChatResponse({
       {/* Message Actions (feedback, copy, regenerate, model info) */}
       {activeTab === 'answer' && (
         <MessageActions
-          content={displayContent}
+          content={speakContent}
           citationMaps={effectiveCitationMaps}
           modelInfo={modelInfo}
           isStreaming={isStreaming}
           messageId={messageId}
           question={question}
-          isLastMessage={isLastMessage}
+          isLastMessage={isLastMessage && !askQuestionMatchesRow}
           appliedFilters={appliedFilters}
+          feedbackInfo={feedbackInfo}
         />
       )}
     </Box>

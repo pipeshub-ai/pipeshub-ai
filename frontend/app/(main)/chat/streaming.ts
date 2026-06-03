@@ -565,6 +565,7 @@ export async function streamMessageForSlot(
           streamingCitationMaps: null,
           pendingCollections: [],
           abortController: null,
+          pendingAskUserQuestion: null,
           messages: withStreamingErrorMessage(currentMessages, err),
         });
         if (isNewConversation) {
@@ -620,6 +621,7 @@ export async function streamMessageForSlot(
       streamingCitationMaps: null,
       pendingCollections: [],
       abortController: null,
+      pendingAskUserQuestion: null,
       messages: withStreamingErrorMessage(currentMessages, errorMessage),
     });
     if (isNewConversation) {

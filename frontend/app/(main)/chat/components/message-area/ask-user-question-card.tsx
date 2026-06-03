@@ -442,6 +442,7 @@ export function AskUserQuestionCard({
         </Flex>
 
         {currentQ.multiSelect ? (
+          <div style={{ maxHeight: '160px', overflowY: 'auto', paddingRight: 'var(--space-2)' }}>
           <Flex direction="column" gap="3">
             {augmentedOptions.map((opt) => {
               const checked = selectedIds.includes(opt.id);
@@ -483,11 +484,13 @@ export function AskUserQuestionCard({
               );
             })}
           </Flex>
+          </div>
         ) : (
           <RadioGroup.Root
             value={singleValue}
             onValueChange={(v) => handleRadioChange(currentQ, v)}
           >
+            <div style={{ maxHeight: '160px', overflowY: 'auto', paddingRight: 'var(--space-2)' }}>
             <Flex direction="column" gap="3">
               {augmentedOptions.map((opt) => {
                 const isSynthetic = opt.id === SOMETHING_ELSE_ID;
@@ -524,6 +527,7 @@ export function AskUserQuestionCard({
                 );
               })}
             </Flex>
+            </div>
           </RadioGroup.Root>
         )}
 

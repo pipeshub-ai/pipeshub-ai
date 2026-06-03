@@ -298,6 +298,21 @@ export function loadHistoricalMessages(
       continue;
     }
 
+    if (msg.messageType === 'error') {
+      toolPayload = null;
+      result.push({
+        id: msg._id,
+        role: 'assistant' as const,
+        content: [{ type: 'text' as const, text: msg.content || 'An error occurred. Please try again.' }],
+        metadata: {
+          custom: {
+            citationMaps: buildCitationMapsFromApi([]),
+          },
+        },
+      });
+      continue;
+    }
+
     if (msg.messageType === 'bot_response') {
       const capturedPayload = toolPayload;
       toolPayload = null;
@@ -315,6 +330,13 @@ export function loadHistoricalMessages(
         }
       }
 
+      const feedbackEntry = (msg.feedback as Array<{ isHelpful?: boolean }> | undefined)?.[0];
+      const feedbackInfo = feedbackEntry?.isHelpful === true
+        ? { value: 'like' as const }
+        : feedbackEntry?.isHelpful === false
+          ? { value: 'dislike' as const }
+          : undefined;
+
       result.push({
         id: msg._id,
         role: 'assistant' as const,
@@ -325,6 +347,7 @@ export function loadHistoricalMessages(
             citationMaps: buildCitationMapsFromApi(msg.citations || []),
             confidence: msg.confidence,
             modelInfo: msg.modelInfo,
+            ...(feedbackInfo ? { feedbackInfo } : {}),
             ...(capturedPayload && isAnswered
               ? { persistedAskUserQuestion: capturedPayload }
               : {}),
