@@ -70,6 +70,34 @@ describe('TeamsController', () => {
       expect(res.json.calledWith(mockTeam)).to.be.true;
     });
 
+    it('should enrich createdByUser.profilePicture when creating team', async () => {
+      const creatorId = '507f1f77bcf86cd799439011';
+      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 201,
+        data: {
+          id: 'team1',
+          name: 'Engineering',
+          createdByUser: { userId: creatorId, name: 'Alice', email: 'alice@test.com' },
+        },
+      });
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([
+            { userId: creatorId, pic: 'creatorPic', mimeType: 'image/jpeg' },
+          ]),
+        }),
+      } as any);
+
+      req.body = { name: 'Engineering', userIds: [] };
+
+      await controller.createTeam(req, res, next);
+
+      expect(res.status.calledWith(201)).to.be.true;
+      expect(res.json.firstCall.args[0].createdByUser.profilePicture).to.equal(
+        'data:image/jpeg;base64,creatorPic',
+      );
+    });
+
     it('should call next with BadRequestError when orgId is missing', async () => {
       req.user = { userId: '507f1f77bcf86cd799439011' };
 
@@ -118,6 +146,34 @@ describe('TeamsController', () => {
 
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledWith(mockTeam)).to.be.true;
+    });
+
+    it('should enrich createdByUser.profilePicture when getting team', async () => {
+      const creatorId = '507f1f77bcf86cd799439011';
+      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {
+          id: 'team1',
+          name: 'Engineering',
+          createdByUser: { userId: creatorId, name: 'Alice', email: 'alice@test.com' },
+        },
+      });
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([
+            { userId: creatorId, pic: 'teamCreatorPic', mimeType: 'image/png' },
+          ]),
+        }),
+      } as any);
+
+      req.params.teamId = 'team1';
+
+      await controller.getTeam(req, res, next);
+
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.firstCall.args[0].createdByUser.profilePicture).to.equal(
+        'data:image/png;base64,teamCreatorPic',
+      );
     });
 
     it('should throw BadRequestError when orgId is missing', async () => {
@@ -174,6 +230,39 @@ describe('TeamsController', () => {
 
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledWith(mockTeams)).to.be.true;
+    });
+
+    it('should enrich createdByUser.profilePicture when listing teams', async () => {
+      const creatorId = '507f1f77bcf86cd799439012';
+      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {
+          teams: [
+            {
+              id: 'team1',
+              name: 'Team 1',
+              createdByUser: { userId: creatorId, name: 'Bob', email: 'bob@test.com' },
+            },
+          ],
+          total: 1,
+        },
+      });
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([
+            { userId: creatorId, pic: 'listPic', mimeType: 'image/jpeg' },
+          ]),
+        }),
+      } as any);
+
+      req.query = { page: '1', limit: '10' };
+
+      await controller.listTeams(req, res, next);
+
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.firstCall.args[0].teams[0].createdByUser.profilePicture).to.equal(
+        'data:image/jpeg;base64,listPic',
+      );
     });
 
     it('should call next with BadRequestError when orgId is missing', async () => {

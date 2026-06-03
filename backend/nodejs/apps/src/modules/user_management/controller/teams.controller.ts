@@ -249,17 +249,16 @@ export class TeamsController {
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (!aiResponse) {
-        res.status(HTTP_STATUS.INTERNAL_SERVER).json({ message: 'No response from AI service' });
-        return;
+        throw new InternalServerError('No response from AI service');
       }
       if (aiResponse.statusCode !== HTTP_STATUS.OK) {
-        res.status(aiResponse.statusCode).json(aiResponse.data);
-        return;
+        throw handleBackendError(aiResponse, 'get team');
       }
       const teamData = aiResponse.data as TeamResponse | undefined;
-      if (teamData) {
-        await enrichTeamsProfilePictures(orgId, [teamData]);
+      if (!teamData) {
+        throw new NotFoundError('Getting team failed: Team not found');
       }
+      await enrichTeamsProfilePictures(orgId, [teamData]);
       res.status(HTTP_STATUS.OK).json(teamData);
     } catch (error: any) {
       this.logger.error('Error getting team', {
@@ -323,15 +322,16 @@ export class TeamsController {
       const aiCommand = new AIServiceCommand<TeamsListResponse>(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (!aiResponse) {
-        res.status(HTTP_STATUS.INTERNAL_SERVER).json({ message: 'No response from AI service' });
-        return;
+        throw new InternalServerError('No response from AI service');
       }
       if (aiResponse.statusCode !== HTTP_STATUS.OK) {
-        res.status(aiResponse.statusCode).json(aiResponse.data);
-        return;
+        throw handleBackendError(aiResponse, 'get teams');
       }
       const teamsData = aiResponse.data as TeamsListResponse | undefined;
-      const teams = teamsData?.teams ?? [];
+      if (!teamsData) {
+        throw new NotFoundError('Getting teams failed: Teams not found');
+      }
+      const teams = teamsData.teams ?? [];
       if (teams.length > 0) {
         await enrichTeamsProfilePictures(orgId, teams);
       }
@@ -643,16 +643,21 @@ export class TeamsController {
       const aiCommand = new AIServiceCommand<TeamsListResponse>(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (!aiResponse) {
-        res.status(HTTP_STATUS.INTERNAL_SERVER).json({ message: 'No response from AI service' });
-        return;
+        throw new InternalServerError('No response from AI service');
       }
       if (aiResponse.statusCode !== HTTP_STATUS.OK) {
-        res.status(aiResponse.statusCode).json(aiResponse.data);
+        res.status(HTTP_STATUS.OK).json({
+          teams: [],
+          pagination: { page: 1, limit: 10, total: 0, pages: 0 },
+        });
         return;
       }
-      const teamsData = aiResponse.data;
+      const teamsData = aiResponse.data as TeamsListResponse | undefined;
+      if (!teamsData) {
+        throw new NotFoundError('Getting user created teams failed: Teams not found');
+      }
 
-      const teams = teamsData?.teams ?? [];
+      const teams = teamsData.teams ?? [];
       if (teams.length > 0) {
         await enrichTeamsProfilePictures(orgId, teams);
       }
