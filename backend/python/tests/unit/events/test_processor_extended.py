@@ -103,7 +103,7 @@ class TestProcessImageNonDocError:
         )
 
         with patch(
-            "app.events.processor.get_llm", new_callable=AsyncMock
+            "app.events.processor.get_llm_for_role", new_callable=AsyncMock
         ) as mock_llm, patch(
             "app.events.processor.get_embedding_model_config", new_callable=AsyncMock
         ) as mock_emb:
@@ -809,7 +809,7 @@ class TestProcessDelimitedNonUnicodeError:
         )
         proc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
             events = await _collect_events(
@@ -844,7 +844,7 @@ class TestProcessDelimitedOuterException:
             return_value=_mock_record_dict(recordName="test.csv")
         )
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
             with pytest.raises(RuntimeError, match="pipeline exploded"):
@@ -1291,7 +1291,7 @@ class TestProcessDelimitedTSV:
             return_value=_mock_record_dict(recordName="test.tsv")
         )
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm, \
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.IndexingPipeline") as MockPipeline:
             mock_llm.return_value = (MagicMock(), {})
             MockPipeline.return_value.apply = AsyncMock()
@@ -1454,7 +1454,7 @@ class TestCreateTransformContextCalledByProcessMethods:
             return_value=_mock_record_dict(recordName="test.xlsx")
         )
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm, \
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch.object(proc, "_create_transform_context", wraps=proc._create_transform_context) as mock_ctx:
             mock_llm.return_value = (MagicMock(), {})

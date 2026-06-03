@@ -276,7 +276,7 @@ class TestProcessExcelDocument:
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="test.xlsx"))
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm, \
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch("app.events.processor.TransformContext"):
             mock_llm.return_value = (MagicMock(), {})
@@ -298,7 +298,7 @@ class TestProcessExcelDocument:
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="empty.xlsx"))
         proc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
             events = await _collect_events(
@@ -318,7 +318,7 @@ class TestProcessExcelDocument:
 
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
             events = await _collect_events(
@@ -474,7 +474,7 @@ class TestProcessImage:
             recordName="photo.png", mimeType="image/png",
         ))
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm, \
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb, \
              patch("app.events.processor.get_extension_from_mimetype", return_value="png"), \
              patch("app.events.processor.IndexingPipeline") as MockPipeline, \
@@ -500,7 +500,7 @@ class TestProcessImage:
         ))
         proc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm, \
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             mock_emb.return_value = {"isMultimodal": False}
@@ -550,7 +550,7 @@ class TestProcessDelimitedDocument:
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="test.csv"))
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm, \
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch("app.events.processor.TransformContext"):
             mock_llm.return_value = (MagicMock(), {})
@@ -573,7 +573,7 @@ class TestProcessDelimitedDocument:
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="empty.csv"))
         proc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
             events = await _collect_events(
@@ -595,7 +595,7 @@ class TestProcessDelimitedDocument:
 
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
             events = await _collect_events(
@@ -619,7 +619,7 @@ class TestProcessDelimitedDocument:
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="test.tsv"))
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm, \
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch("app.events.processor.TransformContext"):
             mock_llm.return_value = (MagicMock(), {})
@@ -1506,7 +1506,7 @@ class TestProcessImageAdditional:
             recordName="photo.png", mimeType="image/png",
         ))
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm, \
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb, \
              patch("app.events.processor.get_extension_from_mimetype", return_value="png"), \
              patch("app.events.processor.IndexingPipeline") as MockPipeline, \
@@ -1532,7 +1532,7 @@ class TestProcessImageAdditional:
 
         proc.graph_provider.get_document = AsyncMock(return_value=record_no_mime)
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm, \
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
             mock_emb.return_value = {"isMultimodal": False}
@@ -1549,7 +1549,7 @@ class TestProcessImageAdditional:
             recordName="photo.tiff", mimeType="image/tiff",
         ))
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm, \
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb, \
              patch("app.events.processor.get_extension_from_mimetype", return_value="tiff"):
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
@@ -2113,7 +2113,7 @@ class TestProcessImageBatchUpsertFailure:
         ))
         proc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=False)
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm, \
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             mock_emb.return_value = {"isMultimodal": False}
@@ -2304,7 +2304,7 @@ class TestProcessExcelDocumentAdditional:
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="bad.xlsx"))
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
             with pytest.raises(RuntimeError, match="corrupt excel"):
                 await _collect_events(
@@ -2328,7 +2328,7 @@ class TestProcessImageAdditional:
             recordName="photo.png", mimeType="image/png",
         ))
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm, \
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb, \
              patch("app.events.processor.get_extension_from_mimetype", return_value="png"), \
              patch("app.events.processor.IndexingPipeline") as MockPipeline, \

@@ -151,6 +151,38 @@ for _pkg in _OPTIONAL_PACKAGES:
     _ensure_module(_pkg)
 
 
+# ---------------------------------------------------------------------------
+# Inject a minimal Document stub into the mocked langchain_core.documents so
+# that production code calling Document(page_content=..., metadata=...) and
+# tests using isinstance(c, Document) / c.page_content both work correctly
+# even when langchain_core is not installed.
+# ---------------------------------------------------------------------------
+
+class _DocumentStub:
+    """Minimal langchain_core Document stub for tests."""
+
+    def __init__(self, page_content: str = "", metadata=None, **kwargs):
+        self.page_content = page_content
+        self.metadata = metadata if metadata is not None else {}
+
+    def __repr__(self) -> str:
+        return f"Document(page_content={self.page_content!r})"
+
+
+def _inject_document_stub() -> None:
+    import types
+
+    for mod_name in ("langchain_core.documents", "langchain_core.documents.base"):
+        if mod_name not in sys.modules:
+            mod = types.ModuleType(mod_name)
+            mod.__path__ = []  # type: ignore[attr-defined]
+            sys.modules[mod_name] = mod
+        sys.modules[mod_name].Document = _DocumentStub  # type: ignore[attr-defined]
+
+
+_inject_document_stub()
+
+
 @pytest.fixture
 def logger():
     """Provide a silent logger for tests."""

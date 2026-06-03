@@ -720,7 +720,7 @@ class TestIndexDocuments:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(
                 BlocksContainer(blocks=[], block_groups=[]),
@@ -747,7 +747,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="text", format="txt", data="Hello world", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -774,7 +774,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="text", format="txt", data="First sentence. Second sentence.", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -794,7 +794,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="image", format="bin", data={"uri": "base64data"}, comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -817,7 +817,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="image", format="bin", data={"uri": "base64data"}, comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -837,7 +837,7 @@ class TestIndexDocuments:
         bg.data = {"table_summary": "Summary of the table"}
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -859,7 +859,7 @@ class TestIndexDocuments:
         )
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -877,7 +877,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="divider", format="txt", data="test", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -895,7 +895,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="heading", format="txt", data="Main Heading", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -923,7 +923,7 @@ class TestIndexDocuments:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.side_effect = RuntimeError("llm fail")
             with pytest.raises(IndexingError, match="Failed to get LLM"):
                 await vs.index_documents(
@@ -944,7 +944,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="text", format="txt", data="Hello", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             with pytest.raises(IndexingError, match="Unexpected error during indexing"):
                 await vs.index_documents(container, "org-1", "rec-1", "vr-1")
@@ -961,7 +961,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="paragraph", format="txt", data="A paragraph", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -979,7 +979,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="quote", format="txt", data="A quote", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -997,7 +997,7 @@ class TestIndexDocuments:
         block = Block(index=0, type="table_cell", format="txt", data={"cell": "value"}, comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1649,7 +1649,7 @@ class TestIndexDocumentsAdditional:
         )
         container = BlocksContainer(blocks=[img_block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1676,7 +1676,7 @@ class TestIndexDocumentsAdditional:
         )
         container = BlocksContainer(blocks=[img_block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1702,7 +1702,7 @@ class TestIndexDocumentsAdditional:
         )
         container = BlocksContainer(blocks=[table_row], block_groups=[table_bg])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1718,7 +1718,7 @@ class TestIndexDocumentsAdditional:
 
         container = BlocksContainer(blocks=[], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1748,7 +1748,7 @@ class TestIndexDocumentsAdditional:
             topics=["onboarding"],
         )
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(
                 container,
@@ -1798,7 +1798,7 @@ class TestIndexDocumentsAdditional:
 
         container = BlocksContainer(blocks=[], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock, side_effect=Exception("LLM failed")):
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock, side_effect=Exception("LLM failed")):
             with pytest.raises(IndexingError, match="Failed to get LLM"):
                 await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1814,7 +1814,7 @@ class TestIndexDocumentsAdditional:
         block = Block(index=0, type="image", format="base64", data={"no_uri": True}, comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -1833,7 +1833,7 @@ class TestIndexDocumentsAdditional:
         block = Block(index=0, type="text", format="txt", data="Hello world", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             with pytest.raises(IndexingError, match="Unexpected error during indexing"):
                 await vs.index_documents(container, "org-1", "rec-1", "vr-1")
@@ -2205,7 +2205,7 @@ class TestIndexDocumentsImageDescription:
         block = Block(index=0, type="image", format="bin", data={"uri": "base64data"}, comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -2225,7 +2225,7 @@ class TestIndexDocumentsImageDescription:
         bg.data = {"table_summary": "Revenue data by quarter"}
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -2245,7 +2245,7 @@ class TestIndexDocumentsImageDescription:
         block = Block(index=0, type="textsection", format="txt", data="A text section", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
@@ -2278,7 +2278,7 @@ class TestRecordSummaryEdgeCases:
             categories=[],
         )
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             await vs.index_documents(
                 container, "org-1", "rec-1", "vr-1", record=record,
@@ -2310,7 +2310,7 @@ class TestRecordSummaryEdgeCases:
         record = MagicMock()
         record.semantic_metadata = None
 
-        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.modules.transformers.vectorstore.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             await vs.index_documents(
                 container, "org-1", "rec-1", "vr-1", record=record,

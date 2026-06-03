@@ -384,7 +384,7 @@ class TestProcessImage:
             "recordType": "FILE",
         }
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             with patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
                 mock_emb.return_value = {"isMultimodal": False}
@@ -850,7 +850,7 @@ class TestProcessExcelDocument:
         mock_parser = MagicMock()
         proc.parsers["xlsx"] = mock_parser
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
             events = await _collect(
@@ -879,7 +879,7 @@ class TestProcessExcelDocument:
         mock_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc.parsers["xlsx"] = mock_parser
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
             events = await _collect(
@@ -1298,7 +1298,7 @@ class TestProcessDelimitedDocument:
         mock_parser.read_raw_rows.return_value = []
         proc.parsers["csv"] = mock_parser
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
             events = await _collect(
@@ -1322,7 +1322,7 @@ class TestProcessDelimitedDocument:
         mock_parser.read_raw_rows.return_value = [["a", "b"]]
         proc.parsers["csv"] = mock_parser
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
             events = await _collect(
@@ -1349,7 +1349,7 @@ class TestProcessDelimitedDocument:
         mock_parser.get_blocks_from_csv_with_multiple_tables = AsyncMock(return_value=MagicMock())
         proc.parsers["csv"] = mock_parser
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
             with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
                 mock_pipeline.return_value = AsyncMock()
@@ -1377,7 +1377,7 @@ class TestProcessDelimitedDocument:
         mock_parser.read_raw_rows.return_value = []
         proc.parsers["tsv"] = mock_parser
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
             events = await _collect(
@@ -1414,7 +1414,7 @@ class TestProcessImageSuccess:
         mock_parser.parse_image.return_value = MagicMock()
         proc.parsers[".png"] = mock_parser
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
             with patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
                 mock_emb.return_value = {"isMultimodal": True}
@@ -1451,7 +1451,7 @@ class TestProcessImageAdditional:
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = None
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
             with patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
                 mock_emb.return_value = {"isMultimodal": True}
@@ -1467,7 +1467,7 @@ class TestProcessImageAdditional:
         gp.get_document.return_value = _base_record_dict(mimeType="image/png")
         gp.batch_upsert_nodes.return_value = True
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             with patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
                 mock_emb.return_value = {"isMultimodal": False}
@@ -1484,7 +1484,7 @@ class TestProcessImageAdditional:
         gp.get_document.return_value = _base_record_dict(mimeType="image/png")
         gp.batch_upsert_nodes.return_value = False
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             with patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
                 mock_emb.return_value = {"isMultimodal": False}
@@ -1498,7 +1498,7 @@ class TestProcessImageAdditional:
         record = _base_record_dict(mimeType=None)
         gp.get_document.return_value = record
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
             with patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
                 mock_emb.return_value = {"isMultimodal": True}
@@ -1512,7 +1512,7 @@ class TestProcessImageAdditional:
         gp.get_document.return_value = _base_record_dict(mimeType="image/png")
         proc.parsers = {}  # No parsers
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
             with patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
                 mock_emb.return_value = {"isMultimodal": True}
@@ -2087,7 +2087,7 @@ class TestProcessExcelDocument:
         mock_parser = MagicMock()
         proc.parsers[ExtensionTypes.XLSX.value] = mock_parser
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
             events = await _collect(proc.process_excel_document(
                 "test.xlsx", "rec-1", 1, "upload", "org-1", b"", "vr-1"
@@ -2108,7 +2108,7 @@ class TestProcessExcelDocument:
         mock_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc.parsers[ExtensionTypes.XLSX.value] = mock_parser
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
             with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
                 mock_pipeline.return_value = AsyncMock()
@@ -2131,7 +2131,7 @@ class TestProcessExcelDocument:
         mock_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc.parsers[ExtensionTypes.XLSX.value] = mock_parser
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
             events = await _collect(proc.process_excel_document(
                 "test.xlsx", "rec-1", 1, "upload", "org-1", b"excel_data", "vr-1"
