@@ -31,6 +31,7 @@ import {
   createAgentSchema,
   getWebSearchProviderUsageRequestSchema,
   getWebSearchProviderUsageResponseSchema,
+  getModelUsageRequestSchema,
   updateAgentSchema,
   listAgentsQuerySchema,
 } from '../../../../src/modules/enterprise_search/validators/es_validators'
@@ -342,6 +343,39 @@ describe('enterprise_search/validators/es_validators', () => {
     it('should reject unexpected query params', () => {
       const result = getWebSearchProviderUsageRequestSchema.safeParse({
         params: { provider: 'tavily' },
+        query: { page: '1' },
+      })
+
+      expect(result.success).to.be.false
+    })
+  })
+
+  describe('getModelUsageRequestSchema', () => {
+    it('should trim a valid model_key path param', () => {
+      const result = getModelUsageRequestSchema.safeParse({
+        params: { model_key: '  f3a4b5b6-5b6c-4e85-9097-3202cfe696fc  ' },
+        query: {},
+      })
+
+      expect(result.success).to.be.true
+      expect(result.data?.params.model_key).to.equal(
+        'f3a4b5b6-5b6c-4e85-9097-3202cfe696fc',
+      )
+      expect(result.data?.query).to.deep.equal({})
+    })
+
+    it('should reject an empty model_key path param', () => {
+      const result = getModelUsageRequestSchema.safeParse({
+        params: { model_key: '   ' },
+        query: {},
+      })
+
+      expect(result.success).to.be.false
+    })
+
+    it('should reject unexpected query params', () => {
+      const result = getModelUsageRequestSchema.safeParse({
+        params: { model_key: 'model-1' },
         query: { page: '1' },
       })
 

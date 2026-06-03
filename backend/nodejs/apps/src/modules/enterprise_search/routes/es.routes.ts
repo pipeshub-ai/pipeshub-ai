@@ -97,6 +97,7 @@ import {
   deleteAgentSchema,
   getAgentParamsSchema,
   getWebSearchProviderUsageRequestSchema,
+  getModelUsageRequestSchema,
   listAgentsQuerySchema,
   getAgentConversationByIdSchema,
 } from '../validators/es_validators';
@@ -855,6 +856,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(getModelUsageRequestSchema),
     getModelUsage(appConfig),
   );
 

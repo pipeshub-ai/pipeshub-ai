@@ -147,6 +147,12 @@ const webSearchProviderParam = {
     .min(1, { message: 'Provider is required' })
     .transform((value) => value.toLowerCase()),
 };
+const modelUsageParam = {
+  model_key: z
+    .string()
+    .trim()
+    .min(1, { message: 'Model key is required' }),
+};
 
 // ---------------------------------------------------------------------------
 // Enterprise search: create
@@ -483,6 +489,11 @@ export const getAgentParamsSchema = z.object({
 
 export const getWebSearchProviderUsageRequestSchema = z.object({
   params: z.object(webSearchProviderParam),
+  query: z.object({}).strict(),
+});
+
+export const getModelUsageRequestSchema = z.object({
+  params: z.object(modelUsageParam),
   query: z.object({}).strict(),
 });
 

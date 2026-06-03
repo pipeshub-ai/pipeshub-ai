@@ -625,7 +625,7 @@ describe('Enterprise Search Routes', () => {
 
       const modelUsageRoute = routes.find((r: any) => r.path === '/model-usage/:model_key' && r.methods.get)
       expect(modelUsageRoute).to.exist
-      expect(modelUsageRoute?.stack.length ?? 0).to.be.greaterThanOrEqual(4)
+      expect(modelUsageRoute?.stack.length ?? 0).to.be.greaterThanOrEqual(5)
     })
 
     it('agent router should register web search usage route with validation middleware', () => {

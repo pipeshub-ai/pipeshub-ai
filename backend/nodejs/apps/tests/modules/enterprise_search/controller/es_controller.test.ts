@@ -6050,24 +6050,6 @@ describe('Enterprise Search Controller', () => {
       expect(next.called).to.be.false
     })
 
-    it('should call next with BadRequestError when model_key is missing', async () => {
-      const handler = getModelUsage(createMockAppConfig())
-      const req = createMockRequest({
-        params: {},
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-      const err = next.firstCall.args[0]
-      expect(err).to.exist
-      expect(err.statusCode).to.equal(400)
-      expect(err.message).to.include('Model key is required')
-    })
-
     it('should call next when AI backend throws', async () => {
       const handler = getModelUsage(createMockAppConfig())
       const req = createMockRequest({

@@ -25363,15 +25363,31 @@ paths:
             Validation failures use HTTP 400 with a `Validation failed` message;
             handler errors may include `Provider is required` or
             `Organization ID is required`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
             Forbidden. OAuth access tokens without the `agent:read` scope receive
             HTTP 403 (`Insufficient scope. Required: agent:read`). Regular JWT
             bearer tokens are not subject to per-route OAuth scope checks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error while checking web search provider usage
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/model-usage/{model_key}:
     get:

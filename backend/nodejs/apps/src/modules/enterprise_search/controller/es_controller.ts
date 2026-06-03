@@ -5126,10 +5126,7 @@ export const getModelUsage =
       if (!orgId) {
         throw new BadRequestError('Organization ID is required');
       }
-      const { model_key: modelKey } = req.params;
-      if (!modelKey) {
-        throw new BadRequestError('Model key is required');
-      }
+      const { model_key: modelKey } = req.params as { model_key: string };
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/model-usage/${encodeURIComponent(modelKey)}`,
         method: HttpMethod.GET,
