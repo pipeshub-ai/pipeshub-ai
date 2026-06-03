@@ -100,6 +100,12 @@ const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({
   maxImages: 3,
 });
 
+const DUCKDUCKGO_WEB_SEARCH_PROVIDER = Object.freeze({
+  provider: 'duckduckgo',
+  providerKey: 'duckduckgo',
+  configuration: {},
+});
+
 const normalizeWebSearchSettings = (
   settings?: Partial<{ includeImages: unknown; maxImages: unknown }>,
 ) => {
@@ -3919,7 +3925,7 @@ export const getWebSearchProviders =
       if (!encryptedWebSearchConfig) {
         res.status(200).json({
           status: 'success',
-          providers: [],
+          providers: [{ ...DUCKDUCKGO_WEB_SEARCH_PROVIDER, isDefault: true }],
           settings: DEFAULT_WEB_SEARCH_SETTINGS,
           message: 'No web search providers found',
         });
@@ -3933,9 +3939,16 @@ export const getWebSearchProviders =
         ).decrypt(encryptedWebSearchConfig),
       ) as WebSearchConfig;
 
-      const providers = Array.isArray(webSearchConfig.providers)
+      const storedProviders = Array.isArray(webSearchConfig.providers)
         ? webSearchConfig.providers
         : [];
+      const providers = [
+        {
+          ...DUCKDUCKGO_WEB_SEARCH_PROVIDER,
+          isDefault: !storedProviders.some((p) => p.isDefault),
+        },
+        ...storedProviders,
+      ];
       const settings = normalizeWebSearchSettings(webSearchConfig.settings);
 
       res.status(200).json({
