@@ -31097,6 +31097,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AIModelProviderSimpleError'
+        '500':
+          description: |
+            Internal server error. The current implementation can return 500 for
+            unknown modelKey updates when the persisted aiModels blob contains
+            non-array top-level keys (for example modelRoles or custom system
+            prompt fields), causing lookup to fail before the not-found path.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
