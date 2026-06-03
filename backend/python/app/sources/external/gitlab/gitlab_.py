@@ -605,6 +605,25 @@ class GitLabDataSource:
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
 
+    def compare_commits(
+        self,
+        project_id: int | str,
+        from_sha: str,
+        to_sha: str,
+        straight: bool = False,
+    ) -> GitLabResponse:
+        """Compare two refs and return changed file diffs.
+
+        Wraps ``GET /projects/:id/repository/compare``. Response includes
+        ``diffs``, ``commits``, and related fields.
+        """
+        try:
+            p = self._project(project_id)
+            result = p.repository_compare(from_sha, to_sha, straight=straight)
+            return GitLabResponse(success=True, data=result)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
     def list_commits_for_path(
         self,
         project_id: int | str,
@@ -1226,6 +1245,7 @@ class GitLabDataSource:
         self,
         project_id: int | str,
         ref: str | None = None,
+        path: str | None = None,
         recursive: bool | None = None,
         get_all: bool | None = None,
     ) -> GitLabResponse:
@@ -1234,6 +1254,7 @@ class GitLabDataSource:
             p = self._sdk.projects.get(project_id)
             payload = self._params(
                 ref=ref,
+                path=path,
                 recursive=recursive,
                 get_all=get_all,
             )
