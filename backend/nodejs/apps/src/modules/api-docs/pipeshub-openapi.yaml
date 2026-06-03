@@ -31229,14 +31229,13 @@ paths:
       description: |
         Retrieve all configured web search providers and current web search settings.
 
-        **Authentication:** Session JWT or OAuth 2.0 access token via `Authorization: Bearer`
-        (same header for both; see `bearerAuth` / `oauth2` security schemes). The gateway does
-        not enforce OAuth scopes or admin role on this route.
+        **Authentication:** Session JWT or OAuth 2.0 access token via `Authorization: Bearer`.
+        OAuth tokens must include the `config:read` scope. Admin role is not required.
       operationId: getWebSearchProviders
-      x-sdk: true
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: Web search providers and settings retrieved
@@ -31246,6 +31245,12 @@ paths:
                 $ref: '#/components/schemas/WebSearchProvidersResponse'
         '401':
           description: Missing or invalid Bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden — OAuth token missing `config:read` scope
           content:
             application/json:
               schema:
