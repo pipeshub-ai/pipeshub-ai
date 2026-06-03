@@ -1110,6 +1110,7 @@
       "toastDefaultError": "Failed to set default model",
       "toastDeleted": "Deleted {{name}}",
       "toastDeleteError": "Failed to delete model",
+      "toastSentenceTransformerDownloading": "The model may take a few minutes to become available as it downloads in the background",
       "configAddModel": "Add Model",
       "configUpdateModel": "Update Model",
       "configFillRequiredTooltip": "Fill in all required fields",

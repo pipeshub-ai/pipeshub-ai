@@ -1111,6 +1111,7 @@
       "toastDefaultError": "डिफ़ॉल्ट मॉडल सेट नहीं हो सका",
       "toastDeleted": "{{name}} हटाया गया",
       "toastDeleteError": "मॉडल हटाया नहीं जा सका",
+      "toastSentenceTransformerDownloading": "मॉडल बैकग्राउंड में डाउनलोड हो रहा है, उपलब्ध होने में कुछ मिनट लग सकते हैं",
       "configAddModel": "मॉडल जोड़ें",
       "configUpdateModel": "मॉडल अपडेट करें",
       "configFillRequiredTooltip": "सभी आवश्यक फ़ील्ड भरें",

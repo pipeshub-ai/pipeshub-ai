@@ -1110,6 +1110,7 @@
       "toastDefaultError": "No se pudo establecer el modelo predeterminado",
       "toastDeleted": "Se eliminó {{name}}",
       "toastDeleteError": "No se pudo eliminar el modelo",
+      "toastSentenceTransformerDownloading": "El modelo puede tardar unos minutos en estar disponible mientras se descarga en segundo plano",
       "configAddModel": "Añadir modelo",
       "configUpdateModel": "Actualizar modelo",
       "configFillRequiredTooltip": "Rellene todos los campos obligatorios",

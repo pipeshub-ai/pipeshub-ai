@@ -20,7 +20,6 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.service import config_node_constants
-from app.exceptions.embedding_exceptions import EmbeddingModelCreationError
 from app.exceptions.fastapi_responses import Status
 from app.models.blocks import GroupType
 from app.modules.transformers.blob_storage import BlobStorage
@@ -92,13 +91,11 @@ class RetrievalService:
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
         self.logger.info(f"Retrieval service initialized with collection name: {self.collection_name}")
-        self.embedding_model = None
-        self.embedding_size = None
-        self.embedding_model_instance = None
-        # Serialize concurrent embedding model loads so we only build the model
-        # once even if multiple requests race during warmup. Safe to create at
-        # import-time on Python 3.10+ (no running loop required).
-        self._embedding_model_lock = asyncio.Lock()
+        # NOTE: the dense embedding model is intentionally NOT cached on the
+        # instance. It is re-resolved from configuration on every search so the
+        # query service always embeds queries with the exact same model the
+        # indexing pipeline used to write the collection. Caching it here risks
+        # serving a stale model after the embedding configuration changes.
 
     async def _ensure_sparse_embeddings(self) -> FastEmbedSparse:
         """Lazily initialise FastEmbedSparse in a worker thread."""
@@ -149,73 +146,41 @@ class RetrievalService:
             return None
 
     async def get_embedding_model_instance(self, use_cache: bool = False) -> Embeddings | None:
+        """Resolve the dense embedding model fresh from configuration on every call.
+
+        The query service MUST embed queries with the exact same model the indexing
+        pipeline used to write the collection — otherwise the query vectors won't
+        match the stored vectors and Qdrant rejects the search with a dimension
+        error. We therefore do not cache the model instance and re-read the config
+        each time, resolving the model identically to the indexing pipeline
+        (``app/modules/transformers/vectorstore.py``): prefer the ``isDefault``
+        embedding config, fall back to the first one, and only use the built-in
+        default model when no embedding config is present.
+        """
         try:
-            embedding_model = await self.get_current_embedding_model_name(use_cache)
+            ai_models = await self.config_service.get_config(
+                config_node_constants.AI_MODELS.value, use_cache=use_cache
+            )
+            embedding_configs = (ai_models or {}).get("embedding")
 
-            # Fast path: same model already loaded, no lock needed.
-            if self.embedding_model == embedding_model and self.embedding_model_instance is not None:
-                return self.embedding_model_instance
+            if not embedding_configs:
+                self.logger.info("No embedding config found; using default embedding model")
+                # Construction may do blocking I/O, so offload to a worker thread.
+                return await asyncio.to_thread(get_default_embedding_model)
 
-            # Serialize the (potentially very slow) model load so concurrent
-            # callers don't all download / instantiate the embedding model.
-            async with self._embedding_model_lock:
-                # Re-check after acquiring the lock in case another coroutine
-                # already finished loading while we were waiting.
-                if self.embedding_model == embedding_model and self.embedding_model_instance is not None:
-                    return self.embedding_model_instance
-
-                try:
-                    if not embedding_model or embedding_model == DEFAULT_EMBEDDING_MODEL:
-                        self.logger.info("Using default embedding model")
-                        effective_model = DEFAULT_EMBEDDING_MODEL
-                        # HuggingFaceEmbeddings(...) may download ~1GB+ and load a
-                        # transformer, which blocks the event loop. Offload to a
-                        # worker thread so the server stays responsive.
-                        dense_embeddings = await asyncio.to_thread(get_default_embedding_model)
-                    else:
-                        self.logger.info(
-                            f"Using embedding model: {getattr(embedding_model, 'model', embedding_model)}"
-                        )
-                        ai_models = await self.config_service.get_config(
-                            config_node_constants.AI_MODELS.value
-                        )
-                        dense_embeddings = None
-                        effective_model = embedding_model
-                        if ai_models["embedding"]:
-                            self.logger.info(
-                                "No default embedding model found, using first available provider"
-                            )
-                            configs = ai_models["embedding"]
-                            selected_config = next(
-                                (c for c in configs if c.get("isDefault", False)), None
-                            )
-                            if not selected_config and configs:
-                                selected_config = configs[0]
-
-                            if selected_config:
-                                # Provider clients (Bedrock/OpenAI/etc.) may also do
-                                # blocking I/O on construction, so offload here too.
-                                dense_embeddings = await asyncio.to_thread(
-                                    get_embedding_model,
-                                    selected_config["provider"],
-                                    selected_config,
-                                )
-                                self.logger.info(
-                                    f"Embedding provider: {selected_config['provider']}"
-                                )
-
-                except Exception as e:
-                    self.logger.error(f"Error creating embedding model: {str(e)}")
-                    raise EmbeddingModelCreationError(
-                        f"Failed to create embedding model: {str(e)}"
-                    ) from e
-
-                self.logger.info(
-                    f"Using embedding model: {getattr(effective_model, 'model', effective_model)}"
-                )
-                self.embedding_model = embedding_model
-                self.embedding_model_instance = dense_embeddings
-                return dense_embeddings
+            # Mirror the indexing pipeline's selection so query vectors match the
+            # vectors written to the collection.
+            selected_config = next(
+                (c for c in embedding_configs if c.get("isDefault", False)),
+                embedding_configs[0],
+            )
+            provider = selected_config["provider"]
+            self.logger.info(f"Using embedding provider: {provider}")
+            # Provider clients (Bedrock/OpenAI/etc.) may do blocking I/O on
+            # construction, so offload to a worker thread.
+            return await asyncio.to_thread(
+                get_embedding_model, provider, selected_config
+            )
         except Exception as e:
             self.logger.error(f"Error getting embedding model: {str(e)}")
             return None
@@ -247,6 +212,60 @@ class RetrievalService:
             return dense_embeddings.model
         else:
             return None
+
+    async def _ensure_collection_dimensions(self, dense_embeddings: Embeddings) -> None:
+        """Verify the Qdrant collection's dense vector dimension matches the current
+        embedding model.  If there is a mismatch **and** the collection is empty,
+        drop it and recreate with the correct size so queries don't fail with a
+        dimension error.  If the collection contains data, log an error — the user
+        must re-index."""
+        try:
+            collection_info = await self.vector_db_service.get_collection(self.collection_name)
+            current_dim = collection_info.config.params.vectors["dense"].size
+        except Exception:
+            return
+
+        # Probe the model fresh each call — the model instance is no longer cached,
+        # so the required dimension must reflect the currently configured model.
+        sample_embedding = await dense_embeddings.aembed_query("dimension check")
+        required_dim = len(sample_embedding)
+
+        if current_dim == required_dim:
+            return
+
+        point_count = await self.vector_db_service.count_points(self.collection_name)
+        if point_count > 0:
+            msg = (
+                f"Vector dimension mismatch: collection '{self.collection_name}' stores "
+                f"{current_dim}-dim vectors but the current embedding model produces "
+                f"{required_dim}-dim vectors. The collection contains {point_count} "
+                f"point(s). Please re-index your documents to use the new embedding model."
+            )
+            self.logger.error(msg)
+            raise ValueError(msg)
+
+        self.logger.warning(
+            f"Collection '{self.collection_name}' has dimension {current_dim} but model requires "
+            f"{required_dim}. Collection is empty — recreating with correct dimensions."
+        )
+        await self.vector_db_service.delete_collection(self.collection_name)
+        await self.vector_db_service.create_collection(
+            embedding_size=required_dim,
+            collection_name=self.collection_name,
+        )
+        await self.vector_db_service.create_index(
+            collection_name=self.collection_name,
+            field_name="metadata.virtualRecordId",
+            field_schema={"type": "keyword"},
+        )
+        await self.vector_db_service.create_index(
+            collection_name=self.collection_name,
+            field_name="metadata.orgId",
+            field_schema={"type": "keyword"},
+        )
+        self.logger.info(
+            f"Recreated collection '{self.collection_name}' with dimension {required_dim}"
+        )
 
     async def _preprocess_query(self, query: str) -> str:
         """
@@ -677,6 +696,7 @@ class RetrievalService:
         dense_embeddings = await self.get_embedding_model_instance()
         if not dense_embeddings:
             raise ValueError("No dense embeddings found")
+        await self._ensure_collection_dimensions(dense_embeddings)
         sparse_embeddings = await self._ensure_sparse_embeddings()
         if not sparse_embeddings:
             raise ValueError("No sparse embeddings found")
