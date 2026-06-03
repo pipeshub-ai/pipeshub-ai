@@ -30662,7 +30662,6 @@ paths:
         `config:read` scope must be present; regular JWT bearer tokens pass through
         without scope enforcement.
       operationId: getAvailableModelsByType
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -30997,7 +30996,6 @@ paths:
       summary: Add new AI model provider
       description: "Add a new AI model provider configuration. Performs a health check before saving to verify connectivity. Supported providers: openai, anthropic, azure-openai, aws-bedrock, google-vertex, ollama, huggingface."
       operationId: addAIModelProvider
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:write]
@@ -31043,7 +31041,6 @@ paths:
       summary: Update AI model provider
       description: Update an existing AI model provider configuration.
       operationId: updateAIModelProvider
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:write]
@@ -31117,7 +31114,6 @@ paths:
         reference the model. If the deleted entry was default, the first remaining
         entry for that type is promoted to default.
       operationId: deleteAIModelProvider
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
