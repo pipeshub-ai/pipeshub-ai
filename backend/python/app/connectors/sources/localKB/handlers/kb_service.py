@@ -941,8 +941,8 @@ class KnowledgeBaseService:
             self.logger.info(f"🚀 Creating {role} permissions for {len(user_ids)} users and {len(team_ids)} teams on KB {kb_id}")
 
             # Step 1: Validate inputs early
-            unique_users = list(set(user_ids)) if user_ids else []
-            unique_teams = list(set(team_ids)) if team_ids else []
+            unique_users = list(dict.fromkeys(user_ids)) if user_ids else []
+            unique_teams = list(dict.fromkeys(team_ids)) if team_ids else []
 
             if not unique_users and not unique_teams:
                 return {"success": False, "reason": "No users or teams provided", "code": 400}
