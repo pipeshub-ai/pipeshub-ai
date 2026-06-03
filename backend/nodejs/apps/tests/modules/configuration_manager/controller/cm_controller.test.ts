@@ -40,6 +40,7 @@ import {
   setMetricsCollectionRemoteServer,
   getAIModelsConfig,
   getAIModelsProviders,
+  getWebSearchProviders,
   getModelsByType,
   getAvailableModelsByType,
   deleteAIModelProvider,
@@ -1070,6 +1071,118 @@ describe('ConfigurationManager Controller', () => {
       const response = res.json.firstCall.args[0]
       expect(response.status).to.equal('success')
       expect(response.models.llm).to.have.length(1)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Web Search Providers
+  // -----------------------------------------------------------------------
+  describe('getWebSearchProviders', () => {
+    const duckDuckGoProvider = {
+      provider: 'duckduckgo',
+      providerKey: 'duckduckgo',
+      configuration: {},
+    }
+
+    it('should return DuckDuckGo as default when no config exists', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = getWebSearchProviders(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(next.called).to.be.false
+      const response = res.json.firstCall.args[0]
+      expect(response.status).to.equal('success')
+      expect(response.providers).to.deep.equal([
+        { ...duckDuckGoProvider, isDefault: true },
+      ])
+      expect(response.settings).to.deep.equal({
+        includeImages: false,
+        maxImages: 3,
+      })
+      expect(response.message).to.equal('No web search providers found')
+    })
+
+    it('should prepend DuckDuckGo as default when stored providers have no default', async () => {
+      const storedSerper = {
+        provider: 'serper',
+        providerKey: 'serper-key-1',
+        configuration: { apiKey: 'secret' },
+        isDefault: false,
+      }
+      mockEncService.decrypt.returns(
+        JSON.stringify({ providers: [storedSerper] }),
+      )
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:web-search-config'),
+      })
+      const handler = getWebSearchProviders(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.providers).to.deep.equal([
+        { ...duckDuckGoProvider, isDefault: true },
+        storedSerper,
+      ])
+      expect(response.message).to.equal(
+        'Web search providers retrieved successfully',
+      )
+    })
+
+    it('should prepend DuckDuckGo with isDefault false when another provider is default', async () => {
+      const storedTavily = {
+        provider: 'tavily',
+        providerKey: 'tavily-key-1',
+        configuration: { apiKey: 'secret' },
+        isDefault: true,
+      }
+      mockEncService.decrypt.returns(
+        JSON.stringify({ providers: [storedTavily], settings: { includeImages: true } }),
+      )
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:web-search-config'),
+      })
+      const handler = getWebSearchProviders(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.providers).to.deep.equal([
+        { ...duckDuckGoProvider, isDefault: false },
+        storedTavily,
+      ])
+      expect(response.settings).to.deep.equal({
+        includeImages: true,
+        maxImages: 3,
+      })
+    })
+
+    it('should call next on error', async () => {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().rejects(new Error('kv unavailable')),
+      })
+      const handler = getWebSearchProviders(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(Error)
     })
   })
 
