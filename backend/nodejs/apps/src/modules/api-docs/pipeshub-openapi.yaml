@@ -2249,36 +2249,105 @@ components:
         - updatedAt
         - __v
 
+    TeamCreatedByUser:
+      type: object
+      properties:
+        userId:
+          type: string
+          description: MongoDB user ID of the team creator
+        name:
+          type: string
+          description: Creator display name
+        email:
+          type: string
+          description: Creator email
+        profilePicture:
+          type: string
+          nullable: true
+          description: Base64-encoded data URI of the creator profile picture, if available
+
+    TeamMember:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Graph user key (internal identifier)
+        userId:
+          type: string
+          description: MongoDB user ID
+        userName:
+          type: string
+          description: Member display name
+        userEmail:
+          type: string
+          description: Member email
+        role:
+          type: string
+          enum: [OWNER, READER, WRITER]
+          description: Member role on the team
+        joinedAt:
+          type: integer
+          description: Permission edge created timestamp (ms)
+        isOwner:
+          type: boolean
+          description: Whether the member has OWNER role
+        profilePicture:
+          type: string
+          nullable: true
+          description: Base64-encoded data URI of the member profile picture, if available
+
     Team:
       type: object
       properties:
+        id:
+          type: string
+          description: Team graph key (UUID)
         _id:
           type: string
           format: ObjectId
-          description: Unique team identifier
+          description: Legacy unique team identifier (Mongo-style)
         name:
           type: string
           description: Team name
         description:
           type: string
+          nullable: true
           description: Team description
+        createdBy:
+          type: string
+          description: Graph key of the team creator
+        createdByUser:
+          $ref: '#/components/schemas/TeamCreatedByUser'
         orgId:
           type: string
-          format: ObjectId
           description: Organization ID
+        memberCount:
+          type: integer
+          description: Number of team members
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamMember'
+          description: Team members (when included in response)
         userRoles:
           type: array
           items:
             $ref: '#/components/schemas/UserRole'
-          description: Users and their roles in the team
+          description: Users and their roles in the team (create request / legacy)
+        createdAtTimestamp:
+          type: integer
+          description: Creation timestamp (ms)
+        updatedAtTimestamp:
+          type: integer
+          description: Last update timestamp (ms)
         createdAt:
           type: string
           format: date-time
-          description: Creation timestamp (ISO 8601)
+          description: Creation timestamp (ISO 8601, legacy)
         updatedAt:
           type: string
           format: date-time
-          description: Last update timestamp (ISO 8601)
+          description: Last update timestamp (ISO 8601, legacy)
       required:
         - name
 
@@ -2287,10 +2356,10 @@ components:
       properties:
         userId:
           type: string
-          description: User's database key
+          description: MongoDB user ID (resolved to graph key on the server)
         role:
           type: string
-          enum: [OWNER, READER]
+          enum: [OWNER, READER, WRITER]
           description: User's role in the team
         profilePicture:
           type: string
@@ -15195,7 +15264,7 @@ paths:
         <li>Default permission settings</li>
         </ul>
         <b>Initial Members:</b><br>
-        You can optionally add initial members with their roles during creation using the <code>userRoles</code> array.<br><br>
+        You can optionally add initial members with their roles during creation using the <code>userRoles</code> array. Each <code>userId</code> is a MongoDB user ID (resolved to a graph user key on the server).<br><br>
         <b>Validation:</b><br>
         <ul>
         <li>Team name is required and must be unique in the org</li>
@@ -15398,14 +15467,18 @@ paths:
         - Teams
       summary: Update team
       description: |
-        Update team metadata and settings.<br><br>
+        Update team metadata, members, and roles.<br><br>
         <b>Overview:</b><br>
-        This endpoint allows updating team properties like name and description. Member management is handled through separate endpoints.<br><br>
+        This endpoint updates team name/description and can add, remove, or change member roles in one request.<br><br>
         <b>Updatable Fields:</b><br>
         <ul>
         <li><code>name</code>: Team display name (must remain unique)</li>
         <li><code>description</code>: Team description</li>
+        <li><code>addUserRoles</code>: Add members by MongoDB user ID with role</li>
+        <li><code>removeUserIds</code>: Remove members by MongoDB user ID</li>
+        <li><code>updateUserRoles</code>: Change roles for existing members by MongoDB user ID</li>
         </ul>
+        User identifiers in member operations are MongoDB user IDs; the server resolves them to graph keys before updating permissions.
         <b>Authorization:</b><br>
         <ul>
         <li><b>Team Owner:</b> Full update access</li>
@@ -15450,6 +15523,22 @@ paths:
                   maxLength: 500
                   description: New team description
                   example: "Primary engineering team for product development"
+                addUserRoles:
+                  type: array
+                  description: Members to add (MongoDB user IDs)
+                  items:
+                    $ref: '#/components/schemas/UserRole'
+                removeUserIds:
+                  type: array
+                  description: MongoDB user IDs of members to remove
+                  items:
+                    type: string
+                    minLength: 1
+                updateUserRoles:
+                  type: array
+                  description: Role updates for existing members (MongoDB user IDs)
+                  items:
+                    $ref: '#/components/schemas/UserRole'
       responses:
         '200':
           description: Team updated successfully
@@ -15472,6 +15561,7 @@ paths:
             <ul>
             <li>Team name already exists</li>
             <li>Invalid field values</li>
+            <li>User not found in graph (invalid MongoDB user ID)</li>
             </ul>
         '401':
           description: Unauthorized - Valid bearer token required
@@ -15581,7 +15671,7 @@ paths:
         - name: created_by
           in: query
           required: false
-          description: Filter by creator user key
+          description: Filter by creator MongoDB user ID (resolved to graph key on the server)
           schema:
             type: string
         - name: created_after
@@ -15607,19 +15697,10 @@ paths:
                   success:
                     type: boolean
                     example: true
-                  data:
+                  teams:
                     type: array
                     items:
-                      type: object
-                      properties:
-                        team:
-                          $ref: '#/components/schemas/Team'
-                        role:
-                          type: string
-                          enum: [owner, admin, member, viewer]
-                        joinedAt:
-                          type: string
-                          format: date-time
+                      $ref: '#/components/schemas/Team'
                   pagination:
                     type: object
                     properties:
@@ -15632,6 +15713,13 @@ paths:
                       total:
                         type: integer
                         example: 5
+                      pages:
+                        type: integer
+                        example: 1
+                      hasNext:
+                        type: boolean
+                      hasPrev:
+                        type: boolean
         '401':
           description: Unauthorized - Valid authentication required
 

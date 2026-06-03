@@ -881,6 +881,25 @@ class TestUpdateTeam:
         )
 
     @pytest.mark.asyncio
+    async def test_remove_users_ignores_falsy_ids(self):
+        body = {"name": "T", "removeUserIds": ["", MEMBER_MONGO_ID_2]}
+        req, gp = self._setup_authorized_request(body)
+        gp.get_team_owner_removal_info.return_value = {
+            "owners_being_removed": [],
+            "total_owner_count": 1,
+        }
+        gp.delete_team_member_edges.return_value = ["e1"]
+
+        resp = await update_team(req, "team-1")
+        assert resp.status_code == 200
+        gp.get_graph_user_keys_by_mongo_user_ids.assert_called_once()
+        assert MEMBER_MONGO_ID_2 in gp.get_graph_user_keys_by_mongo_user_ids.call_args[0][0]
+        gp.delete_team_member_edges.assert_called_once_with(
+            team_id="team-1",
+            user_ids=["graph-key-2"],
+        )
+
+    @pytest.mark.asyncio
     async def test_combined_member_ops_single_resolve(self):
         body = {
             "name": "T",

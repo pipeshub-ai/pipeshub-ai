@@ -413,7 +413,9 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
 
         # Handle member additions and removals (Mongo userId on wire; resolve once)
         add_user_roles = body_dict.get("addUserRoles", [])  # Array of {userId, role}
-        remove_user_mongo_ids = body_dict.get("removeUserIds", [])
+        remove_user_mongo_ids = [
+            mid for mid in body_dict.get("removeUserIds", []) if mid
+        ]
         update_user_roles = body_dict.get("updateUserRoles", [])  # Array of {userId, role}
         # Support legacy format for backward compatibility
         if not add_user_roles and body_dict.get("addUserIds"):

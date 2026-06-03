@@ -98,7 +98,10 @@ const handleAIServiceResponse = (
   failureMessage: string,
   successStatus: number = HTTP_STATUS.OK,
 ) => {
-  if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK && aiResponse.statusCode !== HTTP_STATUS.CREATED) {
+  if (!aiResponse) {
+    throw new InternalServerError('No response from AI service');
+  }
+  if (aiResponse.statusCode !== HTTP_STATUS.OK && aiResponse.statusCode !== HTTP_STATUS.CREATED) {
     throw handleBackendError(aiResponse, operation);
   }
   const responseData = aiResponse.data;
@@ -194,8 +197,10 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
+      if (!aiResponse) {
+        throw new InternalServerError('No response from AI service');
+      }
       if (
-        aiResponse &&
         aiResponse.statusCode !== HTTP_STATUS.CREATED &&
         aiResponse.statusCode !== HTTP_STATUS.OK
       ) {
@@ -243,7 +248,11 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
+      if (!aiResponse) {
+        res.status(HTTP_STATUS.INTERNAL_SERVER).json({ message: 'No response from AI service' });
+        return;
+      }
+      if (aiResponse.statusCode !== HTTP_STATUS.OK) {
         res.status(aiResponse.statusCode).json(aiResponse.data);
         return;
       }
@@ -313,7 +322,11 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand<TeamsListResponse>(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
+      if (!aiResponse) {
+        res.status(HTTP_STATUS.INTERNAL_SERVER).json({ message: 'No response from AI service' });
+        return;
+      }
+      if (aiResponse.statusCode !== HTTP_STATUS.OK) {
         res.status(aiResponse.statusCode).json(aiResponse.data);
         return;
       }
@@ -405,7 +418,10 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
+      if (!aiResponse) {
+        throw new InternalServerError('No response from AI service');
+      }
+      if (aiResponse.statusCode !== HTTP_STATUS.OK) {
         throw handleBackendError(aiResponse, 'Updating team');
       }
       const teamData = aiResponse.data as TeamResponse | undefined;
@@ -545,8 +561,11 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand<TeamUsersResponse>(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-
-      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
+      if (!aiResponse) {
+        res.status(HTTP_STATUS.INTERNAL_SERVER).json({ message: 'No response from AI service' });
+        return;
+      }
+      if (aiResponse.statusCode !== HTTP_STATUS.OK) {
         res.status(aiResponse.statusCode).json(aiResponse.data);
         return;
       }
@@ -623,8 +642,12 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand<TeamsListResponse>(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
-        res.status(HTTP_STATUS.OK).json({ teams: [], pagination: { page: 1, limit: 10, total: 0, pages: 0 } });
+      if (!aiResponse) {
+        res.status(HTTP_STATUS.INTERNAL_SERVER).json({ message: 'No response from AI service' });
+        return;
+      }
+      if (aiResponse.statusCode !== HTTP_STATUS.OK) {
+        res.status(aiResponse.statusCode).json(aiResponse.data);
         return;
       }
       const teamsData = aiResponse.data;
