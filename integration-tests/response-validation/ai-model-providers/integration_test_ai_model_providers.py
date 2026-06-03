@@ -888,9 +888,9 @@ class TestUpdateAIModelProviderValidation:
             f"got {resp.status_code}: {resp.text}"
         )
 
-    def test_unknown_model_key_returns_404(self) -> None:
-        # updateAIModelProvider runs Python health-check before KV lookup; use
-        # real credentials so a missing modelKey yields 404, not health-check 4xx/5xx.
+    def test_unknown_model_key_put_returns_404(self) -> None:
+        # Health-check runs before KV lookup; use live OpenAI creds via
+        # _skip_if_no_live_credentials so the gateway reaches model lookup.
         openai_spec = next(
             s for s in _live_provider_specs() if s.provider_id == _PROVIDER_OPENAI
         )
@@ -901,11 +901,15 @@ class TestUpdateAIModelProviderValidation:
             self.client, _MODEL_TYPE_LLM, unknown_key, payload, headers=self.headers
         )
         assert resp.status_code == 404, (
-            f"Expected 404 for unknown modelKey, got {resp.status_code}: {resp.text}"
+            f"Expected 404 for unknown modelKey on PUT, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
         assert body.get("status") == "error" or body.get("error"), body
-        assert "not found" in (body.get("message") or "").lower(), body
+        message = body.get("message") or (body.get("error") or {}).get("message") or ""
+        assert "not found" in message.lower(), body
+        assert_response_matches_openapi_ref(
+            body, "#/components/schemas/AIModelProviderSimpleError"
+        )
 
     def test_missing_authorization(self) -> None:
         payload = _minimal_update_body(
@@ -1160,7 +1164,7 @@ class TestDeleteAIModelProviderValidation:
             f"got {resp.status_code}: {resp.text}"
         )
 
-    def test_unknown_model_key_returns_404(self) -> None:
+    def test_unknown_model_key_delete_returns_404(self) -> None:
         unknown_key = str(uuid.uuid4())
         resp = _delete_provider(
             self.client, _MODEL_TYPE_LLM, unknown_key, headers=self.headers
@@ -1170,6 +1174,11 @@ class TestDeleteAIModelProviderValidation:
         )
         body = resp.json()
         assert body.get("status") == "error" or body.get("error"), body
+        message = body.get("message") or (body.get("error") or {}).get("message") or ""
+        assert "not found" in message.lower(), body
+        assert_response_matches_openapi_ref(
+            body, "#/components/schemas/AIModelProviderSimpleError"
+        )
 
     def test_missing_authorization(self) -> None:
         resp = requests.delete(
