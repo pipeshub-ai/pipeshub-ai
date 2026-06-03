@@ -84,6 +84,7 @@ import {
   IAgentConversationDocument,
 } from '../schema/agent.conversation.schema';
 import { Users } from '../../user_management/schema/users.schema';
+import { UserDisplayPicture } from '../../user_management/schema/userDp.schema';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import {
@@ -103,6 +104,48 @@ function omitId<T>(doc: T): T {
   const o = { ...(doc as Record<string, unknown>) };
   delete o.id;
   return o as T;
+}
+
+async function enrichAgentsCreatedByProfilePictures(
+  orgId: string,
+  agents: Array<Record<string, unknown>>,
+): Promise<void> {
+  const userIds: string[] = [];
+  for (const agent of agents) {
+    const createdByUser = agent.createdByUser as
+      | { userId?: string; profilePicture?: string }
+      | null
+      | undefined;
+    if (createdByUser?.userId) userIds.push(createdByUser.userId);
+  }
+  if (userIds.length === 0) return;
+
+  const uniqueIds = [...new Set(userIds)];
+  const dpDocs = await UserDisplayPicture.find({
+    orgId,
+    userId: { $in: uniqueIds },
+    pic: { $ne: null },
+  })
+    .lean()
+    .exec();
+
+  const dpMap = new Map<string, string>();
+  for (const dp of dpDocs) {
+    if (dp.userId && dp.pic) {
+      const mime = dp.mimeType || 'image/jpeg';
+      dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
+    }
+  }
+
+  for (const agent of agents) {
+    const createdByUser = agent.createdByUser as
+      | { userId?: string; profilePicture?: string }
+      | null
+      | undefined;
+    if (createdByUser?.userId && dpMap.has(createdByUser.userId)) {
+      createdByUser.profilePicture = dpMap.get(createdByUser.userId);
+    }
+  }
 }
 
 function buildSearchResponseForClient(data: AiSearchResponse & Record<string, unknown>): Record<string, unknown> {
@@ -5243,6 +5286,7 @@ export const getAgent =
       ) {
         const normalizedAgent = { ...(responsePayload.agent as Record<string, unknown>) };
         delete normalizedAgent.id;
+        await enrichAgentsCreatedByProfilePictures(orgId, [normalizedAgent]);
         res.status(HTTP_STATUS.OK).json({
           ...responsePayload,
           agent: normalizedAgent,
@@ -5421,9 +5465,13 @@ export const listAgents =
         typeof responsePayload === 'object' &&
         Array.isArray(responsePayload.agents)
       ) {
+        const agents = responsePayload.agents.map((agent) =>
+          omitId(agent),
+        ) as Array<Record<string, unknown>>;
+        await enrichAgentsCreatedByProfilePictures(orgId, agents);
         res.status(HTTP_STATUS.OK).json({
           ...responsePayload,
-          agents: responsePayload.agents.map((agent) => omitId(agent)),
+          agents,
         });
         return;
       }

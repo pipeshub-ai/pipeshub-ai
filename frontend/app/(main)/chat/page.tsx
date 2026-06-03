@@ -886,11 +886,7 @@ function ChatContent() {
   const agentCreatorName = historyAndShareAgentId
     ? agentContextCreatedByUser?.name?.trim() || null
     : null;
-  const agentCreatorAvatarUrl =
-    agentContextCreatedByUser?.profilePicture ??
-    (agentContextCreatedByUser?.userId
-      ? `/api/v1/users/${agentContextCreatedByUser.userId}/dp`
-      : undefined);
+  const agentCreatorAvatarUrl = agentContextCreatedByUser?.profilePicture ?? undefined;
 
   // Render decisions
   /** Profile from GET /api/v1/users/:id — auth-store `user` is often null (not persisted with tokens). */

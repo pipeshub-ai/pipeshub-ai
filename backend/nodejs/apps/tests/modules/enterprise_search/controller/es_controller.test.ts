@@ -69,6 +69,7 @@ import Citation from '../../../../src/modules/enterprise_search/schema/citation.
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema'
 import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 
 // ---------------------------------------------------------------------------
@@ -2737,6 +2738,49 @@ describe('Enterprise Search Controller', () => {
 
       expect(next.calledOnce).to.be.true
     })
+
+    it('should enrich createdByUser.profilePicture from UserDisplayPicture', async () => {
+      const handler = getAgent(createMockAppConfig())
+      const creatorMongoId = '507f1f77bcf86cd799439011'
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {
+          agent: {
+            id: 'remove-me',
+            agentKey: 'agent-1',
+            createdByUser: {
+              userId: creatorMongoId,
+              name: 'Creator',
+              email: 'creator@test.com',
+            },
+          },
+        },
+      } as any)
+
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([
+            { userId: creatorMongoId, pic: 'base64pic', mimeType: 'image/jpeg' },
+          ]),
+        }),
+      } as any)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0].agent.createdByUser.profilePicture).to.equal(
+        'data:image/jpeg;base64,base64pic',
+      )
+    })
   })
 
   describe('listAgents', () => {
@@ -2777,6 +2821,65 @@ describe('Enterprise Search Controller', () => {
         expect(res.json.firstCall.args[0].agents[0]).to.not.have.property('id')
         expect(res.json.firstCall.args[0].agents[0].agentKey).to.equal('agent-1')
       }
+    })
+
+    it('should enrich createdByUser.profilePicture for each agent in the list', async () => {
+      const handler = listAgents(createMockAppConfig())
+      const creatorA = '507f1f77bcf86cd799439011'
+      const creatorB = '507f1f77bcf86cd799439012'
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {
+          success: true,
+          agents: [
+            {
+              id: 'remove-a',
+              agentKey: 'agent-a',
+              createdByUser: { userId: creatorA, name: 'A', email: 'a@test.com' },
+            },
+            {
+              id: 'remove-b',
+              agentKey: 'agent-b',
+              createdByUser: { userId: creatorB, name: 'B', email: 'b@test.com' },
+            },
+          ],
+          pagination: {
+            currentPage: 1,
+            limit: 20,
+            totalItems: 2,
+            totalPages: 1,
+            hasNext: false,
+            hasPrev: false,
+          },
+        },
+      } as any)
+
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([
+            { userId: creatorA, pic: 'picA', mimeType: 'image/jpeg' },
+            { userId: creatorB, pic: 'picB', mimeType: 'image/png' },
+          ]),
+        }),
+      } as any)
+
+      const req = createMockRequest({
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      const agents = res.json.firstCall.args[0].agents
+      expect(agents[0].createdByUser.profilePicture).to.equal(
+        'data:image/jpeg;base64,picA',
+      )
+      expect(agents[1].createdByUser.profilePicture).to.equal(
+        'data:image/png;base64,picB',
+      )
     })
 
     it('should forward all supported query params to the AI backend', async () => {

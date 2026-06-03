@@ -77,9 +77,7 @@ export function AgentBuilderHeader(props: {
   const [agentMenuTriggerHovered, setAgentMenuTriggerHovered] = useState(false);
 
   const creatorName = createdByUser?.name?.trim() || null;
-  const creatorAvatarUrl =
-    createdByUser?.profilePicture ??
-    (createdByUser?.userId ? `/api/v1/users/${createdByUser.userId}/dp` : undefined);
+  const creatorAvatarUrl = createdByUser?.profilePicture ?? undefined;
 
   const showDeleteOption = Boolean(editing && canDeleteAgent && onRequestDeleteAgent);
   const showConvertOption = Boolean(!isServiceAccount && onEnableServiceAccount);
