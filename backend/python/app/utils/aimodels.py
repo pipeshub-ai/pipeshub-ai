@@ -416,6 +416,36 @@ def _anthropic_supports_sampling_params(model_name: str | None) -> bool:
 
     return True
 
+
+def _is_reasoning_model_config(config: dict[str, Any], model_name: str | None) -> bool:
+    if config.get("isReasoning"):
+        return True
+    lowered = (model_name or "").lower()
+    return "gpt-5" in lowered
+
+
+def _anthropic_thinking_kwargs(max_tokens: int) -> dict[str, Any]:
+    budget = min(10_000, max(1024, max_tokens // 4))
+    return {"thinking": {"type": "enabled", "budget_tokens": budget}}
+
+
+def _apply_anthropic_thinking_kwargs(kwargs: Dict[str, Any], model_name: str, config: dict[str, Any]) -> None:
+    if not _is_reasoning_model_config(config, model_name):
+        return
+    max_tokens = int(kwargs.get("max_tokens") or _get_anthropic_max_tokens(model_name))
+    kwargs.update(_anthropic_thinking_kwargs(max_tokens))
+    kwargs.pop("temperature", None)
+
+
+def _apply_gemini_thinking_kwargs(kwargs: Dict[str, Any], model_name: str, config: dict[str, Any]) -> None:
+    if not _is_reasoning_model_config(config, model_name):
+        return
+    lowered = (model_name or "").lower()
+    if "gemini" not in lowered:
+        return
+    kwargs["thinking_budget"] = int(config.get("configuration", {}).get("thinkingBudget") or 8192)
+
+
 def get_generator_model(provider: str, config: dict[str, Any], model_name: str | None = None) -> BaseChatModel:
     configuration = config['configuration']
     is_default = config.get("isDefault")
@@ -444,6 +474,7 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
         )
         if _anthropic_supports_sampling_params(model_name):
             anthropic_kwargs["temperature"] = 0.2
+        _apply_anthropic_thinking_kwargs(anthropic_kwargs, model_name, config)
         return ChatAnthropic(**anthropic_kwargs)
 
     elif provider == LLMProvider.AWS_BEDROCK.value:
@@ -530,6 +561,7 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
             )
             if _anthropic_supports_sampling_params(model_name):
                 azure_claude_kwargs["temperature"] = temperature
+            _apply_anthropic_thinking_kwargs(azure_claude_kwargs, model_name, config)
             return ChatAnthropic(**azure_claude_kwargs)
         else:
             return ChatOpenAI(
@@ -577,14 +609,16 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
     elif provider == LLMProvider.GEMINI.value:
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        return ChatGoogleGenerativeAI(
-                model=model_name,
-                temperature=0.2,
-                max_tokens=None,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                max_retries=2,
-                google_api_key=configuration["apiKey"],
-            )
+        gemini_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=0.2,
+            max_tokens=None,
+            timeout=DEFAULT_LLM_TIMEOUT,
+            max_retries=2,
+            google_api_key=configuration["apiKey"],
+        )
+        _apply_gemini_thinking_kwargs(gemini_kwargs, model_name, config)
+        return ChatGoogleGenerativeAI(**gemini_kwargs)
 
     elif provider == LLMProvider.GROQ.value:
         from langchain_groq import ChatGroq
@@ -695,9 +729,9 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
                 "Please provide the Google Cloud project that hosts Vertex AI."
             )
         creds = _create_vertex_credentials(sa_json)
-        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
+        is_reasoning_model = _is_reasoning_model_config(config, model_name)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return ChatGoogleGenerativeAI(
+        vertex_gemini_kwargs: Dict[str, Any] = dict(
             model=model_name,
             project=project,
             location=configuration.get("location") or "us-central1",
@@ -707,6 +741,8 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
             timeout=DEFAULT_LLM_TIMEOUT,
             max_retries=2,
         )
+        _apply_gemini_thinking_kwargs(vertex_gemini_kwargs, model_name, config)
+        return ChatGoogleGenerativeAI(**vertex_gemini_kwargs)
 
     raise ValueError(f"Unsupported provider type: {provider}")
 

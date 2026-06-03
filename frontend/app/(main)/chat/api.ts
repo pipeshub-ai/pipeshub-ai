@@ -16,6 +16,7 @@ import {
   SSEConnectedEvent,
   SSEStatusEvent,
   SSEAnswerChunkEvent,
+  SSEReasoningChunkEvent,
   SSECompleteEvent,
   SSEErrorEvent,
   SSEArtifactEvent,
@@ -40,6 +41,7 @@ export interface StreamMessageCallbacks {
   onConnected?: (data: SSEConnectedEvent) => void;
   onStatus?: (data: SSEStatusEvent) => void;
   onChunk?: (data: SSEAnswerChunkEvent) => void;
+  onReasoningChunk?: (data: SSEReasoningChunkEvent) => void;
   onComplete?: (data: SSECompleteEvent) => void;
   onArtifact?: (data: SSEArtifactEvent) => void;
   /** Backend is discarding partial output (citation verify / re-parse) — clear UI buffer */
@@ -304,6 +306,9 @@ export const ChatApi = {
             case 'answer_chunk':
               callbacks.onChunk?.(event.data as SSEAnswerChunkEvent);
               break;
+            case 'reasoning_chunk':
+              callbacks.onReasoningChunk?.(event.data as SSEReasoningChunkEvent);
+              break;
             case 'complete':
               receivedComplete = true;
               callbacks.onComplete?.(event.data as SSECompleteEvent);
@@ -408,6 +413,9 @@ export const ChatApi = {
             case 'answer_chunk':
               callbacks.onChunk?.(event.data as SSEAnswerChunkEvent);
               break;
+            case 'reasoning_chunk':
+              callbacks.onReasoningChunk?.(event.data as SSEReasoningChunkEvent);
+              break;
             case 'complete':
               receivedComplete = true;
               callbacks.onComplete?.(event.data as SSECompleteEvent);
@@ -493,6 +501,9 @@ export const ChatApi = {
               break;
             case 'answer_chunk':
               callbacks.onChunk?.(event.data as SSEAnswerChunkEvent);
+              break;
+            case 'reasoning_chunk':
+              callbacks.onReasoningChunk?.(event.data as SSEReasoningChunkEvent);
               break;
             case 'complete':
               receivedComplete = true;
