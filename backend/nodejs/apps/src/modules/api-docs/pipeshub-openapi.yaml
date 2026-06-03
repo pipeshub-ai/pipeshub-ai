@@ -9949,7 +9949,6 @@ components:
       description: Normalized web search global settings returned by getWebSearchProviders
       required:
         - includeImages
-        - maxImages
       properties:
         includeImages:
           type: boolean
@@ -9958,7 +9957,7 @@ components:
           type: integer
           minimum: 1
           maximum: 500
-          description: Maximum number of images to return
+          description: Maximum number of images to return when includeImages is true
 
     WebSearchProvidersResponse:
       type: object
