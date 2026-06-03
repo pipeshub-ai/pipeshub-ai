@@ -47,6 +47,7 @@ from app.sources.external.s3.s3 import S3DataSource
 from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
+    NotificationRecipientRole,
 )
 
 # Re-export the entities processor for backward compatibility
@@ -157,7 +158,7 @@ class S3Connector(S3CompatibleBaseConnector):
                 title="Configuration not found", 
                 message="S3 configuration not found for this connector.", 
                 payload=payload,
-                recipient_roles=["admin"],
+                recipient_roles=[NotificationRecipientRole.ADMIN],
             )
             return False
 

@@ -16,8 +16,9 @@ from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.connectors.core.registry.filters import FilterOptionsResponse
 from app.models.entities import AppUser, AppUserGroup, Record
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin
+from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin, NotificationRecipientRole
 from app.connectors.core.registry.connector_builder import ConnectorScope
+from app.services.notification.notification_service import NotificationService
 
 DEFAULT_CONNECTOR_NOTIFICATION_LINK = "workspace/connectors/"
 
@@ -34,7 +35,7 @@ class BaseConnector(ABC):
     scope: str
     created_by: str
     creator_email: Optional[str]
-    _notification_service: Any
+    _notification_service: NotificationService | None
 
     def __init__(
         self,
@@ -321,7 +322,7 @@ class BaseConnector(ABC):
         message: str,
         payload: dict[str, Any] | None = None,
         recipient_user_ids: list[str] | None = None,
-        recipient_roles: list[str] | None = None,
+        recipient_roles: list[NotificationRecipientRole] | None = None,
     ) -> None:
         """Fire-and-forget: publish a user-visible connector notification to the broker."""
         svc = self._notification_service
@@ -330,7 +331,7 @@ class BaseConnector(ABC):
             return
         org_id = getattr(self.data_entities_processor, "org_id", None) or ""
         connector_type = self.connector_name.value if isinstance(self.connector_name, Connectors) else self.connector_name
-        redirect_link = f"workspace/connectors/{self.scope}/?connectorType={connector_type}"
+        redirect_link = DEFAULT_CONNECTOR_NOTIFICATION_LINK + f"{self.scope}/?connectorType={connector_type}"
 
         if not recipient_user_ids and not recipient_roles:
             recipient_user_ids = [self.created_by]

@@ -15,7 +15,7 @@ class NotificationOrigin(str, Enum):
     AI = "AI Service"
 
 
-class   NotificationType(str, Enum):
+class NotificationType(str, Enum):
     CONNECTOR_AUTH_ERROR = "CONNECTOR_AUTH_ERROR"
     CONNECTOR_SYNC_ERROR = "CONNECTOR_SYNC_ERROR"
     CONNECTOR_USER_SYNC_ERROR = "CONNECTOR_USER_SYNC_ERROR"
@@ -27,3 +27,13 @@ class   NotificationType(str, Enum):
     CONNECTOR_INFO = "CONNECTOR_INFO"
     CONNECTOR_WARNING = "CONNECTOR_WARNING"
     CONNECTOR_SUCCESS = "CONNECTOR_SUCCESS"
+
+class NotificationStatus(str, Enum):
+    UNREAD = "unread"
+    READ = "read"
+    ARCHIVED = "archived"
+
+class NotificationRecipientRole(str, Enum):
+    ADMIN = "admin"
+    STANDARD = "standard"
+    EVERYONE = "everyone"

@@ -3,14 +3,8 @@
 from __future__ import annotations
 
 from typing import Any
-
-from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin
+from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin, NotificationStatus, NotificationRecipientRole
 from app.connectors.services.kafka_service import KafkaService
-
-
-CONNECTOR_ERROR_TYPE = "CONNECTOR_ERROR"
-CONNECTOR_WARNING_TYPE = "CONNECTOR_WARNING"
-DEFAULT_CONNECTOR_NOTIFICATION_LINK = "workspace/connectors/"
 
 
 class NotificationService:
@@ -32,7 +26,7 @@ class NotificationService:
         payload: dict[str, Any],
         redirect_link: str | None = None,
         recipient_user_ids: list[str],
-        recipient_roles: list[str],
+        recipient_roles: list[NotificationRecipientRole],
     ) -> None:
         """Publish a user-visible connector notification. Swallows broker errors after logging."""
         try:
@@ -40,20 +34,21 @@ class NotificationService:
                 "orgId": org_id,
                 "type": type.value,
                 "severity": severity.value,
-                "status": "unread",
+                "status": NotificationStatus.UNREAD.value,
                 "originService": origin.value,
                 "title": title,
                 "message": message,
                 "redirectLink": redirect_link,
                 "payload": payload,
                 "recipientUserIds": recipient_user_ids or [],
-                "recipientRoles": recipient_roles or [],
+                "recipientRoles": [role.value for role in recipient_roles] or [],
                 "isDeleted": False,
             }
             await self._kafka_service.publish_notification(document)
         except Exception as exc:  # noqa: BLE001 — must not break connector sync
             self._logger.warning(
-                "Failed to publish connector notification (user will not see in-app alert): %s",
-                exc,
+                "Failed to publish connector notification: \n Title: %s \n type: %s",
+                title,
+                type.value,
                 exc_info=True,
             )
