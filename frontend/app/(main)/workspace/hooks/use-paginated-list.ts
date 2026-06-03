@@ -10,7 +10,7 @@ function dedupeItemsWithId<T>(items: T[]): T[] {
   const seen = new Set<string>();
   const out: T[] = [];
   for (const item of items) {
-    const id = (item as { id?: string }).id;
+    const id = item ? (item as { id?: string }).id : undefined;
     if (typeof id === 'string' && id.length > 0) {
       if (seen.has(id)) continue;
       seen.add(id);

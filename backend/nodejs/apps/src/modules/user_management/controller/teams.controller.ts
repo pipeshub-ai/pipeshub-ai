@@ -562,12 +562,10 @@ export class TeamsController {
       const aiCommand = new AIServiceCommand<TeamUsersResponse>(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (!aiResponse) {
-        res.status(HTTP_STATUS.INTERNAL_SERVER).json({ message: 'No response from AI service' });
-        return;
+        throw new InternalServerError('No response from AI service');
       }
       if (aiResponse.statusCode !== HTTP_STATUS.OK) {
-        res.status(aiResponse.statusCode).json(aiResponse.data);
-        return;
+        throw handleBackendError(aiResponse, 'get team users');
       }
 
       const data = aiResponse.data as any;

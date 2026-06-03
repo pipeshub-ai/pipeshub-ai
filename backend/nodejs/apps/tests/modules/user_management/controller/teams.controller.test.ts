@@ -497,6 +497,16 @@ describe('TeamsController', () => {
 
       expect(next.calledOnce).to.be.true;
     });
+
+    it('should call next with error when AI service returns no response', async () => {
+      req.params.teamId = 'team1';
+      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves(undefined);
+
+      await controller.getTeamUsers(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(res.status.called).to.be.false;
+    });
   });
 
   describe('updateTeamUsersPermissions', () => {

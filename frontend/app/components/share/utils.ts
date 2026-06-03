@@ -3,8 +3,8 @@ import type { User } from '@/app/(main)/workspace/users/types';
 import type { ShareUser } from './types';
 
 /** Map merged Mongo users to ShareUser with Mongo `userId` as `id`. */
-export function toShareUsers(users: User[]): ShareUser[] {
-  return users.map((u) => ({
+export function toShareUsers(users?: User[]): ShareUser[] {
+  return (users ?? []).map((u) => ({
     id: u.userId,
     name: u.name ?? u.email ?? '',
     email: u.email,
