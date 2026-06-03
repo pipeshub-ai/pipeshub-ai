@@ -30662,6 +30662,7 @@ paths:
         `config:read` scope must be present; regular JWT bearer tokens pass through
         without scope enforcement.
       operationId: getAvailableModelsByType
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:read]
