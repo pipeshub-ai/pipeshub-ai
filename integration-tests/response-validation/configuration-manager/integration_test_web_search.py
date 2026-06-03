@@ -112,8 +112,7 @@ class TestGetWebSearchProviders:
             f"Expected 400/401 without Authorization, got {resp.status_code}: "
             f"{resp.text[:500]}"
         )
-        if resp.status_code == 401:
-            _assert_error_envelope_matches_spec(resp.json())
+        _assert_error_envelope_matches_spec(resp.json())
 
     def test_get_web_search_invalid_bearer_token(self) -> None:
         resp = requests.get(
@@ -128,5 +127,4 @@ class TestGetWebSearchProviders:
             f"Expected 400/401 for invalid Bearer, got {resp.status_code}: "
             f"{resp.text[:500]}"
         )
-        if resp.status_code == 401:
-            _assert_error_envelope_matches_spec(resp.json())
+        _assert_error_envelope_matches_spec(resp.json())
