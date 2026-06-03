@@ -713,7 +713,7 @@ function ChatContent() {
           store.setCollectionMetaCache(metaCache);
         }
 
-        const formattedMessages = loadHistoricalMessages(messages);
+        const { messages: formattedMessages, unansweredAskUserQuestion } = loadHistoricalMessages(messages);
         useChatStore.getState().updateSlot(activeSlotId, {
           messages: formattedMessages,
           isInitialized: true,
@@ -725,6 +725,9 @@ function ChatContent() {
             isLoadingOlder: false,
           },
           ...(modelInfo ? { conversationModelInfo: modelInfo } : {}),
+          ...(unansweredAskUserQuestion
+            ? { pendingAskUserQuestion: unansweredAskUserQuestion }
+            : {}),
         });
       } catch (error) {
         console.error('Failed to load conversation history:', error);

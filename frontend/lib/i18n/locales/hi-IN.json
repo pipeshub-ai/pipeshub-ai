@@ -2611,5 +2611,26 @@
     "title": "सर्वर से कनेक्ट नहीं हो पा रहा",
     "description": "सर्वर अभी उपलब्ध नहीं है। यह शुरू हो रहा हो सकता है या रखरखाव चल रहा हो सकता है। हम पुनः कनेक्ट करने का प्रयास कर रहे हैं।",
     "contactAdmin": "यदि यह समस्या बनी रहती है, तो कृपया अपने PipesHub व्यवस्थापक से संपर्क करें।"
+  },
+  "askUserQuestion": {
+    "questionsHeadingSingular": "प्रश्न :",
+    "questionsHeadingPlural": "प्रश्न :",
+    "answered": "उत्तर दिया गया",
+    "showLess": "कम दिखाएं",
+    "showMore": "अधिक दिखाएं",
+    "noPreference": "[कोई प्राथमिकता नहीं]",
+    "somethingElse": "कुछ और",
+    "questionAskedSingular": "पूछा गया प्रश्न:",
+    "questionAskedPlural": "पूछे गए प्रश्न:",
+    "quickQuestionSingular": "त्वरित प्रश्न :",
+    "quickQuestionPlural": "त्वरित प्रश्न :",
+    "stepOf": "चरण {{step}} में से {{total}}",
+    "selectedCount": "{{count}} चयनित",
+    "describeYourAnswer": "अपना उत्तर वर्णन करें…",
+    "typeYourAnswer": "अपना उत्तर लिखें…",
+    "back": "वापस",
+    "skip": "छोड़ें",
+    "next": "अगला",
+    "submit": "जमा करें"
   }
 }

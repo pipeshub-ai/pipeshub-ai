@@ -87,9 +87,13 @@ export interface IChatAttachmentRef {
   extension?: string;
   virtualRecordId?: string;
 }
+export interface IToolCallItem {
+  toolName: string;
+  toolResult: any;
+}
 
 export interface IMessage {
-  messageType: 'user_query' | 'bot_response' | 'error' | 'feedback' | 'system';
+  messageType: 'user_query' | 'bot_response' | 'error' | 'feedback' | 'system' | 'tool_call';
   content: string;
   contentFormat?: 'MARKDOWN' | 'JSON' | 'HTML';
   citations?: IMessageCitation[];
@@ -107,6 +111,8 @@ export interface IMessage {
   attachments?: IChatAttachmentRef[];
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];
+  // Tool call data for tool_call messageType
+  tools?: IToolCallItem[];
 }
 
 export interface IConversation {

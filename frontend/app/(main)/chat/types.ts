@@ -340,9 +340,52 @@ export type SSEEventType =
   | 'tool_calls'
   /** Agent / deep flows — UI ignores */
   | 'tool_result'
+  /** Interactive questionnaire card — internaltools.ask_user_question */
+  | 'ask_user_question'
   | 'metadata'
   | 'restreaming'
   | 'error';
+
+/** Single option in an ask_user_question tool payload. */
+export interface AskUserQuestionOption {
+  id: string;
+  label: string;
+  isUserInput: boolean;
+}
+
+export interface AskUserQuestionItem {
+  uuid: string;
+  question: string;
+  options: AskUserQuestionOption[];
+  multiSelect: boolean;
+}
+
+export interface AskUserQuestionPayload {
+  name: 'ask_user_question';
+  userIntent?: string;
+  questions: AskUserQuestionItem[];
+}
+
+export interface SSEAskUserQuestionEvent {
+  status: string;
+  toolData: AskUserQuestionPayload;
+}
+
+/** User's collected answers per question (keyed by question uuid in slot state). */
+export interface AskUserQuestionAnswer {
+  questionUuid: string;
+  selectedOptionIds: string[];
+  /** Free-text values keyed by option id when isUserInput is true. */
+  userInputs: Record<string, string>;
+}
+
+export interface PendingAskUserQuestion {
+  /** Matches ThreadMessageLike.id for the assistant row (same as MessagePair.key). */
+  assistantMessageId: string;
+  payload: AskUserQuestionPayload;
+  answers: Record<string, AskUserQuestionAnswer>;
+  status: 'pending' | 'submitted' | 'persisted';
+}
 
 /** Artifact produced by a sandbox tool (coding/database). */
 export interface SSEArtifactEvent {
@@ -472,9 +515,14 @@ export interface ReferenceData {
   type: string;
 }
 
+export interface ToolCallEntry {
+  toolName: string;
+  toolResult: Record<string, unknown>;
+}
+
 export interface ConversationMessage {
   _id: string;
-  messageType: 'user_query' | 'bot_response';
+  messageType: 'user_query' | 'bot_response' | 'tool_call';
   content: string;
   contentFormat: 'MARKDOWN';
   citations: CitationApiResponse[];
@@ -488,6 +536,7 @@ export interface ConversationMessage {
   appliedFilters?: AppliedFilters;
   /** File attachments uploaded with this user query (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
+  tools?: ToolCallEntry[];
 }
 
 export interface ConversationCompleteData {
@@ -549,6 +598,8 @@ export interface StreamChatRequest {
     apps: string[];
     kb: string[];
   };
+  timezone?: string;
+  currentTime?: string;
   appliedFilters?: AppliedFilters;
   conversationId?: string;
   /** When set, the stream uses /api/v1/agents/:id/conversations/.../stream */
@@ -686,6 +737,12 @@ export interface ChatSlot {
 
   /** Artifacts produced during the current streaming response. */
   artifacts: ChatArtifact[];
+
+  /**
+   * Pending interactive questionnaire from SSE `ask_user_question`.
+   * Cleared when the user submits answers or starts another stream that replaces messages.
+   */
+  pendingAskUserQuestion: PendingAskUserQuestion | null;
 
   /** AbortController for the in-flight SSE stream (if any). */
   abortController: AbortController | null;
