@@ -25402,6 +25402,9 @@ paths:
         configuration. Returns the agents currently configured to use the model so
         the caller can block deletion (HTTP 409 from the deleting service) when the
         model is still in use.
+        
+        **Query parameters:**
+        None. The gateway rejects any query string on this route.
       operationId: getModelUsage
       security:
         - bearerAuth: []
@@ -25412,7 +25415,12 @@ paths:
           required: true
           schema:
             type: string
-          description: URL-encoded model key (typically the `modelKey` assigned at model creation time).
+            minLength: 1
+          description: |
+            URL-encoded model key (typically the `modelKey` assigned at model creation time).
+            The Node gateway trims surrounding whitespace before forwarding the value.
+            Unknown model keys are valid inputs; they return `200` with an empty
+            `agents` array rather than a validation error.
       responses:
         '200':
           description: Model usage lookup result. Returns an empty `agents` array when the model is not in use or when the upstream AI backend returns a non-200 response.
@@ -25421,11 +25429,40 @@ paths:
               schema:
                 $ref: '#/components/schemas/GetModelUsageResponse'
         '400':
-          description: Bad request - organization ID or model key missing
+          description: |
+            Bad request. The Node gateway may return this when:
+
+            - The `model_key` path segment is whitespace-only after trim.
+            - The request includes query parameters (none are accepted).
+            - The authenticated user context lacks an organization ID.
+
+            Validation failures use HTTP 400 with a `Validation failed` message;
+            handler errors may include `Organization ID is required`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden. OAuth access tokens without the `agent:read` scope receive
+            HTTP 403 (`Insufficient scope. Required: agent:read`). Regular JWT
+            bearer tokens are not subject to per-route OAuth scope checks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error while checking model usage
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}:
     get:
