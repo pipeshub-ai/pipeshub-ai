@@ -35,6 +35,28 @@ _AGENTS_MODEL_USAGE_PATH = "/api/v1/agents/model-usage/{model_key}"
 _AGENTS_DETAIL_PATH = "/api/v1/agents/{agent_key}"
 
 
+def _response_text_fragments(resp: requests.Response) -> str:
+    fragments: list[str] = [resp.text]
+    try:
+        body = resp.json()
+    except ValueError:
+        body = None
+
+    if isinstance(body, dict):
+        for key in ("message", "detail", "error", "msg", "status"):
+            value = body.get(key)
+            if isinstance(value, str):
+                fragments.append(value)
+        err = body.get("error")
+        if isinstance(err, dict):
+            for key in ("message", "detail", "msg"):
+                value = err.get(key)
+                if isinstance(value, str):
+                    fragments.append(value)
+
+    return " ".join(fragments).lower()
+
+
 def _response_json(resp: requests.Response) -> dict[str, Any]:
     try:
         data = resp.json()
@@ -103,10 +125,12 @@ class TestGetWebSearchProviderUsage:
         provider: str,
         *,
         headers: dict[str, str] | None = None,
+        params: dict[str, str] | None = None,
     ) -> requests.Response:
         return requests.get(
             f"{self.base_url}{_AGENTS_WEB_SEARCH_USAGE_PATH.format(provider=provider)}",
             headers=self.headers if headers is None else headers,
+            params=params,
             timeout=self.timeout,
         )
 
@@ -165,6 +189,26 @@ class TestGetWebSearchProviderUsage:
         assert usage_body.get("success") is True, f"Expected success=true, got: {usage_body!r}"
         assert usage_body.get("agents") == [], (
             f"Expected empty agents for unknown provider, got: {usage_body!r}"
+        )
+
+    def test_get_web_search_provider_usage_rejects_whitespace_only_provider(self) -> None:
+        usage_resp = self._web_search_usage_raw("%20%20%20")
+        assert usage_resp.status_code == 400, (
+            f"Expected 400 for whitespace-only provider, got {usage_resp.status_code}: {usage_resp.text}"
+        )
+        error_text = _response_text_fragments(usage_resp)
+        assert "provider is required" in error_text, (
+            f"unexpected error payload: {usage_resp.text}"
+        )
+
+    def test_get_web_search_provider_usage_rejects_unexpected_query_params(self) -> None:
+        usage_resp = self._web_search_usage_raw("tavily", params={"page": "1"})
+        assert usage_resp.status_code == 400, (
+            f"Expected 400 for unexpected query param, got {usage_resp.status_code}: {usage_resp.text}"
+        )
+        error_text = _response_text_fragments(usage_resp)
+        assert "validation failed" in error_text, (
+            f"unexpected error payload: {usage_resp.text}"
         )
 
     def test_get_web_search_provider_usage_requires_auth(self) -> None:

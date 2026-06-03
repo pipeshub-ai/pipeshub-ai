@@ -6813,7 +6813,10 @@ components:
     AgentModelUsageAgent:
       type: object
       additionalProperties: false
-      description: Lightweight agent reference returned by `GET /agents/model-usage/{model_key}`.
+      description: |
+        Lightweight agent reference returned by usage lookup routes:
+        `GET /agents/model-usage/{model_key}` and
+        `GET /agents/web-search-usage/{provider}`.
       required:
         - _key
         - name
@@ -6821,10 +6824,12 @@ components:
       properties:
         _key:
           type: string
+          minLength: 1
           description: Stable agent key used in route params.
           example: "e6f848ca-e2ab-4594-9925-e1136629f474"
         name:
           type: string
+          minLength: 1
           description: Display name of the agent.
           example: "Customer Support Assistant"
         creatorName:
@@ -25303,10 +25308,14 @@ paths:
         - Agents
       summary: Get web search provider usage
       description: |
-        Retrieve usage statistics for a specific web search provider used by agents.<br><br>
-        <b>Overview:</b><br>
+        Retrieve usage statistics for a specific web search provider used by agents.
+
+        **Overview:**
         Returns information about how a particular web search provider is being used
         across agents in the organization.
+
+        **Query parameters:**
+        None. The gateway rejects any query string on this route.
       operationId: getWebSearchProviderUsage
       security:
         - bearerAuth: []
@@ -25317,10 +25326,13 @@ paths:
           required: true
           schema:
             type: string
+            minLength: 1
           description: |
-            Web search provider identifier. The backend normalizes value casing
-            and returns `200` with an empty `agents` array when the provider is
-            unsupported.
+            Web search provider identifier (non-empty after trim). The Node gateway
+            trims whitespace, lowercases the value before forwarding, and returns
+            `200` with an empty `agents` array when the provider is unsupported.
+            Unknown provider strings are valid inputs; they are not rejected at
+            the contract level.
           examples:
             duckduckgo:
               value: duckduckgo
@@ -25341,9 +25353,23 @@ paths:
               schema:
                 $ref: '#/components/schemas/GetWebSearchProviderUsageResponse'
         '400':
-          description: Bad request - provider or organization ID missing
+          description: |
+            Bad request. The Node gateway may return this when:
+
+            - The `provider` path segment is missing or whitespace-only after trim.
+            - The request includes query parameters (none are accepted).
+            - The authenticated user context lacks an organization ID.
+
+            Validation failures use HTTP 400 with a `Validation failed` message;
+            handler errors may include `Provider is required` or
+            `Organization ID is required`.
         '401':
           description: Unauthorized
+        '403':
+          description: |
+            Forbidden. OAuth access tokens without the `agent:read` scope receive
+            HTTP 403 (`Insufficient scope. Required: agent:read`). Regular JWT
+            bearer tokens are not subject to per-route OAuth scope checks.
         '500':
           description: Internal server error while checking web search provider usage
 
