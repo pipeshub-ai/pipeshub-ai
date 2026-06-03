@@ -28,7 +28,7 @@ dependencies = [
   "curl-cffi==0.14.0",
   "dependency-injector==4.44.0",
   "discord.py==2.6.3",
-  "docling==2.60.0",
+  "docling==2.94.0",
   "dropbox==12.0.2",
   "docx2python==3.5.0",
   "etcd3==0.12.0",
