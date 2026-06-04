@@ -15,6 +15,7 @@ function listParamsForFilter(
   return {
     limit: DEFAULT_NOTIFICATION_PAGE_SIZE,
     ...(filter === 'unread' ? { status: 'unread' as const } : {}),
+    ...(filter === 'archived' ? { status: 'archived' as const } : {}),
     ...extra,
   };
 }
@@ -41,6 +42,8 @@ interface NotificationState {
   markRead: (id: string) => void;
   markAllRead: () => void;
   remove: (id: string) => void;
+  archive: (id: string) => void;
+  unarchive: (id: string) => void;
 }
 
 function dedupeAppend(
@@ -68,7 +71,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   isLoadingMore: false,
   listFilter: 'all',
   isPanelOpen: false,
-  setListFilter: (filter) => set({ listFilter: filter }),
+  setListFilter: (filter) => set({ listFilter: filter, hasMore: false, cursor: null }),
   openPanel: () => set({ isPanelOpen: true }),
   closePanel: () => set({ isPanelOpen: false }),
   togglePanel: () => set((s) => ({ isPanelOpen: !s.isPanelOpen })),
@@ -149,6 +152,31 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     set({
       notifications: next,
       unreadCount: wasUnread ? Math.max(0, get().unreadCount - 1) : get().unreadCount,
+    });
+  },
+
+  archive: (id) => {
+    const target = get().notifications.find((n) => n._id === id);
+    if (!target || target.status === 'archived') return;
+    const wasUnread = target.status === 'unread';
+    set({
+      notifications: get().notifications.map((n) =>
+        n._id === id ? { ...n, status: 'archived' as const } : n,
+      ),
+      unreadCount: wasUnread ? Math.max(0, get().unreadCount - 1) : get().unreadCount,
+      archivedCount: get().archivedCount + 1,
+    });
+  },
+
+  unarchive: (id) => {
+    const target = get().notifications.find((n) => n._id === id);
+    if (!target || target.status !== 'archived') return;
+    set({
+      notifications: get().notifications.map((n) =>
+        n._id === id ? { ...n, status: 'read' as const } : n,
+      ),
+      archivedCount: Math.max(0, get().archivedCount - 1),
+      readCount: get().readCount + 1,
     });
   },
 }));

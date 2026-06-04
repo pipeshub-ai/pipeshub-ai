@@ -63,14 +63,22 @@ function severityColor(severity: NotificationSeverity): string {
 export function NotificationRow({
   notification: n,
   onMarkRead,
+  onArchive,
+  onUnarchive,
   onDismiss,
   markReadLabel,
+  archiveLabel,
+  unarchiveLabel,
   dismissLabel,
 }: {
   notification: NotificationListItem;
   onMarkRead: (n: NotificationListItem) => void;
+  onArchive: (n: NotificationListItem) => void;
+  onUnarchive: (n: NotificationListItem) => void;
   onDismiss: (n: NotificationListItem) => void;
   markReadLabel: string;
+  archiveLabel: string;
+  unarchiveLabel: string;
   dismissLabel: string;
 }) {
   const { i18n } = useTranslation();
@@ -80,7 +88,7 @@ export function NotificationRow({
   const message = n.message ?? '';
   const href = notificationHref(n.redirectLink ?? '');
 
-  const isRead = n.status === 'read';
+  const isRead = n.status === 'read' || n.status === 'archived';
   const titleStyle = { color: 'var(--slate-12)' };
 
   return (
@@ -160,7 +168,7 @@ export function NotificationRow({
               justifyContent: 'flex-end',
               alignItems: 'center',
               minHeight: 26,
-              width: n.status === 'unread' ? 84 : 40,
+              width: n.status === 'unread' ? 128 : 84,
             }}
           >
             <Flex
@@ -178,6 +186,29 @@ export function NotificationRow({
                   style={{ flexShrink: 0 }}
                 >
                   <MaterialIcon name="done" size={16} color="var(--slate-11)" />
+                </IconButton>
+              )}
+              {n.status !== 'archived' ? (
+                <IconButton
+                  variant="ghost"
+                  color="gray"
+                  size="1"
+                  onClick={() => onArchive(n)}
+                  aria-label={archiveLabel}
+                  style={{ flexShrink: 0 }}
+                >
+                  <MaterialIcon name="archive" size={16} color="var(--slate-11)" />
+                </IconButton>
+              ) : (
+                <IconButton
+                  variant="ghost"
+                  color="gray"
+                  size="1"
+                  onClick={() => onUnarchive(n)}
+                  aria-label={unarchiveLabel}
+                  style={{ flexShrink: 0 }}
+                >
+                  <MaterialIcon name="unarchive" size={16} color="var(--slate-11)" />
                 </IconButton>
               )}
               <IconButton

@@ -17,6 +17,7 @@ interface NotificationFilterMenuProps {
 const FILTER_OPTIONS: { id: NotificationListFilter; icon: string }[] = [
   { id: 'all', icon: 'all_inbox' },
   { id: 'unread', icon: 'mark_email_unread' },
+  { id: 'archived', icon: 'archive' },
 ];
 
 /**
@@ -29,6 +30,7 @@ export function NotificationFilterMenu({ value, onChange }: NotificationFilterMe
   const labels: Record<NotificationListFilter, string> = {
     all: t('notifications.filterAll', { defaultValue: 'All' }),
     unread: t('notifications.filterOnlyUnread', { defaultValue: 'Only Unread' }),
+    archived: t('notifications.filterArchived', { defaultValue: 'Archived' }),
   };
 
   const filterTooltip = t('notifications.filterTooltip', {

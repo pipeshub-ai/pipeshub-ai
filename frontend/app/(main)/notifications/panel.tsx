@@ -45,6 +45,8 @@ export function NotificationsPanel() {
   const markReadStore = useNotificationStore((s) => s.markRead);
   const markAllReadStore = useNotificationStore((s) => s.markAllRead);
   const removeStore = useNotificationStore((s) => s.remove);
+  const archiveStore = useNotificationStore((s) => s.archive);
+  const unarchiveStore = useNotificationStore((s) => s.unarchive);
   const listFilter = useNotificationStore((s) => s.listFilter);
   const setListFilter = useNotificationStore((s) => s.setListFilter);
   const unreadCount = useNotificationStore((s) => s.unreadCount);
@@ -174,7 +176,13 @@ export function NotificationsPanel() {
     setError(null);
     try {
       const [page, stats] = await Promise.all([
-        NotificationsApi.list(listFilter === 'unread' ? { status: 'unread' } : {}),
+        NotificationsApi.list(
+          listFilter === 'unread'
+            ? { status: 'unread' }
+            : listFilter === 'archived'
+            ? { status: 'archived' }
+            : {},
+        ),
         NotificationsApi.getStats(),
       ]);
       setInitialPage(page);
@@ -197,7 +205,9 @@ export function NotificationsPanel() {
   const displayNotifications =
     listFilter === 'unread'
       ? notifications.filter((n) => n.status === 'unread')
-      : notifications;
+      : listFilter === 'archived'
+      ? notifications.filter((n) => n.status === 'archived')
+      : notifications.filter((n) => n.status !== 'archived');
 
   // Close on Escape
   useEffect(() => {
@@ -266,6 +276,26 @@ export function NotificationsPanel() {
       removeStore(n._id);
     } catch {
       setError(t('notifications.removeFailed'));
+    }
+  };
+
+  const onArchive = async (n: NotificationListItem) => {
+    if (!n._id || n.status === 'archived') return;
+    try {
+      await NotificationsApi.archive(n._id);
+      archiveStore(n._id);
+    } catch {
+      setError(t('notifications.updateFailed'));
+    }
+  };
+
+  const onUnarchive = async (n: NotificationListItem) => {
+    if (!n._id || n.status !== 'archived') return;
+    try {
+      await NotificationsApi.unarchive(n._id);
+      unarchiveStore(n._id);
+    } catch {
+      setError(t('notifications.updateFailed'));
     }
   };
 
@@ -414,6 +444,35 @@ export function NotificationsPanel() {
                 </IconButton>
               </Tooltip>
             </Box>
+            <Box style={{ display: 'inline-flex', flexShrink: 0, position: 'relative' }}>
+              <Tooltip
+                className={NOTIFICATIONS_PANEL_TOOLTIP_CLASS}
+                content={
+                  listFilter === 'archived'
+                    ? t('notifications.showAll', { defaultValue: 'Show all' })
+                    : t('notifications.showArchived', { defaultValue: 'Show archived' })
+                }
+                side="bottom"
+              >
+                <IconButton
+                  variant="ghost"
+                  size="1"
+                  color="gray"
+                  aria-label={
+                    listFilter === 'archived'
+                      ? t('notifications.showAll', { defaultValue: 'Show all' })
+                      : t('notifications.showArchived', { defaultValue: 'Show archived' })
+                  }
+                  onClick={() => handleFilterChange(listFilter === 'archived' ? 'all' : 'archived')}
+                  style={{
+                    cursor: 'pointer',
+                    backgroundColor: listFilter === 'archived' ? 'var(--olive-5)' : undefined,
+                  }}
+                >
+                  <MaterialIcon name="archive" size={18} color="var(--slate-11)" />
+                </IconButton>
+              </Tooltip>
+            </Box>
             <NotificationFilterMenu value={listFilter} onChange={handleFilterChange} />
           </Flex>
         </Flex>
@@ -456,6 +515,10 @@ export function NotificationsPanel() {
                   ? t('notifications.emptyUnread', {
                       defaultValue: 'No unread notifications',
                     })
+                  : listFilter === 'archived'
+                  ? t('notifications.emptyArchived', {
+                      defaultValue: 'No archived notifications',
+                    })
                   : t('notifications.empty')}
               </Text>
             </Flex>
@@ -466,8 +529,12 @@ export function NotificationsPanel() {
                   key={n._id}
                   notification={n}
                   onMarkRead={(item) => void onMarkRead(item)}
+                  onArchive={(item) => void onArchive(item)}
+                  onUnarchive={(item) => void onUnarchive(item)}
                   onDismiss={(item) => void onDismiss(item)}
                   markReadLabel={t('notifications.markRead')}
+                  archiveLabel={t('notifications.archive', { defaultValue: 'Archive' })}
+                  unarchiveLabel={t('notifications.unarchive', { defaultValue: 'Unarchive' })}
                   dismissLabel={t('notifications.dismiss')}
                 />
               ))}

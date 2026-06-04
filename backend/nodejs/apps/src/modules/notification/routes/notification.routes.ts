@@ -153,6 +153,76 @@ export function createNotificationRouter(
     },
   );
 
+  router.patch(
+    '/:id/archive',
+    authMiddleware.authenticate.bind(authMiddleware),
+    async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+      try {
+        const userId = req.user?.userId;
+        const { id } = req.params;
+        if (!userId || !mongoose.isValidObjectId(userId)) {
+          res.status(401).json({ message: 'Unauthorized' });
+          return;
+        }
+        if (!mongoose.isValidObjectId(id)) {
+          res.status(400).json({ message: 'Invalid notification id' });
+          return;
+        }
+        const userOid = new mongoose.Types.ObjectId(userId);
+        const doc = await Notifications.findOneAndUpdate(
+          {
+            _id: new mongoose.Types.ObjectId(id),
+            ...buildRetentionFilter(userOid, null),
+          },
+          { $set: { status: 'archived' } },
+          { new: true },
+        ).lean();
+        if (!doc) {
+          res.status(404).json({ message: 'Notification not found' });
+          return;
+        }
+        res.json({ notification: doc });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  router.patch(
+    '/:id/unarchive',
+    authMiddleware.authenticate.bind(authMiddleware),
+    async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+      try {
+        const userId = req.user?.userId;
+        const { id } = req.params;
+        if (!userId || !mongoose.isValidObjectId(userId)) {
+          res.status(401).json({ message: 'Unauthorized' });
+          return;
+        }
+        if (!mongoose.isValidObjectId(id)) {
+          res.status(400).json({ message: 'Invalid notification id' });
+          return;
+        }
+        const userOid = new mongoose.Types.ObjectId(userId);
+        const doc = await Notifications.findOneAndUpdate(
+          {
+            _id: new mongoose.Types.ObjectId(id),
+            ...buildRetentionFilter(userOid, 'archived'),
+          },
+          { $set: { status: 'read' } },
+          { new: true },
+        ).lean();
+        if (!doc) {
+          res.status(404).json({ message: 'Notification not found' });
+          return;
+        }
+        res.json({ notification: doc });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
   router.delete(
     '/:id',
     authMiddleware.authenticate.bind(authMiddleware),
@@ -172,7 +242,7 @@ export function createNotificationRouter(
         const doc = await Notifications.findOneAndUpdate(
           {
             _id: new mongoose.Types.ObjectId(id),
-            ...buildRetentionFilter(userOid, null),
+            ...buildRetentionFilter(userOid, null, true),
           },
           { $set: { isDeleted: true, deletedBy: userOid } },
           { new: true },

@@ -40,13 +40,13 @@ export interface NotificationStatsResponse {
   archivedCount: number;
 }
 
-export type NotificationListFilter = 'all' | 'unread';
+export type NotificationListFilter = 'all' | 'unread' | 'archived';
 
 export interface NotificationListParams {
   limit?: number;
   cursor?: string;
-  /** When `'unread'`, only unread notifications are returned. Omit for all. */
-  status?: 'unread';
+  /** When `'unread'`, only unread notifications are returned. When `'archived'`, only archived. Omit for all. */
+  status?: 'unread' | 'archived';
 }
 
 export const DEFAULT_NOTIFICATION_PAGE_SIZE = 20;
@@ -60,6 +60,8 @@ export const NotificationsApi = {
     }
     if (params.status === 'unread') {
       searchParams.set('status', 'unread');
+    } else if (params.status === 'archived') {
+      searchParams.set('status', 'archived');
     }
     const { data } = await apiClient.get<NotificationListResponse>(
       `/api/v1/notifications?${searchParams.toString()}`,
@@ -84,6 +86,20 @@ export const NotificationsApi = {
   async markRead(id: string): Promise<NotificationListItem> {
     const { data } = await apiClient.patch<{ notification: NotificationListItem }>(
       `/api/v1/notifications/${encodeURIComponent(id)}/read`,
+    );
+    return data.notification;
+  },
+
+  async archive(id: string): Promise<NotificationListItem> {
+    const { data } = await apiClient.patch<{ notification: NotificationListItem }>(
+      `/api/v1/notifications/${encodeURIComponent(id)}/archive`,
+    );
+    return data.notification;
+  },
+
+  async unarchive(id: string): Promise<NotificationListItem> {
+    const { data } = await apiClient.patch<{ notification: NotificationListItem }>(
+      `/api/v1/notifications/${encodeURIComponent(id)}/unarchive`,
     );
     return data.notification;
   },
