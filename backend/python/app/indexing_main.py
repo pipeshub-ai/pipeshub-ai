@@ -1,3 +1,5 @@
+import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
+
 import asyncio
 import os
 from collections.abc import AsyncGenerator

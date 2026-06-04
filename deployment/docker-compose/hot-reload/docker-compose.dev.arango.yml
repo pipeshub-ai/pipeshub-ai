@@ -22,7 +22,11 @@ services:
     deploy:
       resources:
         limits:
+          cpus: '${PIPESHUB_CPU_LIMIT:-6}'
           memory: 12G
+        reservations:
+          cpus: '2'
+          memory: 4G
     shm_size: 2gb
     init: true
     logging:
@@ -115,6 +119,9 @@ services:
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
       
+      # ML thread limit — caps PyTorch / OpenBLAS / MKL threads per operation.
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
+
       # Indexing service config
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-5}

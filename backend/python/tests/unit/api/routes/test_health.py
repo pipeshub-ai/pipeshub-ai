@@ -191,6 +191,33 @@ class TestHandleModelChange:
         await handle_model_change(retrieval_svc, "Model-A", "model-a", 768, 100, 768, logger)
 
     @pytest.mark.asyncio
+    async def test_same_model_different_provider_allowed_with_data(self):
+        """Same model served by different providers (org prefix differs) is NOT a
+        breaking change, so it must be allowed even when the collection has data."""
+        retrieval_svc = AsyncMock()
+        logger = MagicMock()
+
+        from app.api.routes.health import handle_model_change
+        # sentence-transformers "nomic-ai/nomic-embed-text" -> ollama "nomic-embed-text"
+        await handle_model_change(
+            retrieval_svc, "nomic-ai/nomic-embed-text", "nomic-embed-text", 768, 100, 768, logger
+        )
+        retrieval_svc.vector_db_service.delete_collection.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_different_bare_model_still_flagged(self):
+        """Different underlying models (different bare name) remain a breaking change."""
+        retrieval_svc = AsyncMock()
+        logger = MagicMock()
+
+        from app.api.routes.health import handle_model_change
+        with pytest.raises(HTTPException) as exc_info:
+            await handle_model_change(
+                retrieval_svc, "nomic-ai/nomic-embed-text", "BAAI/bge-large-en-v1.5", 768, 100, 1024, logger
+            )
+        assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
     async def test_zero_qdrant_vector_size_no_recreate(self):
         retrieval_svc = AsyncMock()
         logger = MagicMock()

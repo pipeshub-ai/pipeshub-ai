@@ -270,6 +270,26 @@ async def verify_embedding_health(dense_embeddings, logger) -> int:
 
     return embedding_size
 
+def normalize_embedding_model_name(name: str | None) -> str | None:
+    """Normalize an embedding model name so the *same* model is comparable across providers.
+
+    The identical underlying model is referenced differently depending on the
+    serving provider, e.g. ``nomic-ai/nomic-embed-text`` (sentence-transformers)
+    vs ``nomic-embed-text`` (Ollama), or ``models/text-embedding-004`` (Gemini).
+    These all produce the same embeddings/dimension, so switching the provider
+    for the same model must NOT be treated as a breaking model change.
+
+    We lowercase and strip any provider/org namespace prefix (the part before the
+    last ``/``, which also covers the ``models/`` prefix).
+    """
+    if name is None:
+        return None
+    normalized = name.strip().lower()
+    if "/" in normalized:
+        normalized = normalized.rsplit("/", 1)[-1]
+    return normalized
+
+
 async def handle_model_change(
     retrieval_service,
     current_model_name: str,
@@ -280,14 +300,12 @@ async def handle_model_change(
     logger
 ) -> None:
     """Handle embedding model changes and collection recreation if needed."""
-    if current_model_name is not None:
-        current_model_name = current_model_name.removeprefix("models/")
-    if new_model_name is not None:
-        new_model_name = new_model_name.removeprefix("models/")
+    current_model_name = normalize_embedding_model_name(current_model_name)
+    new_model_name = normalize_embedding_model_name(new_model_name)
 
     if (current_model_name is not None and
         new_model_name is not None and
-        current_model_name.lower() != new_model_name.lower()):
+        current_model_name != new_model_name):
 
 
 

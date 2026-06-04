@@ -72,6 +72,10 @@ WORKDIR /app
 # FASTEMBED_CACHE_PATH used at build time in the python-deps stage.
 ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
 
+# Cap ML thread fan-out (PyTorch/OpenBLAS/MKL). runtime_threads.py propagates
+# this to all libraries. Override via OMP_NUM_THREADS in .env if needed.
+ENV OMP_NUM_THREADS=2
+
 # Copy Python site-packages from build stage
 COPY --from=python-deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=python-deps /usr/local/bin /usr/local/bin
