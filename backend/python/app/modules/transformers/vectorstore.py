@@ -61,7 +61,7 @@ HTTP_OK = 200
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50
 _DEFAULT_CONCURRENCY_LIMIT = 5
 # Small batch size for local/CPU embedding models to avoid memory/CPU thrashing
-_LOCAL_CPU_DOCUMENT_BATCH_SIZE = 3
+_LOCAL_CPU_DOCUMENT_BATCH_SIZE = 10
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = ":record_summary"
 
 class VectorStore(Transformer):
