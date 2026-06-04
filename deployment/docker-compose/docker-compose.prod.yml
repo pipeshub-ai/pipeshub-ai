@@ -8,17 +8,7 @@ services:
     deploy:
       resources:
         limits:
-          # Cap CPU so ML thread storms cannot starve Qdrant, sshd, or other
-          # host services. Raise PIPESHUB_CPU_LIMIT in your .env if you have
-          # more cores to spare (rule of thumb: leave 2 cores for the host and
-          # databases). Host RAM must exceed the sum of all container memory
-          # limits plus OS overhead; keep vm.swappiness low (e.g. 10) to avoid
-          # swap thrashing when models are resident.
-          cpus: '${PIPESHUB_CPU_LIMIT:-6}'
           memory: 10G
-        reservations:
-          cpus: '2'
-          memory: 4G
     shm_size: 2gb
     init: true
     logging:

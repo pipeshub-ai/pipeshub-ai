@@ -24,11 +24,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '${PIPESHUB_CPU_LIMIT:-6}'
           memory: 10G
-        reservations:
-          cpus: '2'
-          memory: 4G
     shm_size: 2gb
     init: true
     logging:
