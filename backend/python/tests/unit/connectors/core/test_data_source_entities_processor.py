@@ -3914,3 +3914,268 @@ class TestGetUserAndAppHelpers:
         result = await proc.get_app_by_id("conn-1")
 
         assert result == app_mock
+
+
+# ===========================================================================
+# on_records_moved — reindex-event semantics
+# ===========================================================================
+
+
+def _make_code_record(
+    *,
+    record_id: str = "rec-1",
+    connector_id: str = "conn-1",
+    external_record_id: str = "/ns/-/blob/HEAD/src/new.py",
+    external_revision_id: str = "sha-new",
+    indexing_status: str | None = None,
+    is_internal: bool = False,
+) -> MagicMock:
+    """Build a minimal Record mock suitable for on_records_moved tests.
+
+    Uses plain MagicMock (no spec) so that any attribute access not explicitly
+    set here returns a valid MagicMock instead of raising AttributeError.  This
+    is important for attributes accessed only in log-formatting paths (e.g.
+    record.record_name used in the logger.info call inside on_records_moved).
+    """
+    rec = MagicMock()
+    rec.id = record_id
+    rec.connector_id = connector_id
+    rec.external_record_id = external_record_id
+    rec.external_revision_id = external_revision_id
+    rec.indexing_status = indexing_status
+    rec.is_internal = is_internal
+    rec.org_id = "org-1"
+    rec.record_name = f"file_{record_id}.py"
+    rec.to_kafka_record = MagicMock(return_value={"id": record_id})
+    return rec
+
+
+def _make_old_record(
+    *,
+    record_id: str = "old-rec-1",
+    external_revision_id: str = "sha-old",
+) -> MagicMock:
+    """Build a minimal existing DB record mock returned by get_record_by_external_id."""
+    rec = MagicMock()
+    rec.id = record_id
+    rec.external_revision_id = external_revision_id
+    return rec
+
+
+def _setup_proc_for_moved(tx_store, *, old_record, new_record_id: str = "old-rec-1"):
+    """Wire up a processor for on_records_moved with all internal helpers mocked."""
+    proc = _make_processor()
+    proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+    tx_store.get_record_by_external_id = AsyncMock(return_value=old_record)
+    # Needed by _reset_indexing_status_to_queued (called per reindex record)
+    queued_rec = MagicMock()
+    queued_rec.indexing_status = ProgressStatus.COMPLETED.value
+    tx_store.get_record_by_key = AsyncMock(return_value=queued_rec)
+
+    # Mock complex graph-building internals that are tested elsewhere
+    proc._handle_record_group = AsyncMock(return_value=None)
+    proc._link_record_to_group = AsyncMock()
+    proc._handle_parent_record = AsyncMock()
+    proc._handle_record_permissions = AsyncMock()
+
+    return proc
+
+
+class TestOnRecordsMovedReindex:
+    """Tests for DataSourceEntitiesProcessor.on_records_moved.
+
+    The critical contract under test:
+    - A rename/move where the blob SHA changes fires an 'updateRecord' Kafka event
+      (i.e. a re-index is triggered for the moved record).
+    - A pure rename (same blob SHA, only path changes) fires NO Kafka event at all
+      — expensive re-embedding work must be avoided.
+    - When the old record is not found in the DB, the move is treated as a fresh
+      add and a 'newRecord' event is fired.
+    - Records with AUTO_INDEX_OFF indexing status or is_internal=True never
+      produce any Kafka event.
+    """
+
+    # Run async tests via anyio locally (anyio plugin) and via pytest-asyncio
+    # in CI (asyncio_mode=auto in pytest.ini discovers them automatically).
+    pytestmark = pytest.mark.anyio
+
+    async def test_content_change_fires_update_record_event(self) -> None:
+        """When the blob SHA changes (content changed), 'updateRecord' must be sent.
+
+        Scenario: file renamed from 'src/a.py' → 'dst/a.py' AND its content changed.
+        git diff: { "old_path": "src/a.py", "new_path": "dst/a.py",
+                    "renamed_file": True }
+        The new blob SHA differs from the stored SHA → on_records_moved fires updateRecord.
+        """
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-abc", external_revision_id="sha-before")
+        new_record = _make_code_record(
+            record_id="fresh-uuid",
+            external_revision_id="sha-after",  # different → content changed
+        )
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        # Must fire an 'updateRecord' event (the reindex trigger)
+        event_calls = proc.messaging_producer.send_message.call_args_list
+        event_types = [c.args[1]["eventType"] for c in event_calls]
+        assert "updateRecord" in event_types
+
+    async def test_pure_rename_no_content_change_fires_no_event(self) -> None:
+        """Pure rename (same blob SHA) must NOT fire any Kafka event.
+
+        Scenario: 'src/a.py' renamed to 'dst/a.py', content unchanged.
+        git diff: { "old_path": "src/a.py", "new_path": "dst/a.py",
+                    "renamed_file": True }
+        The blob SHA is identical → no re-embedding needed → no Kafka event.
+        """
+        tx_store = _make_tx_store()
+        shared_sha = "sha-identical"
+        old_record = _make_old_record(record_id="rec-xyz", external_revision_id=shared_sha)
+        new_record = _make_code_record(
+            record_id="fresh-uuid",
+            external_revision_id=shared_sha,  # same → pure rename
+        )
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        # No Kafka event must be produced at all
+        proc.messaging_producer.send_message.assert_not_called()
+
+    async def test_old_record_not_found_treated_as_add_fires_new_record_event(self) -> None:
+        """When the old record doesn't exist in the DB, the move is treated as a fresh
+        add and a 'newRecord' event is fired.
+
+        This handles:
+        - dotfile that was never stored
+        - first sync after a force-push that cleared history
+        """
+        tx_store = _make_tx_store()
+        # old record not found
+        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+
+        new_record = _make_code_record(record_id="brand-new")
+        processed_record = _make_code_record(record_id="brand-new", is_internal=False)
+
+        proc = _make_processor()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        proc._handle_record_group = AsyncMock(return_value=None)
+        proc._link_record_to_group = AsyncMock()
+        proc._handle_parent_record = AsyncMock()
+        proc._handle_record_permissions = AsyncMock()
+        # _process_record returns the record to publish
+        proc._process_record = AsyncMock(return_value=processed_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/old.py", new_record, [])])
+
+        event_calls = proc.messaging_producer.send_message.call_args_list
+        event_types = [c.args[1]["eventType"] for c in event_calls]
+        assert "newRecord" in event_types
+
+    async def test_auto_index_off_content_change_no_event(self) -> None:
+        """Even when content changes, AUTO_INDEX_OFF suppresses the Kafka event."""
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(external_revision_id="sha-before")
+        new_record = _make_code_record(
+            external_revision_id="sha-after",
+            indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
+        )
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        proc.messaging_producer.send_message.assert_not_called()
+
+    async def test_internal_record_content_change_no_event(self) -> None:
+        """Internal records (is_internal=True) never fire Kafka events."""
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(external_revision_id="sha-before")
+        new_record = _make_code_record(
+            external_revision_id="sha-after",
+            is_internal=True,
+        )
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        proc.messaging_producer.send_message.assert_not_called()
+
+    async def test_old_record_id_reused(self) -> None:
+        """The existing DB record's id must be reused (not replaced) on rename.
+
+        Reusing the id preserves all downstream edges (permissions, belongs-to,
+        parent-child edges to other nodes) and avoids a delete-recreate cycle.
+        """
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="original-id", external_revision_id="sha-x")
+        new_record = _make_code_record(
+            record_id="fresh-uuid",
+            external_revision_id="sha-x",  # same SHA (pure rename)
+        )
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        # After the call, new_record.id must have been set to old_record.id
+        assert new_record.id == "original-id"
+
+    async def test_empty_moves_is_noop(self) -> None:
+        """Empty moves list → no DB or Kafka calls."""
+        proc = _make_processor()
+
+        await proc.on_records_moved([])
+
+        proc.messaging_producer.send_message.assert_not_called()
+
+    async def test_multiple_moves_mixed_content_change(self) -> None:
+        """Batch of moves: only records with changed SHA fire updateRecord events."""
+        tx_store = _make_tx_store()
+
+        # record A: content changed → updateRecord
+        old_a = _make_old_record(record_id="id-a", external_revision_id="sha-a-old")
+        new_a = _make_code_record(
+            record_id="new-a",
+            external_record_id="/ns/-/blob/HEAD/a.py",
+            external_revision_id="sha-a-new",  # changed
+        )
+
+        # record B: pure rename → no event
+        old_b = _make_old_record(record_id="id-b", external_revision_id="sha-b")
+        new_b = _make_code_record(
+            record_id="new-b",
+            external_record_id="/ns/-/blob/HEAD/b_new.py",
+            external_revision_id="sha-b",  # unchanged
+        )
+
+        record_map = {
+            "/ns/-/blob/HEAD/old_a.py": old_a,
+            "/ns/-/blob/HEAD/old_b.py": old_b,
+        }
+        # on_records_moved calls tx_store.get_record_by_external_id(connector_id=..., external_id=...)
+        tx_store.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, external_id: record_map.get(external_id)
+        )
+        queued = MagicMock(indexing_status=ProgressStatus.COMPLETED.value)
+        tx_store.get_record_by_key = AsyncMock(return_value=queued)
+
+        proc = _make_processor()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        proc._handle_record_group = AsyncMock(return_value=None)
+        proc._handle_parent_record = AsyncMock()
+        proc._handle_record_permissions = AsyncMock()
+
+        moves = [
+            ("/ns/-/blob/HEAD/old_a.py", new_a, []),
+            ("/ns/-/blob/HEAD/old_b.py", new_b, []),
+        ]
+        await proc.on_records_moved(moves)
+
+        event_calls = proc.messaging_producer.send_message.call_args_list
+        event_types = [c.args[1]["eventType"] for c in event_calls]
+
+        # Only the content-changed record fires an event
+        assert event_types.count("updateRecord") == 1
+        assert "newRecord" not in event_types
