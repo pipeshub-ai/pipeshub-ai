@@ -25124,7 +25124,6 @@ paths:
           description: |
             Unexpected server error while unarchiving the search.
 
-  /agents/template/{templateId}:
   # -------------------- Agents --------------------
   /agents:
     get:
