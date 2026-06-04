@@ -5,6 +5,7 @@ import {
   type NotificationListFilter,
   type NotificationListItem,
   type NotificationListResponse,
+  type NotificationStatsResponse,
 } from './api';
 
 function listParamsForFilter(
@@ -21,6 +22,8 @@ function listParamsForFilter(
 interface NotificationState {
   notifications: NotificationListItem[];
   unreadCount: number;
+  readCount: number;
+  archivedCount: number;
   cursor: string | null;
   hasMore: boolean;
   isLoadingMore: boolean;
@@ -31,6 +34,7 @@ interface NotificationState {
   togglePanel: () => void;
   setListFilter: (filter: NotificationListFilter) => void;
   setInitialPage: (response: NotificationListResponse) => void;
+  setStats: (stats: NotificationStatsResponse) => void;
   appendPage: (response: NotificationListResponse) => void;
   loadMore: () => Promise<void>;
   addNotification: (item: NotificationListItem) => void;
@@ -57,6 +61,8 @@ function dedupeAppend(
 export const useNotificationStore = create<NotificationState>((set, get) => ({
   notifications: [],
   unreadCount: 0,
+  readCount: 0,
+  archivedCount: 0,
   cursor: null,
   hasMore: false,
   isLoadingMore: false,
@@ -70,9 +76,15 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   setInitialPage: (response) =>
     set({
       notifications: response.notifications,
-      unreadCount: response.unreadCount,
       cursor: response.cursor,
       hasMore: response.hasMore,
+    }),
+
+  setStats: (stats) =>
+    set({
+      unreadCount: stats.unreadCount,
+      readCount: stats.readCount,
+      archivedCount: stats.archivedCount,
     }),
 
   appendPage: (response) =>

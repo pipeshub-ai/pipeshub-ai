@@ -41,6 +41,7 @@ export function NotificationsPanel() {
   const isLoadingMore = useNotificationStore((s) => s.isLoadingMore);
   const loadMore = useNotificationStore((s) => s.loadMore);
   const setInitialPage = useNotificationStore((s) => s.setInitialPage);
+  const setStats = useNotificationStore((s) => s.setStats);
   const markReadStore = useNotificationStore((s) => s.markRead);
   const markAllReadStore = useNotificationStore((s) => s.markAllRead);
   const removeStore = useNotificationStore((s) => s.remove);
@@ -172,16 +173,18 @@ export function NotificationsPanel() {
     setLoading(true);
     setError(null);
     try {
-      const page = await NotificationsApi.list(
-        listFilter === 'unread' ? { status: 'unread' } : {},
-      );
+      const [page, stats] = await Promise.all([
+        NotificationsApi.list(listFilter === 'unread' ? { status: 'unread' } : {}),
+        NotificationsApi.getStats(),
+      ]);
       setInitialPage(page);
+      setStats(stats);
     } catch (e) {
       setError(e instanceof Error ? e.message : t('notifications.loadFailed'));
     } finally {
       setLoading(false);
     }
-  }, [setInitialPage, listFilter, t]);
+  }, [setInitialPage, setStats, listFilter, t]);
 
   useEffect(() => {
     if (isPanelOpen) void load();

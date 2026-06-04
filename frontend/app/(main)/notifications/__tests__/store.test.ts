@@ -26,7 +26,6 @@ function makePage(
     notifications,
     cursor: null,
     hasMore: false,
-    unreadCount: notifications.filter((n) => n.status === 'unread').length,
     ...overrides,
   };
 }
@@ -36,6 +35,8 @@ describe('useNotificationStore', () => {
     useNotificationStore.setState({
       notifications: [],
       unreadCount: 0,
+      readCount: 0,
+      archivedCount: 0,
       cursor: null,
       hasMore: false,
       isLoadingMore: false,
@@ -43,7 +44,7 @@ describe('useNotificationStore', () => {
     });
   });
 
-  it('setInitialPage replaces list and pagination metadata', () => {
+  it('setInitialPage replaces list and pagination metadata (does not touch counts)', () => {
     const items: NotificationListItem[] = [
       makeNotification({
         _id: '1',
@@ -61,14 +62,23 @@ describe('useNotificationStore', () => {
         payload: { connectorId: 'c2', connectorName: 'Slack' },
       }),
     ];
+    useNotificationStore.setState({ unreadCount: 7 });
     useNotificationStore.getState().setInitialPage(
-      makePage(items, { unreadCount: 5, hasMore: true, cursor: 'cursor-1' }),
+      makePage(items, { hasMore: true, cursor: 'cursor-1' }),
     );
     const s = useNotificationStore.getState();
     expect(s.notifications).toHaveLength(2);
-    expect(s.unreadCount).toBe(5);
+    expect(s.unreadCount).toBe(7); // setInitialPage must not overwrite counts
     expect(s.hasMore).toBe(true);
     expect(s.cursor).toBe('cursor-1');
+  });
+
+  it('setStats sets unreadCount, readCount, archivedCount', () => {
+    useNotificationStore.getState().setStats({ unreadCount: 5, readCount: 12, archivedCount: 3 });
+    const s = useNotificationStore.getState();
+    expect(s.unreadCount).toBe(5);
+    expect(s.readCount).toBe(12);
+    expect(s.archivedCount).toBe(3);
   });
 
   it('appendPage merges without duplicates', () => {
@@ -93,8 +103,9 @@ describe('useNotificationStore', () => {
 
   it('addNotification prepends and increments unreadCount for unread items', () => {
     useNotificationStore.getState().setInitialPage(
-      makePage([makeNotification({ _id: '1', status: 'unread' })], { unreadCount: 1 }),
+      makePage([makeNotification({ _id: '1', status: 'unread' })]),
     );
+    useNotificationStore.setState({ unreadCount: 1 });
     useNotificationStore.getState().addNotification(
       makeNotification({
         _id: '1',
@@ -111,8 +122,9 @@ describe('useNotificationStore', () => {
 
   it('markRead updates status and decrements unreadCount', () => {
     useNotificationStore.getState().setInitialPage(
-      makePage([makeNotification({ _id: '1', status: 'unread' })], { unreadCount: 1 }),
+      makePage([makeNotification({ _id: '1', status: 'unread' })]),
     );
+    useNotificationStore.setState({ unreadCount: 1 });
     useNotificationStore.getState().markRead('1');
     expect(useNotificationStore.getState().notifications[0].status).toBe('read');
     expect(useNotificationStore.getState().unreadCount).toBe(0);
@@ -125,9 +137,10 @@ describe('useNotificationStore', () => {
           makeNotification({ _id: '1', status: 'unread' }),
           makeNotification({ _id: '2', status: 'unread', severity: 'warning' }),
         ],
-        { unreadCount: 2, hasMore: true, cursor: 'cursor-1' },
+        { hasMore: true, cursor: 'cursor-1' },
       ),
     );
+    useNotificationStore.setState({ unreadCount: 2 });
     useNotificationStore.getState().markAllRead();
     const s = useNotificationStore.getState();
     expect(s.notifications.every((n) => n.status === 'read')).toBe(true);
@@ -138,11 +151,11 @@ describe('useNotificationStore', () => {
     useNotificationStore.setState({ listFilter: 'unread' });
     useNotificationStore.getState().setInitialPage(
       makePage([makeNotification({ _id: '1', status: 'unread' })], {
-        unreadCount: 1,
         hasMore: true,
         cursor: 'c1',
       }),
     );
+    useNotificationStore.setState({ unreadCount: 1 });
     useNotificationStore.getState().markAllRead();
     const s = useNotificationStore.getState();
     expect(s.hasMore).toBe(false);
@@ -156,9 +169,9 @@ describe('useNotificationStore', () => {
           makeNotification({ _id: '1', status: 'unread' }),
           makeNotification({ _id: '2', status: 'unread', severity: 'warning' }),
         ],
-        { unreadCount: 2 },
       ),
     );
+    useNotificationStore.setState({ unreadCount: 2 });
     useNotificationStore.getState().remove('1');
     expect(useNotificationStore.getState().notifications.map((n) => n._id)).toEqual(['2']);
     expect(useNotificationStore.getState().unreadCount).toBe(1);

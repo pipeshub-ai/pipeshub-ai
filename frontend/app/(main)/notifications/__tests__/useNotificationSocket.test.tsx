@@ -35,7 +35,12 @@ vi.mock('../api', async (importOriginal) => {
           notifications: [],
           cursor: null,
           hasMore: false,
+        }),
+      getStats: () =>
+        Promise.resolve({
           unreadCount: 0,
+          readCount: 0,
+          archivedCount: 0,
         }),
     },
   };

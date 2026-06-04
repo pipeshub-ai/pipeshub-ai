@@ -61,16 +61,37 @@ export function createNotificationRouter(
 
         const filter = { ...baseFilter, ...cursorFilter };
 
-        const [rows, unreadCount] = await Promise.all([
-          Notifications.find(filter)
-            .sort({ createdAt: -1, _id: -1 })
-            .limit(limit + 1)
-            .lean(),
-          Notifications.countDocuments({ ...baseFilter, status: 'unread' }),
-        ]);
+        const rows = await Notifications.find(filter)
+          .sort({ createdAt: -1, _id: -1 })
+          .limit(limit + 1)
+          .lean();
 
         const { notifications, hasMore, cursor } = paginateResults(rows, limit);
-        res.json({ notifications, cursor, hasMore, unreadCount });
+        res.json({ notifications, cursor, hasMore });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  router.get(
+    '/stats',
+    authMiddleware.authenticate.bind(authMiddleware),
+    async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+      try {
+        const userId = req.user?.userId;
+        if (!userId || !mongoose.isValidObjectId(userId)) {
+          res.status(401).json({ message: 'Unauthorized' });
+          return;
+        }
+        const userOid = new mongoose.Types.ObjectId(userId);
+        const base = buildRetentionFilter(userOid, null);
+        const [unreadCount, readCount, archivedCount] = await Promise.all([
+          Notifications.countDocuments({ ...base, status: 'unread' }),
+          Notifications.countDocuments({ ...base, status: 'read' }),
+          Notifications.countDocuments({ ...base, status: 'archived' }),
+        ]);
+        res.json({ unreadCount, readCount, archivedCount });
       } catch (err) {
         next(err);
       }

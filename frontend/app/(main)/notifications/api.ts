@@ -32,7 +32,12 @@ export interface NotificationListResponse {
   notifications: NotificationListItem[];
   cursor: string | null;
   hasMore: boolean;
+}
+
+export interface NotificationStatsResponse {
   unreadCount: number;
+  readCount: number;
+  archivedCount: number;
 }
 
 export type NotificationListFilter = 'all' | 'unread';
@@ -63,7 +68,6 @@ export const NotificationsApi = {
       notifications: data.notifications ?? [],
       cursor: data.cursor ?? null,
       hasMore: data.hasMore ?? false,
-      unreadCount: data.unreadCount ?? 0,
     };
   },
 
@@ -86,5 +90,16 @@ export const NotificationsApi = {
 
   async remove(id: string): Promise<void> {
     await apiClient.delete(`/api/v1/notifications/${encodeURIComponent(id)}`);
+  },
+
+  async getStats(): Promise<NotificationStatsResponse> {
+    const { data } = await apiClient.get<NotificationStatsResponse>(
+      '/api/v1/notifications/stats',
+    );
+    return {
+      unreadCount: data.unreadCount ?? 0,
+      readCount: data.readCount ?? 0,
+      archivedCount: data.archivedCount ?? 0,
+    };
   },
 };

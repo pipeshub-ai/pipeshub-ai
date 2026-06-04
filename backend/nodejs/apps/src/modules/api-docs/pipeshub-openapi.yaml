@@ -1946,6 +1946,25 @@ components:
               description: Optional; may appear in non-production for some errors.
               additionalProperties: true
 
+    RateLimitErrorResponse:
+      type: object
+      description: Rate-limit error payload (shape differs from standard error responses).
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Error code.
+            message:
+              type: string
+            retryAfter:
+              type: integer
+              nullable: true
+              description: Suggested seconds to wait before retrying.
+      required:
+        - error
+
     OAuthTokenListItem:
       type: object
       description: |
@@ -10811,7 +10830,6 @@ paths:
                 required:
                   - notifications
                   - hasMore
-                  - unreadCount
                 properties:
                   notifications:
                     type: array
@@ -10823,13 +10841,70 @@ paths:
                     description: Pass as cursor query param to fetch the next page
                   hasMore:
                     type: boolean
-                  unreadCount:
-                    type: integer
-                    description: Total unread notifications within the 30-day retention window
         '400':
           description: Invalid cursor
         '401':
-          description: Unauthorized — missing or invalid session
+          description: Unauthorized — missing or invalid access token
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /notifications/stats:
+    get:
+      tags:
+        - Notifications
+      summary: Get notification counts for the current user
+      description: |
+        Returns per-status notification counts for the authenticated user within the
+        30-day retention window. Counts are always global — independent of the `status`
+        filter used on the list endpoint.
+      operationId: getNotificationStats
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Counts retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - unreadCount
+                  - readCount
+                  - archivedCount
+                properties:
+                  unreadCount:
+                    type: integer
+                    description: Notifications with status `unread` within the retention window
+                  readCount:
+                    type: integer
+                    description: Notifications with status `read` within the retention window
+                  archivedCount:
+                    type: integer
+                    description: Notifications with status `archived` within the retention window
+        '401':
+          description: Unauthorized — missing or invalid access token
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /notifications/read-all:
     patch:
@@ -10860,7 +10935,19 @@ paths:
                     type: integer
                     description: Number of notifications updated
         '401':
-          description: Unauthorized — missing or invalid session
+          description: Unauthorized — missing or invalid access token
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /notifications/{id}/read:
     patch:
@@ -10895,9 +10982,21 @@ paths:
         '400':
           description: Invalid user or notification id
         '401':
-          description: Unauthorized
+          description: Unauthorized — missing or invalid access token
         '404':
           description: Notification not found
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /notifications/{id}:
     delete:
@@ -10932,9 +11031,21 @@ paths:
         '400':
           description: Invalid user or notification id
         '401':
-          description: Unauthorized
+          description: Unauthorized — missing or invalid access token
         '404':
           description: Notification not found
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ==================== OAUTH PROVIDER ENDPOINTS ====================
   /oauth2/authorize:

@@ -64,7 +64,6 @@ describe('notification/routes/notification.routes', () => {
       limit: sinon.stub().returnsThis(),
       lean: sinon.stub().resolves(lean),
     } as any);
-    sinon.stub(Notifications, 'countDocuments').resolves(1);
 
     const port = await listen();
     const res = await fetch(`http://127.0.0.1:${port}/api/v1/notifications/`);
@@ -73,7 +72,7 @@ describe('notification/routes/notification.routes', () => {
     expect(body.notifications).to.deep.equal(lean);
     expect(body.hasMore).to.equal(false);
     expect(body.cursor).to.equal(null);
-    expect(body.unreadCount).to.equal(1);
+    expect(body.unreadCount).to.equal(undefined);
   });
 
   it('GET / returns 400 for invalid cursor', async () => {
@@ -91,7 +90,6 @@ describe('notification/routes/notification.routes', () => {
       limit: sinon.stub().returnsThis(),
       lean: sinon.stub().resolves([]),
     } as any);
-    sinon.stub(Notifications, 'countDocuments').resolves(0);
 
     const port = await listen();
     const res = await fetch(
@@ -216,5 +214,48 @@ describe('notification/routes/notification.routes', () => {
     expect(res.status).to.equal(200);
     const body = await res.json();
     expect(body.success).to.equal(true);
+  });
+
+  it('GET /stats returns unreadCount, readCount, archivedCount', async () => {
+    const countStub = sinon.stub(Notifications, 'countDocuments');
+    countStub.onFirstCall().resolves(5);   // unread
+    countStub.onSecondCall().resolves(12); // read
+    countStub.onThirdCall().resolves(3);   // archived
+
+    const port = await listen();
+    const res = await fetch(`http://127.0.0.1:${port}/api/v1/notifications/stats`);
+    expect(res.status).to.equal(200);
+    const body = await res.json();
+    expect(body.unreadCount).to.equal(5);
+    expect(body.readCount).to.equal(12);
+    expect(body.archivedCount).to.equal(3);
+  });
+
+  it('GET /stats returns 401 when userId missing', async () => {
+    container.unbind('AuthMiddleware');
+    container
+      .bind<AuthMiddleware>('AuthMiddleware')
+      .toConstantValue({
+        authenticate: sinon.stub().callsFake((req: any, _res: any, next: any) => {
+          req.user = {};
+          next();
+        }),
+      } as any);
+    const router = createNotificationRouter(container);
+    const app401 = express();
+    app401.use('/api/v1/notifications', router);
+    const srv = app401.listen(0);
+    const port = await new Promise<number>((resolve, reject) => {
+      srv.on('listening', () => {
+        const a = srv.address();
+        if (a && typeof a === 'object') resolve(a.port);
+        else reject(new Error('no port'));
+      });
+    });
+    const res = await fetch(`http://127.0.0.1:${port}/api/v1/notifications/stats`);
+    expect(res.status).to.equal(401);
+    await new Promise<void>((resolve, reject) =>
+      srv.close((err) => (err ? reject(err) : resolve())),
+    );
   });
 });
