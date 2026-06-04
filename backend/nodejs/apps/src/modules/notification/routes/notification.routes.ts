@@ -125,8 +125,12 @@ export function createNotificationRouter(
       try {
         const userId = req.user?.userId;
         const { id } = req.params;
-        if (!userId || !mongoose.isValidObjectId(userId) || !mongoose.isValidObjectId(id)) {
-          res.status(400).json({ message: 'Invalid request' });
+        if (!userId || !mongoose.isValidObjectId(userId)) {
+          res.status(401).json({ message: 'Unauthorized' })
+          return
+        }
+        if (!mongoose.isValidObjectId(id)) {
+          res.status(400).json({ message: 'Invalid notification id' });
           return;
         }
         const userOid = new mongoose.Types.ObjectId(userId);
@@ -156,7 +160,11 @@ export function createNotificationRouter(
       try {
         const userId = req.user?.userId;
         const { id } = req.params;
-        if (!userId || !mongoose.isValidObjectId(userId) || !mongoose.isValidObjectId(id)) {
+        if (!userId || !mongoose.isValidObjectId(userId)) {
+          res.status(401).json({ message: 'Unauthorized' });
+          return;
+        }
+        if (!mongoose.isValidObjectId(id)) {
           res.status(400).json({ message: 'Invalid request' });
           return;
         }

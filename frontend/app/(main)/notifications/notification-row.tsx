@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { Flex, Text, Box, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useTranslation } from 'react-i18next';
 import type { NotificationListItem, NotificationSeverity } from './api';
 
 /** App-relative paths from the API may omit a leading slash; Next.js Link needs one. */
@@ -13,18 +14,20 @@ function notificationHref(redirectLink: string): string | null {
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
 }
 
-function formatRelativeTime(iso?: string): string {
+function formatRelativeTime(iso: string | undefined, lang: string): string {
   if (!iso) return '';
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return '';
-  const diff = Date.now() - t;
+  const ts = new Date(iso).getTime();
+  if (Number.isNaN(ts)) return '';
+  const diff = Date.now() - ts;
+  const secs = Math.floor(diff / 1000);
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins}m ago`;
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
   const days = Math.floor(hrs / 24);
-  return `${days}d ago`;
+  const rtf = new Intl.RelativeTimeFormat(lang, { numeric: 'auto' });
+  if (secs < 60) return rtf.format(0, 'second');
+  if (mins < 60) return rtf.format(-mins, 'minute');
+  if (hrs < 24) return rtf.format(-hrs, 'hour');
+  return rtf.format(-days, 'day');
 }
 
 function severityIcon(severity: NotificationSeverity): string {
@@ -70,7 +73,8 @@ export function NotificationRow({
   markReadLabel: string;
   dismissLabel: string;
 }) {
-  const timeLabel = formatRelativeTime(n.createdAt);
+  const { i18n } = useTranslation();
+  const timeLabel = formatRelativeTime(n.createdAt, i18n.language);
   const severity = n.severity ?? 'error';
   const title = n.title ?? '';
   const message = n.message ?? '';

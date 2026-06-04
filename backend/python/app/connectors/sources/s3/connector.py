@@ -169,7 +169,14 @@ class S3Connector(S3CompatibleBaseConnector):
 
         if not access_key or not secret_key:
             self.logger.error("S3 access key or secret key not found in configuration.")
-            await self.notify(type=NotificationType.CONNECTOR_AUTH_ERROR, severity=NotificationSeverity.ERROR, title="Credentials missing", message="S3 access key or secret key is missing in connector configuration.")
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="Credentials missing",
+                message=(
+                    "S3 access key or secret key is missing in connector configuration."
+                ),
+            )
             return False
 
         try:

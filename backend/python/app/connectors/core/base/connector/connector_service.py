@@ -328,7 +328,15 @@ class BaseConnector(ABC):
         """Fire-and-forget: publish a user-visible connector notification to the broker."""
         svc = self._notification_service
         if not svc or not self.created_by:
-            self.logger.debug("notify skipped: no notification service or created_by associated with connector: %s, connector id: %s \n Info: self.created_by: %s, self.notification_service: %s", self.connector_name, self.connector_id, self.created_by, bool(self._notification_service))
+            self.logger.debug(
+                "notify skipped: no notification service or created_by "
+                "associated with connector: %s, connector id: %s \n "
+                "Info: self.created_by: %s, self.notification_service: %s",
+                self.connector_name,
+                self.connector_id,
+                self.created_by,
+                bool(self._notification_service),
+            )
             return
         org_id = getattr(self.data_entities_processor, "org_id", None) or ""
         connector_type = self.connector_name.value if isinstance(self.connector_name, Connectors) else self.connector_name
