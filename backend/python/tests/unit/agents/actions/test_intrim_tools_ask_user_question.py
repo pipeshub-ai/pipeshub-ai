@@ -1,4 +1,4 @@
-"""Tests for ask_user_question Pydantic coercion (InternalTools)."""
+"""Tests for ask_user_question tool input coercion and structured output (InternalTools)."""
 
 import json
 
@@ -8,6 +8,8 @@ from pydantic import ValidationError
 from app.agents.actions.internal_tools.intrim_tools import (
     AskUserQuestionInput,
     AskUserQuestionItemInput,
+    AskUserQuestionOptionInput,
+    InternalTools,
 )
 
 
@@ -75,3 +77,39 @@ def test_missing_user_intent_raises() -> None:
     }
     with pytest.raises(ValidationError):
         AskUserQuestionInput.model_validate(raw)
+
+
+def test_ask_user_question_returns_structured_json_for_ui() -> None:
+    """Tool output must match the shape persisted by Node and consumed by the frontend."""
+    tools = InternalTools()
+    result_json = tools.ask_user_question(
+        user_intent="User wants to pick a Slack channel for the message.",
+        questions=[
+            AskUserQuestionItemInput(
+                question="Which channel?",
+                options=[
+                    AskUserQuestionOptionInput(label="#general", isUserInput=False),
+                    AskUserQuestionOptionInput(label="#random", isUserInput=False),
+                    AskUserQuestionOptionInput(label="Enter channel name", isUserInput=True),
+                ],
+                multiSelect=False,
+            ),
+        ],
+    )
+
+    payload = json.loads(result_json)
+    assert payload["name"] == "ask_user_question"
+    assert payload["userIntent"] == "User wants to pick a Slack channel for the message."
+    assert len(payload["questions"]) == 1
+
+    question = payload["questions"][0]
+    assert question["question"] == "Which channel?"
+    assert question["multiSelect"] is False
+    assert "uuid" in question and question["uuid"]
+
+    options = question["options"]
+    assert len(options) == 3
+    assert options[0]["label"] == "#general"
+    assert options[0]["isUserInput"] is False
+    assert options[0]["id"] == "opt_#general"
+    assert options[2]["isUserInput"] is True
