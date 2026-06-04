@@ -991,6 +991,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/web-search',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
     metricsMiddleware(container),
     getWebSearchProviders(keyValueStoreService),
   );
