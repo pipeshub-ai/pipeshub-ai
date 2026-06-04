@@ -358,6 +358,36 @@ class TestExecutePostgresQuery:
         mock_client.close.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_multi_statement_executes_only_last_statement(self):
+        from app.utils.execute_query import _execute_postgres_query
+
+        mock_client = MagicMock()
+        mock_client.resize_pool = MagicMock()
+        mock_client.connect = AsyncMock()
+        mock_client.execute_query_raw = AsyncMock(return_value=(["id"], [(2,)]))
+        mock_client.close = AsyncMock()
+        mock_client.get_connection_info.return_value = {
+            "host": "localhost", "port": 5432, "database": "test", "user": "admin"
+        }
+
+        mock_builder = MagicMock()
+        mock_builder.get_client.return_value = mock_client
+
+        with patch(
+            "app.sources.client.postgres.postgres.PostgreSQLClientBuilder.build_from_services",
+            new_callable=AsyncMock,
+            return_value=mock_builder,
+        ):
+            result = await _execute_postgres_query(
+                "SELECT 1; SELECT 2 AS id", MagicMock(), "conn-1"
+            )
+
+        assert result["ok"] is True
+        assert result["columns"] == ["id"]
+        assert result["rows"] == [(2,)]
+        mock_client.execute_query_raw.assert_awaited_once_with("SELECT 2 AS id")
+
+    @pytest.mark.asyncio
     async def test_empty_rows(self):
         from app.utils.execute_query import _execute_postgres_query
 

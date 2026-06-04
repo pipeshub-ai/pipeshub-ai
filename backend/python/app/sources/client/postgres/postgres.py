@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
 
 from pydantic import AliasChoices, BaseModel, Field, ValidationError, model_validator
@@ -73,7 +73,7 @@ class PostgreSQLClient:
         self.min_pool_size = min_pool_size
         self.max_pool_size = max_pool_size
         self.pool_acquire_timeout = pool_acquire_timeout
-        self._pool: Optional[asyncpg.Pool] = None
+        self._pool: asyncpg.Pool | None = None
         self._connect_lock = asyncio.Lock() # Serialize pool creation so concurrent connect() calls create only one pool.
 
         logger.info(f"🔧 [PostgreSQLClient] Initialized successfully for {user}@{host}:{port}/{database}")
@@ -146,15 +146,15 @@ class PostgreSQLClient:
         self.max_pool_size = max_pool_size
         return self
 
-    def get_pool(self) -> Optional[asyncpg.Pool]:
+    def get_pool(self) -> asyncpg.Pool | None:
         """Return the underlying asyncpg pool for datasource-level querying."""
         return self._pool
 
     async def execute_query(
         self,
         query: str,
-        params: Optional[Sequence[Any]] = None,
-    ) -> List[Dict[str, Any]]:
+        params: Sequence[Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """Execute a SQL query and return results as list of dicts."""
         if not self.is_connected():
             await self.connect()
@@ -179,7 +179,7 @@ class PostgreSQLClient:
     async def execute_query_raw(
         self,
         query: str,
-        params: Optional[Sequence[Any]] = None,
+        params: Sequence[Any] | None = None,
     ) -> tuple[list[str], list[tuple[Any, ...]]]:
         """Execute a SQL query and return raw columns/rows."""
         if not self.is_connected():
@@ -229,7 +229,7 @@ class PostgreSQLClient:
         except (IndexError, ValueError, AttributeError):
             return 0
 
-    def get_connection_info(self) -> Dict[str, Any]:
+    def get_connection_info(self) -> dict[str, Any]:
         """Get connection information."""
         return {
             "host": self.host,
@@ -303,17 +303,17 @@ class PostgreSQLConfig(BaseModel):
 class AuthConfig(BaseModel):
     """Authentication configuration for PostgreSQL connector."""
 
-    host: Optional[str] = Field(default=None, description="PostgreSQL server host")
+    host: str | None = Field(default=None, description="PostgreSQL server host")
     port: int = Field(default=5432, description="PostgreSQL server port")
-    database: Optional[str] = Field(default=None, description="Database name")
-    user: Optional[str] = Field(
+    database: str | None = Field(default=None, description="Database name")
+    user: str | None = Field(
         default=None,
         description="Username",
         validation_alias=AliasChoices("username", "user"),
     )
     password: str = Field(default="", description="Password")
     sslmode: str = Field(default="prefer", description="SSL mode")
-    connection_string: Optional[str] = Field(
+    connection_string: str | None = Field(
         default=None,
         description="Full DSN/URI; used when authType is CONNECTION_STRING",
         validation_alias=AliasChoices("connectionString", "connection_string"),
@@ -380,7 +380,7 @@ class PostgreSQLClientBuilder(IClient):
         """Return the PostgreSQL client object."""
         return self._client
     
-    def get_connection_info(self) -> Dict[str, Any]:
+    def get_connection_info(self) -> dict[str, Any]:
         """Return the connection information."""
         return self._client.get_connection_info()
     
@@ -404,7 +404,7 @@ class PostgreSQLClientBuilder(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
-        connector_instance_id: Optional[str] = None,
+        connector_instance_id: str | None = None,
     ) -> "PostgreSQLClientBuilder":
         """Build PostgreSQLClientBuilder using configuration service.
         
@@ -467,8 +467,8 @@ class PostgreSQLClientBuilder(IClient):
     async def _get_connector_config(
         logger: logging.Logger,
         config_service: ConfigurationService,
-        connector_instance_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        connector_instance_id: str | None = None,
+    ) -> dict[str, Any]:
         """Fetch connector config from etcd for PostgreSQL.
         
         Args:
@@ -509,17 +509,17 @@ class PostgreSQLResponse(BaseModel):
     """Standard response wrapper for PostgreSQL operations."""
     
     success: bool = Field(..., description="Whether the request was successful")
-    data: Optional[Union[Dict[str, Any], List[Any]]] = Field(
+    data: dict[str, Any] | list[Any] | None = Field(
         default=None, description="Response data"
     )
-    error: Optional[str] = Field(default=None, description="Error message if failed")
-    message: Optional[str] = Field(default=None, description="Additional message")
+    error: str | None = Field(default=None, description="Error message if failed")
+    message: str | None = Field(default=None, description="Additional message")
     
     class Config:
         """Pydantic configuration."""
         extra = "allow"
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert response to dictionary."""
         return self.model_dump(exclude_none=True)
     

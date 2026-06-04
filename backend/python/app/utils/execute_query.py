@@ -110,6 +110,18 @@ def _is_keyword_present(keyword: str, query: str) -> bool:
     return bool(re.search(pattern, query))
 
 
+def _last_sql_statement(query: str) -> str:
+    """Return the final non-empty statement from a semicolon-delimited query.
+
+    This helper is intentionally simple: callers only use it after `_is_query_safe()`
+    has already accepted the SQL. That validator also splits on semicolons, so any
+    query containing semicolons inside literals/comments would already be rejected
+    before reaching this point.
+    """
+    statements = [stmt.strip() for stmt in query.split(";") if stmt.strip()]
+    return statements[-1] if statements else query.strip()
+
+
 def _is_query_safe(query: str) -> tuple[bool, str]:
     """Validate that query is read-only across all SQL dialects.
 
@@ -323,9 +335,15 @@ async def _execute_postgres_query(
         connection_info = client.get_connection_info()
         logger.debug(f"🔍 [_execute_postgres_query] Connecting to PostgreSQL: host={connection_info.get('host')}, port={connection_info.get('port')}, database={connection_info.get('database')}, user={connection_info.get('user')}")
         logger.info(f"🔍 [_execute_postgres_query] Executing query: {query}")
+        query_to_execute = _last_sql_statement(query)
+        if query_to_execute != query.strip():
+            logger.warning(
+                "🔍 [_execute_postgres_query] Multi-statement query detected; "
+                "executing only the final statement"
+            )
         await client.connect()
         try:
-            columns, rows = await client.execute_query_raw(query)
+            columns, rows = await client.execute_query_raw(query_to_execute)
         finally:
             await client.close()
 
