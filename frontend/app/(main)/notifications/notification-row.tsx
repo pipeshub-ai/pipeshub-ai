@@ -125,6 +125,7 @@ export function NotificationRow({
                     minWidth: 0,
                     display: 'block',
                   }}
+                  onClick={() => { if (!isRead) onMarkRead(n); }}
                   {...(/^https?:\/\//i.test(href)
                     ? { target: '_blank', rel: 'noopener noreferrer' }
                     : {})}
