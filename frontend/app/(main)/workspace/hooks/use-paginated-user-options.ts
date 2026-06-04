@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { UsersApi } from '../users/api';
 import type { CheckboxOption } from '../components';
 
@@ -28,6 +28,28 @@ interface UsePaginatedUserOptionsReturn {
   onLoadMore: () => void;
 }
 
+/** Merge options by id so infinite scroll never produces duplicate React keys. */
+function mergeOptionsById(
+  prev: CheckboxOption[],
+  incoming: CheckboxOption[],
+  append: boolean,
+): CheckboxOption[] {
+  const seen = new Set<string>();
+  const merged: CheckboxOption[] = [];
+
+  for (const opt of append ? prev : []) {
+    if (!opt.id || seen.has(opt.id)) continue;
+    seen.add(opt.id);
+    merged.push(opt);
+  }
+  for (const opt of incoming) {
+    if (!opt.id || seen.has(opt.id)) continue;
+    seen.add(opt.id);
+    merged.push(opt);
+  }
+  return merged;
+}
+
 /**
  * Reusable hook for paginated, searchable user options in SearchableCheckboxDropdown.
  * Fetches users from `UsersApi.fetchMergedUsers` with server-side search and pagination.
@@ -38,13 +60,18 @@ export function usePaginatedUserOptions({
   limit = DEFAULT_LIMIT,
 }: UsePaginatedUserOptionsConfig): UsePaginatedUserOptionsReturn {
   const [options, setOptions] = useState<CheckboxOption[]>([]);
-  const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [search, setSearch] = useState('');
+
+  const pageRef = useRef(1);
+  const searchRef = useRef('');
+  const fetchInFlightRef = useRef(false);
+  const requestIdRef = useRef(0);
 
   const fetchOptions = useCallback(
     async (query: string, pageNum: number, append: boolean) => {
+      const requestId = ++requestIdRef.current;
+      fetchInFlightRef.current = true;
       setIsLoading(true);
       try {
         const { users, totalCount } = await UsersApi.fetchMergedUsers({
@@ -52,46 +79,53 @@ export function usePaginatedUserOptions({
           limit,
           search: query || undefined,
         });
+        if (requestId !== requestIdRef.current) return;
+
         const newOpts = users.map((u) => ({
           id: idField === 'id' ? u.id : u.userId,
           label: u.name || u.email || 'Unknown User',
           subtitle: u.email,
           profilePicture: u.profilePicture,
         }));
-        setOptions((prev) => (append ? [...prev, ...newOpts] : newOpts));
+        setOptions((prev) => mergeOptionsById(prev, newOpts, append));
+        pageRef.current = pageNum;
         setHasMore(pageNum * limit < totalCount);
       } catch {
         // handled by global interceptor
       } finally {
-        setIsLoading(false);
+        if (requestId === requestIdRef.current) {
+          fetchInFlightRef.current = false;
+          setIsLoading(false);
+        }
       }
     },
-    [limit, idField]
+    [limit, idField],
   );
 
-  // Load first page when enabled; reset state when disabled
+  // Load first page when enabled; reset state when panel opens
   useEffect(() => {
     if (enabled) {
-      setSearch('');
-      setPage(1);
+      searchRef.current = '';
+      pageRef.current = 1;
+      setHasMore(false);
       fetchOptions('', 1, false);
     }
   }, [enabled, fetchOptions]);
 
   const onSearch = useCallback(
     (query: string) => {
-      setSearch(query);
-      setPage(1);
+      searchRef.current = query;
+      pageRef.current = 1;
       fetchOptions(query, 1, false);
     },
-    [fetchOptions]
+    [fetchOptions],
   );
 
   const onLoadMore = useCallback(() => {
-    const nextPage = page + 1;
-    setPage(nextPage);
-    fetchOptions(search, nextPage, true);
-  }, [page, search, fetchOptions]);
+    if (fetchInFlightRef.current || !hasMore) return;
+    const nextPage = pageRef.current + 1;
+    fetchOptions(searchRef.current, nextPage, true);
+  }, [hasMore, fetchOptions]);
 
   return { options, isLoading, hasMore, onSearch, onLoadMore };
 }

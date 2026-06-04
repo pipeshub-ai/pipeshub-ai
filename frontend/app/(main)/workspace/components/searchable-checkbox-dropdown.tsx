@@ -77,6 +77,7 @@ export function SearchableCheckboxDropdown({
   const chipsContainerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadMoreLockRef = useRef(false);
   const isServerSearch = !!onSearch;
 
   // Close on click outside
@@ -127,12 +128,27 @@ export function SearchableCheckboxDropdown({
     [isServerSearch, onSearch]
   );
 
+  // Release scroll lock when parent finishes loading (covers one-frame gap before isLoadingMore updates)
+  useEffect(() => {
+    if (!isLoadingMore) {
+      loadMoreLockRef.current = false;
+    }
+  }, [isLoadingMore]);
+
   // Infinite scroll
   const handleScroll = useCallback(() => {
-    if (!onLoadMore || !hasMore || isLoadingMore) return;
+    if (
+      !onLoadMore ||
+      !hasMore ||
+      isLoadingMore ||
+      loadMoreLockRef.current
+    ) {
+      return;
+    }
     const el = listRef.current;
     if (!el) return;
     if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
+      loadMoreLockRef.current = true;
       onLoadMore();
     }
   }, [onLoadMore, hasMore, isLoadingMore]);
