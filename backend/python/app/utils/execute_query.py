@@ -113,10 +113,16 @@ def _is_keyword_present(keyword: str, query: str) -> bool:
 def _last_sql_statement(query: str) -> str:
     """Return the final non-empty statement from a semicolon-delimited query.
 
-    This helper is intentionally simple: callers only use it after `_is_query_safe()`
-    has already accepted the SQL. That validator also splits on semicolons, so any
-    query containing semicolons inside literals/comments would already be rejected
-    before reaching this point.
+    PostgreSQL queries in this module ultimately flow into
+    ``PostgreSQLClient.execute_query_raw()``, which uses ``asyncpg``
+    ``conn.prepare(query)`` under the hood. Prepared statements there accept
+    exactly one SQL statement, so the ad-hoc PostgreSQL execution path keeps
+    only the final validated statement before calling the client.
+
+    This helper is intentionally simple: callers only use it after
+    `_is_query_safe()` has already accepted the SQL. That validator also splits
+    on semicolons, so any query containing semicolons inside literals/comments
+    would already be rejected before reaching this point.
     """
     statements = [stmt.strip() for stmt in query.split(";") if stmt.strip()]
     return statements[-1] if statements else query.strip()

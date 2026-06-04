@@ -181,7 +181,10 @@ class PostgreSQLClient:
         query: str,
         params: Sequence[Any] | None = None,
     ) -> tuple[list[str], list[tuple[Any, ...]]]:
-        """Execute a SQL query and return raw columns/rows."""
+        """
+        Execute a SQL query and return raw columns/rows.
+        conn.execute doesn't support multi-statement queries.
+        """
         if not self.is_connected():
             await self.connect()
 

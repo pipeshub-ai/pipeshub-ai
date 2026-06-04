@@ -54,14 +54,35 @@ def _make_attribute(name: str) -> MagicMock:
 
 
 class _FakeRecord:
+    """Minimal asyncpg.Record stand-in: iterable for tuple(row), keyed lookup for dict(row)."""
+
     def __init__(self, values: dict[str, object]) -> None:
         self._values = values
+        self._items = tuple(values.values())
 
     def keys(self):
         return self._values.keys()
 
-    def __getitem__(self, key: str) -> object:
+    def __getitem__(self, key: str | int) -> object:
+        if isinstance(key, int):
+            return self._items[key]
         return self._values[key]
+
+    def __iter__(self):
+        return iter(self._items)
+
+
+class _FakeRecordDuplicateColumns:
+    """Simulates asyncpg: name lookup returns first match; iteration is positional."""
+
+    def __init__(self, items: tuple[object, ...]) -> None:
+        self._items = items
+
+    def __getitem__(self, key: str) -> object:
+        return self._items[0]
+
+    def __iter__(self):
+        return iter(self._items)
 
 
 @pytest.fixture
@@ -509,7 +530,10 @@ class TestPostgreSQLClientExecuteQueryRaw:
     async def test_with_results(self):
         statement = _make_statement_mock(
             attributes=[_make_attribute("id"), _make_attribute("name")],
-            rows=[{"id": 1, "name": "a"}, {"id": 2, "name": "b"}],
+            rows=[
+                _FakeRecord({"id": 1, "name": "a"}),
+                _FakeRecord({"id": 2, "name": "b"}),
+            ],
         )
         client, pool, conn = self._make_pooled_client(statement=statement)
 
@@ -519,6 +543,19 @@ class TestPostgreSQLClientExecuteQueryRaw:
         assert rows == [(1, "a"), (2, "b")]
         conn.prepare.assert_awaited_once_with("SELECT * FROM t")
         pool.acquire.assert_called_once_with(timeout=client.pool_acquire_timeout)
+
+    @pytest.mark.asyncio
+    async def test_duplicate_column_names_preserve_positional_values(self):
+        statement = _make_statement_mock(
+            attributes=[_make_attribute("a"), _make_attribute("a")],
+            rows=[_FakeRecordDuplicateColumns((1, 2))],
+        )
+        client, _, _ = self._make_pooled_client(statement=statement)
+
+        columns, rows = await client.execute_query_raw("SELECT a, a FROM t")
+
+        assert columns == ["a", "a"]
+        assert rows == [(1, 2)]
 
     @pytest.mark.asyncio
     async def test_no_description_returns_empty(self):
@@ -535,7 +572,7 @@ class TestPostgreSQLClientExecuteQueryRaw:
     async def test_with_params(self):
         statement = _make_statement_mock(
             attributes=[_make_attribute("id")],
-            rows=[{"id": 1}],
+            rows=[_FakeRecord({"id": 1})],
         )
         client, _, _ = self._make_pooled_client(statement=statement)
 

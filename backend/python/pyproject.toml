@@ -282,7 +282,6 @@ dependencies = [
     "uvicorn==0.35",
     "zstandard==0.25.0",
     "mariadb>=1.1.0",
-    "psycopg2-binary==2.9.11",
     "asyncpg>=0.31.0",
 ]
 
