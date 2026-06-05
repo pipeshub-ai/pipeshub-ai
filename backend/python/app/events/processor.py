@@ -786,7 +786,12 @@ class Processor:
 
                     if non_header_row_dicts:
                         try:
-                            table_data = {"grid": [[row] for row in non_header_row_dicts]}
+                            # Convert row_dicts to Docling cell format expected by get_rows_text
+                            grid = []
+                            for row_dict in non_header_row_dicts:
+                                grid_row = [{"text": row_dict.get(col, "")} for col in column_headers]
+                                grid.append(grid_row)
+                            table_data = {"grid": grid}
                             row_descriptions, _ = await get_rows_text(
                                 self.config_service, table_data, table_summary, column_headers
                             )

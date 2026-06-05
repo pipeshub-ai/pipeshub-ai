@@ -11,6 +11,7 @@ import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from app.models.blocks import (
@@ -67,6 +68,44 @@ class ConfluenceBlockParser:
             return None
         return url
 
+    @staticmethod
+    def _resolve_comment_weburl(
+        links: dict[str, Any] | None,
+        parent_page_url: str | None = None,
+    ) -> str | None:
+        """
+        Build an absolute comment URL from Confluence v2 _links.
+
+        Per Confluence Cloud REST API v2, comment _links.webui is a site-relative path.
+        Join with _links.base, derive from _links.self, or fall back to the parent page URL.
+        """
+        if not links:
+            return None
+
+        web_path = links.get("webui")
+        if not web_path or not str(web_path).strip():
+            return None
+
+        web_path = str(web_path).strip()
+        if web_path.startswith("http"):
+            return web_path
+
+        base_url = links.get("base")
+        if base_url:
+            return f"{base_url}{web_path}"
+
+        self_link = links.get("self")
+        if self_link and "https://" in self_link and "/wiki/" in self_link:
+            extracted_base_url = self_link.split("/wiki/")[0] + "/wiki"
+            return f"{extracted_base_url}{web_path}"
+
+        if parent_page_url and parent_page_url.startswith("http"):
+            parsed = urlparse(parent_page_url)
+            page_base = f"{parsed.scheme}://{parsed.netloc}/wiki"
+            return f"{page_base}{web_path}"
+
+        return None
+
     def _construct_block_url(
         self,
         parent_page_url: str | None,
@@ -92,6 +131,7 @@ class ConfluenceBlockParser:
         media_fetcher: Callable[[str, str], Awaitable[str | None]] | None = None,
         parent_page_url: str | None = None,
         page_id: str | None = None,
+        page_title: str | None = None,
     ) -> tuple[list[Block], list[BlockGroup]]:
         """
         Parse ADF content into blocks and block groups.
@@ -101,6 +141,7 @@ class ConfluenceBlockParser:
             media_fetcher: Async callback that fetches media as base64 data URI
             parent_page_url: URL of the parent page
             page_id: ID of the parent page
+            page_title: Page title prepended as H1 before body (ADF omits title)
 
         Returns:
             Tuple of (blocks, block_groups)
@@ -108,12 +149,22 @@ class ConfluenceBlockParser:
         blocks: list[Block] = []
         block_groups: list[BlockGroup] = []
 
-        if not adf_content or not isinstance(adf_content, dict):
-            return blocks, block_groups
-
         # Reset counters
         self._block_counter = 0
         self._block_group_counter = 0
+
+        # Title must be block 0 before parsing so table row indices and children stay aligned
+        if page_title and str(page_title).strip() and page_id:
+            blocks.append(
+                self.create_title_block(
+                    str(page_title).strip(),
+                    page_id,
+                    parent_page_url,
+                )
+            )
+
+        if not adf_content or not isinstance(adf_content, dict):
+            return blocks, block_groups
 
         # Parse root content nodes
         content_nodes = adf_content.get("content", [])
@@ -1021,6 +1072,9 @@ class ConfluenceBlockParser:
             table_group.table_metadata.num_of_cols = num_cols
             table_group.table_metadata.num_of_cells = len(row_indices) * num_cols
             table_group.table_metadata.column_names = column_headers
+            # First ADF row is always used for column_headers / markdown header row
+            if row_indices:
+                table_group.table_metadata.has_header = True
 
         if isinstance(table_group.data, dict):
             table_group.data["column_headers"] = column_headers
@@ -1838,6 +1892,7 @@ class ConfluenceBlockParser:
         blocks: list[Block],
         inline_comments: list[dict[str, Any]],
         media_fetcher: Callable[[str, str], Awaitable[str | None]] | None = None,
+        parent_page_url: str | None = None,
     ) -> None:
         """
         Attach inline comments to their target blocks based on quoted text.
@@ -1846,6 +1901,7 @@ class ConfluenceBlockParser:
             blocks: List of blocks to attach comments to
             inline_comments: List of inline comment dictionaries from API
             media_fetcher: Optional media fetcher for comment attachments
+            parent_page_url: Absolute page/blog URL for resolving relative comment webui paths
         """
         if not inline_comments:
             return
@@ -1887,6 +1943,7 @@ class ConfluenceBlockParser:
                         comment,
                         quoted_text=quoted_text if comment == first_comment else None,
                         media_fetcher=media_fetcher,
+                        parent_page_url=parent_page_url,
                     )
                     if block_comment:
                         thread_block_comments.append(block_comment)
@@ -1936,6 +1993,7 @@ class ConfluenceBlockParser:
         comment: dict[str, Any],
         quoted_text: str | None = None,
         media_fetcher: Callable | None = None,
+        parent_page_url: str | None = None,
     ) -> BlockComment | None:
         """
         Parse Confluence comment data into BlockComment object.
@@ -1944,6 +2002,7 @@ class ConfluenceBlockParser:
             comment: Raw comment data from Confluence API
             quoted_text: The text that was commented on (for inline comments)
             media_fetcher: Optional media fetcher for attachments
+            parent_page_url: Absolute page/blog URL for resolving relative comment webui paths
 
         Returns:
             BlockComment object or None if parsing fails
@@ -1977,9 +2036,9 @@ class ConfluenceBlockParser:
             # Parse timestamps
             created_at = self._parse_confluence_timestamp(comment.get("createdAt"))
 
-            # Extract weburl
+            # Extract weburl (v2 API returns site-relative webui paths)
             links = comment.get("_links", {})
-            comment_weburl = links.get("webui")
+            comment_weburl = self._resolve_comment_weburl(links, parent_page_url)
 
             # Resolution status
             resolution_status = comment.get("resolutionStatus", "open")
@@ -2100,6 +2159,64 @@ class ConfluenceBlockParser:
     # Post-Processing Methods
     # ============================================================================
 
+    @staticmethod
+    def shift_parent_indices_after_group_insert(
+        blocks: list[Block],
+        block_groups: list[BlockGroup],
+        insert_at: int = 0,
+    ) -> None:
+        """
+        Bump parent_index values when a block group is inserted at insert_at.
+
+        Comment threads keep parent_index=insert_at (content wrapper) unchanged.
+        """
+        for group in block_groups:
+            if group.parent_index is None or group.parent_index < insert_at:
+                continue
+            if (
+                group.sub_type == GroupSubType.COMMENT_THREAD
+                and group.parent_index == insert_at
+            ):
+                continue
+            group.parent_index += 1
+
+        for block in blocks:
+            if block.parent_index is not None and block.parent_index >= insert_at:
+                block.parent_index += 1
+
+    @staticmethod
+    def sync_table_row_links(
+        blocks: list[Block],
+        block_groups: list[BlockGroup],
+    ) -> None:
+        """
+        Align TABLE_ROW parent_index and row_number fields with TABLE group children.
+
+        Uses each table group's explicit children ranges as source of truth so row
+        blocks stay correct after block_groups are reordered (e.g. content wrapper insert).
+        """
+        for group in block_groups:
+            if group.type != GroupType.TABLE or not group.children:
+                continue
+
+            row_number = 0
+            for range_obj in group.children.block_ranges:
+                for block_index in range(range_obj.start, range_obj.end + 1):
+                    if block_index < 0 or block_index >= len(blocks):
+                        continue
+                    block = blocks[block_index]
+                    if block.type != BlockType.TABLE_ROW:
+                        continue
+
+                    block.parent_index = group.index
+                    row_number += 1
+
+                    if block.table_row_metadata:
+                        block.table_row_metadata.row_number = row_number
+
+                    if isinstance(block.data, dict):
+                        block.data["row_number"] = row_number
+
     def post_process_blocks(
         self,
         blocks: list[Block],
@@ -2145,34 +2262,23 @@ class ConfluenceBlockParser:
         for i, group in enumerate(block_groups):
             group.index = i
 
-        # Update table row metadata
-        table_row_counts: dict[int, int] = {}
-        table_header_flags: dict[int, bool] = {}
+        self.sync_table_row_links(blocks, block_groups)
 
-        # First pass: identify tables with headers
+        # Ensure first row is marked header when table declares has_header
         for group in block_groups:
             if (
-                group.type == GroupType.TABLE
-                and group.table_metadata
-                and group.table_metadata.has_header
+                group.type != GroupType.TABLE
+                or not group.table_metadata
+                or not group.table_metadata.has_header
+                or not group.children
+                or not group.children.block_ranges
             ):
-                table_header_flags[group.index] = True
-
-        # Second pass: update row numbers
-        for block in blocks:
-            if block.type == BlockType.TABLE_ROW and block.parent_index is not None:
-                table_index = block.parent_index
-
-                if table_index not in table_row_counts:
-                    table_row_counts[table_index] = 0
-
-                if block.table_row_metadata:
-                    table_row_counts[table_index] += 1
-                    block.table_row_metadata.row_number = table_row_counts[table_index]
-
-                    # Set header flag if first row and table has headers
-                    if table_row_counts[table_index] == 1 and table_header_flags.get(table_index, False):
-                        block.table_row_metadata.is_header = True
+                continue
+            first_index = group.children.block_ranges[0].start
+            if 0 <= first_index < len(blocks):
+                first_row = blocks[first_index]
+                if first_row.table_row_metadata:
+                    first_row.table_row_metadata.is_header = True
 
     def _fix_numbered_list_numbering(self, blocks: list[Block]) -> None:
         """

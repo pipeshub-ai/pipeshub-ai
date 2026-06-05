@@ -4054,26 +4054,17 @@ class ConfluenceConnector(BaseConnector):
         # Determine content_type for API calls
         content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
 
-        # 1. Parse ADF content to blocks using the new parser
-        if adf_dict:
-            blocks, block_groups = await parser.parse_adf(
-                adf_content=adf_dict,
-                media_fetcher=self._create_confluence_media_fetcher(page_id, content_type),
-                parent_page_url=weburl,
-                page_id=page_id,
-            )
-        else:
-            blocks = []
-            block_groups = []
-
-        # Prepend page title as H1 — ADF body does not include the title
-        if page_title and str(page_title).strip():
-            title_block = parser.create_title_block(
-                str(page_title).strip(),
-                page_id,
-                weburl,
-            )
-            blocks.insert(0, title_block)
+        # 1. Parse ADF content to blocks (title prepended inside parse_adf as block 0)
+        page_title_str = str(page_title).strip() if page_title and str(page_title).strip() else None
+        blocks, block_groups = await parser.parse_adf(
+            adf_content=adf_dict if adf_dict else {},
+            media_fetcher=self._create_confluence_media_fetcher(page_id, content_type)
+            if adf_dict
+            else None,
+            parent_page_url=weburl,
+            page_id=page_id,
+            page_title=page_title_str,
+        )
 
         # Track attachment IDs that are used (embedded images)
         used_attachment_ids: set[str] = set()
@@ -4140,6 +4131,7 @@ class ConfluenceConnector(BaseConnector):
                 blocks=blocks,
                 inline_comments=inline_comments,
                 media_fetcher=self._create_comment_media_fetcher(page_id, content_type),
+                parent_page_url=weburl,
             )
 
         # 4. Process footer comments as COMMENT_THREAD/COMMENT BlockGroups
@@ -4294,6 +4286,10 @@ class ConfluenceConnector(BaseConnector):
                     for i, bg in enumerate(block_groups):
                         bg.index = i
 
+                    ConfluenceBlockParser.shift_parent_indices_after_group_insert(
+                        blocks, block_groups, insert_at=0
+                    )
+
                 # Assign attachments
                 content_group.children_records = remaining_attachments
             else:
@@ -4311,6 +4307,8 @@ class ConfluenceConnector(BaseConnector):
                 block_groups.append(content_group)
 
         # 9. Update parent relationships after post-processing
+        ConfluenceBlockParser.sync_table_row_links(blocks, block_groups)
+
         # Build children references for block groups
         blockgroup_children_map: dict[int, list[int]] = defaultdict(list)
         block_children_map: dict[int, list[int]] = defaultdict(list)
