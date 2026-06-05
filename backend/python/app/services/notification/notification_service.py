@@ -23,10 +23,10 @@ class NotificationService:
         severity: NotificationSeverity,
         title: str,
         message: str,
-        payload: dict[str, Any],
+        payload: dict[str, Any] | None = None,
         redirect_link: str | None = None,
-        recipient_user_ids: list[str],
-        recipient_roles: list[NotificationRecipientRole],
+        recipient_user_ids: list[str] | None = None,
+        recipient_roles: list[NotificationRecipientRole] | None = None,
     ) -> None:
         """Publish a user-visible connector notification. Swallows broker errors after logging."""
         try:

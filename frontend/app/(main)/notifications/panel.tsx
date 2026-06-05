@@ -158,13 +158,13 @@ export function NotificationsPanel() {
     const observer = new ResizeObserver((entries) => {
       const el = panelRef.current;
       if (!el) return;
-      const w = Math.round(entries[0].contentRect.width);
+      const w = isMobile || isNavCollapsed ? 0 : Math.round(entries[0].contentRect.width);
       el.style.left = `${w}px`;
     });
 
     observer.observe(slot);
     return () => observer.disconnect();
-  }, [isVisible]);
+  }, [isVisible, isMobile, isNavCollapsed]);
   // ──────────────────────────────────────────────────────────────────────────
 
   const [loading, setLoading] = useState(false);
