@@ -162,6 +162,65 @@ describe('useNotificationStore', () => {
     expect(s.cursor).toBe(null);
   });
 
+  it('archive sets status to archived, increments archivedCount, decrements unreadCount when was unread', () => {
+    useNotificationStore.getState().setInitialPage(
+      makePage([makeNotification({ _id: '1', status: 'unread' })]),
+    );
+    useNotificationStore.setState({ unreadCount: 1, archivedCount: 0 });
+    useNotificationStore.getState().archive('1');
+    const s = useNotificationStore.getState();
+    expect(s.notifications[0].status).toBe('archived');
+    expect(s.unreadCount).toBe(0);
+    expect(s.archivedCount).toBe(1);
+  });
+
+  it('archive increments archivedCount without changing unreadCount when notification was already read', () => {
+    useNotificationStore.getState().setInitialPage(
+      makePage([makeNotification({ _id: '1', status: 'read' })]),
+    );
+    useNotificationStore.setState({ unreadCount: 2, archivedCount: 0 });
+    useNotificationStore.getState().archive('1');
+    const s = useNotificationStore.getState();
+    expect(s.notifications[0].status).toBe('archived');
+    expect(s.unreadCount).toBe(2);
+    expect(s.archivedCount).toBe(1);
+  });
+
+  it('archive is a no-op when notification is already archived', () => {
+    useNotificationStore.getState().setInitialPage(
+      makePage([makeNotification({ _id: '1', status: 'archived' })]),
+    );
+    useNotificationStore.setState({ unreadCount: 0, archivedCount: 1 });
+    useNotificationStore.getState().archive('1');
+    const s = useNotificationStore.getState();
+    expect(s.archivedCount).toBe(1);
+    expect(s.unreadCount).toBe(0);
+  });
+
+  it('unarchive sets status to read, decrements archivedCount, increments readCount', () => {
+    useNotificationStore.getState().setInitialPage(
+      makePage([makeNotification({ _id: '1', status: 'archived' })]),
+    );
+    useNotificationStore.setState({ archivedCount: 1, readCount: 0 });
+    useNotificationStore.getState().unarchive('1');
+    const s = useNotificationStore.getState();
+    expect(s.notifications[0].status).toBe('read');
+    expect(s.archivedCount).toBe(0);
+    expect(s.readCount).toBe(1);
+  });
+
+  it('unarchive is a no-op when notification is not archived', () => {
+    useNotificationStore.getState().setInitialPage(
+      makePage([makeNotification({ _id: '1', status: 'unread' })]),
+    );
+    useNotificationStore.setState({ archivedCount: 0, readCount: 0 });
+    useNotificationStore.getState().unarchive('1');
+    const s = useNotificationStore.getState();
+    expect(s.notifications[0].status).toBe('unread');
+    expect(s.archivedCount).toBe(0);
+    expect(s.readCount).toBe(0);
+  });
+
   it('remove drops notification and decrements unreadCount', () => {
     useNotificationStore.getState().setInitialPage(
       makePage(

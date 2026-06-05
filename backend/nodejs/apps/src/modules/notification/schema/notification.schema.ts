@@ -80,7 +80,7 @@ const notificationSchema = new Schema<INotification>(
 
 // Indexes for performance improvements
 notificationSchema.index({ orgId: 1, status: 1 });
-notificationSchema.index({ assignedTo: 1, isDeleted: 1, createdAt: -1, _id: -1 });
+notificationSchema.index({ assignedTo: 1, isDeleted: 1, status: 1, createdAt: -1, _id: -1 });
 notificationSchema.index({ createdAt: 1 }, { expireAfterSeconds: NOTIFICATION_TTL_SECONDS });
 
 export const Notifications: Model<INotification> = mongoose.model<INotification>("Notifications", notificationSchema);

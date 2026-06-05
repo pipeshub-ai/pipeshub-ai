@@ -7,56 +7,44 @@ function normalizeRole(role: string): string {
   return role.trim().toLowerCase();
 }
 
-async function getUserIdsForGroupType(
-  orgId: mongoose.Types.ObjectId,
-  groupType: string,
-): Promise<mongoose.Types.ObjectId[]> {
-  const groups = await UserGroups.find({
-    orgId,
-    type: groupType,
-    isDeleted: false,
-  })
-    .select('users')
-    .lean();
-
-  const ids = new Set<string>();
-  for (const group of groups) {
-    const users = (group as { users?: unknown[] }).users ?? [];
-    for (const userId of users) {
-      const asString = String(userId);
-      if (mongoose.isValidObjectId(asString)) {
-        ids.add(asString);
-      }
-    }
-  }
-  return [...ids].map((id) => new mongoose.Types.ObjectId(id));
-}
-
 /**
  * Resolves Kafka `recipientRoles` entries to user IDs via org user groups.
  * Supports role names that match UserGroup.type (e.g. "admin").
+ * Uses a single $in query instead of N sequential queries — one DB round-trip regardless of how many roles are supplied.
  */
 export async function resolveRoleRecipientUserIds(
   orgId: mongoose.Types.ObjectId,
   recipientRoles: string[],
 ): Promise<mongoose.Types.ObjectId[]> {
-  const uniqueRoles = [
+  const validRoles = [
     ...new Set(
       recipientRoles
         .filter((r): r is string => typeof r === 'string' && r.trim() !== '')
-        .map(normalizeRole),
+        .map(normalizeRole)
+        .filter((r) => SUPPORTED_GROUP_ROLE_TYPES.has(r)),
     ),
   ];
 
+  if (validRoles.length === 0) {
+    return [];
+  }
+
+  const groups = await UserGroups.find({
+    orgId,
+    type: { $in: validRoles },
+    isDeleted: false,
+  })
+    .select('users')
+    .lean();
+
   const userIdStrings = new Set<string>();
-  for (const role of uniqueRoles) {
-    const groupType = SUPPORTED_GROUP_ROLE_TYPES.has(role) ? role : null;
-    if (!groupType) {
-      continue;
-    }
-    const userIds = await getUserIdsForGroupType(orgId, groupType);
-    for (const oid of userIds) {
-      userIdStrings.add(oid.toString());
+  for (const group of groups) {
+    const users = (group as { users?: unknown[] }).users ?? [];
+    for (const userId of users) {
+      const asString = String(userId);
+      if (mongoose.isValidObjectId(asString)) {
+        userIdStrings.add(asString);
+      }
     }
   }
   return [...userIdStrings].map((id) => new mongoose.Types.ObjectId(id));

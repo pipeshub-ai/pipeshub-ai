@@ -35,6 +35,13 @@ describe('notification/notification-api.utils', () => {
     const cutoffMs = createdAtFilter.$gte.getTime();
     expect(cutoffMs).to.be.at.least(before);
     expect(cutoffMs).to.be.at.most(after);
+    // Default (no status, includeArchived=false) excludes archived docs.
+    expect(filter.status).to.deep.equal({ $ne: 'archived' });
+  });
+
+  it('buildRetentionFilter includes all statuses when includeArchived=true', () => {
+    const userOid = new mongoose.Types.ObjectId();
+    const filter = buildRetentionFilter(userOid, null, true);
     expect(filter.status).to.be.undefined;
   });
 

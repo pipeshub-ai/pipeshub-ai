@@ -29,12 +29,12 @@ export function useNotificationSocket(): void {
 
     const onConnect = async () => {
       try {
-        const [page, stats] = await Promise.all([
-          NotificationsApi.list(),
-          NotificationsApi.getStats(),
-        ]);
-        setInitialPage(page);
+        const stats = await NotificationsApi.getStats();
         setStats(stats);
+        if (useNotificationStore.getState().isPanelOpen) {
+          const page = await NotificationsApi.list();
+          setInitialPage(page);
+        }
       } catch {
         // non-fatal: user still gets live events
       }

@@ -10998,6 +10998,108 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /notifications/{id}/archive:
+    patch:
+      tags:
+        - Notifications
+      summary: Archive a notification
+      description: |
+        Moves a single non-archived notification to `archived` status.
+        Archived notifications are excluded from the default list query and counts but
+        can be retrieved by passing `status=archived`.
+      operationId: archiveInAppNotification
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Notification document ID (MongoDB ObjectId)
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+      responses:
+        '200':
+          description: Notification archived
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - notification
+                properties:
+                  notification:
+                    $ref: '#/components/schemas/InAppNotification'
+        '400':
+          description: Invalid user or notification id
+        '401':
+          description: Unauthorized — missing or invalid access token
+        '404':
+          description: Notification not found (or already archived)
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /notifications/{id}/unarchive:
+    patch:
+      tags:
+        - Notifications
+      summary: Unarchive a notification
+      description: |
+        Restores an archived notification to `read` status.
+        Because the original pre-archive status is not stored, unarchived notifications
+        always land in `read` rather than `unread`.
+      operationId: unarchiveInAppNotification
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Notification document ID (MongoDB ObjectId)
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+      responses:
+        '200':
+          description: Notification unarchived (status set to `read`)
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - notification
+                properties:
+                  notification:
+                    $ref: '#/components/schemas/InAppNotification'
+        '400':
+          description: Invalid user or notification id
+        '401':
+          description: Unauthorized — missing or invalid access token
+        '404':
+          description: Notification not found or not currently archived
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /notifications/{id}:
     delete:
       tags:
