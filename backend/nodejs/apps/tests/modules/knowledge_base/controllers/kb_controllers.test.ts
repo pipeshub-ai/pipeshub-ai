@@ -48,6 +48,9 @@ function createMockRequest(overrides: Record<string, any> = {}): any {
     query: {},
     user: { userId: 'user-1', orgId: 'org-1', email: 'test@test.com', fullName: 'Test User' },
     context: { requestId: 'req-123' },
+    // Streaming upload clears the per-response socket timeout and listens for close.
+    socket: { setTimeout: sinon.stub() },
+    on: sinon.stub(),
     ...overrides,
   }
 }
@@ -63,12 +66,36 @@ function createMockResponse(): any {
     getHeader: sinon.stub(),
     headersSent: false,
     pipe: sinon.stub(),
+    // Streaming (SSE) upload response surface.
+    writeHead: sinon.stub(),
+    write: sinon.stub(),
+    flush: sinon.stub(),
   }
   res.status.returns(res)
   res.json.returns(res)
   res.end.returns(res)
   res.send.returns(res)
+  res.writeHead.returns(res)
   return res
+}
+
+/** Parse the named SSE events written to a streaming upload response mock. */
+function getStreamedEvents(res: any): Array<{ event: string; data: any }> {
+  return res.write
+    .getCalls()
+    .map((c: any) => String(c.args[0]))
+    .filter((s: string) => s.startsWith('event:'))
+    .map((s: string) => {
+      const event = (s.match(/event: (.*)/) || [])[1]?.trim() || ''
+      const dataRaw = (s.match(/data: ([^\n]*)/) || [])[1] || '{}'
+      let data: any = {}
+      try {
+        data = JSON.parse(dataRaw)
+      } catch {
+        /* ignore */
+      }
+      return { event, data }
+    })
 }
 
 function createMockNext(): sinon.SinonStub {
@@ -114,12 +141,6 @@ function createMockKeyValueStore(): any {
     get: sinon.stub().resolves(null),
     set: sinon.stub().resolves(),
     delete: sinon.stub().resolves(),
-  }
-}
-
-function createMockNotificationService(): any {
-  return {
-    sendToUser: sinon.stub().returns(true),
   }
 }
 
@@ -603,7 +624,6 @@ describe('Knowledge Base Controller', () => {
       const handler = uploadRecordsToKB(
         createMockKeyValueStore(),
         createMockAppConfig(),
-        createMockNotificationService(),
       )
       expect(handler).to.be.a('function')
     })
@@ -2210,7 +2230,7 @@ describe('Knowledge Base Controller', () => {
         documentId: 'doc-123',
         documentName: 'test-file',
       })
-      const processUploadsStub = sinon.stub(kbUtils, 'processUploadsInBackground').resolves()
+      const processUploadsStub = sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
       const handler = uploadRecordsToKB(
         createMockKeyValueStore(),
@@ -2257,12 +2277,11 @@ describe('Knowledge Base Controller', () => {
         documentName: 'file1',
       })
       createPlaceholderStub.onSecondCall().rejects(new Error('Storage full'))
-      sinon.stub(kbUtils, 'processUploadsInBackground').resolves()
+      sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
       const handler = uploadRecordsToKB(
         createMockKeyValueStore(),
         createMockAppConfig(),
-        createMockNotificationService(),
       )
       const req = createMockRequest({
         params: { kbId: 'kb-1' },
@@ -2308,7 +2327,6 @@ describe('Knowledge Base Controller', () => {
       const handler = uploadRecordsToKB(
         createMockKeyValueStore(),
         createMockAppConfig(),
-        createMockNotificationService(),
       )
       const req = createMockRequest({
         params: { kbId: 'kb-1' },
@@ -2344,7 +2362,7 @@ describe('Knowledge Base Controller', () => {
         documentId: 'doc-1',
         documentName: 'file-no-mod',
       })
-      sinon.stub(kbUtils, 'processUploadsInBackground').resolves()
+      sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
       const handler = uploadRecordsToKB(
         createMockKeyValueStore(),
@@ -2384,7 +2402,7 @@ describe('Knowledge Base Controller', () => {
         documentId: 'doc-1',
         documentName: 'nested-file',
       })
-      sinon.stub(kbUtils, 'processUploadsInBackground').resolves()
+      sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
       const handler = uploadRecordsToKB(
         createMockKeyValueStore(),
@@ -2422,7 +2440,7 @@ describe('Knowledge Base Controller', () => {
         documentId: 'doc-1',
         documentName: 'no-ext-file',
       })
-      sinon.stub(kbUtils, 'processUploadsInBackground').resolves()
+      sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
       const handler = uploadRecordsToKB(
         createMockKeyValueStore(),
@@ -2461,7 +2479,6 @@ describe('Knowledge Base Controller', () => {
       const handler = uploadRecordsToKB(
         createMockKeyValueStore(),
         createMockAppConfig(),
-        createMockNotificationService(),
       )
       const req = createMockRequest({
         params: { kbId: 'kb-1' },
@@ -2525,6 +2542,64 @@ describe('Knowledge Base Controller', () => {
         expect(response.status).to.equal('failed')
       }
     })
+
+    // Regression: files the processor rejected up front (oversize / unsupported
+    // type) arrive on req.body.rejectedFiles and must be streamed as file:failed
+    // with stage 'upload' and their stable reason code, then counted in `done` —
+    // never silently dropped.
+    it('streams up-front rejectedFiles as file:failed (stage upload) with reason codes', async () => {
+      stubFolderUploadPreValidationSuccess()
+      // No accepted buffers, so the indexing path is never reached.
+      const processStub = sinon.stub(kbUtils, 'processUploadsInBackground')
+
+      const handler = uploadRecordsToKB(
+        createMockKeyValueStore(),
+        createMockAppConfig(),
+      )
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: {
+          fileBuffers: [],
+          rejectedFiles: [
+            {
+              originalname: 'huge.pdf',
+              filePath: 'huge.pdf',
+              size: 999999999,
+              mimetype: 'application/pdf',
+              reason: 'EXCEEDS_SIZE_LIMIT',
+              error: 'File exceeds the 30 MB size limit',
+            },
+            {
+              originalname: 'malware.exe',
+              filePath: 'malware.exe',
+              size: 1024,
+              mimetype: 'application/octet-stream',
+              reason: 'UNSUPPORTED_TYPE',
+              error: 'Unsupported file type ".exe"',
+            },
+          ],
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.writeHead.calledWith(200)).to.be.true
+      // Nothing to upload/index, so the background processor is not invoked.
+      expect(processStub.called).to.be.false
+
+      const events = getStreamedEvents(res)
+      const failures = events.filter((e) => e.event === 'file:failed')
+      expect(failures).to.have.length(2)
+      expect(failures.every((e) => e.data.stage === 'upload')).to.be.true
+      const reasons = failures.map((e) => e.data.reason)
+      expect(reasons).to.include.members(['EXCEEDS_SIZE_LIMIT', 'UNSUPPORTED_TYPE'])
+
+      const done = events.find((e) => e.event === 'done')
+      expect(done!.data.summary).to.deep.equal({ total: 2, succeeded: 0, failed: 2 })
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -2537,7 +2612,7 @@ describe('Knowledge Base Controller', () => {
         documentId: 'doc-456',
         documentName: 'folder-file',
       })
-      sinon.stub(kbUtils, 'processUploadsInBackground').resolves()
+      sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
       const handler = uploadRecordsToFolder(
         createMockKeyValueStore(),
@@ -2565,10 +2640,9 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.called).to.be.false
-      expect(res.status.calledWith(200)).to.be.true
-      const response = res.json.firstCall.args[0]
-      expect(response.status).to.equal('processing')
-      expect(response.records).to.have.lengthOf(1)
+      expect(res.writeHead.calledWith(200)).to.be.true
+      expect(getStreamedEvents(res).some((e) => e.event === 'done')).to.be.true
+      expect(res.end.called).to.be.true
     })
 
     it('should handle partial failures in folder upload', async () => {
@@ -2576,12 +2650,11 @@ describe('Knowledge Base Controller', () => {
       const createStub = sinon.stub(kbUtils, 'createPlaceholderDocument')
       createStub.onFirstCall().resolves({ documentId: 'doc-1', documentName: 'f1' })
       createStub.onSecondCall().rejects(new Error('Failed'))
-      sinon.stub(kbUtils, 'processUploadsInBackground').resolves()
+      sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
       const handler = uploadRecordsToFolder(
         createMockKeyValueStore(),
         createMockAppConfig(),
-        createMockNotificationService(),
       )
       const req = createMockRequest({
         params: { kbId: 'kb-1', folderId: 'folder-1' },
@@ -2598,10 +2671,10 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.called).to.be.false
-      expect(res.status.calledWith(200)).to.be.true
-      const response = res.json.firstCall.args[0]
-      expect(response.successfulFiles).to.equal(1)
-      expect(response.failedFiles).to.equal(1)
+      const events = getStreamedEvents(res)
+      // The placeholder that rejected is streamed as a file:failed.
+      expect(events.filter((e) => e.event === 'file:failed').length).to.be.greaterThan(0)
+      expect(events.some((e) => e.event === 'done')).to.be.true
     })
 
     it('should handle all files failing in folder upload', async () => {
@@ -2611,7 +2684,6 @@ describe('Knowledge Base Controller', () => {
       const handler = uploadRecordsToFolder(
         createMockKeyValueStore(),
         createMockAppConfig(),
-        createMockNotificationService(),
       )
       const req = createMockRequest({
         params: { kbId: 'kb-1', folderId: 'folder-1' },
@@ -2627,10 +2699,10 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.called).to.be.false
-      expect(res.status.calledWith(200)).to.be.true
-      const response = res.json.firstCall.args[0]
-      expect(response.status).to.equal('failed')
-      expect(response.records).to.have.lengthOf(0)
+      const events = getStreamedEvents(res)
+      expect(events.filter((e) => e.event === 'file:failed')).to.have.length(1)
+      const done = events.find((e) => e.event === 'done')
+      expect(done!.data.summary).to.deep.equal({ total: 1, succeeded: 0, failed: 1 })
     })
 
     it('should handle missing folderId in folder upload', async () => {
@@ -2661,7 +2733,7 @@ describe('Knowledge Base Controller', () => {
         documentId: 'doc-nested',
         documentName: 'nested',
       })
-      sinon.stub(kbUtils, 'processUploadsInBackground').resolves()
+      sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
       const handler = uploadRecordsToFolder(
         createMockKeyValueStore(),
@@ -2688,21 +2760,18 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.called).to.be.false
-      expect(res.status.calledWith(200)).to.be.true
+      expect(res.writeHead.calledWith(200)).to.be.true
+      expect(getStreamedEvents(res).some((e) => e.event === 'done')).to.be.true
     })
 
-    it('should handle notification service error during folder upload', async () => {
+    it('should handle error in folder upload', async () => {
       stubFolderUploadPreValidationSuccess()
       const createStub = sinon.stub(kbUtils, 'createPlaceholderDocument')
       createStub.rejects(new Error('Storage fail'))
 
-      const brokenNotification = createMockNotificationService()
-      brokenNotification.sendToUser = sinon.stub().throws(new Error('Socket error'))
-
       const handler = uploadRecordsToFolder(
         createMockKeyValueStore(),
         createMockAppConfig(),
-        brokenNotification,
       )
       const req = createMockRequest({
         params: { kbId: 'kb-1', folderId: 'folder-1' },
@@ -2717,11 +2786,13 @@ describe('Knowledge Base Controller', () => {
 
       await handler(req, res, next)
 
-      // Should still return 200 even if notification fails — storage fail = all files fail
+      // The stream still completes (the placeholder failure is streamed as
+      // file:failed).
       expect(next.called).to.be.false
-      expect(res.status.calledWith(200)).to.be.true
-      const response = res.json.firstCall.args[0]
-      expect(response.status).to.equal('failed')
+      expect(res.writeHead.calledWith(200)).to.be.true
+      const events = getStreamedEvents(res)
+      expect(events.filter((e) => e.event === 'file:failed')).to.have.length(1)
+      expect(events.some((e) => e.event === 'done')).to.be.true
     })
   })
 

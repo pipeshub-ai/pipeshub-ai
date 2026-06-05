@@ -12736,11 +12736,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         total_created = result.get("total_created", 0)
         folders_created = result.get("folders_created", 0)
         failed_count = len(result.get("failed_files", []))
+        skipped_count = len(result.get("skipped_files", []))
         message = f"Successfully uploaded {total_created} file{'s' if total_created != 1 else ''} to {upload_type}"
         if folders_created > 0:
             message += f" with {folders_created} new subfolder{'s' if folders_created != 1 else ''} created"
         if failed_count > 0:
             message += f". {failed_count} file{'s' if failed_count != 1 else ''} failed to upload"
+        if skipped_count > 0:
+            message += f". {skipped_count} file{'s' if skipped_count != 1 else ''} skipped (name already exists)"
         return message + "."
 
     async def _create_files_batch(
@@ -12750,38 +12753,59 @@ class ArangoHTTPProvider(IGraphDBProvider):
         parent_folder_id: str | None,
         transaction: str | None,
         timestamp: int,
-    ) -> list[dict]:
-        """Create a batch of file records and edges; skip name conflicts."""
+    ) -> tuple[list[dict], list[dict]]:
+        """Create a batch of file records and edges.
+
+        Files whose name already exists in the target parent (or collides with an
+        earlier file in this same batch) are SKIPPED, not created. Returns a tuple
+        of (created_files, skipped_files) where each skipped entry is
+        {"filePath", "name", "reason": "DUPLICATE_NAME"} so the caller can report
+        the skip back to the user instead of silently dropping it.
+        """
         if not files:
-            return []
+            return [], []
         valid_files: list[dict] = []
+        skipped_files: list[dict] = []
+        # Track names already accepted in THIS batch so two files with the same
+        # name in a single upload don't both get created (the DB check can't see
+        # the first one until the transaction commits).
+        seen_in_batch: set[tuple[str, str]] = set()
         for file_data in files:
             file_record = file_data.get("fileRecord") or {}
             record = file_data.get("record") or {}
             file_name = self._normalize_name(file_record.get("name") or record.get("recordName")) or ""
             mime_type = file_record.get("mimeType")
-            conflict_result = await self._check_name_conflict_in_parent(
+            batch_key = (file_name.lower(), str(mime_type or ""))
+
+            conflict_with_existing = await self._check_name_conflict_in_parent(
                 kb_id=kb_id,
                 parent_folder_id=parent_folder_id,
                 item_name=file_name,
                 mime_type=mime_type,
                 transaction=transaction,
             )
-            if conflict_result.get("has_conflict"):
-                conflicts = conflict_result.get("conflicts", [])
-                conflict_names = [c.get("name", "") for c in conflicts]
+            is_conflict = bool(conflict_with_existing.get("has_conflict")) or batch_key in seen_in_batch
+            if is_conflict:
+                conflicts = conflict_with_existing.get("conflicts", [])
+                conflict_names = [c.get("name", "") for c in conflicts] or [file_name]
                 self.logger.warning(
                     "⚠️ Skipping file due to name conflict: '%s' conflicts with %s",
                     file_name,
                     conflict_names,
                 )
+                skipped_files.append({
+                    "filePath": file_data.get("filePath", ""),
+                    "name": file_name,
+                    "reason": "DUPLICATE_NAME",
+                })
                 continue
+            seen_in_batch.add(batch_key)
             file_record["name"] = file_name
             if record and "recordName" not in record:
                 record["recordName"] = file_name
             valid_files.append(file_data)
         if not valid_files:
-            return []
+            return [], skipped_files
 
         # Enrich records with KB-specific fields
         records = []
@@ -12864,7 +12888,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             await self.batch_create_edges(belongs_to, CollectionNames.BELONGS_TO.value, transaction=transaction)
         if inherit_permission:
             await self.batch_create_edges(inherit_permission, CollectionNames.INHERIT_PERMISSIONS.value, transaction=transaction)
-        return valid_files
+        return valid_files, skipped_files
 
     async def _create_files_in_kb_root(
         self,
@@ -12872,7 +12896,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         files: list[dict],
         transaction: str | None,
         timestamp: int,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], list[dict]]:
         """Create files directly in KB root."""
         return await self._create_files_batch(
             kb_id=kb_id,
@@ -12889,7 +12913,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         files: list[dict],
         transaction: str | None,
         timestamp: int,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], list[dict]]:
         """Create files in a specific folder."""
         return await self._create_files_batch(
             kb_id=kb_id,
@@ -12910,6 +12934,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Create all file records and relationships from upload."""
         total_created = 0
         failed_files: list[str] = []
+        skipped_files: list[dict] = []
         created_files_data: list[dict] = []
         root_files: list[tuple[dict, str | None]] = []
         folder_files: dict[str, list[dict]] = {}
@@ -12931,20 +12956,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 parent_folder_files_map.setdefault(fid, []).append(file_data)
         if kb_root_files:
             try:
-                successful = await self._create_files_in_kb_root(
+                successful, skipped = await self._create_files_in_kb_root(
                     kb_id=kb_id,
                     files=kb_root_files,
                     transaction=transaction,
                     timestamp=timestamp,
                 )
                 created_files_data.extend(successful)
+                skipped_files.extend(skipped)
                 total_created += len(successful)
             except Exception as e:
                 self.logger.error("❌ Failed to create root files: %s", str(e))
                 failed_files.extend(f[0].get("filePath", "") for f in root_files if f[1] is None)
         for fid, file_list in parent_folder_files_map.items():
             try:
-                successful = await self._create_files_in_folder(
+                successful, skipped = await self._create_files_in_folder(
                     kb_id=kb_id,
                     folder_id=fid,
                     files=file_list,
@@ -12952,13 +12978,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     timestamp=timestamp,
                 )
                 created_files_data.extend(successful)
+                skipped_files.extend(skipped)
                 total_created += len(successful)
             except Exception as e:
                 self.logger.error("❌ Failed to create parent folder files: %s", str(e))
                 failed_files.extend(f.get("filePath", "") for f in file_list)
         for folder_id, file_list in folder_files.items():
             try:
-                successful = await self._create_files_in_folder(
+                successful, skipped = await self._create_files_in_folder(
                     kb_id=kb_id,
                     folder_id=folder_id,
                     files=file_list,
@@ -12966,6 +12993,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     timestamp=timestamp,
                 )
                 created_files_data.extend(successful)
+                skipped_files.extend(skipped)
                 total_created += len(successful)
             except Exception as e:
                 self.logger.error("❌ Failed to create subfolder files: %s", str(e))
@@ -12973,6 +13001,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         return {
             "total_created": total_created,
             "failed_files": failed_files,
+            "skipped_files": skipped_files,
             "created_files_data": created_files_data,
         }
 
@@ -13023,6 +13052,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         "folders_created": len(folder_map),
                         "created_folders": [{"id": fid} for fid in folder_map.values()],
                         "failed_files": creation_result["failed_files"],
+                        "skipped_files": creation_result.get("skipped_files", []),
                         "created_files_data": creation_result["created_files_data"],
                     }
                 await self.rollback_transaction(txn_id)
@@ -13032,6 +13062,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "folders_created": 0,
                     "created_folders": [],
                     "failed_files": creation_result["failed_files"],
+                    "skipped_files": creation_result.get("skipped_files", []),
                     "created_files_data": [],
                 }
             except Exception as e:
@@ -13113,6 +13144,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "foldersCreated": result["folders_created"],
                     "createdFolders": result["created_folders"],
                     "failedFiles": result["failed_files"],
+                    "skippedFiles": result.get("skipped_files", []),
                     "kbId": kb_id,
                     "parentFolderId": parent_folder_id,
                     "eventData": event_data

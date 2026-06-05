@@ -47,6 +47,69 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
 const SESSION_EXPIRED_MESSAGE = 'Session expired, please login again';
 
 /**
+ * Error thrown when an upload fails at the HTTP layer — i.e. the request is
+ * rejected BEFORE the SSE stream starts (e.g. a 429 from the rate limiter, a
+ * 413 payload-too-large, or a 5xx). Carries the server's structured fields so
+ * the UI can show the EXACT reason instead of a generic "upload failed" /
+ * "timed out", and so callers can honour `Retry-After` on a 429.
+ */
+export class UploadHttpError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  /** Seconds to wait before retrying, when the server provided it. */
+  readonly retryAfter?: number;
+
+  constructor(opts: {
+    status: number;
+    message: string;
+    code?: string;
+    retryAfter?: number;
+  }) {
+    super(opts.message);
+    this.name = 'UploadHttpError';
+    this.status = opts.status;
+    this.code = opts.code;
+    this.retryAfter = opts.retryAfter;
+  }
+}
+
+/**
+ * Build a precise error from a non-OK upload response by reading the JSON error
+ * body the API returns (`{ error: { code, message, retryAfter } }`). This is why
+ * the user sees the real reason — "Too many requests. Please try again later."
+ * — rather than a bare status code or a misleading timeout. Falls back to the
+ * `Retry-After` header, then to the status text.
+ */
+async function readUploadHttpError(response: Response): Promise<UploadHttpError> {
+  let message = '';
+  let code: string | undefined;
+  let retryAfter: number | undefined;
+  try {
+    const body = await response.clone().json();
+    const err = body?.error ?? body;
+    if (err && typeof err === 'object') {
+      if (typeof err.message === 'string') message = err.message;
+      if (typeof err.code === 'string') code = err.code;
+      if (typeof err.retryAfter === 'number') retryAfter = err.retryAfter;
+    }
+  } catch {
+    /* non-JSON body — fall back below */
+  }
+  if (retryAfter == null) {
+    const header = response.headers.get('retry-after');
+    const parsed = header ? parseInt(header, 10) : NaN;
+    if (Number.isFinite(parsed)) retryAfter = parsed;
+  }
+  if (!message) {
+    message =
+      response.status === 429
+        ? 'Too many requests. Please try again later.'
+        : `Upload failed (${response.status} ${response.statusText || 'error'})`;
+  }
+  return new UploadHttpError({ status: response.status, message, code, retryAfter });
+}
+
+/**
  * Resolve a fresh access token before issuing a stream.
  *
  * Native `fetch` bypasses the axios request interceptor, so this is the
@@ -334,6 +397,212 @@ export async function streamSSERequest<T = unknown>(
     }
   } catch (error) {
     // Don't report abort errors as actual errors
+    if (error instanceof Error && error.name === 'AbortError') {
+      return;
+    }
+    onError(error instanceof Error ? error : new Error('SSE request failed'));
+  }
+}
+
+export interface SSEGetOptions<T = unknown> {
+  onEvent: (event: SSEEvent<T>) => void;
+  onError: (error: Error) => void;
+  /** Extra request headers, e.g. `Last-Event-ID` for resume on reconnect. */
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+  /**
+   * Abort the stream if no bytes arrive for this long (the server heartbeats
+   * during long work, so silence means the connection is dead). Surfaced via
+   * `onError` so the caller can fail/retry instead of hanging forever.
+   */
+  idleTimeoutMs?: number;
+}
+
+const DEFAULT_UPLOAD_IDLE_TIMEOUT_MS = 60_000;
+
+/**
+ * POST a multipart upload and consume its Server-Sent Events response. The KB
+ * upload endpoints stream a per-file outcome (`file:succeeded` / `file:failed`)
+ * and a final `done` on the SAME response, so the upload and its progress are a
+ * single request. `FormData` is sent as the body; do NOT set `Content-Type` (the
+ * browser adds the multipart boundary).
+ */
+export async function streamSSEUpload<T = unknown>(
+  url: string,
+  formData: FormData,
+  options: SSEGetOptions<T>,
+): Promise<void> {
+  const {
+    onEvent,
+    onError,
+    headers: extraHeaders,
+    signal,
+    idleTimeoutMs = DEFAULT_UPLOAD_IDLE_TIMEOUT_MS,
+  } = options;
+
+  // Own controller so we can abort on idle timeout; chained to any caller signal.
+  const controller = new AbortController();
+  let idleTimedOut = false;
+  const onExternalAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const resetIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idleTimedOut = true;
+      controller.abort();
+    }, idleTimeoutMs);
+  };
+  const clearIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = undefined;
+  };
+
+  try {
+    const { token, sessionExpired } = await ensureFreshToken();
+    if (sessionExpired) {
+      onError(new Error(SESSION_EXPIRED_MESSAGE));
+      return;
+    }
+
+    const requestInit: RequestInit = {
+      method: 'POST',
+      headers: {
+        Accept: 'text/event-stream',
+        ...(extraHeaders || {}),
+        ...(token && { Authorization: `Bearer ${token}` }),
+      },
+      body: formData,
+      signal: controller.signal,
+    };
+
+    resetIdle();
+    const response = isElectron()
+      ? await streamingFetch(`${getApiBaseUrl()}${url}`, requestInit)
+      : await fetch(`${API_BASE_URL}${url}`, requestInit);
+
+    if (!response.ok) {
+      // Rate limit / payload-too-large / 5xx arrive as a normal JSON response
+      // (the rate limiter short-circuits before the SSE handler). Surface the
+      // server's exact error so the user knows the real cause.
+      throw await readUploadHttpError(response);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error('No response body available for streaming');
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      resetIdle();
+      buffer += decoder.decode(value, { stream: true });
+      const { complete, remaining } = parseSSEBuffer(buffer);
+      for (const event of complete) {
+        onEvent(event as SSEEvent<T>);
+      }
+      buffer = remaining;
+    }
+
+    buffer += decoder.decode(undefined, { stream: false });
+    const { complete: tailEvents } = parseSSEBuffer(buffer);
+    for (const event of tailEvents) {
+      onEvent(event as SSEEvent<T>);
+    }
+  } catch (error) {
+    // A real HTTP error (rate limit, payload too large, 5xx) always takes
+    // precedence over the idle watchdog — never report it as a timeout.
+    if (error instanceof UploadHttpError) {
+      onError(error);
+      return;
+    }
+    if (idleTimedOut) {
+      onError(new Error('Upload timed out (no response from server)'));
+      return;
+    }
+    // External (caller) abort — silent, like the other streamers.
+    if (error instanceof Error && error.name === 'AbortError') {
+      return;
+    }
+    onError(error instanceof Error ? error : new Error('Upload failed'));
+  } finally {
+    clearIdle();
+    if (signal) signal.removeEventListener('abort', onExternalAbort);
+  }
+}
+
+/**
+ * GET variant of {@link streamSSERequest} for long-lived, reconnectable streams.
+ * EventSource cannot send an Authorization header, so we use fetch +
+ * ReadableStream like the chat stream, and let callers supply `Last-Event-ID` to
+ * resume after a drop. Returns when the stream ends; the caller decides
+ * whether/when to reconnect. (Upload progress is served by the POST-response
+ * stream in `streamSSEUpload`, not by this helper.)
+ */
+export async function streamSSEGet<T = unknown>(
+  url: string,
+  options: SSEGetOptions<T>,
+): Promise<void> {
+  const { onEvent, onError, headers: extraHeaders, signal } = options;
+
+  try {
+    const { token, sessionExpired } = await ensureFreshToken();
+    if (sessionExpired) {
+      onError(new Error(SESSION_EXPIRED_MESSAGE));
+      return;
+    }
+
+    const requestInit: RequestInit = {
+      method: 'GET',
+      headers: {
+        Accept: 'text/event-stream',
+        ...(extraHeaders || {}),
+        ...(token && { Authorization: `Bearer ${token}` }),
+      },
+      signal,
+    };
+
+    const response = isElectron()
+      ? await streamingFetch(`${getApiBaseUrl()}${url}`, requestInit)
+      : await fetch(`${API_BASE_URL}${url}`, requestInit);
+
+    if (!response.ok) {
+      throw new Error(`SSE request failed: ${response.status} ${response.statusText}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error('No response body available for streaming');
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const { complete, remaining } = parseSSEBuffer(buffer);
+      for (const event of complete) {
+        onEvent(event as SSEEvent<T>);
+      }
+      buffer = remaining;
+    }
+
+    buffer += decoder.decode(undefined, { stream: false });
+    const { complete: tailEvents } = parseSSEBuffer(buffer);
+    for (const event of tailEvents) {
+      onEvent(event as SSEEvent<T>);
+    }
+  } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
       return;
     }

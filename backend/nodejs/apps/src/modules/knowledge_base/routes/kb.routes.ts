@@ -64,7 +64,7 @@ import {
 } from '../validators/validators';
 // Clean up unused commented import
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
-import { extensionToMimeType } from '../../storage/mimetypes/mimetypes';
+import { extensionToMimeType, getMimeType } from '../../storage/mimetypes/mimetypes';
 import { RecordRelationService } from '../services/kb.relation.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { RecordsEventProducer } from '../services/records_events.service';
@@ -76,7 +76,6 @@ import { getPlatformSettingsFromStore } from '../../configuration_manager/utils/
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { RequestHandler, Response, NextFunction } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
-import { NotificationService } from '../../notification/service/notification.service';
 import { validateNoXSS, validateNoFormatSpecifiers } from '../../../utils/xss-sanitization';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
@@ -87,7 +86,6 @@ const logger = Logger.getInstance({
 
 export function createKnowledgeBaseRouter(
   container: Container,
-  notificationContainer?: Container,
 ): Router {
   const router = Router();
   const appConfig = container.get<AppConfig>('AppConfig');
@@ -106,17 +104,6 @@ export function createKnowledgeBaseRouter(
     'KeyValueStoreService',
   );
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
-  
-  // Get NotificationService from notificationContainer if available (optional)
-  let notificationService: NotificationService | undefined;
-  try {
-    if (notificationContainer) {
-      notificationService = notificationContainer.get<NotificationService>(NotificationService);
-    }
-  } catch (error) {
-    // NotificationService not available - uploads will work but without real-time updates
-    logger.warn('NotificationService not available - real-time updates disabled');
-  }
 
   // Helper: resolve current max upload size (bytes) from platform settings
   const resolveMaxUploadSize = async (): Promise<number> => {
@@ -168,6 +155,8 @@ export function createKnowledgeBaseRouter(
     maxFilesAllowed: number;
     isMultipleFilesAllowed: boolean;
     strictFileUpload: boolean;
+    allowedExtensions?: string[];
+    partialUpload?: boolean;
   }): RequestHandler[] => {
     const handler: RequestHandler = async (
       req: AuthenticatedUserRequest,
@@ -184,6 +173,9 @@ export function createKnowledgeBaseRouter(
           processingType: FileProcessingType.BUFFER,
           maxFileSize,
           strictFileUpload: opts.strictFileUpload,
+          allowedExtensions: opts.allowedExtensions,
+          partialUpload: opts.partialUpload,
+          resolveMimeType: (ext: string) => getMimeType(ext),
         });
         const upload = service.upload();
         upload(req, res, (err: any) => {
@@ -432,9 +424,15 @@ export function createKnowledgeBaseRouter(
     ...createDynamicBufferUpload({
       fieldName: 'files',
       allowedMimeTypes: Object.values(extensionToMimeType),
+      allowedExtensions: Object.keys(extensionToMimeType).map((e) =>
+        e.toLowerCase(),
+      ),
       maxFilesAllowed: KB_UPLOAD_LIMITS.maxFilesPerRequest,
       isMultipleFilesAllowed: true,
       strictFileUpload: true,
+      // Reject oversize / unsupported files individually instead of failing the
+      // whole batch; rejected files are reported back as per-file failures.
+      partialUpload: true,
     }),
     // Validate multipart form data after file processing
     validateMultipartFormData,
@@ -442,7 +440,7 @@ export function createKnowledgeBaseRouter(
     ValidationMiddleware.validate(uploadRecordsSchema),
 
     // Upload handler
-    uploadRecordsToKB(keyValueStoreService, appConfig, notificationService),
+    uploadRecordsToKB(keyValueStoreService, appConfig),
   );
 
   // Upload records to a specific folder in the KB
@@ -455,9 +453,15 @@ export function createKnowledgeBaseRouter(
     ...createDynamicBufferUpload({
       fieldName: 'files',
       allowedMimeTypes: Object.values(extensionToMimeType),
+      allowedExtensions: Object.keys(extensionToMimeType).map((e) =>
+        e.toLowerCase(),
+      ),
       maxFilesAllowed: KB_UPLOAD_LIMITS.maxFilesPerRequest,
       isMultipleFilesAllowed: true,
       strictFileUpload: true,
+      // Reject oversize / unsupported files individually instead of failing the
+      // whole batch; rejected files are reported back as per-file failures.
+      partialUpload: true,
     }),
     // Validate multipart form data after file processing
     validateMultipartFormData,
@@ -465,11 +469,7 @@ export function createKnowledgeBaseRouter(
     ValidationMiddleware.validate(uploadRecordsToFolderSchema),
 
     // Upload handler
-    uploadRecordsToFolder(
-      keyValueStoreService,
-      appConfig,
-      notificationService,
-    ),
+    uploadRecordsToFolder(keyValueStoreService, appConfig),
   );
 
   // Create a root folder

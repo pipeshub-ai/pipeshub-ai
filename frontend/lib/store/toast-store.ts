@@ -1,19 +1,23 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
-
 // ========================================
 // Toast Types
 // ========================================
 
 export type ToastVariant = 'loading' | 'success' | 'error' | 'info' | 'warning';
+export type ToastPlacement = 'top' | 'bottom';
 
 export interface ToastAction {
   label: string;
   icon?: string;
-  onClick: () => void;
+  onClick?: () => void;
+  /** Renders as a link when set (use with `openInNewTab` for external/same-app new tab). */
+  href?: string;
+  openInNewTab?: boolean;
 }
 
 export interface Toast {
@@ -21,20 +25,40 @@ export interface Toast {
   variant: ToastVariant;
   title: string;
   description?: string;
+  // Rich content rendered instead of `description` when set. A FUNCTION (not a
+  // node) so the immer store never holds/auto-freezes React elements — fresh
+  // elements are created at render time, avoiding frozen-element crashes.
+  renderDescription?: () => ReactNode;
   icon?: string;                    // Custom icon (e.g., connector icon like 'chat')
   showCloseButton?: boolean;        // Default: true for non-loading toasts
   action?: ToastAction;             // Optional action button
   duration?: number | null;         // Auto-dismiss duration in ms (null = persist)
+  /** Wider layout for scrollable multi-line content. */
+  contentLayout?: 'default' | 'expanded';
+  /** Screen edge for the toast stack. Default `bottom`; use `top` when the bottom is occupied (e.g. upload tray). */
+  placement?: ToastPlacement;
   createdAt: number;                // Timestamp for ordering
   isExiting?: boolean;              // For exit animation
 }
 
 export interface ToastOptions {
   description?: string;
+  renderDescription?: () => ReactNode;
   icon?: string;
   showCloseButton?: boolean;
   action?: ToastAction;
   duration?: number | null;         // Override default duration
+  contentLayout?: 'default' | 'expanded';
+  placement?: ToastPlacement;
+}
+
+// Immer cannot safely hold render callbacks; keep them outside the draft state.
+const renderDescriptionByToastId = new Map<string, () => ReactNode>();
+
+export function getToastRenderDescription(
+  id: string,
+): (() => ReactNode) | undefined {
+  return renderDescriptionByToastId.get(id);
 }
 
 // ========================================
@@ -88,18 +112,23 @@ export const useToastStore = create<ToastStore>()(
 
       addToast: (toastData) => {
         const id = generateId();
+        const { renderDescription, ...toastFields } = toastData;
+        if (renderDescription) {
+          renderDescriptionByToastId.set(id, renderDescription);
+        }
         // Toasts with action buttons persist until user interaction
-        const duration = toastData.duration !== undefined
-          ? toastData.duration
-          : toastData.action
+        const duration = toastFields.duration !== undefined
+          ? toastFields.duration
+          : toastFields.action
             ? null
-            : DEFAULT_DURATIONS[toastData.variant];
+            : DEFAULT_DURATIONS[toastFields.variant];
 
         const toast: Toast = {
-          ...toastData,
+          ...toastFields,
           id,
           createdAt: Date.now(),
-          showCloseButton: toastData.showCloseButton ?? (toastData.variant !== 'loading'),
+          placement: toastFields.placement ?? 'bottom',
+          showCloseButton: toastFields.showCloseButton ?? (toastFields.variant !== 'loading'),
           duration,
         };
 
@@ -132,6 +161,9 @@ export const useToastStore = create<ToastStore>()(
 
         // Remove after exit animation (300ms)
         setTimeout(() => {
+          // Drop the out-of-state render callback so the module-level map does
+          // not retain closures for dismissed toasts (memory leak otherwise).
+          renderDescriptionByToastId.delete(id);
           set((state) => {
             state.toasts = state.toasts.filter((t) => t.id !== id);
           });
@@ -139,19 +171,28 @@ export const useToastStore = create<ToastStore>()(
       },
 
       updateToast: (id, updates) => {
+        const { renderDescription, ...toastUpdates } = updates;
+        if (renderDescription !== undefined) {
+          if (renderDescription) {
+            renderDescriptionByToastId.set(id, renderDescription);
+          } else {
+            renderDescriptionByToastId.delete(id);
+          }
+        }
+
         set((state) => {
           const toast = state.toasts.find((t) => t.id === id);
           if (toast) {
-            Object.assign(toast, updates);
+            Object.assign(toast, toastUpdates);
 
             // If variant changed and no explicit duration provided, set up auto-dismiss
-            if (updates.variant && updates.duration === undefined) {
+            if (toastUpdates.variant && toastUpdates.duration === undefined) {
               // Toasts with action buttons persist until user interaction
-              const newDuration = updates.action || toast.action
+              const newDuration = toastUpdates.action || toast.action
                 ? null
-                : DEFAULT_DURATIONS[updates.variant];
+                : DEFAULT_DURATIONS[toastUpdates.variant];
               toast.duration = newDuration;
-              toast.showCloseButton = updates.showCloseButton ?? (updates.variant !== 'loading');
+              toast.showCloseButton = toastUpdates.showCloseButton ?? (toastUpdates.variant !== 'loading');
 
               if (newDuration) {
                 setTimeout(() => {
@@ -164,6 +205,7 @@ export const useToastStore = create<ToastStore>()(
       },
 
       clearAll: () => {
+        renderDescriptionByToastId.clear();
         set((state) => {
           state.toasts = [];
         });

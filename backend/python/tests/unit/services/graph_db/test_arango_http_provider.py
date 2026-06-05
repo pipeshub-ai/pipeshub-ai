@@ -15669,7 +15669,7 @@ class TestCreateFilesInFolder:
 class TestCreateRecords:
     @pytest.mark.asyncio
     async def test_root_files(self, connected_provider):
-        connected_provider._create_files_in_kb_root = AsyncMock(return_value=[{"record": {}}])
+        connected_provider._create_files_in_kb_root = AsyncMock(return_value=([{"record": {}}], []))
         folder_analysis = {
             "file_destinations": {0: {"type": "root"}},
             "parent_folder_id": None,
@@ -15678,10 +15678,11 @@ class TestCreateRecords:
             "kb1", [{"filePath": "file.pdf"}], folder_analysis, "txn1", 1000
         )
         assert result["total_created"] == 1
+        assert result["skipped_files"] == []
 
     @pytest.mark.asyncio
     async def test_folder_files(self, connected_provider):
-        connected_provider._create_files_in_folder = AsyncMock(return_value=[{"record": {}}])
+        connected_provider._create_files_in_folder = AsyncMock(return_value=([{"record": {}}], []))
         folder_analysis = {
             "file_destinations": {0: {"type": "folder", "folder_id": "f1"}},
             "parent_folder_id": None,
@@ -15704,7 +15705,7 @@ class TestCreateRecords:
 
     @pytest.mark.asyncio
     async def test_parent_folder_files(self, connected_provider):
-        connected_provider._create_files_in_folder = AsyncMock(return_value=[{"record": {}}])
+        connected_provider._create_files_in_folder = AsyncMock(return_value=([{"record": {}}], []))
         folder_analysis = {
             "file_destinations": {0: {"type": "root"}},
             "parent_folder_id": "parent1",
@@ -15851,18 +15852,39 @@ class TestCreateFilesBatch:
     @pytest.mark.asyncio
     async def test_empty_files(self, connected_provider):
         result = await connected_provider._create_files_batch("kb1", [], None, "txn1", 1000)
-        assert result == []
+        assert result == ([], [])
 
     @pytest.mark.asyncio
     async def test_conflict_skipped(self, connected_provider):
         connected_provider._check_name_conflict_in_parent = AsyncMock(
             return_value={"has_conflict": True, "conflicts": [{"name": "file.pdf"}]}
         )
-        result = await connected_provider._create_files_batch(
-            "kb1", [{"fileRecord": {"name": "file.pdf"}, "record": {"_key": "r1", "recordName": "file.pdf"}}],
+        created, skipped = await connected_provider._create_files_batch(
+            "kb1", [{"filePath": "file.pdf", "fileRecord": {"name": "file.pdf"}, "record": {"_key": "r1", "recordName": "file.pdf"}}],
             None, "txn1", 1000
         )
-        assert result == []
+        assert created == []
+        assert len(skipped) == 1
+        assert skipped[0]["reason"] == "DUPLICATE_NAME"
+        assert skipped[0]["filePath"] == "file.pdf"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_within_batch_skipped(self, connected_provider):
+        # No DB conflict, but two files in the same batch share a name -> the
+        # second is skipped as a duplicate.
+        connected_provider._check_name_conflict_in_parent = AsyncMock(
+            return_value={"has_conflict": False, "conflicts": []}
+        )
+        connected_provider.batch_upsert_nodes = AsyncMock()
+        connected_provider.batch_create_edges = AsyncMock()
+        files = [
+            {"filePath": "a/test.pdf", "fileRecord": {"_key": "f1", "name": "test.pdf", "mimeType": "application/pdf", "isFile": True}, "record": {"_key": "r1", "recordName": "test.pdf"}},
+            {"filePath": "b/test.pdf", "fileRecord": {"_key": "f2", "name": "test.pdf", "mimeType": "application/pdf", "isFile": True}, "record": {"_key": "r2", "recordName": "test.pdf"}},
+        ]
+        created, skipped = await connected_provider._create_files_batch("kb1", files, None, "txn1", 1000)
+        assert len(created) == 1
+        assert len(skipped) == 1
+        assert skipped[0]["reason"] == "DUPLICATE_NAME"
 
     @pytest.mark.asyncio
     async def test_success(self, connected_provider):
@@ -15875,8 +15897,9 @@ class TestCreateFilesBatch:
             "fileRecord": {"_key": "f1", "name": "test.pdf", "mimeType": "application/pdf", "isFile": True},
             "record": {"_key": "r1", "recordName": "test.pdf", "orgId": "o1"},
         }]
-        result = await connected_provider._create_files_batch("kb1", files, None, "txn1", 1000)
-        assert len(result) == 1
+        created, skipped = await connected_provider._create_files_batch("kb1", files, None, "txn1", 1000)
+        assert len(created) == 1
+        assert skipped == []
 
     @pytest.mark.asyncio
     async def test_with_parent_folder(self, connected_provider):
@@ -15889,8 +15912,8 @@ class TestCreateFilesBatch:
             "fileRecord": {"_key": "f1", "name": "test.pdf", "mimeType": "application/pdf", "isFile": True},
             "record": {"_key": "r1", "recordName": "test.pdf", "orgId": "o1"},
         }]
-        result = await connected_provider._create_files_batch("kb1", files, "parent1", "txn1", 1000)
-        assert len(result) == 1
+        created, skipped = await connected_provider._create_files_batch("kb1", files, "parent1", "txn1", 1000)
+        assert len(created) == 1
 
 
 # ---------------------------------------------------------------------------

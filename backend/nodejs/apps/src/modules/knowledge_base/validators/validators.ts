@@ -97,6 +97,9 @@ export const uploadRecordsSchema = z.object({
     // Processed file buffers (set by file processor middleware)
     fileBuffers: z.array(fileBufferSchema).optional(),
     fileBuffer: fileBufferSchema.optional(),
+    // Set by the file processor for files it rejected (oversize / unsupported).
+    // Declared so validation doesn't strip it before the handler reads it.
+    rejectedFiles: z.array(z.any()).optional(),
 
     // Files metadata JSON string - parsed by file processor
     // Format: [{ file_path: string, last_modified: number }, ...]
@@ -150,6 +153,9 @@ export const uploadRecordsToFolderSchema = z.object({
     // Processed file buffers (set by file processor middleware)
     fileBuffers: z.array(fileBufferSchema).optional(),
     fileBuffer: fileBufferSchema.optional(),
+    // Set by the file processor for files it rejected (oversize / unsupported).
+    // Declared so validation doesn't strip it before the handler reads it.
+    rejectedFiles: z.array(z.any()).optional(),
 
     // Files metadata JSON string - parsed by file processor
     // Format: [{ file_path: string, last_modified: number }, ...]

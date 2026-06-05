@@ -6,6 +6,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import type { Toast as ToastType, ToastVariant } from '@/lib/store/toast-store';
+import { getToastRenderDescription } from '@/lib/store/toast-store';
 
 // ========================================
 // Toast Icon Configuration
@@ -55,13 +56,24 @@ interface ToastProps {
   style?: React.CSSProperties;
 }
 
+/** Route wheel events to this pane; the toast stack container does not scroll. */
+function handleDescriptionWheel(event: React.WheelEvent<HTMLDivElement>) {
+  event.stopPropagation();
+}
+
 export function Toast({ toast, onDismiss, style }: ToastProps) {
   const [isHovered, setIsHovered] = useState(false);
   const config = VARIANT_CONFIG[toast.variant];
 
-  // Use custom icon if provided, otherwise use variant default
   const iconName = toast.icon || config.icon;
   const isLoading = toast.variant === 'loading';
+  const isExpanded = toast.contentLayout === 'expanded';
+  const renderDescription = getToastRenderDescription(toast.id);
+  const hasDescription = !!(renderDescription || toast.description);
+
+  const descriptionMaxHeight = isExpanded
+    ? 'min(48dvh, 300px)'
+    : 'min(36dvh, 220px)';
 
   return (
     <Box
@@ -69,13 +81,16 @@ export function Toast({ toast, onDismiss, style }: ToastProps) {
       onMouseLeave={() => setIsHovered(false)}
       style={{
         width: '100%',
-        maxWidth: 'min(340px, calc(100vw - 32px))',
+        maxWidth: isExpanded
+          ? 'min(420px, calc(100vw - 32px))'
+          : 'min(340px, calc(100vw - 32px))',
         maxHeight: 'min(72dvh, calc(100dvh - 96px))',
         boxSizing: 'border-box',
         background: 'var(--olive-2)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-2)',
-        boxShadow: '0 12px 32px -16px var(--slate-a5, rgba(217, 237, 254, 0.15)), 0 12px 60px 0 var(--Black--a3, rgba(0, 0, 0, 0.15))',
+        boxShadow:
+          '0 12px 32px -16px var(--slate-a5, rgba(217, 237, 254, 0.15)), 0 12px 60px 0 var(--Black--a3, rgba(0, 0, 0, 0.15))',
         padding: 'var(--space-3)',
         opacity: toast.isExiting ? 0 : 1,
         transform: toast.isExiting ? 'translateX(100%)' : 'translateX(0)',
@@ -83,17 +98,17 @@ export function Toast({ toast, onDismiss, style }: ToastProps) {
         overflow: 'hidden',
         display: 'flex',
         flexDirection: 'column',
-        minHeight: 0,
         ...style,
       }}
     >
-      <Flex align="start" gap="2" style={{ minHeight: 0, flex: 1, overflow: 'hidden' }}>
+      <Flex align="start" gap="2" style={{ minWidth: 0 }}>
         {/* Icon */}
         <Box
           style={{
             width: '24px',
             height: '24px',
             minWidth: '24px',
+            flexShrink: 0,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -115,7 +130,7 @@ export function Toast({ toast, onDismiss, style }: ToastProps) {
         </Box>
 
         {/* Content */}
-        <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
+        <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
           <Text
             size="2"
             weight="medium"
@@ -130,81 +145,121 @@ export function Toast({ toast, onDismiss, style }: ToastProps) {
             {toast.title}
           </Text>
 
-          {toast.description && (
+          {hasDescription && (
             <Box
+              role="region"
+              aria-label={toast.title}
+              tabIndex={0}
+              onWheel={handleDescriptionWheel}
               style={{
-                maxHeight: 'min(36dvh, 220px)',
+                maxHeight: descriptionMaxHeight,
                 overflowY: 'auto',
                 overflowX: 'hidden',
-                minHeight: 0,
                 scrollbarWidth: 'thin',
                 paddingRight: 2,
+                width: '100%',
+                WebkitOverflowScrolling: 'touch',
+                overscrollBehavior: 'contain',
+                touchAction: 'pan-y',
               }}
             >
-              <Text
-                size="1"
-                style={{
-                  color: 'var(--slate-11)',
-                  lineHeight: 1.45,
-                  fontWeight: 300,
-                  letterSpacing: '0.04px',
-                  overflowWrap: 'anywhere',
-                  wordBreak: 'break-word',
-                }}
-              >
-                {toast.description}
-              </Text>
+              {renderDescription ? (
+                renderDescription()
+              ) : (
+                <Text
+                  size="1"
+                  style={{
+                    color: 'var(--slate-11)',
+                    lineHeight: 1.45,
+                    fontWeight: 300,
+                    letterSpacing: '0.04px',
+                    overflowWrap: 'anywhere',
+                    wordBreak: 'break-word',
+                    whiteSpace: 'pre-line',
+                  }}
+                >
+                  {toast.description}
+                </Text>
+              )}
             </Box>
           )}
 
-          {/* Action Button */}
           {toast.action && (
-            <Box style={{ marginTop: '8px' }}>
-              <Flex
-                align="center"
-                justify="center"
-                gap="1"
-                asChild
-              >
-                <button
-                  onClick={toast.action.onClick}
-                  style={{
-                    height: '24px',
-                    padding: '0 8px',
-                    border: '1px solid rgba(0, 6, 46, 0.2)',
-                    borderRadius: '3px',
-                    backgroundColor: 'transparent',
-                    cursor: 'pointer',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                  }}
-                >
+            <Box style={{ marginTop: '6px' }}>
+              {toast.action.href ? (
+                <Flex align="center" gap="1">
                   {toast.action.icon && (
                     <MaterialIcon
                       name={toast.action.icon}
-                      size={16}
-                      color="var(--slate-11)"
+                      size={14}
+                      color="var(--accent-11)"
                     />
                   )}
-                  <Text
-                    size="1"
-                    weight="medium"
+                  <Text size="1" weight="medium" asChild>
+                    <a
+                      href={toast.action.href}
+                      target={toast.action.openInNewTab ? '_blank' : undefined}
+                      rel={toast.action.openInNewTab ? 'noopener noreferrer' : undefined}
+                      style={{
+                        color: 'var(--accent-11)',
+                        textDecoration: 'underline',
+                        textUnderlineOffset: '2px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {toast.action.label}
+                    </a>
+                  </Text>
+                  {toast.action.openInNewTab && (
+                    <MaterialIcon
+                      name="open_in_new"
+                      size={14}
+                      color="var(--accent-11)"
+                    />
+                  )}
+                </Flex>
+              ) : (
+                <Flex align="center" justify="center" gap="1" asChild>
+                  <button
+                    type="button"
+                    onClick={toast.action.onClick}
                     style={{
-                      color: 'var(--slate-11)',
-                      lineHeight: '16px',
-                      letterSpacing: '0.04px',
+                      height: '24px',
+                      padding: '0 8px',
+                      border: '1px solid rgba(0, 6, 46, 0.2)',
+                      borderRadius: '3px',
+                      backgroundColor: 'transparent',
+                      cursor: 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
                     }}
                   >
-                    {toast.action.label}
-                  </Text>
-                </button>
-              </Flex>
+                    {toast.action.icon && (
+                      <MaterialIcon
+                        name={toast.action.icon}
+                        size={16}
+                        color="var(--slate-11)"
+                      />
+                    )}
+                    <Text
+                      size="1"
+                      weight="medium"
+                      style={{
+                        color: 'var(--slate-11)',
+                        lineHeight: '16px',
+                        letterSpacing: '0.04px',
+                      }}
+                    >
+                      {toast.action.label}
+                    </Text>
+                  </button>
+                </Flex>
+              )}
             </Box>
           )}
         </Flex>
 
-        {/* Close Button */}
         {toast.showCloseButton && (
           <IconButton
             variant="ghost"
@@ -215,6 +270,7 @@ export function Toast({ toast, onDismiss, style }: ToastProps) {
               onDismiss(toast.id);
             }}
             style={{
+              flexShrink: 0,
               opacity: isHovered ? 1 : 0.6,
               transition: 'opacity 0.15s ease',
               cursor: 'pointer',

@@ -17,7 +17,10 @@ import {
   ORIGIN_TYPE,
   RECORD_TYPE,
 } from '../constants/record.constants';
-import { NotificationService } from '../../notification/service/notification.service';
+import {
+  getFileExtension,
+  getFilenameWithoutExtension,
+} from '../../../libs/utils/file-extension.util';
 
 const logger = Logger.getInstance({
   service: 'knowledge_base.utils',
@@ -82,6 +85,11 @@ export const createPlaceholderDocument = async (
   isVersionedFile: boolean,
   keyValueStoreService: KeyValueStoreService,
   defaultConfig: DefaultStorageConfig,
+  // Scoped STORAGE_TOKEN minted by the caller. We hit the INTERNAL storage route
+  // (service-to-service) rather than the user-facing /upload route, so these
+  // per-file byte transfers aren't gated by the user-facing API rate limiter and
+  // the user route can stay locked down against abuse.
+  storageToken: string,
 ): Promise<PlaceholderResult> => {
   const formData = new FormData();
 
@@ -104,12 +112,12 @@ export const createPlaceholderDocument = async (
 
   try {
     const response = await axiosInstance.post(
-      `${storageUrl}/api/v1/document/upload`,
+      `${storageUrl}/api/v1/document/internal/upload`,
       formData,
       {
         headers: {
           ...formData.getHeaders(),
-          Authorization: req.headers.authorization,
+          Authorization: `Bearer ${storageToken}`,
         },
       },
     );
@@ -200,40 +208,75 @@ export const uploadFileToSignedUrl = async (
   }
 };
 
+/** Writes a single per-file outcome to the upload SSE response stream. */
+export type UploadStreamPublish = (
+  event: 'file:succeeded' | 'file:failed',
+  data: Record<string, unknown>,
+) => void;
+
 /**
- * Processes uploads sequentially in background and calls Python service after completion.
- * This function tracks successful and failed files separately and only sends successful files to Python API.
- * 
- * @param placeholderResults - Array of placeholder results with metadata
- * @param orgId - Organization ID
- * @param userId - User ID for notifications
- * @param currentTime - Current timestamp
- * @param pythonServiceUrl - Python service endpoint URL
- * @param headers - HTTP headers to forward to Python service
- * @param logger - Logger instance
- * @param notificationService - NotificationService for sending socket events
- * @returns Promise that resolves when background processing completes
+ * Uploads the accepted files to storage, creates their records via the indexing
+ * service, and STREAMS a terminal per-file event for each (success or failure)
+ * through `publish`. Returns the batch's succeeded/failed counts so the caller
+ * can emit a final `done` summary. Runs inline within the streaming upload
+ * request (no longer fire-and-forget).
  */
 export const processUploadsInBackground = async (
   placeholderResults: PlaceholderResultWithMetadata[],
   orgId: string,
-  userId: string,
   currentTime: number,
   pythonServiceUrl: string,
   headers: Record<string, string>,
   logger: Logger,
-  notificationService?: NotificationService,
-  kbId?: string,
-  folderId?: string,
-): Promise<void> => {
+  publish: UploadStreamPublish,
+): Promise<{ succeeded: number; failed: number }> => {
   const uploadStartTime = Date.now();
-  
+
   // Track successful and failed files separately
   const successfulResults: PlaceholderResultWithMetadata[] = [];
   const failedResults: Array<{
     result: PlaceholderResultWithMetadata;
     error: string;
   }> = [];
+
+  // The file extension (lower-case, no dot) so the client can show the file
+  // type / icon for a row even before the records list reloads.
+  const extOf = (filePath: string, fileName: string): string | undefined =>
+    getFileExtension(filePath) ?? getFileExtension(fileName) ?? undefined;
+
+  const publishFailure = (
+    meta: { key: string; fileName: string; filePath: string },
+    message: string,
+    stage: 'upload' | 'index',
+    reason?: string,
+  ): void => {
+    publish('file:failed', {
+      recordId: meta.key,
+      fileName: meta.fileName,
+      filePath: meta.filePath,
+      extension: extOf(meta.filePath, meta.fileName),
+      errors: [message],
+      stage,
+      ...(reason ? { reason } : {}),
+    });
+  };
+
+  const publishSuccess = (meta: {
+    key: string;
+    fileName: string;
+    filePath: string;
+  }): void => {
+    publish('file:succeeded', {
+      recordId: meta.key,
+      fileName: meta.fileName,
+      filePath: meta.filePath,
+      extension: extOf(meta.filePath, meta.fileName),
+    });
+  };
+
+  // Batch outcome counts, returned to the caller for the final `done` summary.
+  let batchSucceeded = 0;
+  let batchFailed = 0;
 
   try {
     // STEP 1: Upload all files sequentially (not parallel)
@@ -282,70 +325,19 @@ export const processUploadsInBackground = async (
       durationMs: uploadDuration,
     });
 
-    // STEP 2: Use provided kbId and folderId, or extract from URL as fallback
-    // Prefer explicit parameters over URL parsing for better reliability
-    const finalKbId = kbId || (() => {
-      const urlParts = pythonServiceUrl.split('/');
-      const kbIdIndex = urlParts.findIndex((part) => part === 'kb') + 1;
-      return kbIdIndex > 0 && kbIdIndex < urlParts.length ? urlParts[kbIdIndex] : undefined;
-    })();
-    const finalFolderId = folderId || (() => {
-      const urlParts = pythonServiceUrl.split('/');
-      const folderIdIndex = urlParts.findIndex((part) => part === 'folder');
-      return folderIdIndex > 0 && folderIdIndex + 1 < urlParts.length ? urlParts[folderIdIndex + 1] : undefined;
-    })();
-
-    // STEP 3: Send failed files notification if any
-    // Event-driven: Send immediately when failures are detected, no delays
-    // NotificationService handles connection state and queuing automatically
-    if (failedResults.length > 0 && notificationService) {
-      try {
-        const failedFiles = failedResults.map((fr) => ({
-          recordId: fr.result.metadata.key,
-          fileName: fr.result.metadata.fileName,
-          filePath: fr.result.metadata.filePath,
-          error: fr.error,
-        }));
-
-        const eventData = {
-          failedFiles,
-          orgId,
-          kbId: finalKbId,
-          folderId: finalFolderId,
-          totalFailed: failedResults.length,
-          timestamp: Date.now(),
-        };
-
-        // Send immediately - service handles connection state and queuing
-        const sentImmediately = notificationService.sendToUser(userId, 'records:failed', eventData);
-
-        logger.info('Notification sent for failed records', {
-          userId,
-          totalFailed: failedResults.length,
-          kbId: finalKbId,
-          folderId: finalFolderId,
-          sentImmediately,
-        });
-      } catch (socketError: unknown) {
-        const error = socketError instanceof Error ? socketError : new Error(String(socketError));
-        logger.error('Failed to send notification for failed files', {
-          error: error.message,
-          stack: error.stack,
-          userId,
-          kbId: finalKbId,
-          folderId: finalFolderId,
-        });
-        // Don't fail the upload if notification fails - this is a non-critical notification
-      }
+    // Per-file storage-upload failures → stream as `file:failed` (stage upload).
+    for (const fr of failedResults) {
+      publishFailure(fr.result.metadata, fr.error, 'upload');
     }
 
-    // STEP 4: Process successful files - only send successful files to Python API
+    // Nothing to index if every upload failed.
     if (successfulResults.length === 0) {
       logger.warn('No successful uploads to process', {
         totalFiles: placeholderResults.length,
         failedFiles: failedResults.length,
       });
-      return;
+      batchFailed = failedResults.length;
+      return { succeeded: batchSucceeded, failed: batchFailed };
     }
 
     // Build records with storage info using proper types - only for successful files
@@ -418,62 +410,106 @@ export const processUploadsInBackground = async (
     const totalDuration = Date.now() - uploadStartTime;
 
     if (response.statusCode === 200 || response.statusCode === 201) {
+      // Python may partially fail: a 200 can still carry `failedFiles` (the
+      // exact filePaths it could not create). Split the batch so we only report
+      // the records that truly succeeded as processed, and report the rest as
+      // failed — instead of claiming success for every file.
+      const responseBody = (response.data ?? {}) as {
+        failedFiles?: unknown;
+        skippedFiles?: unknown;
+        data?: { failedFiles?: unknown; skippedFiles?: unknown };
+      };
+      const failedPathList =
+        (Array.isArray(responseBody.failedFiles) && responseBody.failedFiles) ||
+        (Array.isArray(responseBody.data?.failedFiles) &&
+          responseBody.data?.failedFiles) ||
+        [];
+      const failedPathSet = new Set(
+        (failedPathList as unknown[]).filter(
+          (p): p is string => typeof p === 'string' && p.length > 0,
+        ),
+      );
+
+      // Files the indexing service SKIPPED because a record with the same name
+      // already exists in the target KB/folder (or collided within the batch).
+      // These are not errors but must be reported so the user knows they were
+      // not added — otherwise they'd wrongly appear as succeeded.
+      const skippedList =
+        (Array.isArray(responseBody.skippedFiles) && responseBody.skippedFiles) ||
+        (Array.isArray(responseBody.data?.skippedFiles) &&
+          responseBody.data?.skippedFiles) ||
+        [];
+      const skippedPathSet = new Set(
+        (skippedList as unknown[])
+          .map((s) =>
+            s && typeof s === 'object'
+              ? (s as { filePath?: unknown }).filePath
+              : s,
+          )
+          .filter((p): p is string => typeof p === 'string' && p.length > 0),
+      );
+
+      const pythonFailedFiles = processedFiles.filter((pf) =>
+        failedPathSet.has(pf.filePath),
+      );
+      const pythonSkippedFiles = processedFiles.filter(
+        (pf) => !failedPathSet.has(pf.filePath) && skippedPathSet.has(pf.filePath),
+      );
+      const succeededFiles = processedFiles.filter(
+        (pf) =>
+          !failedPathSet.has(pf.filePath) && !skippedPathSet.has(pf.filePath),
+      );
+
       logger.info('Python service called successfully after uploads', {
-        successfulRecords: processedFiles.length,
-        failedRecords: failedResults.length,
+        requestedRecords: processedFiles.length,
+        indexedRecords: succeededFiles.length,
+        serverFailedRecords: pythonFailedFiles.length,
+        skippedRecords: pythonSkippedFiles.length,
+        uploadFailedRecords: failedResults.length,
         statusCode: response.statusCode,
         totalDurationMs: totalDuration,
         uploadDurationMs: uploadDuration,
       });
 
-      // STEP 6: Emit Socket.IO event to notify frontend that successful records are now processed
-      // Event-driven: Send immediately when processing completes, no delays
-      // NotificationService handles connection state and queuing automatically
-      if (notificationService) {
-        const recordIds = processedFiles.map((pf) => pf.record._key);
-        try {
-          const eventData = {
-            recordIds,
-            orgId,
-            kbId: finalKbId,
-            folderId: finalFolderId,
-            totalRecords: processedFiles.length,
-            timestamp: Date.now(),
-          };
-
-          // Send immediately - service handles connection state and queuing
-          const sentImmediately = notificationService.sendToUser(userId, 'records:processed', eventData);
-          
-          logger.info('Notification sent for processed records', {
-            userId,
-            recordIds: recordIds.slice(0, 3),
-            totalRecords: processedFiles.length,
-            kbId: finalKbId,
-            folderId: finalFolderId,
-            sentImmediately,
-            totalDurationMs: totalDuration,
-            uploadDurationMs: uploadDuration,
-          });
-        } catch (socketError: unknown) {
-          const error = socketError instanceof Error ? socketError : new Error(String(socketError));
-          logger.error('Failed to send notification for processed records', {
-            error: error.message,
-            stack: error.stack,
-            userId,
-            kbId: finalKbId,
-            folderId: finalFolderId,
-            totalRecords: processedFiles.length,
-          });
-          // Don't fail the upload if notification fails - this is a non-critical notification
-        }
-      } else {
-        logger.warn('NotificationService not available - socket events will not be sent', {
-          userId,
-          kbId: finalKbId,
-          folderId: finalFolderId,
-          totalRecords: processedFiles.length,
+      // Stream a terminal per-file event for every file in this batch: success
+      // for the records that were created, failure for the ones the server
+      // could not create, and a duplicate-name failure for the skipped ones.
+      for (const pf of succeededFiles) {
+        publishSuccess({
+          key: pf.record._key,
+          fileName: pf.record.recordName,
+          filePath: pf.filePath,
         });
       }
+      for (const pf of pythonFailedFiles) {
+        publishFailure(
+          {
+            key: pf.record._key,
+            fileName: pf.record.recordName,
+            filePath: pf.filePath,
+          },
+          'Server failed to create this record',
+          'index',
+        );
+      }
+      for (const pf of pythonSkippedFiles) {
+        publishFailure(
+          {
+            key: pf.record._key,
+            fileName: pf.record.recordName,
+            filePath: pf.filePath,
+          },
+          `A file named "${pf.record.recordName}" already exists in this location; it was skipped.`,
+          'index',
+          'DUPLICATE_NAME',
+        );
+      }
+
+      batchSucceeded = succeededFiles.length;
+      batchFailed =
+        failedResults.length +
+        pythonFailedFiles.length +
+        pythonSkippedFiles.length;
     } else {
       logger.error('Python service call failed after uploads', {
         statusCode: response.statusCode,
@@ -482,48 +518,21 @@ export const processUploadsInBackground = async (
         failedRecords: failedResults.length,
         totalDurationMs: totalDuration,
       });
-      
-      // If Python API fails, mark all successful uploads as failed in notification
-      // Event-driven: Send immediately when API failure is detected
-      if (notificationService && processedFiles.length > 0) {
-        try {
-          const failedFiles = processedFiles.map((pf) => ({
-            recordId: pf.record._key,
+
+      // Whole indexing request failed → every uploaded record failed (index).
+      for (const pf of processedFiles) {
+        publishFailure(
+          {
+            key: pf.record._key,
             fileName: pf.record.recordName,
             filePath: pf.filePath,
-            error: `Python API call failed: ${response.msg || 'Unknown error'}`,
-          }));
-
-          const eventData = {
-            failedFiles,
-            orgId,
-            kbId: finalKbId,
-            folderId: finalFolderId,
-            totalFailed: processedFiles.length,
-            timestamp: Date.now(),
-          };
-
-          // Send immediately - service handles connection state and queuing
-          const sentImmediately = notificationService.sendToUser(userId, 'records:failed', eventData);
-
-          logger.info('Notification sent for Python API failures', {
-            userId,
-            kbId: finalKbId,
-            folderId: finalFolderId,
-            totalFailed: processedFiles.length,
-            sentImmediately,
-          });
-        } catch (socketError: unknown) {
-          const error = socketError instanceof Error ? socketError : new Error(String(socketError));
-          logger.error('Failed to send notification for Python API failures', {
-            error: error.message,
-            stack: error.stack,
-            userId,
-            kbId: finalKbId,
-            folderId: finalFolderId,
-          });
-        }
+          },
+          `Indexing service failed: ${response.msg || 'Unknown error'}`,
+          'index',
+        );
       }
+      batchSucceeded = 0;
+      batchFailed = failedResults.length + processedFiles.length;
     }
   } catch (error: any) {
     const totalDuration = Date.now() - uploadStartTime;
@@ -534,63 +543,22 @@ export const processUploadsInBackground = async (
       successfulUploads: successfulResults.length,
       failedUploads: failedResults.length,
     });
-    
-      // Send notification for all files as failed if there's a catastrophic error
-      // Event-driven: Send immediately when catastrophic error occurs
-    if (notificationService && placeholderResults.length > 0) {
-      try {
-        // Use provided kbId and folderId, or extract from URL as fallback
-        const errorKbId = kbId || (() => {
-          const urlParts = pythonServiceUrl.split('/');
-          const kbIdIndex = urlParts.findIndex((part) => part === 'kb') + 1;
-          return kbIdIndex > 0 && kbIdIndex < urlParts.length ? urlParts[kbIdIndex] : undefined;
-        })();
-        const errorFolderId = folderId || (() => {
-          const urlParts = pythonServiceUrl.split('/');
-          const folderIdIndex = urlParts.findIndex((part) => part === 'folder');
-          return folderIdIndex > 0 && folderIdIndex + 1 < urlParts.length ? urlParts[folderIdIndex + 1] : undefined;
-        })();
 
-        const failedFiles = placeholderResults.map((result) => ({
-          recordId: result.metadata.key,
-          fileName: result.metadata.fileName,
-          filePath: result.metadata.filePath,
-          error: error.message || 'Processing failed',
-        }));
-
-        const eventData = {
-          failedFiles,
-          orgId,
-          kbId: errorKbId,
-          folderId: errorFolderId,
-          totalFailed: placeholderResults.length,
-          timestamp: Date.now(),
-        };
-
-        // Send immediately - service handles connection state and queuing
-        const sentImmediately = notificationService.sendToUser(userId, 'records:failed', eventData);
-
-        logger.info('Notification sent for catastrophic failure', {
-          userId,
-          kbId: errorKbId,
-          folderId: errorFolderId,
-          totalFailed: placeholderResults.length,
-          sentImmediately,
-        });
-      } catch (socketError: unknown) {
-        const error = socketError instanceof Error ? socketError : new Error(String(socketError));
-        logger.error('Failed to send notification for catastrophic failure', {
-          error: error.message,
-          stack: error.stack,
-          userId,
-          kbId: kbId || undefined,
-          folderId: folderId || undefined,
-        });
-      }
+    // Catastrophic failure after uploads succeeded → mark the uploaded-but-
+    // unindexed files as failed (storage-upload failures were already streamed).
+    for (const result of successfulResults) {
+      publishFailure(result.metadata, error.message || 'Processing failed', 'index');
     }
-    // Don't throw - this is background processing, errors are logged but don't affect the response
+    batchSucceeded = 0;
+    batchFailed = failedResults.length + successfulResults.length;
+    // Don't rethrow — every file's outcome has already been streamed.
   }
+
+  return { succeeded: batchSucceeded, failed: batchFailed };
 };
+
+// NOTE: getFilenameWithoutExtension now lives in libs/utils/file-extension.util.ts
+// (canonical last-dot derivation, safe for names with no real extension).
 
 /**
  * Legacy function for backward compatibility.
@@ -607,6 +575,7 @@ export const saveFileToStorageAndGetDocumentId = async (
   keyValueStoreService: KeyValueStoreService,
   defaultConfig: DefaultStorageConfig,
   _recordRelationService: RecordRelationService,
+  storageToken: string,
 ): Promise<StorageResponseMetadata> => {
   const result = await createPlaceholderDocument(
     req,
@@ -615,6 +584,7 @@ export const saveFileToStorageAndGetDocumentId = async (
     isVersionedFile,
     keyValueStoreService,
     defaultConfig,
+    storageToken,
   );
 
   // If there's an upload promise, await it (for backward compatibility)
@@ -629,11 +599,14 @@ export const saveFileToStorageAndGetDocumentId = async (
 };
 
 export const uploadNextVersionToStorage = async (
-  req: AuthenticatedUserRequest,
+  _req: AuthenticatedUserRequest,
   file: FileBufferInfo,
   documentId: string,
   keyValueStoreService: KeyValueStoreService,
   defaultConfig: DefaultStorageConfig,
+  // Scoped STORAGE_TOKEN — go through the INTERNAL storage route (see
+  // createPlaceholderDocument) instead of forwarding the user's token.
+  storageToken: string,
 ): Promise<StorageResponseMetadata> => {
   const formData = new FormData();
 
@@ -649,12 +622,12 @@ export const uploadNextVersionToStorage = async (
 
   try {
     const response = await axiosInstance.post(
-      `${storageUrl}/api/v1/document/${documentId}/uploadNextVersion`,
+      `${storageUrl}/api/v1/document/internal/${documentId}/uploadNextVersion`,
       formData,
       {
         headers: {
           ...formData.getHeaders(),
-          Authorization: req.headers.authorization,
+          Authorization: `Bearer ${storageToken}`,
         },
       },
     );
@@ -672,8 +645,3 @@ export const uploadNextVersionToStorage = async (
     throw error;
   }
 };
-
-function getFilenameWithoutExtension(originalname: string) {
-  const fileExtension = originalname.slice(originalname.lastIndexOf('.') + 1);
-  return originalname.slice(0, -fileExtension.length - 1);
-}

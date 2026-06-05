@@ -12,7 +12,7 @@ import { CitationCard } from './citations-panel';
 import { useTranslation } from 'react-i18next';
 import { useCitationSync } from './use-citation-sync';
 import { usePdfZoom } from './use-pdf-zoom';
-import { downloadPreviewFile, shouldShowPagination } from './utils';
+import { downloadPreviewFile, shouldShowPagination, resolvePreviewIconExtension } from './utils';
 import {
   PDF_ZOOM_MAX,
   PDF_ZOOM_MIN,
@@ -152,6 +152,7 @@ export function FilePreviewMobile({
       >
         <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
           <FileIcon
+            extension={resolvePreviewIconExtension(recordDetails, file.type)}
             filename={file.name}
             mimeType={file.type}
             size={16}

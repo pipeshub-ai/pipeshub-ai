@@ -206,14 +206,37 @@ export function getDocumentRootPath(
   return `${getFullDocumentPath(orgId, documentPath)}/${documentId}`;
 }
 
-export function hasExtension(documentName: string | undefined): boolean {
-  if (documentName === undefined) {
+/**
+ * Detects whether a document name still carries a file extension that would be
+ * duplicated when `${documentName}${extension}` is reconstructed.
+ *
+ * The extension of a file is ALWAYS the segment after the LAST dot. A name may
+ * legitimately contain earlier dots (e.g. a file literally named
+ * `report.docx.png` is stored as documentName `report.docx` + extension `png`),
+ * so we must NOT reject a name just because some interior dot-segment looks like
+ * a known type. When the real `extension` is known, only flag the genuine
+ * double-extension case — the name already ending in `.<extension>`.
+ *
+ * When `extension` is not provided we fall back to the historical heuristic
+ * (last dot-segment maps to a known MIME type) for backward compatibility.
+ */
+export function hasExtension(
+  documentName: string | undefined,
+  extension?: string,
+): boolean {
+  if (!documentName) {
     return false;
   }
 
-  const extension = documentName.split('.').pop() || '';
-  const mimeType = getMimeType(extension);
-  return mimeType !== '';
+  if (extension) {
+    const ext = (
+      extension.startsWith('.') ? extension.slice(1) : extension
+    ).toLowerCase();
+    return ext !== '' && documentName.toLowerCase().endsWith(`.${ext}`);
+  }
+
+  const lastSegment = documentName.split('.').pop() || '';
+  return getMimeType(lastSegment) !== '';
 }
 
 /**
@@ -236,7 +259,7 @@ export function validateFileAndDocumentName(
     );
   }
 
-  if (hasExtension(documentName)) {
+  if (hasExtension(documentName, extension)) {
     throw new BadRequestError(
       `File "${fileNameForError}": The document name cannot contain a file extension. Please provide only the name without the extension.`,
     );
@@ -466,6 +489,16 @@ export function extractUserId(
   // Check user request first
   if ('user' in req && req.user && 'userId' in req.user) {
     return req.user.userId;
+  }
+
+  // Service token that carries a userId (e.g. the storage service token minted
+  // for internal KB uploads) — preserve initiator attribution.
+  if (
+    'tokenPayload' in req &&
+    req.tokenPayload &&
+    typeof req.tokenPayload.userId === 'string'
+  ) {
+    return req.tokenPayload.userId;
   }
 
   return null;

@@ -25,7 +25,9 @@ import {
 } from './components';
 import type { UploadFileItem } from './components';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
-import { applyKnowledgeBaseUploadBatchResult } from './upload-batch-result';
+import { notifyUploadFailures } from '@/lib/utils/upload-failure-feedback';
+import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
+import { parseFileRejectionReason } from '@/lib/constants/file-rejection-reason';
 import { KnowledgeBaseApi, KnowledgeHubApi, type FileMetadata } from './api';
 // import KnowledgeBaseSidebar from './sidebar';
 import { useKnowledgeBaseStore, DEFAULT_PAGE_SIZE } from './store';
@@ -475,7 +477,8 @@ function KnowledgeBasePageContent() {
   const [previewMode, setPreviewMode] = useState<'sidebar' | 'fullscreen'>('sidebar');
 
   // Upload store actions
-  const { addItems: addUploadItems, startUpload, completeUpload, failUpload, bulkUpdateItemStatus } = useUploadStore();
+  const { addItems: addUploadItems, startUpload, completeUpload, failUpload } = useUploadStore();
+  const { maxFileSizeMB } = useUploadLimits();
 
   /**
    * Tracks last page we fetched for so filter/sort resets (page → 1) do not trigger a
@@ -1541,6 +1544,24 @@ function KnowledgeBasePageContent() {
         return;
       }
 
+      // One upload session per drag-drop, shared by all of this drop's batch
+      // requests. The SSE stream keyed by `uploadId` delivers async per-file
+      // failures and lets the tracker survive a refresh / connection drop.
+      const uploadId =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : generateUploadId();
+      const sessionLabel =
+        items.length === 1 && items[0].type === 'folder'
+          ? items[0].name
+          : `${fileEntries.length} file${fileEntries.length === 1 ? '' : 's'}`;
+      useUploadStore.getState().upsertSession({
+        uploadId,
+        kbId: selectedKbId,
+        folderId: newParentId,
+        label: sessionLabel,
+      });
+
       // Add all individual file entries to the upload store (one row per file)
       addUploadItems(
         fileEntries.map((entry) => ({
@@ -1551,6 +1572,8 @@ function KnowledgeBasePageContent() {
           file: entry.file,
           knowledgeBaseId: selectedKbId,
           parentId: newParentId,
+          uploadId,
+          filePath: entry.filePath,
         }))
       );
 
@@ -1569,44 +1592,108 @@ function KnowledgeBasePageContent() {
         batches.push(fileEntries.slice(i, i + BATCH_SIZE));
       }
 
+      const normalizePath = (p: string) =>
+        p.replace(/\\/g, '/').replace(/^\/+/, '').trim();
+
+      // Stream one batch upload: the POST response is an SSE stream of per-file
+      // outcomes (rejections, storage upload, indexing). Map each event to its
+      // row by file path within the batch.
       const sendBatch = async (batch: FileEntry[]) => {
         const batchFiles = batch.map((e) => e.file);
         const batchMetadata: FileMetadata[] = batch.map((e) => ({
           file_path: e.filePath,
           last_modified: e.file.lastModified,
         }));
-
-        const batchIds = batch.map((e) => e.storeId);
-        const onBatchProgress = (progress: number) => {
-          bulkUpdateItemStatus(batchIds, 'uploading', progress);
-        };
-
-        let responseData: Record<string, unknown>;
-        if (newParentId) {
-          responseData = await KnowledgeBaseApi.uploadToFolder(
-            selectedKbId,
-            newParentId,
-            batchFiles,
-            batchMetadata,
-            onBatchProgress
+        const byPath = new Map(
+          batch.map((e) => [normalizePath(e.filePath), e.storeId]),
+        );
+        const findStoreId = (data: any): string | undefined =>
+          byPath.get(
+            normalizePath(String(data?.filePath || data?.fileName || '')),
           );
-        } else {
-          responseData = await KnowledgeBaseApi.uploadToRoot(
-            selectedKbId,
-            batchFiles,
-            batchMetadata,
-            onBatchProgress
-          );
-        }
 
-        applyKnowledgeBaseUploadBatchResult(
-          batch.map((e) => ({ storeId: e.storeId, file: e.file, filePath: e.filePath })),
-          responseData,
-          completeUpload,
-          failUpload
+        let streamError: Error | null = null;
+        // The server emits a terminal `done` once the whole batch is processed,
+        // or an `error` event on a catastrophic mid-stream failure. We only
+        // treat unresolved rows as successful when `done` was actually seen.
+        let gotDone = false;
+        let gotError: string | null = null;
+        await KnowledgeBaseApi.streamUpload(
+          selectedKbId,
+          newParentId,
+          batchFiles,
+          batchMetadata,
+          {
+            onEvent: (evt) => {
+              const data = evt.data as any;
+              if (evt.event === 'file:succeeded') {
+                const id = findStoreId(data);
+                if (id) completeUpload(id);
+                anySuccess = true;
+              } else if (evt.event === 'file:failed') {
+                const id = findStoreId(data);
+                if (id) {
+                  const errors =
+                    Array.isArray(data?.errors) && data.errors.length
+                      ? data.errors
+                      : [
+                          t('uploadProgress.uploadFailedDefault', {
+                            defaultValue: 'Upload failed',
+                          }),
+                        ];
+                  const reason = parseFileRejectionReason(data?.reason);
+                  failUpload(id, errors, reason ? [reason] : undefined);
+                }
+              } else if (evt.event === 'done') {
+                gotDone = true;
+              } else if (evt.event === 'error') {
+                gotError =
+                  (data && typeof data.message === 'string' && data.message) ||
+                  t('uploadProgress.serverError', {
+                    defaultValue: 'Upload failed on the server',
+                  });
+              }
+            },
+            onError: (err) => {
+              streamError = err;
+            },
+          },
         );
 
-        anySuccess = true;
+        // Resolve any row whose terminal event was missed. NEVER mark a row
+        // completed unless the server confirmed the batch finished (`done`) and
+        // no error occurred — otherwise fail it, so a dropped/errored stream is
+        // never shown as success.
+        const message =
+          (streamError as Error | null)?.message ||
+          gotError ||
+          t('uploadProgress.uploadIncomplete', {
+            defaultValue: 'Upload incomplete',
+          });
+        const succeededCleanly = gotDone && !gotError && !streamError;
+        const items = useUploadStore.getState().items;
+        batch.forEach((e) => {
+          const item = items.find((i) => i.id === e.storeId);
+          if (item && (item.status === 'uploading' || item.status === 'pending')) {
+            if (succeededCleanly) {
+              completeUpload(e.storeId);
+              // A row whose terminal event we missed but whose batch finished
+              // cleanly was created server-side — warrant a refresh.
+              anySuccess = true;
+            } else {
+              failUpload(e.storeId, message);
+            }
+          }
+        });
+
+        if (streamError) {
+          // Connection / transport failure — surface it so the worker/priming
+          // handlers can also account for the batch.
+          throw streamError;
+        }
+        // NOTE: `anySuccess` is set only when at least one file actually
+        // succeeded (file:succeeded event, or a cleanly-finished missed row), so
+        // an all-failed batch does not trigger a pointless table refresh.
       };
 
       // Group entries by top-level folder so each distinct folder gets a
@@ -1654,7 +1741,12 @@ function KnowledgeBasePageContent() {
         try {
           await sendBatch(batch);
         } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Upload failed';
+          const errorMessage =
+            error instanceof Error
+              ? error.message
+              : t('uploadProgress.uploadFailedDefault', {
+                  defaultValue: 'Upload failed',
+                });
           batch.forEach((entry) => failUpload(entry.storeId, errorMessage));
           const folder = getTopLevelFolder(batch[0].filePath);
           if (folder) failedFolders.add(folder);
@@ -1666,7 +1758,12 @@ function KnowledgeBasePageContent() {
         const folder = getTopLevelFolder(batch[0]?.filePath);
         if (folder && failedFolders.has(folder)) {
           batch.forEach((entry) =>
-            failUpload(entry.storeId, 'Skipped: folder creation failed')
+            failUpload(
+              entry.storeId,
+              t('uploadProgress.skippedFolderFailed', {
+                defaultValue: 'Skipped: folder creation failed',
+              })
+            )
           );
           return false;
         }
@@ -1682,7 +1779,12 @@ function KnowledgeBasePageContent() {
           try {
             await sendBatch(viableBatches[idx]);
           } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'Upload failed';
+            const errorMessage =
+              error instanceof Error
+                ? error.message
+                : t('uploadProgress.uploadFailedDefault', {
+                    defaultValue: 'Upload failed',
+                  });
             viableBatches[idx].forEach((entry) => failUpload(entry.storeId, errorMessage));
           }
         }
@@ -1694,11 +1796,21 @@ function KnowledgeBasePageContent() {
         )
       );
 
+      // All batch streams have settled — finalize the session (completes any
+      // rows still in flight as a safety net).
+      useUploadStore.getState().finalizeSession(uploadId);
+
+      const sessionStoreIds = new Set(fileEntries.map((e) => e.storeId));
+      const failedInSession = useUploadStore
+        .getState()
+        .items.filter((i) => sessionStoreIds.has(i.id) && i.status === 'failed');
+      notifyUploadFailures(failedInSession, maxFileSizeMB);
+
       if (anySuccess) {
         await refreshData();
       }
     },
-    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, bulkUpdateItemStatus, refreshData]
+    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, refreshData, maxFileSizeMB, t]
   );
 
   // Handle folder info click
