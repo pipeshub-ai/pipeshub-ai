@@ -202,7 +202,7 @@ class PostgreSQLClient:
 
                 rows = await statement.fetch(*prepared_params)
                 columns = [attr.name for attr in attributes]
-                raw_rows = [tuple(row[column] for column in columns) for row in rows]
+                raw_rows = [tuple(row) for row in rows]
                 return (columns, raw_rows)
         except Exception as e:
             logger.error(f"🔧 [PostgreSQLClient.execute_query_raw] Query execution failed: {e}")
