@@ -110,6 +110,18 @@ class TestApplyEmpty:
         doc_extraction.apply.assert_awaited_once_with(ctx)
         sink_orchestrator.apply.assert_awaited_once_with(ctx)
 
+    @pytest.mark.asyncio
+    async def test_block_containers_none_skips_validation(self, pipeline, doc_extraction, sink_orchestrator):
+        """When block_containers is None, apply should not crash before extraction."""
+        record = _make_record()
+        record.block_containers = None
+        ctx = _make_ctx(record)
+
+        await pipeline.apply(ctx)
+
+        doc_extraction.apply.assert_awaited_once_with(ctx)
+        sink_orchestrator.apply.assert_awaited_once_with(ctx)
+
 
 # ---------------------------------------------------------------------------
 # apply -- non-empty blocks

@@ -423,7 +423,17 @@ class BlockContainerValidator:
             row_text = data.get("row_natural_language_text")
             has_cells = isinstance(cells, list) and len(cells) > 0
 
-            if not has_cells:
+            if row_text is not None and not isinstance(row_text, str):
+                issues.append(ValidationIssue(
+                    severity=Severity.ERROR,
+                    code="TABLE_ROW_TEXT_NOT_STRING",
+                    message=(
+                        f"row_natural_language_text must be a string, "
+                        f"got {type(row_text).__name__}"
+                    ),
+                    location=loc,
+                ))
+            elif not has_cells:
                 if not isinstance(row_text, str) or not row_text.strip():
                     issues.append(ValidationIssue(
                         severity=Severity.ERROR,

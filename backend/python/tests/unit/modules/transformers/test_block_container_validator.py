@@ -683,6 +683,18 @@ class TestTableRowBlocks:
         container = self._valid_table_container(row_data={"cells": [1, 2]})
         _assert_raises_with_codes(container, "TABLE_ROW_CELL_NOT_STRING")
 
+    def test_table_row_text_not_string_with_cells(self):
+        container = self._valid_table_container(
+            row_data={"cells": ["a", "b"], "row_natural_language_text": 123}
+        )
+        _assert_raises_with_codes(container, "TABLE_ROW_TEXT_NOT_STRING")
+
+    def test_table_row_text_not_string_without_cells(self):
+        container = self._valid_table_container(
+            row_data={"row_natural_language_text": 123}
+        )
+        _assert_raises_with_codes(container, "TABLE_ROW_TEXT_NOT_STRING")
+
     def test_table_row_number_invalid_zero(self):
         container = self._valid_table_container(
             row_data={"cells": ["a"], "row_number": 0}
