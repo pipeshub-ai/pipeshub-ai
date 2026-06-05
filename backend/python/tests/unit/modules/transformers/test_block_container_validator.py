@@ -337,6 +337,45 @@ class TestParentChildLinkage:
         )
         _assert_raises_with_codes(container, "CHILDREN_BLOCK_INDEX_OUT_OF_RANGE")
 
+    def test_children_block_range_huge_end_single_error(self):
+        children = BlockGroupChildren(block_ranges=[IndexRange(start=0, end=10**9)])
+        container = _container(
+            blocks=[_block(0)],
+            block_groups=[_block_group(0, children=children)],
+        )
+        with pytest.raises(BlockContainerValidationError) as exc_info:
+            _validator().validate(container)
+        range_errors = [
+            e for e in exc_info.value.errors
+            if e.code == "CHILDREN_BLOCK_INDEX_OUT_OF_RANGE"
+        ]
+        assert len(range_errors) == 1
+        assert "[0, 1000000000]" in range_errors[0].message
+
+    def test_children_block_range_inverted(self):
+        children = BlockGroupChildren(block_ranges=[IndexRange(start=3, end=1)])
+        container = _container(
+            blocks=[_block(0), _block(1), _block(2)],
+            block_groups=[_block_group(0, children=children)],
+        )
+        _assert_raises_with_codes(container, "CHILDREN_BLOCK_INDEX_OUT_OF_RANGE")
+
+    def test_children_group_range_huge_end_single_error(self):
+        children = BlockGroupChildren(block_group_ranges=[IndexRange(start=0, end=10**9)])
+        container = _container(
+            block_groups=[
+                _block_group(0, children=children),
+                _block_group(1),
+            ]
+        )
+        with pytest.raises(BlockContainerValidationError) as exc_info:
+            _validator().validate(container)
+        range_errors = [
+            e for e in exc_info.value.errors
+            if e.code == "CHILDREN_GROUP_INDEX_OUT_OF_RANGE"
+        ]
+        assert len(range_errors) == 1
+
     def test_children_group_range_out_of_range(self):
         children = BlockGroupChildren(block_group_ranges=[IndexRange(start=2, end=2)])
         container = _container(block_groups=[_block_group(0, children=children)])

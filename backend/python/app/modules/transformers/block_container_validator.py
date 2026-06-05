@@ -5,7 +5,7 @@ from enum import Enum
 from typing import List, Optional
 
 from app.exceptions.indexing_exceptions import BlockContainerValidationError
-from app.models.blocks import BlockType, BlocksContainer, DataFormat, GroupType
+from app.models.blocks import BlockType, BlocksContainer, DataFormat, GroupType, IndexRange
 
 
 class Severity(str, Enum):
@@ -197,18 +197,9 @@ class BlockContainerValidator:
             loc = f"block_group[{gi}]"
 
             for r in (group.children.block_ranges or []):
+                if not self._append_if_block_range_invalid(r, n_blocks, loc, issues):
+                    continue
                 for bi in range(r.start, r.end + 1):
-                    if not (0 <= bi < n_blocks):
-                        issues.append(ValidationIssue(
-                            severity=Severity.ERROR,
-                            code="CHILDREN_BLOCK_INDEX_OUT_OF_RANGE",
-                            message=(
-                                f"children.block_ranges references block[{bi}] "
-                                f"which does not exist (n_blocks={n_blocks})"
-                            ),
-                            location=loc,
-                        ))
-                        continue
                     children_block_membership.add((gi, bi))
                     child = blocks[bi]
                     if child.parent_index is not None and child.parent_index != gi:
@@ -223,18 +214,9 @@ class BlockContainerValidator:
                         ))
 
             for r in (group.children.block_group_ranges or []):
+                if not self._append_if_group_range_invalid(r, n_groups, loc, issues):
+                    continue
                 for cgi in range(r.start, r.end + 1):
-                    if not (0 <= cgi < n_groups):
-                        issues.append(ValidationIssue(
-                            severity=Severity.ERROR,
-                            code="CHILDREN_GROUP_INDEX_OUT_OF_RANGE",
-                            message=(
-                                f"children.block_group_ranges references block_group[{cgi}] "
-                                f"which does not exist (n_groups={n_groups})"
-                            ),
-                            location=loc,
-                        ))
-                        continue
                     children_group_membership.add((gi, cgi))
                     child_group = block_groups[cgi]
                     if child_group.parent_index is not None and child_group.parent_index != gi:
@@ -522,9 +504,9 @@ class BlockContainerValidator:
             # Every child block must be table_row
             if group.children:
                 for r in (group.children.block_ranges or []):
+                    if not self._is_index_range_in_bounds(r, n_blocks):
+                        continue
                     for bi in range(r.start, r.end + 1):
-                        if not (0 <= bi < n_blocks):
-                            continue  # already caught by linkage check
                         child_type = self._block_type(blocks[bi])
                         if child_type != BlockType.TABLE_ROW.value:
                             issues.append(ValidationIssue(
@@ -569,6 +551,55 @@ class BlockContainerValidator:
     # ──────────────────────────────────────────────────────────────────────
     # Helpers
     # ──────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_index_range_in_bounds(r: IndexRange, upper_bound: int) -> bool:
+        """True when [start, end] is non-inverted and fully within [0, upper_bound)."""
+        if r.start < 0 or r.start > r.end or r.end >= upper_bound:
+            return False
+        return True
+
+    @staticmethod
+    def _append_if_block_range_invalid(
+        r: IndexRange,
+        n_blocks: int,
+        location: str,
+        issues: List[ValidationIssue],
+    ) -> bool:
+        """Return True when the range is safe to iterate; append one error otherwise."""
+        if BlockContainerValidator._is_index_range_in_bounds(r, n_blocks):
+            return True
+        issues.append(ValidationIssue(
+            severity=Severity.ERROR,
+            code="CHILDREN_BLOCK_INDEX_OUT_OF_RANGE",
+            message=(
+                f"children.block_ranges [{r.start}, {r.end}] is out of range "
+                f"for n_blocks={n_blocks}"
+            ),
+            location=location,
+        ))
+        return False
+
+    @staticmethod
+    def _append_if_group_range_invalid(
+        r: IndexRange,
+        n_groups: int,
+        location: str,
+        issues: List[ValidationIssue],
+    ) -> bool:
+        """Return True when the range is safe to iterate; append one error otherwise."""
+        if BlockContainerValidator._is_index_range_in_bounds(r, n_groups):
+            return True
+        issues.append(ValidationIssue(
+            severity=Severity.ERROR,
+            code="CHILDREN_GROUP_INDEX_OUT_OF_RANGE",
+            message=(
+                f"children.block_group_ranges [{r.start}, {r.end}] is out of range "
+                f"for n_groups={n_groups}"
+            ),
+            location=location,
+        ))
+        return False
 
     def _format_record_context(self) -> str:
         """Build a log-friendly record context string."""
