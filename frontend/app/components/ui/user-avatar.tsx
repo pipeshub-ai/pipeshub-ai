@@ -38,28 +38,48 @@ function toRadixSize(px: number): React.ComponentProps<typeof Avatar>['size'] {
   return '5';
 }
 
+/** First character of a string as a full Unicode code point (emoji-safe), or '' if empty. */
+function firstChar(s: string): string {
+  for (const char of s) {
+    return char;
+  }
+  return '';
+}
+
+/**
+ * Derive initials from a free-form name string by splitting on separators.
+ * Returns '' when no usable characters remain (caller decides the fallback).
+ * e.g. "Acme Corporation" → "AC", "Pipeshub Inc." → "PI", "sofia.chen" → "SC", .
+ */
+function initialsFromName(name: string): string {
+  const parts = name.split(/[\s._-]+/).filter(Boolean);
+  if (parts.length === 0) return '';
+  if (parts.length === 1) return Array.from(parts[0].toUpperCase()).slice(0, 2).join('');
+  return firstChar(parts[0].toUpperCase()) + firstChar(parts[parts.length - 1].toUpperCase());
+}
+
 /**
  * Resolve initials from a profile object.
  * Priority: fullName → firstName+lastName → email local-part → '?'.
+ * Guards against names made of only separators, leading/trailing separators,
+ * whitespace-only values, and multi-byte (emoji) first characters.
  */
 export function getInitials({ fullName, firstName, lastName, email }: UserAvatarProfile): string {
-  // 1. fullName (e.g. "Rishabh Gupta" → "RG", "sofia.chen" → "SC")
-  if (fullName) {
-    const parts = fullName.trim().split(/[\s._-]+/);
-    if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-    return fullName.slice(0, 2).toUpperCase();
-  }
+  // 1. fullName (e.g. "Acme Corporation" → "AC", "Pipeshub Inc." → "PI")
+  const fromFullName = initialsFromName(fullName?.trim() ?? '');
+  if (fromFullName) return fromFullName;
+
   // 2. firstName + lastName
-  if (firstName || lastName) {
-    return [(firstName ?? '')[0], (lastName ?? '')[0]].filter(Boolean).join('').toUpperCase();
-  }
+  const first = firstChar((firstName ?? '').trim());
+  const last = firstChar((lastName ?? '').trim());
+  if (first || last) return (first + last).toUpperCase();
+
   // 3. Email local-part (e.g. "abhishek@pipeshub.com" → "AB")
   if (email) {
-    const local = email.split('@')[0];
-    const parts = local.trim().split(/[\s._-]+/);
-    if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-    return local.slice(0, 2).toUpperCase();
+    const fromEmail = initialsFromName(email.split('@')[0].trim());
+    if (fromEmail) return fromEmail;
   }
+
   return '?';
 }
 
