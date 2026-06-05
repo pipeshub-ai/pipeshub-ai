@@ -213,60 +213,6 @@ class RetrievalService:
         else:
             return None
 
-    async def _ensure_collection_dimensions(self, dense_embeddings: Embeddings) -> None:
-        """Verify the Qdrant collection's dense vector dimension matches the current
-        embedding model.  If there is a mismatch **and** the collection is empty,
-        drop it and recreate with the correct size so queries don't fail with a
-        dimension error.  If the collection contains data, log an error — the user
-        must re-index."""
-        try:
-            collection_info = await self.vector_db_service.get_collection(self.collection_name)
-            current_dim = collection_info.config.params.vectors["dense"].size
-        except Exception:
-            return
-
-        # Probe the model fresh each call — the model instance is no longer cached,
-        # so the required dimension must reflect the currently configured model.
-        sample_embedding = await dense_embeddings.aembed_query("dimension check")
-        required_dim = len(sample_embedding)
-
-        if current_dim == required_dim:
-            return
-
-        point_count = await self.vector_db_service.count_points(self.collection_name)
-        if point_count > 0:
-            msg = (
-                f"Vector dimension mismatch: collection '{self.collection_name}' stores "
-                f"{current_dim}-dim vectors but the current embedding model produces "
-                f"{required_dim}-dim vectors. The collection contains {point_count} "
-                f"point(s). Please re-index your documents to use the new embedding model."
-            )
-            self.logger.error(msg)
-            raise ValueError(msg)
-
-        self.logger.warning(
-            f"Collection '{self.collection_name}' has dimension {current_dim} but model requires "
-            f"{required_dim}. Collection is empty — recreating with correct dimensions."
-        )
-        await self.vector_db_service.delete_collection(self.collection_name)
-        await self.vector_db_service.create_collection(
-            embedding_size=required_dim,
-            collection_name=self.collection_name,
-        )
-        await self.vector_db_service.create_index(
-            collection_name=self.collection_name,
-            field_name="metadata.virtualRecordId",
-            field_schema={"type": "keyword"},
-        )
-        await self.vector_db_service.create_index(
-            collection_name=self.collection_name,
-            field_name="metadata.orgId",
-            field_schema={"type": "keyword"},
-        )
-        self.logger.info(
-            f"Recreated collection '{self.collection_name}' with dimension {required_dim}"
-        )
-
     async def _preprocess_query(self, query: str) -> str:
         """
         Preprocess the query text.
@@ -696,7 +642,6 @@ class RetrievalService:
         dense_embeddings = await self.get_embedding_model_instance()
         if not dense_embeddings:
             raise ValueError("No dense embeddings found")
-        await self._ensure_collection_dimensions(dense_embeddings)
         sparse_embeddings = await self._ensure_sparse_embeddings()
         if not sparse_embeddings:
             raise ValueError("No sparse embeddings found")

@@ -309,6 +309,9 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.15
+    ports:
+      - "6333:6333"
+      - "6334:6334"
     environment:
       - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
       - QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=64

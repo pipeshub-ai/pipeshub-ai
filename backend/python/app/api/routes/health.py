@@ -303,27 +303,37 @@ async def handle_model_change(
     current_model_name = normalize_embedding_model_name(current_model_name)
     new_model_name = normalize_embedding_model_name(new_model_name)
 
-    if (current_model_name is not None and
-        new_model_name is not None and
-        current_model_name != new_model_name):
+    model_name_changed = (
+        current_model_name is not None
+        and new_model_name is not None
+        and current_model_name != new_model_name
+    )
+    dimension_mismatch = (
+        qdrant_vector_size != 0 and qdrant_vector_size != embedding_size
+    )
 
+    if not model_name_changed and not dimension_mismatch:
+        return
 
+    if model_name_changed:
+        logger.warning(
+            f"Detected embedding model change: '{current_model_name}' -> '{new_model_name}'"
+        )
+    if dimension_mismatch:
+        logger.warning(
+            f"Detected vector dimension mismatch: collection has {qdrant_vector_size}, "
+            f"new model produces {embedding_size}"
+        )
 
-        logger.warning("Detected embedding model change attempt")
-
-        if qdrant_vector_size != 0 and points_count > 0:
-            logger.error("Rejected embedding model change due to non-empty existing collection")
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "status": "not healthy",
-                    "error": "Policy Rejection: Embedding model configuration cannot be changed while vector store collection contains data. Please ensure you are using the original embedding configuration.",
-                    "timestamp": get_epoch_timestamp_in_ms(),
-                }
+    if qdrant_vector_size != 0:
+        if points_count > 0:
+            logger.warning(
+                f"Collection '{retrieval_service.collection_name}' contains "
+                f"{points_count} point(s) that are incompatible with the new "
+                f"embedding model — deleting and recreating. Documents will "
+                f"need to be re-indexed."
             )
-
-        if qdrant_vector_size != 0 and points_count == 0:
-            await recreate_collection(retrieval_service, embedding_size, logger)
+        await recreate_collection(retrieval_service, embedding_size, logger)
 
 async def recreate_collection(retrieval_service, embedding_size, logger) -> None:
     """Recreate the collection with new parameters."""
@@ -712,8 +722,8 @@ async def perform_embedding_health_check(
                         new_model = model_name
 
                         if current_model_name:
-                            current_normalized = current_model_name.removeprefix("models/").strip().lower()
-                            new_normalized = (new_model or "").removeprefix("models/").strip().lower()
+                            current_normalized = normalize_embedding_model_name(current_model_name)
+                            new_normalized = normalize_embedding_model_name(new_model)
 
                             if current_normalized and new_normalized and current_normalized != new_normalized:
                                 return JSONResponse(

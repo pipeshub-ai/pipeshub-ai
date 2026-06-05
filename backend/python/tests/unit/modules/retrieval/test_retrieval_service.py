@@ -202,88 +202,6 @@ class TestToQdrantSparse:
 
 
 # ============================================================================
-# _ensure_collection_dimensions
-# ============================================================================
-
-
-def _make_collection_info(dense_size: int):
-    """Build a fake collection_info object with the given dense vector size."""
-    info = MagicMock()
-    info.config.params.vectors = {"dense": MagicMock(size=dense_size)}
-    return info
-
-
-class TestEnsureCollectionDimensions:
-    @pytest.mark.asyncio
-    async def test_noop_when_dimensions_match(
-        self, retrieval_service, mock_vector_db_service
-    ):
-        mock_vector_db_service.get_collection.return_value = _make_collection_info(1024)
-        dense = AsyncMock()
-        dense.aembed_query = AsyncMock(return_value=[0.0] * 1024)
-        await retrieval_service._ensure_collection_dimensions(dense)
-        mock_vector_db_service.delete_collection.assert_not_called()
-        mock_vector_db_service.create_collection.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_recreates_empty_collection_on_mismatch(
-        self, retrieval_service, mock_vector_db_service
-    ):
-        mock_vector_db_service.get_collection.return_value = _make_collection_info(768)
-        mock_vector_db_service.count_points.return_value = 0
-        dense = AsyncMock()
-        dense.aembed_query = AsyncMock(return_value=[0.0] * 1024)
-
-        await retrieval_service._ensure_collection_dimensions(dense)
-
-        mock_vector_db_service.delete_collection.assert_awaited_once_with("test_collection")
-        mock_vector_db_service.create_collection.assert_awaited_once_with(
-            embedding_size=1024, collection_name="test_collection"
-        )
-        assert mock_vector_db_service.create_index.await_count == 2
-
-    @pytest.mark.asyncio
-    async def test_raises_on_non_empty_collection_mismatch(
-        self, retrieval_service, mock_vector_db_service
-    ):
-        mock_vector_db_service.get_collection.return_value = _make_collection_info(768)
-        mock_vector_db_service.count_points.return_value = 500
-        dense = AsyncMock()
-        dense.aembed_query = AsyncMock(return_value=[0.0] * 1024)
-
-        with pytest.raises(ValueError, match="re-index your documents"):
-            await retrieval_service._ensure_collection_dimensions(dense)
-
-        mock_vector_db_service.delete_collection.assert_not_called()
-        mock_vector_db_service.create_collection.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_noop_when_collection_does_not_exist(
-        self, retrieval_service, mock_vector_db_service
-    ):
-        mock_vector_db_service.get_collection.side_effect = Exception("not found")
-        dense = AsyncMock()
-        await retrieval_service._ensure_collection_dimensions(dense)
-        mock_vector_db_service.delete_collection.assert_not_called()
-        dense.aembed_query.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_probes_dimension_fresh_each_call(
-        self, retrieval_service, mock_vector_db_service
-    ):
-        """The required dimension is probed fresh on every call (no caching), so a
-        model swap is always reflected."""
-        mock_vector_db_service.get_collection.return_value = _make_collection_info(1024)
-        dense = AsyncMock()
-        dense.aembed_query = AsyncMock(return_value=[0.0] * 1024)
-
-        await retrieval_service._ensure_collection_dimensions(dense)
-        await retrieval_service._ensure_collection_dimensions(dense)
-
-        assert dense.aembed_query.await_count == 2
-
-
-# ============================================================================
 # _preprocess_query
 # ============================================================================
 
@@ -507,7 +425,6 @@ class TestExecuteParallelSearches:
     @pytest.mark.asyncio
     async def test_raises_without_sparse_embeddings(self, retrieval_service):
         retrieval_service.get_embedding_model_instance = AsyncMock(return_value=MagicMock())
-        retrieval_service._ensure_collection_dimensions = AsyncMock()
         retrieval_service._ensure_sparse_embeddings = AsyncMock(return_value=None)
         with pytest.raises(ValueError, match="No sparse embeddings"):
             await retrieval_service._execute_parallel_searches(["q"], MagicMock(), 10)
@@ -517,7 +434,6 @@ class TestExecuteParallelSearches:
         dense = AsyncMock()
         dense.aembed_query = AsyncMock(return_value=[0.1, 0.2, 0.3])
         retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
-        retrieval_service._ensure_collection_dimensions = AsyncMock()
 
         sparse_result = MagicMock()
         sparse_result.indices = [1, 2]
@@ -547,7 +463,6 @@ class TestExecuteParallelSearches:
         dense = AsyncMock()
         dense.aembed_query = AsyncMock(return_value=[0.1])
         retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
-        retrieval_service._ensure_collection_dimensions = AsyncMock()
 
         sparse_result = MagicMock()
         sparse_result.indices = [1]
