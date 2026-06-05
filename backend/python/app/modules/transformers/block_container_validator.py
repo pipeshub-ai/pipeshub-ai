@@ -153,23 +153,37 @@ class BlockContainerValidator:
                     location=f"block[{i}]",
                 ))
 
-        # block_group.parent_index must point at a valid, different group
+        # block_group.parent_index must point at a valid group with no cycles
         for i, group in enumerate(block_groups):
             p = group.parent_index
             if p is None:
                 continue
-            if p == (group.index if group.index is not None else i):
-                issues.append(ValidationIssue(
-                    severity=Severity.ERROR,
-                    code="PARENT_INDEX_SELF_REFERENCE",
-                    message=f"block_group.parent_index={p} references itself",
-                    location=f"block_group[{i}]",
-                ))
-            elif not (0 <= p < n_groups):
+            if not (0 <= p < n_groups):
                 issues.append(ValidationIssue(
                     severity=Severity.ERROR,
                     code="PARENT_INDEX_OUT_OF_RANGE",
                     message=f"block_group.parent_index={p} out of range [0, {n_groups})",
+                    location=f"block_group[{i}]",
+                ))
+                continue
+
+            visited = {i}
+            curr = p
+            cycle_detected = False
+            while curr is not None:
+                if curr in visited:
+                    cycle_detected = True
+                    break
+                if not (0 <= curr < n_groups):
+                    break
+                visited.add(curr)
+                curr = block_groups[curr].parent_index
+
+            if cycle_detected:
+                issues.append(ValidationIssue(
+                    severity=Severity.ERROR,
+                    code="PARENT_INDEX_CYCLE",
+                    message=f"block_group[{i}].parent_index={p} introduces a cyclic reference",
                     location=f"block_group[{i}]",
                 ))
 
@@ -322,6 +336,12 @@ class BlockContainerValidator:
 
             data = block.data
             if data is None:
+                issues.append(ValidationIssue(
+                    severity=Severity.WARNING,
+                    code="IMAGE_DATA_MISSING",
+                    message="image block data is missing; block will not be embedded",
+                    location=loc,
+                ))
                 continue
 
             if isinstance(data, str):
@@ -333,12 +353,19 @@ class BlockContainerValidator:
                     location=loc,
                 ))
             elif isinstance(data, dict):
-                uri = data.get("uri") or ""
+                uri = data.get("uri")
                 if not uri:
                     issues.append(ValidationIssue(
                         severity=Severity.WARNING,
                         code="IMAGE_URI_EMPTY",
                         message="image data.uri is empty or missing; block will not be embedded",
+                        location=loc,
+                    ))
+                elif not isinstance(uri, str):
+                    issues.append(ValidationIssue(
+                        severity=Severity.ERROR,
+                        code="IMAGE_URI_INVALID_TYPE",
+                        message=f"image data.uri must be a string, got {type(uri).__name__}",
                         location=loc,
                     ))
                 elif not self._is_valid_image_uri(uri):
@@ -386,7 +413,17 @@ class BlockContainerValidator:
                 ))
 
             data = block.data
-            if data is not None and not isinstance(data, dict):
+            if data is None:
+                issues.append(ValidationIssue(
+                    severity=Severity.ERROR,
+                    code="TABLE_ROW_DATA_MISSING",
+                    message="table_row block data is missing; block cannot be embedded",
+                    location=loc,
+                ))
+                self._check_table_row_parent(block, block_groups, n_groups, i, loc, issues)
+                continue
+
+            if not isinstance(data, dict):
                 issues.append(ValidationIssue(
                     severity=Severity.ERROR,
                     code="TABLE_ROW_DATA_NOT_DICT",
@@ -398,9 +435,6 @@ class BlockContainerValidator:
                 continue
 
             self._check_table_row_parent(block, block_groups, n_groups, i, loc, issues)
-
-            if data is None:
-                continue
 
             # Embedding content: cells OR row_natural_language_text must be present
             cells = data.get("cells")

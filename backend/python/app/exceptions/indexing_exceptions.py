@@ -102,4 +102,7 @@ class BlockContainerValidationError(IndexingError):
         msg = "; ".join(
             f"[{e.location}] {e.code}: {e.message}" for e in errors
         )
-        super().__init__(f"{context}Block container validation failed — {msg}")
+        super().__init__(
+            f"{context}Block container validation failed — {msg}",
+            record_id=record_id,
+        )
