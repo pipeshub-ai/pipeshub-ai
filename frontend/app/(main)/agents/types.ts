@@ -7,13 +7,6 @@ import type {
   ConversationsListResponse,
 } from '@/chat/types';
 
-export interface AgentCreatedByUser {
-  userId: string;
-  name: string;
-  email: string;
-  profilePicture?: string | null;
-}
-
 /**
  * GET /api/v1/agents — pagination envelope (`pagination` object).
  */
@@ -56,8 +49,8 @@ export interface AgentListRecord {
   isDeleted: boolean;
   createdAtTimestamp: number;
   updatedAtTimestamp: number;
+  /** MongoDB user ID of the agent creator */
   createdBy: string;
-  createdByUser?: AgentCreatedByUser | null;
   updatedBy?: string;
   /** Omitted on some agents */
   instructions?: string;
@@ -149,8 +142,8 @@ export interface AgentDetail {
   systemPrompt: string;
   createdAtTimestamp: number;
   isDeleted: boolean;
+  /** MongoDB user ID of the agent creator */
   createdBy: string;
-  createdByUser?: AgentCreatedByUser | null;
   name: string;
   id: string;
   isServiceAccount?: boolean;

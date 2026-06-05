@@ -207,9 +207,10 @@ export class TeamsController {
         throw handleBackendError(aiResponse, 'Creating team');
       }
       const teamData = aiResponse.data as TeamResponse | undefined;
-      if (teamData) {
-        await enrichTeamsProfilePictures(orgId, [teamData]);
+      if (!teamData) {
+        throw new NotFoundError('Creating team failed: Team not found');
       }
+      await enrichTeamsProfilePictures(orgId, [teamData]);
       res.status(HTTP_STATUS.CREATED).json(teamData);
     } catch (error: any) {
       this.logger.error('Error creating team', {
@@ -271,126 +272,6 @@ export class TeamsController {
     }
   }
 
-  async listTeams(
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-
-      const { page, limit, search } = req.query;
-      
-      // Validate search parameter for XSS and format specifiers
-      if (search) {
-        try {
-          validateNoXSS(String(search), 'search parameter');
-          validateNoFormatSpecifiers(String(search), 'search parameter');
-          
-          if (String(search).length > 1000) {
-            throw new BadRequestError('Search parameter too long (max 1000 characters)');
-          }
-        } catch (error: any) {
-          throw new BadRequestError(
-            error.message || 'Search parameter contains potentially dangerous content'
-          );
-        }
-      }
-      
-      const queryParams = new URLSearchParams();
-      if (page) queryParams.append('page', String(page));
-      if (limit) queryParams.append('limit', String(limit));
-      if (search) queryParams.append('search', String(search));
-      const queryString = queryParams.toString();
-
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${this.config.connectorBackend}/api/v1/entity/team/list?${queryString}`,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-        method: HttpMethod.GET,
-      };
-      const aiCommand = new AIServiceCommand<TeamsListResponse>(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      if (!aiResponse) {
-        throw new InternalServerError('No response from AI service');
-      }
-      if (aiResponse.statusCode !== HTTP_STATUS.OK) {
-        throw handleBackendError(aiResponse, 'get teams');
-      }
-      const teamsData = aiResponse.data as TeamsListResponse | undefined;
-      if (!teamsData) {
-        throw new NotFoundError('Getting teams failed: Teams not found');
-      }
-      const teams = teamsData.teams ?? [];
-      if (teams.length > 0) {
-        await enrichTeamsProfilePictures(orgId, teams);
-      }
-      res.status(HTTP_STATUS.OK).json(teamsData);
-    } catch (error: any) {
-      this.logger.error('Error getting teams', {
-        requestId,
-        message: 'Error getting teams',
-        error: error.message,
-      });
-      const handledError = handleBackendError(error, 'get teams');
-      next(handledError);
-    }
-  }
-
-  async addUsersToTeam(
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      const teamId = req.params.teamId;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${this.config.connectorBackend}/api/v1/entity/team/${teamId}/users`,
-        method: HttpMethod.POST,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-        body: req.body,
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      handleAIServiceResponse(
-        aiResponse,
-        res,
-        'Adding users to team',
-        'Failed to add users to team',
-      );
-    } catch (error: any) {
-      this.logger.error('Error adding users to team', {
-        requestId,
-        message: 'Error adding users to team',
-        error: error.message,
-      });
-      const handledError = handleBackendError(error, 'add users to team');
-      next(handledError);
-    }
-  }
-
   async updateTeam(
     req: AuthenticatedUserRequest,
     res: Response,
@@ -425,9 +306,10 @@ export class TeamsController {
         throw handleBackendError(aiResponse, 'Updating team');
       }
       const teamData = aiResponse.data as TeamResponse | undefined;
-      if (teamData) {
-        await enrichTeamsProfilePictures(orgId, [teamData]);
+      if (!teamData) {
+        throw new NotFoundError('Updating team failed: Team not found');
       }
+      await enrichTeamsProfilePictures(orgId, [teamData]);
       res.status(HTTP_STATUS.OK).json(teamData);
     } catch (error: any) {
       this.logger.error('Error updating team', {
@@ -479,51 +361,6 @@ export class TeamsController {
         error: error.message,
       });
       const handledError = handleBackendError(error, 'delete team');
-      next(handledError);
-    }
-  }
-
-  async removeUserFromTeam(
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      const teamId = req.params.teamId;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${this.config.connectorBackend}/api/v1/entity/team/${teamId}/users`,
-        method: HttpMethod.DELETE,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-        body: req.body,
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      handleAIServiceResponse(
-        aiResponse,
-        res,
-        'Removing user from team',
-        'Failed to remove user from team',
-      );
-    } catch (error: any) {
-      this.logger.error('Error removing user from team', {
-        requestId,
-        message: 'Error removing user from team',
-        error: error.message,
-      });
-      const handledError = handleBackendError(error, 'remove user from team');
       next(handledError);
     }
   }
@@ -671,114 +508,4 @@ export class TeamsController {
     }
   }
 
-  async updateTeamUsersPermissions(
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      const teamId = req.params.teamId;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${this.config.connectorBackend}/api/v1/entity/team/${teamId}/users/permissions`,
-        method: HttpMethod.PUT,
-        body: req.body,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      handleAIServiceResponse(
-        aiResponse,
-        res,
-        'Updating team users permissions',
-        'Failed to update team users permissions',
-      );
-    } catch (error: any) {
-      this.logger.error('Error updating team users permissions', {
-        requestId,
-        message: 'Error updating team users permissions',
-        error: error.message,
-      });
-      const handledError = handleBackendError(error, 'update team users permissions');
-      next(handledError);
-    }
-  }
-
-  async getUserCreatedTeams(
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-
-      const { page, limit, search } = req.query;
-      
-      // Validate search parameter for XSS and format specifiers
-      if (search) {
-        try {
-          validateNoXSS(String(search), 'search parameter');
-          validateNoFormatSpecifiers(String(search), 'search parameter');
-          
-          if (String(search).length > 1000) {
-            throw new BadRequestError('Search parameter too long (max 1000 characters)');
-          }
-        } catch (error: any) {
-          throw new BadRequestError(
-            error.message || 'Search parameter contains potentially dangerous content'
-          );
-        }
-      }
-      
-      const queryParams = new URLSearchParams();
-      if (page) queryParams.append('page', String(page));
-      if (limit) queryParams.append('limit', String(limit));
-      if (search) queryParams.append('search', String(search));
-      const queryString = queryParams.toString();
-
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${this.config.connectorBackend}/api/v1/entity/user/teams/created?${queryString}`,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-        method: HttpMethod.GET,
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      handleAIServiceResponse(
-        aiResponse,
-        res,
-        'Getting user created teams',
-        'User created teams not found',
-      );
-    } catch (error: any) {
-      this.logger.error('Error getting user created teams', {
-        requestId,
-        message: 'Error getting user created teams',
-        error: error.message,
-      });
-      const handledError = handleBackendError(error, 'get user created teams');
-      next(handledError);
-    }
-  }
 }

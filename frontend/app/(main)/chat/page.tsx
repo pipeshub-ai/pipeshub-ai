@@ -45,6 +45,7 @@ import { toast } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { SIDEBAR_CONVERSATIONS_PAGE_SIZE } from './constants';
+import { UsersApi } from '@/app/(main)/workspace/users/api';
 
 // Space reserved below content views to clear the absolutely-positioned chat input.
 const CHAT_INPUT_OFFSET = { mobile: 120, desktop: 128 };
@@ -388,7 +389,7 @@ function ChatContent() {
             deprecatedToolNames,
           });
           store.setAgentContextDisplayName(agent?.name?.trim() || null);
-          store.setAgentContextCreatedByUser(agent?.createdByUser ?? null);
+          store.setAgentContextCreatedBy(agent?.createdBy ?? null);
 
           // Warn when any tool attached to this agent has been removed from
           // server code since the agent was last saved (deprecated=true is
@@ -443,13 +444,13 @@ function ChatContent() {
             console.error('Failed to fetch agent details:', error);
             store.hydrateAgentChatResources(null);
             store.setAgentContextDisplayName(null);
-            store.setAgentContextCreatedByUser(null);
+            store.setAgentContextCreatedBy(null);
           }
         }
       } else {
         store.hydrateAgentChatResources(null);
         store.setAgentContextDisplayName(null);
-        store.setAgentContextCreatedByUser(null);
+        store.setAgentContextCreatedBy(null);
       }
 
       try {
@@ -882,11 +883,37 @@ function ChatContent() {
 
   const isMobile = useIsMobile();
   const agentContextDisplayName = useChatStore((s) => s.agentContextDisplayName);
-  const agentContextCreatedByUser = useChatStore((s) => s.agentContextCreatedByUser);
-  const agentCreatorName = historyAndShareAgentId
-    ? agentContextCreatedByUser?.name?.trim() || null
-    : null;
-  const agentCreatorAvatarUrl = agentContextCreatedByUser?.profilePicture ?? undefined;
+  const agentContextCreatedBy = useChatStore((s) => s.agentContextCreatedBy);
+  const [agentCreatorName, setAgentCreatorName] = useState<string | null>(null);
+  const [agentCreatorAvatarUrl, setAgentCreatorAvatarUrl] = useState<string | undefined>(
+    undefined
+  );
+
+  useEffect(() => {
+    const mongoUserId = historyAndShareAgentId ? agentContextCreatedBy : null;
+    if (!mongoUserId) {
+      setAgentCreatorName(null);
+      setAgentCreatorAvatarUrl(undefined);
+      return;
+    }
+    let cancelled = false;
+    UsersApi.getUsersByIds([mongoUserId])
+      .then((users) => {
+        if (cancelled) return;
+        const user = users[0];
+        setAgentCreatorName(user?.name?.trim() || user?.email?.trim() || null);
+        setAgentCreatorAvatarUrl(user?.profilePicture ?? undefined);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAgentCreatorName(null);
+          setAgentCreatorAvatarUrl(undefined);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [historyAndShareAgentId, agentContextCreatedBy]);
 
   // Render decisions
   /** Profile from GET /api/v1/users/:id — auth-store `user` is often null (not persisted with tokens). */

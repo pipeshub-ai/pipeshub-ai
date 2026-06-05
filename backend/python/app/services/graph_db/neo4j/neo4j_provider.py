@@ -15886,7 +15886,7 @@ class Neo4jProvider(IGraphDBProvider):
         entities: list[dict],
         transaction: str | None = None,
     ) -> None:
-        """Attach createdByUser (Mongo userId, name, email) from graph createdBy keys."""
+        """Attach createdByUser (graph id, Mongo userId, name, email) from graph createdBy keys."""
         if not entities:
             return
 
@@ -15923,16 +15923,19 @@ class Neo4jProvider(IGraphDBProvider):
             creator_key = entity.get("createdBy")
             if not creator_key or creator_key == "system":
                 entity["createdByUser"] = None
+                entity.pop("createdBy", None)
                 continue
             user_doc = users_by_key.get(creator_key)
             if not user_doc or not user_doc.get("userId"):
                 entity["createdByUser"] = None
             else:
                 entity["createdByUser"] = {
+                    "id": creator_key,
                     "userId": user_doc["userId"],
                     "name": user_doc.get("fullName") or "",
                     "email": user_doc.get("email") or "",
                 }
+            entity.pop("createdBy", None)
 
     async def get_teams(
         self,

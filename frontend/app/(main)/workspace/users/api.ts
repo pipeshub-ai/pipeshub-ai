@@ -21,6 +21,7 @@ function userFromByIdsDoc(doc: UserByIdsDoc): User {
     hasLoggedIn: doc.hasLoggedIn ?? false,
     // Not merged with block list here; treat as active org member for display lookups.
     isActive: true,
+    profilePicture: doc.profilePicture,
   };
 }
 

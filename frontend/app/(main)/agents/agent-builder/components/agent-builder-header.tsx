@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Avatar,
@@ -18,7 +18,7 @@ import {
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useTranslation } from 'react-i18next';
-import type { AgentCreatedByUser } from '@/app/(main)/agents/types';
+import { UsersApi } from '@/app/(main)/workspace/users/api';
 
 export function AgentBuilderHeader(props: {
   agentName: string;
@@ -47,8 +47,8 @@ export function AgentBuilderHeader(props: {
   /** When editing, show meatball → delete (opens confirmation in parent). */
   canDeleteAgent?: boolean;
   onRequestDeleteAgent?: () => void;
-  /** Creator profile from GET agent `createdByUser` enrichment. */
-  createdByUser?: AgentCreatedByUser | null;
+  /** MongoDB user ID from agent.createdBy — resolved via by-ids for display. */
+  createdBy?: string | null;
 }) {
   const router = useRouter();
   const { t } = useTranslation();
@@ -71,13 +71,37 @@ export function AgentBuilderHeader(props: {
     onEnableServiceAccount,
     canDeleteAgent = false,
     onRequestDeleteAgent,
-    createdByUser = null,
+    createdBy = null,
   } = props;
 
   const [agentMenuTriggerHovered, setAgentMenuTriggerHovered] = useState(false);
+  const [creatorName, setCreatorName] = useState<string | null>(null);
+  const [creatorAvatarUrl, setCreatorAvatarUrl] = useState<string | undefined>(undefined);
 
-  const creatorName = createdByUser?.name?.trim() || null;
-  const creatorAvatarUrl = createdByUser?.profilePicture ?? undefined;
+  useEffect(() => {
+    if (!createdBy) {
+      setCreatorName(null);
+      setCreatorAvatarUrl(undefined);
+      return;
+    }
+    let cancelled = false;
+    UsersApi.getUsersByIds([createdBy])
+      .then((users) => {
+        if (cancelled) return;
+        const user = users[0];
+        setCreatorName(user?.name?.trim() || user?.email?.trim() || null);
+        setCreatorAvatarUrl(user?.profilePicture ?? undefined);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCreatorName(null);
+          setCreatorAvatarUrl(undefined);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [createdBy]);
 
   const showDeleteOption = Boolean(editing && canDeleteAgent && onRequestDeleteAgent);
   const showConvertOption = Boolean(!isServiceAccount && onEnableServiceAccount);

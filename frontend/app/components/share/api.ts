@@ -44,7 +44,8 @@ export const ShareCommonApi = {
       id: u.id as string,
       name: (u.name as string) ?? (u.fullName as string) ?? '',
       email: (u.email as string) ?? undefined,
-      avatarUrl: (u.avatarUrl as string) || undefined,
+      avatarUrl:
+        (u.profilePicture as string) || (u.avatarUrl as string) || undefined,
       isInOrg: true,
     }));
   },

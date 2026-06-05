@@ -762,6 +762,7 @@ class TestCreatedByUserEnrichment:
         await connected_provider._enrich_created_by_user(entities)
 
         assert entities[0]["createdByUser"] == {
+            "id": "creator-1",
             "userId": "507f1f77bcf86cd799439011",
             "name": "Alice",
             "email": "alice@test.com",
@@ -769,6 +770,10 @@ class TestCreatedByUserEnrichment:
         assert entities[1]["createdByUser"] == entities[0]["createdByUser"]
         assert entities[2]["createdByUser"] is None
         assert entities[3]["createdByUser"] is None
+        assert "createdBy" not in entities[0]
+        assert "createdBy" not in entities[1]
+        assert "createdBy" not in entities[2]
+        assert "createdBy" not in entities[3]
         bind_vars = connected_provider.http_client.execute_aql.call_args[0][1]
         assert set(bind_vars["keys"]) == {"creator-1", "missing-creator"}
 
@@ -798,10 +803,12 @@ class TestCreatedByUserEnrichment:
         await connected_provider._enrich_created_by_user(agents)
 
         assert agents[0]["createdByUser"] == {
+            "id": "creator-1",
             "userId": "507f1f77bcf86cd799439011",
             "name": "Bob",
             "email": "bob@test.com",
         }
+        assert "createdBy" not in agents[0]
 
 
 # ---------------------------------------------------------------------------
@@ -14660,7 +14667,9 @@ class TestGetUserCreatedTeams:
         teams, total = await connected_provider.get_user_created_teams("org1", "uk1")
         assert len(teams) == 1
         assert total == 1
+        assert teams[0]["createdByUser"]["id"] == "uk1"
         assert teams[0]["createdByUser"]["userId"] == "507f1f77bcf86cd799439011"
+        assert "createdBy" not in teams[0]
 
     @pytest.mark.asyncio
     async def test_with_search(self, connected_provider):

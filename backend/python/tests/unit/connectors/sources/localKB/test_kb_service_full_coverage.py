@@ -921,6 +921,86 @@ def _mock_mongo_to_graph(user_ids, org_id=None, chunk_size=500):
     return {uid: f"gk_{uid}" for uid in user_ids}
 
 
+class TestResolveUserIdsToGraphKeys:
+    @pytest.mark.asyncio
+    async def test_empty_user_ids(self, service):
+        graph_keys, err = await service._resolve_user_ids_to_graph_keys([], "req1")
+        assert graph_keys == []
+        assert err is None
+
+    @pytest.mark.asyncio
+    async def test_success(self, service):
+        service.graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "rk1", "_key": "rk1", "orgId": "org-1"}
+        )
+        service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
+            return_value={"u1": "gk_u1", "u2": "gk_u2"}
+        )
+
+        graph_keys, err = await service._resolve_user_ids_to_graph_keys(
+            ["u1", "u2"], "req1"
+        )
+        assert err is None
+        assert graph_keys == ["gk_u1", "gk_u2"]
+
+    @pytest.mark.asyncio
+    async def test_empty_mapping(self, service):
+        service.graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "rk1", "_key": "rk1", "orgId": "org-1"}
+        )
+        service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
+            return_value={}
+        )
+
+        graph_keys, err = await service._resolve_user_ids_to_graph_keys(["u1"], "req1")
+        assert graph_keys is None
+        assert err["success"] is False
+        assert err["code"] == 400
+        assert "u1" in err["reason"]
+
+    @pytest.mark.asyncio
+    async def test_partial_mapping(self, service):
+        service.graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "rk1", "_key": "rk1", "orgId": "org-1"}
+        )
+        service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
+            return_value={"u1": "gk_u1"}
+        )
+
+        graph_keys, err = await service._resolve_user_ids_to_graph_keys(
+            ["u1", "u2"], "req1"
+        )
+        assert graph_keys is None
+        assert err["success"] is False
+        assert err["code"] == 400
+        assert "u2" in err["reason"]
+
+    @pytest.mark.asyncio
+    async def test_value_error_from_provider(self, service):
+        service.graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "rk1", "_key": "rk1", "orgId": "org-1"}
+        )
+        service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
+            side_effect=ValueError("Users not found in graph: ['missing']")
+        )
+
+        graph_keys, err = await service._resolve_user_ids_to_graph_keys(
+            ["missing"], "req1"
+        )
+        assert graph_keys is None
+        assert err["success"] is False
+        assert err["code"] == 400
+
+    def test_resolve_graph_user_ids_error_without_resolve_err(self, service):
+        err = service._resolve_graph_user_ids_error(["u1"], None, None)
+        assert err["success"] is False
+        assert err["code"] == 400
+
+    def test_resolve_graph_user_ids_error_empty_mongo_ids(self, service):
+        assert service._resolve_graph_user_ids_error([], None, None) is None
+        assert service._resolve_graph_user_ids_error([], [], None) is None
+
+
 class TestCreateKbPermissions:
     @pytest.mark.asyncio
     async def test_success_users(self, service):

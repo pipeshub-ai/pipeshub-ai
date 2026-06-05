@@ -5,6 +5,8 @@
 export type TeamMemberRole = 'OWNER' | 'READER' | 'WRITER';
 
 export interface TeamCreatedByUser {
+  /** Graph user key of the team creator */
+  id: string;
   userId: string;
   name: string;
   email: string;
@@ -16,8 +18,6 @@ export interface Team {
   id: string;
   name: string;
   description: string | null;
-  /** UUID of the user who created the team */
-  createdBy: string;
   createdByUser?: TeamCreatedByUser | null;
   orgId: string;
   createdAtTimestamp: number;

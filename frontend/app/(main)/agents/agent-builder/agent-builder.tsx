@@ -855,7 +855,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           onEnableServiceAccount={canPersist ? handleRequestServiceAccount : undefined}
           canDeleteAgent={Boolean(loadedAgent?.can_delete)}
           onRequestDeleteAgent={() => setAgentDeleteDialogOpen(true)}
-          createdByUser={loadedAgent?.createdByUser ?? null}
+          createdBy={loadedAgent?.createdBy ?? null}
         />
 
         {((loadedAgent && !canPersist) || error || banner || success || showDeprecatedBanner) && (

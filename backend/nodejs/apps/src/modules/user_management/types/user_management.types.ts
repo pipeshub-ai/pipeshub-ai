@@ -49,6 +49,8 @@ export interface TeamMemberResponse {
 }
 
 export interface TeamCreatedByUser {
+  /** Graph user key of the team creator */
+  id: string;
   userId: string;
   name: string;
   email: string;
@@ -59,7 +61,6 @@ export interface TeamResponse {
   id: string;
   name: string;
   description?: string | null;
-  createdBy: string;
   createdByUser?: TeamCreatedByUser | null;
   orgId: string;
   memberCount: number;
