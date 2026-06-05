@@ -2370,7 +2370,6 @@ components:
       description: |
         Team identifier in list/detail payloads: standard UUID team key, or the
         system **All** team `all_{mongoOrgId}` created by `ensure_all_team_with_users`.
-      pattern: '^(all_[a-fA-F0-9]{24}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$'
       example: "550e8400-e29b-41d4-a716-446655440000"
 
     TeamMemberRoleEntry:
@@ -15993,10 +15992,10 @@ paths:
         - Teams
       summary: Get team by ID
       description: |
-        Retrieve a team and its members by graph team key (UUID).
+        Retrieve a team and its members by graph team key (`TeamGraphKey`).
 
         **Gateway contract:**
-        Path `teamId` validated as UUID by `getTeamSchema`.
+        Path `teamId` validated by `getTeamSchema` (`TeamGraphKey`).
 
         **Product usage:**
         Team detail sidebar (`TeamsApi.getTeam`). Clients may read `team` from the envelope or use the object directly depending on proxy behavior.
@@ -16012,10 +16011,9 @@ paths:
         - name: teamId
           in: path
           required: true
-          description: Team graph key (UUID)
+          description: Team graph key (UUID or system `all_{mongoOrgId}` team)
           schema:
-            type: string
-            format: uuid
+            $ref: '#/components/schemas/TeamGraphKey'
           example: "550e8400-e29b-41d4-a716-446655440000"
       responses:
         '200':
@@ -16090,7 +16088,7 @@ paths:
         Update team metadata and members in a single request (OWNER only).
 
         **Gateway contract:**
-        Body validated by `updateTeamSchema`. Path `teamId` is UUID.
+        Body validated by `updateTeamSchema`. Path `teamId` is `TeamGraphKey`.
 
         **Product usage:**
         Primary member-management path for the workspace UI (`addUserRoles`, `removeUserIds`, `updateUserRoles` on `PUT /api/v1/teams/:id`).
@@ -16107,8 +16105,7 @@ paths:
           in: path
           required: true
           schema:
-            type: string
-            format: uuid
+            $ref: '#/components/schemas/TeamGraphKey'
           example: "550e8400-e29b-41d4-a716-446655440000"
       requestBody:
         required: true
@@ -16183,7 +16180,7 @@ paths:
         Permanently delete a team and its permission edges (OWNER only).
 
         **Gateway contract:**
-        Path validated by `deleteTeamSchema` (UUID `teamId`).
+        Path validated by `deleteTeamSchema` (`TeamGraphKey` `teamId`).
 
         **Observed behavior:**
         Returns `{ status, message }` on success.
@@ -16197,8 +16194,7 @@ paths:
           in: path
           required: true
           schema:
-            type: string
-            format: uuid
+            $ref: '#/components/schemas/TeamGraphKey'
           example: "550e8400-e29b-41d4-a716-446655440000"
       responses:
         '200':
@@ -16241,7 +16237,7 @@ paths:
         Paginated team members with optional search.
 
         **Gateway contract:**
-        Query validated by `getTeamUsersSchema` (`page`, `limit`, `search`). Path `teamId` is UUID.
+        Query validated by `getTeamUsersSchema` (`page`, `limit`, `search`). Path `teamId` is `TeamGraphKey`.
 
         **Product usage:**
         Team detail member list (`TeamsApi.getTeamUsers`).
@@ -16258,8 +16254,7 @@ paths:
           in: path
           required: true
           schema:
-            type: string
-            format: uuid
+            $ref: '#/components/schemas/TeamGraphKey'
           example: "550e8400-e29b-41d4-a716-446655440000"
         - in: query
           name: page
@@ -16327,8 +16322,7 @@ paths:
           in: path
           required: true
           schema:
-            type: string
-            format: uuid
+            $ref: '#/components/schemas/TeamGraphKey'
       requestBody:
         required: true
         description: Members to add
@@ -16380,8 +16374,7 @@ paths:
           in: path
           required: true
           schema:
-            type: string
-            format: uuid
+            $ref: '#/components/schemas/TeamGraphKey'
       requestBody:
         required: true
         description: Mongo user IDs to remove
@@ -16440,8 +16433,7 @@ paths:
           in: path
           required: true
           schema:
-            type: string
-            format: uuid
+            $ref: '#/components/schemas/TeamGraphKey'
       requestBody:
         required: true
         description: Role updates
