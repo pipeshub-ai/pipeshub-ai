@@ -68,3 +68,38 @@ class ProcessingError(IndexingError):
     """Raised when there's an error processing the document"""
 
     pass
+
+
+class BlockContainerValidationError(IndexingError):
+    """Raised when block container validation fails before indexing.
+
+    ``errors`` is a list of :class:`ValidationIssue` objects (imported lazily
+    to avoid circular imports with the validator module).
+    """
+
+    def __init__(
+        self,
+        errors: list,
+        record_id: str = None,
+        virtual_record_id: str = None,
+        record_name: str = None,
+    ) -> None:
+        self.errors = errors
+        self.record_id = record_id
+        self.virtual_record_id = virtual_record_id
+        self.record_name = record_name
+
+        # Build record context prefix
+        context_parts = []
+        if record_id:
+            context_parts.append(f"record_id={record_id}")
+        if virtual_record_id:
+            context_parts.append(f"vrid={virtual_record_id}")
+        if record_name:
+            context_parts.append(f"name={record_name!r}")
+        context = f"[{', '.join(context_parts)}] " if context_parts else ""
+
+        msg = "; ".join(
+            f"[{e.location}] {e.code}: {e.message}" for e in errors
+        )
+        super().__init__(f"{context}Block container validation failed — {msg}")
