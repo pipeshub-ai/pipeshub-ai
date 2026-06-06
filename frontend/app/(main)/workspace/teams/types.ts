@@ -23,9 +23,6 @@ export interface Team {
   createdAtTimestamp: number;
   updatedAtTimestamp: number;
 
-  /** Current user's permission on this team */
-  currentUserPermission?: TeamPermission;
-
   /** Array of team members */
   members: TeamMember[];
   /** Total member count */
@@ -49,18 +46,6 @@ export interface TeamMember {
   isOwner: boolean;
   /** Data URI for profile picture, if available */
   profilePicture?: string;
-}
-
-export interface TeamPermission {
-  _key: string;
-  _id: string;
-  _from: string;
-  _to: string;
-  _rev: string;
-  type: string;
-  role: string;
-  createdAtTimestamp: number;
-  updatedAtTimestamp: number;
 }
 
 // ========================================
@@ -128,7 +113,8 @@ export interface TeamsListResponse {
 import type { DateFilterType } from '@/app/components/ui/date-range-picker';
 
 export interface TeamsFilter {
-  createdBy?: string[];
+  /** Mongo userId of the team creator (single value; API accepts one `created_by`) */
+  createdBy?: string;
   createdAfter?: string;
   createdBefore?: string;
   createdDateType?: DateFilterType;

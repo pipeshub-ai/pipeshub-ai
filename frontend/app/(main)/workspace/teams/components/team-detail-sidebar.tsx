@@ -428,14 +428,16 @@ export function TeamDetailSidebar({
     t,
   ]);
 
+  const canEditTeam = Boolean(detailTeam?.canEdit);
+
   // Handle footer action
   const handlePrimaryClick = useCallback(() => {
     if (isEditMode) {
       handleSaveEdits();
-    } else {
+    } else if (canEditTeam) {
       enterEditMode();
     }
-  }, [isEditMode, handleSaveEdits, enterEditMode]);
+  }, [isEditMode, canEditTeam, handleSaveEdits, enterEditMode]);
 
   const handleSecondaryClick = useCallback(() => {
     if (isEditMode) {
@@ -472,6 +474,7 @@ export function TeamDetailSidebar({
       primaryLoading={isSavingEdit}
       onPrimaryClick={handlePrimaryClick}
       onSecondaryClick={handleSecondaryClick}
+      hideFooter={!canEditTeam && !isEditMode}
     >
       {/* Main card containing form + sections */}
       <Box
@@ -826,7 +829,7 @@ export function TeamDetailSidebar({
       </Box>
 
       {/* Delete Team section (edit mode only) — separate box */}
-      {isEditMode && detailTeam?.canDelete && (
+      {isEditMode && detailTeam?.canDelete && detailTeam.id !== `all_${detailTeam.orgId}` && (
         <Box
           style={{
             marginTop: 'var(--space-4)',

@@ -2305,68 +2305,6 @@ components:
           type: string
           nullable: true
           description: Base64-encoded data URI of the member profile picture, if available
-        _id:
-          type: string
-          description: Arango document id (legacy, may appear on wire)
-        _key:
-          type: string
-          description: Graph key (legacy alias)
-
-    TeamCurrentUserPermission:
-      type: object
-      nullable: true
-      description: |
-        Caller's `permission` edge to this team (USER → team). Present when the
-        requesting user is a member; `null` on org-wide lists for teams without
-        membership. Shape varies by graph backend (Arango stores `_from`/`_to`;
-        Neo4j responses may also include `from_id` / `from_collection`).
-      properties:
-        type:
-          type: string
-          enum: [USER]
-          description: Always `USER` for team member permissions
-        role:
-          type: string
-          enum: [OWNER, READER, WRITER]
-          description: Caller's role on this team
-        createdAtTimestamp:
-          type: integer
-          format: int64
-        updatedAtTimestamp:
-          type: integer
-          format: int64
-        _from:
-          type: string
-          description: Arango edge source (`users/{graphUserKey}`)
-        _to:
-          type: string
-          description: Arango edge target (`teams/{teamKey}`)
-        from_id:
-          type: string
-          description: Source graph user key (Neo4j-normalized responses)
-        to_id:
-          type: string
-          description: Target team graph key
-        from_collection:
-          type: string
-          enum: [users]
-        to_collection:
-          type: string
-          enum: [teams]
-        _key:
-          type: string
-          description: Permission edge key (Arango)
-        _id:
-          type: string
-          description: Permission document id (Arango)
-        _rev:
-          type: string
-          description: Arango revision
-      required:
-        - type
-        - role
-        - createdAtTimestamp
-        - updatedAtTimestamp
 
     TeamGraphKey:
       type: string
@@ -2427,20 +2365,13 @@ components:
           items:
             $ref: '#/components/schemas/TeamMember'
           description: Members when included on list rows
-        currentUserPermission:
-          $ref: '#/components/schemas/TeamCurrentUserPermission'
         canEdit:
           type: boolean
         canDelete:
           type: boolean
+          description: Always false for the system All team (`all_{mongoOrgId}`); DELETE returns 403.
         canManageMembers:
           type: boolean
-        _id:
-          type: string
-          description: Arango document id (legacy, may appear on wire)
-        _key:
-          type: string
-          description: Graph key (legacy alias)
       required:
         - id
         - name
@@ -2482,18 +2413,11 @@ components:
         updatedAtTimestamp:
           type: integer
           format: int64
-        _id:
-          type: string
-          description: Arango document id (legacy, may appear on wire)
-        _key:
-          type: string
-          description: Graph key (legacy alias)
-        currentUserPermission:
-          $ref: '#/components/schemas/TeamCurrentUserPermission'
         canEdit:
           type: boolean
         canDelete:
           type: boolean
+          description: Always false for the system All team (`all_{mongoOrgId}`); DELETE returns 403.
         canManageMembers:
           type: boolean
       required:

@@ -472,6 +472,10 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    org_id = user_info.get("orgId")
+    if org_id and team_id == f"all_{org_id}":
+        raise HTTPException(status_code=403, detail="The default All team cannot be deleted")
+
     # Check if user has permission to delete the team (OWNER only)
     permission = await graph_provider.get_edge(
         user['_key'],
@@ -726,84 +730,3 @@ async def get_team_users(
     except Exception as e:
         logger.error(f"Error in get_team_users: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch team users")
-
-@router.post("/team/{team_id}/bulk-users", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
-async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse:
-    """Bulk add/remove users from a team -OWNER role"""
-    services = await get_services(request)
-    graph_provider = services["graph_provider"]
-    logger = services["logger"]
-
-    user_info = {
-        "userId": request.state.user.get("userId"),
-        "orgId": request.state.user.get("orgId"),
-    }
-
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    body = await request.body()
-    body_dict = json.loads(body.decode('utf-8'))
-    logger.info(f"Bulk managing team users: {body_dict}")
-
-    add_user_ids = body_dict.get("addUserIds", [])
-    remove_user_ids = body_dict.get("removeUserIds", [])
-    role = body_dict.get("role", "MEMBER")
-
-    if not add_user_ids and not remove_user_ids:
-        raise HTTPException(status_code=400, detail="No users to add or remove")
-
-    try:
-        # Prevent removing the team owner
-        if remove_user_ids and user["_key"] in remove_user_ids:
-            raise HTTPException(status_code=400, detail="Cannot remove team owner from team")
-
-        # Remove users if specified
-        if remove_user_ids:
-            permissions = await graph_provider.delete_team_member_edges(
-                team_id=team_id,
-                user_ids=remove_user_ids
-            )
-            if not permissions:
-                raise HTTPException(status_code=404, detail="No users found in team to remove")
-            logger.info(f"Successfully removed {len(permissions)} users from team {team_id}")
-
-        # Add users if specified
-        if add_user_ids:
-            user_team_edges = []
-            for user_id in add_user_ids:
-                user_team_edges.append({
-                    "from_id": user_id,
-                    "from_collection": CollectionNames.USERS.value,
-                    "to_id": team_id,
-                    "to_collection": CollectionNames.TEAMS.value,
-                    "type": "USER",
-                    "role": role,
-                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                })
-            logger.info(f"Adding {len(add_user_ids)} users to team {team_id}")
-            result = await graph_provider.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value)
-            if not result:
-                raise HTTPException(status_code=500, detail="Failed to add users to team")
-            logger.info(f"Successfully added {len(add_user_ids)} users to team {team_id}")
-
-        # Return updated team with users
-        updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": "Team users updated successfully",
-                "team": updated_team,
-                "added": len(add_user_ids) if add_user_ids else 0,
-                "removed": len(remove_user_ids) if remove_user_ids else 0,
-            }
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in bulk_manage_team_users: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update team users")

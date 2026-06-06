@@ -14548,41 +14548,6 @@ class TestCopyDocumentRelationships:
 
 
 # ---------------------------------------------------------------------------
-# get_teams
-# ---------------------------------------------------------------------------
-
-
-class TestGetTeams:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        teams = [{"id": "t1", "name": "Team 1", "memberCount": 2}]
-        connected_provider.execute_query = AsyncMock(
-            side_effect=[[1], teams]
-        )
-        result_teams, total = await connected_provider.get_teams("org1", "uk1")
-        assert len(result_teams) == 1
-        assert total == 1
-
-    @pytest.mark.asyncio
-    async def test_with_search(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(
-            side_effect=[[0], []]
-        )
-        result_teams, total = await connected_provider.get_teams(
-            "org1", "uk1", search="test"
-        )
-        assert result_teams == []
-        assert total == 0
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result_teams, total = await connected_provider.get_teams("org1", "uk1")
-        assert result_teams == []
-        assert total == 0
-
-
-# ---------------------------------------------------------------------------
 # get_team_with_users
 # ---------------------------------------------------------------------------
 
@@ -14643,53 +14608,6 @@ class TestGetUserTeams:
 
 
 # ---------------------------------------------------------------------------
-# get_user_created_teams
-# ---------------------------------------------------------------------------
-
-
-class TestGetUserCreatedTeams:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(
-            side_effect=[
-                [1],
-                [{"id": "t1", "createdBy": "uk1"}],
-                [
-                    {
-                        "_key": "uk1",
-                        "userId": "507f1f77bcf86cd799439011",
-                        "fullName": "Creator",
-                        "email": "creator@test.com",
-                    }
-                ],
-            ]
-        )
-        teams, total = await connected_provider.get_user_created_teams("org1", "uk1")
-        assert len(teams) == 1
-        assert total == 1
-        assert teams[0]["createdByUser"]["id"] == "uk1"
-        assert teams[0]["createdByUser"]["userId"] == "507f1f77bcf86cd799439011"
-        assert "createdBy" not in teams[0]
-
-    @pytest.mark.asyncio
-    async def test_with_search(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(
-            side_effect=[[0], []]
-        )
-        teams, total = await connected_provider.get_user_created_teams(
-            "org1", "uk1", search="test"
-        )
-        assert teams == []
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        teams, total = await connected_provider.get_user_created_teams("org1", "uk1")
-        assert teams == []
-        assert total == 0
-
-
-# ---------------------------------------------------------------------------
 # get_team_users
 # ---------------------------------------------------------------------------
 
@@ -14715,33 +14633,6 @@ class TestGetTeamUsersExtended:
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
         result = await connected_provider.get_team_users("t1", "org1", "uk1")
         assert result is None
-
-
-# ---------------------------------------------------------------------------
-# search_teams
-# ---------------------------------------------------------------------------
-
-
-class TestSearchTeams:
-    @pytest.mark.asyncio
-    async def test_found(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(
-            return_value=[{"team": {"id": "t1", "name": "Test"}}]
-        )
-        result = await connected_provider.search_teams("org1", "uk1", "test")
-        assert len(result) == 1
-
-    @pytest.mark.asyncio
-    async def test_not_found(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[])
-        result = await connected_provider.search_teams("org1", "uk1", "xyz")
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.search_teams("org1", "uk1", "test")
-        assert result == []
 
 
 # ---------------------------------------------------------------------------

@@ -10,7 +10,6 @@ from fastapi.responses import JSONResponse
 from app.api.routes.entity import (
     _validate_and_filter_owner_updates,
     _validate_owner_removal,
-    bulk_manage_team_users,
     create_team,
     delete_team,
     get_services,
@@ -909,6 +908,18 @@ class TestDeleteTeam:
         assert exc.value.status_code == 403
 
     @pytest.mark.asyncio
+    async def test_system_all_team_cannot_be_deleted(self):
+        req, gp = self._setup()
+
+        with pytest.raises(HTTPException) as exc:
+            await delete_team(req, "all_org-1")
+
+        assert exc.value.status_code == 403
+        assert "All team" in exc.value.detail
+        gp.get_edge.assert_not_called()
+        gp.delete_all_team_permissions.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_team_not_found_on_delete(self):
         req, gp = self._setup()
         gp.delete_all_team_permissions.return_value = True
@@ -1150,133 +1161,4 @@ class TestGetTeamUsers:
             await get_team_users(req, "team-1")
         assert exc.value.status_code == 403
 
-
-# ---------------------------------------------------------------------------
-# bulk_manage_team_users
-# ---------------------------------------------------------------------------
-
-class TestBulkManageTeamUsers:
-    def _setup(self, body_dict):
-        req = _make_request(body_dict)
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
-        return req, gp
-
-    @pytest.mark.asyncio
-    async def test_success_add_only(self):
-        body = {"addUserIds": ["u2", "u3"]}
-        req, gp = self._setup(body)
-        gp.batch_create_edges.return_value = True
-        gp.get_team_with_users.return_value = {"team": "t"}
-
-        resp = await bulk_manage_team_users(req, "team-1")
-        assert resp.status_code == 200
-        content = json.loads(resp.body.decode())
-        assert content["added"] == 2
-        assert content["removed"] == 0
-
-    @pytest.mark.asyncio
-    async def test_success_remove_only(self):
-        body = {"removeUserIds": ["u2"]}
-        req, gp = self._setup(body)
-        gp.delete_team_member_edges.return_value = ["e1"]
-        gp.get_team_with_users.return_value = {"team": "t"}
-
-        resp = await bulk_manage_team_users(req, "team-1")
-        assert resp.status_code == 200
-        content = json.loads(resp.body.decode())
-        assert content["removed"] == 1
-        assert content["added"] == 0
-
-    @pytest.mark.asyncio
-    async def test_success_add_and_remove(self):
-        body = {"addUserIds": ["u3"], "removeUserIds": ["u2"]}
-        req, gp = self._setup(body)
-        gp.delete_team_member_edges.return_value = ["e1"]
-        gp.batch_create_edges.return_value = True
-        gp.get_team_with_users.return_value = {"team": "t"}
-
-        resp = await bulk_manage_team_users(req, "team-1")
-        assert resp.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_no_users_provided(self):
-        body = {}
-        req, gp = self._setup(body)
-
-        with pytest.raises(HTTPException) as exc:
-            await bulk_manage_team_users(req, "team-1")
-        assert exc.value.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self):
-        body = {"addUserIds": ["u2"]}
-        req = _make_request(body)
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await bulk_manage_team_users(req, "team-1")
-        assert exc.value.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_cannot_remove_owner(self):
-        body = {"removeUserIds": ["user-key-1"]}
-        req, gp = self._setup(body)
-
-        with pytest.raises(HTTPException) as exc:
-            await bulk_manage_team_users(req, "team-1")
-        assert exc.value.status_code == 400
-        assert "Cannot remove team owner" in exc.value.detail
-
-    @pytest.mark.asyncio
-    async def test_remove_no_users_found(self):
-        body = {"removeUserIds": ["u2"]}
-        req, gp = self._setup(body)
-        gp.delete_team_member_edges.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await bulk_manage_team_users(req, "team-1")
-        assert exc.value.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_add_batch_create_fails(self):
-        body = {"addUserIds": ["u2"]}
-        req, gp = self._setup(body)
-        gp.batch_create_edges.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await bulk_manage_team_users(req, "team-1")
-        assert exc.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_generic_exception(self):
-        body = {"addUserIds": ["u2"]}
-        req, gp = self._setup(body)
-        gp.batch_create_edges.side_effect = RuntimeError("db")
-
-        with pytest.raises(HTTPException) as exc:
-            await bulk_manage_team_users(req, "team-1")
-        assert exc.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_http_exception_re_raised(self):
-        body = {"removeUserIds": ["user-key-1"]}
-        req, gp = self._setup(body)
-
-        with pytest.raises(HTTPException) as exc:
-            await bulk_manage_team_users(req, "team-1")
-        assert exc.value.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_custom_role(self):
-        body = {"addUserIds": ["u2"], "role": "EDITOR"}
-        req, gp = self._setup(body)
-        gp.batch_create_edges.return_value = True
-        gp.get_team_with_users.return_value = {"team": "t"}
-
-        resp = await bulk_manage_team_users(req, "team-1")
-        assert resp.status_code == 200
-        edges = gp.batch_create_edges.call_args[0][0]
-        assert edges[0]["role"] == "EDITOR"
 

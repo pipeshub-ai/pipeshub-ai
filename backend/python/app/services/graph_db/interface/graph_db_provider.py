@@ -3782,32 +3782,6 @@ class IGraphDBProvider(ABC):
     # ==================== Team Operations ====================
 
     @abstractmethod
-    async def get_teams(
-        self,
-        org_id: str,
-        user_key: str,
-        search: str | None = None,
-        page: int = 1,
-        limit: int = 10,
-        transaction: str | None = None
-    ) -> tuple[list[dict], int]:
-        """
-        Get teams for an organization with pagination, search, members, and permissions.
-
-        Args:
-            org_id (str): Organization ID
-            user_key (str): Current user's key (for permission checking)
-            search (Optional[str]): Search query for team name
-            page (int): Page number (1-indexed)
-            limit (int): Number of items per page
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Tuple[List[Dict], int]: (List of teams with members and permissions, total count)
-        """
-        pass
-
-    @abstractmethod
     async def get_team_with_users(
         self,
         team_id: str,
@@ -3858,32 +3832,6 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_user_created_teams(
-        self,
-        org_id: str,
-        user_key: str,
-        search: str | None = None,
-        page: int = 1,
-        limit: int = 100,
-        transaction: str | None = None
-    ) -> tuple[list[dict], int]:
-        """
-        Get all teams created by a user.
-
-        Args:
-            org_id (str): Organization ID
-            user_key (str): User's key
-            search (Optional[str]): Search query for team name or description
-            page (int): Page number (1-indexed)
-            limit (int): Number of items per page
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Tuple[List[Dict], int]: (List of teams with members and permissions, total count)
-        """
-        pass
-
-    @abstractmethod
     async def get_team_users(
         self,
         team_id: str,
@@ -3908,32 +3856,6 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Optional[Dict]: Team data with paginated members, None if not found
-        """
-        pass
-
-    @abstractmethod
-    async def search_teams(
-        self,
-        org_id: str,
-        user_key: str,
-        query: str,
-        limit: int = 10,
-        offset: int = 0,
-        transaction: str | None = None
-    ) -> list[dict]:
-        """
-        Search teams by name or description.
-
-        Args:
-            org_id (str): Organization ID
-            user_key (str): Current user's key (for permission checking)
-            query (str): Search query string
-            limit (int): Maximum number of results
-            offset (int): Offset for pagination
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            List[Dict]: List of matching teams with members and permissions
         """
         pass
 

@@ -104,10 +104,8 @@ function TeamsPageContent() {
         limit,
         search: searchQuery || undefined,
       };
-      // Created By filter (single Mongo userId; API resolves to graph key)
-      const createdByMongoId = filters.createdBy?.[0];
-      if (createdByMongoId) {
-        params.created_by = createdByMongoId;
+      if (filters.createdBy) {
+        params.created_by = filters.createdBy;
       }
       // Created On date filter
       if (filters.createdAfter) {
@@ -171,7 +169,7 @@ function TeamsPageContent() {
         store.isDetailPanelOpen && store.detailTeam?.id === teamId;
 
       if (alreadyShowing) {
-        if (mode === 'edit' && !store.isEditMode) enterEditMode();
+        if (mode === 'edit' && store.detailTeam?.canEdit && !store.isEditMode) enterEditMode();
         else if (mode !== 'edit' && store.isEditMode) exitEditMode();
         initialUrlProcessed.current = true;
       } else {
@@ -224,13 +222,13 @@ function TeamsPageContent() {
     const existing = teams.find((t) => t.id === teamId);
     if (existing) {
       openDetailPanel(existing);
-      if (mode === 'edit') setTimeout(() => enterEditMode(), 0);
+      if (mode === 'edit' && existing.canEdit) setTimeout(() => enterEditMode(), 0);
       initialUrlProcessed.current = true;
     } else {
       TeamsApi.getTeam(teamId)
         .then((team) => {
           openDetailPanel(team);
-          if (mode === 'edit') setTimeout(() => enterEditMode(), 0);
+          if (mode === 'edit' && team.canEdit) setTimeout(() => enterEditMode(), 0);
           initialUrlProcessed.current = true;
         })
         .catch(() => {
@@ -310,8 +308,11 @@ function TeamsPageContent() {
               label={filter.label}
               icon={filter.icon}
               options={userFilter.options}
-              selectedValues={filters.createdBy || []}
-              onSelectionChange={(values) => setFilters({ createdBy: values })}
+              selectedValues={filters.createdBy ? [filters.createdBy] : []}
+              onSelectionChange={(values) =>
+                setFilters({ createdBy: values[0] ?? undefined })
+              }
+              selectionMode="single"
               searchable
               onSearch={userFilter.onSearch}
               onLoadMore={userFilter.onLoadMore}
@@ -444,7 +445,7 @@ function TeamsPageContent() {
             navigateToDetailPanel(team);
           },
         },
-        team.canDelete && {
+        team.canDelete && team.id !== `all_${team.orgId}` && {
           icon: 'delete',
           label: t('workspace.teams.actions.delete'),
           variant: 'danger' as const,
@@ -476,7 +477,7 @@ function TeamsPageContent() {
   // ── Empty state ──
   const hasActiveFilters = !!(
     searchQuery.trim() ||
-    filters.createdBy?.length ||
+    filters.createdBy ||
     filters.createdAfter ||
     filters.createdBefore
   );

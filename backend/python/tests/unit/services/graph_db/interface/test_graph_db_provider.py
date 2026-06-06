@@ -375,12 +375,9 @@ class TestAbstractMethodInventory:
         "get_connector_instances_with_filters",
         "count_connector_instances_by_scope",
         # Team operations
-        "get_teams",
         "get_team_with_users",
         "get_user_teams",
-        "get_user_created_teams",
         "get_team_users",
-        "search_teams",
         "delete_team_member_edges",
         "batch_update_team_member_roles",
         "delete_all_team_permissions",
