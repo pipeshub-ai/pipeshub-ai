@@ -783,8 +783,22 @@ class ConfluenceBlockParser:
                     parent_list_style=parent_list_style,
                 )
                 nested_list_indices.extend(nested_result)
+            elif child_type in ["media", "mediaSingle"]:
+                media_result = await self._process_node_recursive(
+                    node=child_node,
+                    blocks=blocks,
+                    block_groups=block_groups,
+                    parent_group_index=parent_group_index,
+                    media_fetcher=media_fetcher,
+                    parent_page_url=parent_page_url,
+                    page_id=page_id,
+                    list_depth=list_depth,
+                    parent_list_style=parent_list_style,
+                )
+                nested_list_indices.extend(media_result)
             else:
-                # Extract text from paragraphs and other content
+                # Extract text from paragraphs and other inline content
+                # TODO: tables/panels in list items still need a wrapping BlockGroup
                 if "content" in child_node:
                     child_text = self._extract_text_from_content(child_node["content"])
                     if child_text:
@@ -1077,13 +1091,14 @@ class ConfluenceBlockParser:
 
         # Process table rows
         row_indices: list[int] = []
+        nested_block_group_indices: list[int] = []  # Track all nested block groups
         num_cols = 0
         table_markdown_lines: list[str] = []
         column_headers: list[str] = []
 
         for row_idx, row_node in enumerate(content):
             if row_node.get("type") == "tableRow":
-                row_block_index = await self._parse_table_row_node(
+                row_block_index, row_nested_groups = await self._parse_table_row_node(
                     node=row_node,
                     blocks=blocks,
                     block_groups=block_groups,
@@ -1094,6 +1109,7 @@ class ConfluenceBlockParser:
                 )
                 if row_block_index is not None:
                     row_indices.append(row_block_index)
+                    nested_block_group_indices.extend(row_nested_groups)  # Collect nested groups
 
                     # Get the cell texts from the created block
                     row_block = blocks[row_block_index]
@@ -1138,12 +1154,17 @@ class ConfluenceBlockParser:
             table_group.data["column_headers"] = column_headers
             table_group.data["table_markdown"] = table_markdown
 
-        # Update table group children
-        if row_indices:
+        # Update table group children with BOTH row blocks AND nested block groups
+        if row_indices or nested_block_group_indices:
             table_group.children = BlockGroupChildren.from_indices(
                 block_indices=row_indices,
-                block_group_indices=[],
+                block_group_indices=nested_block_group_indices,
             )
+
+        # Align nested block groups with the parent table (same as panel/callout parsing)
+        for nested_gi in nested_block_group_indices:
+            if 0 <= nested_gi < len(block_groups):
+                block_groups[nested_gi].parent_index = group_index
 
         return [BlockContainerIndex(block_group_index=group_index)]
 
@@ -1156,13 +1177,17 @@ class ConfluenceBlockParser:
         media_fetcher: Callable | None,
         parent_page_url: str | None,
         page_id: str | None,
-    ) -> int | None:
+    ) -> tuple[int | None, list[int]]:
         """
         Parse tableRow ADF node into TABLE_ROW block.
 
-        Returns the block index of the created row block.
+        Returns:
+            Tuple of (row block index, list of nested block group indices created in this row)
         """
         content = node.get("content", [])
+
+        # Track all nested block groups created within cells of this row
+        all_nested_block_group_indices: list[int] = []
 
         # Extract cell data
         cells_data = []
@@ -1180,7 +1205,7 @@ class ConfluenceBlockParser:
                     for cell_child in cell_content:
                         cell_text = self._extract_text_from_content(
                             cell_child.get("content", []) if "content" in cell_child else [cell_child],
-                            strip_marks=True
+                            strip_marks=False,
                         )
                         if cell_text:
                             cell_text_parts.append(cell_text)
@@ -1207,6 +1232,11 @@ class ConfluenceBlockParser:
                         )
                         child_indices.extend(result)
                     
+                    # Collect nested block group indices from this cell
+                    nested_groups_in_cell = [idx.block_group_index for idx in child_indices 
+                                             if idx.block_group_index is not None]
+                    all_nested_block_group_indices.extend(nested_groups_in_cell)
+                    
                     # Extract text from created blocks for search
                     cell_text = self._extract_text_from_blocks(blocks, child_indices)
                     cell_texts.append(cell_text)
@@ -1215,11 +1245,11 @@ class ConfluenceBlockParser:
                         "text": cell_text,
                         "is_header": cell_type == "tableHeader",
                         "block_indices": [idx.block_index for idx in child_indices if idx.block_index is not None],
-                        "block_group_indices": [idx.block_group_index for idx in child_indices if idx.block_group_index is not None],
+                        "block_group_indices": nested_groups_in_cell,
                     })
 
         if not cells_data:
-            return None
+            return None, []
 
         # Create TABLE_ROW block with proper data format
         block_index = len(blocks)
@@ -1233,7 +1263,8 @@ class ConfluenceBlockParser:
             "row_natural_language_text": row_natural_language_text,
             "row_number": 0,  # Will be set in post-processing
             "row": json.dumps({"cells": cell_texts}),
-            "cells": cells_data,
+            "cells": cell_texts,
+            "cell_details": cells_data,
         }
 
         block = Block(
@@ -1252,7 +1283,7 @@ class ConfluenceBlockParser:
         )
         blocks.append(block)
 
-        return block_index
+        return block_index, all_nested_block_group_indices
 
     # ============================================================================
     # Structural Block Group Parsers
@@ -1541,15 +1572,26 @@ class ConfluenceBlockParser:
         extension_key = attrs.get("extensionKey", "")
         parameters = attrs.get("parameters", {})
 
-        # Handle nested ADF in extension parameters
+        # Handle nested ADF in extension parameters (e.g. migration nested-table)
         nested_adf_str = parameters.get("adf")
         if nested_adf_str:
             try:
                 nested_adf = json.loads(nested_adf_str) if isinstance(nested_adf_str, str) else nested_adf_str
-                # Recursively parse nested ADF
-                if "content" in nested_adf:
+                if not isinstance(nested_adf, dict):
+                    raise TypeError("nested ADF must be a dict")
+
+                nested_type = nested_adf.get("type", "")
+                if nested_type == "doc" and nested_adf.get("content"):
+                    nodes_to_process = nested_adf["content"]
+                elif nested_type:
+                    # Migration stores the inner table (or other block) as the root node
+                    nodes_to_process = [nested_adf]
+                else:
+                    nodes_to_process = []
+
+                if nodes_to_process:
                     child_indices: list[BlockContainerIndex] = []
-                    for nested_node in nested_adf["content"]:
+                    for nested_node in nodes_to_process:
                         nested_result = await self._process_node_recursive(
                             node=nested_node,
                             blocks=blocks,
@@ -1562,7 +1604,8 @@ class ConfluenceBlockParser:
                             parent_list_style=parent_list_style,
                         )
                         child_indices.extend(nested_result)
-                    return child_indices
+                    if child_indices:
+                        return child_indices
             except Exception as e:
                 self.logger.debug(f"Failed to parse nested ADF in extension: {e}")
 
@@ -2055,6 +2098,36 @@ class ConfluenceBlockParser:
             else:
                 self.logger.debug(f"Could not find target block for inline comment thread {thread_id}")
 
+    @staticmethod
+    def _normalize_text_for_comment_match(text: str) -> str:
+        """Normalize block text for inline comment quoted-text matching."""
+        block_text_clean = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
+        block_text_clean = re.sub(r"[*_~`#>]", "", block_text_clean)
+        return block_text_clean.strip().lower()
+
+    @staticmethod
+    def _searchable_text_for_comment_match(block: Block) -> str:
+        """Collect searchable plain text from a block for inline comment matching."""
+        if block.type == BlockType.TEXT and block.data:
+            return str(block.data)
+
+        if block.type == BlockType.TABLE_ROW and isinstance(block.data, dict):
+            parts: list[str] = []
+            row_text = block.data.get("row_natural_language_text")
+            if row_text:
+                parts.append(str(row_text))
+            for detail in block.data.get("cell_details") or []:
+                if isinstance(detail, dict) and detail.get("text"):
+                    parts.append(str(detail["text"]))
+            cells = block.data.get("cells") or []
+            parts.extend(str(cell) for cell in cells if cell)
+            return " ".join(parts)
+
+        if isinstance(block.data, str) and block.data.strip():
+            return block.data
+
+        return ""
+
     def _find_block_by_text(
         self,
         blocks: list[Block],
@@ -2076,16 +2149,13 @@ class ConfluenceBlockParser:
         quoted_text_normalized = quoted_text.strip().lower()
 
         for block in blocks:
-            if block.type == BlockType.TEXT and block.data:
-                # Extract plain text from markdown for matching
-                block_text = str(block.data)
-                # Remove markdown formatting for better matching
-                block_text_clean = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', block_text)  # Remove links
-                block_text_clean = re.sub(r'[*_~`#>]', '', block_text_clean)  # Remove formatting
-                block_text_clean = block_text_clean.strip().lower()
+            block_text = self._searchable_text_for_comment_match(block)
+            if not block_text:
+                continue
 
-                if quoted_text_normalized in block_text_clean:
-                    return block
+            block_text_clean = self._normalize_text_for_comment_match(block_text)
+            if quoted_text_normalized in block_text_clean:
+                return block
 
         return None
 
@@ -2261,29 +2331,80 @@ class ConfluenceBlockParser:
     # ============================================================================
 
     @staticmethod
+    def _shift_group_index_refs(
+        index: int,
+        insert_at: int,
+        delta: int = 1,
+    ) -> int:
+        """Bump a block_group index reference when a group is inserted at insert_at."""
+        if index >= insert_at:
+            return index + delta
+        return index
+
+    @staticmethod
+    def _shift_block_group_ranges(
+        ranges: list[Any],
+        insert_at: int,
+        delta: int = 1,
+    ) -> None:
+        """Bump block_group index ranges after a block group is inserted at insert_at."""
+        for range_obj in ranges:
+            if range_obj.start >= insert_at:
+                range_obj.start += delta
+            if range_obj.end >= insert_at:
+                range_obj.end += delta
+
+    @staticmethod
     def shift_parent_indices_after_group_insert(
         blocks: list[Block],
         block_groups: list[BlockGroup],
         insert_at: int = 0,
+        delta: int = 1,
     ) -> None:
         """
         Bump parent_index values when a block group is inserted at insert_at.
+
+        Also shifts block_group_ranges in children and block_group_indices stored
+        in table cell_details. Block index ranges are unchanged (blocks are not reordered).
 
         Comment threads keep parent_index=insert_at (content wrapper) unchanged.
         """
         for group in block_groups:
             if group.parent_index is None or group.parent_index < insert_at:
-                continue
-            if (
+                pass
+            elif (
                 group.sub_type == GroupSubType.COMMENT_THREAD
                 and group.parent_index == insert_at
             ):
-                continue
-            group.parent_index += 1
+                pass
+            else:
+                group.parent_index += delta
+
+            if group.children and group.children.block_group_ranges:
+                ConfluenceBlockParser._shift_block_group_ranges(
+                    group.children.block_group_ranges,
+                    insert_at,
+                    delta,
+                )
 
         for block in blocks:
             if block.parent_index is not None and block.parent_index >= insert_at:
-                block.parent_index += 1
+                block.parent_index += delta
+
+            if block.type != BlockType.TABLE_ROW or not isinstance(block.data, dict):
+                continue
+            for detail in block.data.get("cell_details") or []:
+                if not isinstance(detail, dict):
+                    continue
+                nested_group_indices = detail.get("block_group_indices")
+                if not nested_group_indices:
+                    continue
+                detail["block_group_indices"] = [
+                    ConfluenceBlockParser._shift_group_index_refs(
+                        gi, insert_at, delta
+                    )
+                    for gi in nested_group_indices
+                ]
 
     @staticmethod
     def sync_table_row_links(
@@ -2317,6 +2438,21 @@ class ConfluenceBlockParser:
 
                     if isinstance(block.data, dict):
                         block.data["row_number"] = row_number
+
+    @staticmethod
+    def sync_nested_table_group_links(
+        block_groups: list[BlockGroup],
+    ) -> None:
+        """Align nested TABLE block_group parent_index with parent table children."""
+        for group in block_groups:
+            if group.type != GroupType.TABLE or not group.children:
+                continue
+            for range_obj in group.children.block_group_ranges:
+                for group_index in range(range_obj.start, range_obj.end + 1):
+                    if group_index < 0 or group_index >= len(block_groups):
+                        continue
+                    nested_group = block_groups[group_index]
+                    nested_group.parent_index = group.index
 
     def post_process_blocks(
         self,
@@ -2414,6 +2550,17 @@ class ConfluenceBlockParser:
             else:
                 previous_indent = None
 
+    @staticmethod
+    def _list_item_lives_in_table(
+        block: Block,
+        block_groups: list[BlockGroup],
+    ) -> bool:
+        """True when a list item block belongs to a TABLE group (nested in a cell)."""
+        parent_index = block.parent_index
+        if parent_index is None or parent_index < 0 or parent_index >= len(block_groups):
+            return False
+        return block_groups[parent_index].type == GroupType.TABLE
+
     def _group_list_items(
         self,
         blocks: list[Block],
@@ -2421,6 +2568,9 @@ class ConfluenceBlockParser:
     ) -> None:
         """
         Group consecutive list items into BlockGroups.
+
+        List items nested inside table cells keep their TABLE parent_index and are
+        referenced via cell_details.block_indices only (not wrapped in LIST groups).
 
         Args:
             blocks: List of blocks (modified in-place)
@@ -2436,6 +2586,17 @@ class ConfluenceBlockParser:
 
         for i, block in enumerate(blocks):
             if block.list_metadata:
+                if self._list_item_lives_in_table(block, block_groups):
+                    if current_group_start is not None and group_blocks:
+                        self._create_list_group(
+                            blocks, block_groups, group_blocks, current_list_style
+                        )
+                        current_group_start = None
+                        current_indent = None
+                        current_list_style = None
+                        group_blocks = []
+                    continue
+
                 list_style = block.list_metadata.list_style
                 indent_level = block.list_metadata.indent_level or 0
 
@@ -2484,9 +2645,17 @@ class ConfluenceBlockParser:
             block_group_indices=[],
         )
 
+        parent_indices = {
+            blocks[idx].parent_index
+            for idx in group_block_indices
+            if blocks[idx].parent_index is not None
+        }
+        list_parent_index = parent_indices.pop() if len(parent_indices) == 1 else None
+
         group = BlockGroup(
             id=str(uuid4()),
             index=group_index,
+            parent_index=list_parent_index,
             type=GroupType.ORDERED_LIST if list_style == "numbered" else GroupType.LIST,
             children=group_children,
             list_metadata=blocks[group_block_indices[0]].list_metadata,

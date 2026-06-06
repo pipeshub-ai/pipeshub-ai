@@ -4313,6 +4313,7 @@ class ConfluenceConnector(BaseConnector):
 
         # 9. Update parent relationships after post-processing
         ConfluenceBlockParser.sync_table_row_links(blocks, block_groups)
+        ConfluenceBlockParser.sync_nested_table_group_links(block_groups)
 
         # Build children references for block groups
         blockgroup_children_map: dict[int, list[int]] = defaultdict(list)
