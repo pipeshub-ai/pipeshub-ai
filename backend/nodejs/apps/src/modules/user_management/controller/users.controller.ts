@@ -402,7 +402,13 @@ export class UserController {
         );
       }
 
-      // Ensure that userIds are valid MongoDB ObjectIds
+      const invalidIds = userIds.filter((id) => !mongoose.isValidObjectId(id));
+      if (invalidIds.length > 0) {
+        throw new BadRequestError(
+          'userIds must contain valid MongoDB ObjectIds',
+        );
+      }
+
       const userObjectIds = userIds.map(
         (id) => new mongoose.mongo.ObjectId(id),
       );

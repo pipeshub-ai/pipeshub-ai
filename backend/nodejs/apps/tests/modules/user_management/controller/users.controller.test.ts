@@ -753,6 +753,18 @@ describe('UserController', () => {
       const error = next.firstCall.args[0];
       expect(error.message).to.equal('userIds must be provided as a non-empty array');
     });
+
+    it('should call next with BadRequestError when userIds contain invalid ObjectIds', async () => {
+      req.body = { userIds: ['system', new mongoose.Types.ObjectId().toString()] };
+
+      await controller.getUsersByIds(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      const error = next.firstCall.args[0];
+      expect(error.message).to.equal(
+        'userIds must contain valid MongoDB ObjectIds',
+      );
+    });
   });
 
   describe('checkUserExistsByEmail', () => {
