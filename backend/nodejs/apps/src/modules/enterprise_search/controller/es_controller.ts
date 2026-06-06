@@ -93,8 +93,6 @@ import {
 import { getSlackBotStore } from '../../configuration_manager/controller/cm_controller';
 import { Org } from '../../user_management/schema/org.schema';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
-import { getWebSearchProviderUsageResponseSchema } from '../validators/es_validators';
-
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
 
@@ -4895,49 +4893,6 @@ export const deleteSearchHistory = async (
 
 /////////////////////// AGENT ///////////////////////
 
-export const shareAgentTemplate =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      const templateId = req.params.templateId;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/share-template/${templateId}`,
-        method: HttpMethod.POST,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      if (!aiResponse) {
-        throw new InternalServerError('Failed to get response from AI service');
-      }
-      if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Share Agent Template');
-      }
-      const agentTemplate = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(agentTemplate);
-    } catch (error: any) {
-      logger.error('Error sharing agent template', {
-        requestId,
-        message: 'Error sharing agent template',
-        error: error.message,
-      });
-      const backendError = handleBackendError(error, 'Share Agent Template');
-      next(backendError);
-    }
-  };
-
 export const createAgent =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -5104,8 +5059,7 @@ export const getWebSearchProviderUsage =
         res.status(HTTP_STATUS.OK).json({ success: true, agents: [] });
         return;
       }
-      const validatedResponse = getWebSearchProviderUsageResponseSchema.parse(aiResponse.data);
-      res.status(HTTP_STATUS.OK).json(validatedResponse);
+      res.status(HTTP_STATUS.OK).json(aiResponse.data);
     } catch (error: any) {
       logger.error('Error checking web search provider usage', {
         requestId,

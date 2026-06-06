@@ -540,25 +540,6 @@ export const listAgentsQuerySchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Agent usage lookup response schemas
-// ---------------------------------------------------------------------------
-
-export const agentUsageAgentSchema = z
-  .object({
-    _key: z.string().trim().min(1, { message: 'Agent key is required' }),
-    name: z.string().trim().min(1, { message: 'Agent name is required' }),
-    creatorName: z.string().nullable(),
-  })
-  .strict();
-
-export const getWebSearchProviderUsageResponseSchema = z
-  .object({
-    success: z.boolean(),
-    agents: z.array(agentUsageAgentSchema),
-  })
-  .strict();
-
-// ---------------------------------------------------------------------------
 // Message params
 // ---------------------------------------------------------------------------
 

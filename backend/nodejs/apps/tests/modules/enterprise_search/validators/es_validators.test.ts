@@ -30,7 +30,6 @@ import {
   agentAttachmentRecordIdParamsSchema,
   createAgentSchema,
   getWebSearchProviderUsageRequestSchema,
-  getWebSearchProviderUsageResponseSchema,
   getModelUsageRequestSchema,
   updateAgentSchema,
   listAgentsQuerySchema,
@@ -377,41 +376,6 @@ describe('enterprise_search/validators/es_validators', () => {
       const result = getModelUsageRequestSchema.safeParse({
         params: { model_key: 'model-1' },
         query: { page: '1' },
-      })
-
-      expect(result.success).to.be.false
-    })
-  })
-
-  describe('getWebSearchProviderUsageResponseSchema', () => {
-    it('should accept a valid usage response with nullable creatorName', () => {
-      const result = getWebSearchProviderUsageResponseSchema.safeParse({
-        success: true,
-        agents: [
-          { _key: 'agent-1', name: 'Agent One', creatorName: 'Alice' },
-          { _key: 'agent-2', name: 'Agent Two', creatorName: null },
-        ],
-      })
-
-      expect(result.success).to.be.true
-    })
-
-    it('should reject agent entries missing nested required fields', () => {
-      const result = getWebSearchProviderUsageResponseSchema.safeParse({
-        success: true,
-        agents: [
-          { name: 'Agent One', creatorName: 'Alice' },
-        ],
-      })
-
-      expect(result.success).to.be.false
-    })
-
-    it('should reject unexpected top-level response properties', () => {
-      const result = getWebSearchProviderUsageResponseSchema.safeParse({
-        success: true,
-        agents: [],
-        pagination: { page: 1 },
       })
 
       expect(result.success).to.be.false
