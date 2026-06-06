@@ -3772,6 +3772,11 @@ class ConfluenceConnector(BaseConnector):
         batch_size = 100
         cursor = None
 
+        # Early return for unsupported record types
+        if record_type not in [RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST]:
+            self.logger.debug(f"Unsupported record type for comments: {record_type}")
+            return []
+
         datasource = await self._get_fresh_datasource()
         page_id_int = int(page_id) if isinstance(page_id, str) else page_id
 

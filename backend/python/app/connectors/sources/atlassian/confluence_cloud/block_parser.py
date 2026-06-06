@@ -9,7 +9,7 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -328,7 +328,6 @@ class ConfluenceBlockParser:
                 timestamp = attrs.get("timestamp", "")
                 if timestamp:
                     try:
-                        from datetime import datetime, timezone
                         dt = datetime.fromtimestamp(int(timestamp) / 1000, tz=timezone.utc)
                         text_parts.append(dt.strftime("%Y-%m-%d"))
                     except (ValueError, TypeError):
@@ -342,6 +341,57 @@ class ConfluenceBlockParser:
                     text_parts.append(nested_text)
 
         return "".join(text_parts)
+
+    def _is_inline_only_content(self, content: list[dict[str, Any]]) -> bool:
+        """
+        Check if content contains only inline ADF nodes (text, mention, emoji, etc.).
+        
+        Returns False if content contains block-level nodes like tables, lists, panels.
+        """
+        INLINE_NODE_TYPES = {
+            "text", "mention", "emoji", "date", "status", 
+            "inlineCard", "hardBreak", "mediaInline"
+        }
+        
+        for node in content:
+            if not isinstance(node, dict):
+                continue
+                
+            node_type = node.get("type", "")
+            
+            # Paragraph is only inline if all its children are inline
+            if node_type == "paragraph":
+                child_content = node.get("content", [])
+                if not self._is_inline_only_content(child_content):
+                    return False
+            # Any non-inline node type means we need full parsing
+            elif node_type not in INLINE_NODE_TYPES:
+                return False
+        
+        return True
+
+    def _extract_text_from_blocks(
+        self, 
+        blocks: list[Block], 
+        indices: list[BlockContainerIndex]
+    ) -> str:
+        """
+        Extract searchable text from a list of block container indices.
+        Used for nested cell content where blocks have been created.
+        """
+        text_parts = []
+        for idx in indices:
+            if idx.block_index is not None and idx.block_index < len(blocks):
+                block = blocks[idx.block_index]
+                if isinstance(block.data, str):
+                    text_parts.append(block.data)
+                elif isinstance(block.data, dict):
+                    # Extract text from common data fields
+                    text = block.data.get("text") or block.data.get("row_natural_language_text") or ""
+                    if text:
+                        text_parts.append(text)
+        
+        return " ".join(text_parts).strip()
 
     def _apply_marks(self, text: str, marks: list[dict[str, Any]]) -> str:
         """
@@ -1033,7 +1083,7 @@ class ConfluenceBlockParser:
 
         for row_idx, row_node in enumerate(content):
             if row_node.get("type") == "tableRow":
-                row_block_index = await self._parse_tableRow(
+                row_block_index = await self._parse_table_row_node(
                     node=row_node,
                     blocks=blocks,
                     block_groups=block_groups,
@@ -1048,7 +1098,15 @@ class ConfluenceBlockParser:
                     # Get the cell texts from the created block
                     row_block = blocks[row_block_index]
                     if isinstance(row_block.data, dict):
-                        cell_texts = row_block.data.get("cells", [])
+                        cells = row_block.data.get("cells", [])
+                        
+                        # Extract text from cells (handle both dict and string format for backward compatibility)
+                        cell_texts = []
+                        for cell in cells:
+                            if isinstance(cell, dict):
+                                cell_texts.append(cell.get("text", ""))
+                            else:
+                                cell_texts.append(str(cell))
 
                         # Extract column headers from first row
                         if row_idx == 0:
@@ -1089,7 +1147,7 @@ class ConfluenceBlockParser:
 
         return [BlockContainerIndex(block_group_index=group_index)]
 
-    async def _parse_tableRow(
+    async def _parse_table_row_node(
         self,
         node: dict[str, Any],
         blocks: list[Block],
@@ -1100,7 +1158,7 @@ class ConfluenceBlockParser:
         page_id: str | None,
     ) -> int | None:
         """
-        Parse tableRow node into TABLE_ROW block.
+        Parse tableRow ADF node into TABLE_ROW block.
 
         Returns the block index of the created row block.
         """
@@ -1113,24 +1171,52 @@ class ConfluenceBlockParser:
         for cell_node in content:
             cell_type = cell_node.get("type", "")
             if cell_type in ["tableCell", "tableHeader"]:
-                # Extract text from cell content (strip formatting for tables)
                 cell_content = cell_node.get("content", [])
-                cell_text_parts = []
-
-                for cell_child in cell_content:
-                    cell_text = self._extract_text_from_content(
-                        cell_child.get("content", []) if "content" in cell_child else [cell_child],
-                        strip_marks=True
-                    )
-                    if cell_text:
-                        cell_text_parts.append(cell_text)
-
-                cell_text = " ".join(cell_text_parts).strip()
-                cell_texts.append(cell_text)
-                cells_data.append({
-                    "text": cell_text,
-                    "is_header": cell_type == "tableHeader",
-                })
+                
+                # Check if cell contains only inline content (fast path)
+                if self._is_inline_only_content(cell_content):
+                    # Extract text as string (existing logic)
+                    cell_text_parts = []
+                    for cell_child in cell_content:
+                        cell_text = self._extract_text_from_content(
+                            cell_child.get("content", []) if "content" in cell_child else [cell_child],
+                            strip_marks=True
+                        )
+                        if cell_text:
+                            cell_text_parts.append(cell_text)
+                    
+                    cell_text = " ".join(cell_text_parts).strip()
+                    cell_texts.append(cell_text)
+                    cells_data.append({
+                        "type": "text",
+                        "text": cell_text,
+                        "is_header": cell_type == "tableHeader",
+                    })
+                else:
+                    # Cell contains block-level content - parse recursively
+                    child_indices = []
+                    for content_node in cell_content:
+                        result = await self._process_node_recursive(
+                            node=content_node,
+                            blocks=blocks,
+                            block_groups=block_groups,
+                            parent_group_index=parent_group_index,  # Nested content points to TABLE group
+                            media_fetcher=media_fetcher,
+                            parent_page_url=parent_page_url,
+                            page_id=page_id,
+                        )
+                        child_indices.extend(result)
+                    
+                    # Extract text from created blocks for search
+                    cell_text = self._extract_text_from_blocks(blocks, child_indices)
+                    cell_texts.append(cell_text)
+                    cells_data.append({
+                        "type": "nested",
+                        "text": cell_text,
+                        "is_header": cell_type == "tableHeader",
+                        "block_indices": [idx.block_index for idx in child_indices if idx.block_index is not None],
+                        "block_group_indices": [idx.block_group_index for idx in child_indices if idx.block_group_index is not None],
+                    })
 
         if not cells_data:
             return None
@@ -1147,7 +1233,7 @@ class ConfluenceBlockParser:
             "row_natural_language_text": row_natural_language_text,
             "row_number": 0,  # Will be set in post-processing
             "row": json.dumps({"cells": cell_texts}),
-            "cells": cell_texts,
+            "cells": cells_data,
         }
 
         block = Block(
@@ -1725,6 +1811,21 @@ class ConfluenceBlockParser:
         """Parse date node - usually not standalone."""
         return []
 
+    async def _parse_tableRow(
+        self,
+        node: dict[str, Any],
+        blocks: list[Block],
+        block_groups: list[BlockGroup],
+        parent_group_index: int | None,
+        media_fetcher: Callable | None,
+        parent_page_url: str | None,
+        page_id: str | None,
+        list_depth: int = 0,
+        parent_list_style: str | None = None,
+    ) -> list[BlockContainerIndex]:
+        """Parse tableRow - handled by table parser."""
+        return []
+
     async def _parse_tableCell(
         self,
         node: dict[str, Any],
@@ -2294,6 +2395,11 @@ class ConfluenceBlockParser:
             if block.list_metadata and block.list_metadata.list_style == "numbered":
                 indent_level = block.list_metadata.indent_level or 0
 
+                # Reset counters for any deeper levels
+                for level in list(counters.keys()):
+                    if level > indent_level:
+                        del counters[level]
+
                 if indent_level in counters and previous_indent is not None:
                     counters[indent_level] += 1
                 else:
@@ -2373,9 +2479,10 @@ class ConfluenceBlockParser:
             return
 
         group_index = len(block_groups)
-        group_children = BlockGroupChildren()
-        for idx in group_block_indices:
-            group_children.add_block_index(idx)
+        group_children = BlockGroupChildren.from_indices(
+            block_indices=group_block_indices,
+            block_group_indices=[],
+        )
 
         group = BlockGroup(
             id=str(uuid4()),

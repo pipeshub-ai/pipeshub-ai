@@ -15,6 +15,7 @@ from app.models.blocks import (
     DataFormat,
     GroupSubType,
     GroupType,
+    ListMetadata,
     TableRowMetadata,
 )
 
@@ -279,3 +280,211 @@ class TestTableRowParentIndexAfterContentInsert:
 
         assert thread.parent_index == 0
         assert comment.parent_index == 3
+
+
+class TestFixNumberedListNumbering:
+    def test_nested_list_restarts_after_returning_to_shallower_level(self):
+        parser = _parser()
+        blocks = [
+            Block(
+                index=0,
+                type=BlockType.TEXT,
+                format=DataFormat.MARKDOWN,
+                data="1. Top A",
+                list_metadata=ListMetadata(list_style="numbered", indent_level=0),
+            ),
+            Block(
+                index=1,
+                type=BlockType.TEXT,
+                format=DataFormat.MARKDOWN,
+                data="1. Nested A",
+                list_metadata=ListMetadata(list_style="numbered", indent_level=1),
+            ),
+            Block(
+                index=2,
+                type=BlockType.TEXT,
+                format=DataFormat.MARKDOWN,
+                data="1. Nested B",
+                list_metadata=ListMetadata(list_style="numbered", indent_level=1),
+            ),
+            Block(
+                index=3,
+                type=BlockType.TEXT,
+                format=DataFormat.MARKDOWN,
+                data="1. Top B",
+                list_metadata=ListMetadata(list_style="numbered", indent_level=0),
+            ),
+            Block(
+                index=4,
+                type=BlockType.TEXT,
+                format=DataFormat.MARKDOWN,
+                data="1. Nested C",
+                list_metadata=ListMetadata(list_style="numbered", indent_level=1),
+            ),
+        ]
+
+        parser._fix_numbered_list_numbering(blocks)
+
+        assert blocks[0].data == "1. Top A"
+        assert blocks[1].data == "1. Nested A"
+        assert blocks[2].data == "2. Nested B"
+        assert blocks[3].data == "2. Top B"
+        assert blocks[4].data == "1. Nested C"
+
+
+@pytest.mark.asyncio
+class TestNestedTableInCell:
+    async def test_nested_table_creates_block_groups(self):
+        """Nested table in cell is parsed as BlockGroup, not flattened to text."""
+        parser = _parser()
+        adf = {
+            "type": "doc",
+            "content": [{
+                "type": "table",
+                "content": [{
+                    "type": "tableRow",
+                    "content": [
+                        {
+                            "type": "tableCell",
+                            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "A"}]}]
+                        },
+                        {
+                            "type": "tableCell",
+                            "content": [{
+                                "type": "table",
+                                "content": [{
+                                    "type": "tableRow",
+                                    "content": [{
+                                        "type": "tableCell",
+                                        "content": [{"type": "paragraph", "content": [{"type": "text", "text": "nested"}]}]
+                                    }]
+                                }]
+                            }]
+                        }
+                    ]
+                }]
+            }]
+        }
+        
+        blocks, block_groups = await parser.parse_adf(adf, page_id="p1", page_title=None)
+        
+        # Should have 2 TABLE groups (outer + nested)
+        table_groups = [g for g in block_groups if g.type == GroupType.TABLE]
+        assert len(table_groups) == 2
+        
+        outer_table = table_groups[0]
+        nested_table = table_groups[1]
+        
+        # Nested table parent_index should point to outer table
+        assert nested_table.parent_index == outer_table.index
+        
+        # Outer table row should have nested cell data
+        outer_rows = [b for b in blocks if b.type == BlockType.TABLE_ROW and b.parent_index == outer_table.index]
+        assert len(outer_rows) == 1
+        
+        row_data = outer_rows[0].data
+        assert isinstance(row_data, dict)
+        cells = row_data["cells"]
+        
+        # First cell: text only
+        assert cells[0]["type"] == "text"
+        assert cells[0]["text"] == "A"
+        
+        # Second cell: nested table
+        assert cells[1]["type"] == "nested"
+        assert len(cells[1]["block_group_indices"]) == 1
+        assert cells[1]["block_group_indices"][0] == nested_table.index
+
+    async def test_nested_list_in_cell(self):
+        """List in cell is parsed as blocks, not flattened to text."""
+        parser = _parser()
+        adf = {
+            "type": "doc",
+            "content": [{
+                "type": "table",
+                "content": [{
+                    "type": "tableRow",
+                    "content": [
+                        {
+                            "type": "tableCell",
+                            "content": [{
+                                "type": "bulletList",
+                                "content": [
+                                    {
+                                        "type": "listItem",
+                                        "content": [{"type": "paragraph", "content": [{"type": "text", "text": "item1"}]}]
+                                    },
+                                    {
+                                        "type": "listItem",
+                                        "content": [{"type": "paragraph", "content": [{"type": "text", "text": "item2"}]}]
+                                    }
+                                ]
+                            }]
+                        }
+                    ]
+                }]
+            }]
+        }
+        
+        blocks, block_groups = await parser.parse_adf(adf, page_id="p1", page_title=None)
+        
+        # Check that cell has nested content with text blocks
+        table_rows = [b for b in blocks if b.type == BlockType.TABLE_ROW]
+        assert len(table_rows) == 1
+        
+        cells = table_rows[0].data["cells"]
+        assert cells[0]["type"] == "nested"
+        assert len(cells[0]["block_indices"]) > 0
+
+    async def test_mixed_text_and_nested_cells(self):
+        """Table row with both simple text and nested content cells."""
+        parser = _parser()
+        adf = {
+            "type": "doc",
+            "content": [{
+                "type": "table",
+                "content": [{
+                    "type": "tableRow",
+                    "content": [
+                        {
+                            "type": "tableCell",
+                            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Simple"}]}]
+                        },
+                        {
+                            "type": "tableCell",
+                            "content": [{
+                                "type": "bulletList",
+                                "content": [{
+                                    "type": "listItem",
+                                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "item"}]}]
+                                }]
+                            }]
+                        },
+                        {
+                            "type": "tableCell",
+                            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Also simple"}]}]
+                        }
+                    ]
+                }]
+            }]
+        }
+        
+        blocks, block_groups = await parser.parse_adf(adf, page_id="p1", page_title=None)
+        
+        table_rows = [b for b in blocks if b.type == BlockType.TABLE_ROW]
+        assert len(table_rows) == 1
+        
+        cells = table_rows[0].data["cells"]
+        assert len(cells) == 3
+        
+        # First cell: text only
+        assert cells[0]["type"] == "text"
+        assert cells[0]["text"] == "Simple"
+        
+        # Second cell: nested list
+        assert cells[1]["type"] == "nested"
+        assert len(cells[1]["block_indices"]) > 0
+        
+        # Third cell: text only
+        assert cells[2]["type"] == "text"
+        assert cells[2]["text"] == "Also simple"
