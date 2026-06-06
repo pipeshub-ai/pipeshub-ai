@@ -139,14 +139,15 @@ class TestHandleModelChange:
         await handle_model_change(retrieval_svc, "model-a", "model-a", 768, 100, 768, logger)
 
     @pytest.mark.asyncio
-    async def test_model_change_with_data_raises(self):
+    async def test_model_change_with_data_recreates(self):
+        """Model name change with existing data should delete and recreate the collection."""
         retrieval_svc = AsyncMock()
         logger = MagicMock()
 
-        from app.api.routes.health import handle_model_change
-        with pytest.raises(HTTPException) as exc_info:
+        with patch(f"{MODULE}.recreate_collection", new_callable=AsyncMock) as mock_recreate:
+            from app.api.routes.health import handle_model_change
             await handle_model_change(retrieval_svc, "model-a", "model-b", 768, 100, 512, logger)
-        assert exc_info.value.status_code == 500
+            mock_recreate.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_model_change_empty_collection_recreates(self):
