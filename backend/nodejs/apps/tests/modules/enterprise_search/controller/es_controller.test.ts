@@ -40,7 +40,6 @@ import {
   updateAgent,
   listAgents,
   getModelUsage,
-  shareAgentTemplate,
   streamAgentConversation,
   streamAgentConversationInternal,
   addMessageToAgentConversation,
@@ -2320,49 +2319,6 @@ describe('Enterprise Search Controller', () => {
       const next = createMockNext()
 
       await deleteSearchHistory(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('shareAgentTemplate', () => {
-    it('should return a handler function', () => {
-      const handler = shareAgentTemplate(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should share template successfully', async () => {
-      const handler = shareAgentTemplate(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { shared: true },
-      } as any)
-
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next when orgId is missing', async () => {
-      const handler = shareAgentTemplate(createMockAppConfig())
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { userId: VALID_OID },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -5968,22 +5924,6 @@ describe('Enterprise Search Controller', () => {
     })
   })
 
-  describe('shareAgentTemplate (validation branches)', () => {
-    it('should throw when userId is missing', async () => {
-      const handler = shareAgentTemplate(createMockAppConfig())
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
   // -----------------------------------------------------------------------
   // listAgents - userId validation
   // -----------------------------------------------------------------------
@@ -9282,28 +9222,6 @@ describe('Enterprise Search Controller', () => {
 
       const req = createMockRequest({
         params: { agentKey: 'agent-1' },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('shareAgentTemplate - AI response non-200', () => {
-    it('should throw when AI response is non-200', async () => {
-      const handler = shareAgentTemplate(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 400,
-        data: { detail: 'Template share failed' },
-      } as any)
-
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()
