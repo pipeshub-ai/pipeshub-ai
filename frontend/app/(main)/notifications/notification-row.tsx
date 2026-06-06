@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useRef, useLayoutEffect } from 'react';
 import Link from 'next/link';
 import { Flex, Text, Box, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -82,6 +83,14 @@ export function NotificationRow({
   dismissLabel: string;
 }) {
   const { i18n } = useTranslation();
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [isTruncated, setIsTruncated] = useState(false);
+  // Hidden unclamped clone used solely for measuring the natural text height.
+  // scrollHeight on a -webkit-line-clamp element is unreliable in some browsers
+  // (it can return the clamped height instead of the full content height), so we
+  // measure on a separate, unconstrained div instead.
+  const measureRef = useRef<HTMLDivElement>(null);
+
   const timeLabel = formatRelativeTime(n.createdAt, i18n.language);
   const severity = n.severity ?? 'error';
   const title = n.title ?? '';
@@ -90,6 +99,13 @@ export function NotificationRow({
 
   const isRead = n.status === 'read' || n.status === 'archived';
   const titleStyle = { color: 'var(--slate-12)' };
+
+  useLayoutEffect(() => {
+    const el = measureRef.current;
+    if (!el) return;
+    const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 16;
+    setIsTruncated(el.scrollHeight > lineHeight * 2 + 1);
+  }, [message]);
 
   return (
     <Box
@@ -146,18 +162,86 @@ export function NotificationRow({
                 {title}
               </Text>
             )}
-            <Text
-              size="1"
-              color="gray"
-              style={{
-                display: '-webkit-box',
-                WebkitLineClamp: 2,
-                WebkitBoxOrient: 'vertical',
-                overflow: 'hidden',
-              }}
-            >
-              {message}
-            </Text>
+            <Box style={{ position: 'relative' }}>
+              {/* Invisible unclamped clone — used only to measure full text height */}
+              <div
+                ref={measureRef}
+                aria-hidden="true"
+                style={{
+                  visibility: 'hidden',
+                  pointerEvents: 'none',
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  fontSize: 'var(--font-size-1)',
+                  lineHeight: 'var(--line-height-1)',
+                  letterSpacing: 'var(--letter-spacing-1)',
+                  whiteSpace: 'normal',
+                  overflow: 'visible',
+                }}
+              >
+                {message}
+              </div>
+              <div
+                style={{
+                  display: isExpanded ? 'block' : '-webkit-box',
+                  WebkitLineClamp: isExpanded ? undefined : 2,
+                  WebkitBoxOrient: 'vertical',
+                  overflow: 'hidden',
+                  paddingRight: (isTruncated && !isExpanded) ? '58px' : '0',
+                  fontSize: 'var(--font-size-1)',
+                  lineHeight: 'var(--line-height-1)',
+                  letterSpacing: 'var(--letter-spacing-1)',
+                  color: 'var(--gray-11)',
+                }}
+              >
+                {message}
+              </div>
+              {isTruncated && !isExpanded && (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setIsExpanded(true)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') setIsExpanded(true);
+                  }}
+                  style={{
+                    position: 'absolute',
+                    bottom: 0,
+                    right: 0,
+                    cursor: 'pointer',
+                    color: 'var(--accent-11)',
+                    fontSize: 'var(--font-size-1)',
+                    lineHeight: 'var(--line-height-1)',
+                    userSelect: 'none',
+                  }}
+                >
+                  show more
+                </span>
+              )}
+            </Box>
+            {isExpanded && isTruncated && (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={() => setIsExpanded(false)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') setIsExpanded(false);
+                }}
+                style={{
+                  display: 'inline-block',
+                  marginTop: '2px',
+                  cursor: 'pointer',
+                  color: 'var(--accent-11)',
+                  fontSize: 'var(--font-size-1)',
+                  lineHeight: 'var(--line-height-1)',
+                  userSelect: 'none',
+                }}
+              >
+                show less
+              </span>
+            )}
           </Flex>
 
           <Box
@@ -165,16 +249,15 @@ export function NotificationRow({
               flexShrink: 0,
               alignSelf: 'flex-start',
               display: 'flex',
-              justifyContent: 'flex-end',
               alignItems: 'center',
-              minHeight: 26,
-              width: n.status === 'unread' ? 128 : 84,
+              gap: 'var(--space-2)',
             }}
           >
             <Flex
               data-ph-notification-row-actions=""
               align="center"
               gap="2"
+              style={{ minWidth: '76px', justifyContent: 'flex-end' }}
             >
               {n.status === 'unread' && (
                 <IconButton
