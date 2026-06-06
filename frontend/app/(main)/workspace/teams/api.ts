@@ -94,7 +94,9 @@ export const TeamsApi = {
       `${BASE_URL}/${teamId}/users`,
       { params }
     );
-    const members = data?.team?.members ?? [];
+    const members = (data?.team?.members ?? []).filter(
+      (m) => typeof m.userId === 'string' && m.userId.trim().length > 0
+    );
     const totalCount = data?.pagination?.totalCount ?? data?.team?.memberCount ?? members.length;
     return { members, totalCount };
   },

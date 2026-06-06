@@ -19,8 +19,13 @@ import { useTeamsStore } from '../store';
 import { TeamsApi } from '../api';
 import type { TeamMember, TeamMemberRole } from '../types';
 import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
-import { TEAM_ROLE_LABELS } from '../constants';
+import { TEAM_ROLE_LABELS, normalizeTeamMemberRole } from '../constants';
 import { RoleDropdownMenu } from '@/app/components/share';
+
+/** Min addable users to prefetch before stopping auto-pagination. */
+const MIN_ADDABLE_USER_BUFFER = 25;
+/** Cap auto-prefetch pages when client-side member filtering leaves sparse results. */
+const MAX_ADD_USER_PREFETCH_PAGES = 10;
 
 // ========================================
 // Component
@@ -163,26 +168,49 @@ export function TeamDetailSidebar({
     options: userOptions,
     isLoading: userFilterLoading,
     hasMore: userFilterHasMore,
+    loadedPage: userOptionsLoadedPage,
     onSearch: handleUserSearch,
     onLoadMore: handleUserLoadMore,
   } = usePaginatedUserOptions({
     enabled: isDetailPanelOpen && isEditMode,
     idField: 'userId',
+    limit: 50,
   });
 
-  // Exclude already-added members from the options
+  // Exclude users who are already on the team (keep pending-add selections in the
+  // dropdown so row checkboxes can tick/untick like create-team-form).
   const availableUserOptions: CheckboxOption[] = useMemo(() => {
     if (!detailTeam) return [];
     const memberMongoIds = new Set(existingMemberIds);
     // Keep local page data merged in too (helps before full fetch finishes).
     teamMembers.forEach((m) => memberMongoIds.add(m.userId));
-    // Do not show users already selected in "Add Members".
-    const pendingAddIds = new Set(editAddUserIds);
 
-    return userOptions.filter(
-      (o) => !memberMongoIds.has(o.id) && !pendingAddIds.has(o.id)
-    );
-  }, [userOptions, teamMembers, existingMemberIds, editAddUserIds, detailTeam]);
+    return userOptions.filter((o) => !memberMongoIds.has(o.id));
+  }, [userOptions, teamMembers, existingMemberIds, detailTeam]);
+
+  // Client-side member filtering can leave sparse pages (e.g. "All" team). Keep
+  // prefetching org user pages until the addable buffer is full or pages run out.
+  useEffect(() => {
+    if (
+      !isEditMode ||
+      !isDetailPanelOpen ||
+      userFilterLoading ||
+      !userFilterHasMore ||
+      availableUserOptions.length >= MIN_ADDABLE_USER_BUFFER ||
+      userOptionsLoadedPage >= MAX_ADD_USER_PREFETCH_PAGES
+    ) {
+      return;
+    }
+    handleUserLoadMore();
+  }, [
+    isEditMode,
+    isDetailPanelOpen,
+    userFilterLoading,
+    userFilterHasMore,
+    availableUserOptions.length,
+    userOptionsLoadedPage,
+    handleUserLoadMore,
+  ]);
 
   // Prune pending-add role + cache entries when a user is deselected
   useEffect(() => {
@@ -637,7 +665,7 @@ export function TeamDetailSidebar({
           </Text>
 
           <PaginatedMembersList<TeamMember>
-            key={detailTeam?.id}
+            key={`${detailTeam?.id}-${isEditMode ? 'edit' : 'view'}`}
             ref={membersListRef}
             fetcher={fetchTeamMembersFn}
             keyExtractor={(m) => m.id}
@@ -648,7 +676,10 @@ export function TeamDetailSidebar({
             onFetched={(items) => setTeamMembers(items)}
             renderItem={(member) => {
               const isPendingRemove = pendingRemoveUserIds.has(member.userId);
-              const effectiveRole = (pendingUpdateRoles.get(member.userId) ?? member.role) as TeamMemberRole | string;
+              const effectiveRole = normalizeTeamMemberRole(
+                pendingUpdateRoles.get(member.userId) ?? member.role,
+                member.isOwner
+              );
               const isCurrentMemberUser = isSameAsCurrentUser(member);
               const canEditRole = isEditMode && !isCurrentMemberUser && !isPendingRemove;
               return (
@@ -663,7 +694,12 @@ export function TeamDetailSidebar({
                 >
                   <Box style={{ flex: 1, minWidth: 0 }}>
                     <AvatarCell
-                      name={member.userName || member.userEmail || 'Unknown'}
+                      name={
+                        member.userName?.trim() ||
+                        member.userEmail?.trim() ||
+                        member.userId ||
+                        'Unknown'
+                      }
                       email={member.userEmail}
                       avatarSize={28}
                       isSelf={isCurrentMemberUser}
@@ -678,7 +714,7 @@ export function TeamDetailSidebar({
                           handleMemberRoleChange(
                             member.userId,
                             r as TeamMemberRole,
-                            member.role as TeamMemberRole
+                            normalizeTeamMemberRole(member.role, member.isOwner)
                           )
                         }
                         labels={TEAM_ROLE_LABELS}

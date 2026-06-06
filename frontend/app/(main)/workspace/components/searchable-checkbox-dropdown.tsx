@@ -161,6 +161,19 @@ export function SearchableCheckboxDropdown({
     }
   }, [isOpen, isServerSearch, onSearch]);
 
+  // When client-side filtering removed every loaded row, pull the next page.
+  useEffect(() => {
+    if (
+      isOpen &&
+      filteredOptions.length === 0 &&
+      hasMore &&
+      onLoadMore &&
+      !isLoadingMore
+    ) {
+      onLoadMore();
+    }
+  }, [isOpen, filteredOptions.length, hasMore, onLoadMore, isLoadingMore]);
+
   const toggleOption = useCallback(
     (id: string) => {
       if (selectedIds.includes(id)) {
@@ -373,11 +386,21 @@ export function SearchableCheckboxDropdown({
             <Flex
               align="center"
               justify="center"
+              gap="2"
               style={{ padding: 'var(--space-4)' }}
             >
-              <Text size="2" style={{ color: 'var(--slate-9)' }}>
-                {emptyText}
-              </Text>
+              {hasMore ? (
+                <>
+                  <Spinner size={14} />
+                  <Text size="2" style={{ color: 'var(--slate-9)' }}>
+                    Loading...
+                  </Text>
+                </>
+              ) : (
+                <Text size="2" style={{ color: 'var(--slate-9)' }}>
+                  {emptyText}
+                </Text>
+              )}
             </Flex>
           ) : (
             filteredOptions.map((option) => {

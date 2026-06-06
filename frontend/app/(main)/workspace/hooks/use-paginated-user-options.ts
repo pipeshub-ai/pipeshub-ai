@@ -22,6 +22,8 @@ interface UsePaginatedUserOptionsReturn {
   isLoading: boolean;
   /** Whether there are more pages to load */
   hasMore: boolean;
+  /** Last successfully loaded page number (1-based) */
+  loadedPage: number;
   /** Call when the user types in the search box (debounced by the dropdown component) */
   onSearch: (query: string) => void;
   /** Call when the user scrolls to the bottom of the list */
@@ -62,6 +64,7 @@ export function usePaginatedUserOptions({
   const [options, setOptions] = useState<CheckboxOption[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [loadedPage, setLoadedPage] = useState(0);
 
   const pageRef = useRef(1);
   const searchRef = useRef('');
@@ -89,6 +92,7 @@ export function usePaginatedUserOptions({
         }));
         setOptions((prev) => mergeOptionsById(prev, newOpts, append));
         pageRef.current = pageNum;
+        setLoadedPage(pageNum);
         setHasMore(pageNum * limit < totalCount);
       } catch {
         // handled by global interceptor
@@ -108,6 +112,7 @@ export function usePaginatedUserOptions({
       searchRef.current = '';
       pageRef.current = 1;
       setHasMore(false);
+      setLoadedPage(0);
       fetchOptions('', 1, false);
     }
   }, [enabled, fetchOptions]);
@@ -127,5 +132,5 @@ export function usePaginatedUserOptions({
     fetchOptions(searchRef.current, nextPage, true);
   }, [hasMore, fetchOptions]);
 
-  return { options, isLoading, hasMore, onSearch, onLoadMore };
+  return { options, isLoading, hasMore, loadedPage, onSearch, onLoadMore };
 }
