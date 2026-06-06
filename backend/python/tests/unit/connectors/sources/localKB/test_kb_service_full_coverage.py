@@ -991,15 +991,6 @@ class TestResolveUserIdsToGraphKeys:
         assert err["success"] is False
         assert err["code"] == 400
 
-    def test_resolve_graph_user_ids_error_without_resolve_err(self, service):
-        err = service._resolve_graph_user_ids_error(["u1"], None, None)
-        assert err["success"] is False
-        assert err["code"] == 400
-
-    def test_resolve_graph_user_ids_error_empty_mongo_ids(self, service):
-        assert service._resolve_graph_user_ids_error([], None, None) is None
-        assert service._resolve_graph_user_ids_error([], [], None) is None
-
 
 class TestCreateKbPermissions:
     @pytest.mark.asyncio

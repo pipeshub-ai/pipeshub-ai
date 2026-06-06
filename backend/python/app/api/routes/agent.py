@@ -2524,16 +2524,32 @@ async def get_agents(
             agents = result.get("agents", [])
             total_items = int(result.get("totalItems", len(agents)))
 
-        graph_provider = services["graph_provider"]
+        creator_keys = {
+            str(agent["createdBy"])
+            for agent in agents
+            if isinstance(agent, dict)
+            and agent.get("createdBy")
+            and agent.get("createdBy") != "system"
+        }
+        creators_by_key: dict[str, dict] = {}
+        if creator_keys:
+            creator_docs = await services["graph_provider"].get_nodes_by_field_in(
+                CollectionNames.USERS.value,
+                "id",
+                list(creator_keys),
+                return_fields=["id", "userId"],
+            )
+            for doc in creator_docs or []:
+                if doc.get("id") and doc.get("userId"):
+                    creators_by_key[str(doc["id"])] = doc
+
         for agent in agents:
             if not isinstance(agent, dict):
                 continue
             agent["webSearch"] = _format_web_search_for_response(agent.get("webSearch"))
             creator_key = agent.get("createdBy")
             if creator_key and creator_key != "system":
-                creator_doc = await graph_provider.get_document(
-                    str(creator_key), CollectionNames.USERS.value
-                )
+                creator_doc = creators_by_key.get(str(creator_key))
                 if creator_doc and creator_doc.get("userId"):
                     agent["createdBy"] = creator_doc["userId"]
 

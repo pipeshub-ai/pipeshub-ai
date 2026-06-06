@@ -142,23 +142,6 @@ class KnowledgeBaseService:
         except ValueError as e:
             return None, {"success": False, "reason": str(e), "code": 400}
 
-    def _resolve_graph_user_ids_error(
-        self,
-        mongo_user_ids: List[str],
-        graph_user_ids: Optional[List[str]],
-        resolve_err: Optional[Dict],
-    ) -> Optional[Dict]:
-        """Return an error response when Mongo→graph resolution failed."""
-        if resolve_err:
-            return resolve_err
-        if mongo_user_ids and graph_user_ids is None:
-            return {
-                "success": False,
-                "reason": "Failed to resolve user IDs to graph keys",
-                "code": 400,
-            }
-        return None
-
     async def create_knowledge_base(
         self,
         user_id: str,
@@ -994,11 +977,8 @@ class KnowledgeBaseService:
             graph_user_ids, resolve_err = await self._resolve_user_ids_to_graph_keys(
                 unique_users, requester_id
             )
-            resolve_error = self._resolve_graph_user_ids_error(
-                unique_users, graph_user_ids, resolve_err
-            )
-            if resolve_error:
-                return resolve_error
+            if resolve_err:
+                return resolve_err
 
             # Step 2: Single AQL query to do everything at once
             # Pass role even if only teams (it will be ignored for teams)
@@ -1061,11 +1041,8 @@ class KnowledgeBaseService:
             graph_user_ids, resolve_err = await self._resolve_user_ids_to_graph_keys(
                 user_ids, requester_id
             )
-            resolve_error = self._resolve_graph_user_ids_error(
-                user_ids, graph_user_ids, resolve_err
-            )
-            if resolve_error:
-                return resolve_error
+            if resolve_err:
+                return resolve_err
 
             # Validate new role
             valid_roles = ["OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER", "COMMENTER", "READER"]
@@ -1221,11 +1198,8 @@ class KnowledgeBaseService:
             graph_user_ids, resolve_err = await self._resolve_user_ids_to_graph_keys(
                 user_ids, requester_id
             )
-            resolve_error = self._resolve_graph_user_ids_error(
-                user_ids, graph_user_ids, resolve_err
-            )
-            if resolve_error:
-                return resolve_error
+            if resolve_err:
+                return resolve_err
 
             # Get current permissions for all users and teams in a single batch query
             current_permissions = await self.graph_provider.get_kb_permissions(

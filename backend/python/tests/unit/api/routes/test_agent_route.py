@@ -1426,8 +1426,8 @@ class TestAgentCreatedByMongoId:
         graph_provider.get_all_agents = AsyncMock(
             return_value={"agents": agents, "totalItems": 1}
         )
-        graph_provider.get_document = AsyncMock(
-            return_value={"_key": "ck1", "userId": mongo_user_id}
+        graph_provider.get_nodes_by_field_in = AsyncMock(
+            return_value=[{"id": "ck1", "userId": mongo_user_id}]
         )
 
         services = {
@@ -1442,8 +1442,11 @@ class TestAgentCreatedByMongoId:
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
             response = await get_agents(request, page=1, limit=20)
 
-        graph_provider.get_document.assert_awaited_once_with(
-            "ck1", CollectionNames.USERS.value
+        graph_provider.get_nodes_by_field_in.assert_awaited_once_with(
+            CollectionNames.USERS.value,
+            "id",
+            ["ck1"],
+            return_fields=["id", "userId"],
         )
         body = json.loads(response.body)
         assert body["agents"][0]["createdBy"] == mongo_user_id
