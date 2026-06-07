@@ -31,9 +31,9 @@ from app.models.blocks import (
 )
 from app.models.entities import Record, RecordType
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
-from app.modules.parsers.pdf.docling import DoclingProcessor
+from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
-from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
+from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
@@ -235,15 +235,15 @@ class Processor:
             self.logger.error(f"❌ Error processing Gmail Message document: {str(e)}")
             raise
 
-    async def process_pdf_with_pymupdf(self, recordName, recordId, pdf_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
-        """Process PDF using PyMuPDF+OpenCV processor, yielding phase completion events."""
+    async def process_pdf_with_pdf_plumber(self, recordName, recordId, pdf_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process PDF using PdfPlumber+OpenCV processor, yielding phase completion events."""
         self.logger.info(f"🚀 Starting PDF document processing for record: {recordId}")
         try:
-            self.logger.debug("📄 Processing PDF binary content using PyMuPDF+OpenCV processor")
+            self.logger.debug("📄 Processing PDF binary content using PdfPlumber+OpenCV processor")
 
             record_name = recordName if recordName.endswith(".pdf") else f"{recordName}.pdf"
 
-            processor = PyMuPDFOpenCVProcessor(
+            processor = PDFPlumberOpenCVProcessor(
                 logger=self.logger,
                 config=self.config_service,
             )
@@ -277,10 +277,10 @@ class Processor:
             # Signal indexing complete
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-            self.logger.info(f"✅ PDF processing completed for record: {recordName}, using PyMuPDF+OpenCV processor")
+            self.logger.info(f"✅ PDF processing completed for record: {recordName}, using PdfPlumber+OpenCV processor")
             return
         except Exception as e:
-            self.logger.error(f"❌ Error processing PDF document with PyMuPDF+OpenCV: {str(e)}")
+            self.logger.error(f"❌ Error processing PDF document with PdfPlumber+OpenCV: {str(e)}")
             raise
 
     async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:

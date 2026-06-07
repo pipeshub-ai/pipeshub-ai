@@ -1,11 +1,14 @@
 import asyncio
 import base64
 import os
+import tempfile
+from io import BytesIO
 from typing import Any, Dict
 
-import fitz
+import pdfplumber
 from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import HumanMessage
+from pdf2image import convert_from_path
 
 from app.config.constants.service import config_node_constants
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
@@ -90,6 +93,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         self.llm = None
         self.llm_config = None
         self.document_analysis_result = None
+        self._pdf_path = None
 
     def _create_llm_from_config(self, config: Dict[str, Any]) -> BaseChatModel:
         """Helper to create an LLM instance from a configuration dictionary."""
@@ -187,23 +191,27 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         Render a PDF page as a PNG image and convert to base64
 
         Args:
-            page: PyMuPDF page object
+            page: pdfplumber page object
 
         Returns:
             str: Base64-encoded PNG image with data URI prefix
         """
         try:
-            # Render page to pixmap at specified DPI
-            mat = fitz.Matrix(self.RENDER_DPI / 72, self.RENDER_DPI / 72)
-            pix = page.get_pixmap(matrix=mat)
-
-            # Convert to PNG bytes
-            img_bytes = pix.tobytes("png")
-
-            # Encode to base64
-            img_base64 = base64.b64encode(img_bytes).decode('utf-8')
-
-            # Return with data URI prefix
+            if not self._pdf_path:
+                raise RuntimeError(
+                    "PDF source path not initialized; load_document must run first"
+                )
+            page_number = int(getattr(page, "page_number", 1))
+            images = convert_from_path(
+                self._pdf_path,
+                dpi=self.RENDER_DPI,
+                first_page=page_number,
+                last_page=page_number,
+                fmt="png",
+            )
+            buf = BytesIO()
+            images[0].save(buf, format="PNG")
+            img_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
             return f"data:image/png;base64,{img_base64}"
 
         except Exception as e:
@@ -259,35 +267,34 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             self.logger.error(f"❌ Error calling LLM for page {page_number}: {str(e)}")
             raise
 
-    async def process_page(self, page) -> Dict[str, Any]:
+    async def process_page(self, page, page_number: int = None) -> Dict[str, Any]:
         """
         Process a single PDF page with VLM OCR
 
         Args:
-            page: PyMuPDF page object
+            page: pdfplumber page object
+            page_number: 1-based page number (derived from page if not provided)
 
         Returns:
             Dict containing page markdown and metadata
         """
-        page_number = page.number + 1
+        if page_number is None:
+            page_number = page.page_number
         self.logger.info(f"📄 Processing page {page_number} with VLM OCR")
 
         try:
-            # Render page to base64 image
             self.logger.debug(f"🖼️ Rendering page {page_number} to image")
             image_base64 = self._render_page_to_base64(page)
-            # Call LLM to get markdown
             markdown = await self._call_llm_for_markdown(image_base64, page_number)
 
             return {
                 "page_number": page_number,
                 "markdown": markdown,
-                "width": page.rect.width,
-                "height": page.rect.height,
+                "width": page.width,
+                "height": page.height,
             }
         except Exception as e:
             self.logger.error(f"❌ Error processing page {page_number}: {str(e)}")
-            # Re-raise the error instead of returning empty markdown
             raise
 
     async def _preprocess_document(self) -> Dict[str, Any]:
@@ -297,56 +304,53 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         Returns:
             Dict containing pages with markdown and metadata
         """
-        self.logger.info(f"🚀 Processing {len(self.doc)} pages with VLM OCR (concurrency: {self.CONCURRENCY_LIMIT})")
+        pages = self.doc.pages
+        self.logger.info(f"🚀 Processing {len(pages)} pages with VLM OCR (concurrency: {self.CONCURRENCY_LIMIT})")
 
-        # Create semaphore for concurrency control
         semaphore = asyncio.Semaphore(self.CONCURRENCY_LIMIT)
 
-        async def process_page_with_retry(page) -> Dict[str, Any]:
+        async def process_page_with_retry(page, page_number: int) -> Dict[str, Any]:
             """Process page with retry logic (3 total attempts)"""
             async with semaphore:
                 last_error = None
-                # Loop for initial attempt + MAX_RETRY_ATTEMPTS
                 for attempt in range(self.MAX_RETRY_ATTEMPTS + 1):
                     try:
-                        return await self.process_page(page)
+                        return await self.process_page(page, page_number)
                     except Exception as e:
                         last_error = e
-                        if attempt < self.MAX_RETRY_ATTEMPTS:  # Not the last attempt
+                        if attempt < self.MAX_RETRY_ATTEMPTS:
                             self.logger.warning(
-                                f"⚠️ Retry {attempt + 1}/2 for page {page.number + 1}: {str(e)}"
+                                f"⚠️ Retry {attempt + 1}/2 for page {page_number}: {str(e)}"
                             )
-                        else:  # Last attempt failed
+                        else:
                             self.logger.error(
-                                f"❌ All retries failed for page {page.number + 1}"
+                                f"❌ All retries failed for page {page_number}"
                             )
                             raise last_error
 
-        # Create tasks
-        tasks = [asyncio.create_task(process_page_with_retry(page)) for page in self.doc]
+        tasks = [
+            asyncio.create_task(process_page_with_retry(page, page_num + 1))
+            for page_num, page in enumerate(pages)
+        ]
 
         try:
-            # Process all pages concurrently
             pages_results = await asyncio.gather(*tasks)
         except Exception:
-            # Cancel all remaining tasks
             self.logger.error("❌ Cancelling all remaining tasks due to failure")
             for task in tasks:
                 if not task.done():
                     task.cancel()
-            # Wait for all tasks to complete cancellation
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
 
         doc_markdown = "\n\n---\n\n".join([page["markdown"] for page in pages_results])
-        # Build result structure
         result = {
             "pages": pages_results,
             "markdown": doc_markdown,
-            "total_pages": len(self.doc),
+            "total_pages": len(pages),
         }
 
-        self.logger.info(f"✅ Completed processing {len(self.doc)} pages")
+        self.logger.info(f"✅ Completed processing {len(pages)} pages")
         return result
 
     async def load_document(self, content: bytes) -> None:
@@ -359,16 +363,22 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         self.logger.info("📥 Loading document for VLM OCR processing")
 
         try:
-            # Load PDF with PyMuPDF
-            self.logger.debug("📄 Loading PDF with PyMuPDF")
-            self.doc = fitz.open(stream=content, filetype="pdf")
-            self.logger.info(f"📚 Loaded PDF with {len(self.doc)} pages")
+            self.logger.debug("📄 Loading PDF with pdfplumber")
+            tmp = tempfile.NamedTemporaryFile(
+                delete=False, suffix=".pdf", prefix="pipeshub_vlm_"
+            )
+            try:
+                tmp.write(content)
+                tmp.flush()
+            finally:
+                tmp.close()
+            self._pdf_path = tmp.name
+            self.doc = pdfplumber.open(BytesIO(content))
+            self.logger.info(f"📚 Loaded PDF with {len(self.doc.pages)} pages")
 
-            # Get multimodal LLM (prefers default, falls back to first available)
             self.logger.debug("🤖 Getting multimodal LLM")
             self.llm = await self._get_multimodal_llm()
 
-            # Process document
             self.logger.debug("⚙️ Processing document pages")
             self.document_analysis_result = await self._preprocess_document()
 
@@ -376,4 +386,14 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         except Exception as e:
             self.logger.error(f"❌ Error loading document: {str(e)}")
             raise
+        finally:
+            if self.doc:
+                self.doc.close()
+                self.doc = None
+            if self._pdf_path:
+                try:
+                    os.unlink(self._pdf_path)
+                except OSError:
+                    pass
+                self._pdf_path = None
 

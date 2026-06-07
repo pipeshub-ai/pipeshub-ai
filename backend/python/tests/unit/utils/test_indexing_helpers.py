@@ -1,10 +1,10 @@
 """
-Tests for indexing helper pure functions:
-  - format_rows_with_index(rows) - Format rows with explicit numbering
-  - generate_simple_row_text(row_data) - Generate "column: value" text
-  - get_table_summary_n_headers(config, table_data) - LLM-based table summary
-  - _normalize_bbox - Normalize bounding box coordinates
-  - image_bytes_to_base64 - Convert image bytes to data URI
+Tests for app.utils.indexing_helpers:
+  - format_rows_with_index — numbered JSON rows
+  - generate_simple_row_text — column: value formatting
+  - get_table_summary_n_headers — LLM table summary (mocked)
+  - get_rows_text — row descriptions via structured LLM (mocked)
+  - image_bytes_to_base64 — data URI encoding
 """
 
 import base64
@@ -14,9 +14,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.utils.indexing_helpers import (
-    _normalize_bbox,
     format_rows_with_index,
     generate_simple_row_text,
+    get_rows_text,
     get_table_summary_n_headers,
     image_bytes_to_base64,
     TableSummary,
@@ -347,37 +347,6 @@ class TestGetTableSummaryNHeaders:
 
 
 # ===========================================================================
-# _normalize_bbox
-# ===========================================================================
-
-
-class TestNormalizeBbox:
-    """Test bounding box normalisation."""
-
-    def test_basic_normalization(self):
-        result = _normalize_bbox((100, 200, 300, 400), 600, 800)
-        assert len(result) == 4
-        # Top-left
-        assert result[0] == {"x": 100 / 600, "y": 200 / 800}
-        # Top-right
-        assert result[1] == {"x": 300 / 600, "y": 200 / 800}
-        # Bottom-right
-        assert result[2] == {"x": 300 / 600, "y": 400 / 800}
-        # Bottom-left
-        assert result[3] == {"x": 100 / 600, "y": 400 / 800}
-
-    def test_full_page_bbox(self):
-        result = _normalize_bbox((0, 0, 100, 100), 100, 100)
-        assert result[0] == {"x": 0.0, "y": 0.0}
-        assert result[2] == {"x": 1.0, "y": 1.0}
-
-    def test_zero_origin(self):
-        result = _normalize_bbox((0, 0, 50, 50), 100, 200)
-        assert result[0] == {"x": 0.0, "y": 0.0}
-        assert result[2] == {"x": 0.5, "y": 0.25}
-
-
-# ===========================================================================
 # image_bytes_to_base64
 # ===========================================================================
 
@@ -403,3 +372,142 @@ class TestImageBytesToBase64:
         assert result.startswith("data:image/png;base64,")
         b64_part = result.split(",")[1]
         assert base64.b64decode(b64_part) == b""
+
+
+# ===========================================================================
+# get_rows_text
+# ===========================================================================
+
+
+class TestGetRowsText:
+    """get_rows_text: grid parsing, header handling, and LLM row descriptions."""
+
+    @pytest.mark.asyncio
+    @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
+    @patch("app.utils.indexing_helpers.get_llm")
+    async def test_with_column_headers_and_parsed_response(
+        self, mock_get_llm, mock_invoke
+    ):
+        mock_get_llm.return_value = (MagicMock(), None)
+
+        parsed = MagicMock()
+        parsed.descriptions = ["Row 1 is about X", "Row 2 is about Y"]
+        mock_invoke.return_value = parsed
+
+        table_data = {
+            "grid": [
+                ["Name", "Age"],
+                ["Alice", "30"],
+                ["Bob", "25"],
+            ]
+        }
+
+        descriptions, rows = await get_rows_text(
+            MagicMock(), table_data, "People table", ["Name", "Age"]
+        )
+        assert len(descriptions) == 2
+        assert descriptions[0] == "Row 1 is about X"
+        assert len(rows) == 2
+
+    @pytest.mark.asyncio
+    @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
+    @patch("app.utils.indexing_helpers.get_llm")
+    async def test_without_column_headers(self, mock_get_llm, mock_invoke):
+        mock_get_llm.return_value = (MagicMock(), None)
+        mock_invoke.return_value = None
+
+        table_data = {
+            "grid": [
+                ["Alice", "30"],
+                ["Bob", "25"],
+            ]
+        }
+
+        descriptions, rows = await get_rows_text(
+            MagicMock(), table_data, "People table", []
+        )
+        assert len(descriptions) == 2
+        assert len(rows) == 2
+        assert "Alice" in descriptions[0]
+
+    @pytest.mark.asyncio
+    @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
+    @patch("app.utils.indexing_helpers.get_llm")
+    async def test_with_dict_cells(self, mock_get_llm, mock_invoke):
+        mock_get_llm.return_value = (MagicMock(), None)
+        mock_invoke.return_value = None
+
+        table_data = {
+            "grid": [
+                ["Name", "Age"],
+                [{"text": "Alice"}, {"text": "30"}],
+            ]
+        }
+
+        descriptions, rows = await get_rows_text(
+            MagicMock(), table_data, "People table", ["Name", "Age"]
+        )
+        assert len(rows) == 1
+        assert "Alice" in descriptions[0]
+
+    @pytest.mark.asyncio
+    async def test_empty_grid(self):
+        descriptions, rows = await get_rows_text(
+            MagicMock(), {}, "summary", []
+        )
+        assert descriptions == []
+        assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_empty_grid_when_grid_is_none(self):
+        descriptions, rows = await get_rows_text(
+            MagicMock(), {"grid": None}, "Empty", []
+        )
+        assert descriptions == []
+        assert rows == []
+
+    @pytest.mark.asyncio
+    @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
+    @patch("app.utils.indexing_helpers.get_llm")
+    async def test_parsed_response_empty_descriptions(self, mock_get_llm, mock_invoke):
+        mock_get_llm.return_value = (MagicMock(), None)
+        parsed = MagicMock()
+        parsed.descriptions = []
+        mock_invoke.return_value = parsed
+
+        table_data = {"grid": [["A"], ["B"]]}
+
+        descriptions, rows = await get_rows_text(
+            MagicMock(), table_data, "summary", []
+        )
+        assert len(descriptions) == 2
+
+    @pytest.mark.asyncio
+    @patch("app.utils.indexing_helpers.get_llm")
+    async def test_exception_propagates_get_rows_text(self, mock_get_llm):
+        mock_get_llm.side_effect = Exception("LLM error")
+
+        table_data = {"grid": [["A"], ["B"]]}
+
+        with pytest.raises(Exception, match="LLM error"):
+            await get_rows_text(MagicMock(), table_data, "summary", ["Col"])
+
+    @pytest.mark.asyncio
+    @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
+    @patch("app.utils.indexing_helpers.get_llm")
+    async def test_more_columns_than_headers(self, mock_get_llm, mock_invoke):
+        mock_get_llm.return_value = (MagicMock(), None)
+        mock_invoke.return_value = None
+
+        table_data = {
+            "grid": [
+                ["Name", "Age", "Extra"],
+                ["Alice", "30", "abc"],
+            ]
+        }
+
+        descriptions, rows = await get_rows_text(
+            MagicMock(), table_data, "summary", ["Name"]
+        )
+        assert len(rows) == 1
+        assert "Column_2" in descriptions[0] or "Column_3" in descriptions[0]

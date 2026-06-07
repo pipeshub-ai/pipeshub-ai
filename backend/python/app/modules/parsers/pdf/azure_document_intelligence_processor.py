@@ -3,7 +3,7 @@ import time
 from io import BytesIO
 from typing import Any, Dict, List
 
-import fitz  # PyMuPDF for initial document check
+import pdfplumber
 import spacy
 from azure.ai.formrecognizer.aio import (
     DocumentAnalysisClient as AsyncDocumentAnalysisClient,
@@ -61,19 +61,19 @@ class AzureOCRStrategy(OCRStrategy):
         self.logger.info(f"📊 Document size: {len(content):,} bytes")
 
 
-        self.logger.debug("📄 Opening PDF with PyMuPDF for initial OCR need analysis")
+        self.logger.debug("📄 Opening PDF with pdfplumber for initial OCR need analysis")
 
         try:
-            with fitz.open(stream=content, filetype="pdf") as temp_doc:
+            with pdfplumber.open(BytesIO(content)) as pdf:
                 # Check if any page needs OCR
                 self.logger.info("🔍 Analyzing OCR requirements per page...")
                 pages_needing_ocr = []
 
-                for page_num, page in enumerate(temp_doc):
-                    self.logger.debug(f"🔍 Checking page {page_num + 1}/{len(temp_doc)} for OCR need")
+                for page_num, page in enumerate(pdf.pages):
+                    self.logger.debug(f"🔍 Checking page {page_num + 1}/{len(pdf.pages)} for OCR need")
 
                     # Log page dimensions
-                    self.logger.debug(f"   📐 Page dimensions: {page.rect.width:.1f} x {page.rect.height:.1f}")
+                    self.logger.debug(f"   📐 Page dimensions: {page.width:.1f} x {page.height:.1f}")
 
                     page_needs_ocr = OCRStrategy.needs_ocr(page, self.logger)
                     if page_needs_ocr:
@@ -1056,87 +1056,87 @@ class AzureOCRStrategy(OCRStrategy):
 
         return overlap_ratio > threshold
 
-    async def _create_searchable_pdf(
-        self, original_content: bytes, output_dir: str = "output/searchable/azure"
-    ) -> bytes:
-        """Create a searchable PDF by overlaying OCR text from Azure results"""
-        self.logger.debug("🔄 Starting searchable PDF creation")
+    # async def _create_searchable_pdf(
+    #     self, original_content: bytes, output_dir: str = "output/searchable/azure"
+    # ) -> bytes:
+    #     """Create a searchable PDF by overlaying OCR text from Azure results"""
+    #     self.logger.debug("🔄 Starting searchable PDF creation")
 
-        # Create output directory if it doesn't exist
-        os.makedirs(output_dir, exist_ok=True)
-        self.logger.debug(f"📁 Using output directory: {output_dir}")
+    #     # Create output directory if it doesn't exist
+    #     os.makedirs(output_dir, exist_ok=True)
+    #     self.logger.debug(f"📁 Using output directory: {output_dir}")
 
-        # Generate unique filename using timestamp
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        output_filename = f"searchable_pdf_{timestamp}.pdf"
-        output_path = os.path.join(output_dir, output_filename)
-        self.logger.debug(f"📄 Output file will be saved as: {output_path}")
+    #     # Generate unique filename using timestamp
+    #     timestamp = time.strftime("%Y%m%d_%H%M%S")
+    #     output_filename = f"searchable_pdf_{timestamp}.pdf"
+    #     output_path = os.path.join(output_dir, output_filename)
+    #     self.logger.debug(f"📄 Output file will be saved as: {output_path}")
 
-        # Open the original PDF from bytes
-        doc = fitz.open(stream=original_content, filetype="pdf")
-        self.logger.debug(f"📄 Opened original PDF with {len(doc)} pages")
+    #     # Open the original PDF from bytes
+    #     doc = fitz.open(stream=original_content, filetype="pdf")
+    #     self.logger.debug(f"📄 Opened original PDF with {len(doc)} pages")
 
-        # Process each page
-        for page_num in range(len(doc)):
-            page = doc[page_num]
+    #     # Process each page
+    #     for page_num in range(len(doc)):
+    #         page = doc[page_num]
 
-            # Get Azure OCR results for this page
-            azure_page = next(
-                (p for p in self.doc.pages if p.page_number == page_num), None
-            )
-            if not azure_page:
-                self.logger.debug(
-                    f"⚠️ No Azure OCR results found for page {page_num + 1}"
-                )
-                continue
+    #         # Get Azure OCR results for this page
+    #         azure_page = next(
+    #             (p for p in self.doc.pages if p.page_number == page_num), None
+    #         )
+    #         if not azure_page:
+    #             self.logger.debug(
+    #                 f"⚠️ No Azure OCR results found for page {page_num + 1}"
+    #             )
+    #             continue
 
-            self.logger.debug(f"🔄 Processing page {page_num + 1}")
-            word_count = 0
+    #         self.logger.debug(f"🔄 Processing page {page_num + 1}")
+    #         word_count = 0
 
-            # Add text overlay for each word
-            for word in azure_page.words:
-                if not word.content.strip():
-                    continue
+    #         # Add text overlay for each word
+    #         for word in azure_page.words:
+    #             if not word.content.strip():
+    #                 continue
 
-                # Get the bounding box
-                if not word.bounding_regions:
-                    continue
+    #             # Get the bounding box
+    #             if not word.bounding_regions:
+    #                 continue
 
-                bbox = word.bounding_regions[0].polygon
+    #             bbox = word.bounding_regions[0].polygon
 
-                # Convert Azure coordinates (0-1) to page coordinates and ensure correct bounds
-                x_coords = [p.x * page.rect.width for p in bbox]
-                y_coords = [p.y * page.rect.height for p in bbox]
-                rect = fitz.Rect(
-                    min(x_coords), min(y_coords), max(x_coords), max(y_coords)
-                )
+    #             # Convert Azure coordinates (0-1) to page coordinates and ensure correct bounds
+    #             x_coords = [p.x * page.rect.width for p in bbox]
+    #             y_coords = [p.y * page.rect.height for p in bbox]
+    #             rect = fitz.Rect(
+    #                 min(x_coords), min(y_coords), max(x_coords), max(y_coords)
+    #             )
 
-                # Add searchable text overlay
-                page.insert_textbox(
-                    rect,  # rectangle to place text
-                    word.content,  # the text to insert
-                    fontname="helv",  # use a standard font
-                    fontsize=10,  # reasonable font size
-                    align=0,  # left alignment
-                    color=(0, 0, 0, 0),  # transparent color
-                    overlay=True,  # overlay on top of existing content
-                )
+    #             # Add searchable text overlay
+    #             page.insert_textbox(
+    #                 rect,  # rectangle to place text
+    #                 word.content,  # the text to insert
+    #                 fontname="helv",  # use a standard font
+    #                 fontsize=10,  # reasonable font size
+    #                 align=0,  # left alignment
+    #                 color=(0, 0, 0, 0),  # transparent color
+    #                 overlay=True,  # overlay on top of existing content
+    #             )
 
-                word_count += 1
+    #             word_count += 1
 
-        # Save the modified PDF to the output file
-        self.logger.info(f"💾 Saving searchable PDF to: {output_path}")
-        doc.save(output_path)
-        doc.close()
-        self.logger.debug("📄 Closed PDF document")
+    #     # Save the modified PDF to the output file
+    #     self.logger.info(f"💾 Saving searchable PDF to: {output_path}")
+    #     doc.save(output_path)
+    #     doc.close()
+    #     self.logger.debug("📄 Closed PDF document")
 
-        # Read the saved file
-        self.logger.debug(f"📖 Reading saved searchable PDF: {output_path}")
-        with open(output_path, "rb") as f:
-            ocr_pdf_content = f.read()
+    #     # Read the saved file
+    #     self.logger.debug(f"📖 Reading saved searchable PDF: {output_path}")
+    #     with open(output_path, "rb") as f:
+    #         ocr_pdf_content = f.read()
 
-        self.logger.info("✅ Searchable PDF creation completed")
-        return ocr_pdf_content
+    #     self.logger.info("✅ Searchable PDF creation completed")
+    #     return ocr_pdf_content
 
     def _get_lines_for_paragraph(
         self,

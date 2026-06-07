@@ -2,8 +2,8 @@
 
 Covers uncovered lines/branches in:
 - AzureOCRStrategy (azure_document_intelligence_processor.py)
-- OpenCVLayoutAnalyzer (opencv_layout_analyzer.py)
-- PyMuPDFOpenCVProcessor (pymupdf_opencv_processor.py)
+- OpenCVLayoutAnalyzer (legacy; skipped — stub exposes types only)
+- PDFPlumberOpenCVProcessor (pdfplumber_opencv_processor.py)
 """
 
 import os
@@ -35,6 +35,7 @@ def _mock_config():
 #   _collect_unclaimed_text_blocks unclaimed heading/text paths
 # ============================================================================
 
+@pytest.mark.skip(reason="OpenCVLayoutAnalyzer not in stub opencv_layout_analyzer; pipeline is opencv_layout_analyzer.")
 class TestOpenCVLayoutAnalyzerAnalyzePage:
     """Tests for OpenCVLayoutAnalyzer.analyze_page covering full classification paths."""
 
@@ -569,6 +570,7 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
 # OpenCVLayoutAnalyzer — analyze_page text classification paths
 # ============================================================================
 
+@pytest.mark.skip(reason="OpenCVLayoutAnalyzer not in stub opencv_layout_analyzer; pipeline is opencv_layout_analyzer.")
 class TestOpenCVLayoutAnalyzerTextClassification:
     """Tests for text region classification inside analyze_page."""
 
@@ -726,108 +728,29 @@ class TestOpenCVLayoutAnalyzerTextClassification:
 
 
 # ============================================================================
-# PyMuPDFOpenCVProcessor — covering _extract_tables_with_pymupdf,
-#   create_blocks branch coverage, load_document
+# PDFPlumberOpenCVProcessor — create_blocks branch coverage, load_document
 # ============================================================================
 
 class TestPyMuPDFOpenCVProcessorExtended:
 
     def _make_processor(self):
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
-            return PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
-
-    def test_extract_tables_with_pymupdf_matches_existing_region(self):
-        """_extract_tables_with_pymupdf matches a table to an existing TABLE region."""
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
-            LayoutRegion, LayoutRegionType, ParsedPageData, PyMuPDFOpenCVProcessor,
-        )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
-
-        # Create a region and page data
-        existing_region = LayoutRegion(type=LayoutRegionType.TABLE, bbox=(50, 50, 300, 200))
-        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[existing_region])
-
-        # Mock doc and page
-        mock_doc = MagicMock()
-        mock_page = MagicMock()
-        mock_doc.__getitem__ = lambda s, i: mock_page
-
-        # Mock table finder
-        mock_table = MagicMock()
-        mock_table.bbox = (50, 50, 300, 200)
-        mock_table.extract.return_value = [["A", "B"], ["1", "2"]]
-        mock_table_finder = MagicMock()
-        mock_table_finder.tables = [mock_table]
-        mock_page.find_tables.return_value = mock_table_finder
-
-        proc._extract_tables_with_pymupdf(mock_doc, [pd])
-
-        # The existing region should have its grid updated
-        assert existing_region.table_grid == [["A", "B"], ["1", "2"]]
-
-    def test_extract_tables_with_pymupdf_new_table(self):
-        """_extract_tables_with_pymupdf adds new TABLE region when no match found."""
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
-            LayoutRegion, LayoutRegionType, ParsedPageData, PyMuPDFOpenCVProcessor,
-        )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
-
-        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[])
-
-        mock_doc = MagicMock()
-        mock_page = MagicMock()
-        mock_doc.__getitem__ = lambda s, i: mock_page
-
-        mock_table = MagicMock()
-        mock_table.bbox = (100, 100, 400, 300)
-        mock_table.extract.return_value = [["X", "Y"]]
-        mock_table_finder = MagicMock()
-        mock_table_finder.tables = [mock_table]
-        mock_page.find_tables.return_value = mock_table_finder
-
-        proc._extract_tables_with_pymupdf(mock_doc, [pd])
-
-        assert len(pd.regions) == 1
-        assert pd.regions[0].type == LayoutRegionType.TABLE
-        assert pd.regions[0].table_grid == [["X", "Y"]]
-
-    def test_extract_tables_find_tables_error(self):
-        """_extract_tables_with_pymupdf handles find_tables error."""
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
-            ParsedPageData, PyMuPDFOpenCVProcessor,
-        )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
-
-        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[])
-
-        mock_doc = MagicMock()
-        mock_page = MagicMock()
-        mock_doc.__getitem__ = lambda s, i: mock_page
-        mock_page.find_tables.side_effect = RuntimeError("no tables")
-
-        proc._extract_tables_with_pymupdf(mock_doc, [pd])
-        assert len(pd.regions) == 0
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+        return PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
     @pytest.mark.asyncio
     async def test_create_blocks_all_region_types(self):
-        """create_blocks handles TABLE, IMAGE, LIST, ORDERED_LIST, HEADING, and TEXT."""
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
-            LayoutRegion, LayoutRegionType, ParsedPageData, PyMuPDFOpenCVProcessor,
+        """create_blocks handles TABLE, IMAGE, LIST (bullet + numbered), and TEXT."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion, LayoutRegionType, ParsedPageData, PDFPlumberOpenCVProcessor,
         )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
         regions = [
             LayoutRegion(type=LayoutRegionType.TABLE, bbox=(0, 0, 100, 100), table_grid=[["A", "B"]]),
             LayoutRegion(type=LayoutRegionType.IMAGE, bbox=(0, 100, 100, 200), image_data=b"img", image_ext="png"),
             LayoutRegion(type=LayoutRegionType.LIST, bbox=(0, 200, 100, 300), text="- A\n- B", list_items=["- A", "- B"]),
-            LayoutRegion(type=LayoutRegionType.ORDERED_LIST, bbox=(0, 300, 100, 400), text="1. A\n2. B", list_items=["1. A", "2. B"]),
-            LayoutRegion(type=LayoutRegionType.HEADING, bbox=(0, 400, 100, 450), text="Title"),
-            LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 450, 100, 500), text="Body text"),
+            LayoutRegion(type=LayoutRegionType.LIST, bbox=(0, 300, 100, 400), text="1. A\n2. B", list_items=["1. A", "2. B"]),
+            LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 400, 100, 500), text="Title and body"),
         ]
         pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=regions)
 
@@ -835,24 +758,23 @@ class TestPyMuPDFOpenCVProcessorExtended:
         mock_response.summary = "Table"
         mock_response.headers = ["A", "B"]
 
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.get_table_summary_n_headers",
+        with patch("app.modules.parsers.pdf.pdfplumber_opencv_processor.get_table_summary_n_headers",
                     new_callable=AsyncMock, return_value=mock_response), \
-             patch("app.modules.parsers.pdf.pymupdf_opencv_processor.get_rows_text",
+             patch("app.modules.parsers.pdf.pdfplumber_opencv_processor.get_rows_text",
                     new_callable=AsyncMock, return_value=(["Row text"], [["A", "B"]])):
             result = await proc.create_blocks([pd])
 
-        # Should have blocks for all types
-        assert len(result.blocks) >= 6  # text, heading, 2 list items, table row, image
-        assert len(result.block_groups) >= 3  # table, list, ordered_list
+        # TABLE row, IMAGE, 4 list items (2 groups), 1 TEXT
+        assert len(result.blocks) >= 7
+        assert len(result.block_groups) >= 3  # table, bullet list, ordered list
 
     @pytest.mark.asyncio
     async def test_create_blocks_no_page_number_filter(self):
         """create_blocks without page_number processes all pages."""
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
-            LayoutRegion, LayoutRegionType, ParsedPageData, PyMuPDFOpenCVProcessor,
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion, LayoutRegionType, ParsedPageData, PDFPlumberOpenCVProcessor,
         )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
         r1 = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 0, 100, 50), text="Page 1")
         r2 = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 0, 100, 50), text="Page 2")
@@ -865,9 +787,8 @@ class TestPyMuPDFOpenCVProcessorExtended:
     @pytest.mark.asyncio
     async def test_load_document_delegates(self):
         """load_document calls parse_document then create_blocks."""
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
         mock_parsed = [MagicMock()]
         mock_blocks = MagicMock()
@@ -882,27 +803,29 @@ class TestPyMuPDFOpenCVProcessorExtended:
     @pytest.mark.asyncio
     async def test_parse_document_with_bytesio(self):
         """parse_document accepts BytesIO input."""
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer") as MockAnalyzer:
-            mock_analyzer_inst = MagicMock()
-            mock_analyzer_inst.analyze_page.return_value = []
-            MockAnalyzer.return_value = mock_analyzer_inst
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
-            mock_doc = MagicMock()
-            mock_doc.__len__ = lambda s: 1
-            mock_page = MagicMock()
-            mock_page.rect.width = 612
-            mock_page.rect.height = 792
-            mock_doc.__getitem__ = lambda s, i: mock_page
-            mock_doc.close = MagicMock()
+        mock_pdf = MagicMock()
+        mock_page = MagicMock()
+        mock_page.width = 612
+        mock_page.height = 792
+        mock_pdf.pages = [mock_page]
+        mock_cm = MagicMock()
+        mock_cm.__enter__.return_value = mock_pdf
+        mock_cm.__exit__.return_value = None
 
-            with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.fitz") as mock_fitz:
-                mock_fitz.open.return_value = mock_doc
-                result = await proc.parse_document("test.pdf", BytesIO(b"fake-pdf-bytes"))
+        with patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.pdfplumber.open",
+            return_value=mock_cm,
+        ), patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.extract_layout_regions",
+            return_value=[],
+        ):
+            result = await proc.parse_document("test.pdf", BytesIO(b"fake-pdf-bytes"))
 
-            assert len(result) == 1
+        assert len(result) == 1
 
 
 
@@ -949,18 +872,22 @@ class TestAzureOCRStrategyExtended:
         strategy = self._make_strategy()
 
         mock_page = MagicMock()
-        mock_page.rect.width = 612
-        mock_page.rect.height = 792
+        mock_page.width = 612
+        mock_page.height = 792
 
-        mock_temp_doc = MagicMock()
-        mock_temp_doc.__enter__ = lambda s: s
-        mock_temp_doc.__exit__ = MagicMock(return_value=False)
-        mock_temp_doc.__iter__ = lambda s: iter([mock_page])
-        mock_temp_doc.__len__ = lambda s: 1
+        mock_pdf = MagicMock()
+        mock_pdf.pages = [mock_page]
 
-        with patch("app.modules.parsers.pdf.azure_document_intelligence_processor.fitz") as mock_fitz, \
-             patch("app.modules.parsers.pdf.azure_document_intelligence_processor.OCRStrategy") as MockOCR:
-            mock_fitz.open.return_value = mock_temp_doc
+        cm = MagicMock()
+        cm.__enter__.return_value = mock_pdf
+        cm.__exit__.return_value = None
+
+        with patch(
+            "app.modules.parsers.pdf.azure_document_intelligence_processor.pdfplumber.open",
+            return_value=cm,
+        ), patch(
+            "app.modules.parsers.pdf.azure_document_intelligence_processor.OCRStrategy",
+        ) as MockOCR:
             MockOCR.needs_ocr = MagicMock(return_value=True)
 
             strategy._process_with_azure = AsyncMock()
@@ -976,18 +903,22 @@ class TestAzureOCRStrategyExtended:
         strategy = self._make_strategy()
 
         mock_page = MagicMock()
-        mock_page.rect.width = 612
-        mock_page.rect.height = 792
+        mock_page.width = 612
+        mock_page.height = 792
 
-        mock_temp_doc = MagicMock()
-        mock_temp_doc.__enter__ = lambda s: s
-        mock_temp_doc.__exit__ = MagicMock(return_value=False)
-        mock_temp_doc.__iter__ = lambda s: iter([mock_page])
-        mock_temp_doc.__len__ = lambda s: 1
+        mock_pdf = MagicMock()
+        mock_pdf.pages = [mock_page]
 
-        with patch("app.modules.parsers.pdf.azure_document_intelligence_processor.fitz") as mock_fitz, \
-             patch("app.modules.parsers.pdf.azure_document_intelligence_processor.OCRStrategy") as MockOCR:
-            mock_fitz.open.return_value = mock_temp_doc
+        cm = MagicMock()
+        cm.__enter__.return_value = mock_pdf
+        cm.__exit__.return_value = None
+
+        with patch(
+            "app.modules.parsers.pdf.azure_document_intelligence_processor.pdfplumber.open",
+            return_value=cm,
+        ), patch(
+            "app.modules.parsers.pdf.azure_document_intelligence_processor.OCRStrategy",
+        ) as MockOCR:
             MockOCR.needs_ocr = MagicMock(return_value=False)
 
             with pytest.raises(Exception, match="Azure OCR is not needed"):
@@ -998,10 +929,10 @@ class TestAzureOCRStrategyExtended:
         """load_document defaults to OCR on analysis error."""
         strategy = self._make_strategy()
 
-        with patch("app.modules.parsers.pdf.azure_document_intelligence_processor.fitz") as mock_fitz, \
-             patch("app.modules.parsers.pdf.azure_document_intelligence_processor.OCRStrategy") as MockOCR:
-            mock_fitz.open.side_effect = RuntimeError("Cannot open PDF")
-
+        with patch(
+            "app.modules.parsers.pdf.azure_document_intelligence_processor.pdfplumber.open",
+            side_effect=RuntimeError("Cannot open PDF"),
+        ):
             strategy._process_with_azure = AsyncMock()
             strategy._preprocess_document = AsyncMock(return_value={"pages": []})
 
@@ -1533,6 +1464,7 @@ class TestAzureOCRStrategyExtended:
         bbox2 = [{"x": 1, "y": 0}, {"x": 2, "y": 0}, {"x": 2, "y": 1}, {"x": 1, "y": 1}]
         assert strategy._check_bbox_overlap(bbox1, bbox2) is False
 
+    @pytest.mark.skip(reason="_create_searchable_pdf is not present (commented out in Azure OCR processor)")
     @pytest.mark.asyncio
     async def test_create_searchable_pdf(self):
         """_create_searchable_pdf creates a searchable PDF from Azure results."""
@@ -1575,6 +1507,7 @@ class TestAzureOCRStrategyExtended:
 
         mock_pdf_page.insert_textbox.assert_called()
 
+    @pytest.mark.skip(reason="_create_searchable_pdf is not present (commented out in Azure OCR processor)")
     @pytest.mark.asyncio
     async def test_create_searchable_pdf_no_azure_page(self):
         """_create_searchable_pdf handles pages without Azure results."""
@@ -1599,6 +1532,7 @@ class TestAzureOCRStrategyExtended:
 
             result = await strategy._create_searchable_pdf(b"content")
 
+    @pytest.mark.skip(reason="_create_searchable_pdf is not present (commented out in Azure OCR processor)")
     @pytest.mark.asyncio
     async def test_create_searchable_pdf_empty_word(self):
         """_create_searchable_pdf skips empty words."""
@@ -1633,6 +1567,7 @@ class TestAzureOCRStrategyExtended:
 
         mock_pdf_page.insert_textbox.assert_not_called()
 
+    @pytest.mark.skip(reason="_create_searchable_pdf is not present (commented out in Azure OCR processor)")
     @pytest.mark.asyncio
     async def test_create_searchable_pdf_word_no_bounding_regions(self):
         """_create_searchable_pdf skips words without bounding regions."""
@@ -1776,41 +1711,3 @@ class TestAzureOCRStrategyExtended:
         b1 = {"type": 0, "lines": [{"spans": [{"text": text}]}]}
         b2 = {"type": 0, "lines": [{"spans": [{"text": "short"}]}]}
         assert strategy._should_merge_blocks(b1, b2) is False
-
-
-# ============================================================================
-# Additional targeted tests for remaining uncovered lines
-# ============================================================================
-
-class TestPyMuPDFOpenCVProcessorExtraTables:
-    """Extra tests for _extract_tables_with_pymupdf non-TABLE region skip (line 127)."""
-
-    def test_extract_tables_skips_non_table_regions(self):
-        """Non-TABLE regions are skipped when matching tables."""
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
-            LayoutRegion, LayoutRegionType, ParsedPageData, PyMuPDFOpenCVProcessor,
-        )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
-
-        # Regions: a TEXT region at the same location as the table
-        text_region = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(50, 50, 300, 200), text="Some text")
-        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[text_region])
-
-        mock_doc = MagicMock()
-        mock_page = MagicMock()
-        mock_doc.__getitem__ = lambda s, i: mock_page
-
-        mock_table = MagicMock()
-        mock_table.bbox = (50, 50, 300, 200)
-        mock_table.extract.return_value = [["A", "B"]]
-        mock_table_finder = MagicMock()
-        mock_table_finder.tables = [mock_table]
-        mock_page.find_tables.return_value = mock_table_finder
-
-        proc._extract_tables_with_pymupdf(mock_doc, [pd])
-
-        # Since there's no TABLE region, a new one should be added
-        table_regions = [r for r in pd.regions if r.type == LayoutRegionType.TABLE]
-        assert len(table_regions) == 1
-

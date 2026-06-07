@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from app.models.blocks import BlockType
 
 # ---------------------------------------------------------------------------
-# Helpers: collapse, MIME, attachment extension, estimate tokens
+# Helpers: collapse, MIME, attachment extension
 # ---------------------------------------------------------------------------
 
 
@@ -31,26 +31,6 @@ class TestCollapseSingleTextUserContent:
 
         parts = [{"type": "text", "text": "a"}, {"type": "image_url", "image_url": {}}]
         assert _collapse_single_text_user_content(parts) is parts
-
-
-class TestEstimateRecordTokens:
-    def test_counts_uri_string_chars(self):
-        from app.api.routes.chatbot import _estimate_record_tokens
-
-        rec = {"block_containers": {"blocks": [{"data": {"uri": "abcd"}}]}}
-        assert _estimate_record_tokens(rec) >= 1
-
-    def test_string_data_chars(self):
-        from app.api.routes.chatbot import _estimate_record_tokens
-
-        rec = {"block_containers": {"blocks": [{"data": "x" * 40}]}}
-        assert _estimate_record_tokens(rec) == 10
-
-    def test_non_dict_data(self):
-        from app.api.routes.chatbot import _estimate_record_tokens
-
-        rec = {"block_containers": {"blocks": [{"data": 12345}]}}
-        assert _estimate_record_tokens(rec) == 1
 
 
 class TestAttachmentMimeHelpers:
@@ -99,23 +79,21 @@ def test_pdf_has_any_ocr_page_mocked_doc(needs_ocr_per_page, len_pages, expect):
     """ocr_count / total >= 0.5 when all scanned pages."""
     from app.api.routes.chatbot import _pdf_has_any_ocr_page
 
-    mock_doc = MagicMock()
-    mock_doc.__len__ = MagicMock(return_value=len_pages)
-    mock_doc.__iter__ = MagicMock(
-        return_value=iter([MagicMock() for _ in range(len_pages)]),
-    )
+    mock_pages = [MagicMock() for _ in range(len_pages)]
+    mock_pdf = MagicMock()
+    mock_pdf.pages = mock_pages
 
-    class FakeOpen:
+    class FakePDFOpen:
         def __init__(self, *args, **kwargs) -> None:
             pass
 
         def __enter__(self):
-            return mock_doc
+            return mock_pdf
 
         def __exit__(self, *_):
             pass
 
-    with patch("app.api.routes.chatbot.fitz.open", FakeOpen):
+    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen):
         with patch(
             "app.api.routes.chatbot.OCRStrategy.needs_ocr",
             return_value=needs_ocr_per_page,
@@ -126,70 +104,72 @@ def test_pdf_has_any_ocr_page_mocked_doc(needs_ocr_per_page, len_pages, expect):
 def test_pdf_has_any_empty_doc():
     from app.api.routes.chatbot import _pdf_has_any_ocr_page
 
-    mock_doc = MagicMock()
-    mock_doc.__len__ = MagicMock(return_value=0)
+    mock_pdf = MagicMock()
+    mock_pdf.pages = []
 
-    class FakeOpen:
+    class FakePDFOpen:
         def __init__(self, *args, **kwargs) -> None:
             pass
 
         def __enter__(self):
-            return mock_doc
+            return mock_pdf
 
         def __exit__(self, *_):
             pass
 
-    with patch("app.api.routes.chatbot.fitz.open", FakeOpen):
+    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen):
         assert _pdf_has_any_ocr_page(b"%PDF-empty") is False
 
 
 def test_pdf_page_count_fixture():
     from app.api.routes.chatbot import _pdf_page_count
 
-    mock_doc = MagicMock()
-    mock_doc.__len__ = MagicMock(return_value=5)
+    mock_pdf = MagicMock()
+    mock_pdf.pages = [MagicMock() for _ in range(5)]
 
-    class FakeOpen:
+    class FakePDFOpen:
         def __init__(self, *args, **kwargs) -> None:
             pass
 
         def __enter__(self):
-            return mock_doc
+            return mock_pdf
 
         def __exit__(self, *_):
             pass
 
-    with patch("app.api.routes.chatbot.fitz.open", FakeOpen):
+    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen):
         assert _pdf_page_count(b"%PDF-x") == 5
 
 
 def test_build_pdf_image_blocks_one_page():
     from app.api.routes.chatbot import _build_pdf_image_blocks
 
-    mock_pix = MagicMock()
-    mock_pix.tobytes.return_value = b"fakepng"
+    mock_orig = MagicMock()
+    mock_to_img = MagicMock()
+    mock_to_img.original = mock_orig
 
     mock_page = MagicMock()
-    mock_page.get_pixmap.return_value = mock_pix
+    mock_page.to_image.return_value = mock_to_img
 
-    mock_doc = MagicMock()
-    mock_doc.__iter__ = MagicMock(return_value=iter([mock_page]))
+    mock_pdf = MagicMock()
+    mock_pdf.pages = [mock_page]
 
-    class FakeOpen:
+    class FakePDFOpen:
         def __init__(self, *args, **kwargs) -> None:
             pass
 
         def __enter__(self):
-            return mock_doc
+            return mock_pdf
 
         def __exit__(self, *_):
             pass
 
-    with patch("app.api.routes.chatbot.fitz.open", FakeOpen):
-        with patch("app.api.routes.chatbot.fitz.Matrix"):
-            bc = _build_pdf_image_blocks(b"%PDF-sample")
-            assert len(bc.blocks) == 1
-            assert bc.blocks[0].type == BlockType.IMAGE
+    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen):
+        bc = _build_pdf_image_blocks(b"%PDF-sample")
+        assert len(bc.blocks) == 1
+        assert bc.blocks[0].type == BlockType.IMAGE
+        mock_page.to_image.assert_called_once_with(resolution=144)
+        mock_orig.save.assert_called_once()
 
 
 @pytest.mark.parametrize("append_citations", [True, False])
@@ -1630,7 +1610,7 @@ async def test_upload_pdf_regular_and_scan_cap():
         with patch("app.api.routes.chatbot.GraphDBTransformer", return_value=MagicMock()):
 
 
-            with patch("app.api.routes.chatbot.PyMuPDFOpenCVProcessor", return_value=pym):
+            with patch("app.api.routes.chatbot.PDFPlumberOpenCVProcessor", return_value=pym):
 
 
                 with patch("app.api.routes.chatbot._pdf_has_any_ocr_page", return_value=False):
@@ -1818,7 +1798,7 @@ async def test_upload_pdf_regular_and_scan_cap():
 
 
 
-            with patch("app.api.routes.chatbot.PyMuPDFOpenCVProcessor", return_value=pym):
+            with patch("app.api.routes.chatbot.PDFPlumberOpenCVProcessor", return_value=pym):
 
 
 
@@ -2123,122 +2103,6 @@ async def test_delete_chat_attachment_early_and_full():
     gp.delete_nodes_and_edges.assert_awaited()
 
     gp.delete_nodes.assert_awaited()
-
-
-def test_collect_effective_attachments_filters_entries():
-    from app.api.routes.chatbot import ChatQuery, _collect_effective_attachments
-
-    q = ChatQuery(
-        query="hi",
-        attachments=[{"oops": True}, {"virtualRecordId": " v1 ", "mimeType": "png"}],
-        previousConversations=[
-            {
-                "role": "bot_response",
-                "attachments": [{"virtualRecordId": "ignored"}],
-            },
-
-            {
-
-
-                "role": "user_query",
-
-
-                "attachments": [{"x": True}, {"recordId": "r2"}],
-
-
-            },
-
-
-        ],
-    )
-
-
-
-    merged = _collect_effective_attachments(q)
-
-
-    def norm_id(att: dict) -> str:
-
-
-        return str(att.get("recordId") or att.get("virtualRecordId") or "").strip()
-
-
-    assert {norm_id(x) for x in merged} == {"v1", "r2"}
-
-
-
-def test_estimate_tokens_non_string_uri_and_non_string_block_data():
-
-
-
-
-
-
-    from app.api.routes.chatbot import _estimate_record_tokens
-
-
-
-
-
-
-
-
-
-    tiny = {
-
-
-        "block_containers": {
-
-
-            "blocks": [
-
-
-                {"data": {"uri": 404}},
-
-
-
-
-
-                {"data": [None, False]},
-
-
-
-
-
-            ]
-
-
-
-
-        }
-
-
-
-    }
-
-
-
-
-
-
-
-    tokens = _estimate_record_tokens(tiny)
-
-
-    assert tokens >= 3
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -2756,7 +2620,7 @@ async def test_upload_pdf_ocr_success_small_doc():
         with patch("app.api.routes.chatbot.GraphDBTransformer", return_value=MagicMock()):
 
 
-            with patch("app.api.routes.chatbot.PyMuPDFOpenCVProcessor", return_value=pym):
+            with patch("app.api.routes.chatbot.PDFPlumberOpenCVProcessor", return_value=pym):
 
 
                 with patch("app.api.routes.chatbot._pdf_has_any_ocr_page", return_value=True):
@@ -2917,7 +2781,7 @@ async def test_upload_pdf_parse_generic_failure():
         with patch("app.api.routes.chatbot.GraphDBTransformer", return_value=MagicMock()):
 
 
-            with patch("app.api.routes.chatbot.PyMuPDFOpenCVProcessor", return_value=pym):
+            with patch("app.api.routes.chatbot.PDFPlumberOpenCVProcessor", return_value=pym):
 
 
                 with patch("app.api.routes.chatbot._pdf_has_any_ocr_page", return_value=False):

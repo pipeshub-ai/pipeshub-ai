@@ -183,11 +183,12 @@ class TestPreprocessDocument:
 
         # Simulate a document with 1 page
         mock_page = MagicMock()
-        mock_page.number = 0
-        strategy.doc = [mock_page]
+        strategy.doc = MagicMock()
+        strategy.doc.pages = [mock_page]
 
         call_count = 0
-        async def mock_process_page(page):
+
+        async def mock_process_page(page, page_number=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -207,10 +208,13 @@ class TestPreprocessDocument:
         strategy = VLMOCRStrategy(logger, config)
 
         mock_page = MagicMock()
-        mock_page.number = 0
-        strategy.doc = [mock_page]
+        strategy.doc = MagicMock()
+        strategy.doc.pages = [mock_page]
 
-        with patch.object(strategy, "process_page", side_effect=Exception("Persistent failure")):
+        async def mock_process_page(page, page_number=None):
+            raise Exception("Persistent failure")
+
+        with patch.object(strategy, "process_page", side_effect=mock_process_page):
             with pytest.raises(Exception, match="Persistent failure"):
                 await strategy._preprocess_document()
 
@@ -227,7 +231,12 @@ class TestLoadDocument:
         config = MagicMock()
         strategy = VLMOCRStrategy(logger, config)
 
-        with patch("app.modules.parsers.pdf.vlm_ocr_strategy.fitz") as mock_fitz:
-            mock_fitz.open.side_effect = Exception("PDF parse error")
+        def _boom(_stream):
+            raise Exception("PDF parse error")
+
+        with patch(
+            "app.modules.parsers.pdf.vlm_ocr_strategy.pdfplumber.open",
+            side_effect=_boom,
+        ):
             with pytest.raises(Exception, match="PDF parse error"):
                 await strategy.load_document(b"fake_pdf_content")

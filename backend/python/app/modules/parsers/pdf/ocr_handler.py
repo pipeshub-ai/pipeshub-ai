@@ -1,8 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict
 
-import fitz
-
 from app.config.constants.ai_models import OCRProvider
 
 
@@ -24,63 +22,35 @@ class OCRStrategy(ABC):
 
 
     @staticmethod
-    def needs_ocr(page,logger) -> bool:
+    def needs_ocr(page, logger) -> bool:
         """Determine if a page needs OCR processing"""
         try:
+            text = (page.extract_text() or "").strip()
+            words = page.extract_words()
+            images = page.images
+            page_area = page.width * page.height
 
-            # Get page metrics
-            text = page.get_text().strip()
-            words = page.get_text("words")
-            images = page.get_images()
-            page_area = page.rect.width * page.rect.height
-
-            # Log detailed image information
-            significant_images = 0
-            MIN_IMAGE_WIDTH = 500  # Minimum width in pixels for a significant image
-            MIN_IMAGE_HEIGHT = 500  # Minimum height in pixels for a significant image
-            RGB = 3
+            MIN_IMAGE_WIDTH = 100
+            MIN_IMAGE_HEIGHT = 100
             LOW_DENSITY_THRESHOLD = 0.01
             MIN_TEXT_LENGTH = 100
             MIN_SIGNIFICANT_IMAGES = 2
-            for img_index, img in enumerate(images):
-                # img tuple contains: (xref, smask, width, height, bpc, colorspace, ...)
-                width, height = img[2], img[3]
 
-                # Consider an image significant if it's larger than our minimum dimensions
-                if width > MIN_IMAGE_WIDTH and height > MIN_IMAGE_HEIGHT:
-                    significant_images += 1
+            significant_images = sum(
+                1 for img in images
+                if (img.get("width") or 0) > MIN_IMAGE_WIDTH and (img.get("height") or 0) > MIN_IMAGE_HEIGHT
+            )
 
-            # Multiple criteria for OCR need
-            has_minimal_text = len(text) < MIN_TEXT_LENGTH  # Less than 100 characters
-            has_significant_images = (
-                significant_images > MIN_SIGNIFICANT_IMAGES
-            )  # Contains substantial images
+            has_minimal_text = len(text) < MIN_TEXT_LENGTH
+            has_significant_images = significant_images > MIN_SIGNIFICANT_IMAGES
             text_density = (
-                sum((w[2] - w[0]) * (w[3] - w[1]) for w in words) / page_area
-                if words
+                sum((w["x1"] - w["x0"]) * (w["bottom"] - w["top"]) for w in words) / page_area
+                if words and page_area > 0
                 else 0
             )
             low_density = text_density < LOW_DENSITY_THRESHOLD
 
-            # Extract and save images
-            for img_index, img in enumerate(images):
-                xref = img[0]
-                try:
-                    # Create pixmap from image
-                    pix = fitz.Pixmap(page.parent, xref)
-                    if pix.n - pix.alpha > RGB:  # CMYK: convert to RGB
-                        pix = fitz.Pixmap(fitz.csRGB, pix)
-
-                    # Optionally save the image:
-                    # pix.save(f"image_{img_index + 1}_{uuid4()}.png")
-
-                    pix = None  # Free memory
-                except Exception as e:
-                    logger.warning(f"❌ Error extracting image {img_index + 1}: {str(e)}")
-                    pass
-
-            needs_ocr = (has_minimal_text and has_significant_images) or low_density
-            return needs_ocr
+            return (has_minimal_text and has_significant_images) or low_density
 
         except Exception as e:
             logger.warning(f"❌ Error in needs_ocr function: {str(e)}")

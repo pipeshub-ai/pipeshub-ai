@@ -86,7 +86,14 @@ def _ensure_module(name: str) -> None:
         return
     try:
         __import__(name)
-    except (ImportError, ModuleNotFoundError, RuntimeError, OSError, AttributeError):
+    except (
+        ImportError,
+        ModuleNotFoundError,
+        RuntimeError,
+        OSError,
+        AttributeError,
+        TypeError,
+    ):
         # Remove any partially-loaded submodules to avoid stale state
         to_remove = [k for k in sys.modules if k == name or k.startswith(name + ".")]
         for k in to_remove:
@@ -118,13 +125,8 @@ _OPTIONAL_PACKAGES = [
     "google.cloud.storage",
     "azure.storage.fileshare",
     "sentence_transformers",
-    "langchain_core",
-    "langchain_anthropic",
-    "langchain_openai",
-    "langchain_google_genai",
-    "langchain_aws",
-    "langchain_mistralai",
-    "langchain_qdrant",
+    # LangChain*: declared in pyproject — must not be MagicMock stubs or
+    # isinstance(..., ChatOpenAI) and PydanticOutputParser break in unit tests.
     "litellm",
     "qdrant_client",
     "fastembed",
@@ -133,7 +135,6 @@ _OPTIONAL_PACKAGES = [
     "docling_core",
     "cv2",
     "spacy",
-    "langchain_experimental",
     "openpyxl",
     "celery",
     "aiokafka",
@@ -144,7 +145,6 @@ _OPTIONAL_PACKAGES = [
     "msgraph",
     "msgraph_core",
     "slack_sdk",
-    "langchain",
 ]
 
 for _pkg in _OPTIONAL_PACKAGES:

@@ -10,11 +10,14 @@ from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from jinja2 import Template
-import fitz
+from io import BytesIO
+
+import pdfplumber
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes, config_node_constants
@@ -23,7 +26,6 @@ from app.containers.query import QueryAppContainer
 from app.events.processor import convert_record_dict_to_record
 from app.models.blocks import Block, BlockType, BlocksContainer, CitationMetadata, DataFormat
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
-from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
 from app.modules.qna.prompt_templates import (
     qna_prompt_with_retrieval_tool,
     qna_prompt_instructions_2,
@@ -183,20 +185,21 @@ def create_internal_search_tool(
 
 
 def _pdf_has_any_ocr_page(file_content: bytes) -> bool:
-    with fitz.open(stream=file_content, filetype="pdf") as temp_doc:
-        total = len(temp_doc)
+    with pdfplumber.open(BytesIO(file_content)) as pdf:
+        total = len(pdf.pages)
         if total == 0:
             return False
-        ocr_count = sum(1 for page in temp_doc if OCRStrategy.needs_ocr(page, logger))
+        ocr_count = sum(1 for page in pdf.pages if OCRStrategy.needs_ocr(page, logger))
     return ocr_count / total >= 0.5
 
 
 def _build_pdf_image_blocks(file_content: bytes) -> BlocksContainer:
     blocks: list[Block] = []
-    with fitz.open(stream=file_content, filetype="pdf") as pdf_doc:
-        for idx, page in enumerate(pdf_doc):
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-            png_bytes = pix.tobytes("png")
+    with pdfplumber.open(BytesIO(file_content)) as pdf:
+        for idx, page in enumerate(pdf.pages):
+            buf = BytesIO()
+            page.to_image(resolution=144).original.save(buf, format="PNG")
+            png_bytes = buf.getvalue()
             data_uri = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('utf-8')}"
             blocks.append(
                 Block(
@@ -211,8 +214,8 @@ def _build_pdf_image_blocks(file_content: bytes) -> BlocksContainer:
 
 
 def _pdf_page_count(file_content: bytes) -> int:
-    with fitz.open(stream=file_content, filetype="pdf") as pdf_doc:
-        return len(pdf_doc)
+    with pdfplumber.open(BytesIO(file_content)) as pdf:
+        return len(pdf.pages)
 
 
 def _build_image_blocks(file_content: bytes, mime_type: str) -> BlocksContainer:
@@ -1125,44 +1128,17 @@ def _attachment_extension(file_name: str, mime_type: str) -> str:
         return "png"
     return "bin"
 
-def _collect_effective_attachments(query_info: ChatQuery) -> list[dict[str, Any]]:
-    merged: dict[str, dict[str, Any]] = {}
-
-    for att in query_info.attachments or []:
-        if not isinstance(att, dict):
-            continue
-        key = str(att.get("recordId") or att.get("virtualRecordId") or "").strip()
-        if key:
-            merged[key] = att
-
-    for conv in query_info.previousConversations or []:
-        if conv.get("role") != "user_query":
-            continue
-        for att in conv.get("attachments") or []:
-            if not isinstance(att, dict):
-                continue
-            key = str(att.get("recordId") or att.get("virtualRecordId") or "").strip()
-            if key and key not in merged:
-                merged[key] = att
-
-    return list(merged.values())
 
 
-def _estimate_record_tokens(record: dict[str, Any]) -> int:
-    block_containers = record.get("block_containers", {}) if isinstance(record, dict) else {}
-    blocks = block_containers.get("blocks", []) if isinstance(block_containers, dict) else []
-    char_count = 0
-    for block in blocks:
-        data = block.get("data") if isinstance(block, dict) else None
-        if isinstance(data, dict):
-            if isinstance(data.get("uri"), str):
-                char_count += len(data.get("uri", ""))
-        elif isinstance(data, str):
-            char_count += len(data)
-        elif data is not None:
-            char_count += len(str(data))
-    # Heuristic fallback (~4 chars/token)
-    return max(1, char_count // 4) if char_count > 0 else 1
+
+
+
+
+class _AttachmentSinkNoopVectorStore:
+    """Vector store shim for attachment upload sink-only pipeline (skipped by SinkOrchestrator)."""
+
+    async def apply(self, ctx: TransformContext) -> bool:
+        return True
 
 
 @router.post("/chat/attachments/upload", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
@@ -1219,7 +1195,7 @@ async def upload_chat_attachments(
     service_logger = container.logger()
     graphdb = GraphDBTransformer(graph_provider=graph_provider, logger=service_logger)
     blob_storage = BlobStorage(logger=service_logger, config_service=config_service, graph_provider=graph_provider)
-    pdf_processor = PyMuPDFOpenCVProcessor(logger=logger, config=config_service)
+    pdf_processor = PDFPlumberOpenCVProcessor(logger=logger, config=config_service)
 
     for item in payload.attachments:
         if not _is_supported_attachment_mime(item.mimeType):
@@ -1324,7 +1300,7 @@ async def upload_chat_attachments(
                 "mimeType": item.mimeType,
                 "extension": extension,
                 "virtualRecordId": record_doc.get("virtualRecordId", virtual_record_id),
-                "ocrMode": "image_direct" if needs_ocr else "pymupdf",
+                "ocrMode": "image_direct" if needs_ocr else "pdfplumber",
             }
         )
 
@@ -1358,14 +1334,10 @@ async def upload_chat_attachments(
         ]
         await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
 
-    class _NoopVectorStore:
-        async def apply(self, ctx: TransformContext) -> bool:
-            return True
-
     sink_orchestrator = SinkOrchestrator(
         graphdb=graphdb,
         blob_storage=blob_storage,
-        vector_store=_NoopVectorStore(),
+        vector_store=_AttachmentSinkNoopVectorStore(),
         graph_provider=graph_provider,
         logger=service_logger,
     )

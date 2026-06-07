@@ -155,13 +155,18 @@ class TestRenderPageToBase64:
         strategy = VLMOCRStrategy(logger, config)
 
         mock_page = MagicMock()
-        mock_pix = MagicMock()
-        mock_pix.tobytes.return_value = b"\x89PNG\r\nfake"
-        mock_page.get_pixmap.return_value = mock_pix
+        mock_img = MagicMock()
+        mock_orig = MagicMock()
+        mock_to_image = MagicMock()
+        mock_to_image.original = mock_orig
+        mock_page.to_image.return_value = mock_to_image
 
-        with patch("app.modules.parsers.pdf.vlm_ocr_strategy.fitz") as mock_fitz:
-            mock_fitz.Matrix.return_value = MagicMock()
-            result = strategy._render_page_to_base64(mock_page)
+        def _fake_save(buf, format="PNG"):
+            buf.write(b"\x89PNG\r\nfake")
+
+        mock_orig.save.side_effect = _fake_save
+
+        result = strategy._render_page_to_base64(mock_page)
 
         assert result.startswith("data:image/png;base64,")
         # Verify it contains valid base64
@@ -178,12 +183,14 @@ class TestRenderPageToBase64:
         strategy = VLMOCRStrategy(logger, config)
 
         mock_page = MagicMock()
-        mock_page.get_pixmap.side_effect = RuntimeError("Render failed")
+        mock_orig = MagicMock()
+        mock_orig.save.side_effect = RuntimeError("Render failed")
+        mock_to_image = MagicMock()
+        mock_to_image.original = mock_orig
+        mock_page.to_image.return_value = mock_to_image
 
-        with patch("app.modules.parsers.pdf.vlm_ocr_strategy.fitz") as mock_fitz:
-            mock_fitz.Matrix.return_value = MagicMock()
-            with pytest.raises(RuntimeError, match="Render failed"):
-                strategy._render_page_to_base64(mock_page)
+        with pytest.raises(RuntimeError, match="Render failed"):
+            strategy._render_page_to_base64(mock_page)
 
 
 # ============================================================================
@@ -202,9 +209,9 @@ class TestProcessPage:
         strategy = VLMOCRStrategy(logger, config)
 
         mock_page = MagicMock()
-        mock_page.number = 2  # 0-indexed, so page_number = 3
-        mock_page.rect.width = 612
-        mock_page.rect.height = 792
+        mock_page.page_number = 3
+        mock_page.width = 612
+        mock_page.height = 792
 
         with patch.object(
             strategy,
@@ -230,8 +237,8 @@ class TestProcessPage:
         config = MagicMock()
         strategy = VLMOCRStrategy(logger, config)
 
-        mock_page = MagicMock()
-        mock_page.number = 0
+        mock_page = MagicMock(spec=["page_number", "width", "height"])
+        mock_page.page_number = 1
 
         with patch.object(
             strategy,
@@ -248,8 +255,8 @@ class TestProcessPage:
         config = MagicMock()
         strategy = VLMOCRStrategy(logger, config)
 
-        mock_page = MagicMock()
-        mock_page.number = 0
+        mock_page = MagicMock(spec=["page_number", "width", "height"])
+        mock_page.page_number = 1
 
         with patch.object(
             strategy,
@@ -356,17 +363,16 @@ class TestPreprocessDocumentCancellation:
         strategy = VLMOCRStrategy(logger, config)
 
         mock_page1 = MagicMock()
-        mock_page1.number = 0
         mock_page2 = MagicMock()
-        mock_page2.number = 1
-        strategy.doc = [mock_page1, mock_page2]
+        strategy.doc = MagicMock()
+        strategy.doc.pages = [mock_page1, mock_page2]
 
         call_count = 0
 
-        async def failing_process(page):
+        async def failing_process(page, page_number=None):
             nonlocal call_count
             call_count += 1
-            if page.number == 0:
+            if page_number == 1:
                 raise Exception("Page 1 always fails")
             # Page 2 would succeed but may be cancelled
             await asyncio.sleep(10)
@@ -475,7 +481,7 @@ class TestLoadDocumentSuccess:
         strategy = VLMOCRStrategy(logger, config)
 
         mock_doc = MagicMock()
-        mock_doc.__len__ = lambda s: 2
+        mock_doc.pages = [MagicMock(), MagicMock()]
 
         mock_preprocess_result = {
             "pages": [
@@ -486,9 +492,10 @@ class TestLoadDocumentSuccess:
             "total_pages": 2,
         }
 
-        with patch("app.modules.parsers.pdf.vlm_ocr_strategy.fitz") as mock_fitz:
-            mock_fitz.open.return_value = mock_doc
-
+        with patch(
+            "app.modules.parsers.pdf.vlm_ocr_strategy.pdfplumber.open",
+            return_value=mock_doc,
+        ):
             with patch.object(
                 strategy,
                 "_get_multimodal_llm",
@@ -502,7 +509,7 @@ class TestLoadDocumentSuccess:
             ) as mock_preprocess:
                 await strategy.load_document(b"fake pdf content")
 
-        assert strategy.doc is mock_doc
+        mock_doc.close.assert_called_once()
         assert strategy.llm is not None
         assert strategy.document_analysis_result is mock_preprocess_result
         mock_get_llm.assert_called_once()
@@ -525,13 +532,12 @@ class TestPreprocessDocumentSuccess:
         strategy = VLMOCRStrategy(logger, config)
 
         mock_page1 = MagicMock()
-        mock_page1.number = 0
         mock_page2 = MagicMock()
-        mock_page2.number = 1
-        strategy.doc = [mock_page1, mock_page2]
+        strategy.doc = MagicMock()
+        strategy.doc.pages = [mock_page1, mock_page2]
 
-        async def mock_process(page):
-            num = page.number + 1
+        async def mock_process(page, page_number=None):
+            num = page_number or 1
             return {
                 "page_number": num,
                 "markdown": f"# Page {num}",

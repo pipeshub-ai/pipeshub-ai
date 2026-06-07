@@ -63,7 +63,6 @@ if api_key and workspace:
     try:
         from opik import configure
         from opik.integrations.langchain import OpikTracer
-        configure(use_local=False, api_key=api_key, workspace=workspace)
         opik_tracer = OpikTracer()
     except Exception as e:
         logger.warning(f"Error configuring Opik: {e}")

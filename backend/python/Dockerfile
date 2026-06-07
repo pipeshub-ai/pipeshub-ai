@@ -54,7 +54,7 @@ ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 RUN apt-get update && apt-get install -y \
     librocksdb-dev libgflags-dev libsnappy-dev zlib1g-dev \
     libbz2-dev liblz4-dev libzstd-dev libssl-dev ca-certificates libspatialindex-dev libpq5 \
-    ffmpeg \
+    ffmpeg poppler-utils \
  && rm -rf /var/lib/apt/lists/*
  # Ensure executable permission
 RUN chmod +x /app/indexing_main
