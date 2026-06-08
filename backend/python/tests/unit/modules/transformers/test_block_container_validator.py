@@ -158,13 +158,6 @@ def _assert_raises_with_codes(container: BlocksContainer, *codes: str) -> None:
     assert _error_codes(exc_info.value) == set(codes)
 
 
-def _assert_raises_with_codes_in(container: BlocksContainer, *codes: str) -> None:
-    """Assert validation raises and includes at least the given error codes."""
-    with pytest.raises(BlockContainerValidationError) as exc_info:
-        _validator().validate(container)
-    assert set(codes) <= _error_codes(exc_info.value)
-
-
 # ---------------------------------------------------------------------------
 # Batch 1: Index contiguity (_check_index_contiguity / _check_list_indices)
 # ---------------------------------------------------------------------------
@@ -495,21 +488,23 @@ class TestImageBlocks:
         )
         assert _validator().validate(container) == []
 
-    def test_valid_image_with_https_url(self):
+    def test_image_uri_invalid_https_url(self):
         container = _container(
             blocks=[_image_block(0, data={"uri": "https://example.com/img.png"})]
         )
-        assert _validator().validate(container) == []
+        _assert_raises_with_codes(container, "IMAGE_URI_INVALID")
 
-    def test_valid_image_with_http_url(self):
+    def test_image_uri_invalid_http_url(self):
         container = _container(
             blocks=[_image_block(0, data={"uri": "http://example.com/img.png"})]
         )
-        assert _validator().validate(container) == []
+        _assert_raises_with_codes(container, "IMAGE_URI_INVALID")
 
     def test_image_format_not_base64(self):
         container = _container(
-            blocks=[_image_block(0, fmt=DataFormat.TXT, data={"uri": "https://x.com/a"})]
+            blocks=[
+                _image_block(0, fmt=DataFormat.TXT, data={"uri": self._VALID_DATA_URI})
+            ]
         )
         _assert_raises_with_codes(container, "IMAGE_FORMAT_NOT_BASE64")
 
@@ -519,7 +514,7 @@ class TestImageBlocks:
                 _block_construct(
                     type=BlockType.IMAGE,
                     format=None,
-                    data={"uri": "https://x.com/a"},
+                    data={"uri": self._VALID_DATA_URI},
                 )
             ]
         )
@@ -668,11 +663,9 @@ class TestTableRowBlocks:
 
     def test_table_row_cells_not_list(self):
         container = self._valid_table_container(row_data={"cells": "not-a-list"})
-        _assert_raises_with_codes_in(
-            container,
-            "TABLE_ROW_CELLS_NOT_LIST",
-            "TABLE_ROW_NO_EMBEDDABLE_CONTENT",
-        )
+        with pytest.raises(BlockContainerValidationError) as exc_info:
+            _validator().validate(container)
+        assert _error_codes(exc_info.value) == {"TABLE_ROW_CELLS_NOT_LIST"}
 
     def test_table_row_cell_not_string(self):
         container = self._valid_table_container(row_data={"cells": [1, 2]})
@@ -834,8 +827,8 @@ class TestValidatorHelpers:
     @pytest.mark.parametrize(
         "uri,expected",
         [
-            ("https://example.com/a.png", True),
-            ("http://example.com/a.png", True),
+            ("https://example.com/a.png", False),
+            ("http://example.com/a.png", False),
             ("data:image/png;base64,abc", True),
             ("ftp://example.com/a.png", False),
             ("", False),
