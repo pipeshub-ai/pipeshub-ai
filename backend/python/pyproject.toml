@@ -231,6 +231,7 @@ dependencies = [
     "langgraph-prebuilt==1.0.8",
     "linkedin-api-client>=0.3.0",
     "lxml>=4.9.0",
+    "lxml_html_clean>=0.4.0",
     "mail-parser-reply==1.36",
     "markdown==3.8.1",
     "markdown-it-py[plugins]>=3.0.0",

@@ -172,6 +172,14 @@ class _DocumentStub:
 def _inject_document_stub() -> None:
     import types
 
+    # When langchain_core is installed, use the real documents module so
+    # transitive imports (e.g. langchain_aws -> BaseDocumentCompressor) work.
+    try:
+        import langchain_core  # noqa: F401
+        return
+    except ImportError:
+        pass
+
     for mod_name in ("langchain_core.documents", "langchain_core.documents.base"):
         if mod_name not in sys.modules:
             mod = types.ModuleType(mod_name)

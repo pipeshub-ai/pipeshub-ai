@@ -473,6 +473,7 @@ class TestGetMessageContentImageBlocksAndOrphanVrids:
         vr = {
             "vr-extra": {
                 "virtual_record_id": "vr-extra",
+                "record_type": RecordType.SQL_TABLE.value,
                 "frontend_url": "https://a.com",
                 "id": "rec-x",
                 "context_metadata": "only in map",

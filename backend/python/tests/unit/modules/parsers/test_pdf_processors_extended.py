@@ -1025,29 +1025,21 @@ class TestAzureOCRStrategyExtended:
 
     @pytest.mark.asyncio
     async def test_process_page_not_processed_extracts_data(self):
-        """process_page extracts words and lines from PyMuPDF page when not processed."""
+        """process_page extracts words and lines from pdfplumber page when not processed."""
         strategy = self._make_strategy()
         strategy._processed = False
 
         mock_page = MagicMock()
-        mock_page.rect.width = 612
-        mock_page.rect.height = 792
-        mock_page.get_text.side_effect = [
-            # "words" call
-            [(10, 10, 50, 20, "Hello", 0, 0, 0), (60, 10, 100, 20, "  ", 0, 0, 0)],
-            # "dict" call
-            {
-                "blocks": [{
-                    "lines": [{
-                        "spans": [{"text": "Hello world"}],
-                        "bbox": (10, 10, 100, 20),
-                    }]
-                }]
-            },
+        mock_page.width = 612
+        mock_page.height = 792
+        mock_page.extract_words.return_value = [
+            {"text": "Hello", "x0": 10, "top": 10, "x1": 50, "bottom": 20},
+            {"text": "  ", "x0": 60, "top": 10, "x1": 100, "bottom": 20},
+            {"text": "world", "x0": 110, "top": 10, "x1": 150, "bottom": 20},
         ]
 
         result = await strategy.process_page(mock_page)
-        assert len(result["words"]) == 1  # empty word skipped
+        assert len(result["words"]) == 2  # whitespace-only word skipped
         assert len(result["lines"]) == 1
         assert result["page_width"] == 612
         assert result["page_height"] == 792

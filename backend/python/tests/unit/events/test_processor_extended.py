@@ -1514,7 +1514,7 @@ class TestProcessorCoverageBranchesTo95:
 
         data = "a,b\nc,d\n".encode("utf-8")
 
-        with patch("app.events.processor.get_llm", new_callable=AsyncMock) as mock_llm, \
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.IndexingPipeline") as MockPipeline:
             mock_llm.return_value = (MagicMock(), {})
             MockPipeline.return_value.apply = AsyncMock()

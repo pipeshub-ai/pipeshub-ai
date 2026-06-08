@@ -384,7 +384,7 @@ class TestGetRowsText:
 
     @pytest.mark.asyncio
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
     async def test_with_column_headers_and_parsed_response(
         self, mock_get_llm, mock_invoke
     ):
@@ -411,7 +411,7 @@ class TestGetRowsText:
 
     @pytest.mark.asyncio
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
     async def test_without_column_headers(self, mock_get_llm, mock_invoke):
         mock_get_llm.return_value = (MagicMock(), None)
         mock_invoke.return_value = None
@@ -432,7 +432,7 @@ class TestGetRowsText:
 
     @pytest.mark.asyncio
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
     async def test_with_dict_cells(self, mock_get_llm, mock_invoke):
         mock_get_llm.return_value = (MagicMock(), None)
         mock_invoke.return_value = None
@@ -468,7 +468,7 @@ class TestGetRowsText:
 
     @pytest.mark.asyncio
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
     async def test_parsed_response_empty_descriptions(self, mock_get_llm, mock_invoke):
         mock_get_llm.return_value = (MagicMock(), None)
         parsed = MagicMock()
@@ -483,7 +483,7 @@ class TestGetRowsText:
         assert len(descriptions) == 2
 
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
     async def test_exception_propagates_get_rows_text(self, mock_get_llm):
         mock_get_llm.side_effect = Exception("LLM error")
 
@@ -494,7 +494,7 @@ class TestGetRowsText:
 
     @pytest.mark.asyncio
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
     async def test_more_columns_than_headers(self, mock_get_llm, mock_invoke):
         mock_get_llm.return_value = (MagicMock(), None)
         mock_invoke.return_value = None

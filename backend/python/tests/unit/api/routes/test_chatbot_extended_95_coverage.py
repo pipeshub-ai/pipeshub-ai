@@ -144,32 +144,16 @@ def test_pdf_page_count_fixture():
 def test_build_pdf_image_blocks_one_page():
     from app.api.routes.chatbot import _build_pdf_image_blocks
 
-    mock_orig = MagicMock()
-    mock_to_img = MagicMock()
-    mock_to_img.original = mock_orig
+    mock_image = MagicMock()
 
-    mock_page = MagicMock()
-    mock_page.to_image.return_value = mock_to_img
-
-    mock_pdf = MagicMock()
-    mock_pdf.pages = [mock_page]
-
-    class FakePDFOpen:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def __enter__(self):
-            return mock_pdf
-
-        def __exit__(self, *_):
-            pass
-
-    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen):
+    with patch(
+        "app.api.routes.chatbot.convert_from_bytes", return_value=[mock_image]
+    ) as mock_convert:
         bc = _build_pdf_image_blocks(b"%PDF-sample")
         assert len(bc.blocks) == 1
         assert bc.blocks[0].type == BlockType.IMAGE
-        mock_page.to_image.assert_called_once_with(resolution=144)
-        mock_orig.save.assert_called_once()
+        mock_convert.assert_called_once_with(b"%PDF-sample", dpi=144, fmt="png")
+        mock_image.save.assert_called_once()
 
 
 @pytest.mark.parametrize("append_citations", [True, False])
