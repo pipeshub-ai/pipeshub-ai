@@ -3,7 +3,7 @@ Full coverage tests for app.modules.parsers.pdf.vlm_ocr_strategy.VLMOCRStrategy.
 
 Targets all uncovered lines and branches:
 - _create_llm_from_config (lines 95-103): model string parsing
-- _render_page_to_base64 (lines 188-204): page rendering and base64 conversion
+- _render_all_pages_to_base64 / _preload_page_images: batch rendering off event loop
 - process_page (lines 265-284): single page processing
 - _preprocess_document: task cancellation of not-done tasks (line 329)
 - load_document (lines 358-368): full success path
@@ -141,56 +141,50 @@ class TestCreateLLMFromConfig:
 
 
 # ============================================================================
-# _render_page_to_base64
+# _render_all_pages_to_base64 / _preload_page_images
 # ============================================================================
 
 
-class TestRenderPageToBase64:
-    """Cover _render_page_to_base64 method (lines 188-204)."""
+class TestRenderAllPagesToBase64:
+    """Cover batch page rendering helpers."""
 
-    def test_render_success(self):
-        """Renders page to base64 image string."""
+    def test_render_all_pages_success(self):
         logger = logging.getLogger("test")
         config = MagicMock()
         strategy = VLMOCRStrategy(logger, config)
+        strategy._pdf_path = "/tmp/test.pdf"
 
-        mock_page = MagicMock()
         mock_img = MagicMock()
-        mock_orig = MagicMock()
-        mock_to_image = MagicMock()
-        mock_to_image.original = mock_orig
-        mock_page.to_image.return_value = mock_to_image
+        mock_img.save.side_effect = lambda buf, format=None: buf.write(b"\x89PNG\r\nfake")
 
-        def _fake_save(buf, format="PNG"):
-            buf.write(b"\x89PNG\r\nfake")
+        with patch(
+            "app.modules.parsers.pdf.vlm_ocr_strategy.convert_from_path",
+            return_value=[mock_img],
+        ) as mock_convert:
+            result = strategy._render_all_pages_to_base64()
 
-        mock_orig.save.side_effect = _fake_save
+        mock_convert.assert_called_once_with("/tmp/test.pdf", dpi=strategy.RENDER_DPI, fmt="png")
+        assert result[1].startswith("data:image/png;base64,")
 
-        result = strategy._render_page_to_base64(mock_page)
-
-        assert result.startswith("data:image/png;base64,")
-        # Verify it contains valid base64
-        import base64
-
-        b64_part = result.split(",", 1)[1]
-        decoded = base64.b64decode(b64_part)
-        assert decoded == b"\x89PNG\r\nfake"
-
-    def test_render_error_raises(self):
-        """Rendering error propagates the exception."""
+    @pytest.mark.asyncio
+    async def test_preload_dispatches_to_thread(self):
         logger = logging.getLogger("test")
         config = MagicMock()
         strategy = VLMOCRStrategy(logger, config)
 
-        mock_page = MagicMock()
-        mock_orig = MagicMock()
-        mock_orig.save.side_effect = RuntimeError("Render failed")
-        mock_to_image = MagicMock()
-        mock_to_image.original = mock_orig
-        mock_page.to_image.return_value = mock_to_image
+        with patch.object(
+            strategy,
+            "_render_all_pages_to_base64",
+            return_value={1: "data:image/png;base64,abc"},
+        ), patch(
+            "app.modules.parsers.pdf.vlm_ocr_strategy.asyncio.to_thread",
+            new_callable=AsyncMock,
+            return_value={1: "data:image/png;base64,abc"},
+        ) as mock_to_thread:
+            await strategy._preload_page_images()
 
-        with pytest.raises(RuntimeError, match="Render failed"):
-            strategy._render_page_to_base64(mock_page)
+        mock_to_thread.assert_awaited_once()
+        assert strategy._page_images[1] == "data:image/png;base64,abc"
 
 
 # ============================================================================
@@ -213,11 +207,8 @@ class TestProcessPage:
         mock_page.width = 612
         mock_page.height = 792
 
+        strategy._page_images = {3: "data:image/png;base64,abc"}
         with patch.object(
-            strategy,
-            "_render_page_to_base64",
-            return_value="data:image/png;base64,abc",
-        ), patch.object(
             strategy,
             "_call_llm_for_markdown",
             new_callable=AsyncMock,
@@ -231,22 +222,18 @@ class TestProcessPage:
         assert result["height"] == 792
 
     @pytest.mark.asyncio
-    async def test_process_page_render_error_raises(self):
-        """Error during rendering re-raises the exception."""
+    async def test_process_page_missing_prerender_raises(self):
+        """Missing pre-rendered image raises KeyError."""
         logger = logging.getLogger("test")
         config = MagicMock()
         strategy = VLMOCRStrategy(logger, config)
+        strategy._page_images = {}
 
         mock_page = MagicMock(spec=["page_number", "width", "height"])
         mock_page.page_number = 1
 
-        with patch.object(
-            strategy,
-            "_render_page_to_base64",
-            side_effect=RuntimeError("Render error"),
-        ):
-            with pytest.raises(RuntimeError, match="Render error"):
-                await strategy.process_page(mock_page)
+        with pytest.raises(KeyError, match="No pre-rendered image for page 1"):
+            await strategy.process_page(mock_page)
 
     @pytest.mark.asyncio
     async def test_process_page_llm_error_raises(self):
@@ -258,11 +245,8 @@ class TestProcessPage:
         mock_page = MagicMock(spec=["page_number", "width", "height"])
         mock_page.page_number = 1
 
+        strategy._page_images = {1: "data:image/png;base64,abc"}
         with patch.object(
-            strategy,
-            "_render_page_to_base64",
-            return_value="data:image/png;base64,abc",
-        ), patch.object(
             strategy,
             "_call_llm_for_markdown",
             new_callable=AsyncMock,
@@ -383,7 +367,9 @@ class TestPreprocessDocumentCancellation:
                 "height": 200,
             }
 
-        with patch.object(strategy, "process_page", side_effect=failing_process):
+        with patch.object(
+            strategy, "_preload_page_images", new_callable=AsyncMock
+        ), patch.object(strategy, "process_page", side_effect=failing_process):
             with pytest.raises(Exception, match="Page 1 always fails"):
                 await strategy._preprocess_document()
 
@@ -545,7 +531,9 @@ class TestPreprocessDocumentSuccess:
                 "height": 792,
             }
 
-        with patch.object(strategy, "process_page", side_effect=mock_process):
+        with patch.object(
+            strategy, "_preload_page_images", new_callable=AsyncMock
+        ), patch.object(strategy, "process_page", side_effect=mock_process):
             result = await strategy._preprocess_document()
 
         assert result["total_pages"] == 2

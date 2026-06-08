@@ -13,6 +13,7 @@ from jinja2 import Template
 from io import BytesIO
 
 import pdfplumber
+from pdf2image import convert_from_bytes
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
@@ -195,21 +196,21 @@ def _pdf_has_any_ocr_page(file_content: bytes) -> bool:
 
 def _build_pdf_image_blocks(file_content: bytes) -> BlocksContainer:
     blocks: list[Block] = []
-    with pdfplumber.open(BytesIO(file_content)) as pdf:
-        for idx, page in enumerate(pdf.pages):
-            buf = BytesIO()
-            page.to_image(resolution=144).original.save(buf, format="PNG")
-            png_bytes = buf.getvalue()
-            data_uri = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('utf-8')}"
-            blocks.append(
-                Block(
-                    index=idx,
-                    type=BlockType.IMAGE,
-                    format=DataFormat.BASE64,
-                    data={"uri": data_uri},
-                    citation_metadata=CitationMetadata(page_number=idx + 1),
-                )
+    images = convert_from_bytes(file_content, dpi=144, fmt="png")
+    for idx, image in enumerate(images):
+        buf = BytesIO()
+        image.save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+        data_uri = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('utf-8')}"
+        blocks.append(
+            Block(
+                index=idx,
+                type=BlockType.IMAGE,
+                format=DataFormat.BASE64,
+                data={"uri": data_uri},
+                citation_metadata=CitationMetadata(page_number=idx + 1),
             )
+        )
     return BlocksContainer(blocks=blocks, block_groups=[])
 
 
@@ -1259,9 +1260,9 @@ async def upload_chat_attachments(
                 raise HTTPException(status_code=400, detail=f"Failed to process image attachment {item.fileName}: {str(e)}")
         else:
             try:
-                needs_ocr = _pdf_has_any_ocr_page(file_binary)
+                needs_ocr = await asyncio.to_thread(_pdf_has_any_ocr_page, file_binary)
                 if needs_ocr:
-                    page_count = _pdf_page_count(file_binary)
+                    page_count = await asyncio.to_thread(_pdf_page_count, file_binary)
                     if ocr_image_pages_used + page_count > OCR_IMAGE_PAGE_CAP:
                         raise HTTPException(
                             status_code=400,
@@ -1270,7 +1271,9 @@ async def upload_chat_attachments(
                                 f"Maximum allowed combined scanned pages is {OCR_IMAGE_PAGE_CAP}."
                             ),
                         )
-                    block_containers = _build_pdf_image_blocks(file_binary)
+                    block_containers = await asyncio.to_thread(
+                        _build_pdf_image_blocks, file_binary
+                    )
                     ocr_image_pages_used += page_count
                 else:
                     parsed_data = await pdf_processor.parse_document(item.fileName, file_binary)

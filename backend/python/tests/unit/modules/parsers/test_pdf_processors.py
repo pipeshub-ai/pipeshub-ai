@@ -857,14 +857,14 @@ class TestAzureOCRStrategy:
         strategy = self._make_strategy()
         strategy._processed = False
         mock_page = MagicMock()
-        mock_page.rect.width = 612
-        mock_page.rect.height = 792
-        mock_page.get_text.side_effect = [
-            [(0, 0, 50, 20, "Test")],
-            {"blocks": []},
+        mock_page.width = 612
+        mock_page.height = 792
+        mock_page.extract_words.return_value = [
+            {"text": "Test", "x0": 0, "top": 0, "x1": 50, "bottom": 20},
         ]
         result = await strategy.process_page(mock_page)
         assert "words" in result
+        assert result["words"][0]["content"] == "Test"
 
 class TestVLMOCRStrategy:
     def _make_strategy(self):
@@ -887,30 +887,19 @@ class TestVLMOCRStrategy:
             strategy.MAX_RETRY_ATTEMPTS = 2
             return strategy
 
-    def test_render_page_to_base64(self):
+    def test_render_all_pages_to_base64(self):
         strategy = self._make_strategy()
-        mock_page = MagicMock()
-        mock_orig = MagicMock()
-        mock_orig.save.side_effect = lambda buf, format=None: buf.write(b"fake-png-bytes")
-        ti = MagicMock()
-        ti.original = mock_orig
-        mock_page.to_image.return_value = ti
+        strategy._pdf_path = "/tmp/test.pdf"
+        mock_img = MagicMock()
+        mock_img.save.side_effect = lambda buf, format=None: buf.write(b"fake-png-bytes")
 
-        result = strategy._render_page_to_base64(mock_page)
+        with patch(
+            "app.modules.parsers.pdf.vlm_ocr_strategy.convert_from_path",
+            return_value=[mock_img],
+        ):
+            result = strategy._render_all_pages_to_base64()
 
-        assert result.startswith("data:image/png;base64,")
-
-    def test_render_page_to_base64_error(self):
-        strategy = self._make_strategy()
-        mock_page = MagicMock()
-        mock_orig = MagicMock()
-        mock_orig.save.side_effect = RuntimeError("render failed")
-        ti = MagicMock()
-        ti.original = mock_orig
-        mock_page.to_image.return_value = ti
-
-        with pytest.raises(RuntimeError):
-            strategy._render_page_to_base64(mock_page)
+        assert result[1].startswith("data:image/png;base64,")
 
     @pytest.mark.asyncio
     async def test_call_llm_for_markdown(self):
@@ -948,7 +937,7 @@ class TestVLMOCRStrategy:
     @pytest.mark.asyncio
     async def test_process_page(self):
         strategy = self._make_strategy()
-        strategy._render_page_to_base64 = MagicMock(return_value="data:image/png;base64,abc")
+        strategy._page_images = {1: "data:image/png;base64,abc"}
         strategy._call_llm_for_markdown = AsyncMock(return_value="# Page 1")
 
         mock_page = MagicMock()
@@ -963,12 +952,12 @@ class TestVLMOCRStrategy:
     @pytest.mark.asyncio
     async def test_process_page_error(self):
         strategy = self._make_strategy()
-        strategy._render_page_to_base64 = MagicMock(side_effect=RuntimeError("render fail"))
+        strategy._page_images = {}
 
         mock_page = MagicMock()
         mock_page.page_number = 1
 
-        with pytest.raises(RuntimeError):
+        with pytest.raises(KeyError):
             await strategy.process_page(mock_page)
 
     def test_create_llm_from_config(self):
@@ -1055,6 +1044,7 @@ class TestVLMOCRStrategy:
             "width": 612,
             "height": 792,
         })
+        strategy._preload_page_images = AsyncMock()
 
         result = await strategy._preprocess_document()
         assert result["total_pages"] == 1

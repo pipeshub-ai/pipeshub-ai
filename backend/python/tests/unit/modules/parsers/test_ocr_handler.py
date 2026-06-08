@@ -125,6 +125,12 @@ class TestOCRStrategyNeedsOcr:
 
         assert OCRStrategy.needs_ocr(page, logger) is True
 
+    def test_zero_page_area_avoids_division_error(self, logger):
+        """Zero page area must not raise; density stays 0."""
+        page = self._make_page(text="short", words=[], images=[], width=0.0, height=0.0)
+
+        assert OCRStrategy.needs_ocr(page, logger) is True
+
     def test_image_extraction_failure_continues(self, logger):
         """Needs-OCR heuristic tolerates malformed image metadata gracefully."""
         page = MagicMock()

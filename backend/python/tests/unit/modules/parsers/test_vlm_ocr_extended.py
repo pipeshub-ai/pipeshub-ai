@@ -195,7 +195,9 @@ class TestPreprocessDocument:
                 raise Exception("Temporary failure")
             return {"page_number": 1, "markdown": "# Page 1", "width": 100, "height": 200}
 
-        with patch.object(strategy, "process_page", side_effect=mock_process_page):
+        with patch.object(
+            strategy, "_preload_page_images", new_callable=AsyncMock
+        ), patch.object(strategy, "process_page", side_effect=mock_process_page):
             result = await strategy._preprocess_document()
             assert result["total_pages"] == 1
             assert call_count == 2  # 1 failure + 1 success
@@ -214,7 +216,9 @@ class TestPreprocessDocument:
         async def mock_process_page(page, page_number=None):
             raise Exception("Persistent failure")
 
-        with patch.object(strategy, "process_page", side_effect=mock_process_page):
+        with patch.object(
+            strategy, "_preload_page_images", new_callable=AsyncMock
+        ), patch.object(strategy, "process_page", side_effect=mock_process_page):
             with pytest.raises(Exception, match="Persistent failure"):
                 await strategy._preprocess_document()
 
@@ -225,6 +229,46 @@ class TestPreprocessDocument:
 
 
 class TestLoadDocument:
+    @pytest.mark.asyncio
+    async def test_load_document_unlinks_temp_file(self):
+        """Temp PDF path is removed after load_document completes."""
+        import os
+
+        logger = logging.getLogger("test")
+        config = MagicMock()
+        strategy = VLMOCRStrategy(logger, config)
+
+        mock_doc = MagicMock()
+        mock_doc.pages = [MagicMock()]
+        temp_path = "/tmp/pipeshub_vlm_test.pdf"
+
+        with patch(
+            "app.modules.parsers.pdf.vlm_ocr_strategy.tempfile.NamedTemporaryFile"
+        ) as mock_tmp, patch(
+            "app.modules.parsers.pdf.vlm_ocr_strategy.pdfplumber.open",
+            return_value=mock_doc,
+        ), patch(
+            "app.modules.parsers.pdf.vlm_ocr_strategy.os.unlink"
+        ) as mock_unlink, patch.object(
+            strategy,
+            "_get_multimodal_llm",
+            new_callable=AsyncMock,
+            return_value=MagicMock(),
+        ), patch.object(
+            strategy,
+            "_preprocess_document",
+            new_callable=AsyncMock,
+            return_value={"pages": [], "markdown": "", "total_pages": 1},
+        ):
+            mock_file = MagicMock()
+            mock_file.name = temp_path
+            mock_tmp.return_value = mock_file
+            await strategy.load_document(b"fake pdf content")
+
+        mock_unlink.assert_called_once_with(temp_path)
+        assert strategy._pdf_path is None
+        assert strategy._page_images == {}
+
     @pytest.mark.asyncio
     async def test_load_document_exception(self):
         logger = logging.getLogger("test")

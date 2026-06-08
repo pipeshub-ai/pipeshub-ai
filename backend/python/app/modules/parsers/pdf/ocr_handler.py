@@ -65,7 +65,7 @@ class OCRHandler:
         Initialize OCR handler with specified strategy
 
         Args:
-            strategy_type: Type of OCR strategy ("pymupdf" or "azure")
+            strategy_type: Type of OCR strategy ("azure" or "vlm_ocr")
             **kwargs: Strategy-specific configuration parameters
         """
         self.logger = logger

@@ -30,6 +30,7 @@ from app.models.blocks import (
     TableMetadata,
 )
 from app.modules.parsers.pdf.opencv_layout_analyzer import (
+    DocumentRasterCache,
     LayoutRegion,
     LayoutRegionType,
     extract_layout_regions,
@@ -100,8 +101,11 @@ class PDFPlumberOpenCVProcessor:
                     tmp.write(pdf_bytes)
                     tmp.flush()
                 with pdfplumber.open(tmp_path) as pdf:
+                    raster_cache = DocumentRasterCache(tmp_path)
                     for page_idx, page in enumerate(pdf.pages):
-                        regions = extract_layout_regions(page, pdf_path=tmp_path)
+                        regions = extract_layout_regions(
+                            page, pdf_path=tmp_path, raster_cache=raster_cache
+                        )
                         out.append(
                             ParsedPageData(
                                 page_number=page_idx + 1,

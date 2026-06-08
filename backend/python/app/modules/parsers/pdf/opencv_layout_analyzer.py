@@ -1371,8 +1371,24 @@ def _find_vector_bullets(
 # Public entry point
 # --------------------------------------------------------------------------- #
 
+class DocumentRasterCache:
+    """Lazy per-document raster cache; one poppler call renders all pages."""
+
+    def __init__(self, pdf_path: str, dpi: int = _DPI) -> None:
+        self._pdf_path = pdf_path
+        self._dpi = dpi
+        self._cache: Optional[Dict[int, Tuple[np.ndarray, float]]] = None
+
+    def get(self, page_number: int) -> Tuple[np.ndarray, float]:
+        if self._cache is None:
+            self._cache = _render_all_pages(self._pdf_path, self._dpi)
+        return self._cache[page_number]
+
+
 def extract_layout_regions(
-    page, pdf_path: Optional[str] = None
+    page,
+    pdf_path: Optional[str] = None,
+    raster_cache: Optional[DocumentRasterCache] = None,
 ) -> List[LayoutRegion]:
     page_w = float(page.width)
     page_h = float(page.height)
@@ -1404,7 +1420,9 @@ def extract_layout_regions(
         except Exception:
             n_vec = n_embed = 0
         if n_vec < 5 and n_embed == 0:
-            img_rgb, scale = _rasterize_page(page, _DPI, pdf_path=pdf_path)
+            img_rgb, scale = _rasterize_page(
+                page, _DPI, pdf_path=pdf_path, raster_cache=raster_cache
+            )
             full_bbox = (0.0, 0.0, page_w, page_h)
             return [LayoutRegion(
                 type=LayoutRegionType.IMAGE,
@@ -1435,7 +1453,7 @@ def extract_layout_regions(
     def _get_raster() -> Tuple[np.ndarray, float]:
         if "img" not in _raster:
             _raster["img"], _raster["scale"] = _rasterize_page(
-                page, _DPI, pdf_path=pdf_path
+                page, _DPI, pdf_path=pdf_path, raster_cache=raster_cache
             )
         return _raster["img"], _raster["scale"]
 
@@ -4251,12 +4269,28 @@ def _merge_small_text_regions(
 # Rasterization
 # --------------------------------------------------------------------------- #
 
+def _render_all_pages(pdf_path: str, dpi: int) -> Dict[int, Tuple[np.ndarray, float]]:
+    from pdf2image import convert_from_path
+
+    images = convert_from_path(pdf_path, dpi=dpi, fmt="png")
+    scale = dpi / 72.0
+    return {
+        page_number: (np.array(img.convert("RGB")), scale)
+        for page_number, img in enumerate(images, start=1)
+    }
+
+
 def _rasterize_page(
-    page, dpi: int, pdf_path: Optional[str] = None
+    page,
+    dpi: int,
+    pdf_path: Optional[str] = None,
+    raster_cache: Optional[DocumentRasterCache] = None,
 ) -> Tuple[np.ndarray, float]:
     from pdf2image import convert_from_bytes, convert_from_path
 
     page_number = int(getattr(page, "page_number", 1))
+    if raster_cache is not None:
+        return raster_cache.get(page_number)
     if pdf_path:
         images = convert_from_path(
             pdf_path,

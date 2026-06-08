@@ -3,7 +3,7 @@ import base64
 import os
 import tempfile
 from io import BytesIO
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import pdfplumber
 from langchain.chat_models.base import BaseChatModel
@@ -94,6 +94,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         self.llm_config = None
         self.document_analysis_result = None
         self._pdf_path = None
+        self._page_images: Dict[int, str] = {}
 
     def _create_llm_from_config(self, config: Dict[str, Any]) -> BaseChatModel:
         """Helper to create an LLM instance from a configuration dictionary."""
@@ -186,37 +187,28 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             self.logger.error(f"❌ Error getting multimodal LLM: {str(e)}")
             raise ValueError(f"Failed to get multimodal LLM: {str(e)}")
 
-    def _render_page_to_base64(self, page) -> str:
-        """
-        Render a PDF page as a PNG image and convert to base64
-
-        Args:
-            page: pdfplumber page object
-
-        Returns:
-            str: Base64-encoded PNG image with data URI prefix
-        """
-        try:
-            if not self._pdf_path:
-                raise RuntimeError(
-                    "PDF source path not initialized; load_document must run first"
-                )
-            page_number = int(getattr(page, "page_number", 1))
-            images = convert_from_path(
-                self._pdf_path,
-                dpi=self.RENDER_DPI,
-                first_page=page_number,
-                last_page=page_number,
-                fmt="png",
+    def _render_all_pages_to_base64(self) -> Dict[int, str]:
+        """Render every page in one poppler invocation (sync; run via to_thread)."""
+        if not self._pdf_path:
+            raise RuntimeError(
+                "PDF source path not initialized; load_document must run first"
             )
+        images = convert_from_path(
+            self._pdf_path,
+            dpi=self.RENDER_DPI,
+            fmt="png",
+        )
+        page_images: Dict[int, str] = {}
+        for page_number, image in enumerate(images, start=1):
             buf = BytesIO()
-            images[0].save(buf, format="PNG")
+            image.save(buf, format="PNG")
             img_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-            return f"data:image/png;base64,{img_base64}"
+            page_images[page_number] = f"data:image/png;base64,{img_base64}"
+        return page_images
 
-        except Exception as e:
-            self.logger.error(f"❌ Error rendering page to base64: {str(e)}")
-            raise
+    async def _preload_page_images(self) -> None:
+        """Dispatch blocking poppler rasterization off the event loop."""
+        self._page_images = await asyncio.to_thread(self._render_all_pages_to_base64)
 
     async def _call_llm_for_markdown(self, image_base64: str, page_number: int) -> str:
         """
@@ -267,7 +259,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             self.logger.error(f"❌ Error calling LLM for page {page_number}: {str(e)}")
             raise
 
-    async def process_page(self, page, page_number: int = None) -> Dict[str, Any]:
+    async def process_page(self, page, page_number: Optional[int] = None) -> Dict[str, Any]:
         """
         Process a single PDF page with VLM OCR
 
@@ -283,8 +275,9 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         self.logger.info(f"📄 Processing page {page_number} with VLM OCR")
 
         try:
-            self.logger.debug(f"🖼️ Rendering page {page_number} to image")
-            image_base64 = self._render_page_to_base64(page)
+            image_base64 = self._page_images.get(page_number)
+            if image_base64 is None:
+                raise KeyError(f"No pre-rendered image for page {page_number}")
             markdown = await self._call_llm_for_markdown(image_base64, page_number)
 
             return {
@@ -306,6 +299,8 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         """
         pages = self.doc.pages
         self.logger.info(f"🚀 Processing {len(pages)} pages with VLM OCR (concurrency: {self.CONCURRENCY_LIMIT})")
+
+        await self._preload_page_images()
 
         semaphore = asyncio.Semaphore(self.CONCURRENCY_LIMIT)
 
@@ -396,4 +391,5 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 except OSError:
                     pass
                 self._pdf_path = None
+            self._page_images = {}
 

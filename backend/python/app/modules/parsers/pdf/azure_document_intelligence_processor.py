@@ -1,7 +1,7 @@
 import os
 import time
 from io import BytesIO
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pdfplumber
 import spacy
@@ -42,7 +42,7 @@ class AzureOCRStrategy(OCRStrategy):
         self.model_id = model_id
         self.config = config
         self.document_analysis_result = None
-        self.doc = None  # PyMuPDF document for initial check
+        self.doc = None  # Azure analyze result document
         self._processed = False
         self.ocr_pdf_content = None  # Store the OCR-processed PDF content
 
@@ -288,51 +288,71 @@ class AzureOCRStrategy(OCRStrategy):
         """Process a single page - Implemented for consistency but not primary method"""
         if self._processed:
             raise NotImplementedError("Azure processes entire document at once")
-        else:
-            # Use PyMuPDF extraction for non-OCR pages
-            page_width = page.rect.width
-            page_height = page.rect.height
 
-            words = []
-            lines = []
+        page_width = float(page.width)
+        page_height = float(page.height)
 
-            # Extract words
-            for word in page.get_text("words"):
-                x0, y0, x1, y1, text = word[:5]
-                if text.strip():
-                    words.append(
-                        {
-                            "content": text.strip(),
-                            "confidence": None,
-                            "bounding_box": self._normalize_bbox(
-                                (x0, y0, x1, y1), page_width, page_height
-                            ),
-                        }
-                    )
+        words = []
+        for word in page.extract_words():
+            text = (word.get("text") or "").strip()
+            if not text:
+                continue
+            words.append(
+                {
+                    "content": text,
+                    "confidence": None,
+                    "bounding_box": self._normalize_bbox(
+                        (word["x0"], word["top"], word["x1"], word["bottom"]),
+                        page_width,
+                        page_height,
+                    ),
+                }
+            )
 
-            # Extract lines
-            text_dict = page.get_text("dict")
-            for block in text_dict.get("blocks", []):
-                for line in block.get("lines", []):
-                    text = " ".join(
-                        span.get("text", "") for span in line.get("spans", [])
-                    )
-                    if text.strip() and line.get("bbox"):
-                        lines.append(
-                            {
-                                "content": text.strip(),
-                                "bounding_box": self._normalize_bbox(
-                                    line["bbox"], page_width, page_height
-                                ),
-                            }
-                        )
+        lines = []
+        raw_words = page.extract_words()
+        if raw_words:
+            sorted_words = sorted(raw_words, key=lambda w: (w["top"], w["x0"]))
+            line_words: list = []
+            line_top: Optional[float] = None
+            line_tol = 3.0
 
-            return {
-                "words": words,
-                "lines": lines,
-                "page_width": page_width,
-                "page_height": page_height,
-            }
+            def _flush_line(ws: list) -> None:
+                if not ws:
+                    return
+                text = " ".join((w.get("text") or "").strip() for w in ws).strip()
+                if not text:
+                    return
+                x0 = min(w["x0"] for w in ws)
+                top = min(w["top"] for w in ws)
+                x1 = max(w["x1"] for w in ws)
+                bottom = max(w["bottom"] for w in ws)
+                lines.append(
+                    {
+                        "content": text,
+                        "bounding_box": self._normalize_bbox(
+                            (x0, top, x1, bottom), page_width, page_height
+                        ),
+                    }
+                )
+
+            for w in sorted_words:
+                top = float(w["top"])
+                if line_top is None or abs(top - line_top) <= line_tol:
+                    line_words.append(w)
+                    line_top = top if line_top is None else line_top
+                else:
+                    _flush_line(line_words)
+                    line_words = [w]
+                    line_top = top
+            _flush_line(line_words)
+
+        return {
+            "words": words,
+            "lines": lines,
+            "page_width": page_width,
+            "page_height": page_height,
+        }
 
     def _normalize_bbox(
         self, bbox, page_width: float, page_height: float
