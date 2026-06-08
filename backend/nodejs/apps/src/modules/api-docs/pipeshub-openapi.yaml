@@ -2762,6 +2762,85 @@ components:
                     type: string
                     enum: [asc, desc]
 
+    GetKnowledgeBaseById:
+      type: object
+      additionalProperties: false
+      description: Response returned by GET /knowledgeBase/{kbId} (getKnowledgeBase).
+      required:
+        - id
+        - name
+        - connectorId
+        - createdAtTimestamp
+        - updatedAtTimestamp
+        - createdBy
+        - userRole
+        - folders
+      properties:
+        id:
+          type: string
+          description: Knowledge base ID
+        name:
+          type: string
+          description: Knowledge base name
+        connectorId:
+          type: string
+          nullable: true
+          description: Associated connector ID (null for manual KBs)
+        createdAtTimestamp:
+          type: integer
+          format: int64
+          description: Creation timestamp in milliseconds
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+          description: Last update timestamp in milliseconds
+        createdBy:
+          type: string
+          description: User ID of the creator
+        userRole:
+          type: string
+          enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+          description: User's role in this knowledge base
+        folders:
+          type: array
+          description: Root-level folders in this knowledge base
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - id
+              - name
+            properties:
+              id:
+                type: string
+                description: Folder ID
+              name:
+                type: string
+                description: Folder name
+              createdAtTimestamp:
+                type: integer
+                format: int64
+                description: Creation timestamp in milliseconds
+              webUrl:
+                type: string
+                nullable: true
+                description: Relative web URL for the folder in the UI
+
+    UpdateKnowledgeBaseById:
+      type: object
+      additionalProperties: false
+      description: Response returned by PUT /knowledgeBase/{kbId} (updateKnowledgeBase).
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Knowledge base updated successfully"
+
     Folder:
       type: object
       properties:
@@ -18407,10 +18486,14 @@ paths:
         - Knowledge Bases
       summary: Get knowledge base by ID
       description: |
-        Retrieve detailed information about a specific knowledge base.<br><br>
-        <b>Overview:</b><br>
-        Returns complete KB metadata including name, timestamps, and the requesting user's role/permissions.<br><br>
-        <b>Access Control:</b><br>
+        Retrieve detailed information about a specific knowledge base.
+
+        **Overview:**
+
+        Returns complete KB metadata including name, timestamps, root-level folders, and the requesting user's role.
+
+        **Access Control:**
+
         User must have at least READER permission to view KB details.
       operationId: getKnowledgeBase
       security:
@@ -18420,36 +18503,74 @@ paths:
         - name: kbId
           in: path
           required: true
-          description: Knowledge base ID
+          description: Knowledge base ID (non-empty string)
           schema:
             type: string
-            example: "kb_550e8400-e29b-41d4-a716"
+            minLength: 1
+            example: "8a095180-2989-4018-b448-70eb75fba1c7"
       responses:
         '200':
-          description: Successful operation
+          description: Knowledge base retrieved successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/KnowledgeBase'
+                $ref: '#/components/schemas/GetKnowledgeBaseById'
         '401':
-          description: Unauthorized - Valid bearer token required
+          description: Unauthorized — valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - No access to this knowledge base
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:read` scope
+            - User does not have permission to access this knowledge base
+            - Connector service denied the request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Knowledge base not found
+          description: |
+            Not found. Possible reasons:
+
+            - Knowledge base does not exist
+            - Authenticated user does not exist in the graph database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error — retrieving knowledge base failed in connector or database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable — connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
         - Knowledge Bases
       summary: Update knowledge base
       description: |
-        Update a knowledge base's name.<br><br>
-        <b>Required Permission:</b> OWNER or ORGANIZER<br><br>
-        <b>Validation:</b><br>
-        <ul>
-        <li>Name must be 1-255 characters</li>
-        <li>XSS protection applied to input</li>
-        </ul>
+        Update a knowledge base's name.
+
+        **Required permission:**
+
+        User must have one of `OWNER`, `WRITER`, `ORGANIZER`, or `FILEORGANIZER` on the knowledge base.
+
+        **Validation:**
+
+        - `kbId` path parameter must be a valid UUID (`updateKBSchema`)
+        - When provided, `kbName` must be 1–255 characters
+        - XSS and format-specifier checks are applied to `kbName` in the gateway controller
       operationId: updateKnowledgeBase
       security:
         - bearerAuth: []
@@ -18458,16 +18579,19 @@ paths:
         - name: kbId
           in: path
           required: true
-          description: Knowledge base ID
+          description: Knowledge base ID (UUID)
           schema:
             type: string
+            format: uuid
+            example: "8a095180-2989-4018-b448-70eb75fba1c7"
       requestBody:
         required: true
-        description: "Request payload"
+        description: Fields to update. `kbName` is optional; an empty object is valid.
         content:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 kbName:
                   type: string
@@ -18481,15 +18605,60 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/KnowledgeBase'
+                $ref: '#/components/schemas/UpdateKnowledgeBaseById'
         '400':
-          description: Invalid request - Name validation failed
+          description: |
+            Invalid request. Possible reasons:
+
+            - `kbId` is not a valid UUID (gateway `updateKBSchema`)
+            - `kbName` is empty or longer than 255 characters
+            - `kbName` fails XSS or format-specifier validation in the gateway controller
+            - Invalid JSON request body at the connector (`Invalid request body`)
+            - Connector rejected the update payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid bearer token required
+          description: Unauthorized — valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Requires OWNER or ORGANIZER role
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:write` scope
+            - User has no permission on this knowledge base
+            - User role is insufficient (`COMMENTER` or `READER`; requires `OWNER`, `WRITER`, `ORGANIZER`, or `FILEORGANIZER`)
+            - Connector service denied the request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Knowledge base not found
+          description: |
+            Not found. Possible reasons:
+
+            - Knowledge base does not exist
+            - Authenticated user does not exist in the graph database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error — updating knowledge base failed in connector or database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable — connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:

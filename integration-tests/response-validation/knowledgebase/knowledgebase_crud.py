@@ -222,3 +222,211 @@ class TestKnowledgeBaseCrud:
         assert_response_matches_openapi_operation(
             resp.json(), "listKnowledgeBases", status_code="401"
         )
+
+    def test_get_knowledge_base_success(self) -> None:
+        create_resp = requests.post(
+            self.url,
+            headers=self.headers,
+            json={"kbName": f"rv-get-{uuid4()}"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert create_resp.status_code == 200, create_resp.text
+        kb_id = create_resp.json()["id"]
+
+        try:
+            folder_resp = requests.post(
+                f"{self.url}{kb_id}/folder",
+                headers=self.headers,
+                json={"folderName": "test folder"},
+                timeout=self.client.timeout_seconds,
+            )
+            assert folder_resp.status_code == 200, folder_resp.text
+
+            resp = requests.get(
+                f"{self.url}{kb_id}",
+                headers=self.headers,
+                timeout=self.client.timeout_seconds,
+            )
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert_response_matches_openapi_operation(body, "getKnowledgeBase")
+
+            assert body["id"] == kb_id
+            assert body["userRole"] == "OWNER"
+            assert body["connectorId"] is None
+            assert len(body["folders"]) >= 1
+            folder = body["folders"][0]
+            for key in ("id", "name", "createdAtTimestamp", "webUrl"):
+                assert key in folder
+        finally:
+            requests.delete(
+                f"{self.url}{kb_id}",
+                headers=self.headers,
+                timeout=self.client.timeout_seconds,
+            )
+
+    def test_get_knowledge_base_negative(self) -> None:
+        missing_id = str(uuid4())
+        kb_url = f"{self.url}{missing_id}"
+
+        resp = requests.get(kb_url, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "getKnowledgeBase", status_code="401"
+        )
+
+        resp = requests.get(
+            kb_url,
+            headers={"Authorization": "Bearer invalid"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "getKnowledgeBase", status_code="401"
+        )
+
+        resp = requests.get(
+            f"{self.url}{uuid4()}",
+            headers=self.headers,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 404, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "getKnowledgeBase", status_code="404"
+        )
+
+    def test_update_knowledge_base_success(self) -> None:
+        create_resp = requests.post(
+            self.url,
+            headers=self.headers,
+            json={"kbName": f"rv-update-{uuid4()}"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert create_resp.status_code == 200, create_resp.text
+        kb_id = create_resp.json()["id"]
+        new_name = f"rv-updated-{uuid4()}"
+
+        try:
+            resp = requests.put(
+                f"{self.url}{kb_id}",
+                headers=self.headers,
+                json={"kbName": new_name},
+                timeout=self.client.timeout_seconds,
+            )
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert_response_matches_openapi_operation(body, "updateKnowledgeBase")
+
+            assert body["success"] is True
+            assert body["message"] == "Knowledge base updated successfully"
+
+            get_resp = requests.get(
+                f"{self.url}{kb_id}",
+                headers=self.headers,
+                timeout=self.client.timeout_seconds,
+            )
+            assert get_resp.status_code == 200, get_resp.text
+            assert get_resp.json()["name"] == new_name
+        finally:
+            requests.delete(
+                f"{self.url}{kb_id}",
+                headers=self.headers,
+                timeout=self.client.timeout_seconds,
+            )
+
+    def test_update_knowledge_base_negative(self) -> None:
+        create_resp = requests.post(
+            self.url,
+            headers=self.headers,
+            json={"kbName": f"rv-update-neg-{uuid4()}"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert create_resp.status_code == 200, create_resp.text
+        kb_id = create_resp.json()["id"]
+
+        try:
+            resp = requests.put(
+                f"{self.url}not-a-valid-uuid",
+                headers=self.headers,
+                json={"kbName": "should-fail"},
+                timeout=self.client.timeout_seconds,
+            )
+            assert resp.status_code == 400, resp.text
+            assert_response_matches_openapi_operation(
+                resp.json(), "updateKnowledgeBase", status_code="400"
+            )
+
+            resp = requests.put(
+                f"{self.url}{kb_id}",
+                headers=self.headers,
+                json={"kbName": ""},
+                timeout=self.client.timeout_seconds,
+            )
+            assert resp.status_code == 400, resp.text
+            assert_response_matches_openapi_operation(
+                resp.json(), "updateKnowledgeBase", status_code="400"
+            )
+
+            resp = requests.put(
+                f"{self.url}{kb_id}",
+                headers=self.headers,
+                json={"kbName": "x" * 256},
+                timeout=self.client.timeout_seconds,
+            )
+            assert resp.status_code == 400, resp.text
+            assert_response_matches_openapi_operation(
+                resp.json(), "updateKnowledgeBase", status_code="400"
+            )
+
+            resp = requests.put(
+                f"{self.url}{kb_id}",
+                headers=self.headers,
+                json={"kbName": "<script>alert(1)</script>"},
+                timeout=self.client.timeout_seconds,
+            )
+            assert resp.status_code == 400, resp.text
+            assert_response_matches_openapi_operation(
+                resp.json(), "updateKnowledgeBase", status_code="400"
+            )
+
+            resp = requests.put(
+                f"{self.url}{uuid4()}",
+                headers=self.headers,
+                json={"kbName": "missing-kb"},
+                timeout=self.client.timeout_seconds,
+            )
+            assert resp.status_code == 404, resp.text
+            assert_response_matches_openapi_operation(
+                resp.json(), "updateKnowledgeBase", status_code="404"
+            )
+
+            resp = requests.put(
+                f"{self.url}{kb_id}",
+                headers={"Content-Type": "application/json"},
+                json={"kbName": "should-fail"},
+                timeout=self.client.timeout_seconds,
+            )
+            assert resp.status_code == 401, resp.text
+            assert_response_matches_openapi_operation(
+                resp.json(), "updateKnowledgeBase", status_code="401"
+            )
+
+            resp = requests.put(
+                f"{self.url}{kb_id}",
+                headers={
+                    "Authorization": "Bearer invalid",
+                    "Content-Type": "application/json",
+                },
+                json={"kbName": "should-fail"},
+                timeout=self.client.timeout_seconds,
+            )
+            assert resp.status_code == 401, resp.text
+            assert_response_matches_openapi_operation(
+                resp.json(), "updateKnowledgeBase", status_code="401"
+            )
+        finally:
+            requests.delete(
+                f"{self.url}{kb_id}",
+                headers=self.headers,
+                timeout=self.client.timeout_seconds,
+            )
