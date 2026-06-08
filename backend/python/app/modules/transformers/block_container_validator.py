@@ -329,7 +329,7 @@ class BlockContainerValidator:
             if isinstance(data, str):
                 # Legacy raw base64 string — silently skipped by vectorstore (no .get("uri"))
                 issues.append(ValidationIssue(
-                    severity=Severity.WARNING,
+                    severity=Severity.ERROR,
                     code="IMAGE_DATA_NOT_NORMALIZED",
                     message='image data is a raw string; normalize to {"uri": "..."} so the block is embedded',
                     location=loc,
@@ -368,8 +368,6 @@ class BlockContainerValidator:
     @staticmethod
     def _is_valid_image_uri(uri: str) -> bool:
         uri = uri.strip()
-        if uri.startswith(("http://", "https://")):
-            return True
         if uri.startswith("data:image/") and ";base64," in uri:
             return True
         return False
