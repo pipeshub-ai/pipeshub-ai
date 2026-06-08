@@ -35,6 +35,7 @@ _KB_COUNT = 10
 _RECORD_COUNT = 6
 _RECORDS_POLL_TIMEOUT_SEC = 180
 _RECORDS_POLL_INTERVAL_SEC = 3
+_CLOCK_DRIFT_BUFFER_MS = 10_000
 
 
 def _github_blob_to_raw(blob_url: str) -> str:
@@ -121,7 +122,10 @@ def ten_knowledge_bases(pipeshub_client: PipeshubClient) -> Generator[TenKnowled
     finally:
 
         def _delete_one(kb_id: str) -> None:
-            requests.delete(f"{url}{kb_id}", headers=headers, timeout=timeout)
+            try:
+                requests.delete(f"{url}{kb_id}", headers=headers, timeout=timeout)
+            except requests.RequestException:
+                pass
 
         with ThreadPoolExecutor(max_workers=_KB_COUNT) as pool:
             list(pool.map(_delete_one, kb_ids))
@@ -155,7 +159,7 @@ def six_kb_records(pipeshub_client: PipeshubClient) -> Generator[SixKbRecords, N
     kb_id = create_resp.json()["id"]
 
     record_ids: list[str] = []
-    date_from_ms = int(time.time() * 1000)
+    date_from_ms = max(0, int(time.time() * 1000) - _CLOCK_DRIFT_BUFFER_MS)
 
     try:
         upload_headers = {"Authorization": f"Bearer {client._access_token}"}
@@ -214,8 +218,11 @@ def six_kb_records(pipeshub_client: PipeshubClient) -> Generator[SixKbRecords, N
         }
         yield payload
     finally:
-        requests.delete(
-            f"{kb_url}{kb_id}",
-            headers=json_headers,
-            timeout=timeout,
-        )
+        try:
+            requests.delete(
+                f"{kb_url}{kb_id}",
+                headers=json_headers,
+                timeout=timeout,
+            )
+        except requests.RequestException:
+            pass
