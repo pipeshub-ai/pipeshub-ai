@@ -354,7 +354,7 @@ class BlockContainerValidator:
                     issues.append(ValidationIssue(
                         severity=Severity.ERROR,
                         code="IMAGE_URI_INVALID",
-                        message="data.uri must be a data:image/...;base64,... URI or an http(s):// URL",
+                        message="data.uri must be a data:image/...;base64,... URI",
                         location=loc,
                     ))
             else:

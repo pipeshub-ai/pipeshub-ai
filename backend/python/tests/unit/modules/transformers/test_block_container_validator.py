@@ -530,10 +530,9 @@ class TestImageBlocks:
         warnings = _validator().validate(container)
         assert "IMAGE_DATA_MISSING" in _warning_codes(warnings)
 
-    def test_image_data_raw_string_warns(self):
+    def test_image_data_raw_string_raises(self):
         container = _container(blocks=[_image_block(0, data="iVBORw0KGgo=")])
-        warnings = _validator().validate(container)
-        assert "IMAGE_DATA_NOT_NORMALIZED" in _warning_codes(warnings)
+        _assert_raises_with_codes(container, "IMAGE_DATA_NOT_NORMALIZED")
 
     def test_image_uri_empty_warns(self):
         container = _container(blocks=[_image_block(0, data={"uri": ""})])
@@ -652,10 +651,8 @@ class TestTableRowBlocks:
     def test_table_row_no_embeddable_content(self):
         groups = [_table_group(0, table_metadata=TableMetadata(num_of_cells=1))]
         blocks = [_table_row_block(0, data={}, parent_index=0)]
-        _assert_raises_with_codes(
-            _container(blocks=blocks, block_groups=groups),
-            "TABLE_ROW_NO_EMBEDDABLE_CONTENT",
-        )
+        warnings = _validator().validate(_container(blocks=blocks, block_groups=groups))
+        assert "TABLE_ROW_NO_EMBEDDABLE_CONTENT" in _warning_codes(warnings)
 
     def test_table_row_empty_cells_and_empty_row_text(self):
         groups = [_table_group(0, table_metadata=TableMetadata(num_of_cells=1))]
@@ -666,10 +663,8 @@ class TestTableRowBlocks:
                 parent_index=0,
             )
         ]
-        _assert_raises_with_codes(
-            _container(blocks=blocks, block_groups=groups),
-            "TABLE_ROW_NO_EMBEDDABLE_CONTENT",
-        )
+        warnings = _validator().validate(_container(blocks=blocks, block_groups=groups))
+        assert "TABLE_ROW_NO_EMBEDDABLE_CONTENT" in _warning_codes(warnings)
 
     def test_table_row_cells_not_list(self):
         container = self._valid_table_container(row_data={"cells": "not-a-list"})
