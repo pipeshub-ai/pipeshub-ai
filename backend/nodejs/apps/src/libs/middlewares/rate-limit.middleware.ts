@@ -52,6 +52,15 @@ export function createGlobalRateLimiter(logger: Logger, maxRequestsPerMinute: nu
     },
 
     skip: (req: Request): boolean => {
+      // Internal routes (/…/internal/…) are service-to-service calls protected
+      // by scopedTokenValidator. That middleware runs AFTER the global rate
+      // limiter (route middleware executes later than app.use middleware), so
+      // req.tokenPayload is never set here for those requests. Checking the
+      // path directly is safe: internal routes require a scoped JWT signed with
+      // the server secret, so external callers cannot reach them.
+      if (req.path.includes('/internal/') || req.path.endsWith('/internal')) {
+        return true;
+      }
       const authenticatedServiceReq = req as AuthenticatedServiceRequest;
       if (authenticatedServiceReq.tokenPayload) {
         logger.debug('Skipping rate limit for service request', {

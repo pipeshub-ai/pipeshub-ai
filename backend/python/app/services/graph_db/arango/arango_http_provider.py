@@ -10306,71 +10306,162 @@ class ArangoHTTPProvider(IGraphDBProvider):
         mime_type: str | None = None,
         transaction: str | None = None,
     ) -> dict:
-        """Check if an item (folder or file) name already exists in the target parent."""
+        """Check if an item (folder or file) name already exists in the target parent.
+
+        Two structurally different queries are used depending on the target:
+
+        - **Subfolder** (parent_folder_id set): children have an incoming
+          PARENT_CHILD edge in record_relations from the parent folder document.
+          Query via that edge (unchanged from original behaviour).
+
+        - **KB root** (parent_folder_id is None): root records are connected to
+          the KB via a `belongsTo` edge (record → recordGroup); they have NO
+          incoming PARENT_CHILD edge. The original code queried record_relations
+          for PARENT_CHILD edges starting FROM recordGroups/{kb_id} — no such
+          edges exist — so the check always returned has_conflict=False and
+          every root-level re-upload was silently accepted as a new record.
+        """
         try:
             name_variants = self._normalized_name_variants_lower(item_name)
-            parent_from = (
-                f"{CollectionNames.RECORDS.value}/{parent_folder_id}"
-                if parent_folder_id
-                else f"{CollectionNames.RECORD_GROUPS.value}/{kb_id}"
-            )
-            bind_vars: dict[str, Any] = {
-                "parent_from": parent_from,
-                "name_variants": name_variants,
-                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
-                "@files_collection": CollectionNames.FILES.value,
-            }
-            if mime_type:
-                query = """
-                FOR edge IN @@record_relations
-                    FILTER edge._from == @parent_from
-                    FILTER edge.relationshipType == "PARENT_CHILD"
-                    FILTER edge._to LIKE "records/%"
-                    LET child = DOCUMENT(edge._to)
-                    FILTER child != null
-                    FILTER child.recordName != null
-                    FILTER child.mimeType == @mime_type
-                    LET child_name_l = LOWER(child.recordName)
-                    FILTER child_name_l IN @name_variants
-                    LET file_doc = DOCUMENT(@@files_collection, child._key)
-                    FILTER file_doc != null AND file_doc.isFile == true
-                    RETURN {
-                        id: child._key,
-                        name: child.recordName,
-                        type: "record",
-                        document_type: "records",
-                        mimeType: file_doc.mimeType
-                    }
-                """
-                bind_vars["mime_type"] = mime_type
+            if parent_folder_id:
+                # ── subfolder ────────────────────────────────────────────────
+                parent_from = f"{CollectionNames.RECORDS.value}/{parent_folder_id}"
+                bind_vars: dict[str, Any] = {
+                    "parent_from": parent_from,
+                    "name_variants": name_variants,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    "@files_collection": CollectionNames.FILES.value,
+                }
+                if mime_type:
+                    query = """
+                    FOR edge IN @@record_relations
+                        FILTER edge._from == @parent_from
+                        FILTER edge.relationshipType == "PARENT_CHILD"
+                        FILTER edge._to LIKE "records/%"
+                        LET child = DOCUMENT(edge._to)
+                        FILTER child != null
+                        FILTER child.recordName != null
+                        FILTER child.mimeType == @mime_type
+                        LET child_name_l = LOWER(child.recordName)
+                        FILTER child_name_l IN @name_variants
+                        LET file_doc = DOCUMENT(@@files_collection, child._key)
+                        FILTER file_doc != null AND file_doc.isFile == true
+                        RETURN {
+                            id: child._key,
+                            name: child.recordName,
+                            type: "record",
+                            document_type: "records",
+                            mimeType: file_doc.mimeType
+                        }
+                    """
+                    bind_vars["mime_type"] = mime_type
+                else:
+                    query = """
+                    FOR edge IN @@record_relations
+                        FILTER edge._from == @parent_from
+                        FILTER edge.relationshipType == "PARENT_CHILD"
+                        FILTER edge._to LIKE "records/%"
+                        LET folder_record = DOCUMENT(edge._to)
+                        FILTER folder_record != null
+                        LET folder_file = FIRST(
+                            FOR isEdge IN @@is_of_type
+                                FILTER isEdge._from == folder_record._id
+                                LET f = DOCUMENT(isEdge._to)
+                                FILTER f != null AND f.isFile == false
+                                RETURN f
+                        )
+                        FILTER folder_file != null
+                        LET child_name = folder_record.recordName
+                        FILTER child_name != null
+                        LET child_name_l = LOWER(child_name)
+                        FILTER child_name_l IN @name_variants
+                        RETURN {
+                            id: folder_record._key,
+                            name: child_name,
+                            type: "folder",
+                            document_type: "records"
+                        }
+                    """
+                    bind_vars["@is_of_type"] = CollectionNames.IS_OF_TYPE.value
             else:
-                query = """
-                FOR edge IN @@record_relations
-                    FILTER edge._from == @parent_from
-                    FILTER edge.relationshipType == "PARENT_CHILD"
-                    FILTER edge._to LIKE "records/%"
-                    LET folder_record = DOCUMENT(edge._to)
-                    FILTER folder_record != null
-                    LET folder_file = FIRST(
-                        FOR isEdge IN @@is_of_type
-                            FILTER isEdge._from == folder_record._id
-                            LET f = DOCUMENT(isEdge._to)
-                            FILTER f != null AND f.isFile == false
-                            RETURN f
-                    )
-                    FILTER folder_file != null
-                    LET child_name = folder_record.recordName
-                    FILTER child_name != null
-                    LET child_name_l = LOWER(child_name)
-                    FILTER child_name_l IN @name_variants
-                    RETURN {
-                        id: folder_record._key,
-                        name: child_name,
-                        type: "folder",
-                        document_type: "records"
-                    }
-                """
-                bind_vars["@is_of_type"] = CollectionNames.IS_OF_TYPE.value
+                # ── KB root ───────────────────────────────────────────────────
+                # Root records: belongsTo edge goes record→recordGroup; they have
+                # no incoming PARENT_CHILD edge (those only exist for subfolder
+                # children). Walk the belongsTo collection and exclude any record
+                # that has an incoming PARENT_CHILD edge (i.e. is inside a folder).
+                parent_from = f"{CollectionNames.RECORD_GROUPS.value}/{kb_id}"
+                bind_vars = {
+                    "parent_from": parent_from,
+                    "name_variants": name_variants,
+                    "@belongs_to": CollectionNames.BELONGS_TO.value,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    "@files_collection": CollectionNames.FILES.value,
+                }
+                if mime_type:
+                    query = """
+                    FOR edge IN @@belongs_to
+                        FILTER edge._to == @parent_from
+                        FILTER edge._from LIKE "records/%"
+                        LET child = DOCUMENT(edge._from)
+                        FILTER child != null
+                        FILTER child.recordName != null
+                        FILTER child.mimeType == @mime_type
+                        LET child_name_l = LOWER(child.recordName)
+                        FILTER child_name_l IN @name_variants
+                        LET file_doc = DOCUMENT(@@files_collection, child._key)
+                        FILTER file_doc != null AND file_doc.isFile == true
+                        LET parent_edge = FIRST(
+                            FOR pc IN @@record_relations
+                                FILTER pc._to == child._id
+                                FILTER pc.relationshipType == "PARENT_CHILD"
+                                LIMIT 1
+                                RETURN 1
+                        )
+                        FILTER parent_edge == null
+                        RETURN {
+                            id: child._key,
+                            name: child.recordName,
+                            type: "record",
+                            document_type: "records",
+                            mimeType: file_doc.mimeType
+                        }
+                    """
+                    bind_vars["mime_type"] = mime_type
+                else:
+                    query = """
+                    FOR edge IN @@belongs_to
+                        FILTER edge._to == @parent_from
+                        FILTER edge._from LIKE "records/%"
+                        LET folder_record = DOCUMENT(edge._from)
+                        FILTER folder_record != null
+                        LET folder_file = FIRST(
+                            FOR isEdge IN @@is_of_type
+                                FILTER isEdge._from == folder_record._id
+                                LET f = DOCUMENT(isEdge._to)
+                                FILTER f != null AND f.isFile == false
+                                RETURN f
+                        )
+                        FILTER folder_file != null
+                        LET child_name = folder_record.recordName
+                        FILTER child_name != null
+                        LET child_name_l = LOWER(child_name)
+                        FILTER child_name_l IN @name_variants
+                        LET parent_edge = FIRST(
+                            FOR pc IN @@record_relations
+                                FILTER pc._to == folder_record._id
+                                FILTER pc.relationshipType == "PARENT_CHILD"
+                                LIMIT 1
+                                RETURN 1
+                        )
+                        FILTER parent_edge == null
+                        RETURN {
+                            id: folder_record._key,
+                            name: child_name,
+                            type: "folder",
+                            document_type: "records"
+                        }
+                    """
+                    bind_vars["@is_of_type"] = CollectionNames.IS_OF_TYPE.value
             results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
             conflicts = list(results) if results else []
             return {"has_conflict": len(conflicts) > 0, "conflicts": conflicts}
@@ -16921,7 +17012,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                                 : role_target_perm.role
             )
 
-            // Path 4: User -> Team -> target (MIN of user->team and team->target roles)
+            // Path 4: User -> Team -> target (uses user->team role only; TEAM edge is access grant)
             LET path4_roles = (
                 FOR target_id IN permission_targets
                     FOR user_team_perm IN permission
@@ -16934,12 +17025,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER team_target_perm._from == user_team_perm._to
                             AND team_target_perm._to == target_id
                             AND team_target_perm.type == "TEAM"
-                            AND team_target_perm.role != null
-                            AND team_target_perm.role != ""
-                            // MIN of user->team and team->target roles
-                            RETURN (role_priority[user_team_perm.role] < role_priority[team_target_perm.role])
-                                ? user_team_perm.role
-                                : team_target_perm.role
+                            RETURN user_team_perm.role
             )
 
             // Path 5: User -> Org -> target

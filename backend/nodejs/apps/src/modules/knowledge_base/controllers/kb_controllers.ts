@@ -756,8 +756,20 @@ const writeUploadEvent = (
   event: string,
   data: Record<string, unknown>,
 ): void => {
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  (res as unknown as { flush?: () => void }).flush?.();
+  // The client can drop mid-stream; writing to a closed socket throws
+  // EPIPE / ERR_STREAM_WRITE_AFTER_END. Skip if the response already ended and
+  // swallow any write error here (debug, not error) so a disconnect is never
+  // surfaced by the caller as a catastrophic upload failure.
+  if (res.writableEnded || res.destroyed) return;
+  try {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    (res as unknown as { flush?: () => void }).flush?.();
+  } catch (err) {
+    logger.debug('Skipped upload event write; socket likely closed', {
+      event,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 };
 
 /**

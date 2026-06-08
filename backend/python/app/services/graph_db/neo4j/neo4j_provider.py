@@ -9712,9 +9712,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE toLower(rec.recordName) = toLower($item_name)
                   AND rec.isDeleted <> true
                   {mime_filter}
-                  AND NOT EXISTS {{
-                      MATCH (rec)<-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]-(:Record)
-                  }}
+                  AND NOT (rec)<-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]-(:Record)
                 RETURN rec.id AS id, rec.recordName AS name
                 LIMIT 1
                 """
