@@ -147,6 +147,9 @@ export function PDFRenderer({
   const scrollViewerTo = useRef<(highlight: IHighlight) => void>(() => {});
   const [selectedHighlightId, setSelectedHighlightId] = useState<string | null>(null);
   const [viewerReadyEpoch, setViewerReadyEpoch] = useState(0);
+  // Increments each time activeCitationId changes, forcing the highlight element
+  // to remount so the blink animation always plays from scratch.
+  const [blinkEpoch, setBlinkEpoch] = useState(0);
 
   // Stable ref to latest pagination callbacks — avoids effects re-running on every render
   const paginationRef = useRef(pagination);
@@ -246,7 +249,6 @@ export function PDFRenderer({
 
       .Highlight--scrolledTo .Highlight__part {
         background: rgba(139, 250, 209, 0.4);
-        position: relative;
       }
 
       .Highlight--scrolledTo .Highlight__part::before {
@@ -388,9 +390,14 @@ export function PDFRenderer({
     }
   }, [scale, fileUrl]);
 
-  // Sync selected highlight with activeCitationId from external citation panel
+  // Sync selected highlight with activeCitationId from external citation panel.
+  // Increment blinkEpoch so the key changes and the highlight element remounts,
+  // replaying the blink animation regardless of which citation was previously active.
   useEffect(() => {
     setSelectedHighlightId(activeCitationId ?? null);
+    if (activeCitationId) {
+      setBlinkEpoch((n) => n + 1);
+    }
   }, [activeCitationId]);
 
   // Scroll to a citation when activeCitationId changes or when highlights load.
@@ -568,7 +575,7 @@ export function PDFRenderer({
                     popupContent={<div />}
                     onMouseOver={() => {}}
                     onMouseOut={hideTip}
-                    key={index}
+                    key={`${highlight.id}-${blinkEpoch}`}
                   >
                     {component}
                   </Popup>

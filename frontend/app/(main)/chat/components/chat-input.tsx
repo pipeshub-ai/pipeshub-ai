@@ -845,6 +845,7 @@ export function ChatInput({
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
+    setIsPanelDragging(false);
 
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       processFiles(e.dataTransfer.files);
@@ -2191,6 +2192,14 @@ export function ChatInput({
           </Text>
           <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {t('chat.supportsFileTypes', { types: SUPPORTED_FILE_TYPES.join(', ') })}
+          </Text>
+          <Text size="1" style={{ color: 'var(--slate-10)' }}>
+            {uploadedFiles.length > 0
+              ? t('chat.uploadFilesRemaining', {
+                  remaining: CHAT_ATTACHMENT_MAX_FILES - uploadedFiles.length,
+                  total: CHAT_ATTACHMENT_MAX_FILES,
+                })
+              : t('chat.uploadFilesLimit', { count: CHAT_ATTACHMENT_MAX_FILES })}
           </Text>
         </Box>
       )}
