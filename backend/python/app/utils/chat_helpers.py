@@ -935,16 +935,17 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                             row_text = child_block.get("data", {}).get("row_natural_language_text", "")
 
                             # Create a result for the table row
-                            child_result = {
-                                "content": row_text,
-                                "block_type": BlockType.TABLE_ROW.value,
-                                "virtual_record_id": virtual_record_id,
-                                "block_index": child_block_index,
-                                "metadata": get_enhanced_metadata(record, child_block, meta),
-                                "score": float(result.get("score",0.0)),
-                                "citationType": "vectordb|document",
-                            }
-                            child_results.append(child_result)
+                            if row_text:
+                                child_result = {
+                                    "content": row_text,
+                                    "block_type": BlockType.TABLE_ROW.value,
+                                    "virtual_record_id": virtual_record_id,
+                                    "block_index": child_block_index,
+                                    "metadata": get_enhanced_metadata(record, child_block, meta),
+                                    "score": float(result.get("score",0.0)),
+                                    "citationType": "vectordb|document",
+                                }
+                                child_results.append(child_result)
 
                     table_result = {
                         "content":(table_summary,child_results),
@@ -1011,16 +1012,17 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 block_type = block.get("type")
                 if block_type == BlockType.TABLE_ROW.value:
                     block_text = block.get("data",{}).get("row_natural_language_text","")
-                    enhanced_metadata = get_enhanced_metadata(record,block,{})
-                    child_results.append({
-                        "content": block_text,
-                        "block_type": block_type,
-                        "metadata": enhanced_metadata,
-                        "virtual_record_id": virtual_record_id,
-                        "block_index": row_index,
-                        "citationType": "vectordb|document",
-                        "score": row_score,
-                    })
+                    if block_text:
+                        enhanced_metadata = get_enhanced_metadata(record,block,{})
+                        child_results.append({
+                            "content": block_text,
+                            "block_type": block_type,
+                            "metadata": enhanced_metadata,
+                            "virtual_record_id": virtual_record_id,
+                            "block_index": row_index,
+                            "citationType": "vectordb|document",
+                            "score": row_score,
+                        })
             elif qdrant_content:
                 # Block not in blob (SQL row limit) — use Qdrant page_content
                 logger.debug(f"Using Qdrant page_content for row {row_index} of virtual record {virtual_record_id}")
@@ -1793,14 +1795,14 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
                                     row_text = block_data.get("row_natural_language_text", "")
                                 else:
                                     row_text = str(block_data)
-
-                                child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index)
-                                child_results.append({
-                                    "content": row_text,
-                                    "block_index": row_index,
-                                    "block_web_url": child_block_web_url,
-                                    "citation_ref": ref_mapper.get_or_create_ref(child_block_web_url),
-                                })
+                                if row_text:
+                                    child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index)
+                                    child_results.append({
+                                        "content": row_text,
+                                        "block_index": row_index,
+                                        "block_web_url": child_block_web_url,
+                                        "citation_ref": ref_mapper.get_or_create_ref(child_block_web_url),
+                                    })
 
                         if isinstance(data, dict):
                             table_summary = data.get("table_summary", "Not Available")

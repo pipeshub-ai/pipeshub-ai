@@ -434,7 +434,7 @@ class BlockContainerValidator:
             elif not has_cells:
                 if not isinstance(row_text, str) or not row_text.strip():
                     issues.append(ValidationIssue(
-                        severity=Severity.ERROR,
+                        severity=Severity.WARNING,
                         code="TABLE_ROW_NO_EMBEDDABLE_CONTENT",
                         message=(
                             "table_row has no non-empty cells list and "
