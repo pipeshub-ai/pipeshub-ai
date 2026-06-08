@@ -61,7 +61,6 @@ api_key = os.getenv("OPIK_API_KEY")
 workspace = os.getenv("OPIK_WORKSPACE")
 if api_key and workspace:
     try:
-        from opik import configure
         from opik.integrations.langchain import OpikTracer
         opik_tracer = OpikTracer()
     except Exception as e:

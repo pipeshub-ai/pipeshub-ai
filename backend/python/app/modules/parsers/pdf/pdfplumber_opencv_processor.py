@@ -91,16 +91,17 @@ class PDFPlumberOpenCVProcessor:
 
         def _parse_sync() -> List[ParsedPageData]:
             out: List[ParsedPageData] = []
-            tmp = tempfile.NamedTemporaryFile(
-                delete=False, suffix=".pdf", prefix="pipeshub_pdf_"
-            )
+            tmp_path: str | None = None
             try:
-                tmp.write(pdf_bytes)
-                tmp.flush()
-                tmp.close()
+                with tempfile.NamedTemporaryFile(
+                    delete=False, suffix=".pdf", prefix="pipeshub_pdf_"
+                ) as tmp:
+                    tmp_path = tmp.name
+                    tmp.write(pdf_bytes)
+                    tmp.flush()
                 with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
                     for page_idx, page in enumerate(pdf.pages):
-                        regions = extract_layout_regions(page, pdf_path=tmp.name)
+                        regions = extract_layout_regions(page, pdf_path=tmp_path)
                         out.append(
                             ParsedPageData(
                                 page_number=page_idx + 1,
@@ -110,10 +111,11 @@ class PDFPlumberOpenCVProcessor:
                             )
                         )
             finally:
-                try:
-                    os.unlink(tmp.name)
-                except OSError:
-                    pass
+                if tmp_path is not None:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
             return out
 
         pages_data = await asyncio.to_thread(_parse_sync)
