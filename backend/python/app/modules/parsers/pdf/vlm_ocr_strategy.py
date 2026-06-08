@@ -373,7 +373,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             finally:
                 tmp.close()
             self._pdf_path = tmp.name
-            self.doc = pdfplumber.open(BytesIO(content))
+            self.doc = pdfplumber.open(self._pdf_path)
             self.logger.info(f"📚 Loaded PDF with {len(self.doc.pages)} pages")
 
             self.logger.debug("🤖 Getting multimodal LLM")

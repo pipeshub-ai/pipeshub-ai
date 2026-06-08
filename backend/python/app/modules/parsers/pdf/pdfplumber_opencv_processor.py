@@ -99,7 +99,7 @@ class PDFPlumberOpenCVProcessor:
                     tmp_path = tmp.name
                     tmp.write(pdf_bytes)
                     tmp.flush()
-                with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+                with pdfplumber.open(tmp_path) as pdf:
                     for page_idx, page in enumerate(pdf.pages):
                         regions = extract_layout_regions(page, pdf_path=tmp_path)
                         out.append(
