@@ -3678,25 +3678,28 @@ class TestFetchIssuesBatchedFilters:
 
 class TestFallbackPermissionsForForbiddenSchemeCloud:
 
-    def test_returns_user_permission_when_email_set(self):
+    @pytest.mark.asyncio
+    async def test_returns_user_permission_when_email_set(self):
         conn = _make_connector()
         conn.creator_email = "owner@example.com"
-        result = conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
+        result = await conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
         assert len(result) == 1
         assert result[0].entity_type == EntityType.USER
         assert result[0].email == "owner@example.com"
         assert result[0].type == PermissionType.READ
 
-    def test_returns_empty_when_no_email(self):
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_email(self):
         conn = _make_connector()
         conn.creator_email = None
-        assert conn._fallback_permissions_for_forbidden_scheme("PROJ", 401, "permission scheme") == []
+        assert await conn._fallback_permissions_for_forbidden_scheme("PROJ", 401, "permission scheme") == []
 
-    def test_works_for_both_401_and_403(self):
+    @pytest.mark.asyncio
+    async def test_works_for_both_401_and_403(self):
         conn = _make_connector()
         conn.creator_email = "e@x.com"
         for status in (401, 403):
-            result = conn._fallback_permissions_for_forbidden_scheme("P", status, "grants")
+            result = await conn._fallback_permissions_for_forbidden_scheme("P", status, "grants")
             assert len(result) == 1
             assert result[0].entity_type == EntityType.USER
 
