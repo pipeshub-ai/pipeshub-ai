@@ -100,3 +100,125 @@ class TestKnowledgeBaseCrud:
         assert_response_matches_openapi_operation(
             resp.json(), "createKnowledgeBase", status_code="401"
         )
+
+    def test_list_knowledge_bases_success(
+        self, ten_knowledge_bases: dict[str, object]
+    ) -> None:
+        prefix = str(ten_knowledge_bases["prefix"])
+        params = {
+            "page": "1",
+            "limit": "5",
+            "search": prefix,
+            "permissions": "OWNER",
+            "sortBy": "createdAtTimestamp",
+            "sortOrder": "desc",
+        }
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params=params,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "listKnowledgeBases")
+
+        assert len(body["knowledgeBases"]) == 5
+        assert body["pagination"]["totalCount"] >= 10
+        assert body["pagination"]["hasNext"] is True
+        for kb in body["knowledgeBases"]:
+            assert prefix in kb["name"]
+
+    def test_list_knowledge_bases_negative(self) -> None:
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"page": "0"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "listKnowledgeBases", status_code="400"
+        )
+
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"limit": "101"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "listKnowledgeBases", status_code="400"
+        )
+
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"foo": "bar"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "listKnowledgeBases", status_code="400"
+        )
+
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"sortBy": "notAField"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "listKnowledgeBases", status_code="400"
+        )
+
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"sortOrder": "invalid"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "listKnowledgeBases", status_code="400"
+        )
+
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"permissions": "NOT_A_ROLE"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "listKnowledgeBases", status_code="400"
+        )
+
+        resp = requests.get(
+            self.url,
+            headers=self.headers,
+            params={"search": "<script>alert(1)</script>"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "listKnowledgeBases", status_code="400"
+        )
+
+        resp = requests.get(self.url, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "listKnowledgeBases", status_code="401"
+        )
+
+        resp = requests.get(
+            self.url,
+            headers={"Authorization": "Bearer invalid"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "listKnowledgeBases", status_code="401"
+        )

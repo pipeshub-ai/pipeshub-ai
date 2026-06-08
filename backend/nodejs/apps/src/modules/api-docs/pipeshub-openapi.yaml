@@ -2625,6 +2625,143 @@ components:
         - createdAtTimestamp
         - updatedAtTimestamp
 
+    GetAllKnowledgeBaseResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by GET /knowledgeBase (listKnowledgeBases).
+      required:
+        - knowledgeBases
+        - pagination
+        - filters
+      properties:
+        knowledgeBases:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - id
+              - name
+              - connectorId
+              - createdAtTimestamp
+              - updatedAtTimestamp
+              - createdBy
+              - userRole
+              - folders
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              connectorId:
+                type: string
+                nullable: true
+              createdAtTimestamp:
+                type: integer
+                format: int64
+              updatedAtTimestamp:
+                type: integer
+                format: int64
+              createdBy:
+                type: string
+              userRole:
+                type: string
+                enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+              folders:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required:
+                    - id
+                    - name
+                  properties:
+                    id:
+                      type: string
+                    name:
+                      type: string
+                    createdAtTimestamp:
+                      type: integer
+                      format: int64
+                    path:
+                      type: string
+                    webUrl:
+                      type: string
+                      nullable: true
+        pagination:
+          type: object
+          additionalProperties: false
+          required:
+            - page
+            - limit
+            - totalCount
+            - totalPages
+            - hasNext
+            - hasPrev
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalCount:
+              type: integer
+            totalPages:
+              type: integer
+            hasNext:
+              type: boolean
+            hasPrev:
+              type: boolean
+        filters:
+          type: object
+          additionalProperties: false
+          required:
+            - applied
+            - available
+          properties:
+            applied:
+              type: object
+              additionalProperties: false
+              description: |
+                Active filters. Empty `{}` when defaults. Keys use snake_case for sort
+                fields (backend convention in kb_service.py).
+              properties:
+                search:
+                  type: string
+                permissions:
+                  type: array
+                  items:
+                    type: string
+                    enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+                sort_by:
+                  type: string
+                  enum: [name, createdAtTimestamp, updatedAtTimestamp, userRole]
+                sort_order:
+                  type: string
+                  enum: [asc, desc]
+            available:
+              type: object
+              additionalProperties: false
+              required:
+                - permissions
+                - sortFields
+                - sortOrders
+              properties:
+                permissions:
+                  type: array
+                  items:
+                    type: string
+                    enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+                sortFields:
+                  type: array
+                  items:
+                    type: string
+                    enum: [name, createdAtTimestamp, updatedAtTimestamp, userRole]
+                sortOrders:
+                  type: array
+                  items:
+                    type: string
+                    enum: [asc, desc]
+
     Folder:
       type: object
       properties:
@@ -18126,23 +18263,31 @@ paths:
         - Knowledge Bases
       summary: List all knowledge bases
       description: |
-        Retrieve a paginated list of all knowledge bases accessible to the authenticated user.<br><br>
-        <b>Overview:</b><br>
-        Returns knowledge bases where the user has at least READER permission. Results include the user's role for each KB.<br><br>
-        <b>Filtering:</b><br>
-        <ul>
-        <li><b>search:</b> Full-text search on KB names (max 1000 chars)</li>
-        <li><b>permissions:</b> Filter by user's role (comma-separated: OWNER,WRITER,READER)</li>
-        </ul>
-        <b>Sorting Options:</b><br>
-        <ul>
-        <li><code>name</code> - Alphabetical by KB name</li>
-        <li><code>createdAtTimestamp</code> - By creation date</li>
-        <li><code>updatedAtTimestamp</code> - By last modification</li>
-        <li><code>userRole</code> - By permission level</li>
-        </ul>
-        <b>Performance:</b><br>
+        Retrieve a paginated list of all knowledge bases accessible to the authenticated user.
+
+        **Overview:**
+
+        Returns knowledge bases where the user has at least READER permission. Results include the user's role for each KB.
+
+        **Filtering:**
+
+        - **search:** Full-text search on KB names (max 1000 chars)
+        - **permissions:** Filter by user's role (comma-separated: OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER)
+
+        **Sorting Options:**
+
+        - `name` — Alphabetical by KB name
+        - `createdAtTimestamp` — By creation date
+        - `updatedAtTimestamp` — By last modification
+        - `userRole` — By permission level
+
+        **Performance:**
+
         Uses efficient pagination with limit/offset. For large result sets, use smaller page sizes.
+
+        **Query parameters:**
+
+        Only `page`, `limit`, `search`, `permissions`, `sortBy`, and `sortOrder` are allowed; unknown query keys are rejected.
       operationId: listKnowledgeBases
       security:
         - bearerAuth: []
@@ -18150,14 +18295,16 @@ paths:
       parameters:
         - name: page
           in: query
-          description: Page number (1-indexed)
+          required: false
+          description: Page number (1-indexed). Omitted values default to 1.
           schema:
             type: integer
             minimum: 1
             default: 1
         - name: limit
           in: query
-          description: Results per page (max 100)
+          required: false
+          description: Results per page (max 100). Omitted values default to 20.
           schema:
             type: integer
             minimum: 1
@@ -18165,26 +18312,34 @@ paths:
             default: 20
         - name: search
           in: query
-          description: Search query for KB names (max 1000 chars)
+          required: false
+          description: |
+            Search KB names (max 1000 chars). Rejected if it contains HTML/script tags,
+            event handlers, `javascript:`, or format specifiers (validated in Zod + controller).
           schema:
             type: string
             maxLength: 1000
         - name: permissions
           in: query
-          description: Filter by permission roles (comma-separated)
+          required: false
+          description: |
+            Comma-separated permission roles to filter by. Each token must be one of:
+            OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER.
           schema:
             type: string
             example: "OWNER,ORGANIZER,WRITER"
         - name: sortBy
           in: query
-          description: Field to sort by
+          required: false
+          description: Field to sort by.
           schema:
             type: string
             enum: [name, createdAtTimestamp, updatedAtTimestamp, userRole]
             default: name
         - name: sortOrder
           in: query
-          description: Sort direction
+          required: false
+          description: Sort direction.
           schema:
             type: string
             enum: [asc, desc]
@@ -18195,45 +18350,56 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  knowledgeBases:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/KnowledgeBase'
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                        description: Current page number
-                      limit:
-                        type: integer
-                        description: Items per page
-                      totalCount:
-                        type: integer
-                        description: Total number of items
-                      totalPages:
-                        type: integer
-                        description: Total number of pages
-                      hasNext:
-                        type: boolean
-                        description: Whether there is a next page
-                      hasPrev:
-                        type: boolean
-                        description: Whether there is a previous page
-                  filters:
-                    type: object
-                    description: Applied and available filters
-                    properties:
-                      applied:
-                        type: object
-                      available:
-                        type: object
+                $ref: '#/components/schemas/GetAllKnowledgeBaseResponseSchema'
         '400':
-          description: Invalid query parameters
+          description: |
+            **Invalid query parameters:**
+
+            - `page` not a positive integer
+            - `limit` not between 1 and 100
+            - Unknown query parameter (only `page`, `limit`, `search`, `permissions`, `sortBy`, `sortOrder` allowed)
+            - Invalid `sortBy` or `sortOrder`
+            - Invalid `permissions` role token
+            - `search` too long, or contains HTML/scripts/format specifiers
+            - Connector returned a 400 error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid bearer token required
+          description: Unauthorized — valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:read` scope
+            - Connector service denied the request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found — authenticated user does not exist in the graph database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error — listing knowledge bases failed in connector or database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable — connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /knowledgeBase/{kbId}:
     get:
