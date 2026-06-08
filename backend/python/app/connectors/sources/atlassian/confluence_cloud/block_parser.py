@@ -616,35 +616,6 @@ class ConfluenceBlockParser:
 
         return [BlockContainerIndex(block_index=block_index)]
 
-    async def _parse_rule(
-        self,
-        node: dict[str, Any],
-        blocks: list[Block],
-        block_groups: list[BlockGroup],
-        parent_group_index: int | None,
-        media_fetcher: Callable | None,
-        parent_page_url: str | None,
-        page_id: str | None,
-        list_depth: int = 0,
-        parent_list_style: str | None = None,
-    ) -> list[BlockContainerIndex]:
-        """Parse rule (horizontal line) node into TEXT block with DIVIDER sub_type."""
-        block_index = len(blocks)
-        block = Block(
-            id=str(uuid4()),
-            index=block_index,
-            parent_index=parent_group_index,
-            type=BlockType.TEXT,
-            sub_type=BlockSubType.DIVIDER,
-            format=DataFormat.MARKDOWN,
-            data="---",
-            source_id=node.get("attrs", {}).get("localId"),
-            weburl=self._normalize_url(parent_page_url),
-        )
-        blocks.append(block)
-
-        return [BlockContainerIndex(block_index=block_index)]
-
     async def _parse_inlineCode(
         self,
         node: dict[str, Any],
