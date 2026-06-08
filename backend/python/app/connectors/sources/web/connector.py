@@ -57,7 +57,7 @@ from app.models.entities import (
     RecordType,
     User,
 )
-from app.services.notification.types import NotificationSeverity, NotificationType
+from app.services.notification.types import NotificationRecipientRole, NotificationSeverity, NotificationType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.utils.streaming import create_stream_record_response
@@ -586,6 +586,13 @@ class WebConnector(BaseConnector):
 
             if result is None:
                 self.logger.warning(f"⚠️ Website not accessible: {self.url}")
+                await self.notify(
+                    type=NotificationType.CONNECTOR_NOT_ACCESSIBLE,
+                    severity=NotificationSeverity.ERROR,
+                    title=f"Website not accessible",
+                    message=f"Website {self.url} is not accessible.",
+                    recipient_user_ids=[NotificationRecipientRole.ADMIN],
+                )
                 return False
 
             if result.status_code < HttpStatusCode.BAD_REQUEST.value:
@@ -597,6 +604,13 @@ class WebConnector(BaseConnector):
             else:
                 self.logger.warning(
                     f"⚠️ Website returned status {result.status_code}: {self.url}"
+                )
+                await self.notify(
+                    type=NotificationType.CONNECTOR_NOT_ACCESSIBLE,
+                    severity=NotificationSeverity.ERROR,
+                    title=f"Website not accessible",
+                    message=f"Website {self.url} returned status {result.status_code}",
+                    recipient_user_ids=[NotificationRecipientRole.ADMIN],
                 )
                 return False
 
@@ -794,6 +808,23 @@ class WebConnector(BaseConnector):
             self.logger.info(
                 f"✅ Web crawl completed: {len(self.visited_urls)} pages crawled, {self.processed_urls} pages processed, {len(self.retry_urls)} pages failed"
             )
+
+            if len(self.retry_urls) > 0:
+                await self.notify(
+                    type=NotificationType.CONNECTOR_INFO,
+                    severity=NotificationSeverity.INFO,
+                    title=f"Web crawl completed",
+                    message=f"Failed to crawl {len(self.retry_urls)} pages.\nCrawled {len(self.visited_urls)} pages.\nProcessed {self.processed_urls} pages.",
+                    recipient_user_ids=[self.created_by],
+                )
+            elif self.processed_urls > 0:
+                await self.notify(
+                    type=NotificationType.CONNECTOR_INFO,
+                    severity=NotificationSeverity.INFO,
+                    title=f"Web crawl completed",
+                    message=f"Added {self.processed_urls} pages.",
+                    recipient_user_ids=[self.created_by],
+                )
 
         except Exception as e:
             self.logger.error(f"❌ Error during web sync: {e}", exc_info=True)

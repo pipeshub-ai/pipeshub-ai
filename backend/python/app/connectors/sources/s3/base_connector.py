@@ -29,6 +29,7 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
+    NotificationRecipientRole,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -1130,9 +1131,23 @@ class S3CompatibleBaseConnector(BaseConnector):
                 return True
             else:
                 self.logger.error(f"{self.connector_name} connection test failed: {response.error}")
+                await self.notify(
+                    type=NotificationType.CONNECTOR_AUTH_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=f"Connection test failed",
+                    message=f"{self.connector_name.value}: {response.error}",
+                    recipient_roles=[NotificationRecipientRole.EVERYONE],
+                )
                 return False
         except Exception as e:
             self.logger.error(f"{self.connector_name} connection test failed: {e}", exc_info=True)
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=f"Connection test failed",
+                message=f"{self.connector_name.value}: {e}",
+                recipient_roles=[NotificationRecipientRole.ADMIN],
+            )
             return False
 
     async def get_signed_url(self, record: Record) -> str | None:
