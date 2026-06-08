@@ -855,21 +855,21 @@ export function ChatInput({
   // dragged over the whole chat input area (not just the upload-area box).
   const handlePanelDragEnter = (e: React.DragEvent) => {
     if (!canAcceptDrop) return;
-    if (!e.dataTransfer.types.includes('Files')) return;
+    if (!e.dataTransfer?.types.includes('Files')) return;
     e.preventDefault();
     setIsPanelDragging(true);
   };
 
   const handlePanelDragOver = (e: React.DragEvent) => {
     if (!canAcceptDrop) return;
-    if (!e.dataTransfer.types.includes('Files')) return;
+    if (!e.dataTransfer?.types.includes('Files')) return;
     e.preventDefault();
   };
 
   // Use relatedTarget to distinguish cursor-left-container from cursor-moved-to-child.
   // Handles drag-leaves-window (relatedTarget === null) correctly.
   const handlePanelDragLeave = (e: React.DragEvent) => {
-    if (containerRef.current?.contains(e.relatedTarget as Node)) return;
+    if (e.relatedTarget && containerRef.current?.contains(e.relatedTarget as Node)) return;
     setIsPanelDragging(false);
   };
 
@@ -878,7 +878,7 @@ export function ChatInput({
     e.stopPropagation();
     setIsPanelDragging(false);
     if (!canAcceptDrop) return;
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+    if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
       processFiles(e.dataTransfer.files);
     }
   };
