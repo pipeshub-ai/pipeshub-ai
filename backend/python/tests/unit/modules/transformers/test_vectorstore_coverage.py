@@ -621,7 +621,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -642,7 +642,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = [bg]
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -670,7 +670,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
@@ -696,7 +696,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
@@ -722,7 +722,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = [bg]
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -749,7 +749,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
@@ -776,7 +776,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             # Not multimodal LLM either
@@ -806,7 +806,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -835,7 +835,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -865,7 +865,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})

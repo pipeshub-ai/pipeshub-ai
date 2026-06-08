@@ -10,7 +10,7 @@ PipesHub is a workplace AI platform for enterprise search and workflow automatio
 
 ### Architecture
 
-The platform is a polyglot system: **4 independent Python FastAPI microservices**, **1 Node.js Express API**, and **1 Nextjs frontend**, backed by a fleet of stateful services.
+The platform is a polyglot system: **5 independent Python FastAPI microservices**, **1 Node.js Express API**, and **1 Nextjs frontend**, backed by a fleet of stateful services.
 
 ```
 /pipeshub-ai
@@ -29,7 +29,8 @@ The platform is a polyglot system: **4 independent Python FastAPI microservices*
 - **Connectors** (`backend/python`, port 8088) — `app.connectors_main`. OAuth flows, token refresh, and 30+ data-source integrations (Google, Microsoft, Slack, Jira, Confluence, etc.). Uses a `ConnectorFactory` pattern; new sources live under `app/connectors/sources/`.
 - **Indexing** (`backend/python`, port 8091) — `app.indexing_main`. Document parsing, chunking, and embedding generation. Writes vectors to Qdrant and graph nodes to ArangoDB.
 - **Query** (`backend/python`, port 8000) — `app.query_main`. Retrieval-augmented generation, semantic search, and LLM orchestration via LiteLLM. Hosts the RAG pipeline and agent/workflow runtime.
-- **Docling** (`backend/python`, port 8001) — `app.docling_main`. Advanced document parsing and OCR for complex formats (PDFs, scans, tables).
+- **Docling** (`backend/python`, port 8081) — `app.docling_main`. Advanced document parsing and OCR for complex formats (PDFs, scans, tables).
+- **Embedding** (`backend/python`, port 8002) — `app.embedding_main`. Centralized local dense embedding server (HuggingFace / SentenceTransformers) with OpenAI-compatible `/v1/embeddings`. Indexing and query use this for default local models.
 
 ### Cross-cutting patterns
 

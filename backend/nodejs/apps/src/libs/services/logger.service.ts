@@ -107,14 +107,11 @@ export class Logger {
           filename: 'combined.log',
           format: winston.format.combine(logFormat, winston.format.json())
         }),
-        ...(process.env.NODE_ENV !== 'production'
-          ? [new winston.transports.Console({
-            format: winston.format.combine(
-              winston.format.colorize(),
-              logFormat
-            )
-          })]
-          : []),
+        new winston.transports.Console({
+          format: process.env.NODE_ENV !== 'production'
+            ? winston.format.combine(winston.format.colorize(), logFormat)
+            : winston.format.combine(logFormat, winston.format.json()),
+        }),
       ],
     });
   }

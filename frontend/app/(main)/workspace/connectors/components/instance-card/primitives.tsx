@@ -1,8 +1,10 @@
 'use client';
 
 import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
 import { useToastStore } from '@/lib/store/toast-store';
 import { runConnectorResync } from '../../utils/connector-sync-actions';
 
@@ -155,10 +157,12 @@ export function FullSyncButton({
   connectorId: string;
   connectorType: string;
 }) {
+  const { t } = useTranslation();
   const [state, setState] = useState<SyncState>('idle');
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const addToast = useToastStore((s) => s.addToast);
 
-  const handleClick = async () => {
+  const handleConfirmFullSync = async () => {
     if (state === 'syncing') return;
     setState('syncing');
     try {
@@ -182,6 +186,8 @@ export function FullSyncButton({
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('failed');
       addToast({ variant: 'error', title: 'Full sync failed' });
+    } finally {
+      setConfirmOpen(false);
     }
   };
 
@@ -204,17 +210,39 @@ export function FullSyncButton({
   }[state];
 
   return (
-    <Button
-      variant={state === 'syncing' ? 'soft' : 'solid'}
-      color={state === 'failed' ? 'red' : state === 'syncing' ? 'gray' : 'blue'}
-      size="1"
-      onClick={handleClick}
-      disabled={state === 'syncing'}
-      style={{ cursor: state === 'syncing' ? 'default' : 'pointer', flexShrink: 0 }}
-    >
-      <MaterialIcon name={config.icon} size={16} color={config.color} />
-      {config.label}
-    </Button>
+    <>
+      <Button
+        variant={state === 'syncing' ? 'soft' : 'solid'}
+        color={state === 'failed' ? 'red' : state === 'syncing' ? 'gray' : 'blue'}
+        size="1"
+        onClick={() => {
+          if (state !== 'syncing') setConfirmOpen(true);
+        }}
+        disabled={state === 'syncing'}
+        style={{ cursor: state === 'syncing' ? 'default' : 'pointer', flexShrink: 0 }}
+      >
+        <MaterialIcon name={config.icon} size={16} color={config.color} />
+        {config.label}
+      </Button>
+      <ConfirmationDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title={t('workspace.connectors.fullSyncConfirm.title', {
+          defaultValue: 'Start full sync?',
+        })}
+        message={t('workspace.connectors.fullSyncConfirm.message', {
+          defaultValue:
+            'Overwrites and re-syncs all data from scratch and is slower than normal Sync. Use full sync when content is missing, duplicated, or doesn’t match the source. For routine updates, use Sync instead.',
+        })}
+        confirmLabel={t('workspace.connectors.fullSyncConfirm.confirm', {
+          defaultValue: 'Confirm',
+        })}
+        cancelLabel={t('common.cancel', { defaultValue: 'Cancel' })}
+        confirmVariant="primary"
+        isLoading={state === 'syncing'}
+        onConfirm={() => void handleConfirmFullSync()}
+      />
+    </>
   );
 }
 

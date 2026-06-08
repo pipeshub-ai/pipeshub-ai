@@ -1446,16 +1446,9 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         )
         payload = {
             "isHelpful": True,
-            "ratings": {"accuracy": 5, "relevance": 4},
             "categories": ["excellent_answer"],
             "comments": {
                 "positive": "Clear and useful.",
-                "negative": "",
-                "suggestions": "More examples would help.",
-            },
-            "metrics": {
-                "userInteractionTime": 1200,
-                "feedbackSessionId": "integration-test-session",
             },
         }
         resp = requests.post(

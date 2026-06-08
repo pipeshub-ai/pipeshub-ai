@@ -8,7 +8,7 @@
 	clean-docker clean-docker-no-etcd clean-docker-neo4j \
 	stop-and-clean-volumes stop-and-clean-volumes-no-etcd stop-and-clean-volumes-neo4j \
 	setup-nodejs implode-setup-nodejs nodejs setup-python setup-python-deps \
-	implode-setup-python connectors indexing query docling check-python-version \
+	implode-setup-python connectors indexing query embedding docling check-python-version \
 	setup-frontend implode-setup-frontend frontend clean-env setup-all clean-all \
 	dev-docker-menu prod-docker-menu dev-docker-up dev-docker-down dev-docker-stop dev-docker-clean dev-docker-hard-clean \
 	prod-docker-up prod-docker-down prod-docker-stop prod-docker-clean prod-docker-hard-clean \
@@ -93,6 +93,7 @@ help: ## Show this help message
 	@echo "  make connectors           - Run connectors service (requires venv)"
 	@echo "  make indexing             - Run indexing service (requires venv)"
 	@echo "  make query                - Run query service (requires venv)"
+	@echo "  make embedding            - Run embedding service (requires venv; start before indexing/query)"
 	@echo "  make docling              - Run docling service (requires venv)"
 	@echo "  make check-python-version - Check Python version used by the venv"
 	@echo ""
@@ -507,6 +508,7 @@ setup-python: ## Setup Python backend (create venv and install dependencies)
 	@echo "$(YELLOW)  - make connectors$(NC)"
 	@echo "$(YELLOW)  - make indexing$(NC)"
 	@echo "$(YELLOW)  - make query$(NC)"
+	@echo "$(YELLOW)  - make embedding$(NC)"
 	@echo "$(YELLOW)  - make docling$(NC)"
 
 setup-python-deps: ## Install Python dependencies (requires existing venv)
@@ -539,6 +541,12 @@ query: ## Run Python query service
 	@echo "$(BLUE)Starting query service...$(NC)"
 	@echo "$(YELLOW)Note: This will block the terminal$(NC)"
 	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m app.query_main
+
+embedding: ## Run Python embedding service (local HuggingFace / SentenceTransformer models)
+	@echo "$(BLUE)Starting embedding service...$(NC)"
+	@echo "$(YELLOW)Note: This will block the terminal$(NC)"
+	@echo "$(YELLOW)Start this before indexing and query when using default local embeddings$(NC)"
+	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m app.embedding_main
 
 docling: ## Run Python docling service
 	@echo "$(BLUE)Starting docling service...$(NC)"
@@ -611,6 +619,7 @@ setup-all: setup-nodejs setup-python setup-frontend ## Setup all services
 	@echo "   - make connectors"
 	@echo "   - make indexing"
 	@echo "   - make query"
+	@echo "   - make embedding"
 	@echo "   - make docling"
 	@echo "4. Start frontend: cd frontend && npm run dev"
 	@echo ""
@@ -664,7 +673,7 @@ clean-all: ## Clean all setups with hard Docker cleanup
 
 check-and-kill-ports: ## Check for running processes on required ports and ask to kill them
 	@echo "$(BLUE)Checking for running processes on required ports...$(NC)"
-	@PORTS_TO_CHECK="8000 8091 8081 8088 3000 3001"; \
+	@PORTS_TO_CHECK="8000 8002 8091 8081 8088 3000 3001"; \
 	PROCESSES_FOUND=""; \
 	OS_TYPE=$$(uname -s 2>/dev/null || echo "Unknown"); \
 	if [ "$$OS_TYPE" = "Darwin" ] || [ "$$OS_TYPE" = "Linux" ]; then \

@@ -5415,6 +5415,18 @@ export const listAgents =
         res.status(HTTP_STATUS.OK).json({ success: true, agents: [], pagination: { currentPage: Number(page ?? 1), limit: Number(limit ?? 20), totalItems: 0, totalPages: 0, hasNext: false, hasPrev: false } });
         return;
       }
+      const responsePayload = aiResponse.data as Record<string, unknown>;
+      if (
+        responsePayload &&
+        typeof responsePayload === 'object' &&
+        Array.isArray(responsePayload.agents)
+      ) {
+        res.status(HTTP_STATUS.OK).json({
+          ...responsePayload,
+          agents: responsePayload.agents.map((agent) => omitId(agent)),
+        });
+        return;
+      }
       res.status(HTTP_STATUS.OK).json(aiResponse.data);
     } catch (error: any) {
       logger.error('Error getting agents', {

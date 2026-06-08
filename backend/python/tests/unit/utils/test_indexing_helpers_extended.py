@@ -20,7 +20,7 @@ class TestGetRowsText:
 
     @pytest.mark.asyncio
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role")
     async def test_with_column_headers_and_parsed_response(
         self, mock_get_llm, mock_invoke
     ):
@@ -50,7 +50,7 @@ class TestGetRowsText:
 
     @pytest.mark.asyncio
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role")
     async def test_without_column_headers(self, mock_get_llm, mock_invoke):
         """Lines 132-133: no column headers, use all rows."""
         from app.utils.indexing_helpers import get_rows_text
@@ -75,7 +75,7 @@ class TestGetRowsText:
 
     @pytest.mark.asyncio
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role")
     async def test_with_dict_cells(self, mock_get_llm, mock_invoke):
         """Lines 137-139: cells are dicts with 'text' key."""
         from app.utils.indexing_helpers import get_rows_text
@@ -109,7 +109,7 @@ class TestGetRowsText:
 
     @pytest.mark.asyncio
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role")
     async def test_parsed_response_empty_descriptions(self, mock_get_llm, mock_invoke):
         """Lines 159: parsed_response is not None but descriptions is empty list."""
         from app.utils.indexing_helpers import get_rows_text
@@ -128,7 +128,7 @@ class TestGetRowsText:
         assert len(descriptions) == 2
 
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role")
     async def test_exception_propagates(self, mock_get_llm):
         """Lines 163-164: exception is re-raised."""
         from app.utils.indexing_helpers import get_rows_text
@@ -142,7 +142,7 @@ class TestGetRowsText:
 
     @pytest.mark.asyncio
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role")
     async def test_more_columns_than_headers(self, mock_get_llm, mock_invoke):
         """Lines 137: more columns than headers => uses Column_N fallback."""
         from app.utils.indexing_helpers import get_rows_text

@@ -2750,7 +2750,18 @@ describe('Enterprise Search Controller', () => {
 
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
-        data: [{ agentKey: 'agent-1' }],
+        data: {
+          success: true,
+          agents: [{ id: 'remove-me', agentKey: 'agent-1' }],
+          pagination: {
+            currentPage: 1,
+            limit: 20,
+            totalItems: 1,
+            totalPages: 1,
+            hasNext: false,
+            hasPrev: false,
+          },
+        },
       } as any)
 
       const req = createMockRequest({
@@ -2763,6 +2774,8 @@ describe('Enterprise Search Controller', () => {
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
+        expect(res.json.firstCall.args[0].agents[0]).to.not.have.property('id')
+        expect(res.json.firstCall.args[0].agents[0].agentKey).to.equal('agent-1')
       }
     })
 
@@ -2775,7 +2788,11 @@ describe('Enterprise Search Controller', () => {
         )
         return Promise.resolve({
           statusCode: 200,
-          data: { success: true, agents: [], pagination: { currentPage: 2, limit: 50 } },
+          data: {
+            success: true,
+            agents: [{ id: 'remove-me', agentKey: 'agent-1' }],
+            pagination: { currentPage: 2, limit: 50 },
+          },
         } as any)
       })
 
@@ -2796,6 +2813,7 @@ describe('Enterprise Search Controller', () => {
 
       expect(next.called).to.be.false
       expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0].agents[0]).to.not.have.property('id')
     })
 
     it('should return empty array on non-200 response', async () => {

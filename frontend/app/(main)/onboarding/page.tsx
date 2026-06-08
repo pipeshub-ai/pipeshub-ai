@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, Suspense } from 'react';
+import React, { useEffect, useRef, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Flex, Box, Text, Button, Spinner } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -29,6 +29,12 @@ function OnboardingPageInner() {
   const [embeddingDefaultDialog, setEmbeddingDefaultDialog] = useState(false);
   const [embeddingRegistryHasDefault, setEmbeddingRegistryHasDefault] = useState(false);
   const [isFinishing, setIsFinishing] = useState(false);
+
+  /**
+   * Steps can register a gate function here. handleNext checks it before
+   * navigating; if it returns false the step handles its own error feedback.
+   */
+  const nextGateRef = useRef<(() => boolean) | null>(null);
 
   const {
     steps,
@@ -121,6 +127,8 @@ function OnboardingPageInner() {
   };
 
   const handleNext = () => {
+    // Allow the active step to block navigation and show its own error feedback
+    if (nextGateRef.current && !nextGateRef.current()) return;
     if (currentIndex < steps.length - 1) {
       navigateTo(steps[currentIndex + 1].id);
     }
@@ -198,6 +206,7 @@ function OnboardingPageInner() {
           <StepAiModel
             systemStepIndex={systemStepIndex}
             totalSystemSteps={totalSystemSteps}
+            nextGateRef={nextGateRef}
           />
         );
       case 'embedding-model':
@@ -226,6 +235,7 @@ function OnboardingPageInner() {
           <StepAiModel
             systemStepIndex={systemStepIndex}
             totalSystemSteps={totalSystemSteps}
+            nextGateRef={nextGateRef}
           />
         );
     }

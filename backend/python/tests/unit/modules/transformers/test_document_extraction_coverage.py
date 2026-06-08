@@ -131,7 +131,7 @@ class TestExtractMetadataExceptionPropagation:
         blocks = [_make_text_block("Some content")]
 
         with patch(
-            "app.modules.transformers.document_extraction.get_llm",
+            "app.modules.transformers.document_extraction.get_llm_for_role",
             return_value=(fake_llm, fake_config),
         ), patch.object(ext, "graph_provider") as mock_graph:
             mock_graph.get_departments = AsyncMock(
@@ -152,7 +152,7 @@ class TestExtractMetadataExceptionPropagation:
         blocks = [_make_text_block("Some content")]
 
         with patch(
-            "app.modules.transformers.document_extraction.get_llm",
+            "app.modules.transformers.document_extraction.get_llm_for_role",
             return_value=(fake_llm, fake_config),
         ), patch.object(ext, "graph_provider") as mock_graph, patch(
             "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
@@ -299,7 +299,7 @@ class TestExtractMetadataDepartmentsFallback:
         blocks = [_make_text_block("Some content")]
 
         with patch(
-            "app.modules.transformers.document_extraction.get_llm",
+            "app.modules.transformers.document_extraction.get_llm_for_role",
             return_value=(fake_llm, fake_config),
         ), patch.object(ext, "graph_provider") as mock_graph, patch(
             "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
@@ -339,7 +339,7 @@ class TestExtractMetadataDepartmentsFallback:
         blocks = [_make_text_block("Content")]
 
         with patch(
-            "app.modules.transformers.document_extraction.get_llm",
+            "app.modules.transformers.document_extraction.get_llm_for_role",
             return_value=(fake_llm, fake_config),
         ), patch.object(ext, "graph_provider") as mock_graph, patch(
             "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",

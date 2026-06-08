@@ -135,7 +135,7 @@ describe('configuration_manager/validator/validators', () => {
           modelType: 'llm',
           provider: 'minimax',
           configuration: {
-            model: 'MiniMax-M2.7',
+            model: 'MiniMax-M3',
             apiKey: 'test-minimax-key',
           },
           isMultimodal: true,
@@ -153,7 +153,7 @@ describe('configuration_manager/validator/validators', () => {
           modelType: 'llm',
           provider: 'minimax',
           configuration: {
-            model: 'MiniMax-M2.7, MiniMax-M2.7-highspeed',
+            model: 'MiniMax-M3, MiniMax-M2.7, MiniMax-M2.7-highspeed',
             apiKey: 'test-minimax-key',
           },
           isMultimodal: true,
@@ -171,7 +171,7 @@ describe('configuration_manager/validator/validators', () => {
           modelType: 'invalid',
           provider: 'minimax',
           configuration: {
-            model: 'MiniMax-M2.7',
+            model: 'MiniMax-M3',
             apiKey: 'test-key',
           },
           isMultimodal: false,

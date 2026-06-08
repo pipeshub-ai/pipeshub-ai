@@ -110,7 +110,9 @@ export type SidebarReindexHandler = (
   nodeId: string,
   nodeType: NodeType,
   name: string,
-  statusFilters?: IndexingStatus[]
+  statusFilters?: IndexingStatus[],
+  indexingStatus?: string | null,
+  hasChildren?: boolean,
 ) => void;
 
 export type NodeOrigin = 'COLLECTION' | 'CONNECTOR';

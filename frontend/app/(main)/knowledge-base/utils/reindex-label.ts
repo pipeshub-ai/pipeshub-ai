@@ -43,7 +43,7 @@ const LABEL_FALLBACKS: Record<ReindexMenuLabelKey, string> = {
   'menu.startIndexing': 'Start indexing',
   'menu.reindexAll': 'Reindex all',
   'menu.reindexFailed': 'Reindex failed',
-  'menu.forceReindexing': 'Force reindexing',
+  'menu.forceReindexing': 'Force reindex',
   'menu.retryIndexing': 'Retry indexing',
   'menu.reindex': 'Reindex',
 };
@@ -125,8 +125,9 @@ export function supportsBulkReindex(node: ReindexNode): boolean {
 function leafActionFromStatus(indexingStatus?: string | null): ReindexAction {
   switch (indexingStatus) {
     case 'COMPLETED':
-    case 'IN_PROGRESS':
       return 'force-reindex';
+    case 'IN_PROGRESS':
+      return 'unsupported';
     case 'FAILED':
     case 'EMPTY':
     case 'ENABLE_MULTIMODAL_MODELS':
@@ -265,11 +266,20 @@ export function getReindexAction(node: ReindexNode): ReindexAction {
   return leafActionFromStatus(node.indexingStatus);
 }
 
+/** Whether the user must confirm before starting a force-reindex (not filtered submenu actions). */
+export function requiresForceReindexConfirmation(
+  node: ReindexNode,
+  statusFilters?: string[],
+): boolean {
+  if (statusFilters?.length) return false;
+  return getReindexAction(node) === 'force-reindex';
+}
+
 /** Human-readable label for the menu item / button. */
 export function getReindexLabel(node: ReindexNode): string {
   switch (getReindexAction(node)) {
     case 'force-reindex':
-      return 'Force reindexing';
+      return 'Force reindex';
     case 'retry-indexing':
       return 'Retry indexing';
     case 'start-indexing':
@@ -302,6 +312,7 @@ export function isReindexDisabled(node: ReindexNode): boolean {
 /** Whether reindex menu items should be shown (connector app nodes and empty containers excluded). */
 export function canShowReindexMenu(node: ReindexNode): boolean {
   if (node.nodeType === 'app') return false;
+  if (node.indexingStatus === 'IN_PROGRESS') return false;
   if (isQueuedLeaf(node)) return false;
   const isEmptyContainer =
     (node.nodeType === 'folder' || node.nodeType === 'recordGroup')

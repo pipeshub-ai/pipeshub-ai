@@ -32,7 +32,10 @@ for _p in (_ROOT, _HELPER, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
-from openapi_schema_validator import assert_response_matches_openapi_ref
+from openapi_schema_validator import (
+    assert_request_body_matches_openapi_operation,
+    assert_response_matches_openapi_ref,
+)
 from pipeshub_client import PipeshubClient
 
 SEARCH_QUERY = "every year asana undertakes which exercise?"
@@ -311,6 +314,31 @@ class _AgentStreamTestBase:
                 break
 
         return accumulated_answer, saw_complete
+
+
+@pytest.mark.integration
+class TestAgentConversationStreamOpenApiRequestContract:
+    """Offline OpenAPI request-body checks for streamAgentConversation."""
+
+    def test_minimal_request_body_matches_openapi_spec(self) -> None:
+        assert_request_body_matches_openapi_operation(
+            {"query": "hello"},
+            "streamAgentConversation",
+        )
+
+    def test_rejects_previous_conversations_offline(self) -> None:
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(
+                {"query": "hi", "previousConversations": []},
+                "streamAgentConversation",
+            )
+
+    def test_rejects_quick_mode_offline(self) -> None:
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(
+                {"query": "hi", "quickMode": True},
+                "streamAgentConversation",
+            )
 
 
 @pytest.mark.integration

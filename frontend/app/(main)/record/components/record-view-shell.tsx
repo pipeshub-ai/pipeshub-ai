@@ -12,6 +12,11 @@ import { FilePreviewRenderer } from '@/app/components/file-preview/renderers/fil
 import { isPresentationFile, isDocxFile, shouldShowPagination } from '@/app/components/file-preview/utils';
 import type { PaginationControls } from '@/app/components/file-preview/types';
 import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
+import {
+  canShowReindexMenu,
+  getReindexNodeFromHubItem,
+  requiresForceReindexConfirmation,
+} from '@/app/(main)/knowledge-base/utils/reindex-label';
 import { toast } from '@/lib/store/toast-store';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
 import { DeleteConfirmationDialog } from '@/app/(main)/knowledge-base/components/dialogs/delete-confirmation-dialog';
@@ -241,7 +246,12 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
 
   const handleReindexClick = () => {
     const indexingStatus = recordDetails?.record?.indexingStatus;
-    if (indexingStatus === 'COMPLETED') {
+    const reindexNode = getReindexNodeFromHubItem({
+      nodeType: 'record',
+      indexingStatus,
+      hasChildren: false,
+    });
+    if (requiresForceReindexConfirmation(reindexNode)) {
       setIsForceReindexOpen(true);
     } else {
       handleForceReindex();
@@ -282,7 +292,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
   const getReindexButtonLabel = (status: string | undefined): string => {
     switch (status) {
       case 'COMPLETED':
-        return t('recordView.forceReindex');
+        return t('recordView.forceReindex', { defaultValue: 'Force reindex' });
       case 'AUTO_INDEX_OFF':
       case 'NOT_STARTED':
         return t('recordView.startIndexing');
@@ -294,7 +304,13 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
   };
 
   const reindexButtonLabel = getReindexButtonLabel(indexingStatus);
-  const isIndexingCompleted = indexingStatus === 'COMPLETED';
+  const showReindexButton = canShowReindexMenu(
+    getReindexNodeFromHubItem({
+      nodeType: 'record',
+      indexingStatus,
+      hasChildren: false,
+    }),
+  );
 
   const isConnectorRecord = recordDetails?.record?.origin === 'CONNECTOR';
   const isAttachment = recordDetails?.record?.connectorName?.toUpperCase() === 'ATTACHMENTS';
@@ -364,6 +380,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
         <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
           {!isLoading && !hasError && !isAttachment && (
             <>
+              {showReindexButton && (
               <Button
                 variant="outline"
                 color="gray"
@@ -375,6 +392,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
                 <MaterialIcon name="sync" size={ICON_SIZES.HEADER} />
                 {reindexButtonLabel}
               </Button>
+              )}
               {!isConnectorRecord && (
                 <Button
                   variant="outline"
@@ -654,11 +672,14 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
           <AlertDialog.Title>
             <Flex align="center" gap="2">
               <MaterialIcon name="sync" size={20} />
-              {t('recordView.forceReindexTitle')}
+              {t('recordView.forceReindexTitle', { defaultValue: 'Start force reindex?' })}
             </Flex>
           </AlertDialog.Title>
           <AlertDialog.Description size="2" style={{ color: 'var(--gray-11)' }}>
-            {t('recordView.forceReindexDescription')}
+            {t('recordView.forceReindexDescription', {
+              defaultValue:
+                'This re-indexes the document from scratch and may incur extra cost. Use this when search results are stale, or the document is not searchable even after indexing is complete.',
+            })}
           </AlertDialog.Description>
           <Flex gap="3" justify="end" style={{ marginTop: 'var(--space-4)' }}>
             <AlertDialog.Cancel>
@@ -674,7 +695,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
                 disabled={isReindexing}
               >
                 <MaterialIcon name="sync" size={16} />
-                {t('recordView.forceReindex')}
+                {t('common.confirm', { defaultValue: 'Confirm' })}
               </Button>
             </AlertDialog.Action>
           </Flex>

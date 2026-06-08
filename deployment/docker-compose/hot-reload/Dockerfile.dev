@@ -146,7 +146,7 @@ RUN mkdir -p ./backend/dist/public
 # Copy Python application code (will be overridden by bind-mount in docker-compose)
 COPY backend/python/app/ /app/python/app/
 
-EXPOSE 3000 3001 8000 8088 8091 8081
+EXPOSE 3000 3001 8000 8002 8088 8091 8081
 
 # Entrypoint script is bind-mounted from docker-compose for easy editing without rebuild
 CMD ["/app/dev_process_monitor.sh"]

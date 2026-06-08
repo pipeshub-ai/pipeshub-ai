@@ -550,7 +550,7 @@ class TestExtractMetadata:
         blocks = [_make_text_block("Hello world about microservices")]
 
         with patch(
-            "app.modules.transformers.document_extraction.get_llm",
+            "app.modules.transformers.document_extraction.get_llm_for_role",
             return_value=(fake_llm, fake_config),
         ), patch.object(
             ext, "graph_provider"
@@ -596,7 +596,7 @@ class TestExtractMetadata:
         blocks = [_make_text_block("Some content")]
 
         with patch(
-            "app.modules.transformers.document_extraction.get_llm",
+            "app.modules.transformers.document_extraction.get_llm_for_role",
             return_value=(fake_llm, fake_config),
         ), patch.object(
             ext, "graph_provider"
@@ -627,7 +627,7 @@ class TestExtractMetadata:
         blocks = []  # empty
 
         with patch(
-            "app.modules.transformers.document_extraction.get_llm",
+            "app.modules.transformers.document_extraction.get_llm_for_role",
             return_value=(fake_llm, fake_config),
         ), patch.object(
             ext, "graph_provider"
@@ -930,7 +930,7 @@ class TestExtractMetadataDeeper:
         ]
 
         with patch(
-            "app.modules.transformers.document_extraction.get_llm",
+            "app.modules.transformers.document_extraction.get_llm_for_role",
             return_value=(fake_llm, fake_config),
         ), patch.object(
             ext, "graph_provider"
@@ -979,7 +979,7 @@ class TestExtractMetadataDeeper:
         ]
 
         with patch(
-            "app.modules.transformers.document_extraction.get_llm",
+            "app.modules.transformers.document_extraction.get_llm_for_role",
             return_value=(fake_llm, fake_config),
         ), patch.object(
             ext, "graph_provider"
@@ -1000,7 +1000,7 @@ class TestExtractMetadataDeeper:
         ext = _build_extractor()
 
         with patch(
-            "app.modules.transformers.document_extraction.get_llm",
+            "app.modules.transformers.document_extraction.get_llm_for_role",
             side_effect=RuntimeError("LLM unavailable"),
         ):
             with pytest.raises(RuntimeError, match="LLM unavailable"):

@@ -146,7 +146,7 @@ class TestGetTableSummaryNHeaders:
             headers=["Name", "Age", "City"],
         )
 
-        with patch("app.utils.indexing_helpers.get_llm", new_callable=AsyncMock) as mock_get_llm:
+        with patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock) as mock_get_llm:
             mock_llm = MagicMock()
             mock_get_llm.return_value = (mock_llm, None)
 
@@ -171,7 +171,7 @@ class TestGetTableSummaryNHeaders:
 
         mock_summary = TableSummary(summary="People table", headers=["Name", "Age"])
 
-        with patch("app.utils.indexing_helpers.get_llm", new_callable=AsyncMock) as mock_get_llm:
+        with patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock) as mock_get_llm:
             mock_llm = MagicMock()
             mock_get_llm.return_value = (mock_llm, None)
 
@@ -191,7 +191,7 @@ class TestGetTableSummaryNHeaders:
         """Empty list should result in 'Empty table' text."""
         mock_summary = TableSummary(summary="Empty", headers=[])
 
-        with patch("app.utils.indexing_helpers.get_llm", new_callable=AsyncMock) as mock_get_llm:
+        with patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock) as mock_get_llm:
             mock_llm = MagicMock()
             mock_get_llm.return_value = (mock_llm, None)
 
@@ -209,7 +209,7 @@ class TestGetTableSummaryNHeaders:
         """Non-list data should be stringified."""
         mock_summary = TableSummary(summary="String table", headers=[])
 
-        with patch("app.utils.indexing_helpers.get_llm", new_callable=AsyncMock) as mock_get_llm:
+        with patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock) as mock_get_llm:
             mock_llm = MagicMock()
             mock_get_llm.return_value = (mock_llm, None)
 
@@ -230,7 +230,7 @@ class TestGetTableSummaryNHeaders:
 
         mock_summary = TableSummary(summary="Large table", headers=["col1", "col2"])
 
-        with patch("app.utils.indexing_helpers.get_llm", new_callable=AsyncMock) as mock_get_llm:
+        with patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock) as mock_get_llm:
             mock_llm = MagicMock()
             mock_get_llm.return_value = (mock_llm, None)
 
@@ -256,7 +256,7 @@ class TestGetTableSummaryNHeaders:
 
         mock_summary = TableSummary(summary="Large dict table", headers=["col"])
 
-        with patch("app.utils.indexing_helpers.get_llm", new_callable=AsyncMock) as mock_get_llm:
+        with patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock) as mock_get_llm:
             mock_llm = MagicMock()
             mock_get_llm.return_value = (mock_llm, None)
 
@@ -276,7 +276,7 @@ class TestGetTableSummaryNHeaders:
     @pytest.mark.asyncio
     async def test_llm_returns_none_gives_default(self):
         """If LLM parsing returns None, should return default empty TableSummary."""
-        with patch("app.utils.indexing_helpers.get_llm", new_callable=AsyncMock) as mock_get_llm:
+        with patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock) as mock_get_llm:
             mock_llm = MagicMock()
             mock_get_llm.return_value = (mock_llm, None)
 
@@ -296,7 +296,7 @@ class TestGetTableSummaryNHeaders:
     @pytest.mark.asyncio
     async def test_exception_propagates(self):
         """Exceptions from LLM should propagate."""
-        with patch("app.utils.indexing_helpers.get_llm", new_callable=AsyncMock) as mock_get_llm:
+        with patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock) as mock_get_llm:
             mock_get_llm.side_effect = RuntimeError("LLM unavailable")
 
             with pytest.raises(RuntimeError, match="LLM unavailable"):
@@ -312,7 +312,7 @@ class TestGetTableSummaryNHeaders:
 
         mock_summary = TableSummary(summary="Table with nulls", headers=[])
 
-        with patch("app.utils.indexing_helpers.get_llm", new_callable=AsyncMock) as mock_get_llm:
+        with patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock) as mock_get_llm:
             mock_llm = MagicMock()
             mock_get_llm.return_value = (mock_llm, None)
 
@@ -332,7 +332,7 @@ class TestGetTableSummaryNHeaders:
 
         mock_summary = TableSummary(summary="Numeric list", headers=[])
 
-        with patch("app.utils.indexing_helpers.get_llm", new_callable=AsyncMock) as mock_get_llm:
+        with patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock) as mock_get_llm:
             mock_llm = MagicMock()
             mock_get_llm.return_value = (mock_llm, None)
 

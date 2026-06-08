@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage
 from app.config.constants.service import config_node_constants
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.utils.aimodels import get_generator_model, is_multimodal_llm
+from app.utils.llm import get_llm_for_role
 
 
 class VLMOCRStrategy(OCRStrategy):
@@ -104,8 +105,12 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
 
     async def _get_multimodal_llm(self) -> BaseChatModel:
         """
-        Get a multimodal LLM, preferring the default LLM if it's multimodal,
-        otherwise falling back to the first available multimodal LLM
+        Get a multimodal LLM for VLM OCR.
+
+        Selection priority:
+        1. Indexing role assignment, if the assigned model is multimodal.
+        2. Default LLM, if it is multimodal.
+        3. First available multimodal LLM.
 
         Returns:
             BaseChatModel: Multimodal LLM instance
@@ -116,7 +121,18 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         self.logger.info("🔍 Getting multimodal LLM for VLM OCR")
 
         try:
-            # Get AI models configuration
+            # 1. Check indexing role assignment first — use it if multimodal
+            try:
+                _, role_config = await get_llm_for_role(self.config, "indexing")
+                if is_multimodal_llm(role_config):
+                    self.logger.info(
+                        f"✅ Using indexing-role LLM for VLM OCR: {role_config.get('provider')}"
+                    )
+                    return self._create_llm_from_config(role_config)
+            except Exception:
+                pass
+
+            # 2. Scan all LLM configs for the best multimodal candidate
             ai_models = await self.config.get_config(
                 config_node_constants.AI_MODELS.value,
                 use_cache=False
@@ -126,7 +142,6 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             if not llm_configs:
                 raise ValueError("No LLM configurations found")
 
-            # Find the best multimodal LLM in a single pass
             default_config = None
             first_multimodal_config = None
 
@@ -134,21 +149,16 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 is_default = config.get("isDefault", False)
                 is_multimodal = is_multimodal_llm(config)
 
-                # If we find a default multimodal LLM, use it immediately
                 if is_default and is_multimodal:
                     self.logger.info(f"✅ Using default multimodal LLM: {config.get('provider')}")
-                    llm = self._create_llm_from_config(config)
-                    return llm
+                    return self._create_llm_from_config(config)
 
-                # Track default LLM (even if not multimodal) for warning
                 if is_default:
                     default_config = config
 
-                # Track first multimodal LLM as fallback
                 if is_multimodal and first_multimodal_config is None:
                     first_multimodal_config = config
 
-            # If default exists but isn't multimodal, log warning
             if default_config:
                 provider = default_config.get("provider", "unknown")
                 model_string = default_config.get("configuration", {}).get("model", "unknown")
@@ -158,12 +168,9 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                     f"Using first available multimodal LLM..."
                 )
 
-            # Use first available multimodal LLM
             if first_multimodal_config:
-                llm = self._create_llm_from_config(first_multimodal_config)
-                return llm
+                return self._create_llm_from_config(first_multimodal_config)
 
-            # No multimodal LLM found
             error_msg = (
                 "❌ No multimodal LLM found in configuration. "
                 "VLM OCR requires a multimodal LLM. Please configure at least one multimodal LLM."

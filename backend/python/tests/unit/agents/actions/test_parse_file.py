@@ -580,7 +580,7 @@ class TestHandleXlsx:
         parser = _make_parser()
         expected = BlocksContainer(blocks=[], block_groups=[])
         with patch(
-            "app.agents.actions.util.parse_file.get_llm",
+            "app.agents.actions.util.parse_file.get_llm_for_role",
             new_callable=AsyncMock,
             return_value=("llm", None),
         ), patch(
@@ -622,7 +622,7 @@ class TestHandleCsvTsv:
             return_value=expected
         )
         with patch(
-            "app.agents.actions.util.parse_file.get_llm",
+            "app.agents.actions.util.parse_file.get_llm_for_role",
             new_callable=AsyncMock,
             return_value=("llm", None),
         ):

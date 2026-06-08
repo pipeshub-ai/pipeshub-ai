@@ -122,5 +122,6 @@ describe('api-docs/docs.service', () => {
       expect(spec).to.have.property('paths')
       expect(spec).to.have.property('components')
     })
+
   })
 })

@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    CollectionNames,
     Connectors,
     ExtensionTypes,
     MimeTypes,
@@ -512,6 +513,7 @@ class GitLabConnector(BaseConnector):
         # which is the only way they can search records they have access
         # to on GitLab. See _resolve_creator_identity / Patch #4.
         self._gitlab_user_id: int | None = None
+        self._code_file_timestamp_backfill_task: asyncio.Task[None] | None = None
         # GitLab user-level access flags, captured from ``GET /user``.
         # ``is_admin``: all editions; ``is_auditor``: Premium/Ultimate only.
         # GitLab OMITS both attributes from the response when the caller
@@ -1601,6 +1603,7 @@ class GitLabConnector(BaseConnector):
     async def run_sync(self) -> None:
         """syncing various entities"""
         try:
+            await self._cancel_code_file_timestamp_backfill()
             await self._refresh_token_if_needed()
             self.logger.info("⚒️⚒️ Starting GitLab sync")
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -1614,6 +1617,7 @@ class GitLabConnector(BaseConnector):
             # TODO: what to consider these groups then link projects to these groups ?
             self.logger.info("🕛🕛 Starting sync of projects")
             await self._sync_all_project()
+            self._schedule_code_file_timestamp_backfill_after_sync()
         except Exception as e:
             self.logger.error(f"Error in GitLab sync: {e}", exc_info=True)
             raise
@@ -2475,6 +2479,26 @@ class GitLabConnector(BaseConnector):
         return None
 
     @staticmethod
+    def _should_continue_repo_tree_pagination(
+        raw_nodes_fetched: int,
+        total_collected: int,
+        page_info: dict[str, Any],
+    ) -> tuple[bool, str]:
+        """Whether to fetch another ``paginatedTree`` page and the next cursor.
+
+        GitLab often keeps ``hasNextPage=true`` after the last tree/blob page,
+        returning empty ``nodes`` for many trailing requests. Stop once we
+        already have data and a page adds nothing new.
+        """
+        has_next = bool(page_info.get("hasNextPage"))
+        end_cursor = page_info.get("endCursor") or ""
+        if not has_next or not end_cursor:
+            return False, ""
+        if raw_nodes_fetched == 0 and total_collected > 0:
+            return False, ""
+        return True, end_cursor
+
+    @staticmethod
     def _longest_matching_group_path(
         namespace_path: str | None, group_paths: list[str]
     ) -> str | None:
@@ -2551,6 +2575,182 @@ class GitLabConnector(BaseConnector):
         if not self.indexing_filters:
             return True
         return self.indexing_filters.is_enabled(IndexingFilterKey.CODE_FILES)
+
+    async def _code_file_source_timestamps(
+        self,
+        project_id: int,
+        file_path: str,
+        ref: str = "HEAD",
+    ) -> tuple[int | None, int | None]:
+        """Fetch created/updated timestamps from GitLab commit history for one path."""
+        if not self.data_source or not file_path:
+            return (None, None)
+        res = await self._ds_call(
+            self.data_source.list_commits_for_path,
+            project_id=project_id,
+            path=file_path,
+            ref_name=ref,
+        )
+        if not res.success or not res.data:
+            return (None, None)
+        data = res.data
+        created_ms = self._gitlab_timestamp_to_ms(data.get("oldest_committed_date"))
+        updated_ms = self._gitlab_timestamp_to_ms(data.get("newest_committed_date"))
+        return (created_ms, updated_ms)
+
+    async def _fetch_code_file_timestamps_batch(
+        self, project_id: int, paths: list[str]
+    ) -> dict[str, tuple[int | None, int | None]]:
+        """Fetch commit-history timestamps for many paths (bounded concurrency)."""
+        semaphore = asyncio.Semaphore(10)
+        results: dict[str, tuple[int | None, int | None]] = {}
+
+        async def fetch_one(path: str) -> None:
+            async with semaphore:
+                try:
+                    results[path] = await self._code_file_source_timestamps(
+                        project_id, path
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        "Failed to fetch timestamps for path %s in project %s: %s",
+                        path,
+                        project_id,
+                        e,
+                    )
+                    results[path] = (None, None)
+
+        await asyncio.gather(*(fetch_one(path) for path in paths))
+        return results
+
+    async def _cancel_code_file_timestamp_backfill(self) -> None:
+        """Stop the in-flight connector-wide backfill before starting a new sync."""
+        task = self._code_file_timestamp_backfill_task
+        self._code_file_timestamp_backfill_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    def _schedule_code_file_timestamp_backfill_after_sync(self) -> None:
+        """Fetch null-timestamp code files and backfill in one background task."""
+        existing = self._code_file_timestamp_backfill_task
+        if existing is not None and not existing.done():
+            return
+
+        self._code_file_timestamp_backfill_task = asyncio.create_task(
+            self._backfill_code_file_timestamps_after_sync(),
+            name=f"gitlab_code_file_ts_backfill_{self.connector_id}",
+        )
+
+    async def _backfill_code_file_timestamps_after_sync(self) -> None:
+        """Background job: backfill commit-history timestamps for all synced projects."""
+        try:
+            await self._refresh_token_if_needed()
+            projects = await self._resolve_projects_with_filters()
+            for project in projects:
+                await self._run_code_file_timestamp_backfill(project.id)
+        except Exception as e:
+            self.logger.error(
+                "Code file timestamp backfill failed for connector %s: %s",
+                self.connector_id,
+                e,
+                exc_info=True,
+            )
+        finally:
+            self._code_file_timestamp_backfill_task = None
+
+    async def _run_code_file_timestamp_backfill(self, project_id: int) -> None:
+        batch_size = 100
+
+        try:
+            await self._refresh_token_if_needed()
+            external_group_id = f"{project_id}-code-repository"
+            async with self.data_store_provider.transaction() as tx_store:
+                nodes = await tx_store.get_nodes_by_filters(
+                    collection=CollectionNames.RECORDS.value,
+                    filters={
+                        "connectorId": self.connector_id,
+                        "recordType": RecordType.CODE_FILE.value,
+                        "externalGroupId": external_group_id,
+                        "sourceCreatedAtTimestamp": None,
+                        "sourceLastModifiedTimestamp": None,
+                    },
+                )
+
+            path_to_records: dict[str, list[CodeFileRecord]] = {}
+            for node in nodes:
+                if node.get("isDeleted"):
+                    continue
+                code_file = CodeFileRecord.from_arango_record({}, node)
+                file_path = code_file.file_path or self._repo_path_from_blob_web_url(
+                    code_file.weburl
+                )
+                if not file_path:
+                    continue
+                path_to_records.setdefault(file_path, []).append(code_file)
+
+            file_paths = list(path_to_records.keys())
+            for offset in range(0, len(file_paths), batch_size):
+                await self._refresh_token_if_needed()
+                batch_paths = file_paths[offset : offset + batch_size]
+
+                try:
+                    timestamp_by_path = await self._fetch_code_file_timestamps_batch(
+                        project_id, batch_paths
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        "Failed to fetch timestamps for connector %s project %s: %s",
+                        self.connector_id,
+                        project_id,
+                        e,
+                    )
+                    continue
+
+                for file_path in batch_paths:
+                    created_ms, updated_ms = timestamp_by_path.get(
+                        file_path, (None, None)
+                    )
+                    if created_ms is None and updated_ms is None:
+                        continue
+
+                    for record in path_to_records[file_path]:
+                        if (
+                            record.source_created_at == created_ms
+                            and record.source_updated_at == updated_ms
+                        ):
+                            continue
+
+                        try:
+                            updated_record = record.model_copy(
+                                update={
+                                    "source_created_at": created_ms,
+                                    "source_updated_at": updated_ms,
+                                }
+                            )
+                            await self.data_entities_processor.on_record_metadata_update(
+                                updated_record
+                            )
+                        except Exception as e:
+                            self.logger.warning(
+                                "Failed to update timestamps for connector %s project %s "
+                                "record %s path %s: %s",
+                                self.connector_id,
+                                project_id,
+                                record.id,
+                                file_path,
+                                e,
+                            )
+
+        except Exception as e:
+            self.logger.error(
+                "Code file timestamp backfill failed for connector %s project %s: %s",
+                self.connector_id,
+                project_id,
+                e,
+                exc_info=True,
+            )
 
     async def _group_permissions_from_child_projects(
         self,
@@ -3098,6 +3298,8 @@ class GitLabConnector(BaseConnector):
             project_nodes = paginated_tree.get("nodes") or []
             page_info = paginated_tree.get("pageInfo") or {}
             if not project_nodes:
+                if tree_list:
+                    break
                 self.logger.info(f"No project nodes found for project {project_id}")
                 return
             t_nodes: dict[str, Any] = project_nodes[0]
@@ -3108,10 +3310,14 @@ class GitLabConnector(BaseConnector):
             self.logger.debug(
                 f"❗❗appended {len(file_path_nodes)} file path nodes via GQL"
             )
-            if not page_info.get("hasNextPage"):
-                break
-            after_cursor = page_info.get("endCursor", "")
-            if not after_cursor:
+            continue_paging, after_cursor = self._should_continue_repo_tree_pagination(
+                len(file_path_nodes), len(tree_list), page_info
+            )
+            if not continue_paging:
+                if page_info.get("hasNextPage"):
+                    self.logger.debug(
+                        "Stopping folder pagination early: empty page received after data was collected"
+                    )
                 break
 
         # Group trees by path depth so we process top-down. This keeps
@@ -3209,6 +3415,7 @@ class GitLabConnector(BaseConnector):
         # fetching code files
         # processing as when recieved, as parent folders exist
         after_cursor = ""
+        blobs_processed = 0
         while True:
             try:
                 tree_res = await self._ds_call_async(
@@ -3263,6 +3470,8 @@ class GitLabConnector(BaseConnector):
             project_nodes = paginated_tree.get("nodes") or []
             page_info = paginated_tree.get("pageInfo") or {}
             if not project_nodes:
+                if blobs_processed > 0:
+                    break
                 self.logger.info(f"No project nodes found for project {project_id}")
                 return
             t_nodes: dict[str, Any] = project_nodes[0]
@@ -3276,11 +3485,17 @@ class GitLabConnector(BaseConnector):
                 await self.build_code_file_records(
                     file_path_nodes, project_id, project_path
                 )
-            if not page_info.get("hasNextPage"):
-                self.logger.debug("✅✅ No more code file pages left, exiting")
-                break
-            after_cursor = page_info.get("endCursor", "")
-            if not after_cursor:
+                blobs_processed += len(file_path_nodes)
+            continue_paging, after_cursor = self._should_continue_repo_tree_pagination(
+                len(file_path_nodes), blobs_processed, page_info
+            )
+            if not continue_paging:
+                if not page_info.get("hasNextPage"):
+                    self.logger.debug("✅✅ No more code file pages left, exiting")
+                else:
+                    self.logger.debug(
+                        "Stopping code file pagination early: empty page received after data was collected"
+                    )
                 break
 
     async def build_code_file_records(
@@ -3295,20 +3510,16 @@ class GitLabConnector(BaseConnector):
         # Code files are always synced so the repo tree, parent folders, and
         # permissions stay in the graph regardless of the indexing toggle.
         code_files_enabled = self._code_files_indexing_enabled()
-        
-        # Use current sync time as timestamp for all code files
-        # (avoids expensive per-file REST API calls for Git history)
-        current_timestamp = get_epoch_timestamp_in_ms()
-        
+        # Leave source timestamps null during ingest (no per-file GitLab commit API).
+        # Commit-history timestamps are filled in by the background backfill that
+        # runs after the full connector sync completes.
+
         for file in code_file_list:
             file_path = file.get("path") or ""
             file_name = file.get("name")
             file_hash = file.get("sha")
             external_record_id = file.get("webPath")
             weburl = file.get("webUrl")
-            # Use current sync time for all code files
-            source_created_at = current_timestamp
-            source_updated_at = current_timestamp
 
             if not external_record_id or not file_name:
                 files_skipped += 1
@@ -3378,8 +3589,8 @@ class GitLabConnector(BaseConnector):
                     RecordType.FILE if parent_external_record_id else None
                 ),
                 weburl=weburl,
-                source_created_at=source_created_at,
-                source_updated_at=source_updated_at,
+                source_created_at=None,
+                source_updated_at=None,
             )
             if not code_files_enabled:
                 code_file_record.indexing_status = (
@@ -6139,6 +6350,7 @@ class GitLabConnector(BaseConnector):
         drops any queued (not yet started) work.
         """
         self.logger.info("Cleaning up GitLab connector resources.")
+        await self._cancel_code_file_timestamp_backfill()
         self.data_source = None
         try:
             self._gitlab_executor.shutdown(wait=False, cancel_futures=True)

@@ -88,20 +88,26 @@ import {
   regenerateAgentAnswersParamsSchema,
   agentConversationTitleParamsSchema,
   agentConversationParamsSchema,
+  deleteAgentConversationParamsSchema,
   updateAgentFeedbackParamsSchema,
   agentStreamCreateSchema,
   agentAddMessageParamsSchema,
   getAllConversationsQuerySchema,
   getAllAgentConversationsQuerySchema,
   listAllArchivesConversationQuerySchema,
+  listAllArchivesAgentConversationQuerySchema,
+  listAllAgentsArchivedConversationsGroupedQuerySchema,
   searchArchivedConversationsQuerySchema,
   attachmentUploadSchema,
   attachmentRecordIdParamsSchema,
   agentAttachmentUploadSchema,
   agentAttachmentRecordIdParamsSchema,
   createAgentSchema,
+  updateAgentSchema,
+  deleteAgentSchema,
   getAgentParamsSchema,
   listAgentsQuerySchema,
+  getAgentConversationByIdSchema,
 } from '../validators/es_validators';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
@@ -612,6 +618,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(listAllAgentsArchivedConversationsGroupedQuerySchema),
     listAllAgentsArchivedConversationsGrouped(appConfig),
   );
 
@@ -733,6 +740,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(getAgentConversationByIdSchema),
     getAgentConversationById,
   );
 
@@ -741,6 +749,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(deleteAgentConversationParamsSchema),
     deleteAgentConversationById,
   );
 
@@ -792,6 +801,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(listAllArchivesAgentConversationQuerySchema),
     listAllArchivesAgentConversation(),
   );
 
@@ -858,6 +868,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(updateAgentSchema),
     updateAgent(appConfig),
   );
 
@@ -866,6 +877,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(deleteAgentSchema),
     deleteAgent(appConfig),
   );
 

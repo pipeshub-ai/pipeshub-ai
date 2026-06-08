@@ -24,13 +24,13 @@ export const MODEL_DESCRIPTIONS: Record<string, string> = {
   'gpt-4o-mini': 'Fast and affordable GPT-4 class model for everyday tasks',
   'gpt-4o': 'Flagship multimodal model with vision and audio support',
   'gpt-5': 'Most capable OpenAI model with advanced reasoning',
-  'gpt-5.2': 'Advanced conversational AI with strong reasoning and multimodal capabilities',
+  'gpt-5.5': 'Advanced conversational AI with strong reasoning and multimodal capabilities',
   'gpt-5-nano': 'Compact and fast model optimised for quick responses',
   'claude-3-5-sonnet-20241022': 'Balanced performance and intelligence from Anthropic',
   'claude-3-7-sonnet-20250219': "Anthropic's most intelligent model yet",
   'claude-opus-4-5': 'Context-aware multimodal AI with real-time memory and understanding',
   'gemini-1.5-pro': 'Long context multimodal reasoning from Google',
-  'gemini-2.0-flash': 'Fast and efficient Gemini model with next-gen features',
+  'gemini-2.5-flash': 'Fast and efficient Gemini model with next-gen features',
   'mistral-large-latest': 'Mistral\'s top-tier reasoning and instruction-following model',
 };
 

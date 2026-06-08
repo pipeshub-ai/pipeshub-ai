@@ -36,14 +36,12 @@ from app.utils.aimodels import (
 
 
 class TestGetDefaultEmbeddingModelException:
-    def test_exception_is_reraised(self):
-        """When HuggingFaceEmbeddings raises, the exception propagates."""
-        mock_hf_module = MagicMock()
-        mock_hf_module.HuggingFaceEmbeddings.side_effect = RuntimeError("model load failed")
-
-        with patch.dict("sys.modules", {"langchain_huggingface": mock_hf_module}):
-            with pytest.raises(RuntimeError, match="model load failed"):
-                get_default_embedding_model()
+    @patch("app.utils.embedding_server_client.EmbeddingServerEmbeddings")
+    def test_exception_is_reraised(self, mock_cls):
+        """When the embedding server client fails to construct, propagate."""
+        mock_cls.side_effect = RuntimeError("client init failed")
+        with pytest.raises(RuntimeError, match="client init failed"):
+            get_default_embedding_model()
 
 
 # ============================================================================
@@ -163,10 +161,10 @@ class TestAzureAIEmbeddingCtxLength:
 
 
 class TestHuggingFaceExistingNormalize:
-    @patch("langchain_community.embeddings.HuggingFaceEmbeddings")
-    def test_encode_kwargs_with_existing_normalize(self, mock_cls):
-        """When encode_kwargs already has normalize_embeddings, it is preserved."""
-        mock_cls.return_value = MagicMock()
+    @patch("app.utils.aimodels.get_embedding_server_embeddings")
+    def test_hugging_face_routes_to_embedding_server(self, mock_fn):
+        """HuggingFace provider uses the shared embedding server client."""
+        mock_fn.return_value = MagicMock()
         config = {
             "configuration": {
                 "model": "sentence-transformers/all-MiniLM-L6-v2",
@@ -174,9 +172,8 @@ class TestHuggingFaceExistingNormalize:
             },
             "isDefault": True,
         }
-        result = get_embedding_model(EmbeddingProvider.HUGGING_FACE.value, config)
-        call_kwargs = mock_cls.call_args.kwargs
-        assert call_kwargs["encode_kwargs"]["normalize_embeddings"] is False
+        get_embedding_model(EmbeddingProvider.HUGGING_FACE.value, config)
+        mock_fn.assert_called_once_with("sentence-transformers/all-MiniLM-L6-v2", trust_remote_code=False)
 
 
 # ============================================================================
@@ -525,9 +522,9 @@ class TestOllamaEndpoint:
 
 
 class TestSentenceTransformersEncodeKwargs:
-    @patch("langchain_community.embeddings.SentenceTransformerEmbeddings")
-    def test_sentence_transformers_with_encode_kwargs(self, mock_cls):
-        mock_cls.return_value = MagicMock()
+    @patch("app.utils.aimodels.get_embedding_server_embeddings")
+    def test_sentence_transformers_routes_to_embedding_server(self, mock_fn):
+        mock_fn.return_value = MagicMock()
         config = {
             "configuration": {
                 "model": "all-MiniLM-L6-v2",
@@ -536,10 +533,8 @@ class TestSentenceTransformersEncodeKwargs:
             },
             "isDefault": True,
         }
-        result = get_embedding_model(EmbeddingProvider.SENTENCE_TRANSFOMERS.value, config)
-        call_kwargs = mock_cls.call_args.kwargs
-        assert call_kwargs["encode_kwargs"] == {"normalize_embeddings": True}
-        assert call_kwargs["cache_folder"] == "/tmp/models"
+        get_embedding_model(EmbeddingProvider.SENTENCE_TRANSFOMERS.value, config)
+        mock_fn.assert_called_once_with("all-MiniLM-L6-v2", trust_remote_code=False)
 
 
 # ============================================================================

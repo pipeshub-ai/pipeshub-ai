@@ -385,10 +385,15 @@
     "reindexManual": "Re-index manual",
     "startIndexing": "Start indexing",
     "startManualIndex": "Start manual index",
-    "forceReindexing": "Force reindexing",
+    "forceReindexing": "Force reindex",
     "retryIndexing": "Retry indexing",
     "rename": "Rename",
     "delete": "Delete"
+  },
+  "forceReindexConfirm": {
+    "title": "Start force reindex?",
+    "message": "This re-indexes the document from scratch and may incur extra cost. Use this when search results are stale, or the document is not searchable even after indexing is complete.",
+    "confirm": "Confirm"
   },
   "kb": {
     "viewToggle": "View Toggle",
@@ -1142,6 +1147,28 @@
       "actionSetDefault": "Set default",
       "actionDelete": "Delete",
       "moreOptions": "More options",
+      "roles": {
+        "sectionTitle": "Model Role Assignments",
+        "sectionDescription": "Assign dedicated models for specific tasks. When not assigned, the default model is used.",
+        "onboardingTitle": "How will your models be used?",
+        "onboardingTip": "Assign a small, cost-efficient model (e.g. gpt-5.4-mini, gemini-2.5-flash) for indexing tasks like summarisation and classification. Keep your most capable model (e.g. gpt-5.5, claude-sonnet) for query and agents where reasoning quality matters most.",
+        "queryRole": "Query & Chat",
+        "queryRoleSubtitle": "Search, agents & conversations",
+        "queryRoleDescription": "Handles search, question answering, and AI agent responses. Use your most capable model here.",
+        "queryRoleDefault": "Default model",
+        "defaultBadge": "Default",
+        "indexingRole": "Indexing Model",
+        "indexingRoleSubtitle": "Document processing",
+        "indexingRoleDescription": "Model used for document summarisation, classification, and data extraction during indexing. Assign a smaller, cost-effective model to reduce costs.",
+        "indexingRoleAssigned": "Using {{model}} for indexing",
+        "indexingRoleFallback": "Not set — falls back to your query model.",
+        "requiredHint": "Please choose how the indexing model should behave to continue.",
+        "useDefaultModel": "Same as query model",
+        "selectModel": "Select a model",
+        "noModelsConfigured": "No LLM models configured yet. Add a model above to assign roles.",
+        "toastSaved": "Model role assignment saved",
+        "toastSaveError": "Failed to save model role assignment"
+      },
       "capabilities": {
         "text_generation": {
           "label": "LLM",
@@ -1217,7 +1244,7 @@
         "developerSettings": "Developer Settings",
         "oauth2": "OAuth 2.0 Apps",
         "profile": "Profile",
-        "yourConnectors": "Your Connectors",
+        "yourConnectors": "Your Personal Connectors",
         "yourActions": "Your actions",
         "archivedChats": "Archived Chats",
         "users": "Users",
@@ -1573,6 +1600,11 @@
         "wideSyncMessage": "This process could sync a large number of records. Are you sure you want to start the sync? Consider adding filters through the Filters section to reduce the number of records to sync.",
         "confirm": "Confirm",
         "cancel": "Cancel"
+      },
+      "fullSyncConfirm": {
+        "title": "Start full sync?",
+        "message": "Overwrites and re-syncs all data from scratch and is slower than normal Sync. Use full sync when content is missing, duplicated, or doesn't match the source. For routine updates, use Sync instead.",
+        "confirm": "Confirm"
       },
       "disableFirstDialog": {
         "title": "Connector is currently enabled",

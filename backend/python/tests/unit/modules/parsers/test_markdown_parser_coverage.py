@@ -28,7 +28,7 @@ def parser():
         "docling.datamodel.document": MagicMock(),
         "docling.document_converter": MagicMock(),
     }):
-        with patch("app.modules.parsers.markdown.markdown_parser.DocumentConverter"):
+        with patch("app.modules.parsers.markdown.docling_markdown_parser.DocumentConverter"):
             return MarkdownParser()
 
 

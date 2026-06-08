@@ -625,11 +625,15 @@ async def perform_embedding_health_check(
             "This is a health check test.",
         ]
 
-        # Set timeout for the test
+        # The first call may trigger a large model download (e.g. ~1.9 GB
+        # for nomic-embed-text-v2-moe), so we allow a generous timeout.
+        # Subsequent health checks hit the cached model and return quickly.
+        HEALTH_CHECK_TIMEOUT = 600.0
+
         try:
             test_embeddings = await asyncio.wait_for(
                 asyncio.to_thread(embedding_model.embed_documents, test_texts),
-                timeout=120.0  # 120 second timeout
+                timeout=HEALTH_CHECK_TIMEOUT,
             )
 
             logger.info(f"Test embeddings length: {len(test_embeddings)}")
@@ -673,7 +677,7 @@ async def perform_embedding_health_check(
                                 status_code=400,
                                 content={
                                     "status": "error",
-                                    "message": "Embedding model dimension mismatch with existing non-empty collection",
+                                    "message": "Documents are already indexed with a different embedding model. Please remove existing documents indexed with the old model and try again.",
                                     "details": {
                                         "existing_vector_size": qdrant_vector_size,
                                         "new_embedding_size": embedding_dimension,
@@ -737,19 +741,29 @@ async def perform_embedding_health_check(
                 },
             )
         except asyncio.TimeoutError:
-            logger.error(f"Embedding health check timed out for {embedding_config.get('provider')} with configuration model {embedding_config.get('configuration', {}).get('model', '')}")
+            logger.error(
+                "Embedding health check timed out for %s model %s (timeout=%.0fs). "
+                "If the model is downloading for the first time, retry after it finishes.",
+                embedding_config.get("provider"),
+                embedding_config.get("configuration", {}).get("model", ""),
+                HEALTH_CHECK_TIMEOUT,
+            )
             return JSONResponse(
                 status_code=500,
                 content={
                     "status": "error",
-                    "message": "Embedding health check timed out",
+                    "message": (
+                        "Embedding health check timed out. "
+                        "If this is the first run, the model may still be downloading. "
+                        "Please wait for the download to complete and try again."
+                    ),
                     "details": {
                         "provider": embedding_config.get("provider"),
-                    "model": model_name,
-                    "timeout_seconds": 120
+                        "model": model_name,
+                        "timeout_seconds": int(HEALTH_CHECK_TIMEOUT),
+                    },
                 },
-            },
-        )
+            )
         except Exception as e:
             raise e
 

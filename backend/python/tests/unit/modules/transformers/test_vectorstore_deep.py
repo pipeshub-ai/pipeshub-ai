@@ -400,7 +400,7 @@ class TestIndexDocuments:
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             return_value=(MagicMock(), {"isMultimodal": False}),
         ):
             result = await vs.index_documents(
@@ -450,7 +450,7 @@ class TestIndexDocuments:
         )
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             return_value=(MagicMock(), {"isMultimodal": False}),
         ):
             result = await vs.index_documents(
@@ -478,7 +478,7 @@ class TestIndexDocuments:
         )
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             return_value=(MagicMock(), {"isMultimodal": False}),
         ):
             result = await vs.index_documents(
@@ -613,7 +613,7 @@ class TestIndexDocumentsDeeper:
         )
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             return_value=(MagicMock(), {"isMultimodal": True}),
         ):
             result = await vs.index_documents(
@@ -649,7 +649,7 @@ class TestIndexDocumentsDeeper:
         )
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             return_value=(MagicMock(), {"isMultimodal": True}),
         ):
             result = await vs.index_documents(
@@ -689,7 +689,7 @@ class TestIndexDocumentsDeeper:
         )
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             return_value=(MagicMock(), {"isMultimodal": False}),
         ):
             result = await vs.index_documents(
@@ -716,7 +716,7 @@ class TestIndexDocumentsDeeper:
         vs.nlp = MagicMock(return_value=mock_doc)
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             return_value=(MagicMock(), {"isMultimodal": False}),
         ):
             with pytest.raises(EmbeddingError):
@@ -734,7 +734,7 @@ class TestIndexDocumentsDeeper:
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             side_effect=Exception("LLM unavailable"),
         ):
             with pytest.raises(IndexingError):
@@ -1049,7 +1049,7 @@ class TestIndexDocumentsTableBlocks:
         )
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             return_value=(MagicMock(), {"isMultimodal": False}),
         ):
             result = await vs.index_documents(
@@ -1081,7 +1081,7 @@ class TestIndexDocumentsTableBlocks:
         )
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             return_value=(MagicMock(), {"isMultimodal": False}),
         ):
             result = await vs.index_documents(
@@ -1460,7 +1460,7 @@ class TestIndexDocumentsExceptions:
         vs.get_embedding_model_instance = AsyncMock(side_effect=RuntimeError("unexpected"))
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             return_value=(MagicMock(), {"isMultimodal": False}),
         ):
             with pytest.raises(IndexingError):
@@ -1489,7 +1489,7 @@ class TestIndexDocumentsExceptions:
         )
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             return_value=(MagicMock(), {"isMultimodal": False}),
         ):
             with pytest.raises(DocumentProcessingError, match="Failed to create text document"):
@@ -1522,7 +1522,7 @@ class TestIndexDocumentsExceptions:
         vs.describe_images = AsyncMock(side_effect=RuntimeError("describe failed"))
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             return_value=(MagicMock(), {"isMultimodal": True}),
         ):
             with pytest.raises(DocumentProcessingError, match="Failed to create image document"):
@@ -1553,7 +1553,7 @@ class TestIndexDocumentsExceptions:
         )
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             return_value=(MagicMock(), {"isMultimodal": False}),
         ):
             with pytest.raises(IndexingError, match="Unexpected error during indexing"):

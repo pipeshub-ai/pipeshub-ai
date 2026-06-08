@@ -389,6 +389,11 @@
     "rename": "Renombrar",
     "delete": "Eliminar"
   },
+  "forceReindexConfirm": {
+    "title": "¿Iniciar reindexación forzada?",
+    "message": "Esto reindexa el documento desde cero y puede generar costos adicionales. Úselo cuando los resultados de búsqueda estén desactualizados o el documento no sea buscable incluso después de completar la indexación.",
+    "confirm": "Confirmar"
+  },
   "kb": {
     "viewToggle": "Alternar vista",
     "collectionsView": "Vista de colecciones",
@@ -1141,6 +1146,28 @@
       "actionSetDefault": "Establecer como predeterminado",
       "actionDelete": "Eliminar",
       "moreOptions": "Más opciones",
+      "roles": {
+        "sectionTitle": "Asignación de roles de modelos",
+        "sectionDescription": "Asigne modelos dedicados para tareas específicas. Si no se asigna, se usa el modelo predeterminado.",
+        "onboardingTitle": "¿Cómo se usarán sus modelos?",
+        "onboardingTip": "Asigne un modelo pequeño y económico (p. ej. gpt-5.4-mini, gemini-2.5-flash) para tareas de indexación como resumen y clasificación. Reserve su modelo más potente (p. ej. gpt-5.5 claude-sonnet) para consultas y agentes donde más importa la calidad del razonamiento.",
+        "queryRole": "Consulta y Chat",
+        "queryRoleSubtitle": "Búsqueda, agentes y conversaciones",
+        "queryRoleDescription": "Gestiona búsquedas, preguntas y respuestas de agentes IA. Use aquí su modelo más potente.",
+        "queryRoleDefault": "Modelo predeterminado",
+        "defaultBadge": "Predeterminado",
+        "indexingRole": "Modelo de indexación",
+        "indexingRoleSubtitle": "Procesamiento de documentos",
+        "indexingRoleDescription": "Modelo para resúmenes de documentos, clasificación y extracción de datos durante la indexación. Asigna un modelo más pequeño y económico para reducir costes.",
+        "indexingRoleAssigned": "Usando {{model}} para indexación",
+        "indexingRoleFallback": "No asignado — usa el modelo de consulta por defecto.",
+        "requiredHint": "Elija cómo debe comportarse el modelo de indexación para continuar.",
+        "useDefaultModel": "Igual que el modelo de consulta",
+        "selectModel": "Seleccionar un modelo",
+        "noModelsConfigured": "Aún no hay modelos LLM configurados. Añade un modelo arriba para asignar roles.",
+        "toastSaved": "Asignación de rol guardada",
+        "toastSaveError": "Error al guardar la asignación de rol"
+      },
       "capabilities": {
         "text_generation": {
           "label": "LLM",
@@ -1216,7 +1243,7 @@
         "developerSettings": "Configuración de desarrollador",
         "oauth2": "Apps de OAuth 2.0",
         "profile": "Perfil",
-        "yourConnectors": "Tus conectores",
+        "yourConnectors": "Tus conectores personales",
         "yourActions": "Tus acciones",
         "archivedChats": "Chats archivados",
         "users": "Usuarios",
@@ -1585,6 +1612,11 @@
         "wideSyncMessage": "Este proceso podría sincronizar una gran cantidad de registros. ¿Está seguro de que desea iniciar la sincronización? Considere añadir filtros a través de la sección Filtros para reducir el número de registros a sincronizar.",
         "confirm": "Confirmar",
         "cancel": "Cancelar"
+      },
+      "fullSyncConfirm": {
+        "title": "¿Iniciar sincronización completa?",
+        "message": "Sobrescribe y vuelve a sincronizar todos los datos desde cero; es más lento que la sincronización normal. Use la sincronización completa cuando falte contenido, esté duplicado o no coincida con el origen. Para actualizaciones rutinarias, use Sincronizar.",
+        "confirm": "Confirmar"
       },
       "disableFirstDialog": {
         "title": "El conector está actualmente habilitado",

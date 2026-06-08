@@ -61,7 +61,7 @@ class TestSqlBlockGroups:
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -93,7 +93,7 @@ class TestSqlBlockGroups:
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -128,7 +128,7 @@ class TestSqlBlockGroups:
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -161,7 +161,7 @@ class TestSqlBlockGroups:
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -196,7 +196,7 @@ class TestSqlRowBlocks:
         container = BlocksContainer(blocks=[row], block_groups=[])
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -229,7 +229,7 @@ class TestRegularTableBlockWithSummary:
         container = BlocksContainer(blocks=[table_block], block_groups=[])
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -268,7 +268,7 @@ class TestReconciliationProcessing:
         container = BlocksContainer(blocks=[text_block, img_block], block_groups=[])
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -298,7 +298,7 @@ class TestReconciliationProcessing:
         container = BlocksContainer(blocks=[text_block], block_groups=[])
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -329,7 +329,7 @@ class TestReconciliationProcessing:
         container = BlocksContainer(blocks=[divider], block_groups=[])
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm",
+            "app.modules.transformers.vectorstore.get_llm_for_role",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})

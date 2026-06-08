@@ -17,7 +17,7 @@ from app.models.blocks import (
     TableMetadata,
 )
 from app.modules.parsers.excel.prompt_template import RowDescriptions, row_text_prompt
-from app.utils.llm import get_llm
+from app.utils.llm import get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
 # Maximum number of table rows to include in summary prompts
@@ -62,7 +62,7 @@ async def get_table_summary_n_headers(config, table_data) -> Optional[TableSumma
     """
     try:
         # Get LLM
-        llm, _ = await get_llm(config)
+        llm, _ = await get_llm_for_role(config, "indexing")
 
         # Convert table data to text representation
         if isinstance(table_data, list):
@@ -146,7 +146,7 @@ async def get_rows_text(
             messages = row_text_prompt.format_messages(
                 table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2)
             )
-            llm, _ = await get_llm(config)
+            llm, _ = await get_llm_for_role(config, "indexing")
 
             # Default to string representations of rows
             descriptions = [str(row) for row in rows_data]

@@ -3478,6 +3478,7 @@ components:
 
     Filters:
       type: object
+      additionalProperties: false
       description: |
         App connector instance ids and knowledge-base / record-group ids that narrow retrieval
         for a turn. For **org assistant** chat streams, send explicit `apps` / `kb` lists.
@@ -3490,14 +3491,20 @@ components:
           type: array
           items:
             type: string
-            format: uuid
-          description: Filter by application connector instance IDs
+          description: |
+            Connector instance ids to scope retrieval for this turn. Each element
+            must be a UUID (connector instance id, record-group id, etc.) or the
+            org knowledge-base collection sentinel `knowledgeBase_<orgId>`
+            (pattern `knowledgeBase_[a-zA-Z0-9_-]+`). Gateway validation matches
+            Zod `appOrKbIdSchema`.
         kb:
           type: array
           items:
             type: string
-            format: uuid
-          description: Filter by knowledge base IDs
+          description: |
+            Knowledge-base / record-group ids to scope retrieval for this turn.
+            Each element uses the same accepted formats as `apps`: a UUID or
+            `knowledgeBase_<orgId>` (pattern `knowledgeBase_[a-zA-Z0-9_-]+`).
 
     AppliedFilterNode:
       type: object
@@ -3519,6 +3526,7 @@ components:
 
     AppliedFilters:
       type: object
+      additionalProperties: false
       description: |
         Rich filter state selected by the user, used for display and persistence only.
         This mirrors the active selection shown in the UI and is distinct from the
@@ -3537,6 +3545,7 @@ components:
 
     ChatAttachmentRef:
       type: object
+      additionalProperties: false
       description: |
         Reference to an attachment produced by `POST /conversations/attachments/upload`
         (or the equivalent agent route). Include in create/stream/message bodies
@@ -3564,6 +3573,66 @@ components:
           type: string
           minLength: 1
           description: Optional synthetic record id used by the graph layer.
+
+    ChatAttachmentUploadRef:
+      type: object
+      additionalProperties: false
+      description: |
+        Concrete attachment metadata returned by `POST /conversations/attachments/upload`
+        (or the equivalent agent route).
+      required:
+        - recordId
+        - recordName
+        - mimeType
+        - extension
+        - virtualRecordId
+      properties:
+        recordId:
+          type: string
+          minLength: 1
+          description: Server-assigned attachment record id.
+        recordName:
+          type: string
+          minLength: 1
+          description: Original filename stored for the attachment.
+        mimeType:
+          type: string
+          minLength: 1
+          description: MIME type of the uploaded file.
+        extension:
+          type: string
+          minLength: 1
+          description: File extension derived by the backend.
+        virtualRecordId:
+          type: string
+          minLength: 1
+          description: Synthetic record id used by the graph layer.
+        ocrMode:
+          type: string
+          minLength: 1
+          description: Optional backend-reported processing mode for the attachment.
+
+    ChatAttachmentUploadResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Success envelope returned by `POST /conversations/attachments/upload`
+        and `POST /agents/{agentKey}/conversations/attachments/upload`.
+      required:
+        - conversationId
+        - attachments
+      properties:
+        conversationId:
+          type: string
+          nullable: true
+          description: >
+            Existing conversation id echoed from the request when the upload is tied to a thread;
+            otherwise `null`.
+        attachments:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ChatAttachmentUploadRef'
 
     # ==================== ENTERPRISE SEARCH SCHEMAS ====================
     CreateConversationRequest:
@@ -3786,38 +3855,38 @@ components:
             to let the agent use its default toolset; send `[]` to disable
             tools for this turn.
       example:
-        query: summarize the latest product updates
-        modelKey: 11111111-2222-3333-4444-555555555555
+        query: what are some latest tech news?
+        modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
         modelName: gpt-5.4-mini
         modelFriendlyName: GPT 5.4 mini
         chatMode: auto
-        timezone: UTC
-        currentTime: "2026-05-19T07:28:01Z"
+        timezone: Asia/Kolkata
+        currentTime: "2026-05-19T12:58:01+05:30"
         tools: []
         filters:
           apps:
-            - 11111111-aaaa-bbbb-cccc-111111111111
-            - 22222222-aaaa-bbbb-cccc-222222222222
-            - 33333333-aaaa-bbbb-cccc-333333333333
+            - 2605c882-61d4-4aa2-b480-a68c957c151d
+            - ed6d6cc4-70bd-4838-9aeb-488e910c833a
+            - aeab9ddc-fb9b-47c8-ad98-bd4744e19555
           kb:
-            - 44444444-aaaa-bbbb-cccc-444444444444
+            - 8747da12-4724-4a95-ac92-827b88d79647
         appliedFilters:
           apps:
-            - id: 11111111-aaaa-bbbb-cccc-111111111111
-              name: Product Updates Feed
+            - id: 2605c882-61d4-4aa2-b480-a68c957c151d
+              name: US Headlines, abcnews
               nodeType: app
               connector: RSS
-            - id: 22222222-aaaa-bbbb-cccc-222222222222
-              name: Engineering Changelog Feed
+            - id: ed6d6cc4-70bd-4838-9aeb-488e910c833a
+              name: ABC News RSS
               nodeType: app
               connector: RSS
-            - id: 33333333-aaaa-bbbb-cccc-333333333333
-              name: Support Announcements Feed
+            - id: aeab9ddc-fb9b-47c8-ad98-bd4744e19555
+              name: Hacker news rss
               nodeType: app
               connector: RSS
           kb:
-            - id: 44444444-aaaa-bbbb-cccc-444444444444
-              name: Team Knowledge Base
+            - id: 8747da12-4724-4a95-ac92-827b88d79647
+              name: Siddhant Ota's Private
               nodeType: recordGroup
               connector: KB
 
@@ -3826,10 +3895,18 @@ components:
       additionalProperties: false
       description: |
         Request body for regenerating an AI response. All fields are optional;
-        when omitted the model and context originally used for the message are
-        reused. Provide `modelKey` (and the matching display fields) to switch
-        models, or `filters` to narrow the knowledge sources considered during
-        regeneration.
+        when omitted the model selection and execution context from the
+        original message are reused.
+
+        Supported fields:
+        - `filters` — optional `{ apps?, kb? }` filter object
+        - `chatMode` — optional non-empty chat mode string
+        - `modelKey`, `modelName`, `modelFriendlyName` —
+          optional non-empty model override fields
+        - `timezone` — optional non-empty client timezone string
+        - `currentTime` — optional ISO 8601 / RFC 3339 datetime string with
+          UTC `Z` or a numeric offset
+        - `tools` — optional array of non-empty tool identifiers
       properties:
         filters:
           $ref: '#/components/schemas/Filters'
@@ -4079,38 +4156,39 @@ components:
             to let the agent use its default toolset; send `[]` to disable
             tools for this turn.
       example:
-        query: can you expand on the release notes?
-        modelKey: 11111111-2222-3333-4444-555555555555
+        query: can you elaborate on the latest headlines?
+        modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
         modelName: gpt-5.4-mini
         modelFriendlyName: GPT 5.4 mini
         chatMode: verification
-        timezone: UTC
-        currentTime: "2026-05-19T07:28:01Z"
+        timezone: Asia/Kolkata
+        currentTime: "2026-05-19T12:58:01+05:30"
         tools: []
         filters:
           apps:
-            - 11111111-aaaa-bbbb-cccc-111111111111
-            - 22222222-aaaa-bbbb-cccc-222222222222
+            - 2605c882-61d4-4aa2-b480-a68c957c151d
+            - ed6d6cc4-70bd-4838-9aeb-488e910c833a
           kb:
-            - 44444444-aaaa-bbbb-cccc-444444444444
+            - 8747da12-4724-4a95-ac92-827b88d79647
         appliedFilters:
           apps:
-            - id: 11111111-aaaa-bbbb-cccc-111111111111
-              name: Product Updates Feed
+            - id: 2605c882-61d4-4aa2-b480-a68c957c151d
+              name: US Headlines, abcnews
               nodeType: app
               connector: RSS
-            - id: 22222222-aaaa-bbbb-cccc-222222222222
-              name: Engineering Changelog Feed
+            - id: ed6d6cc4-70bd-4838-9aeb-488e910c833a
+              name: ABC News RSS
               nodeType: app
               connector: RSS
           kb:
-            - id: 44444444-aaaa-bbbb-cccc-444444444444
-              name: Team Knowledge Base
+            - id: 8747da12-4724-4a95-ac92-827b88d79647
+              name: Siddhant Ota's Private
               nodeType: recordGroup
               connector: KB
 
     Message:
       type: object
+      additionalProperties: false
       description: |
         A single message within a conversation. Messages can be user queries,
         AI responses, system messages, or error notifications.
@@ -4159,6 +4237,7 @@ components:
           description: User feedback on this message
         metadata:
           type: object
+          additionalProperties: false
           properties:
             processingTimeMs:
               type: number
@@ -4225,6 +4304,7 @@ components:
 
     CitationReference:
       type: object
+      additionalProperties: false
       description: Reference to a source document cited in a response
       properties:
         citationId:
@@ -4303,6 +4383,7 @@ components:
 
     FollowUpQuestion:
       type: object
+      additionalProperties: false
       description: AI-suggested follow-up question
       properties:
         question:
@@ -4314,6 +4395,44 @@ components:
         reasoning:
           type: string
           description: Why this question might be relevant
+
+    MessageFeedbackSubmitRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Gateway request body for submitting message feedback (Zod
+        `feedbackBodySchema`). All fields are optional; an empty object is
+        accepted. Matches the first-party chat UI payload shape.
+      properties:
+        isHelpful:
+          type: boolean
+          description: Overall helpfulness signal (thumbs up/down).
+        categories:
+          type: array
+          description: Issue or positive categories that apply to the response.
+          items:
+            type: string
+            enum:
+              - incorrect_information
+              - missing_information
+              - irrelevant_information
+              - unclear_explanation
+              - poor_citations
+              - excellent_answer
+              - helpful_citations
+              - well_explained
+              - other
+        comments:
+          type: object
+          additionalProperties: false
+          description: Free-text comments grouped by sentiment.
+          properties:
+            positive:
+              type: string
+              description: What was good about the response.
+            negative:
+              type: string
+              description: What could be improved.
 
     MessageFeedback:
       type: object
@@ -4469,6 +4588,118 @@ components:
               type: string
             platform:
               type: string
+
+    MessageFeedbackAppendMetrics:
+      type: object
+      additionalProperties: false
+      required:
+        - timeToFeedback
+      description: |
+        Telemetry recorded server-side alongside the feedback. Always present
+        on append responses.
+      properties:
+        timeToFeedback:
+          type: number
+          description: |
+            Milliseconds between message creation and feedback submission.
+            Always present.
+        userAgent:
+          type: string
+          description: Value of the `User-Agent` request header captured server-side.
+
+    MessageFeedbackAppendEntry:
+      type: object
+      additionalProperties: false
+      required:
+        - feedbackProvider
+        - timestamp
+        - metrics
+      description: |
+        The feedback entry just appended to the message. Echoes the fields
+        supplied in the request plus server-stamped `feedbackProvider`,
+        `timestamp`, and `metrics`.
+      properties:
+        isHelpful:
+          type: boolean
+          description: Echoed from the request when supplied.
+        categories:
+          type: array
+          description: Echoed categories from the request.
+          items:
+            type: string
+            enum:
+              - incorrect_information
+              - missing_information
+              - irrelevant_information
+              - unclear_explanation
+              - poor_citations
+              - excellent_answer
+              - helpful_citations
+              - well_explained
+              - other
+        comments:
+          type: object
+          additionalProperties: false
+          description: Echoed free-text comments from the request.
+          properties:
+            positive:
+              type: string
+            negative:
+              type: string
+        feedbackProvider:
+          type: string
+          format: objectId
+          description: User who submitted the feedback. Always present.
+        timestamp:
+          type: integer
+          format: int64
+          description: |
+            Submission time as epoch milliseconds (not an ISO 8601 datetime).
+            Always present.
+        metrics:
+          $ref: '#/components/schemas/MessageFeedbackAppendMetrics'
+
+    MessageFeedbackUpdateResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - conversationId
+        - messageId
+        - feedback
+        - meta
+      description: |
+        Gateway response after appending feedback to a bot-response message.
+      properties:
+        conversationId:
+          type: string
+          format: objectId
+          description: Conversation the feedback was attached to.
+        messageId:
+          type: string
+          format: objectId
+          description: Message the feedback was attached to.
+        feedback:
+          $ref: '#/components/schemas/MessageFeedbackAppendEntry'
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+            - requestId
+            - timestamp
+            - duration
+          properties:
+            requestId:
+              type: string
+              description: |
+                Server-side request identifier. Read from the `X-Request-ID`
+                header when supplied, otherwise auto-generated, so this field
+                is always present.
+            timestamp:
+              type: string
+              format: date-time
+            duration:
+              type: integer
+              description: Server-side processing time in milliseconds.
 
     Conversation:
       type: object
@@ -6129,6 +6360,26 @@ components:
           $ref: '#/components/schemas/SemanticSearchHistoryMeta'
 
     # ==================== AGENT SCHEMAS ====================
+    AgentKnowledgeFiltersParsed:
+      type: object
+      additionalProperties: false
+      description: |
+        Indexed scope for a knowledge connector: record-group ids (collections /
+        KB roots) and individual record ids. First-party create/update flows set
+        `recordGroups` and `records`. On GET, `filtersParsed` is this shape
+        parsed from the stored `filters` JSON string.
+      properties:
+        recordGroups:
+          type: array
+          items:
+            type: string
+          description: Record-group ids (e.g. knowledge-base roots) in scope.
+        records:
+          type: array
+          items:
+            type: string
+          description: Individual record ids in scope.
+
     Agent:
       type: object
       additionalProperties: false
@@ -6148,10 +6399,6 @@ components:
           type: string
           description: Backend document revision token.
           example: "_lkNlcOm---"
-        agentKey:
-          type: string
-          description: Legacy alias for the agent key when emitted by some backends
-          example: "customer-support-agent"
         name:
           type: string
           description: Display name of the agent
@@ -6162,43 +6409,9 @@ components:
         systemPrompt:
           type: string
           description: System instructions that define agent behavior
-        tools:
-          type: array
-          items:
-            type: string
-          description: List of tool keys the agent can use
-        knowledgeBases:
-          type: array
-          items:
-            type: string
-            format: uuid
-          description: Knowledge bases the agent has access to
-        modelConfig:
-          type: object
-          additionalProperties: false
-          properties:
-            modelKey:
-              type: string
-            temperature:
-              type: number
-            maxTokens:
-              type: integer
-          description: AI model configuration
-        isPublic:
-          type: boolean
-          description: Whether agent is available to all org users
         createdBy:
           type: string
           format: objectId
-        orgId:
-          type: string
-          format: objectId
-        createdAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
         startMessage:
           type: string
           description: Initial greeting shown when a conversation with this agent starts
@@ -6256,10 +6469,12 @@ components:
             additionalProperties: false
             properties:
               name:
-                type: string
-                description: Integration / toolset type key
+                allOf:
+                  - $ref: '#/components/schemas/AgentCreateToolsetName'
+                description: Integration / toolset type key.
               displayName:
                 type: string
+                description: Human-readable toolset product label (for example `Jira` or `Slack`).
               type:
                 type: string
               instanceId:
@@ -6308,13 +6523,24 @@ components:
               displayName:
                 type: string
               filters:
+                description: |
+                  Knowledge scope filter as stored on the graph edge. The Node `getAgent`
+                  handler proxies this field unchanged from the AI service (only `agent.id`
+                  is stripped). May be a JSON string (typical graph storage) or an object.
+                  Prefer `filtersParsed` on GET for a guaranteed parsed object with the
+                  same keys as the object branch below.
                 oneOf:
-                  - type: object
-                    additionalProperties: true
+                  - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
                   - type: string
+                    description: JSON-encoded filter object (graph storage format).
               filtersParsed:
-                type: object
-                additionalProperties: true
+                readOnly: true
+                description: |
+                  Server-derived read-only object parsed from the stored
+                  `filters` JSON by the graph provider on GET (Neo4j / Arango).
+                  Empty object when `filters` is missing or invalid JSON.
+                allOf:
+                  - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the whole organization
@@ -6628,80 +6854,25 @@ components:
         agent:
           $ref: '#/components/schemas/Agent'
 
-    AgentDeleteCounts:
-      type: object
-      additionalProperties: false
-      description: |
-        Counts of graph entities affected by `DELETE /agents/{agentKey}`.
-        The Python backend soft-deletes (tombstones) the agent instance; related
-        toolsets, tools, and knowledge documents remain unless separately removed.
-        A simple agent with no attachments returns `agents: 1` and zero for the
-        other buckets (as asserted by integration tests).
-      required:
-        - agents
-        - toolsets
-        - tools
-        - knowledge
-        - edges
-      properties:
-        agents:
-          type: integer
-          minimum: 0
-          description: Agent instance documents tombstoned (1 on a successful delete).
-          example: 1
-        toolsets:
-          type: integer
-          minimum: 0
-          example: 0
-        tools:
-          type: integer
-          minimum: 0
-          example: 0
-        knowledge:
-          type: integer
-          minimum: 0
-          example: 0
-        edges:
-          type: integer
-          minimum: 0
-          example: 0
-
-    AgentDeleteResponse:
-      type: object
-      additionalProperties: false
-      description: |
-        Success envelope returned by `DELETE /agents/{agentKey}` on HTTP 200.
-        The Node gateway proxies `DELETE` to the Python query service and returns
-        the backend JSON body unchanged.
-      required:
-        - status
-        - message
-        - deleted
-      properties:
-        status:
-          type: string
-          enum: [success]
-          example: success
-        message:
-          type: string
-          example: Agent deleted successfully
-        deleted:
-          $ref: '#/components/schemas/AgentDeleteCounts'
-
     AgentCreateModelEntry:
       description: |
         Accepted model entry for `POST /agents/create`.
-        The gateway accepts either a non-empty string model entry or an object entry.
-        At least one entry must be present, and at least one object entry must carry
-        `isReasoning: true` for the request to pass validation.
+        The gateway accepts either a non-empty string model entry or an object entry
+        with a required `modelKey`.
+
+        The `models` array must include at least one object entry with `isReasoning: true`.
+        String-only entries are schema-valid but are rejected at the gateway with HTTP 400.
       oneOf:
         - type: string
           minLength: 1
         - type: object
           additionalProperties: false
+          required:
+            - modelKey
           properties:
             modelKey:
               type: string
+              minLength: 1
             modelName:
               type: string
             provider:
@@ -6712,6 +6883,8 @@ components:
     AgentCreateToolRef:
       type: object
       additionalProperties: false
+      required:
+        - name
       properties:
         name:
           type: string
@@ -6719,12 +6892,11 @@ components:
           type: string
         description:
           type: string
+          maxLength: 10000
 
     AgentCreateToolsetName:
       type: string
-      description: |
-        Normalized toolset identifier (lowercase, no spaces or underscores).
-        Matches the Python toolset registry key and the value sent by the agent builder.
+      description: Registered toolset name (lowercase) accepted by the create-agent gateway.
       enum:
         - calendar
         - clickup
@@ -6743,25 +6915,27 @@ components:
         - slack
         - teams
         - zoom
-      example: jira
 
     AgentCreateToolset:
       type: object
       additionalProperties: false
-      description: |
-        Toolset attachment for agent creation.
-        Use `displayName` for human-readable labels (for example, "Jira").
+      required:
+        - name
       properties:
         name:
           $ref: '#/components/schemas/AgentCreateToolsetName'
         displayName:
           type: string
+          maxLength: 200
         type:
           type: string
+          maxLength: 100
         instanceId:
           type: string
+          maxLength: 256
         instanceName:
           type: string
+          maxLength: 200
         tools:
           type: array
           items:
@@ -6770,13 +6944,14 @@ components:
     AgentCreateKnowledge:
       type: object
       additionalProperties: false
+      required:
+        - connectorId
       properties:
         connectorId:
           type: string
         filters:
           oneOf:
-            - type: object
-              additionalProperties: true
+            - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
             - type: string
             - type: array
               items: {}
@@ -6795,10 +6970,13 @@ components:
               type: string
             providerKey:
               type: string
+              maxLength: 256
             providerLabel:
               type: string
+              maxLength: 200
             iconPath:
               type: string
+              maxLength: 500
           required:
             - provider
         - type: 'null'
@@ -6836,8 +7014,9 @@ components:
           type: array
           minItems: 1
           description: |
-            Agent model configuration entries. Gateway validation also requires
-            at least one reasoning-capable model object in the array.
+            Agent model configuration entries. The gateway requires at least one
+            object entry with `isReasoning: true`. String-only arrays are schema-valid
+            but rejected at runtime with HTTP 400.
           items:
             $ref: '#/components/schemas/AgentCreateModelEntry'
         tags:
@@ -6903,9 +7082,10 @@ components:
         - tools
       properties:
         name:
-          type: string
+          $ref: '#/components/schemas/AgentCreateToolsetName'
         displayName:
           type: string
+          description: Human-readable toolset product label (for example `Jira` or `Slack`).
         key:
           type: string
         tools:
@@ -7043,19 +7223,17 @@ components:
       description: |
         Partial update payload for `PUT /agents/{agentKey}`.
 
-        All properties are optional; only supplied fields are updated. The Node
-        gateway does not Zod-validate this body (unlike `POST /agents/create`);
-        the Python agent service validates fields when they are present.
-
-        When `models` is included, the backend requires a non-empty array with at
-        least one entry that resolves to a reasoning-capable model object
-        (`isReasoning: true` on an object entry, matching create semantics).
+        Every field is optional — only the fields present in the request body
+        are updated. When `models` is included, the gateway Zod middleware
+        (mirroring the Python backend) requires at least one model entry and
+        at least one object entry with `isReasoning: true`.
       properties:
         name:
           type: string
           minLength: 1
           maxLength: 200
           description: Agent display name
+          example: "Renamed Agent"
         description:
           type: string
           maxLength: 100000
@@ -7071,14 +7249,14 @@ components:
         instructions:
           type: string
           maxLength: 100000
-          nullable: true
           description: Additional agent execution instructions
         models:
           type: array
+          minItems: 1
           description: |
-            Agent model configuration entries. When this field is sent, the Python
-            backend requires at least one parsed model entry and at least one
-            reasoning-capable model object in the array.
+            Agent model configuration entries. When present, the Zod middleware
+            requires at least one object entry with `isReasoning: true`.
+            String-only arrays are schema-valid but rejected at runtime with HTTP 400.
           items:
             $ref: '#/components/schemas/AgentCreateModelEntry'
         tags:
@@ -7089,26 +7267,22 @@ components:
             maxLength: 100
         shareWithOrg:
           type: boolean
+          default: false
           description: Share agent with the organization
         isServiceAccount:
           type: boolean
-          description: |
-            Mark the agent as a service-account agent. A service-account agent
-            cannot be converted back to a regular agent.
+          default: false
+          description: Mark agent as a service account
         toolsets:
           type: array
           maxItems: 100
-          description: |
-            Toolsets attached to the agent (instance-aware). An empty array
-            removes all toolsets when this field is supplied.
+          description: Toolsets attached to the agent (instance-aware)
           items:
             $ref: '#/components/schemas/AgentCreateToolset'
         knowledge:
           type: array
           maxItems: 100
-          description: |
-            Knowledge sources connected to the agent. An empty array removes all
-            knowledge sources when this field is supplied.
+          description: Knowledge sources connected to the agent
           items:
             $ref: '#/components/schemas/AgentCreateKnowledge'
         webSearch:
@@ -7117,12 +7291,6 @@ components:
     AgentUpdateResponse:
       type: object
       additionalProperties: false
-      description: |
-        Success envelope returned by `PUT /agents/{agentKey}`.
-
-        The Node gateway forwards the Python backend response on success. The
-        updated agent projection is not included; use `GET /agents/{agentKey}`
-        to read the persisted configuration.
       required:
         - status
         - message
@@ -7131,10 +7299,55 @@ components:
           type: string
           enum:
             - success
-          example: "success"
         message:
           type: string
           example: "Agent updated successfully"
+
+    AgentDeleteResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - message
+        - deleted
+      properties:
+        status:
+          type: string
+          enum:
+            - success
+        message:
+          type: string
+          example: "Agent deleted successfully"
+        deleted:
+          type: object
+          additionalProperties: false
+          required:
+            - agents
+            - toolsets
+            - tools
+            - knowledge
+            - edges
+          properties:
+            agents:
+              type: integer
+              minimum: 0
+              example: 1
+            toolsets:
+              type: integer
+              minimum: 0
+              example: 0
+            tools:
+              type: integer
+              minimum: 0
+              example: 0
+            knowledge:
+              type: integer
+              minimum: 0
+              example: 0
+            edges:
+              type: integer
+              minimum: 0
+              example: 0
 
     AgentTemplate:
       type: object
@@ -7302,6 +7515,12 @@ components:
           type: string
           format: objectId
           nullable: true
+        archivedAt:
+          type: string
+          format: date-time
+          description: |
+            Present on archived conversation endpoints. Derived from the
+            document `updatedAt` timestamp when the archive response is built.
         isDeleted:
           type: boolean
         deletedBy:
@@ -7388,11 +7607,34 @@ components:
         meta:
           $ref: '#/components/schemas/SemanticSearchHistoryMeta'
 
+    AgentArchivedConversationGroup:
+      type: object
+      additionalProperties: false
+      description: |
+        Archived conversations for a single agent, sliced to the first page
+        of the per-agent archive query (limit 5, sorted newest first).
+      required:
+        - agentKey
+        - conversations
+        - pagination
+      properties:
+        agentKey:
+          type: string
+          description: Agent identifier the conversations belong to.
+        conversations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentConversationListItem'
+        pagination:
+          $ref: '#/components/schemas/SemanticSearchHistoryPagination'
+
     AgentArchivedGroupsResponse:
       type: object
+      additionalProperties: false
       description: |
         Response from `GET /agents/conversations/show/archives` — archived agent
-        conversations grouped by `agentKey`, with agent-level pagination.
+        conversations grouped by `agentKey`, with agent-level pagination over
+        the groups and a fixed slice of conversations under each agent.
       required:
         - groups
         - agentPagination
@@ -7401,14 +7643,55 @@ components:
         groups:
           type: array
           items:
-            type: object
-            additionalProperties: true
+            $ref: '#/components/schemas/AgentArchivedConversationGroup'
         agentPagination:
-          type: object
-          additionalProperties: true
+          $ref: '#/components/schemas/SemanticSearchHistoryPagination'
         meta:
-          type: object
-          additionalProperties: true
+          $ref: '#/components/schemas/RequestMeta'
+
+    AgentArchivedConversationSummary:
+      type: object
+      additionalProperties: false
+      description: |
+        Archive counts and bounds for the current result page returned by
+        `GET /agents/{agentKey}/conversations/show/archives`.
+      properties:
+        totalArchived:
+          type: integer
+          description: Total archived conversations matching the filter
+        oldestArchive:
+          type: string
+          format: date-time
+          description: Archive timestamp of the first item in the current page. Omitted when the page is empty.
+        newestArchive:
+          type: string
+          format: date-time
+          description: Archive timestamp of the last item in the current page. Omitted when the page is empty.
+
+    AgentArchivedConversationListResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Envelope returned by `GET /agents/{agentKey}/conversations/show/archives`.
+      required:
+        - conversations
+        - pagination
+        - filters
+        - summary
+        - meta
+      properties:
+        conversations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentConversationListItem'
+        pagination:
+          $ref: '#/components/schemas/SemanticSearchHistoryPagination'
+        filters:
+          $ref: '#/components/schemas/SemanticSearchHistoryFilters'
+        summary:
+          $ref: '#/components/schemas/AgentArchivedConversationSummary'
+        meta:
+          $ref: '#/components/schemas/SemanticSearchHistoryMeta'
 
     RequestMeta:
       type: object
@@ -7550,6 +7833,26 @@ components:
           $ref: '#/components/schemas/StoredAgentConversation'
         meta:
           $ref: '#/components/schemas/RequestMeta'
+
+    AgentConversationDeleteResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Envelope returned by `DELETE /agents/{agentKey}/conversations/{conversationId}`.
+        When the conversation does not exist, belongs to a different agent, or
+        was already deleted, the API still returns HTTP 200 with
+        `conversation: null`.
+      required:
+        - message
+        - conversation
+      properties:
+        message:
+          type: string
+          enum:
+            - Conversation deleted successfully
+        conversation:
+          nullable: true
+          $ref: '#/components/schemas/StoredAgentConversation'
 
     AgentConversationDetailMessageCitation:
       type: object
@@ -7812,17 +8115,112 @@ components:
         meta:
           $ref: '#/components/schemas/AgentConversationDetailMeta'
 
+    AgentConversationArchiveMeta:
+      type: object
+      additionalProperties: false
+      description: |
+        Request-scoped metadata returned by the archive route. `requestId` is
+        omitted when upstream middleware did not attach one.
+      required:
+        - timestamp
+        - duration
+      properties:
+        requestId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        duration:
+          type: integer
+
+    AgentConversationArchiveResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Envelope returned by `POST /agents/{agentKey}/conversations/{conversationId}/archive`.
+      required:
+        - id
+        - status
+        - archivedBy
+        - archivedAt
+        - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+        status:
+          type: string
+          enum:
+            - archived
+        archivedBy:
+          type: string
+          format: objectId
+        archivedAt:
+          type: string
+          format: date-time
+        meta:
+          $ref: '#/components/schemas/AgentConversationArchiveMeta'
+
+    AgentConversationUnarchiveMeta:
+      type: object
+      additionalProperties: false
+      description: |
+        Request-scoped metadata returned by the unarchive route. `requestId` is
+        omitted when upstream middleware did not attach one.
+      required:
+        - timestamp
+        - duration
+      properties:
+        requestId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        duration:
+          type: integer
+
+    AgentConversationUnarchiveResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Envelope returned by `POST /agents/{agentKey}/conversations/{conversationId}/unarchive`.
+      required:
+        - id
+        - status
+        - unarchivedBy
+        - unarchivedAt
+        - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+        status:
+          type: string
+          enum:
+            - unarchived
+        unarchivedBy:
+          type: string
+          format: objectId
+        unarchivedAt:
+          type: string
+          format: date-time
+        meta:
+          $ref: '#/components/schemas/AgentConversationUnarchiveMeta'
+
     AgentRegenerateSSEEvent:
       type: object
+      additionalProperties: false
       description: |
         SSE event envelope for `POST /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate`.
 
         Stable events:
 
         - `connected` confirms the stream is open.
-        - `complete` returns the updated conversation plus request metadata.
-        - `error` returns a failure message. Conversation lookup failures and
-          regenerate rule failures are reported here after the stream starts.
+        - `complete` returns the updated conversation plus request metadata
+          after the regenerated bot response is persisted.
+        - `error` returns a failure message. Conversation lookup failures,
+          unauthorized conversation access, and regenerate rule failures such
+          as "not the last message" are reported here after the stream starts.
 
         Other events are forwarded from the agent backend and should be
         treated as informational updates.
@@ -9082,7 +9480,87 @@ components:
           description: Speech-to-Text providers used to transcribe chat audio.
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'
+        modelRoles:
+          type: object
+          description: >-
+            Optional map of named role → model assignment. Each key is a role
+            name (e.g. `indexing`) and the value identifies which configured
+            model handles that role. When a role is absent the corresponding
+            service skips LLM-based processing for that role.
+          additionalProperties:
+            $ref: '#/components/schemas/ModelRoleAssignment'
       description: Must have at least one model type configured
+
+    ModelRoleAssignment:
+      type: object
+      description: Identifies which configured model is assigned to a named role.
+      required:
+        - modelType
+        - modelKey
+      properties:
+        modelType:
+          type: string
+          description: >-
+            The model-type bucket the assigned model lives in
+            (e.g. `llm`, `slm`, `multiModal`).
+          example: slm
+        modelKey:
+          type: string
+          description: UUID of the model entry within the bucket.
+          example: 3f2a1c8e-0000-0000-0000-000000000001
+
+    GetModelRolesResponse:
+      type: object
+      description: Current model role assignments for the organisation.
+      required:
+        - status
+        - modelRoles
+      properties:
+        status:
+          type: string
+          enum: [success]
+        modelRoles:
+          type: object
+          description: Map of role name → assignment. Empty object when no roles are configured.
+          additionalProperties:
+            $ref: '#/components/schemas/ModelRoleAssignment'
+
+    UpdateModelRolesRequest:
+      type: object
+      description: >-
+        Replaces the entire model role assignment map. Roles absent from this
+        object are deleted — send an empty `roles` object to clear all role
+        assignments.
+      required:
+        - roles
+      properties:
+        roles:
+          type: object
+          description: >-
+            The complete desired role map. Replaces the stored map in full;
+            omit a key to delete that role assignment.
+          additionalProperties:
+            $ref: '#/components/schemas/ModelRoleAssignment'
+
+    UpdateModelRolesResponse:
+      type: object
+      description: Updated model role assignments after the write.
+      required:
+        - status
+        - message
+        - modelRoles
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          example: Model roles updated successfully
+        modelRoles:
+          type: object
+          description: The full role map after the update.
+          additionalProperties:
+            $ref: '#/components/schemas/ModelRoleAssignment'
 
     GetAIModelsProvidersResponse:
       type: object
@@ -9464,37 +9942,66 @@ components:
 
     WebSearchProviderItem:
       type: object
-      description: Web search provider configuration item
+      additionalProperties: false
+      description: Web search provider configuration item returned by getWebSearchProviders
+      required:
+        - provider
+        - providerKey
+        - configuration
+        - isDefault
       properties:
         provider:
-          type: string
+          $ref: '#/components/schemas/WebSearchProviderType'
         providerKey:
           type: string
+          description: Unique key for the provider configuration
         configuration:
           type: object
+          description: |
+            Provider-specific configuration as stored and returned by the gateway (open record).
+            Serper, Tavily, and Exa typically include `apiKey`; additional keys may be present.
           additionalProperties: true
         isDefault:
           type: boolean
 
+    WebSearchSettings:
+      type: object
+      additionalProperties: false
+      description: Normalized web search global settings returned by getWebSearchProviders
+      required:
+        - includeImages
+      properties:
+        includeImages:
+          type: boolean
+          description: Whether to include images in search results
+        maxImages:
+          type: integer
+          minimum: 1
+          maximum: 500
+          description: Maximum number of images to return when includeImages is true
+
     WebSearchProvidersResponse:
       type: object
-      description: Response for get web search providers
+      additionalProperties: false
+      description: Response for getWebSearchProviders
+      required:
+        - status
+        - providers
+        - settings
+        - message
       properties:
         status:
           type: string
+          enum: [success]
         providers:
           type: array
           items:
             $ref: '#/components/schemas/WebSearchProviderItem'
         settings:
-          type: object
-          properties:
-            includeImages:
-              type: boolean
-            maxImages:
-              type: integer
+          $ref: '#/components/schemas/WebSearchSettings'
         message:
           type: string
+          description: Human-readable status (empty list vs populated providers)
 
     # Metrics Collection Schemas
     MetricsCollectionConfig:
@@ -21134,29 +21641,33 @@ paths:
               properties:
                 conversationId:
                   type: string
+                  pattern: '^$|^[0-9a-fA-F]{24}$'
                   description: >
-                    Optional. When provided and non-empty after trim, included in the JSON body sent
-                    to the AI backend; otherwise sent as null.
+                    Optional existing conversation id. Empty string is treated as unset; any
+                    non-empty value must be a 24-character ObjectId.
                 files:
                   type: array
-                  description: One or more files; part name must be `files`.
+                  minItems: 1
+                  maxItems: 10
+                  description: >
+                    One or more files; part name must be `files`. Accepted MIME types:
+                    `application/pdf`, `image/jpeg`, `image/jpg`, `image/png`. Max 5 MiB each.
                   items:
                     type: string
                     format: binary
       responses:
         '200':
           description: >
-            Typical success. The HTTP status code and JSON body are those returned by the query
-            service (this route proxies the response).
+            Success. The gateway proxies the AI-backend JSON envelope after transforming the
+            multipart upload into the backend attachment payload.
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
           description: >
-            No files, unsupported MIME type (not PDF/JPEG/PNG), or Multer rejection (e.g. file too
-            large).
+            Invalid `conversationId`, no files, unsupported MIME type (not PDF/JPEG/PNG), or
+            Multer rejection (e.g. file too large).
         '401':
           description: Unauthorized
         '403':
@@ -22393,6 +22904,7 @@ paths:
                             confidence:
                               type: string
                               enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
+                              nullable: true
                               description: AI confidence in the answer. Present only on `bot_response` messages, and only when the model emitted a trailing confidence block.
                             citations:
                               type: array
@@ -23730,19 +24242,15 @@ paths:
         **Overview**
 
         Feedback helps improve AI response quality over time. You can record an
-        overall helpfulness signal, per-aspect ratings, issue categories, and
-        free-text comments. Each call appends a new entry to the message;
-        previous entries are preserved.
+        overall helpfulness signal, issue categories, and free-text comments.
+        Each call appends a new entry to the message; previous entries are
+        preserved.
 
         **Feedback options**
 
         - `isHelpful` — overall thumbs up/down.
-        - `ratings` — 1–5 scores keyed by an aspect name you choose
-          (e.g. `accuracy`, `relevance`, `completeness`, `clarity`).
         - `categories` — issue or positive categories from a fixed list.
-        - `comments` — free-text `positive`, `negative`, and `suggestions`.
-        - `metrics` — optional client-side telemetry
-          (`userInteractionTime`, `feedbackSessionId`).
+        - `comments` — free-text `positive` and `negative`.
 
         **Restrictions**
 
@@ -23774,196 +24282,19 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              additionalProperties: false
-              description: |
-                All fields are optional. An empty object is accepted and still
-                records an entry stamped with the server-side `feedbackProvider`,
-                `timestamp`, and `metrics`.
-              properties:
-                isHelpful:
-                  type: boolean
-                  description: Overall helpfulness signal (thumbs up/down).
-                ratings:
-                  type: object
-                  description: |
-                    Per-aspect ratings. Keys are arbitrary aspect names chosen
-                    by the client (typically `accuracy`, `relevance`,
-                    `completeness`, `clarity`); values are scores in the range
-                    1–5.
-                  additionalProperties:
-                    type: number
-                    minimum: 1
-                    maximum: 5
-                categories:
-                  type: array
-                  description: Issue or positive categories that apply to the response.
-                  items:
-                    type: string
-                    enum:
-                      - incorrect_information
-                      - missing_information
-                      - irrelevant_information
-                      - unclear_explanation
-                      - poor_citations
-                      - excellent_answer
-                      - helpful_citations
-                      - well_explained
-                      - other
-                comments:
-                  type: object
-                  additionalProperties: false
-                  description: Free-text comments grouped by sentiment.
-                  properties:
-                    positive:
-                      type: string
-                      description: What was good about the response.
-                    negative:
-                      type: string
-                      description: What could be improved.
-                    suggestions:
-                      type: string
-                      description: Specific suggestions for improvement.
-                metrics:
-                  type: object
-                  additionalProperties: false
-                  description: Optional client-supplied telemetry.
-                  properties:
-                    userInteractionTime:
-                      type: number
-                      description: Total time the user spent reviewing the response, in milliseconds.
-                    feedbackSessionId:
-                      type: string
-                      description: Opaque session identifier used by the client to group related feedback events.
+              $ref: '#/components/schemas/MessageFeedbackSubmitRequest'
       responses:
         '200':
           description: Feedback submitted successfully.
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: false
-                required:
-                  - conversationId
-                  - messageId
-                  - feedback
-                  - meta
-                properties:
-                  conversationId:
-                    type: string
-                    format: objectId
-                    description: Conversation the feedback was attached to.
-                  messageId:
-                    type: string
-                    format: objectId
-                    description: Message the feedback was attached to.
-                  feedback:
-                    type: object
-                    additionalProperties: false
-                    required:
-                      - feedbackProvider
-                      - timestamp
-                      - metrics
-                    description: |
-                      The feedback entry just appended to the message. Echoes
-                      the fields supplied in the request plus server-stamped
-                      `feedbackProvider`, `timestamp`, and `metrics`.
-                    properties:
-                      isHelpful:
-                        type: boolean
-                        description: Echoed from the request when supplied.
-                      ratings:
-                        type: object
-                        description: Echoed per-aspect ratings (values 1–5).
-                        additionalProperties:
-                          type: number
-                          minimum: 1
-                          maximum: 5
-                      categories:
-                        type: array
-                        description: Echoed categories from the request.
-                        items:
-                          type: string
-                          enum:
-                            - incorrect_information
-                            - missing_information
-                            - irrelevant_information
-                            - unclear_explanation
-                            - poor_citations
-                            - excellent_answer
-                            - helpful_citations
-                            - well_explained
-                            - other
-                      comments:
-                        type: object
-                        additionalProperties: false
-                        description: Echoed free-text comments from the request.
-                        properties:
-                          positive:
-                            type: string
-                          negative:
-                            type: string
-                          suggestions:
-                            type: string
-                      feedbackProvider:
-                        type: string
-                        format: objectId
-                        description: User who submitted the feedback. Always present.
-                      timestamp:
-                        type: integer
-                        format: int64
-                        description: |
-                          Submission time as epoch milliseconds (not an ISO 8601
-                          datetime). Always present.
-                      metrics:
-                        type: object
-                        additionalProperties: false
-                        required:
-                          - timeToFeedback
-                        description: |
-                          Telemetry recorded server-side alongside the feedback.
-                          Always present.
-                        properties:
-                          timeToFeedback:
-                            type: number
-                            description: |
-                              Milliseconds between message creation and feedback
-                              submission. Always present.
-                          userInteractionTime:
-                            type: number
-                            description: Echoed from `metrics.userInteractionTime` in the request when supplied.
-                          feedbackSessionId:
-                            type: string
-                            description: Echoed from `metrics.feedbackSessionId` in the request when supplied.
-                          userAgent:
-                            type: string
-                            description: Value of the `User-Agent` request header captured server-side.
-                  meta:
-                    type: object
-                    additionalProperties: false
-                    required:
-                      - requestId
-                      - timestamp
-                      - duration
-                    properties:
-                      requestId:
-                        type: string
-                        description: |
-                          Server-side request identifier. Read from the
-                          `X-Request-ID` header when supplied, otherwise
-                          auto-generated, so this field is always present.
-                      timestamp:
-                        type: string
-                        format: date-time
-                      duration:
-                        type: integer
-                        description: Server-side processing time in milliseconds.
+                $ref: '#/components/schemas/MessageFeedbackUpdateResponse'
         '400':
           description: |
             Invalid request. Possible causes:
 
             - Feedback target is not a `bot_response` message.
-            - A value in `ratings` is outside the 1–5 range.
             - A `categories` value is not in the allowed list.
             - `conversationId` or `messageId` is not a valid ObjectId.
         '401':
@@ -25712,7 +26043,14 @@ paths:
       tags:
         - Agents
       summary: Get agent
-      description: Retrieve agent details by its unique key.
+      description: |
+        Retrieve agent details by its unique key.
+
+        **Observed gateway behavior (localhost integration tests):**
+        Unknown `agentKey`, lookup after soft-delete, and other AI-backend failures
+        currently return **HTTP 500** with an `ErrorResponse` body (message often
+        mentions the agent or "not found"), not 404. The Python query service may
+        return 404 when called directly; the Node proxy surfaces 500 instead.
       operationId: getAgent
       x-pipeshub-sdk: true
       security:
@@ -25725,6 +26063,7 @@ paths:
           description: Unique agent identifier
           schema:
             type: string
+            minLength: 1
           example: "customer-support-agent"
       responses:
         '200':
@@ -25734,9 +26073,40 @@ paths:
               schema:
                 $ref: '#/components/schemas/GetAgentResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid bearer token (e.g. `No token provided`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden — insufficient OAuth scope (`agent:read` required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: |
+            Gateway validation failure (non-empty `agentKey` path param) or missing
+            organization/user context on the authenticated request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Agent lookup failed
+          description: |
+            Agent not found, post-delete lookup, permission or lookup failure, or other
+            AI-backend error forwarded by the gateway (observed for unknown key and GET
+            after delete on localhost).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: AI query service unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
@@ -25747,16 +26117,16 @@ paths:
 
         **Gateway contract**
 
-        The Node gateway proxies the JSON body unchanged to the Python agent
-        service. Unlike `POST /agents/create`, this route does not run gateway
-        Zod validation on the request body. Query parameters are not validated and
-        are ignored by the controller.
+        The Node gateway validates the request body via Zod middleware before
+        forwarding to the Python agent service. The `agentKey` path param and
+        the request body are both validated. Query parameters are ignored by
+        the controller.
 
         **Update semantics**
 
         Only fields present in the request body are updated. When `models` is
-        included, the Python backend requires at least one parsed model entry and
-        at least one reasoning-capable model object (`isReasoning: true`).
+        included, the gateway Zod middleware requires at least one model entry
+        and at least one object entry with `isReasoning: true`.
 
         **Permissions**
 
@@ -25768,15 +26138,6 @@ paths:
 
         Returns a lightweight success envelope only. Use
         `GET /agents/{agentKey}` to read the persisted agent after an update.
-
-        **Observed error behavior**
-
-        Integration tests against the Node gateway commonly receive `500`
-        `ErrorResponse` envelopes for AI-backend validation failures (invalid
-        `models`, unknown `agentKey`, permission errors) because non-200 backend
-        responses are mapped without preserving the upstream HTTP status. The
-        Python service itself returns `400`/`403`/`404` for many of these cases
-        when called directly.
       operationId: updateAgent
       x-pipeshub-sdk: true
       security:
@@ -25811,19 +26172,27 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden — insufficient OAuth scope (`agent:write` required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '400':
           description: |
-            Malformed JSON request body (Express parser). Observed intermittently
-            for syntactically invalid JSON; may also surface as `500`.
+            Gateway validation failure. Returned for missing/invalid `agentKey`,
+            empty `models` array, `models` without a reasoning entry, malformed
+            JSON, and other Zod schema violations. Syntactically invalid JSON may
+            also surface as `500` depending on the Express parser.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            AI-backend or gateway failure. Observed for unknown `agentKey`,
-            invalid `models` when sent, permission errors, and other non-200
-            responses from the Python agent service via the Node proxy.
+            AI-backend or gateway failure. Returned for unknown `agentKey`,
+            permission errors, and other non-200 responses from the Python agent
+            service via the Node proxy.
           content:
             application/json:
               schema:
@@ -26023,6 +26392,7 @@ paths:
         `agentKey`, with pagination over agent groups. Excludes conversations
         whose agent was soft-deleted upstream.
       operationId: listAgentArchivedConversationsGrouped
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
@@ -26041,6 +26411,7 @@ paths:
             type: integer
             minimum: 1
             maximum: 100
+            default: 5
       responses:
         '200':
           description: Grouped archived conversations
@@ -26058,6 +26429,7 @@ paths:
       summary: List archived conversations for an agent
       description: Paginated list of archived conversations for the given agent key.
       operationId: listAgentConversationArchives
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
@@ -26072,19 +26444,52 @@ paths:
           schema:
             type: integer
             minimum: 1
+            default: 1
         - name: limit
           in: query
           schema:
             type: integer
             minimum: 1
+            maximum: 100
+            default: 20
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum: [createdAt, lastActivityAt, title]
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+        - name: search
+          in: query
+          schema:
+            type: string
+            maxLength: 1000
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date-time
       responses:
         '200':
           description: Archived conversations for the agent
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/AgentArchivedConversationListResponse'
+        '400':
+          description: Invalid query parameters (gateway validation)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
 
@@ -26098,6 +26503,7 @@ paths:
         chat (`POST /conversations/attachments/upload`): up to 10 files, 5 MiB each. Proxies to
         the AI backend. Optional `conversationId` associates uploads with an existing agent thread.
       operationId: uploadAgentConversationChatAttachments
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -26107,6 +26513,7 @@ paths:
           required: true
           schema:
             type: string
+            minLength: 1
       requestBody:
         required: true
         description: Multipart form with attachment files and optional `conversationId`.
@@ -26119,27 +26526,41 @@ paths:
               properties:
                 conversationId:
                   type: string
-                  description: Optional existing agent conversation id to attach files to.
+                  pattern: '^$|^[0-9a-fA-F]{24}$'
+                  description: >
+                    Optional existing agent conversation id. Empty string is treated as unset; any
+                    non-empty value must be a 24-character ObjectId.
                 files:
                   type: array
-                  description: One or more PDF/JPEG/PNG files (field name `files`).
+                  minItems: 1
+                  maxItems: 10
+                  description: >
+                    One or more files; field name must be `files`. Accepted MIME types:
+                    `application/pdf`, `image/jpeg`, `image/jpg`, `image/png`. Max 5 MiB each.
                   items:
                     type: string
                     format: binary
       responses:
         '200':
-          description: Upload result from the AI backend (shape defined by the query service).
+          description: >
+            Success. The gateway proxies the AI-backend JSON envelope after transforming the
+            multipart upload into the backend attachment payload.
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
-          description: No files, unsupported MIME type, or file too large.
+          description: >
+            Invalid `conversationId`, no files, unsupported MIME type (not PDF/JPEG/PNG), or
+            Multer rejection (e.g. file too large).
         '401':
           description: Unauthorized
         '403':
           description: Missing `agent:execute` scope
+        '500':
+          description: >
+            Gateway fallback when the upstream call does not return a status
+            (implementation default).
 
   /agents/{agentKey}/conversations/attachments/{recordId}:
     delete:
@@ -26147,10 +26568,16 @@ paths:
         - Agents
       summary: Delete an agent chat attachment
       description: |
-        Removes a previously uploaded attachment for agent chat (graph cleanup). Proxies the
-        Python query service; response may be `204` with an empty body. Same fire-and-forget
-        semantics as `DELETE /conversations/attachments/{recordId}` on the client.
+        Deletes a previously uploaded attachment by proxying `DELETE` to the query service
+        (`/api/v1/chat/attachments/{recordId}`). The Node handler always ends the response **without
+        a JSON body** on success (empty body); the **status code** is the upstream status, or **204**
+        if none is returned.
+
+        On validation failure in the gateway (invalid / blank path params), the response is **400**
+        with a small JSON error object. Same fire-and-forget semantics as
+        `DELETE /conversations/attachments/{recordId}` on the client.
       operationId: deleteAgentConversationChatAttachment
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -26158,23 +26585,41 @@ paths:
         - name: agentKey
           in: path
           required: true
+          description: Agent key path parameter. Must be non-empty.
           schema:
             type: string
+            minLength: 1
         - name: recordId
           in: path
           required: true
-          description: Attachment record id returned from the upload endpoint.
+          description: Attachment record id (from the upload response). Must be non-blank after trim.
           schema:
             type: string
+            minLength: 1
       responses:
         '204':
-          description: Attachment deleted (or upstream returned no content).
+          description: Success with no content (typical when upstream returns 204).
         '400':
-          description: Missing or blank `recordId`.
+          description: Invalid or blank path params (`agentKey` or `recordId`).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - error
+                properties:
+                  error:
+                    type: string
+                    example: recordId is required
         '401':
           description: Unauthorized
         '403':
           description: Missing `agent:execute` scope
+        default:
+          description: >
+            Other status codes are forwarded from the query service (e.g. 404) with an **empty**
+            response body from this route.
 
   /agents/{agentKey}/conversations/stream:
     post:
@@ -26269,8 +26714,41 @@ paths:
       tags:
         - Agents
       summary: Regenerate agent conversation message
-      description: Re-run generation for a bot message in an agent conversation (SSE).
+      description: |
+        Regenerate the AI response for a specific message in an agent
+        conversation and stream the new answer over Server-Sent Events.
+
+        **Constraints:**
+
+        - Only the last message in the conversation can be regenerated.
+        - The target message must be of type `bot_response`.
+
+        **Request body:**
+
+        All request-body fields are optional. When omitted, the server reuses
+        the original model/context. The body supports:
+        - `filters`
+        - `chatMode`
+        - `modelKey`
+        - `modelName`
+        - `modelFriendlyName`
+        - `timezone`
+        - `currentTime`
+        - `tools`
+
+        **Streaming behavior:**
+
+        The response is delivered as `text/event-stream`. Stable events are
+        `connected`, `complete`, and `error`. Additional agent/tool lifecycle
+        events may be forwarded by the backend and should be treated as
+        informational updates.
+
+        Validation failures on params/body are returned as normal HTTP `400`
+        responses before the stream starts. Valid-shape requests that fail
+        conversation lookup or regenerate rules are reported as SSE `error`
+        events after stream initialization.
       operationId: regenerateAgentConversationMessage
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -26278,46 +26756,73 @@ paths:
         - name: agentKey
           in: path
           required: true
+          description: Stable key identifying the agent that owns this conversation.
           schema:
             type: string
+            minLength: 1
         - name: conversationId
           in: path
           required: true
+          description: ID of the agent conversation containing the target message.
           schema:
             type: string
             format: objectId
         - name: messageId
           in: path
           required: true
+          description: ID of the bot-response message to regenerate.
           schema:
             type: string
             format: objectId
       requestBody:
         required: false
-        description: Optional filters and model overrides for regeneration.
+        description: |
+          Optional regeneration payload. All fields are optional and are
+          validated against `RegenerateRequest`.
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/RegenerateRequest'
       responses:
         '200':
-          description: SSE stream (text/event-stream)
+          description: |
+            SSE stream established.
+
+            Stable event names:
+            - `connected` — confirms the stream is open
+            - `complete` — returns the updated conversation plus metadata
+            - `error` — reports lookup failures, authorization failures on
+              the conversation, or regenerate-rule failures after the stream
+              has started
+
+            Additional backend-defined agent/tool events may be emitted.
+            Clients should ignore unknown event names.
           content:
             text/event-stream:
               schema:
                 $ref: '#/components/schemas/AgentRegenerateSSEEvent'
+        '400':
+          description: |
+            Validation failed for path parameters or request body. Common
+            causes include invalid ObjectId formats, empty strings for fields
+            that require content, malformed `filters`, invalid `tools`
+            entries, or `currentTime` values that are not ISO 8601 datetimes
+            with offset information.
         '401':
           description: Unauthorized
-        '404':
-          description: Conversation or message not found
 
   /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/feedback:
     post:
       tags:
         - Agents
       summary: Submit feedback for an agent message
-      description: Record structured feedback on a bot response in an agent conversation.
+      description: |
+        Append structured feedback to a bot-response message in an agent
+        conversation. Uses the same request body shape as
+        `updateMessageFeedback` (helpfulness, categories, comments). Feedback
+        can only be submitted on `bot_response` messages.
       operationId: updateAgentConversationMessageFeedback
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -26325,17 +26830,21 @@ paths:
         - name: agentKey
           in: path
           required: true
+          description: Unique agent identifier (gateway Zod requires non-empty string).
           schema:
             type: string
+            minLength: 1
         - name: conversationId
           in: path
           required: true
+          description: Unique conversation identifier.
           schema:
             type: string
             format: objectId
         - name: messageId
           in: path
           required: true
+          description: Identifier of the bot-response message being rated.
           schema:
             type: string
             format: objectId
@@ -26345,19 +26854,27 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/MessageFeedback'
+              $ref: '#/components/schemas/MessageFeedbackSubmitRequest'
       responses:
         '200':
           description: Feedback stored
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/MessageFeedbackUpdateResponse'
+        '400':
+          description: |
+            Invalid request. Possible causes:
+
+            - Feedback target is not a `bot_response` message.
+            - A `categories` value is not in the allowed list.
+            - `conversationId` or `messageId` is not a valid ObjectId.
         '401':
           description: Unauthorized
         '404':
           description: Conversation or message not found
+        '500':
+          description: Persistence layer failed to append the feedback entry.
 
   /agents/{agentKey}/conversations/{conversationId}/messages:
     post:
@@ -26409,6 +26926,7 @@ paths:
       summary: Archive an agent conversation
       description: Marks the conversation as archived for the authenticated owner.
       operationId: archiveAgentConversation
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -26430,12 +26948,26 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/AgentConversationArchiveResponse'
+        '400':
+          description: |
+            Invalid path input or the conversation is already archived.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations/{conversationId}/unarchive:
     post:
@@ -26444,6 +26976,7 @@ paths:
       summary: Unarchive an agent conversation
       description: Restores an archived agent conversation to the active list.
       operationId: unarchiveAgentConversation
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -26465,20 +26998,44 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/AgentConversationUnarchiveResponse'
+        '400':
+          description: |
+            Invalid path input or the conversation is not currently archived.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations/{conversationId}/title:
     patch:
       tags:
         - Agents
       summary: Update agent conversation title
-      description: Updates the display title for an agent conversation owned by the caller.
+      description: |
+        Updates the display title for an agent conversation owned by the caller.
+
+        The controller looks up the conversation by `_id`, `orgId`, `userId`,
+        `agentKey`, and `isDeleted: false`.
+
+        The request body uses the shared title validator (`1..200` chars), and
+        the controller trims the incoming title before saving it. A whitespace-only
+        title can therefore still return HTTP 400 even if the raw string is
+        non-empty.
       operationId: updateAgentConversationTitle
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -26496,25 +27053,106 @@ paths:
             format: objectId
       requestBody:
         required: true
-        description: New title for the agent conversation.
+        description: |
+          New title for the agent conversation.
+
+          The server trims the provided string before saving it.
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/ConversationTitleUpdateRequest'
       responses:
         '200':
-          description: Title updated
+          description: Title updated successfully
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/AgentConversationTitleUpdateResponse'
+        '400':
+          description: |
+            Invalid path or body input.
+
+            This includes Zod validation failures for malformed `conversationId`
+            or invalid `title` payloads, plus controller-level bad requests such
+            as titles that become empty after trimming.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Conversation not found
+          description: |
+            Agent conversation not found for the authenticated user, organization,
+            and agent scope, or the conversation is soft-deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations/{conversationId}:
+    delete:
+      tags:
+        - Agents
+      summary: Delete an agent conversation
+      description: |
+        Soft-deletes an agent conversation owned by the authenticated user.
+
+        The controller scopes the lookup by `_id`, `orgId`, `userId`, and
+        `agentKey`. If no matching writable conversation is found, the route is
+        intentionally a no-op and still returns HTTP 200 with `conversation: null`.
+
+        This makes the operation idempotent:
+
+        - deleting a nonexistent conversation returns success with `null`
+        - deleting through a different `agentKey` returns success with `null`
+        - deleting an already deleted conversation returns success with `null`
+      operationId: deleteAgentConversationById
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Conversation deleted or no-op delete completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentConversationDeleteResponse'
+        '400':
+          description: Invalid path input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while deleting the agent conversation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     get:
       tags:
         - Agents
@@ -26531,6 +27169,7 @@ paths:
         - `page`: Page number (default: 1)
         - `limit`: Messages per page (default: 20, max: 100)
       operationId: getAgentConversationById
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:read]
@@ -26566,7 +27205,7 @@ paths:
           description: Field to sort messages by
           schema:
             type: string
-            enum: [createdAt]
+            enum: [createdAt, messageType, content]
             default: createdAt
         - name: sortOrder
           in: query
@@ -26575,6 +27214,24 @@ paths:
             type: string
             enum: [asc, desc]
             default: desc
+        - name: startDate
+          in: query
+          description: Filter messages created on or after this date
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          description: Filter messages created on or before this date
+          schema:
+            type: string
+            format: date-time
+        - name: messageType
+          in: query
+          description: Filter messages by type
+          schema:
+            type: string
+            enum: [user_query, bot_response, error, feedback, system]
       responses:
         '200':
           description: Agent conversation detail
@@ -26582,40 +27239,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentConversationDetailResponse'
-        '401':
-          description: Unauthorized
-        '404':
-          description: Conversation not found
-
-    delete:
-      tags:
-        - Agents
-      summary: Delete agent conversation
-      description: Soft-deletes the agent conversation for the authenticated user.
-      operationId: deleteAgentConversationById
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: conversationId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: objectId
-      responses:
-        '200':
-          description: Conversation deleted
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
         '401':
           description: Unauthorized
         '404':
@@ -29939,7 +30562,6 @@ paths:
   # ==================== CONFIGURATION MANAGER ENDPOINTS ====================
 
   # -------------------- Storage Configuration --------------------
-  # Local Storage
   /configurationManager/storageConfig:
     get:
       tags:
@@ -29986,8 +30608,161 @@ paths:
                   accountName:
                     type: string
                     description: Storage account name (Azure Blob)
-        '404':
-          description: Storage configuration not found
+                  accountKey:
+                    type: string
+                    description: Storage account key (Azure Blob)
+                  endpointProtocol:
+                    type: string
+                    enum: [http, https]
+                    description: Endpoint protocol (Azure Blob)
+                  endpointSuffix:
+                    type: string
+                    description: Endpoint suffix (Azure Blob)
+        '400':
+          description: Storage type not found in stored configuration
+        '401':
+          description: Unauthorized
+    post:
+      tags:
+        - Storage Configuration
+      summary: Create or update storage configuration
+      description: |
+        Save the storage backend configuration. Supported types: Local, S3, Azure Blob.
+
+        For S3 storage, a live health check is performed before saving. The health check
+        validates bucket access, upload, read, presigned URL generation (GET and PUT).
+        If any capability check fails, the request is rejected with a 400 error containing
+        detailed diagnostics per capability.
+      operationId: createStorageConfig
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      requestBody:
+        required: true
+        description: Storage configuration payload (discriminated by storageType)
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [storageType, s3AccessKeyId, s3SecretAccessKey, s3Region, s3BucketName]
+                  properties:
+                    storageType:
+                      type: string
+                      enum: [s3]
+                    s3AccessKeyId:
+                      type: string
+                      description: AWS access key ID
+                    s3SecretAccessKey:
+                      type: string
+                      description: AWS secret access key
+                    s3Region:
+                      type: string
+                      description: AWS region (e.g. us-east-1)
+                    s3BucketName:
+                      type: string
+                      description: S3 bucket name
+                - type: object
+                  required: [storageType, containerName]
+                  properties:
+                    storageType:
+                      type: string
+                      enum: [azureBlob]
+                    azureBlobConnectionString:
+                      type: string
+                      description: Full connection string (alternative to individual fields)
+                    endpointProtocol:
+                      type: string
+                      enum: [http, https]
+                      default: https
+                    accountName:
+                      type: string
+                    accountKey:
+                      type: string
+                    endpointSuffix:
+                      type: string
+                      default: core.windows.net
+                    containerName:
+                      type: string
+                - type: object
+                  required: [storageType]
+                  properties:
+                    storageType:
+                      type: string
+                      enum: [local]
+                    mountName:
+                      type: string
+                    baseUrl:
+                      type: string
+                      format: uri
+            examples:
+              s3:
+                summary: Amazon S3
+                value:
+                  storageType: s3
+                  s3AccessKeyId: AKIAIOSFODNN7EXAMPLE
+                  s3SecretAccessKey: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+                  s3Region: us-east-1
+                  s3BucketName: my-pipeshub-bucket
+              azureBlob:
+                summary: Azure Blob Storage
+                value:
+                  storageType: azureBlob
+                  accountName: mystorageaccount
+                  accountKey: base64-encoded-key
+                  containerName: pipeshub
+              local:
+                summary: Local Storage
+                value:
+                  storageType: local
+                  mountName: PipesHub
+      responses:
+        '200':
+          description: Storage configuration saved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Storage configuration saved successfully
+        '400':
+          description: |
+            Validation error or S3 health-check failure. When storageType is s3, a live
+            capability check runs before saving. If any check fails, the response includes
+            per-capability diagnostics.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        example: HTTP_BAD_REQUEST
+                      message:
+                        type: string
+                        example: "S3 health check failed. Verify credentials, bucket name, region, and IAM permissions (s3:PutObject, s3:GetObject, s3:DeleteObject). upload: AccessDenied"
+                      metadata:
+                        type: object
+                        description: Present in non-production environments
+                        properties:
+                          s3HealthCheck:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                capability:
+                                  type: string
+                                  enum: [bucketAccess, upload, read, signedUrlGet, signedUrlPut]
+                                passed:
+                                  type: boolean
+                                error:
+                                  type: string
+                                  description: Error message when passed is false
         '401':
           description: Unauthorized
 
@@ -30326,7 +31101,6 @@ paths:
       summary: Get models by type
       description: Get all configured models of a specific type.
       operationId: getModelsByType
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -30707,7 +31481,6 @@ paths:
       summary: Add new AI model provider
       description: "Add a new AI model provider configuration. Performs a health check before saving to verify connectivity. Supported providers: openai, anthropic, azure-openai, aws-bedrock, google-vertex, ollama, huggingface."
       operationId: addAIModelProvider
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:write]
@@ -30753,7 +31526,6 @@ paths:
       summary: Update AI model provider
       description: Update an existing AI model provider configuration.
       operationId: updateAIModelProvider
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:write]
@@ -30807,6 +31579,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AIModelProviderSimpleError'
+        '500':
+          description: |
+            Internal server error. The current implementation can return 500 for
+            unknown modelKey updates when the persisted aiModels blob contains
+            non-array top-level keys (for example modelRoles or custom system
+            prompt fields), causing lookup to fail before the not-found path.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
@@ -30817,7 +31599,6 @@ paths:
         reference the model. If the deleted entry was default, the first remaining
         entry for that type is promoted to default.
       operationId: deleteAIModelProvider
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -30935,8 +31716,13 @@ paths:
       tags:
         - Web Search
       summary: Get all web search providers
-      description: Retrieve all configured web search providers and current web search settings.
+      description: |
+        Retrieve all configured web search providers and current web search settings.
+
+        **Authentication:** Session JWT or OAuth 2.0 access token via `Authorization: Bearer`.
+        OAuth tokens must include the `config:read` scope. Admin role is not required.
       operationId: getWebSearchProviders
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -30948,9 +31734,17 @@ paths:
               schema:
                 $ref: '#/components/schemas/WebSearchProvidersResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid Bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Admin access required
+          description: Forbidden — OAuth token missing `config:read` scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/web-search/settings:
     put:
@@ -32103,7 +32897,6 @@ paths:
         (admin-only). Returns the stored KV shape under `models`, not the flattened
         list from getAvailableModelsByType.
       operationId: getAIModelsProviders
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       responses:
@@ -32117,6 +32910,97 @@ paths:
           description: Unauthorized
         '403':
           description: Forbidden - Admin access required
+
+  # -------------------- AI Model Role Assignments --------------------
+  /configurationManager/ai-models/roles:
+    get:
+      tags:
+        - Configuration Manager
+      summary: Get model role assignments
+      description: |
+        Returns the current role-to-model assignments for the organisation.
+
+        Each key in `modelRoles` is a named role (e.g. `indexing`); the value
+        identifies which configured model handles that role via its `modelType`
+        bucket and `modelKey` UUID.
+
+        Returns an empty `modelRoles` object when no roles have been configured.
+      operationId: getModelRoles
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Role assignments retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetModelRolesResponse'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden — admin access required
+
+    put:
+      tags:
+        - Configuration Manager
+      summary: Update model role assignments
+      description: |
+        Replaces the entire role-to-model assignment map with the supplied
+        `roles` object. Roles absent from the request body are deleted — this
+        is how the caller unsets a role (e.g. the frontend omits a key to
+        remove a previously assigned indexing model).
+
+        **Validation rules:**
+        - `modelType` must be one of: `llm`, `slm`, `embedding`, `ocr`,
+          `reasoning`, `multiModal`, `imageGeneration`, `tts`, `stt`.
+        - `modelKey` must refer to an existing provider entry within that
+          `modelType` bucket. A 400 is returned if the model cannot be found.
+        - Both `modelType` and `modelKey` are required for every role entry.
+      operationId: updateModelRoles
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateModelRolesRequest'
+            examples:
+              assignIndexingModel:
+                summary: Assign a small model for the indexing role
+                value:
+                  roles:
+                    indexing:
+                      modelType: slm
+                      modelKey: 3f2a1c8e-0000-0000-0000-000000000001
+      responses:
+        '200':
+          description: Role assignments updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateModelRolesResponse'
+        '400':
+          description: |
+            Bad request. Possible causes:
+            - `roles` field missing or not an object
+            - A role entry is missing `modelType` or `modelKey`
+            - `modelType` is not a recognised bucket
+            - `modelKey` does not exist within the specified `modelType` bucket
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [error]
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden — admin access required
 
   # -------------------- AI Model Registry (Python backend proxy) --------------------
   /configurationManager/ai-models/registry:
