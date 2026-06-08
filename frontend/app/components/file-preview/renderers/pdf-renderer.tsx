@@ -227,10 +227,16 @@ export function PDFRenderer({
       .filter((h): h is IHighlight => h !== null);
   }, [citations]);
 
-  // Inject custom highlight CSS (matching demo styling)
+  // Inject custom highlight CSS
   useEffect(() => {
     const style = document.createElement('style');
     style.textContent = `
+
+      @keyframes citationBracketPulse {
+        0%, 100% { opacity: 1; }
+        45%      { opacity: 0.15; }
+      }
+
       .Highlight__part {
         cursor: pointer;
         position: absolute;
@@ -246,37 +252,39 @@ export function PDFRenderer({
       .Highlight--scrolledTo .Highlight__part::before {
         content: '';
         position: absolute;
-        top: -2px;
-        left: -16px;
-        bottom: -2px;
-        height: calc(100% + 4px);
+        top: -3px;
+        left: -14px;
+        bottom: -3px;
+        height: calc(100% + 6px);
         width: 8px;
-        border-left: 3px solid #006400;
-        border-top: 3px solid #006400;
-        border-bottom: 3px solid #006400;
-        border-top-left-radius: 2px;
-        border-bottom-left-radius: 2px;
+        border-left: 3px solid #00b96b;
+        border-top: 3px solid #00b96b;
+        border-bottom: 3px solid #00b96b;
+        border-top-left-radius: 3px;
+        border-bottom-left-radius: 3px;
         box-sizing: border-box;
         z-index: 10;
         pointer-events: none;
+        animation: citationBracketPulse 0.85s ease-in-out 3 forwards;
       }
 
       .Highlight--scrolledTo .Highlight__part::after {
         content: '';
         position: absolute;
-        top: -2px;
-        right: -16px;
-        bottom: -2px;
-        height: calc(100% + 4px);
+        top: -3px;
+        right: -14px;
+        bottom: -3px;
+        height: calc(100% + 6px);
         width: 8px;
-        border-right: 3px solid #006400;
-        border-top: 3px solid #006400;
-        border-bottom: 3px solid #006400;
-        border-top-right-radius: 2px;
-        border-bottom-right-radius: 2px;
+        border-right: 3px solid #00b96b;
+        border-top: 3px solid #00b96b;
+        border-bottom: 3px solid #00b96b;
+        border-top-right-radius: 3px;
+        border-bottom-right-radius: 3px;
         box-sizing: border-box;
         z-index: 10;
         pointer-events: none;
+        animation: citationBracketPulse 0.85s ease-in-out 3 forwards;
       }
     `;
     document.head.appendChild(style);
