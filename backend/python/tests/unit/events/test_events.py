@@ -523,14 +523,14 @@ class TestOnEventEdgeCases:
 
     @pytest.mark.asyncio
     async def test_pymupdf_env_flag_routes_to_pymupdf(self):
-        """ENABLE_PYMUPDF_PROCESSOR=true routes to process_pdf_with_pdf_plumber."""
+        """ENABLE_PDFPLUMBER_PROCESSOR=true routes to process_pdf_with_pdf_plumber."""
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False), \
              patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
-             patch.dict("os.environ", {"ENABLE_PYMUPDF_PROCESSOR": "true"}):
+             patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "true"}):
             event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -552,7 +552,7 @@ class TestOnEventEdgeCases:
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False), \
              patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
-             patch.dict("os.environ", {"ENABLE_PYMUPDF_PROCESSOR": "true"}):
+             patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "true"}):
             event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -565,7 +565,7 @@ class TestOnEventEdgeCases:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_pdf_with_docling = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.dict("os.environ", {"ENABLE_PYMUPDF_PROCESSOR": "false"}), \
+        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
              patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False), \
              patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, side_effect=Exception("corrupted pdf")):
             event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
@@ -1014,7 +1014,7 @@ class TestOnEventDoclingFallback:
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False), \
              patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
-             patch.dict("os.environ", {"ENABLE_PYMUPDF_PROCESSOR": "false"}):
+             patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}):
             event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
             events = await _drain(ep.on_event(event_data))
 
@@ -1212,7 +1212,7 @@ class TestOnEventOcrPath:
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False), \
              patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, side_effect=RuntimeError("OCR check failed")), \
-             patch.dict("os.environ", {"ENABLE_PYMUPDF_PROCESSOR": "false"}):
+             patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}):
             event_data = _make_event_payload(extension="pdf")
             events = await _drain(ep.on_event(event_data))
 

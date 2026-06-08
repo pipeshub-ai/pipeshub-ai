@@ -136,7 +136,7 @@ services:
       - BOT_TOKEN=${BOT_TOKEN:-}
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
 
-      - ENABLE_PYMUPDF_PROCESSOR=${ENABLE_PYMUPDF_PROCESSOR:-false}
+      - ENABLE_PDFPLUMBER_PROCESSOR=${ENABLE_PDFPLUMBER_PROCESSOR:-false}
 
       # Sandbox execution mode (local = subprocess, docker = ephemeral containers).
       # Defaults to "docker" -- the sandbox-image service below builds the required

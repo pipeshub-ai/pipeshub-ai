@@ -563,9 +563,9 @@ class EventProcessor:
                     ):
                         yield event
                 else:
-                    use_pdfplumber = os.environ.get("ENABLE_PYMUPDF_PROCESSOR", "false").lower() == "true"
+                    use_pdfplumber = os.environ.get("ENABLE_PDFPLUMBER_PROCESSOR", "false").lower() == "true"
                     if use_pdfplumber:
-                        self.logger.info("📄 Using PdfPlumber+OpenCV processor (ENABLE_PYMUPDF_PROCESSOR=true)")
+                        self.logger.info("📄 Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR=true)")
                         try:
                             async for event in self.processor.process_pdf_with_pdf_plumber(
                                 recordName=record_name,
