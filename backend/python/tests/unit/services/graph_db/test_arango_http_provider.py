@@ -15856,8 +15856,9 @@ class TestCreateFilesBatch:
 
     @pytest.mark.asyncio
     async def test_conflict_skipped(self, connected_provider):
-        connected_provider._check_name_conflict_in_parent = AsyncMock(
-            return_value={"has_conflict": True, "conflicts": [{"name": "file.pdf"}]}
+        # Simulate an existing file in the DB with the same name+mime.
+        connected_provider._fetch_existing_file_names_in_parent = AsyncMock(
+            return_value={("file.pdf", "")}
         )
         created, skipped = await connected_provider._create_files_batch(
             "kb1", [{"filePath": "file.pdf", "fileRecord": {"name": "file.pdf"}, "record": {"_key": "r1", "recordName": "file.pdf"}}],
@@ -15870,10 +15871,10 @@ class TestCreateFilesBatch:
 
     @pytest.mark.asyncio
     async def test_duplicate_within_batch_skipped(self, connected_provider):
-        # No DB conflict, but two files in the same batch share a name -> the
-        # second is skipped as a duplicate.
-        connected_provider._check_name_conflict_in_parent = AsyncMock(
-            return_value={"has_conflict": False, "conflicts": []}
+        # No DB conflict, but two files in the same batch share a name+mime ->
+        # the second is skipped as an intra-batch duplicate.
+        connected_provider._fetch_existing_file_names_in_parent = AsyncMock(
+            return_value=set()
         )
         connected_provider.batch_upsert_nodes = AsyncMock()
         connected_provider.batch_create_edges = AsyncMock()
@@ -15888,8 +15889,8 @@ class TestCreateFilesBatch:
 
     @pytest.mark.asyncio
     async def test_success(self, connected_provider):
-        connected_provider._check_name_conflict_in_parent = AsyncMock(
-            return_value={"has_conflict": False, "conflicts": []}
+        connected_provider._fetch_existing_file_names_in_parent = AsyncMock(
+            return_value=set()
         )
         connected_provider.batch_upsert_nodes = AsyncMock()
         connected_provider.batch_create_edges = AsyncMock()
@@ -15903,8 +15904,8 @@ class TestCreateFilesBatch:
 
     @pytest.mark.asyncio
     async def test_with_parent_folder(self, connected_provider):
-        connected_provider._check_name_conflict_in_parent = AsyncMock(
-            return_value={"has_conflict": False, "conflicts": []}
+        connected_provider._fetch_existing_file_names_in_parent = AsyncMock(
+            return_value=set()
         )
         connected_provider.batch_upsert_nodes = AsyncMock()
         connected_provider.batch_create_edges = AsyncMock()

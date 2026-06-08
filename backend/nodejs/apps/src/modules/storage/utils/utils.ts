@@ -259,11 +259,6 @@ export function validateFileAndDocumentName(
     );
   }
 
-  if (hasExtension(documentName, extension)) {
-    throw new BadRequestError(
-      `File "${fileNameForError}": The document name cannot contain a file extension. Please provide only the name without the extension.`,
-    );
-  }
 
   if (documentName?.includes('/')) {
     throw new BadRequestError(

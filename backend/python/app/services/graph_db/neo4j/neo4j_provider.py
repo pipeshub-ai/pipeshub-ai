@@ -9741,6 +9741,47 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to check name conflict: {str(e)}")
             return {"has_conflict": False, "conflicts": []}
 
+    async def _fetch_existing_file_names_in_parent(
+        self,
+        kb_id: str,
+        parent_folder_id: str | None,
+        transaction: str | None = None,
+    ) -> set[tuple[str, str]]:
+        """Return (name_lower, mime_type_str) tuples for all non-deleted file
+        records that are immediate children of *parent_folder_id* (or KB root
+        when None).  Called once per unique parent before the per-file loop so
+        duplicate-name detection is O(1) per file instead of one DB round-trip.
+        """
+        try:
+            if parent_folder_id is None:
+                query = """
+                MATCH (rec:Record)-[:BELONGS_TO]->(kb:RecordGroup {id: $kb_id})
+                MATCH (rec)-[:IS_OF_TYPE]->(file:File {isFile: true})
+                WHERE rec.isDeleted <> true
+                  AND NOT (rec)<-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]-(:Record)
+                RETURN toLower(rec.recordName) AS name_lower, file.mimeType AS mime_type
+                """
+                params: dict = {"kb_id": kb_id}
+            else:
+                query = """
+                MATCH (parent:Record {id: $parent_folder_id})
+                      -[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->
+                      (rec:Record)
+                MATCH (rec)-[:IS_OF_TYPE]->(file:File {isFile: true})
+                WHERE rec.isDeleted <> true
+                RETURN toLower(rec.recordName) AS name_lower, file.mimeType AS mime_type
+                """
+                params = {"parent_folder_id": parent_folder_id}
+            results = await self.client.execute_query(query, parameters=params, txn_id=transaction)
+            return {
+                (r.get("name_lower"), str(r.get("mime_type") or ""))
+                for r in (results or [])
+                if r.get("name_lower")
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch existing file names: {str(e)}")
+            return set()
+
     async def validate_folder_exists_in_kb(
         self,
         kb_id: str,
@@ -10255,14 +10296,31 @@ class Neo4jProvider(IGraphDBProvider):
         failed_files = []
         skipped_files: list[dict] = []
         created_files_data = []  # For event publishing
-        # Names accepted in THIS batch, so two files with the same name in a
-        # single upload don't both get created (the DB check can't see the first
-        # until the transaction commits). Keyed by destination parent so the same
-        # name in DIFFERENT folders is allowed (mirrors the per-folder scoping of
-        # the Arango provider).
+        # Tracks names accepted in THIS batch. The pre-fetched existing-name
+        # sets are built before the loop and do not reflect files written during
+        # iteration, so intra-batch duplicates must still be caught here.
+        # Keyed by (parent_folder_id, name_lower, mime_str).
         seen_in_batch: set[tuple[str, str, str]] = set()
 
         kb_connector_id = f"knowledgeBase_{org_id}"
+
+        # Pre-compute unique parent IDs so we issue one query per parent instead
+        # of one per file.
+        unique_parent_ids: set[str | None] = set()
+        for idx in range(len(files)):
+            dest = folder_analysis["file_destinations"][idx]
+            if dest["type"] == "root":
+                unique_parent_ids.add(folder_analysis.get("parent_folder_id"))
+            else:
+                pid = dest.get("folder_id")
+                if pid:
+                    unique_parent_ids.add(pid)
+
+        existing_names_per_parent: dict[str | None, set[tuple[str, str]]] = {}
+        for pid in unique_parent_ids:
+            existing_names_per_parent[pid] = await self._fetch_existing_file_names_in_parent(
+                kb_id=kb_id, parent_folder_id=pid, transaction=transaction
+            )
 
         for index, file_data in enumerate(files):
             try:
@@ -10281,8 +10339,8 @@ class Neo4jProvider(IGraphDBProvider):
                 record_data = file_data["record"].copy()
                 file_record_data = file_data["fileRecord"].copy()
 
-                # Skip files whose name already exists in the target parent (or
-                # collides with an earlier file in this same batch).
+                # Skip files whose name+mime already exists in the target parent
+                # (pre-fetched set) or collides with an earlier file in this batch.
                 conflict_name = file_record_data.get("name") or record_data.get("recordName") or ""
                 conflict_mime = file_record_data.get("mimeType")
                 batch_key = (
@@ -10290,14 +10348,11 @@ class Neo4jProvider(IGraphDBProvider):
                     conflict_name.lower(),
                     str(conflict_mime or ""),
                 )
-                conflict_with_existing = await self._check_name_conflict_in_parent(
-                    kb_id=kb_id,
-                    parent_folder_id=parent_folder_id,
-                    item_name=conflict_name,
-                    mime_type=conflict_mime,
-                    transaction=transaction,
+                name_mime_key = (conflict_name.lower(), str(conflict_mime or ""))
+                has_db_conflict = name_mime_key in existing_names_per_parent.get(
+                    parent_folder_id, set()
                 )
-                if conflict_with_existing.get("has_conflict") or batch_key in seen_in_batch:
+                if has_db_conflict or batch_key in seen_in_batch:
                     self.logger.warning(
                         "⚠️ Skipping file due to name conflict: '%s'", conflict_name
                     )

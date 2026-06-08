@@ -99,4 +99,35 @@ test.describe.serial('Cleanup E2E Test Data', () => {
 
     console.log(`Deleted ${deleted} e2e teams`);
   });
+
+  test('delete e2e upload knowledge bases', async ({ apiContext }) => {
+    let pageNum = 1;
+    let deleted = 0;
+
+    while (true) {
+      const response = await apiContext.get('/api/v1/knowledgeBase', {
+        params: { page: pageNum, limit: 100 },
+      });
+      if (!response.ok()) break;
+
+      const data = await response.json();
+      const kbs: { id?: string; _key?: string; name?: string }[] =
+        data.knowledgeBases ?? data.kbs ?? data.items ?? [];
+      if (kbs.length === 0) break;
+
+      const e2eKbs = kbs.filter((kb) => kb.name?.startsWith('E2E Upload'));
+
+      for (const kb of e2eKbs) {
+        const id = kb.id ?? kb._key;
+        if (!id) continue;
+        const delResponse = await apiContext.delete(`/api/v1/knowledgeBase/${id}`);
+        if (delResponse.ok()) deleted++;
+      }
+
+      if (kbs.length < 100) break;
+      pageNum++;
+    }
+
+    console.log(`Deleted ${deleted} e2e upload knowledge bases`);
+  });
 });

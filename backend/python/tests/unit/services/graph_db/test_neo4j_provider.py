@@ -3929,10 +3929,10 @@ class TestCreateRecordsDuplicateName:
     def provider_no_db_conflict(
         self, neo4j_provider: Neo4jProvider
     ) -> Neo4jProvider:
-        # Isolate the in-batch dedup: the DB never reports an existing conflict,
-        # and node/edge writes are stubbed so no real Neo4j is needed.
-        neo4j_provider._check_name_conflict_in_parent = AsyncMock(
-            return_value={"has_conflict": False, "conflicts": []}
+        # Isolate the in-batch dedup: the DB has no existing conflicts (empty
+        # pre-fetched set), and node/edge writes are stubbed.
+        neo4j_provider._fetch_existing_file_names_in_parent = AsyncMock(
+            return_value=set()
         )
         neo4j_provider.batch_upsert_nodes = AsyncMock()
         neo4j_provider.batch_create_edges = AsyncMock()
@@ -4034,10 +4034,10 @@ class TestCreateRecordsDuplicateName:
     async def test_existing_db_conflict_skips_file(
         self, neo4j_provider: Neo4jProvider
     ):
-        # A name that already exists in the DB (per _check_name_conflict_in_parent)
-        # is skipped even when it is the only file in the batch.
-        neo4j_provider._check_name_conflict_in_parent = AsyncMock(
-            return_value={"has_conflict": True, "conflicts": [{"name": "README.md"}]}
+        # A name that already exists in the DB (pre-fetched name set) is
+        # skipped even when it is the only file in the batch.
+        neo4j_provider._fetch_existing_file_names_in_parent = AsyncMock(
+            return_value={("readme.md", "text/markdown")}
         )
         neo4j_provider.batch_upsert_nodes = AsyncMock()
         neo4j_provider.batch_create_edges = AsyncMock()

@@ -10298,6 +10298,74 @@ class ArangoHTTPProvider(IGraphDBProvider):
             nfd = nfc
         return [nfc.lower(), nfd.lower()]
 
+    async def _fetch_existing_file_names_in_parent(
+        self,
+        kb_id: str,
+        parent_folder_id: str | None,
+        transaction: str | None = None,
+    ) -> set[tuple[str, str]]:
+        """Return (name_lower, mime_type_str) tuples for all non-deleted file
+        records that are immediate children of *parent_folder_id* (or KB root
+        when None).  Called once before the per-file loop so duplicate-name
+        detection is O(1) per file instead of one DB round-trip per file.
+        """
+        try:
+            if parent_folder_id:
+                parent_from = f"{CollectionNames.RECORDS.value}/{parent_folder_id}"
+                query = """
+                FOR edge IN @@record_relations
+                    FILTER edge._from == @parent_from
+                    FILTER edge.relationshipType == "PARENT_CHILD"
+                    FILTER edge._to LIKE "records/%"
+                    LET child = DOCUMENT(edge._to)
+                    FILTER child != null AND child.recordName != null
+                    FILTER child.isDeleted != true
+                    LET file_doc = DOCUMENT(@@files_collection, child._key)
+                    FILTER file_doc != null AND file_doc.isFile == true
+                    RETURN {name_lower: LOWER(child.recordName), mime_type: file_doc.mimeType}
+                """
+                bind_vars: dict[str, Any] = {
+                    "parent_from": parent_from,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    "@files_collection": CollectionNames.FILES.value,
+                }
+            else:
+                parent_from = f"{CollectionNames.RECORD_GROUPS.value}/{kb_id}"
+                query = """
+                FOR edge IN @@belongs_to
+                    FILTER edge._to == @parent_from
+                    FILTER edge._from LIKE "records/%"
+                    LET child = DOCUMENT(edge._from)
+                    FILTER child != null AND child.recordName != null
+                    FILTER child.isDeleted != true
+                    LET file_doc = DOCUMENT(@@files_collection, child._key)
+                    FILTER file_doc != null AND file_doc.isFile == true
+                    LET parent_edge = FIRST(
+                        FOR pc IN @@record_relations
+                            FILTER pc._to == child._id
+                            FILTER pc.relationshipType == "PARENT_CHILD"
+                            LIMIT 1
+                            RETURN 1
+                    )
+                    FILTER parent_edge == null
+                    RETURN {name_lower: LOWER(child.recordName), mime_type: file_doc.mimeType}
+                """
+                bind_vars = {
+                    "parent_from": parent_from,
+                    "@belongs_to": CollectionNames.BELONGS_TO.value,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    "@files_collection": CollectionNames.FILES.value,
+                }
+            results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
+            return {
+                (r["name_lower"], str(r.get("mime_type") or ""))
+                for r in (results or [])
+                if r.get("name_lower")
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch existing file names: {str(e)}")
+            return set()
+
     async def _check_name_conflict_in_parent(
         self,
         kb_id: str,
@@ -12857,9 +12925,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return [], []
         valid_files: list[dict] = []
         skipped_files: list[dict] = []
-        # Track names already accepted in THIS batch so two files with the same
-        # name in a single upload don't both get created (the DB check can't see
-        # the first one until the transaction commits).
+        # Pre-fetch all existing (name_lower, mime_str) pairs for this parent
+        # in one query so the per-file conflict check is an O(1) set lookup
+        # instead of one DB round-trip per file.
+        existing_name_mime_set = await self._fetch_existing_file_names_in_parent(
+            kb_id=kb_id, parent_folder_id=parent_folder_id, transaction=transaction
+        )
+        # Track names accepted in THIS batch so intra-batch duplicates are
+        # caught. The DB check can't see writes made earlier in the same
+        # transaction because writes are batched after this loop.
         seen_in_batch: set[tuple[str, str]] = set()
         for file_data in files:
             file_record = file_data.get("fileRecord") or {}
@@ -12868,21 +12942,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
             mime_type = file_record.get("mimeType")
             batch_key = (file_name.lower(), str(mime_type or ""))
 
-            conflict_with_existing = await self._check_name_conflict_in_parent(
-                kb_id=kb_id,
-                parent_folder_id=parent_folder_id,
-                item_name=file_name,
-                mime_type=mime_type,
-                transaction=transaction,
+            # Check against the pre-fetched set (all name-variant forms) and
+            # against intra-batch names accepted earlier in this loop.
+            name_variants = self._normalized_name_variants_lower(file_name)
+            has_db_conflict = any(
+                (v, str(mime_type or "")) in existing_name_mime_set for v in name_variants
             )
-            is_conflict = bool(conflict_with_existing.get("has_conflict")) or batch_key in seen_in_batch
+            is_conflict = has_db_conflict or batch_key in seen_in_batch
             if is_conflict:
-                conflicts = conflict_with_existing.get("conflicts", [])
-                conflict_names = [c.get("name", "") for c in conflicts] or [file_name]
                 self.logger.warning(
-                    "⚠️ Skipping file due to name conflict: '%s' conflicts with %s",
+                    "⚠️ Skipping file due to name conflict: '%s'",
                     file_name,
-                    conflict_names,
                 )
                 skipped_files.append({
                     "filePath": file_data.get("filePath", ""),
