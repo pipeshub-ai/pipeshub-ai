@@ -2841,6 +2841,21 @@ components:
           type: string
           example: "Knowledge base updated successfully"
 
+    DeleteKnowledgeBaseById:
+      type: object
+      additionalProperties: false
+      description: Response returned by DELETE /knowledgeBase/{kbId} (deleteKnowledgeBase).
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Knowledge base deleted successfully"
+
     Folder:
       type: object
       properties:
@@ -18665,16 +18680,20 @@ paths:
         - Knowledge Bases
       summary: Delete knowledge base
       description: |
-        Permanently delete a knowledge base and all its contents.<br><br>
-        <b>Required Permission:</b> OWNER only<br><br>
-        <b>What Gets Deleted:</b><br>
-        <ul>
-        <li>All folders within the KB</li>
-        <li>All records and their indexed content</li>
-        <li>All permission grants</li>
-        <li>Associated storage files</li>
-        </ul>
-        <b>Warning:</b> This action is irreversible. Consider exporting data before deletion.
+        Permanently delete a knowledge base and all its contents.
+
+        **Required permission:**
+
+        User must have `OWNER` role on the knowledge base.
+
+        **What gets deleted:**
+
+        - All folders within the KB
+        - All records and their indexed content
+        - All permission grants
+        - Associated storage files
+
+        **Warning:** This action is irreversible. Consider exporting data before deletion.
       operationId: deleteKnowledgeBase
       security:
         - bearerAuth: []
@@ -18683,29 +18702,58 @@ paths:
         - name: kbId
           in: path
           required: true
-          description: Knowledge base ID
+          description: Knowledge base ID (non-empty string)
           schema:
             type: string
+            minLength: 1
+            example: "8a095180-2989-4018-b448-70eb75fba1c7"
       responses:
         '200':
           description: Knowledge base deleted successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
-                    type: string
-                    example: "Knowledge base deleted successfully"
+                $ref: '#/components/schemas/DeleteKnowledgeBaseById'
         '401':
-          description: Unauthorized - Valid bearer token required
+          description: Unauthorized — valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Only OWNER can delete KB
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:delete` scope
+            - User has no permission on this knowledge base
+            - User is not `OWNER` (only KB owners can delete)
+            - Connector service denied the request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Knowledge base not found
+          description: |
+            Not found. Possible reasons:
+
+            - Knowledge base does not exist
+            - Authenticated user does not exist in the graph database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error — deleting knowledge base failed in connector or database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable — connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Records Endpoints --------------------
   /knowledgeBase/records:

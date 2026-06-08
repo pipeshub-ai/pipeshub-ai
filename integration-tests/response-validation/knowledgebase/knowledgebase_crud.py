@@ -430,3 +430,88 @@ class TestKnowledgeBaseCrud:
                 headers=self.headers,
                 timeout=self.client.timeout_seconds,
             )
+
+    def test_delete_knowledge_base_success(self) -> None:
+        create_resp = requests.post(
+            self.url,
+            headers=self.headers,
+            json={"kbName": f"rv-delete-{uuid4()}"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert create_resp.status_code == 200, create_resp.text
+        kb_id = create_resp.json()["id"]
+
+        resp = requests.delete(
+            f"{self.url}{kb_id}",
+            headers=self.headers,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "deleteKnowledgeBase")
+
+        assert body["success"] is True
+        assert body["message"] == "Knowledge base deleted successfully"
+
+        get_resp = requests.get(
+            f"{self.url}{kb_id}",
+            headers=self.headers,
+            timeout=self.client.timeout_seconds,
+        )
+        assert get_resp.status_code == 404, get_resp.text
+
+    def test_delete_knowledge_base_negative(self) -> None:
+        missing_id = str(uuid4())
+        kb_url = f"{self.url}{missing_id}"
+
+        resp = requests.delete(kb_url, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteKnowledgeBase", status_code="401"
+        )
+
+        resp = requests.delete(
+            kb_url,
+            headers={"Authorization": "Bearer invalid"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteKnowledgeBase", status_code="401"
+        )
+
+        resp = requests.delete(
+            f"{self.url}{uuid4()}",
+            headers=self.headers,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 404, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteKnowledgeBase", status_code="404"
+        )
+
+        create_resp = requests.post(
+            self.url,
+            headers=self.headers,
+            json={"kbName": f"rv-delete-neg-{uuid4()}"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert create_resp.status_code == 200, create_resp.text
+        kb_id = create_resp.json()["id"]
+
+        resp = requests.delete(
+            f"{self.url}{kb_id}",
+            headers=self.headers,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, resp.text
+
+        resp = requests.delete(
+            f"{self.url}{kb_id}",
+            headers=self.headers,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 404, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteKnowledgeBase", status_code="404"
+        )
