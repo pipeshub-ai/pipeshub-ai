@@ -3,6 +3,7 @@ import base64
 import inspect
 import json
 import re
+import time
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -3514,89 +3515,162 @@ class GitLabConnector(BaseConnector):
 
         # fetching code files
         # processing as when recieved, as parent folders exist
+        #
+        # Depth-1 pipeline: GitLab's ``paginatedTree`` is cursor-based, so
+        # page N+1 can't be fetched until page N hands back its ``endCursor``.
+        # But the network fetch (read-only GraphQL) is independent of the DB
+        # write side (``build_code_file_records``). So as soon as page N
+        # returns we kick off the fetch for page N+1 as a task and process
+        # page N concurrently — the next GraphQL round-trip overlaps the
+        # current page's writes. We never run more than one fetch ahead, so
+        # the cursor dependency is respected and pages are still processed
+        # strictly in order (parent-folder ordering is preserved).
         after_cursor = ""
         blobs_processed = 0
-        while True:
-            try:
-                tree_res = await self._ds_call_async(
-                    self.data_source.get_file_tree_g,
-                    project_id=project_path,
-                    ref="HEAD",
-                    after_cursor=after_cursor,
-                )
-            except Exception as e:
-                self.logger.error(
-                    f"Error in fetching file tree skipping repo code files sync for {project_id}: {e}"
-                )
-                return
-            if not tree_res.success:
-                self.logger.error(
-                    f"❌❌ Error in fetching file tree skipping repo code files sync for {project_id}: {tree_res.error}"
-                )
-                return
-            if not tree_res.data:
-                self.logger.info(f"❌❌ No file tree found for project {project_id}")
-                return
-            try:
-                data: dict[str, Any] = json.loads(tree_res.data)
-            except json.JSONDecodeError as e:
-                self.logger.error(
-                    f"❌ Failed to parse file tree JSON for {project_id}: {e}"
-                )
-                return
-            
-            # Surface GraphQL errors so they don't get masked as "empty repo"
-            if "errors" in data:
-                self.logger.error(
-                    f"🚨 GraphQL errors for project {project_id}: "
-                    f"{json.dumps(data['errors'])}"
-                )
-                return
-            
-            # Same null-coalescing rationale as ``_sync_repo_main``: GitLab
-            # returns ``repository: null`` (and sometimes ``project: null``)
-            # for empty/wiki-only projects or when the token lacks
-            # ``read_repository`` scope; ``dict.get(k, {})`` doesn't handle
-            # explicit ``None`` values, so coalesce with ``or {}``.
-            project = (data.get("data") or {}).get("project") or {}
-            repository = project.get("repository") or {}
-            paginated_tree = repository.get("paginatedTree") or {}
-            if not paginated_tree:
-                self.logger.info(
-                    f"No repository tree for project {project_id} "
-                    f"(empty repo, missing scope, or archived); skipping code files sync"
-                )
-                return
-            project_nodes = paginated_tree.get("nodes") or []
-            page_info = paginated_tree.get("pageInfo") or {}
-            if not project_nodes:
-                if blobs_processed > 0:
+        pending: asyncio.Task[tuple[str, list[dict[str, Any]], dict[str, Any]]] | None = (
+            asyncio.create_task(
+                self._fetch_blob_page(project_path, project_id, after_cursor)
+            )
+        )
+        try:
+            while pending is not None:
+                kind, file_path_nodes, page_info = await pending
+                pending = None
+                if kind == "abort":
+                    return
+                if kind == "no_nodes":
+                    if blobs_processed == 0:
+                        self.logger.info(
+                            f"No project nodes found for project {project_id}"
+                        )
                     break
-                self.logger.info(f"No project nodes found for project {project_id}")
-                return
-            t_nodes: dict[str, Any] = project_nodes[0]
-            file_path_nodes: list[dict[str, Any]] = (
-                (t_nodes.get("blobs") or {}).get("nodes") or []
-            )
-            if file_path_nodes:
-                self.logger.debug(
-                    f"❗❗ Files fetched via GQL: {len(file_path_nodes)} "
-                )
-                await self.build_code_file_records(
-                    file_path_nodes, project_id, project_path
-                )
-                blobs_processed += len(file_path_nodes)
-            continue_paging, after_cursor = self._should_continue_repo_tree_pagination(
-                len(file_path_nodes), blobs_processed, page_info
-            )
-            if not continue_paging:
-                if not page_info.get("hasNextPage"):
-                    self.logger.debug("✅✅ No more code file pages left, exiting")
-                else:
-                    self.logger.debug(
-                        "Stopping code file pagination early: empty page received after data was collected"
+                # Decide on (and launch) the next fetch BEFORE processing this
+                # page, so the network round-trip overlaps the DB writes below.
+                # Pass the running total *including* this page to match the
+                # original "increment then check" ordering.
+                continue_paging, after_cursor = (
+                    self._should_continue_repo_tree_pagination(
+                        len(file_path_nodes),
+                        blobs_processed + len(file_path_nodes),
+                        page_info,
                     )
-                break
+                )
+                if continue_paging:
+                    pending = asyncio.create_task(
+                        self._fetch_blob_page(
+                            project_path, project_id, after_cursor
+                        )
+                    )
+                if file_path_nodes:
+                    self.logger.debug(
+                        f"❗❗ Files fetched via GQL: {len(file_path_nodes)} "
+                    )
+                    await self.build_code_file_records(
+                        file_path_nodes, project_id, project_path
+                    )
+                    blobs_processed += len(file_path_nodes)
+                if not continue_paging:
+                    if not page_info.get("hasNextPage"):
+                        self.logger.debug(
+                            "✅✅ No more code file pages left, exiting"
+                        )
+                    else:
+                        self.logger.debug(
+                            "Stopping code file pagination early: empty page "
+                            "received after data was collected"
+                        )
+        finally:
+            # Defensive: if we bailed out (abort/break) with a prefetch still
+            # in flight, cancel it so it doesn't dangle as an orphan task.
+            if pending is not None and not pending.done():
+                pending.cancel()
+                try:
+                    await pending
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+    async def _fetch_blob_page(
+        self, project_path: str, project_id: int, after_cursor: str
+    ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+        """Fetch and parse a single ``paginatedTree`` blob page.
+
+        Returns ``(kind, file_path_nodes, page_info)`` where ``kind`` is one of:
+
+        * ``"data"``     — a usable page; ``file_path_nodes`` may still be the
+          empty list for a trailing/empty page (the caller's pagination guard
+          decides whether to stop).
+        * ``"no_nodes"`` — ``paginatedTree.nodes`` was empty.
+        * ``"abort"``    — fatal (network/JSON/GraphQL error, missing repo,
+          missing scope, archived); the caller stops the whole code sync.
+
+        This method never raises — failures are logged and mapped to
+        ``"abort"`` — because it runs as a prefetch task whose result is
+        awaited one iteration later; an escaping exception would otherwise
+        surface detached from its context.
+        """
+        empty: list[dict[str, Any]] = []
+        try:
+            tree_res = await self._ds_call_async(
+                self.data_source.get_file_tree_g,
+                project_id=project_path,
+                ref="HEAD",
+                after_cursor=after_cursor,
+            )
+        except Exception as e:
+            self.logger.error(
+                f"Error in fetching file tree skipping repo code files sync "
+                f"for {project_id}: {e}"
+            )
+            return "abort", empty, {}
+        if not tree_res.success:
+            self.logger.error(
+                f"❌❌ Error in fetching file tree skipping repo code files "
+                f"sync for {project_id}: {tree_res.error}"
+            )
+            return "abort", empty, {}
+        if not tree_res.data:
+            self.logger.info(f"❌❌ No file tree found for project {project_id}")
+            return "abort", empty, {}
+        try:
+            data: dict[str, Any] = json.loads(tree_res.data)
+        except json.JSONDecodeError as e:
+            self.logger.error(
+                f"❌ Failed to parse file tree JSON for {project_id}: {e}"
+            )
+            return "abort", empty, {}
+
+        # Surface GraphQL errors so they don't get masked as "empty repo"
+        if "errors" in data:
+            self.logger.error(
+                f"🚨 GraphQL errors for project {project_id}: "
+                f"{json.dumps(data['errors'])}"
+            )
+            return "abort", empty, {}
+
+        # Same null-coalescing rationale as ``_sync_repo_main``: GitLab
+        # returns ``repository: null`` (and sometimes ``project: null``)
+        # for empty/wiki-only projects or when the token lacks
+        # ``read_repository`` scope; ``dict.get(k, {})`` doesn't handle
+        # explicit ``None`` values, so coalesce with ``or {}``.
+        project = (data.get("data") or {}).get("project") or {}
+        repository = project.get("repository") or {}
+        paginated_tree = repository.get("paginatedTree") or {}
+        if not paginated_tree:
+            self.logger.info(
+                f"No repository tree for project {project_id} "
+                f"(empty repo, missing scope, or archived); skipping code "
+                f"files sync"
+            )
+            return "abort", empty, {}
+        project_nodes = paginated_tree.get("nodes") or []
+        page_info = paginated_tree.get("pageInfo") or {}
+        if not project_nodes:
+            return "no_nodes", empty, page_info
+        t_nodes: dict[str, Any] = project_nodes[0]
+        file_path_nodes: list[dict[str, Any]] = (
+            (t_nodes.get("blobs") or {}).get("nodes") or []
+        )
+        return "data", file_path_nodes, page_info
 
     @staticmethod
     def _code_blob_web_path(
