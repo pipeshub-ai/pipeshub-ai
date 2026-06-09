@@ -54,7 +54,7 @@ frontend/
 2. **Configure Environment Variables**
    Create a `.env.local` file (or copy `env.template`):
    ```env
-   NEXT_PUBLIC_API_BASE_URL=http://localhost:3001
+   NEXT_PUBLIC_API_BASE_URL=http://localhost:3000
    ```
 
 3. **Run Development Server**
