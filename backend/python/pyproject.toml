@@ -251,7 +251,6 @@ dependencies = [
     "pagerduty>=5.0.0",
     "pandas==2.2.3",
     "Pillow<12.0.0",
-    "pdf2image==1.17.0",
     "pdfplumber==0.11.9",
     "pillow-avif-plugin==1.5.5",
     "protobuf>=4.25.0,<6",

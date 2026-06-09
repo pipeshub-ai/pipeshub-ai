@@ -8,9 +8,10 @@ from typing import Any, Dict, Optional
 import pdfplumber
 from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import HumanMessage
-from pdf2image import convert_from_path
+from PIL import Image
 
 from app.config.constants.service import config_node_constants
+from app.modules.parsers.pdf.pdf_rasterizer import render_all_pages_from_path_sync
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.utils.aimodels import get_generator_model, is_multimodal_llm
 from app.utils.llm import get_llm_for_role
@@ -188,26 +189,25 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             raise ValueError(f"Failed to get multimodal LLM: {str(e)}")
 
     def _render_all_pages_to_base64(self) -> Dict[int, str]:
-        """Render every page in one poppler invocation (sync; run via to_thread)."""
+        """Render every page via pdfplumber in an isolated worker process."""
         if not self._pdf_path:
             raise RuntimeError(
                 "PDF source path not initialized; load_document must run first"
             )
-        images = convert_from_path(
+        rendered_pages = render_all_pages_from_path_sync(
             self._pdf_path,
-            dpi=self.RENDER_DPI,
-            fmt="png",
+            self.RENDER_DPI,
         )
         page_images: Dict[int, str] = {}
-        for page_number, image in enumerate(images, start=1):
+        for page_number, (image_array, _) in rendered_pages.items():
             buf = BytesIO()
-            image.save(buf, format="PNG")
+            Image.fromarray(image_array).save(buf, format="PNG")
             img_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
             page_images[page_number] = f"data:image/png;base64,{img_base64}"
         return page_images
 
     async def _preload_page_images(self) -> None:
-        """Dispatch blocking poppler rasterization off the event loop."""
+        """Dispatch blocking pdfium rasterization off the event loop."""
         self._page_images = await asyncio.to_thread(self._render_all_pages_to_base64)
 
     async def _call_llm_for_markdown(self, image_base64: str, page_number: int) -> str:

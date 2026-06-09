@@ -15,6 +15,7 @@ import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pytest
 
 from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
@@ -158,12 +159,15 @@ class TestRenderAllPagesToBase64:
         mock_img.save.side_effect = lambda buf, format=None: buf.write(b"\x89PNG\r\nfake")
 
         with patch(
-            "app.modules.parsers.pdf.vlm_ocr_strategy.convert_from_path",
-            return_value=[mock_img],
-        ) as mock_convert:
+            "app.modules.parsers.pdf.vlm_ocr_strategy.render_all_pages_from_path_sync",
+            return_value={1: (np.zeros((10, 10, 3), dtype=np.uint8), strategy.RENDER_DPI / 72.0)},
+        ) as mock_render, patch(
+            "app.modules.parsers.pdf.vlm_ocr_strategy.Image.fromarray",
+            return_value=mock_img,
+        ):
             result = strategy._render_all_pages_to_base64()
 
-        mock_convert.assert_called_once_with("/tmp/test.pdf", dpi=strategy.RENDER_DPI, fmt="png")
+        mock_render.assert_called_once_with("/tmp/test.pdf", strategy.RENDER_DPI)
         assert result[1].startswith("data:image/png;base64,")
 
     @pytest.mark.asyncio

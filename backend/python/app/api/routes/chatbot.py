@@ -13,11 +13,11 @@ from jinja2 import Template
 from io import BytesIO
 
 import pdfplumber
-from pdf2image import convert_from_bytes
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from app.modules.parsers.pdf.pdf_rasterizer import render_all_pages_as_pil_from_bytes_sync
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
@@ -196,7 +196,7 @@ def _pdf_has_any_ocr_page(file_content: bytes) -> bool:
 
 def _build_pdf_image_blocks(file_content: bytes) -> BlocksContainer:
     blocks: list[Block] = []
-    images = convert_from_bytes(file_content, dpi=144, fmt="png")
+    images = render_all_pages_as_pil_from_bytes_sync(file_content, resolution=144)
     for idx, image in enumerate(images):
         buf = BytesIO()
         image.save(buf, format="PNG")

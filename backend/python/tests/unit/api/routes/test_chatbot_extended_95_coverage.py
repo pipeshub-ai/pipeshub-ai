@@ -147,12 +147,13 @@ def test_build_pdf_image_blocks_one_page():
     mock_image = MagicMock()
 
     with patch(
-        "app.api.routes.chatbot.convert_from_bytes", return_value=[mock_image]
-    ) as mock_convert:
+        "app.api.routes.chatbot.render_all_pages_as_pil_from_bytes_sync",
+        return_value=[mock_image],
+    ) as mock_render:
         bc = _build_pdf_image_blocks(b"%PDF-sample")
         assert len(bc.blocks) == 1
         assert bc.blocks[0].type == BlockType.IMAGE
-        mock_convert.assert_called_once_with(b"%PDF-sample", dpi=144, fmt="png")
+        mock_render.assert_called_once_with(b"%PDF-sample", resolution=144)
         mock_image.save.assert_called_once()
 
 

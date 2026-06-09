@@ -894,8 +894,11 @@ class TestVLMOCRStrategy:
         mock_img.save.side_effect = lambda buf, format=None: buf.write(b"fake-png-bytes")
 
         with patch(
-            "app.modules.parsers.pdf.vlm_ocr_strategy.convert_from_path",
-            return_value=[mock_img],
+            "app.modules.parsers.pdf.vlm_ocr_strategy.render_all_pages_from_path_sync",
+            return_value={1: (np.zeros((10, 10, 3), dtype=np.uint8), 200 / 72.0)},
+        ), patch(
+            "app.modules.parsers.pdf.vlm_ocr_strategy.Image.fromarray",
+            return_value=mock_img,
         ):
             result = strategy._render_all_pages_to_base64()
 

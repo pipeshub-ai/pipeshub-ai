@@ -1207,9 +1207,11 @@ class TestRasterize:
             fake_pil = MagicMock()
             fake_pil.convert.return_value = fake_pil
             arr = np.zeros((10, 10, 3), dtype=np.uint8)
-            with patch("pdf2image.convert_from_path", return_value=[fake_pil]):
-                with patch("numpy.array", return_value=arr):
-                    pages = _render_all_pages(path, 72)
+            with patch(
+                "app.modules.parsers.pdf.pdf_rasterizer.render_all_pages_from_path_sync",
+                return_value={1: (arr, 1.0)},
+            ):
+                pages = _render_all_pages(path, 72)
             assert 1 in pages
         finally:
             os.unlink(path)
@@ -1619,9 +1621,11 @@ class TestCoveragePush:
             fake_pil = MagicMock()
             fake_pil.convert.return_value = fake_pil
             arr = np.zeros((20, 20, 3), dtype=np.uint8)
-            with patch("pdf2image.convert_from_path", return_value=[fake_pil]):
-                with patch("numpy.array", return_value=arr):
-                    img, scale = _rasterize_page(page, 72, pdf_path=path)
+            with patch(
+                "app.modules.parsers.pdf.pdf_rasterizer.render_page_from_path_sync",
+                return_value=(arr, 1.0),
+            ):
+                img, scale = _rasterize_page(page, 72, pdf_path=path)
             assert img.shape == (20, 20, 3)
         finally:
             os.unlink(path)

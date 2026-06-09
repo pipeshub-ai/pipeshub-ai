@@ -68,12 +68,6 @@ RUN ELECTRON_STATIC=1 npm run build && \
 FROM runtime-base AS runtime
 WORKDIR /app
 
-# poppler-utils provides pdftoppm/pdftocairo, which pdf2image shells out to.
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    apt-get update && \
-    apt-get install -y --no-install-recommends poppler-utils && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-
 # Point fastembed at the pre-populated cache we copy in below, matching the
 # FASTEMBED_CACHE_PATH used at build time in the python-deps stage.
 ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed

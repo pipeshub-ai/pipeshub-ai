@@ -1372,7 +1372,7 @@ def _find_vector_bullets(
 # --------------------------------------------------------------------------- #
 
 class DocumentRasterCache:
-    """Lazy per-document raster cache; one poppler call renders all pages."""
+    """Lazy per-document raster cache; one pdfplumber render pass for all pages."""
 
     def __init__(self, pdf_path: str, dpi: int = _DPI) -> None:
         self._pdf_path = pdf_path
@@ -4270,14 +4270,9 @@ def _merge_small_text_regions(
 # --------------------------------------------------------------------------- #
 
 def _render_all_pages(pdf_path: str, dpi: int) -> Dict[int, Tuple[np.ndarray, float]]:
-    from pdf2image import convert_from_path
+    from app.modules.parsers.pdf.pdf_rasterizer import render_all_pages_from_path_sync
 
-    images = convert_from_path(pdf_path, dpi=dpi, fmt="png")
-    scale = dpi / 72.0
-    return {
-        page_number: (np.array(img.convert("RGB")), scale)
-        for page_number, img in enumerate(images, start=1)
-    }
+    return render_all_pages_from_path_sync(pdf_path, dpi)
 
 
 def _rasterize_page(
@@ -4286,34 +4281,19 @@ def _rasterize_page(
     pdf_path: Optional[str] = None,
     raster_cache: Optional[DocumentRasterCache] = None,
 ) -> Tuple[np.ndarray, float]:
-    from pdf2image import convert_from_bytes, convert_from_path
+    from app.modules.parsers.pdf.pdf_rasterizer import (
+        render_page_from_bytes_sync,
+        render_page_from_path_sync,
+    )
 
     page_number = int(getattr(page, "page_number", 1))
     if raster_cache is not None:
         return raster_cache.get(page_number)
     if pdf_path:
-        images = convert_from_path(
-            pdf_path,
-            dpi=dpi,
-            first_page=page_number,
-            last_page=page_number,
-            fmt="png",
-        )
-    else:
-        stream = page.pdf.stream
-        stream.seek(0)
-        pdf_bytes = stream.read()
-        images = convert_from_bytes(
-            pdf_bytes,
-            dpi=dpi,
-            first_page=page_number,
-            last_page=page_number,
-            fmt="png",
-        )
-    pil_img = images[0].convert("RGB")
-    img_rgb = np.array(pil_img)
-    scale = dpi / 72.0
-    return img_rgb, scale
+        return render_page_from_path_sync(pdf_path, page_number, dpi)
+    stream = page.pdf.stream
+    stream.seek(0)
+    return render_page_from_bytes_sync(stream.read(), page_number, dpi)
 
 
 def _binarize_foreground(img_rgb: np.ndarray) -> np.ndarray:
