@@ -25,6 +25,9 @@ class TestKnowledgeBaseRecordsCrud:
         self.client._ensure_access_token()
         self.record_url = f"{self.client.base_url}/api/v1/knowledgeBase/record/"
         self.reindex_url = f"{self.client.base_url}/api/v1/knowledgeBase/reindex/record/"
+        self.reindex_group_url = (
+            f"{self.client.base_url}/api/v1/knowledgeBase/reindex/record-group/"
+        )
         self.headers = {
             "Authorization": f"Bearer {self.client._access_token}",
             "Content-Type": "application/json",
@@ -250,6 +253,89 @@ class TestKnowledgeBaseRecordsCrud:
 
         resp = requests.post(
             record_reindex_url,
+            headers=self.headers,
+            json={"statusFilters": [1]},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+
+    def test_reindex_record_group_success(
+        self, six_kb_records: dict[str, object]
+    ) -> None:
+        record_group_id = str(six_kb_records["kb_id"])
+
+        resp = requests.post(
+            f"{self.reindex_group_url}{record_group_id}",
+            headers=self.headers,
+            json={},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "reindexRecordGroup")
+
+        assert body["success"] is True
+        assert body["recordGroupId"] == record_group_id
+        assert body["depth"] == 0
+        assert "message" in body
+
+    def test_reindex_record_group_negative(
+        self, six_kb_records: dict[str, object]
+    ) -> None:
+        missing_id = str(uuid4())
+        reindex_group_url = f"{self.reindex_group_url}{missing_id}"
+
+        resp = requests.post(
+            reindex_group_url, json={}, timeout=self.client.timeout_seconds
+        )
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "reindexRecordGroup", status_code="401"
+        )
+
+        resp = requests.post(
+            reindex_group_url,
+            headers={"Authorization": "Bearer invalid", "Content-Type": "application/json"},
+            json={},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "reindexRecordGroup", status_code="401"
+        )
+
+        resp = requests.post(
+            f"{self.reindex_group_url}{uuid4()}",
+            headers=self.headers,
+            json={},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 404, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "reindexRecordGroup", status_code="404"
+        )
+
+        record_group_id = str(six_kb_records["kb_id"])
+        group_reindex_url = f"{self.reindex_group_url}{record_group_id}"
+
+        resp = requests.post(
+            group_reindex_url,
+            headers=self.headers,
+            json={"depth": 101},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+
+        resp = requests.post(
+            group_reindex_url,
+            headers=self.headers,
+            json={"depth": -2},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+
+        resp = requests.post(
+            group_reindex_url,
             headers=self.headers,
             json={"statusFilters": [1]},
             timeout=self.client.timeout_seconds,

@@ -3473,6 +3473,32 @@ components:
         depth:
           type: integer
 
+    ReIndexRecordGroupResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by POST /knowledgeBase/reindex/record-group/{recordGroupId}.
+      required:
+        - success
+        - message
+        - recordGroupId
+        - depth
+        - eventPublished
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        message:
+          type: string
+        recordGroupId:
+          type: string
+        depth:
+          type: integer
+        connector:
+          type: string
+          nullable: true
+        eventPublished:
+          type: boolean
+
     GetKnowledgeBaseRecordsResponseSchema:
       type: object
       additionalProperties: false
@@ -20750,9 +20776,14 @@ paths:
         - Connector
       summary: Reindex record group
       description: |
-        Trigger reindexing for all records in a folder or knowledge base.<br><br>
-        <b>Overview:</b><br>
-        Batch reindex operation for entire containers. The recordGroupId can be a folder ID or KB ID.<br><br>
+        Trigger reindexing for all records in a folder or knowledge base.
+
+        **Overview:**
+
+        Batch reindex operation for entire containers. The `recordGroupId` can be a folder ID or KB ID.
+
+        **Status filters:**
+
         Optional `statusFilters` limit which child records are queued (e.g. failed-only or manual-indexing).
       operationId: reindexRecordGroup
       security:
@@ -20774,13 +20805,53 @@ paths:
       responses:
         '200':
           description: Reindexing triggered for all records in group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/reIndexRecordGroupResponseSchema'
+        '400':
+          description: Invalid request body or parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: OAuth token is missing the required kb:write scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Record group not found
+          description: Conflict - the connector instance is disabled. Enable it from Connector Settings and try again.
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: Conflict — the connector instance is disabled. Enable it from Connector Settings and try again.
 
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while reindexing the record group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /knowledgeBase/resync/connector:
     post:
       tags:
