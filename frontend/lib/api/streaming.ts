@@ -411,8 +411,11 @@ export interface SSEGetOptions<T = unknown> {
   headers?: Record<string, string>;
   signal?: AbortSignal;
   /**
-   * Abort the stream if no bytes arrive for this long (the server heartbeats
-   * during long work, so silence means the connection is dead). Surfaced via
+   * Abort the stream if no bytes arrive for this long ONCE STREAMING HAS BEGUN
+   * (i.e. between SSE events, after the response headers arrive). The server
+   * heartbeats every ~15s during long work, so silence beyond this means the
+   * connection died mid-stream. This deliberately does NOT bound the upload /
+   * time-to-first-byte phase — see the note in `streamSSEUpload`. Surfaced via
    * `onError` so the caller can fail/retry instead of hanging forever.
    */
   idleTimeoutMs?: number;
@@ -480,7 +483,14 @@ export async function streamSSEUpload<T = unknown>(
       signal: controller.signal,
     };
 
-    resetIdle();
+    // Do NOT arm the idle watchdog here. Until the server emits its first SSE
+    // byte NO response bytes flow, and it cannot do so until multer has
+    // buffered the ENTIRE multipart body. A large upload over real bandwidth
+    // (or through Cloudflare) easily exceeds `idleTimeoutMs` during this
+    // window, so arming the timer around `fetch` would abort a perfectly
+    // healthy upload — the "times out after 60s on the cloud" regression. The
+    // upload / time-to-first-byte phase is intentionally left unbounded here,
+    // matching the previous axios `timeout: 0` behaviour that worked.
     const response = isElectron()
       ? await streamingFetch(`${getApiBaseUrl()}${url}`, requestInit)
       : await fetch(`${API_BASE_URL}${url}`, requestInit);
@@ -496,6 +506,12 @@ export async function streamSSEUpload<T = unknown>(
     if (!reader) {
       throw new Error('No response body available for streaming');
     }
+
+    // Streaming has begun (200 + readable body). NOW arm the idle watchdog:
+    // from here the server heartbeats every ~15s, so silence beyond
+    // `idleTimeoutMs` means the stream died. This bounds the headers->first-byte
+    // gap and every inter-event gap, but never the upload itself.
+    resetIdle();
 
     const decoder = new TextDecoder();
     let buffer = '';

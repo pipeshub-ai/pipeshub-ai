@@ -746,9 +746,12 @@ const UPLOAD_SSE_HEADERS = {
   'X-Accel-Buffering': 'no',
 } as const;
 
-// Heartbeat cadence (well under proxy idle cutoffs and the client idle-watchdog)
-// and a bounded per-socket timeout so a stuck/half-open connection is reclaimed.
-const UPLOAD_HEARTBEAT_MS = 15_000;
+// Heartbeat cadence and a bounded per-socket timeout so a stuck/half-open
+// connection is eventually reclaimed. We emit a keepalive every 1s — matching
+// the Python chat-streaming backend's `send_keepalive` (interval=1s) — because
+// Cloudflare aggressively reaps connections that go quiet, and a 1s comment
+// stream is the cheapest reliable way to keep the upload stream warm end to end.
+const UPLOAD_HEARTBEAT_MS = 1_000;
 const UPLOAD_SOCKET_TIMEOUT_MS = 5 * 60 * 1000;
 
 const writeUploadEvent = (
