@@ -1,4 +1,4 @@
-import type { Node } from '@xyflow/react';
+import type { Edge, Node } from '@xyflow/react';
 import type { AgentDetail } from '../types';
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
 
