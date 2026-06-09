@@ -3088,6 +3088,336 @@ components:
         userPermission:
           type: string
 
+    GetRecordByIdResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by GET /knowledgeBase/record/{recordId}.
+      required:
+        - record
+        - knowledgeBase
+        - folder
+        - metadata
+        - permissions
+      properties:
+        record:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+            - _id
+            - orgId
+            - recordName
+            - externalRecordId
+            - connectorId
+            - connectorName
+            - recordType
+            - origin
+            - version
+            - isLatestVersion
+            - createdAtTimestamp
+            - updatedAtTimestamp
+            - sourceCreatedAtTimestamp
+            - sourceLastModifiedTimestamp
+            - lastSyncTimestamp
+            - indexingStatus
+            - extractionStatus
+            - isDeleted
+            - isArchived
+            - isDirty
+            - isVLMOcrProcessed
+            - mimeType
+            - sizeInBytes
+            - md5Checksum
+            - webUrl
+            - fileRecord
+            - mailRecord
+            - ticketRecord
+          properties:
+            id:
+              type: string
+            _id:
+              type: string
+            _rev:
+              type: string
+              nullable: true
+            orgId:
+              type: string
+            recordName:
+              type: string
+            externalRecordId:
+              type: string
+            externalRootGroupId:
+              type: string
+              nullable: true
+            externalGroupId:
+              type: string
+              nullable: true
+            connectorId:
+              type: string
+            connectorName:
+              type: string
+            recordType:
+              type: string
+            origin:
+              type: string
+            version:
+              type: integer
+            isLatestVersion:
+              type: boolean
+            createdAtTimestamp:
+              type: integer
+              format: int64
+            updatedAtTimestamp:
+              type: integer
+              format: int64
+            sourceCreatedAtTimestamp:
+              type: integer
+              format: int64
+            sourceLastModifiedTimestamp:
+              type: integer
+              format: int64
+            lastSyncTimestamp:
+              type: integer
+              format: int64
+            lastIndexTimestamp:
+              type: integer
+              format: int64
+            lastExtractionTimestamp:
+              type: integer
+              format: int64
+            indexingStatus:
+              type: string
+            extractionStatus:
+              type: string
+            isDeleted:
+              type: boolean
+            isArchived:
+              type: boolean
+            isDirty:
+              type: boolean
+            isVLMOcrProcessed:
+              type: boolean
+            mimeType:
+              type: string
+            sizeInBytes:
+              type: integer
+              format: int64
+            md5Checksum:
+              type: string
+            virtualRecordId:
+              type: string
+            webUrl:
+              type: string
+            fileRecord:
+              type: object
+              nullable: true
+              additionalProperties: false
+              required:
+                - id
+                - _key
+                - _id
+                - orgId
+                - name
+                - extension
+                - mimeType
+                - sizeInBytes
+                - isFile
+                - webUrl
+              properties:
+                id:
+                  type: string
+                _key:
+                  type: string
+                _id:
+                  type: string
+                _rev:
+                  type: string
+                  nullable: true
+                orgId:
+                  type: string
+                name:
+                  type: string
+                extension:
+                  type: string
+                mimeType:
+                  type: string
+                sizeInBytes:
+                  type: integer
+                  format: int64
+                isFile:
+                  type: boolean
+                webUrl:
+                  type: string
+                path:
+                  type: string
+                  nullable: true
+                localFsRelativePath:
+                  type: string
+                  nullable: true
+            mailRecord:
+              type: object
+              nullable: true
+              additionalProperties: false
+              properties: {}
+            ticketRecord:
+              type: object
+              nullable: true
+              additionalProperties: false
+              properties: {}
+        knowledgeBase:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required:
+            - id
+            - name
+            - orgId
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            orgId:
+              type: string
+        folder:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required:
+            - id
+            - name
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+        metadata:
+          type: object
+          additionalProperties: false
+          required:
+            - languages
+            - topics
+            - subcategories1
+            - subcategories2
+            - subcategories3
+            - departments
+            - categories
+          properties:
+            languages:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - name
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+            topics:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - name
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+            subcategories1:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - name
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+            subcategories2:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - name
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+            subcategories3:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - name
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+            departments:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - name
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+            categories:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - name
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+        permissions:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - id
+              - name
+              - type
+              - relationship
+              - accessType
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              type:
+                type: string
+              relationship:
+                type: string
+                enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+              accessType:
+                type: string
+
     GetKnowledgeBaseRecordsResponseSchema:
       type: object
       additionalProperties: false
@@ -19447,60 +19777,43 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  record:
-                    $ref: '#/components/schemas/Record'
-                  knowledgeBase:
-                    type: object
-                    properties:
-                      id:
-                        type: string
-                      name:
-                        type: string
-                      orgId:
-                        type: string
-                  folder:
-                    type: object
-                    nullable: true
-                  metadata:
-                    type: object
-                    properties:
-                      departments:
-                        type: array
-                        items:
-                          type: object
-                      categories:
-                        type: array
-                        items:
-                          type: object
-                      topics:
-                        type: array
-                        items:
-                          type: object
-                      languages:
-                        type: array
-                        items:
-                          type: object
-                  permissions:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                        name:
-                          type: string
-                        type:
-                          type: string
-                        relationship:
-                          type: string
-                        accessType:
-                          type: string
+                $ref: '#/components/schemas/GetRecordByIdResponseSchema'
+        '400':
+          description: Invalid request parameters or query shape
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
-        '404':
-          description: Record not found
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: OAuth token is missing the required kb:read scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Internal server error while retrieving record details.
+
+            Current API behavior includes record-access lookup failures returning
+            `HTTP_INTERNAL_SERVER_ERROR` with messages such as
+            `Failed to check record access`, including cases where callers might
+            otherwise expect a not-found style response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
