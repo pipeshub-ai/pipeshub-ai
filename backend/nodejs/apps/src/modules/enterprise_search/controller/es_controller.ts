@@ -104,26 +104,33 @@ const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
 
 /** Remove `id` from graph document clones (Neo4j vs Arango shape) before returning search to the client. */
 function omitId<T>(doc: T): T {
-  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return doc;
+  if (doc === null || doc === undefined || typeof doc !== 'object' || Array.isArray(doc)) {
+    return doc;
+  }
   const o = { ...(doc as Record<string, unknown>) };
   delete o.id;
   return o as T;
 }
 
-function buildSearchResponseForClient(data: AiSearchResponse & Record<string, unknown>): Record<string, unknown> {
+function buildSearchResponseForClient(
+  data: AiSearchResponse & Record<string, unknown>,
+): Record<string, unknown> {
   const out: Record<string, unknown> = { ...data };
   if (Array.isArray(data.records)) out.records = data.records.map(omitId);
-  const vmap = data.virtual_to_record_map;
-  if (vmap && typeof vmap === 'object' && !Array.isArray(vmap)) {
+  const vmap: unknown = data.virtual_to_record_map;
+  if (typeof vmap === 'object' && vmap !== null && !Array.isArray(vmap)) {
     out.virtual_to_record_map = Object.fromEntries(
-      Object.entries(vmap as Record<string, unknown>).map(([k, v]) => [k, omitId(v)]),
+      Object.entries(vmap as Record<string, unknown>).map(([k, v]) => [
+        k,
+        omitId(v),
+      ]),
     );
   }
   if (Array.isArray(data.searchResults)) {
     out.searchResults = data.searchResults.map((item) => {
       const row = item as unknown as Record<string, unknown>;
       const meta = row.metadata;
-      if (meta && typeof meta === 'object' && !Array.isArray(meta)) {
+      if (typeof meta === 'object' && meta !== null && !Array.isArray(meta)) {
         return { ...row, metadata: omitId({ ...meta }) };
       }
       return item;
@@ -164,10 +171,14 @@ async function fetchDeletedAgentKeysForUser(
         },
       });
       const aiResponse = await aiCommand.execute();
-      if (!aiResponse || aiResponse.statusCode !== 200) {
+      if (aiResponse === null || aiResponse === undefined || aiResponse.statusCode !== 200) {
+        const statusCode =
+          aiResponse === null || aiResponse === undefined
+            ? undefined
+            : aiResponse.statusCode;
         logger.warn(
           'fetchDeletedAgentKeysForUser: AI backend returned non-200; skipping agent soft-delete filter',
-          { statusCode: aiResponse?.statusCode },
+          { statusCode },
         );
         return null;
       }
@@ -595,13 +606,13 @@ const formatBytes = (bytes: number): string => {
   if (bytes >= 1024) {
     return `${(bytes / 1024).toFixed(1)} KB`;
   }
-  return `${bytes} B`;
+  return `${String(bytes)} B`;
 };
 
 const compressImageIfNeeded = async (
   file: Express.Multer.File,
 ): Promise<NormalizedAttachmentFile> => {
-  const mime = (file.mimetype || '').toLowerCase();
+  const mime = (file.mimetype ?? '').toLowerCase();
   const passthrough: NormalizedAttachmentFile = {
     fileName: file.originalname,
     mimeType: file.mimetype,
@@ -629,11 +640,19 @@ const compressImageIfNeeded = async (
 
   try {
     const metadata = await sharp(file.buffer).metadata();
-    const longestSide = Math.max(metadata.width || 0, metadata.height || 0);
+    const width =
+      typeof metadata.width === 'number' && Number.isFinite(metadata.width)
+        ? metadata.width
+        : 0;
+    const height =
+      typeof metadata.height === 'number' && Number.isFinite(metadata.height)
+        ? metadata.height
+        : 0;
+    const longestSide = Math.max(width, height);
     const needsResize = longestSide > IMAGE_MAX_LONGEST_SIDE_PX;
     const hasAlpha = mime === 'image/png' && Boolean(metadata.hasAlpha);
 
-    const buildBase = () => {
+    const buildBase = (): sharp.Sharp => {
       const base = sharp(file.buffer).rotate();
       if (needsResize) {
         base.resize({
@@ -657,7 +676,9 @@ const compressImageIfNeeded = async (
     } else {
       outMime = 'image/jpeg';
       for (const quality of IMAGE_QUALITY_LADDER) {
-        outBuffer = await buildBase().jpeg({ quality, mozjpeg: true }).toBuffer();
+        outBuffer = await buildBase()
+          .jpeg({ quality, mozjpeg: true })
+          .toBuffer();
         if (outBuffer.length <= IMAGE_COMPRESS_TARGET_BYTES) {
           break;
         }
@@ -676,7 +697,10 @@ const compressImageIfNeeded = async (
       newFileName = newFileName.replace(/\.[^.]+$/, '') + '.jpg';
     }
 
-    const reduction = (((file.size - outBuffer.length) / file.size) * 100).toFixed(1);
+    const reduction = (
+      ((file.size - outBuffer.length) / file.size) *
+      100
+    ).toFixed(1);
     logger.info(
       `[image-compress] done ${file.originalname}: before=${formatBytes(file.size)} (${file.mimetype}), after=${formatBytes(outBuffer.length)} (${outMime}), reduction=${reduction}%`,
     );
@@ -704,15 +728,24 @@ const SUPPORTED_CHAT_ATTACHMENT_MIMETYPES = new Set([
 
 export const uploadChatAttachments =
   (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
     try {
-      const files = (req.files as Express.Multer.File[]) || [];
+      const files = Array.isArray(req.files)
+        ? (req.files as Express.Multer.File[])
+        : [];
       if (!Array.isArray(files) || files.length === 0) {
         throw new BadRequestError('At least one file is required');
       }
 
       const invalidFile = files.find(
-        (file) => !SUPPORTED_CHAT_ATTACHMENT_MIMETYPES.has((file.mimetype || '').toLowerCase()),
+        (file) =>
+          !SUPPORTED_CHAT_ATTACHMENT_MIMETYPES.has(
+            (file.mimetype ?? '').toLowerCase(),
+          ),
       );
       if (invalidFile) {
         throw new BadRequestError(
