@@ -21,10 +21,16 @@ import {
   getFileExtension,
   getFilenameWithoutExtension,
 } from '../../../libs/utils/file-extension.util';
+import { mapWithConcurrency } from '../../../libs/utils/concurrency.util';
 
 const logger = Logger.getInstance({
   service: 'knowledge_base.utils',
 });
+
+// Max storage uploads (and placeholder round-trips) in flight at once for a
+// single batch. Bounds load on the storage service while ensuring one large
+// file never serializes the whole batch behind it.
+export const UPLOAD_STORAGE_CONCURRENCY = 5;
 
 const axiosInstance = axios.create({
   maxRedirects: 0,
@@ -36,7 +42,10 @@ export interface StorageResponseMetadata {
 }
 
 export interface PlaceholderResult extends StorageResponseMetadata {
-  uploadPromise?: Promise<void>;
+  // Lazy upload starter for the signed-URL (S3/Azure) path. Returning a thunk
+  // instead of an already-running promise lets the caller bound how many
+  // uploads run at once — the PUT only begins when `upload()` is invoked.
+  upload?: () => Promise<void>;
   redirectUrl?: string;
 }
 
@@ -141,19 +150,22 @@ export const createPlaceholderDocument = async (
         });
       }
 
-      // Return placeholder info with upload promise
-      // The upload will be handled separately and awaited before calling Python service
+      // Return placeholder info with a LAZY upload starter. The caller invokes
+      // `upload()` under a concurrency limit, so the byte transfer to the signed
+      // URL only begins when a slot is free — not eagerly here (which would let
+      // a whole batch's PUTs run unbounded).
       return {
         documentId,
         documentName,
         redirectUrl,
-        uploadPromise: uploadFileToSignedUrl(
-          file.buffer,
-          file.mimetype,
-          redirectUrl,
-          documentId,
-          documentName,
-        ),
+        upload: () =>
+          uploadFileToSignedUrl(
+            file.buffer,
+            file.mimetype,
+            redirectUrl,
+            documentId,
+            documentName,
+          ),
       };
     } else {
       logger.error('Error creating placeholder document', {
@@ -279,43 +291,51 @@ export const processUploadsInBackground = async (
   let batchFailed = 0;
 
   try {
-    // STEP 1: Upload all files sequentially (not parallel)
-    logger.info('Starting sequential file uploads', {
+    // STEP 1: Upload files to storage with BOUNDED CONCURRENCY. Previously this
+    // ran strictly sequentially, so a single large file (e.g. 100 MB) stalled
+    // every smaller file behind it. Now up to UPLOAD_STORAGE_CONCURRENCY uploads
+    // run at once; the big file occupies one slot while the rest keep flowing.
+    logger.info('Starting bounded-concurrency file uploads', {
       totalFiles: placeholderResults.length,
-      uploadsRequired: placeholderResults.filter((r) => r.placeholderResult.uploadPromise).length,
+      uploadsRequired: placeholderResults.filter((r) => r.placeholderResult.upload).length,
+      concurrency: UPLOAD_STORAGE_CONCURRENCY,
     });
 
-    for (const result of placeholderResults) {
-      const { placeholderResult, metadata } = result;
-      
-      if (placeholderResult.uploadPromise) {
-        try {
-          await placeholderResult.uploadPromise;
+    await mapWithConcurrency(
+      placeholderResults,
+      UPLOAD_STORAGE_CONCURRENCY,
+      async (result) => {
+        const { placeholderResult, metadata } = result;
+
+        if (placeholderResult.upload) {
+          try {
+            await placeholderResult.upload();
+            successfulResults.push(result);
+            logger.debug('Background upload completed', {
+              documentId: placeholderResult.documentId,
+              documentName: placeholderResult.documentName,
+              fileName: metadata.fileName,
+            });
+          } catch (uploadError: any) {
+            failedResults.push({
+              result,
+              error: uploadError.message || 'Upload failed',
+            });
+            logger.error('Background upload failed', {
+              documentId: placeholderResult.documentId,
+              documentName: placeholderResult.documentName,
+              fileName: metadata.fileName,
+              error: uploadError.message,
+              stack: uploadError.stack,
+            });
+            // Continue with other files even if one fails.
+          }
+        } else {
+          // File was already uploaded directly (no redirect).
           successfulResults.push(result);
-          logger.debug('Background upload completed', {
-            documentId: placeholderResult.documentId,
-            documentName: placeholderResult.documentName,
-            fileName: metadata.fileName,
-          });
-        } catch (uploadError: any) {
-          failedResults.push({
-            result,
-            error: uploadError.message || 'Upload failed',
-          });
-          logger.error('Background upload failed', {
-            documentId: placeholderResult.documentId,
-            documentName: placeholderResult.documentName,
-            fileName: metadata.fileName,
-            error: uploadError.message,
-            stack: uploadError.stack,
-          });
-          // Continue with other files even if one fails
         }
-      } else {
-        // File was already uploaded directly (no redirect)
-        successfulResults.push(result);
-      }
-    }
+      },
+    );
 
     const uploadDuration = Date.now() - uploadStartTime;
     logger.info('All background uploads completed', {
@@ -587,9 +607,9 @@ export const saveFileToStorageAndGetDocumentId = async (
     storageToken,
   );
 
-  // If there's an upload promise, await it (for backward compatibility)
-  if (result.uploadPromise) {
-    await result.uploadPromise;
+  // If a signed-URL upload is pending, start and await it (backward compat).
+  if (result.upload) {
+    await result.upload();
   }
 
   return {

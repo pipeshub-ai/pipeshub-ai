@@ -62,7 +62,7 @@ describe('Knowledge Base Utils - coverage', () => {
       publish.getCalls().filter((c) => c.args[0] === 'file:succeeded').map((c) => c.args[1])
 
     function createPlaceholderResult(options: {
-      uploadPromise?: Promise<void>
+      upload?: () => Promise<void>
       documentId?: string
       documentName?: string
       fileName?: string
@@ -73,7 +73,7 @@ describe('Knowledge Base Utils - coverage', () => {
         placeholderResult: {
           documentId: options.documentId || 'doc-1',
           documentName: options.documentName || 'test.pdf',
-          uploadPromise: options.uploadPromise,
+          upload: options.upload,
         },
         metadata: {
           file: { buffer: Buffer.from('test'), mimetype: 'application/pdf', originalname: 'test.pdf', size: 4 } as any,
@@ -104,7 +104,7 @@ describe('Knowledge Base Utils - coverage', () => {
     it('streams a file:failed (stage upload) for each storage-upload failure and returns counts', async () => {
       const results = [
         createPlaceholderResult({
-          uploadPromise: Promise.reject(new Error('Upload failed')),
+          upload: () => Promise.reject(new Error('Upload failed')),
           key: 'failed-key',
         }),
       ]
@@ -126,7 +126,7 @@ describe('Knowledge Base Utils - coverage', () => {
 
     it('warns and returns failed counts when zero uploads succeed', async () => {
       const results = [
-        createPlaceholderResult({ uploadPromise: Promise.reject(new Error('fail')) }),
+        createPlaceholderResult({ upload: () => Promise.reject(new Error('fail')) }),
       ]
 
       const counts = await processUploadsInBackground(
@@ -149,7 +149,7 @@ describe('Knowledge Base Utils - coverage', () => {
           .resolves({ statusCode: 200, data: {} } as any)
 
         const results = [
-          createPlaceholderResult({ uploadPromise: Promise.resolve(), key: 'ok-1' }),
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'ok-1' }),
         ]
 
         const counts = await processUploadsInBackground(
@@ -173,7 +173,7 @@ describe('Knowledge Base Utils - coverage', () => {
           .resolves({ statusCode: 200, data: { failedFiles: ['/path/to/test.pdf'] } } as any)
 
         const results = [
-          createPlaceholderResult({ uploadPromise: Promise.resolve(), key: 'ok-1' }),
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'ok-1' }),
         ]
 
         const counts = await processUploadsInBackground(
@@ -196,7 +196,7 @@ describe('Knowledge Base Utils - coverage', () => {
           .resolves({ statusCode: 500, msg: 'boom' } as any)
 
         const results = [
-          createPlaceholderResult({ uploadPromise: Promise.resolve(), key: 'ok-1' }),
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'ok-1' }),
         ]
 
         const counts = await processUploadsInBackground(
@@ -219,7 +219,7 @@ describe('Knowledge Base Utils - coverage', () => {
           .rejects(new Error('network down'))
 
         const results = [
-          createPlaceholderResult({ uploadPromise: Promise.resolve(), key: 'ok-1' }),
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'ok-1' }),
         ]
 
         const counts = await processUploadsInBackground(
@@ -241,8 +241,8 @@ describe('Knowledge Base Utils - coverage', () => {
           .resolves({ statusCode: 200, data: { failedFiles: ['/path/py-failed.pdf'] } } as any)
 
         const results = [
-          createPlaceholderResult({ uploadPromise: Promise.resolve(), key: 'ok-1', filePath: '/path/ok.pdf' }),
-          createPlaceholderResult({ uploadPromise: Promise.reject(new Error('fail')), key: 'fail-1', filePath: '/path/upload-failed.pdf' }),
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'ok-1', filePath: '/path/ok.pdf' }),
+          createPlaceholderResult({ upload: () => Promise.reject(new Error('fail')), key: 'fail-1', filePath: '/path/upload-failed.pdf' }),
           createPlaceholderResult({ key: 'direct-1', filePath: '/path/py-failed.pdf' }), // direct upload, python fails it
         ]
 
@@ -277,7 +277,7 @@ describe('Knowledge Base Utils - coverage', () => {
         } as any)
 
         const results = [
-          createPlaceholderResult({ uploadPromise: Promise.resolve(), key: 'dup-1', filePath: '/path/dup.pdf' }),
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'dup-1', filePath: '/path/dup.pdf' }),
         ]
 
         const counts = await processUploadsInBackground(
@@ -309,9 +309,9 @@ describe('Knowledge Base Utils - coverage', () => {
         } as any)
 
         const results = [
-          createPlaceholderResult({ uploadPromise: Promise.resolve(), key: 'ok-1', filePath: '/path/ok.pdf' }),
-          createPlaceholderResult({ uploadPromise: Promise.resolve(), key: 'pyfail-1', filePath: '/path/py-failed.pdf' }),
-          createPlaceholderResult({ uploadPromise: Promise.resolve(), key: 'dup-1', filePath: '/path/dup.pdf' }),
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'ok-1', filePath: '/path/ok.pdf' }),
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'pyfail-1', filePath: '/path/py-failed.pdf' }),
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'dup-1', filePath: '/path/dup.pdf' }),
         ]
 
         const counts = await processUploadsInBackground(

@@ -40,7 +40,7 @@ describe('Knowledge Base Utils', () => {
         documentId: 'doc-1',
         documentName: 'test.pdf',
       }
-      expect(result.uploadPromise).to.be.undefined
+      expect(result.upload).to.be.undefined
       expect(result.redirectUrl).to.be.undefined
     })
 
@@ -128,14 +128,14 @@ describe('Knowledge Base Utils', () => {
       expect(processed.filePath).to.equal('/uploads/test.pdf')
     })
 
-    it('should allow PlaceholderResult with uploadPromise', () => {
+    it('should allow PlaceholderResult with a lazy upload starter', () => {
       const result: PlaceholderResult = {
         documentId: 'doc-1',
         documentName: 'test.pdf',
-        uploadPromise: Promise.resolve(),
+        upload: () => Promise.resolve(),
         redirectUrl: 'http://storage.example.com/upload?sig=abc',
       }
-      expect(result.uploadPromise).to.be.instanceOf(Promise)
+      expect(result.upload).to.be.a('function')
       expect(result.redirectUrl).to.include('storage.example.com')
     })
 
@@ -293,7 +293,7 @@ describe('Knowledge Base Utils', () => {
       placeholderResult: {
         documentId: over.documentId || 'doc-1',
         documentName: over.documentName || 'test.pdf',
-        uploadPromise: over.uploadPromise,
+        upload: over.upload,
       },
       metadata: {
         file: {} as any,
@@ -314,7 +314,7 @@ describe('Knowledge Base Utils', () => {
     const succeeded = (publish: sinon.SinonStub) =>
       publish.getCalls().filter((c) => c.args[0] === 'file:succeeded').map((c) => c.args[1])
 
-    it('streams file:succeeded for direct uploads (no uploadPromise) and returns counts', async () => {
+    it('streams file:succeeded for direct uploads (no upload starter) and returns counts', async () => {
       const { processUploadsInBackground } = require('../../../../src/modules/knowledge_base/utils/utils')
       const { ConnectorServiceCommand } = require('../../../../src/libs/commands/connector_service/connector.service.command')
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { success: true } })
@@ -341,7 +341,7 @@ describe('Knowledge Base Utils', () => {
 
       const counts = await processUploadsInBackground(
         [
-          makePlaceholder({ key: 'key-fail', filePath: '/uploads/fail.pdf', uploadPromise: Promise.reject(new Error('Upload timeout')) }),
+          makePlaceholder({ key: 'key-fail', filePath: '/uploads/fail.pdf', upload: () => Promise.reject(new Error('Upload timeout')) }),
           makePlaceholder({ key: 'key-ok', filePath: '/uploads/ok.pdf' }),
         ],
         'org-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
@@ -359,7 +359,7 @@ describe('Knowledge Base Utils', () => {
       const publish = sinon.stub()
 
       const counts = await processUploadsInBackground(
-        [makePlaceholder({ filePath: '/uploads/fail.pdf', uploadPromise: Promise.reject(new Error('Upload failed')) })],
+        [makePlaceholder({ filePath: '/uploads/fail.pdf', upload: () => Promise.reject(new Error('Upload failed')) })],
         'org-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
       )
 

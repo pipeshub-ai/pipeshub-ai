@@ -19,7 +19,9 @@ import {
   FileUploadMetadata,
   PlaceholderResultWithMetadata,
   UploadStreamPublish,
+  UPLOAD_STORAGE_CONCURRENCY,
 } from '../utils/utils';
+import { mapWithConcurrency } from '../../../libs/utils/concurrency.util';
 import axios from 'axios';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -864,73 +866,78 @@ const streamKbUpload = async (opts: {
       failed += 1;
     }
 
-    // 2) Create a placeholder (storage) document per accepted file.
+    // 2) Create a placeholder (storage) document per accepted file, with
+    //    BOUNDED CONCURRENCY. For local-disk storage the file bytes are sent
+    //    here, and for S3/Azure the signed-URL round-trip happens here, so doing
+    //    this sequentially let one large file stall every other file. Now up to
+    //    UPLOAD_STORAGE_CONCURRENCY run at once; each occupies one slot.
     const currentTime = Date.now();
-    const placeholderResults: PlaceholderResultWithMetadata[] = [];
-    for (const file of fileBuffers) {
-      // If the client has gone away mid-batch, stop creating placeholders for
-      // the remaining files — every one is a per-file HTTP round-trip to the
-      // storage service, so continuing would waste CPU/network/storage I/O on
-      // results no one is listening for.
-      if (req.socket?.destroyed) {
-        logger.warn('Client disconnected; aborting remaining placeholder creation', {
-          processed: placeholderResults.length,
-          remaining: fileBuffers.length - placeholderResults.length,
-        });
-        break;
-      }
-      const { originalname, mimetype, size, filePath, lastModified } = file;
-      const fileName = filePath.includes('/')
-        ? filePath.split('/').pop() || originalname
-        : filePath;
-      const extension = getFileExtension(fileName);
-      const correctMimeType = (extension && getMimeType(extension)) || mimetype;
-      const key: string = uuidv4();
-      const webUrl = `/record/${key}`;
-      const validLastModified =
-        lastModified && !isNaN(lastModified) && lastModified > 0
-          ? lastModified
-          : currentTime;
-      const metadata: FileUploadMetadata = {
-        file,
-        filePath,
-        fileName,
-        extension,
-        correctMimeType,
-        key,
-        webUrl,
-        validLastModified,
-        size,
-      };
-      try {
-        const placeholderResult = await createPlaceholderDocument(
-          req,
+    const placeholderOutcomes = await mapWithConcurrency(
+      fileBuffers,
+      UPLOAD_STORAGE_CONCURRENCY,
+      async (file): Promise<PlaceholderResultWithMetadata | null> => {
+        // If the client has gone away mid-batch, skip the per-file HTTP
+        // round-trip to the storage service — no one is listening for it.
+        if (req.socket?.destroyed) return null;
+
+        const { originalname, mimetype, size, filePath, lastModified } = file;
+        const fileName = filePath.includes('/')
+          ? filePath.split('/').pop() || originalname
+          : filePath;
+        const extension = getFileExtension(fileName);
+        const correctMimeType = (extension && getMimeType(extension)) || mimetype;
+        const key: string = uuidv4();
+        const webUrl = `/record/${key}`;
+        const validLastModified =
+          lastModified && !isNaN(lastModified) && lastModified > 0
+            ? lastModified
+            : currentTime;
+        const metadata: FileUploadMetadata = {
           file,
-          fileName,
-          isVersioned,
-          keyValueStoreService,
-          appConfig.storage,
-          storageToken,
-        );
-        placeholderResults.push({ placeholderResult, metadata });
-      } catch (placeholderError: any) {
-        const errorMessage = placeholderErrorMessage(placeholderError);
-        publish('file:failed', {
-          recordId: key,
-          fileName,
           filePath,
-          extension: extension ?? undefined,
-          errors: [errorMessage],
-          stage: 'upload',
-        });
-        failed += 1;
-        logger.error('Failed to create placeholder document for file', {
           fileName,
-          filePath,
-          error: errorMessage,
-        });
-      }
-    }
+          extension,
+          correctMimeType,
+          key,
+          webUrl,
+          validLastModified,
+          size,
+        };
+        try {
+          const placeholderResult = await createPlaceholderDocument(
+            req,
+            file,
+            fileName,
+            isVersioned,
+            keyValueStoreService,
+            appConfig.storage,
+            storageToken,
+          );
+          return { placeholderResult, metadata };
+        } catch (placeholderError: any) {
+          const errorMessage = placeholderErrorMessage(placeholderError);
+          publish('file:failed', {
+            recordId: key,
+            fileName,
+            filePath,
+            extension: extension ?? undefined,
+            errors: [errorMessage],
+            stage: 'upload',
+          });
+          failed += 1;
+          logger.error('Failed to create placeholder document for file', {
+            fileName,
+            filePath,
+            error: errorMessage,
+          });
+          return null;
+        }
+      },
+    );
+    const placeholderResults: PlaceholderResultWithMetadata[] =
+      placeholderOutcomes.filter(
+        (r): r is PlaceholderResultWithMetadata => r !== null,
+      );
 
     // 3) Upload to storage + create records via indexing, streaming each
     //    file's terminal outcome as it settles.
