@@ -3744,7 +3744,7 @@ class GitLabConnector(BaseConnector):
             if path and path not in seen_modify and not self._should_skip_dotfile_repo_path(path):
                 modifies.append(path)
                 seen_modify.add(path)
-        self.logger.debug(f"diffs: {diffs}")
+        self.logger.debug("diffs: %s", diffs)
         for diff in diffs:
             old_path = self._compare_diff_entry(diff, "old_path") or ""
             new_path = self._compare_diff_entry(diff, "new_path") or ""
@@ -4615,7 +4615,9 @@ class GitLabConnector(BaseConnector):
             if content_b64 is None:
                 yield b""
                 return
-            decoded_bytes = base64.b64decode(content_b64)
+            # Offload CPU-bound base64 decode so it doesn't stall the event
+            # loop while decoding potentially multi-MB source files.
+            decoded_bytes = await asyncio.to_thread(base64.b64decode, content_b64)
             yield decoded_bytes
         except Exception as e:
             raise Exception(
@@ -5846,10 +5848,11 @@ class GitLabConnector(BaseConnector):
                 new_file = new_file_content_res.data
                 new_file_content = getattr(new_file, "content", "")
             try:
-                # Decode base64 content from Gitlab API else add encoded content
-                file_content = base64.b64decode(new_file_content).decode(
-                    GitlabLiterals.UTF_8.value
-                )
+                # Offload CPU-bound base64 decode so large MR files don't
+                # stall the event loop.
+                file_content = (
+                    await asyncio.to_thread(base64.b64decode, new_file_content)
+                ).decode(GitlabLiterals.UTF_8.value)
             except Exception as e:
                 self.logger.error(
                     f"Failed to decode code file content for {file_path}: {e}"
@@ -6289,6 +6292,10 @@ class GitLabConnector(BaseConnector):
         ) = await self.parse_gitlab_uploads_clean_test(body_content)
         if not attachments:
             return markdown_content_clean
+        # Skip images larger than 4 MB: base64 encoding inflates size by ~33%,
+        # so a 4 MB image produces a ~5.3 MB string embedded in the record —
+        # beyond that the storage and indexing cost outweighs the value.
+        _MAX_IMAGE_BYTES = 4 * 1024 * 1024
         for attach in attachments:
             if attach.category != GitlabLiterals.IMAGE.value:
                 continue
@@ -6297,10 +6304,18 @@ class GitLabConnector(BaseConnector):
             try:
                 response = await self.data_source.get_img_bytes(full_attachment_url)
                 if response.success and response.data:
+                    if len(response.data) > _MAX_IMAGE_BYTES:
+                        self.logger.debug(
+                            "Skipping image %s: size %d bytes exceeds limit",
+                            attachment_url,
+                            len(response.data),
+                        )
+                        continue
                     fmt = self.EXTENSION_TO_MIME.get(attach.filetype, "png")
-                    base64_data = base64.b64encode(response.data).decode(
-                        GitlabLiterals.UTF_8.value
-                    )
+                    # Offload CPU-bound base64 encode to the thread pool so
+                    # large images don't stall the event loop.
+                    raw_b64 = await asyncio.to_thread(base64.b64encode, response.data)
+                    base64_data = raw_b64.decode(GitlabLiterals.UTF_8.value)
                     md_image_data = f"![Image](data:image/{fmt};base64,{base64_data})"
                     markdown_content_clean += f"{md_image_data}"
             except Exception as e:
@@ -7278,6 +7293,11 @@ class GitLabConnector(BaseConnector):
         """
         self.logger.info("Cleaning up GitLab connector resources.")
         await self._cancel_code_file_timestamp_backfill()
+        if self.data_source is not None:
+            try:
+                await self.data_source.aclose()
+            except Exception as e:
+                self.logger.warning("Failed to close GitLab HTTP client: %s", e)
         self.data_source = None
         try:
             self._gitlab_executor.shutdown(wait=False, cancel_futures=True)

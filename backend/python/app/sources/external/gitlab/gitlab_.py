@@ -38,6 +38,27 @@ class GitLabDataSource:
             self.token = None
 
         self._base_url = base_url.rstrip("/")
+        # Shared async HTTP client — created lazily, reused across all GraphQL
+        # and direct HTTP calls to avoid per-request TCP+TLS setup overhead.
+        # Callers must not close this client directly; use aclose() to tear it
+        # down when the connector is done with this data source instance.
+        self._http_client: httpx.AsyncClient | None = None
+
+    @property
+    def http_client(self) -> httpx.AsyncClient:
+        """Lazily-initialised shared async HTTP client."""
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=30.0,
+            )
+        return self._http_client
+
+    async def aclose(self) -> None:
+        """Close the shared HTTP client. Call when this data source is no longer needed."""
+        if self._http_client is not None and not self._http_client.is_closed:
+            await self._http_client.aclose()
+            self._http_client = None
 
     def get_user(self, user_id: int | str | None = None) -> GitLabResponse:
         """Current user when ``user_id`` is omitted; otherwise ``GET /users/:id`` (full profile, ``public_email``)."""
@@ -1329,13 +1350,10 @@ class GitLabDataSource:
                 "variables": variables,
             }
             try:
-                async with httpx.AsyncClient(
-                    follow_redirects=True, timeout=30.0
-                ) as client:
-                    resp = await client.post(url, headers=headers, json=payload)
-                    resp.raise_for_status()
-                    tree_data = resp.content
-                    return GitLabResponse(success=True, data=(tree_data))
+                resp = await self.http_client.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                tree_data = resp.content
+                return GitLabResponse(success=True, data=(tree_data))
             except Exception as e:
                 return GitLabResponse(success=False, error=str(e))
         except Exception as e:
@@ -1392,13 +1410,10 @@ class GitLabDataSource:
                 "variables": variables,
             }
             try:
-                async with httpx.AsyncClient(
-                    follow_redirects=True, timeout=30.0
-                ) as client:
-                    resp = await client.post(url, headers=headers, json=payload)
-                    resp.raise_for_status()
-                    tree_data = resp.content
-                    return GitLabResponse(success=True, data=(tree_data))
+                resp = await self.http_client.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                tree_data = resp.content
+                return GitLabResponse(success=True, data=(tree_data))
             except Exception as e:
                 return GitLabResponse(success=False, error=str(e))
         except Exception as e:
@@ -1414,11 +1429,10 @@ class GitLabDataSource:
             "Accept": "*/*",
         }
         try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-                resp = await client.get(image_url, headers=headers)
-                resp.raise_for_status()
-                img_data = resp.content
-                return GitLabResponse(success=True, data=img_data)
+            resp = await self.http_client.get(image_url, headers=headers)
+            resp.raise_for_status()
+            img_data = resp.content
+            return GitLabResponse(success=True, data=img_data)
         except httpx.HTTPStatusError as e:
             return GitLabResponse(
                 success=False,
@@ -1437,12 +1451,11 @@ class GitLabDataSource:
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/octet-stream",
         }
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-            async with client.stream(
-                "GET",
-                weburl,
-                headers=headers,
-            ) as response:
-                response.raise_for_status()
-                async for chunk in response.aiter_bytes(chunk_size=65536):
-                    yield chunk
+        async with self.http_client.stream(
+            "GET",
+            weburl,
+            headers=headers,
+        ) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes(chunk_size=65536):
+                yield chunk
