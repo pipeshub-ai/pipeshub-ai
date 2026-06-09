@@ -1776,7 +1776,13 @@ class Processor:
             raise
 
     async def process_json_document(
-        self, recordName, recordId, json_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
+        self,
+        recordName: str,
+        recordId: str,
+        json_binary: bytes | str,
+        virtual_record_id: str,
+        event_type: Optional[str] = None,
+        prev_virtual_record_id: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process JSON document, yielding phase completion events.
 
