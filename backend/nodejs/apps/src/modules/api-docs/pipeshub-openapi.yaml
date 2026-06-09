@@ -6359,6 +6359,106 @@ components:
             type: string
           description: Individual record ids in scope.
 
+    AgentToolset:
+      type: object
+      additionalProperties: false
+      description: |
+        Toolset instance linked to an agent, as projected by the graph store on
+        `GET /agents/{agentKey}` and `GET /agents`. Multiple instances of the
+        same integration type are distinguished by `instanceId` and optional
+        `instanceName`.
+      properties:
+        _key:
+          type: string
+          description: Toolset instance node key in the backing graph store.
+        name:
+          allOf:
+            - $ref: '#/components/schemas/AgentCreateToolsetName'
+          description: Integration / toolset type key.
+        displayName:
+          type: string
+          description: Human-readable toolset product label (for example `Jira` or `Slack`).
+        type:
+          type: string
+        instanceId:
+          type: string
+          description: Admin-created toolset instance id
+        instanceName:
+          type: string
+          description: Human-readable instance label (e.g. sidebar instance name)
+        selectedTools:
+          type: array
+          nullable: true
+          description: |
+            Tool names explicitly selected for this toolset instance, when the
+            instance was created with a subset selection. `null`/absent when the
+            instance exposes all of the toolset's tools.
+          items:
+            type: string
+        tools:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              _key:
+                type: string
+                description: Tool node key in the backing graph store.
+              name:
+                type: string
+              fullName:
+                type: string
+              toolsetName:
+                type: string
+                description: Toolset type key the tool belongs to.
+              description:
+                type: string
+              deprecated:
+                type: boolean
+                readOnly: true
+                description: |
+                  Server-stamped on `GET /agents/{agentKey}`: `true` when the
+                  tool's `fullName` is no longer in the runtime tool registry
+                  (its `@tool` was removed). Read-only; ignored on create/update
+                  bodies. Not stamped on the `GET /agents` list projection.
+
+    AgentKnowledge:
+      type: object
+      additionalProperties: false
+      description: |
+        Knowledge connector / indexed scope linked to an agent, as projected by
+        the graph store on `GET /agents/{agentKey}` and `GET /agents`.
+      properties:
+        _key:
+          type: string
+        connectorId:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        displayName:
+          type: string
+        filters:
+          description: |
+            Knowledge scope filter as stored on the graph edge. The Node `getAgent`
+            handler proxies this field unchanged from the AI service (only `agent.id`
+            is stripped). May be a JSON string (typical graph storage) or an object.
+            Prefer `filtersParsed` on GET for a guaranteed parsed object with the
+            same keys as the object branch below.
+          oneOf:
+            - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
+            - type: string
+              description: JSON-encoded filter object (graph storage format).
+        filtersParsed:
+          readOnly: true
+          description: |
+            Server-derived read-only object parsed from the stored
+            `filters` JSON by the graph provider on GET (Neo4j / Arango).
+            Empty object when `filters` is missing or invalid JSON.
+          allOf:
+            - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
+
     Agent:
       type: object
       additionalProperties: false
@@ -6444,82 +6544,12 @@ components:
             Multiple instances of the same integration type are distinguished by `instanceId`
             and optional `instanceName`.
           items:
-            type: object
-            additionalProperties: false
-            properties:
-              name:
-                allOf:
-                  - $ref: '#/components/schemas/AgentCreateToolsetName'
-                description: Integration / toolset type key.
-              displayName:
-                type: string
-                description: Human-readable toolset product label (for example `Jira` or `Slack`).
-              type:
-                type: string
-              instanceId:
-                type: string
-                description: Admin-created toolset instance id
-              instanceName:
-                type: string
-                description: Human-readable instance label (e.g. sidebar instance name)
-              iconPath:
-                type: string
-                description: Optional branded icon URL or path
-              tools:
-                type: array
-                items:
-                  type: object
-                  additionalProperties: false
-                  properties:
-                    name:
-                      type: string
-                    fullName:
-                      type: string
-                    description:
-                      type: string
-                    deprecated:
-                      type: boolean
-                      readOnly: true
-                      description: |
-                        Server-stamped: `true` when the tool's `fullName` is no
-                        longer in the runtime tool registry (its `@tool` was
-                        removed). Read-only; ignored on create/update bodies.
+            $ref: '#/components/schemas/AgentToolset'
         knowledge:
           type: array
           description: Knowledge connectors and indexed scopes linked to the agent
           items:
-            type: object
-            additionalProperties: false
-            properties:
-              _key:
-                type: string
-              connectorId:
-                type: string
-              name:
-                type: string
-              type:
-                type: string
-              displayName:
-                type: string
-              filters:
-                description: |
-                  Knowledge scope filter as stored on the graph edge. The Node `getAgent`
-                  handler proxies this field unchanged from the AI service (only `agent.id`
-                  is stripped). May be a JSON string (typical graph storage) or an object.
-                  Prefer `filtersParsed` on GET for a guaranteed parsed object with the
-                  same keys as the object branch below.
-                oneOf:
-                  - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
-                  - type: string
-                    description: JSON-encoded filter object (graph storage format).
-              filtersParsed:
-                readOnly: true
-                description: |
-                  Server-derived read-only object parsed from the stored
-                  `filters` JSON by the graph provider on GET (Neo4j / Arango).
-                  Empty object when `filters` is missing or invalid JSON.
-                allOf:
-                  - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
+            $ref: '#/components/schemas/AgentKnowledge'
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the whole organization
@@ -6708,6 +6738,22 @@ components:
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the organization.
+        toolsets:
+          type: array
+          description: |
+            Toolset instances linked to the agent. Same projection as
+            `GET /agents/{agentKey}`; the backend builds it from the graph edges
+            for each agent on the returned page.
+          items:
+            $ref: '#/components/schemas/AgentToolset'
+        knowledge:
+          type: array
+          description: |
+            Knowledge connectors and indexed scopes linked to the agent. Same
+            projection as `GET /agents/{agentKey}`; the backend builds it from
+            the graph edges for each agent on the returned page.
+          items:
+            $ref: '#/components/schemas/AgentKnowledge'
         can_view:
           type: boolean
           description: Effective permission to view the agent.
@@ -6741,6 +6787,8 @@ components:
         - tags
         - updatedAtTimestamp
         - shareWithOrg
+        - toolsets
+        - knowledge
         - can_view
         - can_share
         - can_edit
@@ -25351,7 +25399,6 @@ paths:
                         createdAtTimestamp: 1779792574728
                         createdBy: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
                         description: "AI agent for customer support workflows"
-                        instructions: null
                         isActive: true
                         isDeleted: false
                         isServiceAccount: false
@@ -25362,9 +25409,9 @@ paths:
                         systemPrompt: "You are a helpful assistant."
                         tags: []
                         updatedAtTimestamp: 1779792574728
-                        updatedBy: null
-                        webSearch: null
                         shareWithOrg: false
+                        toolsets: []
+                        knowledge: []
                         can_view: true
                         can_share: true
                         can_edit: true

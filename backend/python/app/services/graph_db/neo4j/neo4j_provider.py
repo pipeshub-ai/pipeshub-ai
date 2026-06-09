@@ -16987,6 +16987,180 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Failed to check connector usage: {str(e)}")
             raise
 
+    async def _get_documents_by_ids(
+        self, ids: list[str], collection: str, transaction: str | None = None
+    ) -> dict[str, dict]:
+        """Batch-fetch documents by id from a collection; returns a map keyed by id.
+
+        Single Cypher round-trip regardless of how many ids are requested. Missing
+        ids are simply absent from the returned map.
+        """
+        if not ids:
+            return {}
+        label = collection_to_label(collection)
+        query = f"""
+        MATCH (n:{label})
+        WHERE n.id IN $ids
+        RETURN n
+        """
+        docs: dict[str, dict] = {}
+        try:
+            results = await self.client.execute_query(
+                query, parameters={"ids": ids}, txn_id=transaction
+            )
+        except Exception as e:
+            # Match the per-document resilience of the old get_agent path: a
+            # lookup failure must not abort the whole projection. Callers treat a
+            # missing id as "unresolved" and fall back to an UNKNOWN label.
+            self.logger.warning(f"Batch document lookup failed for {collection}: {str(e)}")
+            return {}
+        for record in results or []:
+            node = self._neo4j_to_arango_node(dict(record["n"]), collection)
+            key = node.get("_key") or node.get("id")
+            if key:
+                docs[key] = node
+        return docs
+
+    async def _project_agents_toolsets_and_knowledge(
+        self, agent_ids: list[str], transaction: str | None = None
+    ) -> dict[str, dict[str, list[dict]]]:
+        """Build the toolsets + knowledge graph projection for many agents at once.
+
+        Shared by ``get_agent`` (single id) and ``get_all_agents`` (a page of ids)
+        so both expose an identical shape. Uses a fixed number of Cypher
+        round-trips regardless of how many agents are passed (toolsets, knowledge,
+        plus two batched document lookups), instead of querying per agent. Does
+        not perform any permission check.
+
+        Returns a map keyed by agent id; every requested id is present, defaulting
+        to empty ``toolsets``/``knowledge`` lists.
+        """
+        result_map: dict[str, dict[str, list[dict]]] = {
+            agent_id: {"toolsets": [], "knowledge": []} for agent_id in agent_ids
+        }
+        if not agent_ids:
+            return result_map
+
+        agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+        agent_has_toolset_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_TOOLSET.value)
+        toolset_has_tool_rel = edge_collection_to_relationship(CollectionNames.TOOLSET_HAS_TOOL.value)
+        agent_has_knowledge_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_KNOWLEDGE.value)
+        toolset_label = collection_to_label(CollectionNames.AGENT_TOOLSETS.value)
+        tool_label = collection_to_label(CollectionNames.AGENT_TOOLS.value)
+        knowledge_label = collection_to_label(CollectionNames.AGENT_KNOWLEDGE.value)
+
+        # ── Query 1: toolsets (+ tools) for every requested agent ──────────────
+        toolsets_query = f"""
+        MATCH (agent:{agent_label})-[r:{agent_has_toolset_rel}]->(ts:{toolset_label})
+        WHERE agent.id IN $agent_ids
+        OPTIONAL MATCH (ts)-[tr:{toolset_has_tool_rel}]->(tool:{tool_label})
+        WITH agent, ts, collect(DISTINCT CASE
+            WHEN tool IS NOT NULL THEN {{
+                _key: tool.id,
+                name: tool.name,
+                fullName: tool.fullName,
+                toolsetName: tool.toolsetName,
+                description: tool.description
+            }}
+            ELSE null
+        END) AS tools_raw
+        WITH agent, ts, [t IN tools_raw WHERE t IS NOT NULL] AS tools
+        RETURN agent.id AS agent_id, {{
+            _key: ts.id,
+            name: ts.name,
+            displayName: ts.displayName,
+            type: ts.type,
+            instanceId: ts.instanceId,
+            instanceName: ts.instanceName,
+            selectedTools: ts.selectedTools,
+            tools: tools
+        }} AS toolset
+        """
+        toolsets_result = await self.client.execute_query(
+            toolsets_query, parameters={"agent_ids": agent_ids}, txn_id=transaction
+        )
+        for row in toolsets_result or []:
+            agent_id = row["agent_id"]
+            if agent_id in result_map:
+                result_map[agent_id]["toolsets"].append(row["toolset"])
+
+        # ── Query 2: raw knowledge edges for every requested agent ─────────────
+        knowledge_query = f"""
+        MATCH (agent:{agent_label})-[r:{agent_has_knowledge_rel}]->(k:{knowledge_label})
+        WHERE agent.id IN $agent_ids
+        RETURN agent.id AS agent_id, k.id AS _key, k.connectorId AS connectorId, k.filters AS filters
+        """
+        knowledge_result = await self.client.execute_query(
+            knowledge_query, parameters={"agent_ids": agent_ids}, txn_id=transaction
+        )
+
+        # First pass: parse filters, stage raw items, and collect the KB / app ids
+        # that still need resolving so they can be fetched in two batched lookups
+        # rather than one round-trip per knowledge item.
+        staged: list[tuple[str, dict, str | None, str | None]] = []  # (agent_id, item, kb_id, app_id)
+        kb_ids: set[str] = set()
+        app_ids: set[str] = set()
+        for k_row in knowledge_result or []:
+            item = {
+                "_key": k_row["_key"],
+                "connectorId": k_row["connectorId"],
+                "filters": k_row["filters"],
+            }
+            filters_str = item.get("filters")
+            if filters_str is None:
+                # Graph node stored filters: null (no filter configured).
+                filters_parsed = {}
+            elif isinstance(filters_str, str):
+                try:
+                    filters_parsed = json.loads(filters_str)
+                except json.JSONDecodeError:
+                    filters_parsed = {}
+            else:
+                filters_parsed = filters_str
+            item["filtersParsed"] = filters_parsed
+
+            record_groups = filters_parsed.get("recordGroups", []) if isinstance(filters_parsed, dict) else []
+            kb_id = record_groups[0] if record_groups else None
+            app_id = None if kb_id else item["connectorId"]
+            if kb_id:
+                kb_ids.add(kb_id)
+            elif app_id:
+                app_ids.add(app_id)
+            staged.append((k_row["agent_id"], item, kb_id, app_id))
+
+        # ── Query 3 & 4: batch-resolve the referenced KB groups and app docs ───
+        kb_docs = await self._get_documents_by_ids(list(kb_ids), CollectionNames.RECORD_GROUPS.value, transaction)
+        app_docs = await self._get_documents_by_ids(list(app_ids), CollectionNames.APPS.value, transaction)
+
+        # Second pass: enrich each staged knowledge item from the prefetched maps.
+        for agent_id, item, kb_id, app_id in staged:
+            connector_id = item["connectorId"]
+            if kb_id is not None:
+                kb_doc = kb_docs.get(kb_id)
+                if kb_doc and kb_doc.get("groupType") == Connectors.KNOWLEDGE_BASE.value:
+                    item["name"] = kb_doc.get("groupName", "")
+                    item["type"] = "KB"
+                    item["displayName"] = kb_doc.get("groupName", "")
+                    item["connectorId"] = kb_doc.get("connectorId") or connector_id
+                else:
+                    item["name"] = connector_id
+                    item["type"] = "UNKNOWN"
+                    item["displayName"] = connector_id
+            else:
+                app_doc = app_docs.get(app_id) if app_id else None
+                if app_doc:
+                    item["name"] = app_doc.get("name", "")
+                    item["type"] = app_doc.get("type", "APP")
+                    item["displayName"] = app_doc.get("name", "")
+                else:
+                    item["name"] = connector_id
+                    item["type"] = "UNKNOWN"
+                    item["displayName"] = connector_id
+            if agent_id in result_map:
+                result_map[agent_id]["knowledge"].append(item)
+
+        return result_map
+
     async def get_agent(self, agent_id: str, org_id: str | None = None, transaction: str | None = None) -> dict | None:
         """
         Fetch the complete agent document with linked graph data.
@@ -17004,12 +17178,6 @@ class Neo4jProvider(IGraphDBProvider):
             agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
             org_label = collection_to_label(CollectionNames.ORGS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
-            agent_has_toolset_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_TOOLSET.value)
-            toolset_has_tool_rel = edge_collection_to_relationship(CollectionNames.TOOLSET_HAS_TOOL.value)
-            agent_has_knowledge_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_KNOWLEDGE.value)
-            toolset_label = collection_to_label(CollectionNames.AGENT_TOOLSETS.value)
-            tool_label = collection_to_label(CollectionNames.AGENT_TOOLS.value)
-            knowledge_label = collection_to_label(CollectionNames.AGENT_KNOWLEDGE.value)
 
             # Fetch agent document (no permission filtering)
             agent_query = f"""
@@ -17031,111 +17199,11 @@ class Neo4jProvider(IGraphDBProvider):
             agent_data = dict(agent_result[0]["agent"])
             agent = self._neo4j_to_arango_node(agent_data, CollectionNames.AGENT_INSTANCES.value)
 
-            # Get linked toolsets with their tools
-            toolsets_query = f"""
-            MATCH (agent:{agent_label} {{id: $agent_id}})-[r:{agent_has_toolset_rel}]->(ts:{toolset_label})
-            OPTIONAL MATCH (ts)-[tr:{toolset_has_tool_rel}]->(tool:{tool_label})
-            WITH agent, ts, collect(DISTINCT CASE
-                WHEN tool IS NOT NULL THEN {{
-                    _key: tool.id,
-                    name: tool.name,
-                    fullName: tool.fullName,
-                    toolsetName: tool.toolsetName,
-                    description: tool.description
-                }}
-                ELSE null
-            END) AS tools_raw
-            WITH agent, ts, [t IN tools_raw WHERE t IS NOT NULL] AS tools
-            RETURN {{
-                _key: ts.id,
-                name: ts.name,
-                displayName: ts.displayName,
-                type: ts.type,
-                instanceId: ts.instanceId,
-                instanceName: ts.instanceName,
-                selectedTools: ts.selectedTools,
-                tools: tools
-            }} AS toolset
-            """
-            toolsets_result = await self.client.execute_query(
-                toolsets_query,
-                parameters={"agent_id": agent_id},
-                txn_id=transaction
-            )
-            agent["toolsets"] = [r["toolset"] for r in toolsets_result] if toolsets_result else []
-
-            # Get linked knowledge with filters
-            knowledge_query = f"""
-            MATCH (agent:{agent_label} {{id: $agent_id}})-[r:{agent_has_knowledge_rel}]->(k:{knowledge_label})
-            RETURN k.id AS _key, k.connectorId AS connectorId, k.filters AS filters
-            """
-            knowledge_result = await self.client.execute_query(
-                knowledge_query,
-                parameters={"agent_id": agent_id},
-                txn_id=transaction
-            )
-
-            knowledge_list = []
-            if knowledge_result:
-                import json
-                for k_row in knowledge_result:
-                    knowledge_item = {
-                        "_key": k_row["_key"],
-                        "connectorId": k_row["connectorId"],
-                        "filters": k_row["filters"]
-                    }
-
-                    filters_str = knowledge_item.get("filters", "{}")
-                    if isinstance(filters_str, str):
-                        try:
-                            filters_parsed = json.loads(filters_str)
-                        except json.JSONDecodeError:
-                            filters_parsed = {}
-                    else:
-                        filters_parsed = filters_str
-
-                    knowledge_item["filtersParsed"] = filters_parsed
-                    record_groups = filters_parsed.get("recordGroups", [])
-                    is_kb = len(record_groups) > 0
-
-                    if is_kb and record_groups:
-                        try:
-                            first_kb_id = record_groups[0]
-                            kb_doc = await self.get_document(first_kb_id, CollectionNames.RECORD_GROUPS.value, transaction=transaction)
-                            if kb_doc and kb_doc.get("groupType") == Connectors.KNOWLEDGE_BASE.value:
-                                knowledge_item["name"] = kb_doc.get("groupName", "")
-                                knowledge_item["type"] = "KB"
-                                knowledge_item["displayName"] = kb_doc.get("groupName", "")
-                                knowledge_item["connectorId"] = kb_doc.get("connectorId") or knowledge_item["connectorId"]
-                            else:
-                                knowledge_item["name"] = knowledge_item["connectorId"]
-                                knowledge_item["type"] = "UNKNOWN"
-                                knowledge_item["displayName"] = knowledge_item["connectorId"]
-                        except Exception as e:
-                            self.logger.warning(f"Error getting KB document {first_kb_id}: {str(e)}")
-                            knowledge_item["name"] = knowledge_item["connectorId"]
-                            knowledge_item["type"] = "UNKNOWN"
-                            knowledge_item["displayName"] = knowledge_item["connectorId"]
-                    else:
-                        try:
-                            app_doc = await self.get_document(knowledge_item["connectorId"], CollectionNames.APPS.value, transaction=transaction)
-                            if app_doc:
-                                knowledge_item["name"] = app_doc.get("name", "")
-                                knowledge_item["type"] = app_doc.get("type", "APP")
-                                knowledge_item["displayName"] = app_doc.get("name", "")
-                            else:
-                                knowledge_item["name"] = knowledge_item["connectorId"]
-                                knowledge_item["type"] = "UNKNOWN"
-                                knowledge_item["displayName"] = knowledge_item["connectorId"]
-                        except Exception as e:
-                            self.logger.warning(f"Error getting app document {knowledge_item['connectorId']}: {str(e)}")
-                            knowledge_item["name"] = knowledge_item["connectorId"]
-                            knowledge_item["type"] = "UNKNOWN"
-                            knowledge_item["displayName"] = knowledge_item["connectorId"]
-
-                    knowledge_list.append(knowledge_item)
-
-            agent["knowledge"] = knowledge_list
+            # Get linked toolsets + knowledge (shared with the GET /agents list projection)
+            projection = await self._project_agents_toolsets_and_knowledge([agent_id], transaction)
+            agent_projection = projection.get(agent_id, {"toolsets": [], "knowledge": []})
+            agent["toolsets"] = agent_projection["toolsets"]
+            agent["knowledge"] = agent_projection["knowledge"]
 
             # shareWithOrg: when org_id is provided match the specific org node;
             # when org_id is absent check whether any Orgs label node has a
@@ -17588,14 +17656,38 @@ class Neo4jProvider(IGraphDBProvider):
             # Pagination is applied AFTER deduplication and (Cypher-side) search,
             # so `total_items` correctly reflects the count of matching agents
             # across ALL pages, not just the current page.
+            #
+            # Toolsets/knowledge are projected for the agents we are about to
+            # return so the list shape matches GET /agents/{agentKey}. The
+            # projection is batched (fixed number of Cypher round-trips for the
+            # whole list, not one per agent), so it stays cheap for a page and is
+            # also safe on the unpaginated backward-compat branch below.
+            async def _enrich(agent_list: list[dict]) -> list[dict]:
+                ids = [ag.get("_key") for ag in agent_list if ag.get("_key")]
+                try:
+                    projection = await self._project_agents_toolsets_and_knowledge(ids, transaction)
+                except Exception as e:
+                    # Enrichment must not empty the whole list on a transient DB
+                    # error. Degrade to the consistent empty-array shape instead.
+                    self.logger.warning(f"Agent list enrichment failed; returning agents without toolsets/knowledge: {str(e)}")
+                    projection = {}
+                for ag in agent_list:
+                    proj = projection.get(ag.get("_key"), {"toolsets": [], "knowledge": []})
+                    ag["toolsets"] = proj["toolsets"]
+                    ag["knowledge"] = proj["knowledge"]
+                return agent_list
+
             has_paging = page is not None and limit is not None
             if not has_paging:
-                return agents
+                # Flat-list path still gets the same enriched shape as the paged
+                # path. Enrichment is batched, so this stays a fixed number of
+                # round-trips even when returning every visible agent.
+                return await _enrich(agents)
 
             total_items = len(agents)          # count after search + dedup
             start_index = max((page - 1) * limit, 0)
             end_index = start_index + limit
-            paged = agents[start_index:end_index]
+            paged = await _enrich(agents[start_index:end_index])
 
             return {
                 "agents": paged,

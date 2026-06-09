@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import time
 import traceback
@@ -19507,10 +19508,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Parse knowledge filters from JSON strings
             if agent.get("knowledge"):
-                import json
                 for knowledge in agent["knowledge"]:
-                    filters_str = knowledge.get("filters", "{}")
-                    if isinstance(filters_str, str):
+                    filters_str = knowledge.get("filters")
+                    if filters_str is None:
+                        # Graph node stored filters: null (no filter configured).
+                        knowledge["filtersParsed"] = {}
+                    elif isinstance(filters_str, str):
                         try:
                             knowledge["filtersParsed"] = json.loads(filters_str)
                         except json.JSONDecodeError:
@@ -19917,8 +19920,108 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             LET totalItems = LENGTH(sorted)
 
+            // Both the paged and flat-list paths return the same enriched shape so
+            // GET /agents is structurally consistent regardless of pagination. The
+            // page is the SLICE when paging, otherwise the full sorted set.
+            LET page = @do_page ? SLICE(sorted, @offset, @limit) : sorted
+
+            // Enrich the returned agents so the list projection matches
+            // GET /agents/{{agentKey}}.
+            LET enriched = (
+                FOR a IN page
+                    LET agent_path = a._id
+
+                    LET linked_toolsets = (
+                        FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
+                            FILTER edge._from == agent_path
+                            LET toolset = DOCUMENT(edge._to)
+                            FILTER toolset != null
+
+                            LET toolset_tools = (
+                                FOR tool_edge IN {CollectionNames.TOOLSET_HAS_TOOL.value}
+                                    FILTER tool_edge._from == edge._to
+                                    LET tool = DOCUMENT(tool_edge._to)
+                                    FILTER tool != null
+                                    RETURN {{
+                                        _key: tool._key,
+                                        name: tool.name,
+                                        fullName: tool.fullName,
+                                        toolsetName: tool.toolsetName,
+                                        description: tool.description
+                                    }}
+                            )
+
+                            RETURN {{
+                                _key: toolset._key,
+                                name: toolset.name,
+                                displayName: toolset.displayName,
+                                type: toolset.type,
+                                instanceId: toolset.instanceId,
+                                instanceName: toolset.instanceName,
+                                selectedTools: toolset.selectedTools,
+                                tools: toolset_tools
+                            }}
+                    )
+
+                    LET linked_knowledge = (
+                        FOR edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
+                            FILTER edge._from == agent_path
+                            LET knowledge = DOCUMENT(edge._to)
+                            FILTER knowledge != null
+
+                            LET filters_parsed = TYPENAME(knowledge.filters) == "string" ?
+                                JSON_PARSE(knowledge.filters) : knowledge.filters
+                            LET record_groups = filters_parsed.recordGroups || []
+                            LET is_kb = LENGTH(record_groups) > 0
+
+                            LET kb_info = is_kb && LENGTH(record_groups) > 0 ? (
+                                LET first_kb_id = record_groups[0]
+                                LET kb_doc = DOCUMENT(CONCAT('{CollectionNames.RECORD_GROUPS.value}/', first_kb_id))
+                                FILTER kb_doc != null
+                                FILTER kb_doc.groupType == @kb_type
+                                RETURN {{
+                                    name: kb_doc.groupName,
+                                    type: "KB",
+                                    displayName: kb_doc.groupName,
+                                    connectorId: kb_doc.connectorId || knowledge.connectorId
+                                }}
+                            ) : []
+
+                            LET app_info = !is_kb ? (
+                                LET connector_instance = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                                FILTER connector_instance != null
+                                RETURN {{
+                                    name: connector_instance.name,
+                                    type: connector_instance.type || "APP",
+                                    displayName: connector_instance.name
+                                }}
+                            ) : []
+
+                            LET display_info = LENGTH(kb_info) > 0 ? FIRST(kb_info) :
+                                              (LENGTH(app_info) > 0 ? FIRST(app_info) : {{
+                                                  name: knowledge.connectorId,
+                                                  type: "UNKNOWN",
+                                                  displayName: knowledge.connectorId
+                                              }})
+
+                            RETURN {{
+                                _key: knowledge._key,
+                                connectorId: LENGTH(kb_info) > 0 ? FIRST(kb_info).connectorId : knowledge.connectorId,
+                                filters: knowledge.filters,
+                                name: display_info.name,
+                                type: display_info.type,
+                                displayName: display_info.displayName || display_info.name
+                            }}
+                    )
+
+                    RETURN MERGE(a, {{
+                        toolsets: linked_toolsets,
+                        knowledge: linked_knowledge
+                    }})
+            )
+
             RETURN {{
-                agents: @do_page ? SLICE(sorted, @offset, @limit) : sorted,
+                agents: enriched,
                 totalItems: totalItems
             }}
             """
@@ -19943,6 +20046,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "offset": offset,
                 "limit": page_limit,
                 "is_deleted": is_deleted,
+                "kb_type": Connectors.KNOWLEDGE_BASE.value,
             }
 
             result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
@@ -19951,6 +20055,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # The AQL always returns a single envelope object.
             payload = result[0] if isinstance(result, list) else result
+
+            # Parse knowledge filters from JSON strings, mirroring get_agent so the
+            # list projection exposes the same filtersParsed object.
+            for agent in payload.get("agents", []):
+                if not isinstance(agent, dict):
+                    continue
+                for knowledge in agent.get("knowledge", []) or []:
+                    filters_str = knowledge.get("filters")
+                    if filters_str is None:
+                        # Graph node stored filters: null (no filter configured).
+                        knowledge["filtersParsed"] = {}
+                    elif isinstance(filters_str, str):
+                        try:
+                            knowledge["filtersParsed"] = json.loads(filters_str)
+                        except json.JSONDecodeError:
+                            knowledge["filtersParsed"] = {}
+                    else:
+                        knowledge["filtersParsed"] = filters_str
+
             if do_page:
                 return {
                     "agents": payload.get("agents", []),
