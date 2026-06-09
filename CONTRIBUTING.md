@@ -40,7 +40,7 @@ sudo apt install libmariadb-dev
 # Install required packages
 brew install python@3.12
 brew install libreoffice
-brew install mariadb-connector-c (Add to path)
+brew install mariadb-connector-c # Add to path
 ```
 
 #### Windows
