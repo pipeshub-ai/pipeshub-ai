@@ -258,6 +258,7 @@ class ExtensionTypes(Enum):
     TXT = "txt"
     MD = "md"
     MDX = "mdx"
+    JSON = "json"
     HTML = "html"
     PNG = "png"
     JPG = "jpg"
