@@ -3127,7 +3127,6 @@ components:
             - isVLMOcrProcessed
             - mimeType
             - sizeInBytes
-            - md5Checksum
             - webUrl
             - fileRecord
             - mailRecord
@@ -3417,6 +3416,30 @@ components:
                 enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
               accessType:
                 type: string
+
+    DeleteRecordResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by DELETE /knowledgeBase/record/{recordId}.
+      required:
+        - success
+        - message
+        - recordId
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        message:
+          type: string
+        recordId:
+          type: string
+        connector:
+          type: string
+          nullable: true
+        timestamp:
+          type: integer
+          format: int64
+          nullable: true
 
     GetKnowledgeBaseRecordsResponseSchema:
       type: object
@@ -19887,15 +19910,19 @@ paths:
         - Records
       summary: Delete record
       description: |
-        Permanently delete a record from the knowledge base.<br><br>
-        <b>Required Permission:</b> WRITER or higher<br><br>
-        <b>What Gets Deleted:</b><br>
-        <ul>
-        <li>Record metadata</li>
-        <li>Associated storage file</li>
-        <li>Indexed content and embeddings</li>
-        </ul>
-        <b>Warning:</b> This action is irreversible.
+        Permanently delete a record from the knowledge base.
+
+        **Required permission:**
+
+        WRITER or higher
+
+        **What gets deleted:**
+
+        - Record metadata
+        - Associated storage file
+        - Indexed content and embeddings
+
+        **Warning:** This action is irreversible.
       operationId: deleteRecord
       security:
         - bearerAuth: []
@@ -19910,12 +19937,46 @@ paths:
       responses:
         '200':
           description: Record deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteRecordResponseSchema'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient permissions
+          description: OAuth token is missing the required kb:delete scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while deleting record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /knowledgeBase/stream/record/{recordId}:
     get:

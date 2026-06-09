@@ -98,3 +98,78 @@ class TestKnowledgeBaseRecordsCrud:
         assert_response_matches_openapi_operation(
             resp.json(), "getRecordById", status_code="500"
         )
+
+    def test_delete_record_by_id_success(
+        self, six_kb_records: dict[str, object]
+    ) -> None:
+        record_id = str(six_kb_records["record_ids"][-1])  # type: ignore[index]
+
+        resp = requests.delete(
+            f"{self.record_url}{record_id}",
+            headers=self.headers,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "deleteRecord")
+
+        assert body["success"] is True
+        assert body["recordId"] == record_id
+
+        get_resp = requests.get(
+            f"{self.record_url}{record_id}",
+            headers=self.headers,
+            timeout=self.client.timeout_seconds,
+        )
+        assert get_resp.status_code in (404, 500), get_resp.text
+
+    def test_delete_record_by_id_negative(
+        self, six_kb_records: dict[str, object]
+    ) -> None:
+        missing_id = str(uuid4())
+        record_url = f"{self.record_url}{missing_id}"
+
+        resp = requests.delete(record_url, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteRecord", status_code="401"
+        )
+
+        resp = requests.delete(
+            record_url,
+            headers={"Authorization": "Bearer invalid"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteRecord", status_code="401"
+        )
+
+        resp = requests.delete(
+            f"{self.record_url}{uuid4()}",
+            headers=self.headers,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code in (404, 500), resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteRecord", status_code=str(resp.status_code)
+        )
+
+        record_id = str(six_kb_records["record_ids"][-2])  # type: ignore[index]
+
+        resp = requests.delete(
+            f"{self.record_url}{record_id}",
+            headers=self.headers,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, resp.text
+
+        resp = requests.delete(
+            f"{self.record_url}{record_id}",
+            headers=self.headers,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code in (404, 500), resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteRecord", status_code=str(resp.status_code)
+        )
