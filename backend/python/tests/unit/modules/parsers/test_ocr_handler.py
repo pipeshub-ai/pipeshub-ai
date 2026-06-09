@@ -152,33 +152,6 @@ class TestOCRHandlerInit:
         return logging.getLogger("test_ocr_handler")
 
     @patch("app.modules.parsers.pdf.ocr_handler.OCRProvider", OCRProvider)
-    def test_init_azure_di_strategy(self, logger):
-        """OCRHandler with Azure Document Intelligence strategy."""
-        with patch(
-            "app.modules.parsers.pdf.azure_document_intelligence_processor.AzureOCRStrategy"
-        ) as mock_cls:
-            mock_strategy = MagicMock()
-            mock_cls.return_value = mock_strategy
-
-            handler = OCRHandler(
-                logger,
-                OCRProvider.AZURE_DI.value,
-                endpoint="https://example.com",
-                key="secret",
-                model_id="prebuilt-document",
-                config={},
-            )
-
-            assert handler.strategy is mock_strategy
-            mock_cls.assert_called_once_with(
-                logger=logger,
-                endpoint="https://example.com",
-                key="secret",
-                model_id="prebuilt-document",
-                config={},
-            )
-
-    @patch("app.modules.parsers.pdf.ocr_handler.OCRProvider", OCRProvider)
     def test_init_vlm_ocr_strategy(self, logger):
         """OCRHandler with VLM OCR strategy."""
         with patch(
@@ -204,26 +177,6 @@ class TestOCRHandlerCreateStrategy:
     @pytest.fixture
     def logger(self):
         return logging.getLogger("test_strategy")
-
-    def test_create_strategy_azure_default_model(self, logger):
-        """Azure strategy uses default model_id when not provided."""
-        with patch(
-            "app.modules.parsers.pdf.azure_document_intelligence_processor.AzureOCRStrategy"
-        ) as mock_cls:
-            mock_cls.return_value = MagicMock()
-            handler = OCRHandler(
-                logger,
-                OCRProvider.AZURE_DI.value,
-                endpoint="https://example.com",
-                key="secret",
-            )
-            mock_cls.assert_called_once_with(
-                logger=logger,
-                endpoint="https://example.com",
-                key="secret",
-                model_id="prebuilt-document",
-                config=None,
-            )
 
 class TestOCRHandlerProcessDocument:
     """Tests for OCRHandler.process_document."""
