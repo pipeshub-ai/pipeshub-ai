@@ -47,7 +47,6 @@ brew install mariadb-connector-c (Add to path)
 ```bash
 - Install Python 3.12
 - Consider using WSL2 for a Linux-like environment
-- If not using WSL2, install MariaDB C Connector from https://mariadb.com/downloads/connectors/
 ```
 
 ### Application Dependencies
