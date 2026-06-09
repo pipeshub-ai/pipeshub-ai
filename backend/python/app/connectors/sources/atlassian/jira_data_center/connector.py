@@ -4624,18 +4624,33 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.debug(f"No attachment found matching media_id='{media_id}' or filename='{media_alt}' in issue {issue_id}")
                 return None
 
-            # Fetch attachment content
+            # Fetch attachment content via secure URL (client base_url)
             attachment_id = target_attachment.get("id")
             mime_type = target_attachment.get("mimeType", "application/octet-stream")
+            filename = target_attachment.get("filename")
+            if not attachment_id or not filename:
+                self.logger.debug(
+                    f"Missing attachment id or filename for media_id='{media_id}' "
+                    f"filename='{media_alt}' in issue {issue_id}"
+                )
+                return None
 
             datasource = await self._get_fresh_datasource()
-            content_response = await datasource.get_attachment_content_v2(
-                id=attachment_id,
-                redirect=False
+            content_response = await datasource.get_secure_attachment_v2(
+                id=str(attachment_id),
+                filename=str(filename),
             )
 
             if content_response.status != HttpStatusCode.OK.value:
-                self.logger.warning(f"⚠️ Failed to fetch attachment content {attachment_id}: {content_response.status}")
+                self.logger.warning(
+                    "Failed to fetch attachment content for inline media: "
+                    "attachment_id=%s issue_id=%s filename=%s status=%s response=%s",
+                    attachment_id,
+                    issue_id,
+                    filename,
+                    content_response.status,
+                    content_response.text()[:500],
+                )
                 return None
 
             # Convert to base64
@@ -4923,29 +4938,38 @@ class JiraDataCenterConnector(BaseConnector):
                 )
 
             elif record.record_type == RecordType.FILE:
-                # Stream attachment content
+                # Stream attachment content via secure URL (client base_url)
                 attachment_id = record.external_record_id.replace("attachment_", "")
+                filename = record.record_name if hasattr(record, 'record_name') else None
+                if not filename:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.BAD_REQUEST.value,
+                        detail=f"Attachment {attachment_id} is missing filename for download",
+                    )
 
-                # Get attachment content using DataSource
                 datasource = await self._get_fresh_datasource()
-                response = await datasource.get_attachment_content_v2(
+                response = await datasource.get_secure_attachment_v2(
                     id=attachment_id,
-                    redirect=False
+                    filename=filename,
                 )
 
                 if response.status != HttpStatusCode.OK.value:
-                    # Propagate the upstream status so the API returns the
-                    # right code (e.g. 404 when an attachment was deleted at
-                    # the source) instead of being swallowed into a generic
-                    # 500. Without this, the indexing consumer treats every
-                    # gone-at-source attachment as a transient server error,
-                    # burns 3 tenacity retries, and emits a misleading
-                    # traceback for an expected condition.
-                    detail = f"Failed to fetch attachment content: {response.text()}"
+                    error_body = response.text()
+                    detail = f"Failed to fetch attachment content: {error_body}"
                     if response.status == HttpStatusCode.NOT_FOUND.value:
                         self.logger.warning(
                             f"Attachment {attachment_id} not found at source "
                             f"(record {record.external_record_id}) — likely deleted in Jira"
+                        )
+                    else:
+                        self.logger.error(
+                            "Failed to fetch Jira attachment content for stream_record: "
+                            "attachment_id=%s record_id=%s filename=%s status=%s response=%s",
+                            attachment_id,
+                            record.id,
+                            filename,
+                            response.status,
+                            error_body[:500],
                         )
                     raise HTTPException(status_code=response.status, detail=detail)
 

@@ -642,13 +642,9 @@ async def test_stream_record_ticket_happy():
 async def test_stream_record_file_ok():
     conn = _make_connector()
     conn.data_source = MagicMock()
+    conn.site_url = "https://jira.example"
 
-    r = MagicMock()
-    r.status = HttpStatusCode.OK.value
-    r.bytes = MagicMock(return_value=b"png-bytes")
-
-    ds = MagicMock()
-    ds.get_attachment_content_v2 = AsyncMock(return_value=r)
+    ds = _mock_ds_secure_attachment_ok(b"png-bytes")
 
     with patch.object(conn, "init", new_callable=AsyncMock):
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
@@ -1122,11 +1118,8 @@ async def test_cleanup_closes_client_and_clears_cache():
 async def test_stream_record_attachment_fetch_fails_raises():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    bad = MagicMock()
-    bad.status = 500
-    bad.text = MagicMock(return_value="fail")
-    ds = MagicMock()
-    ds.get_attachment_content_v2 = AsyncMock(return_value=bad)
+    conn.site_url = "https://jira.example"
+    ds = _mock_ds_attachment_download_fail(500, "fail")
     with patch.object(conn, "init", new_callable=AsyncMock):
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             with pytest.raises(Exception, match="Failed to fetch attachment"):
@@ -1781,15 +1774,13 @@ async def test_get_issue_attachments_cached_hit_and_miss():
 async def test_fetch_media_as_base64_happy_path_and_bad_content_status():
     conn = _make_connector()
     conn.data_source = MagicMock()
+    conn.site_url = "https://jira.example"
     conn._issue_attachments_cache["iss"] = [{"id": "5", "filename": "x.png", "mimeType": "image/png"}]
 
-    ok_content = MagicMock()
-    ok_content.status = HttpStatusCode.OK.value
-    ok_content.bytes = MagicMock(return_value=b"\xff")
-    bad_content = MagicMock()
-    bad_content.status = 500
+    ok_content = _attachment_ok_resp(b"\xff")
+    bad_content = _err_resp(500, "err")
     ds = MagicMock()
-    ds.get_attachment_content_v2 = AsyncMock(side_effect=[ok_content, bad_content])
+    ds.get_secure_attachment_v2 = AsyncMock(side_effect=[ok_content, bad_content])
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         uri = await conn._fetch_media_as_base64("iss", "5", "alt")
         assert uri and uri.startswith("data:image/png;base64,")
@@ -1800,12 +1791,9 @@ async def test_fetch_media_as_base64_happy_path_and_bad_content_status():
 async def test_fetch_media_as_base64_matches_partial_filename():
     conn = _make_connector()
     conn.data_source = MagicMock()
+    conn.site_url = "https://jira.example"
     conn._issue_attachments_cache["iss"] = [{"id": "1", "filename": "long-name.pdf", "mimeType": "application/pdf"}]
-    resp = MagicMock()
-    resp.status = HttpStatusCode.OK.value
-    resp.bytes = MagicMock(return_value=b"abc")
-    ds = MagicMock()
-    ds.get_attachment_content_v2 = AsyncMock(return_value=resp)
+    ds = _mock_ds_secure_attachment_ok(b"abc")
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         uri = await conn._fetch_media_as_base64("iss", "nope", "name.pdf")
     assert uri.startswith("data:application/pdf;base64,")
@@ -2800,12 +2788,9 @@ async def test_process_issue_blockgroups_for_streaming_end_to_end():
 async def test_stream_record_file_yields_bytes():
     conn = _make_connector()
     conn.data_source = MagicMock()
+    conn.site_url = "https://jira.example"
     fr = _file_record()
-    r = MagicMock()
-    r.status = HttpStatusCode.OK.value
-    r.bytes = MagicMock(return_value=b"xyz")
-    ds = MagicMock()
-    ds.get_attachment_content_v2 = AsyncMock(return_value=r)
+    ds = _mock_ds_secure_attachment_ok(b"xyz")
     with patch.object(conn, "init", new_callable=AsyncMock):
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             out = await conn.stream_record(fr)
@@ -3717,6 +3702,27 @@ def _err_resp(status: int, body: str = "error") -> MagicMock:
     return r
 
 
+def _attachment_ok_resp(data: bytes = b"bytes") -> MagicMock:
+    r = MagicMock()
+    r.status = HttpStatusCode.OK.value
+    r.bytes = MagicMock(return_value=data)
+    r.text = MagicMock(return_value="")
+    r.json = MagicMock(return_value={})
+    return r
+
+
+def _mock_ds_secure_attachment_ok(data: bytes = b"bytes") -> MagicMock:
+    ds = MagicMock()
+    ds.get_secure_attachment_v2 = AsyncMock(return_value=_attachment_ok_resp(data))
+    return ds
+
+
+def _mock_ds_attachment_download_fail(final_status: int = 404, final_body: str = "Not Found") -> MagicMock:
+    ds = MagicMock()
+    ds.get_secure_attachment_v2 = AsyncMock(return_value=_err_resp(final_status, final_body))
+    return ds
+
+
 # ===========================================================================
 # Patch fix 1: _fetch_groups — 404 from /group/bulk triggers picker fallback
 # ===========================================================================
@@ -4146,8 +4152,8 @@ class TestStreamRecordFile404DC:
     async def test_404_raises_http_exception(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
-        ds = MagicMock()
-        ds.get_attachment_content_v2 = AsyncMock(return_value=_err_resp(404, "Not Found"))
+        conn.site_url = "https://jira.example"
+        ds = _mock_ds_attachment_download_fail(404, "Not Found")
         with patch.object(conn, "init", new_callable=AsyncMock):
             with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
                 with pytest.raises(HTTPException) as exc_info:
@@ -4158,8 +4164,8 @@ class TestStreamRecordFile404DC:
     async def test_500_raises_http_exception_with_upstream_status(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
-        ds = MagicMock()
-        ds.get_attachment_content_v2 = AsyncMock(return_value=_err_resp(500, "err"))
+        conn.site_url = "https://jira.example"
+        ds = _mock_ds_attachment_download_fail(500, "err")
         with patch.object(conn, "init", new_callable=AsyncMock):
             with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
                 with pytest.raises(HTTPException) as exc_info:
@@ -4170,8 +4176,8 @@ class TestStreamRecordFile404DC:
     async def test_http_exception_not_swallowed_by_outer_handler(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
-        ds = MagicMock()
-        ds.get_attachment_content_v2 = AsyncMock(return_value=_err_resp(404, "gone"))
+        conn.site_url = "https://jira.example"
+        ds = _mock_ds_attachment_download_fail(404, "gone")
         with patch.object(conn, "init", new_callable=AsyncMock):
             with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
                 try:
