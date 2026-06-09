@@ -28,6 +28,7 @@ Welcome to our open source project! We're excited that you're interested in cont
 sudo apt update
 sudo apt install python3.12-venv
 sudo apt-get install libreoffice
+sudo apt install libmariadb-dev
 ```
 
 #### Mac
@@ -39,12 +40,14 @@ sudo apt-get install libreoffice
 # Install required packages
 brew install python@3.12
 brew install libreoffice
+brew install mariadb-connector-c (Add to path)
 ```
 
 #### Windows
 ```bash
 - Install Python 3.12
 - Consider using WSL2 for a Linux-like environment
+- If not using WSL2, install MariaDB C Connector from https://mariadb.com/downloads/connectors/
 ```
 
 ### Application Dependencies
