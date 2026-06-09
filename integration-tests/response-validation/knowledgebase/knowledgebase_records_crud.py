@@ -14,7 +14,10 @@ for _p in (_ROOT, _RV_HELPER):
         sys.path.insert(0, str(_p))
 
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
-from openapi_schema_validator import assert_response_matches_openapi_operation  # noqa: E402
+from openapi_schema_validator import (  # noqa: E402
+    assert_operation_documents_response,
+    assert_response_matches_openapi_operation,
+)
 
 
 @pytest.mark.integration
@@ -28,6 +31,7 @@ class TestKnowledgeBaseRecordsCrud:
         self.reindex_group_url = (
             f"{self.client.base_url}/api/v1/knowledgeBase/reindex/record-group/"
         )
+        self.stream_url = f"{self.client.base_url}/api/v1/knowledgeBase/stream/record/"
         self.headers = {
             "Authorization": f"Bearer {self.client._access_token}",
             "Content-Type": "application/json",
@@ -341,3 +345,61 @@ class TestKnowledgeBaseRecordsCrud:
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 400, resp.text
+
+    def test_stream_record_buffer_success(
+        self, six_kb_records: dict[str, object]
+    ) -> None:
+        record_id = str(six_kb_records["record_ids"][0])  # type: ignore[index]
+
+        resp = requests.get(
+            f"{self.stream_url}{record_id}",
+            headers=self.headers,
+            timeout=self.client.timeout_seconds,
+            stream=True,
+        )
+        assert resp.status_code == 200, resp.text
+        assert_operation_documents_response("streamRecordBuffer", "200")
+        assert len(resp.content) > 0
+
+        content_type = (resp.headers.get("Content-Type") or "").lower()
+        assert "pdf" in content_type or "octet-stream" in content_type, content_type
+
+    def test_stream_record_buffer_success_with_convert_to(
+        self, six_kb_records: dict[str, object]
+    ) -> None:
+        record_id = str(six_kb_records["record_ids"][0])  # type: ignore[index]
+
+        resp = requests.get(
+            f"{self.stream_url}{record_id}",
+            headers=self.headers,
+            params={"convertTo": "txt"},
+            timeout=self.client.timeout_seconds,
+            stream=True,
+        )
+        assert resp.status_code == 200, resp.text
+        assert_operation_documents_response("streamRecordBuffer", "200")
+        assert len(resp.content) > 0
+
+    def test_stream_record_buffer_negative(self) -> None:
+        missing_id = str(uuid4())
+        stream_url = f"{self.stream_url}{missing_id}"
+
+        resp = requests.get(stream_url, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, resp.text
+        assert_operation_documents_response("streamRecordBuffer", "401")
+
+        resp = requests.get(
+            stream_url,
+            headers={"Authorization": "Bearer invalid"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, resp.text
+        assert_operation_documents_response("streamRecordBuffer", "401")
+
+        resp = requests.get(
+            f"{self.stream_url}{uuid4()}",
+            headers=self.headers,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 404, resp.text
+        assert_operation_documents_response("streamRecordBuffer", "404")

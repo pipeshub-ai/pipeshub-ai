@@ -1033,6 +1033,19 @@ components:
       required:
         - error
 
+    StreamRecordErrorResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Error payload returned by the legacy record-stream proxy when the downstream
+        streaming request fails after route middleware has passed.
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Human-readable error message from the gateway or downstream stream service
+
     AuthError:
       type: object
       description: |
@@ -20042,17 +20055,21 @@ paths:
         - Records
       summary: Stream record content
       description: |
-        Stream the binary content of a record's file.<br><br>
-        <b>Overview:</b><br>
-        Returns the raw file content with appropriate Content-Type and Content-Disposition headers for download or inline viewing.<br><br>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>File downloads</li>
-        <li>Inline document preview</li>
-        <li>Content extraction pipelines</li>
-        </ul>
-        <b>Format Conversion:</b><br>
-        Use <code>convertTo</code> parameter to convert between formats (e.g., DOCX to PDF).
+        Stream the binary content of a record's file.
+
+        **Overview:**
+
+        Returns the raw file content with appropriate `Content-Type` and `Content-Disposition` headers for download or inline viewing.
+
+        **Use cases:**
+
+        - File downloads
+        - Inline document preview
+        - Content extraction pipelines
+
+        **Format conversion:**
+
+        Use the `convertTo` parameter to convert between formats (e.g. DOCX to PDF).
       operationId: streamRecordBuffer
       security:
         - bearerAuth: []
@@ -20077,15 +20094,49 @@ paths:
               schema:
                 type: string
                 format: binary
+        '400':
+          description: Invalid record ID or query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden. Returned either when the OAuth token is missing the required
+            `kb:read` scope or when the authenticated user does not have access to the record.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/StreamRecordErrorResponse'
         '404':
-          description: Record not found
+          description: Record, organization, or backing connector not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamRecordErrorResponse'
         '409':
           description: |
-            Conflict — the connector instance for this record is disabled. Enable it from Connector Settings and try again.
-            Response body is JSON with a `detail` string (FastAPI error shape), not a binary stream.
-
+            Conflict - the connector instance for this record is disabled. Enable it from Connector Settings and try again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamRecordErrorResponse'
+        '500':
+          description: |
+            Internal streaming failure, downstream conversion failure, or connector/backend
+            error proxied by the gateway.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamRecordErrorResponse'
   # -------------------- Folder Endpoints --------------------
   /knowledgeBase/{kbId}/folder:
     post:
@@ -20808,7 +20859,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/reIndexRecordGroupResponseSchema'
+                $ref: '#/components/schemas/ReIndexRecordGroupResponseSchema'
         '400':
           description: Invalid request body or parameters
           content:
