@@ -1991,6 +1991,49 @@ async def test_check_and_fetch_updated_issue_returns_when_timestamp_changes():
 
 
 @pytest.mark.asyncio
+async def test_check_and_fetch_updated_issue_null_assignee_does_not_crash():
+    """Jira DC sends ``assignee: null`` for unassigned issues — must not raise."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn.indexing_filters = MagicMock()
+    rec = _ticket_record()
+    rec.external_record_id = "10324"
+    rec.source_updated_at = 100
+    rec.version = 1
+    fresh = MagicMock()
+    fresh.status = HttpStatusCode.OK.value
+    fresh.json = MagicMock(
+        return_value={
+            "id": "10324",
+            "key": "TEST-1",
+            "fields": {
+                "summary": "S",
+                "updated": "2025-01-02T00:00:00.000+0000",
+                "created": "2025-01-01T00:00:00.000+0000",
+                "issuetype": {"name": "Story"},
+                "creator": {"key": "u1", "emailAddress": "c@e", "displayName": "C"},
+                "reporter": {"key": "u1", "emailAddress": "r@e", "displayName": "R"},
+                "assignee": None,
+                "project": {"id": "10004", "key": "TEST"},
+            },
+        }
+    )
+    mapper = MagicMock()
+    mapper.map_type.return_value = "Story"
+    mapper.map_status.return_value = "Open"
+    mapper.map_priority.return_value = "Medium"
+    conn.value_mapper = mapper
+    ds = MagicMock()
+    ds.get_issue_v2 = AsyncMock(return_value=fresh)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        with patch.object(conn, "_parse_jira_timestamp", side_effect=[200, 100, 100]):
+            row = await conn._check_and_fetch_updated_issue(rec)
+    assert row is not None
+    assert row[0].assignee is None
+    assert row[0].assignee_email is None
+
+
+@pytest.mark.asyncio
 async def test_check_and_fetch_updated_attachment_missing_parent_and_unchanged():
     conn = _make_connector()
     conn.data_source = MagicMock()
@@ -2620,6 +2663,48 @@ async def test_fetch_issues_batched_search_error_raises():
 
 
 @pytest.mark.asyncio
+async def test_fetch_issues_batched_retries_on_transport_error():
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    issue = {
+        "id": "1",
+        "key": "K-1",
+        "fields": {
+            "summary": "S",
+            "updated": "2024-01-01T00:00:00.000+0000",
+            "created": "2024-01-01T00:00:00.000+0000",
+            "issuetype": {"name": "Task"},
+        },
+    }
+    page1 = MagicMock()
+    page1.status = HttpStatusCode.OK.value
+    page1.json = MagicMock(return_value={"issues": [issue], "total": 1})
+    ds = MagicMock()
+    ds.search_issues_post_v2 = AsyncMock(
+        side_effect=[
+            httpx.RemoteProtocolError("Server disconnected without sending a response."),
+            page1,
+        ]
+    )
+    tx = MagicMock()
+    tx.get_record_by_external_id = AsyncMock(return_value=None)
+    _bind_async_transaction(conn, tx)
+    mapper = MagicMock()
+    mapper.map_type.return_value = "T"
+    mapper.map_status.return_value = "O"
+    mapper.map_priority.return_value = "L"
+    conn.value_mapper = mapper
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, return_value=[]):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                batches = []
+                async for batch in conn._fetch_issues_batched("P", "pid", [], None, None, False):
+                    batches.append(batch)
+    assert len(batches) == 1 and batches[0][0]
+    assert ds.search_issues_post_v2.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_fetch_issues_batched_one_page_calls_build_records():
     conn = _make_connector()
     conn.data_source = MagicMock()
@@ -2782,6 +2867,54 @@ async def test_process_issue_blockgroups_for_streaming_end_to_end():
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         raw = await conn._process_issue_blockgroups_for_streaming(rec)
     assert raw.startswith(b"{") and b"block_groups" in raw
+
+
+@pytest.mark.asyncio
+async def test_process_issue_blockgroups_resolves_project_from_api_when_record_group_empty():
+    """Streaming must not pass empty external_record_group_id to new attachments."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn.site_url = "https://jira.example"
+    rec = _ticket_record()
+    rec.external_record_group_id = ""
+    fields = {
+        "summary": "Hi",
+        "description": {"type": "paragraph", "content": [{"type": "text", "text": "d"}]},
+        "attachment": [
+            {
+                "id": "77",
+                "filename": "sample-tables.pdf",
+                "mimeType": "application/pdf",
+                "size": 100,
+                "created": "2024-01-01T00:00:00.000+0000",
+            }
+        ],
+        "comment": {"comments": []},
+        "project": {"id": "10001", "key": "PA"},
+    }
+    resp = MagicMock()
+    resp.status = HttpStatusCode.OK.value
+    resp.json = MagicMock(return_value={"id": rec.external_record_id, "key": "PA-1", "fields": fields})
+    ds = MagicMock()
+    ds.get_issue_v2 = AsyncMock(return_value=resp)
+    tx = MagicMock()
+    tx.get_record_by_external_id = AsyncMock(return_value=None)
+    tx.get_record_group_by_id = AsyncMock(return_value=None)
+    _bind_async_transaction(conn, tx)
+
+    captured: list = []
+
+    async def _capture_new_records(records):
+        captured.extend(records)
+
+    conn.data_entities_processor.on_new_records = AsyncMock(side_effect=_capture_new_records)
+
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        raw = await conn._process_issue_blockgroups_for_streaming(rec)
+    assert raw.startswith(b"{")
+    assert captured
+    file_record, _ = captured[0]
+    assert file_record.external_record_group_id == "10001"
 
 
 @pytest.mark.asyncio
@@ -4035,7 +4168,132 @@ class TestFetchProjectPermissionScheme401403DC:
 
 
 # ===========================================================================
-# Patch fix 5: _get_issue_with_retry
+# Patch fix 5: _search_issues_with_retry
+# ===========================================================================
+
+
+class TestSearchIssuesWithRetryDC:
+
+    @pytest.mark.asyncio
+    async def test_happy_path_first_attempt(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ok = _ok_resp({"issues": [], "total": 0})
+        ds = MagicMock()
+        ds.search_issues_post_v2 = AsyncMock(return_value=ok)
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            resp = await conn._search_issues_with_retry(
+                project_key="IVAS",
+                jql='project = "IVAS"',
+                start_at=0,
+                max_results=50,
+                fields=["summary"],
+            )
+        assert resp.status == HttpStatusCode.OK.value
+        ds.search_issues_post_v2.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_retries_on_remote_protocol_error_then_succeeds(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ok = _ok_resp({"issues": [], "total": 0})
+        ds = MagicMock()
+        ds.search_issues_post_v2 = AsyncMock(
+            side_effect=[httpx.RemoteProtocolError("Server disconnected without sending a response."), ok]
+        )
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                resp = await conn._search_issues_with_retry(
+                    project_key="IVAS",
+                    jql='project = "IVAS"',
+                    start_at=100,
+                    max_results=50,
+                    fields=["summary"],
+                )
+        assert resp.status == HttpStatusCode.OK.value
+        assert ds.search_issues_post_v2.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retries_on_read_error(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ok = _ok_resp({"issues": [], "total": 0})
+        ds = MagicMock()
+        ds.search_issues_post_v2 = AsyncMock(side_effect=[httpx.ReadError("EOF"), ok])
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                resp = await conn._search_issues_with_retry(
+                    project_key="IVAS",
+                    jql='project = "IVAS"',
+                    start_at=0,
+                    max_results=50,
+                    fields=["summary"],
+                )
+        assert resp.status == HttpStatusCode.OK.value
+
+    @pytest.mark.asyncio
+    async def test_exhausts_retries_and_raises(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.search_issues_post_v2 = AsyncMock(side_effect=httpx.RemoteProtocolError("disconnected"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                with pytest.raises(Exception, match="after 3 attempts"):
+                    await conn._search_issues_with_retry(
+                        project_key="IVAS",
+                        jql='project = "IVAS"',
+                        start_at=50,
+                        max_results=50,
+                        fields=["summary"],
+                        max_attempts=3,
+                    )
+        assert ds.search_issues_post_v2.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_non_transport_error_not_retried(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.search_issues_post_v2 = AsyncMock(side_effect=ValueError("unexpected"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with pytest.raises(ValueError, match="unexpected"):
+                await conn._search_issues_with_retry(
+                    project_key="IVAS",
+                    jql='project = "IVAS"',
+                    start_at=0,
+                    max_results=50,
+                    fields=["summary"],
+                )
+        ds.search_issues_post_v2.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_backoff_sleep_called_between_retries(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ok = _ok_resp({"issues": [], "total": 0})
+        ds = MagicMock()
+        ds.search_issues_post_v2 = AsyncMock(side_effect=[httpx.ConnectError("refused"), ok])
+        sleep_calls: list[float] = []
+
+        async def capture(delay: float) -> None:
+            sleep_calls.append(delay)
+
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", side_effect=capture):
+                await conn._search_issues_with_retry(
+                    project_key="IVAS",
+                    jql='project = "IVAS"',
+                    start_at=0,
+                    max_results=50,
+                    fields=["summary"],
+                )
+        assert len(sleep_calls) == 1
+        assert sleep_calls[0] == pytest.approx(0.5)
+
+
+# ===========================================================================
+# Patch fix 6: _get_issue_with_retry
 # ===========================================================================
 
 
