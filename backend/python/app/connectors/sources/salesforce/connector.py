@@ -9,7 +9,12 @@ from logging import Logger
 from typing import Any, AsyncGenerator, Callable, DefaultDict, Dict, List, Optional, Set, Tuple, Type, TypeAlias, TypeVar
 from urllib.parse import quote
 from uuid import uuid4
-from html_to_markdown import convert as html_to_markdown  # type: ignore[import-untyped]
+from html_to_markdown import convert as _html_convert  # type: ignore[import-untyped]
+
+def html_to_markdown(html: str) -> str:
+    """Wrap html_to_markdown.convert to return a plain string."""
+    result = _html_convert(html)
+    return result.content if hasattr(result, 'content') else str(result)
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 

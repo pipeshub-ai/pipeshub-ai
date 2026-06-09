@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import axios, { AxiosError } from 'axios'
+import nock from 'nock'
 import { ConfigService } from '../../../../src/modules/configuration_manager/services/updateConfig.service'
 import { BadRequestError, InternalServerError } from '../../../../src/libs/errors/http.errors'
 
@@ -12,6 +13,7 @@ describe('ConfigService - additional coverage', () => {
   let axiosStub: sinon.SinonStub
 
   beforeEach(() => {
+    nock.disableNetConnect()
     mockAppConfig = {
       iamBackend: 'http://iam:3001',
       communicationBackend: 'http://comm:3002',
@@ -31,6 +33,8 @@ describe('ConfigService - additional coverage', () => {
 
   afterEach(() => {
     sinon.restore()
+    nock.cleanAll()
+    nock.enableNetConnect()
   })
 
   describe('updateConfig - success path', () => {

@@ -216,7 +216,7 @@ export default function PromptsPage() {
     setCustomPromptWebSearch(DEFAULT_WEB_SEARCH_PROMPT);
   }, []);
 
-  const handleSave = useCallback(async () => {
+  const handleSave = useCallback(async function handleSaveImpl() {
     setIsSaving(true);
     try {
       await PromptsApi.saveSystemPrompts({
@@ -235,7 +235,7 @@ export default function PromptsPage() {
         variant: 'error',
         title: t('workspace.prompts.toasts.saveError'),
         description: t('workspace.prompts.toasts.saveErrorDescription'),
-        action: { label: t('action.tryAgain'), onClick: handleSave },
+        action: { label: t('action.tryAgain'), onClick: handleSaveImpl },
       });
     } finally {
       setIsSaving(false);

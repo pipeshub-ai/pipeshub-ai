@@ -207,6 +207,21 @@ tasks
 backend/python/.claude/settings.local.json
 .cursor/*
 
+# Node / Next.js build artifacts
+node_modules/
+.next/
+.next/cache/
+out/
+.turbo/
+.vercel/
+next-env.d.ts.bak
+
+# Local frontend build outputs
+frontend-new/.next/
+frontend-new/node_modules/
+frontend/.next/
+frontend/node_modules/
+
 .opencode
 .codex
 .commandcode

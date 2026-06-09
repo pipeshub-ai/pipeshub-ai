@@ -23,9 +23,14 @@ class ColoredFormatter(logging.Formatter):
             return f"{color}{formatted}{self.RESET}"
         return formatted
 
-# Ensure log directory exists
-log_dir = "logs"
-os.makedirs(log_dir, exist_ok=True)
+# Ensure log directory exists when possible. In restricted environments (e.g. CI
+# or root-owned worktrees), fall back to tmp to avoid import-time crashes.
+log_dir = os.getenv("LOG_DIR", "logs")
+try:
+    os.makedirs(log_dir, exist_ok=True)
+except OSError:
+    log_dir = os.path.join("/tmp", "pipeshub-ai-logs")
+    os.makedirs(log_dir, exist_ok=True)
 
 # Force UTF-8 for stdout/stderr in Windows
 if sys.platform == "win32":
@@ -67,19 +72,22 @@ def create_logger(service_name: str) -> logging.Logger:
         # Enhanced format with filename and line number
         log_format = "%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s"
 
-        # File handler with enhanced format
-        file_handler = logging.FileHandler(
-            os.path.join(log_dir, f"{service_name}.log"),
-            encoding="utf-8",  # Explicitly set encoding here too
-        )
-        file_handler.setFormatter(logging.Formatter(log_format))
-
         # Console handler with colored format
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(ColoredFormatter(log_format))
 
-        # Add handlers
-        logger.addHandler(file_handler)
+        # Try file handler first, but keep logging functional if path is not writable.
+        try:
+            file_handler = logging.FileHandler(
+                os.path.join(log_dir, f"{service_name}.log"),
+                encoding="utf-8",  # Explicitly set encoding here too
+            )
+            file_handler.setFormatter(logging.Formatter(log_format))
+            logger.addHandler(file_handler)
+        except OSError:
+            pass
+
+        # Always keep console logging enabled.
         logger.addHandler(console_handler)
         logger.propagate = False
 

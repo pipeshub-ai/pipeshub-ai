@@ -116,6 +116,7 @@ import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
+import { AgentScheduleService } from '../services/agent_schedule.service';
 
 /** Max bytes per file for chat attachment uploads (PDF/JPEG/PNG). Aligned with frontend, Slack, and Python. */
 const CHAT_ATTACHMENT_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
@@ -602,6 +603,9 @@ export function createAgentConversationalRouter(container: Container): Router {
   const keyValueStoreService = container.isBound('KeyValueStoreService')
     ? container.get<KeyValueStoreService>('KeyValueStoreService')
     : undefined;
+  const agentScheduleService = container.isBound('AgentScheduleService')
+    ? container.get<AgentScheduleService>('AgentScheduleService')
+    : undefined;
 
   const agentAttachmentUpload = multer({
     storage: multer.memoryStorage(),
@@ -851,7 +855,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(createAgentSchema),
-    createAgent(appConfig),
+    createAgent(appConfig, agentScheduleService),
   );
 
   router.get(
@@ -869,7 +873,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateAgentSchema),
-    updateAgent(appConfig),
+    updateAgent(appConfig, agentScheduleService),
   );
 
   router.delete(
@@ -878,7 +882,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(deleteAgentSchema),
-    deleteAgent(appConfig),
+    deleteAgent(appConfig, agentScheduleService),
   );
 
   router.get(

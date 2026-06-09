@@ -5,13 +5,14 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { AgentScheduleService } from '../services/agent_schedule.service';
 
 const loggerConfig = {
   service: 'Enterprise Search Service',
 };
 
 export class EnterpriseSearchAgentContainer {
-  private static instance: Container;
+  private static instance: Container | null = null;
   private static logger: Logger = Logger.getInstance(loggerConfig);
 
   static async initialize(
@@ -63,6 +64,11 @@ export class EnterpriseSearchAgentContainer {
       container
         .bind<AuthMiddleware>('AuthMiddleware')
         .toConstantValue(authMiddleware);
+
+      const agentScheduleService = new AgentScheduleService(appConfig);
+      container
+        .bind<AgentScheduleService>('AgentScheduleService')
+        .toConstantValue(agentScheduleService);
       this.logger.info(
         'Enterprise Search Agent services initialized successfully',
       );
@@ -85,16 +91,28 @@ export class EnterpriseSearchAgentContainer {
   }
 
   static async dispose(): Promise<void> {
+    const instance = this.instance;
+    if (instance === null) {
+      return;
+    }
+
     try {
       // Get only services that need to be disconnected
-      const keyValueStoreService = this.instance.isBound('KeyValueStoreService')
-        ? this.instance.get<KeyValueStoreService>('KeyValueStoreService')
+      const keyValueStoreService = instance.isBound('KeyValueStoreService')
+        ? instance.get<KeyValueStoreService>('KeyValueStoreService')
+        : null;
+      const agentScheduleService = instance.isBound('AgentScheduleService')
+        ? instance.get<AgentScheduleService>('AgentScheduleService')
         : null;
 
       // Disconnect services if they have a disconnect method
-      if (keyValueStoreService && keyValueStoreService.isConnected()) {
+      if (keyValueStoreService?.isConnected()) {
         await keyValueStoreService.disconnect();
         this.logger.info('KeyValueStoreService disconnected successfully');
+      }
+      if (agentScheduleService) {
+        await agentScheduleService.shutdown();
+        this.logger.info('AgentScheduleService shut down successfully');
       }
 
       this.logger.info(
@@ -108,7 +126,7 @@ export class EnterpriseSearchAgentContainer {
         },
       );
     } finally {
-      this.instance = null!;
+      this.instance = null;
     }
   }
 }

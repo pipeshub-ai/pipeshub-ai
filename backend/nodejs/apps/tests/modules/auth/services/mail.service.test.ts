@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import axios, { AxiosError } from 'axios';
+import nock from 'nock';
 import { MailService } from '../../../../src/modules/auth/services/mail.service';
 import {
   BadRequestError,
@@ -21,11 +22,14 @@ describe('MailService', () => {
   } as any;
 
   beforeEach(() => {
+    nock.disableNetConnect();
     mailService = new MailService(mockConfig, mockLogger);
   });
 
   afterEach(() => {
     sinon.restore();
+    nock.cleanAll();
+    nock.enableNetConnect();
   });
 
   describe('sendMail', () => {

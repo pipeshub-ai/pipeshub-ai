@@ -284,6 +284,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   }, [success, setSuccess]);
 
   const prevAgentKeyRef = useRef<string | null>(null);
+  const [historyGuardActive, setHistoryGuardActive] = useState(false);
   useEffect(() => {
     const prev = prevAgentKeyRef.current;
     if (editingKey && prev && prev !== editingKey && !loading) {
@@ -296,7 +297,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   const initOnce = useRef(false);
   useEffect(() => {
     initOnce.current = false;
-    historyGuardActive.current = false;
+    setHistoryGuardActive(false);
     setCleanSnapshot(null);
   }, [editingKey]);
 
@@ -467,6 +468,37 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         setBanner(t(msgKey));
         return;
       }
+
+      const sourceType = sourceNode?.data?.type;
+      const targetType = targetNode?.data?.type;
+
+      // Linear chain guardrails: each agent has max one response successor.
+      if (sourceType === 'agent-core' && connection.sourceHandle === 'response') {
+        const existingOutgoing = edges.some(
+          (e) =>
+            e.source === connection.source &&
+            e.sourceHandle === 'response' &&
+            !(e.target === connection.target && e.targetHandle === connection.targetHandle)
+        );
+        if (existingOutgoing) {
+          setBanner(t('agentBuilder.connectionInvalid'));
+          return;
+        }
+      }
+
+      // Linear chain guardrails: each downstream agent input accepts only one predecessor agent.
+      if (targetType === 'agent-core' && connection.targetHandle === 'input') {
+        const existingIncomingFromAgent = edges.some((e) => {
+          if (e.target !== connection.target || e.targetHandle !== 'input') return false;
+          const existingSourceType = nodes.find((n) => n.id === e.source)?.data?.type;
+          return existingSourceType === 'agent-core';
+        });
+        if (existingIncomingFromAgent && sourceType === 'agent-core') {
+          setBanner(t('agentBuilder.connectionInvalid'));
+          return;
+        }
+      }
+
       setEdges((eds) =>
         addEdge(
           {
@@ -535,23 +567,22 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   // popstate guard: browser back/forward button.
   // When dirty, push a guard entry so the first back press hits it (same URL)
   // and fires popstate without actually leaving the page.
-  const historyGuardActive = useRef(false);
   useEffect(() => {
     if (!isDirty) return;
 
-    if (!historyGuardActive.current) {
+    if (!historyGuardActive) {
       window.history.pushState(null, '');
-      historyGuardActive.current = true;
+      setHistoryGuardActive(true);
     }
 
     const handler = () => {
       // Guard against re-entry: the history.back() below queues another
       // popstate that would fire before Next.js unmounts the page.
-      if (!historyGuardActive.current) return;
+      if (!historyGuardActive) return;
       const confirmed = window.confirm(t('agentBuilder.unsavedChangesConfirm'));
       if (confirmed) {
         // User chose to leave: clear flag and go back past the guard entry.
-        historyGuardActive.current = false;
+        setHistoryGuardActive(false);
         window.history.back();
       } else {
         // User chose to stay: re-push the guard so the next back press is caught too.
@@ -561,19 +592,19 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
 
     window.addEventListener('popstate', handler);
     return () => window.removeEventListener('popstate', handler);
-  }, [isDirty, t]);
+  }, [historyGuardActive, isDirty, t]);
 
   // Clear the back-stack sentinel when the page becomes clean
   // (e.g., after a successful save or full undo). Without this,
   // the pushed history entry leaks and the user has to press Back twice.
   const prevDirtyRef = useRef(false);
   useEffect(() => {
-    if (prevDirtyRef.current && !isDirty && historyGuardActive.current) {
-      historyGuardActive.current = false;
+    if (prevDirtyRef.current && !isDirty && historyGuardActive) {
+      setHistoryGuardActive(false);
       window.history.back();
     }
     prevDirtyRef.current = isDirty;
-  }, [isDirty]);
+  }, [historyGuardActive, isDirty]);
 
   /** Logical toolset types already on the canvas (legacy: at most one per type). */
   const activeToolsetTypeKeys = useMemo(() => collectActiveToolsetTypeKeysFromNodes(nodes), [nodes]);
@@ -658,6 +689,12 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           shareWithOrg,
           isServiceAccount
         ),
+        // Persist the visual layout so positions survive subsequent edits.
+        flow: { nodes, edges },
+        flowSchemaVersion: 2,
+        orchestrationMode: (nodes.some((node) => node.data?.type === 'conditional-check')
+          ? 'conditional'
+          : 'linear') as 'conditional' | 'linear',
       };
 
       if (loadedAgent) {
@@ -739,6 +776,11 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           true,
           true
         ),
+        flow: { nodes, edges },
+        flowSchemaVersion: 2,
+        orchestrationMode: (nodes.some((node) => node.data?.type === 'conditional-check')
+          ? 'conditional'
+          : 'linear') as 'conditional' | 'linear',
       };
 
       if (currentAgent) {
