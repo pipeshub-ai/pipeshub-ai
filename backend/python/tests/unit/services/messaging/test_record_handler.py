@@ -89,7 +89,7 @@ class TestBulkDeleteEvent:
         handler = _make_handler()
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock(
-            return_value={"deleted_count": 5, "virtual_record_ids_processed": 3}
+            return_value={"virtual_record_ids_processed": 3}
         )
 
         payload = {"virtualRecordIds": ["vr1", "vr2", "vr3"]}
@@ -107,7 +107,7 @@ class TestBulkDeleteEvent:
         handler = _make_handler()
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock(
-            return_value={"deleted_count": 0, "virtual_record_ids_processed": 0}
+            return_value={"virtual_record_ids_processed": 0}
         )
 
         payload = {"virtualRecordIds": []}

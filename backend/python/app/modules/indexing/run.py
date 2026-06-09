@@ -1,13 +1,10 @@
 from typing import Any, Dict, List
 
-from langchain_core.documents import Document
-from langchain_experimental.text_splitter import SemanticChunker
 from langchain_qdrant import FastEmbedSparse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.exceptions.indexing_exceptions import (
-    ChunkingError,
     EmbeddingDeletionError,
     IndexingError,
     MetadataProcessingError,
@@ -18,297 +15,6 @@ from app.services.vector_db.interface.vector_db import IVectorDBService
 
 # Constants for bulk deletion
 QDRANT_BULK_DELETE_BATCH_SIZE = 100
-
-
-class CustomChunker(SemanticChunker):
-    def __init__(self, logger, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.logger = logger
-        self.number_of_chunks = None
-        self.breakpoint_threshold_type: str = "percentile"
-        self.breakpoint_threshold_amount: float = 1
-
-    def split_documents(self, documents: List[Document]) -> List[Document]:
-        """Override split_documents to use our custom merging logic"""
-        try:
-            self.logger.info("Splitting documents")
-            if len(documents) <= 1:
-                return documents
-
-            # Calculate distances between adjacent documents
-            try:
-                distances, sentences = self._calculate_sentence_distances(
-                    [doc.page_content for doc in documents]
-                )
-            except Exception as e:
-                raise ChunkingError(
-                    "Failed to calculate sentence distances: " + str(e),
-                    details={"error": str(e)},
-                )
-
-            # Get breakpoint threshold
-            try:
-                if self.number_of_chunks is not None:
-                    breakpoint_distance_threshold = self._threshold_from_clusters(
-                        distances
-                    )
-                    breakpoint_array = distances
-                else:
-                    breakpoint_distance_threshold, breakpoint_array = (
-                        self._calculate_breakpoint_threshold(distances)
-                    )
-            except Exception as e:
-                raise ChunkingError(
-                    "Failed to calculate breakpoint threshold: " + str(e),
-                    details={"error": str(e)},
-                )
-
-            # Find indices where we should NOT merge (where distance is too high)
-            indices_above_thresh = [
-                i
-                for i, x in enumerate(breakpoint_array)
-                if x > breakpoint_distance_threshold
-            ]
-
-            merged_documents = []
-            start_index = 0
-
-            # Merge documents between breakpoints
-            try:
-                for index in indices_above_thresh:
-                    # Get group of documents to merge
-                    group = documents[start_index : index + 1]
-
-                    # Merge text content
-                    merged_text = " ".join(doc.page_content for doc in group)
-                    # Get bounding boxes directly from metadata
-                    bboxes = [
-                        doc.metadata.get("bounding_box", [])
-                        for doc in group
-                        if doc.metadata.get("bounding_box")
-                    ]
-                    metadata_list = [doc.metadata for doc in group]
-
-                    # Create merged metadata
-                    merged_metadata = self._merge_metadata(metadata_list)
-
-                    # Update block numbers to reflect merged state
-                    if len(group) > 1:
-                        block_nums = []
-                        for doc in group:
-                            nums = doc.metadata.get("blockNum", [])
-                            if isinstance(nums, list):
-                                block_nums.extend(nums)
-                            else:
-                                block_nums.append(nums)
-                        merged_metadata["blockNum"] = sorted(
-                            list(set(block_nums))
-                        )  # Remove duplicates and sort
-
-                    # Merge bounding boxes and add to metadata
-                    merged_metadata["bounding_box"] = (
-                        self._merge_bboxes(bboxes) if bboxes else None
-                    )
-                    # Create merged document
-                    merged_documents.append(
-                        Document(
-                            page_content=merged_text,
-                            metadata=merged_metadata,
-                        )
-                    )
-
-                    start_index = index + 1
-
-                # Handle the last group
-                if start_index < len(documents):
-                    group = documents[start_index:]
-
-                    merged_text = " ".join(doc.page_content for doc in group)
-
-                    # Get bounding boxes from metadata
-                    bboxes = [
-                        doc.metadata.get("bounding_box", [])
-                        for doc in group
-                        if doc.metadata.get("bounding_box")
-                    ]
-                    metadata_list = [doc.metadata for doc in group]
-
-                    try:
-                        merged_metadata = self._merge_metadata(metadata_list)
-                        if len(group) > 1:
-                            block_nums = []
-                            for doc in group:
-                                nums = doc.metadata.get("blockNum", [])
-                                if isinstance(nums, list):
-                                    block_nums.extend(nums)
-                                else:
-                                    block_nums.append(nums)
-                            merged_metadata["blockNum"] = sorted(
-                                list(set(block_nums))
-                            )  # Remove duplicates and sort
-
-                        # Merge bounding boxes and add to metadata
-                        merged_metadata["bounding_box"] = (
-                            self._merge_bboxes(bboxes) if bboxes else None
-                        )
-
-                        merged_documents.append(
-                            Document(
-                                page_content=merged_text,
-                                metadata=merged_metadata,
-                            )
-                        )
-                    except MetadataProcessingError as e:
-                        raise ChunkingError(
-                            "Failed to process metadata during document merge: "
-                            + str(e),
-                            details={"error": str(e)},
-                        )
-                    except Exception as e:
-                        raise ChunkingError(
-                            "Failed to merge document groups: " + str(e),
-                            details={"error": str(e)},
-                        )
-
-                return merged_documents
-            except Exception as e:
-                raise ChunkingError(
-                    "Failed to merge document groups: " + str(e),
-                    details={"error": str(e)},
-                )
-
-        except ChunkingError:
-            raise
-        except Exception as e:
-            raise ChunkingError(
-                "Unexpected error during document splitting: " + str(e),
-                details={"error": str(e)},
-            )
-
-    def _merge_bboxes(self, bboxes: List[List[dict]]) -> List[dict]:
-        """Merge multiple bounding boxes into one encompassing box"""
-        try:
-            if not bboxes:
-                return []
-
-            if not all(isinstance(bbox, list) for bbox in bboxes):
-                raise MetadataProcessingError(
-                    "Invalid bounding box format.", details={"bboxes": bboxes}
-                )
-
-            try:
-                # Get the extremes of all coordinates
-                leftmost_x = min(point["x"] for bbox in bboxes for point in bbox)
-                topmost_y = min(point["y"] for bbox in bboxes for point in bbox)
-                rightmost_x = max(point["x"] for bbox in bboxes for point in bbox)
-                bottommost_y = max(point["y"] for bbox in bboxes for point in bbox)
-
-            except (KeyError, TypeError) as e:
-                raise MetadataProcessingError(
-                    "Invalid bounding box coordinate format: " + str(e),
-                    details={"error": str(e)},
-                )
-
-            # Create new bounding box
-            return [
-                {"x": leftmost_x, "y": topmost_y},
-                {"x": rightmost_x, "y": topmost_y},
-                {"x": rightmost_x, "y": bottommost_y},
-                {"x": leftmost_x, "y": bottommost_y},
-            ]
-
-        except MetadataProcessingError:
-            raise
-        except Exception as e:
-            raise MetadataProcessingError(
-                "Failed to merge bounding boxes: " + str(e), details={"error": str(e)}
-            )
-
-    def _merge_metadata(self, metadata_list: List[dict]) -> dict:
-        """
-        Merge metadata from multiple documents.
-        For each field:
-        - If all values are the same, keep single value
-        - If values differ, keep all unique values in a list
-        """
-        try:
-            if not isinstance(metadata_list, list):
-                raise MetadataProcessingError(
-                    "Invalid metadata_list format.",
-                    details={"received_type": type(metadata_list).__name__},
-                )
-
-            if not metadata_list:
-                return {}
-
-            merged_metadata = {}
-
-            try:
-                all_fields = set().union(*(meta.keys() for meta in metadata_list))
-
-                for field in all_fields:
-                    # Collect all non-None values for this field
-                    field_values = [
-                        meta[field]
-                        for meta in metadata_list
-                        if field in meta and meta[field] is not None
-                    ]
-
-                    if not field_values:
-                        continue
-
-                    # Handle list fields - flatten and get unique values
-                    if isinstance(field_values[0], list):
-                        unique_values = []
-                        seen = set()
-                        for value_list in field_values:
-                            for value in value_list:
-                                value_str = str(value)
-                                if value_str not in seen:
-                                    seen.add(value_str)
-                                    unique_values.append(value)
-                        merged_metadata[field] = unique_values
-
-                    # Handle confidence score - keep maximum
-                    elif field == "confidence_score":
-                        merged_metadata[field] = max(field_values)
-
-                    # For all other fields
-                    else:
-                        # Convert values to strings for comparison
-                        str_values = [str(v) for v in field_values]
-                        # If all values are the same, keep single value
-                        if len(set(str_values)) == 1:
-                            merged_metadata[field] = field_values[0]
-                        # If values differ, keep all unique values in a list
-                        else:
-                            # Keep original values but ensure uniqueness
-                            unique_values = []
-                            seen = set()
-                            for value in field_values:
-                                value_str = str(value)
-                                if value_str not in seen:
-                                    seen.add(value_str)
-                                    unique_values.append(value)
-                            merged_metadata[field] = unique_values
-
-                return merged_metadata
-            except Exception as e:
-                raise MetadataProcessingError(
-                    "Failed to merge metadata: " + str(e), details={"error": str(e)}
-                )
-
-        except MetadataProcessingError:
-            raise
-        except Exception as e:
-            raise MetadataProcessingError(
-                "Unexpected error during metadata merging: " + str(e),
-                details={"error": str(e)},
-            )
-
-    def split_text(self, text: str) -> List[str]:
-        """This method won't be used but needs to be implemented"""
-        return [text]  # Return as is since we're not using this method
 
 
 class IndexingPipeline:
@@ -427,8 +133,7 @@ class IndexingPipeline:
 
         Returns:
             Dict with deletion statistics:
-                - deleted_count: Number of embedding points deleted
-                - virtual_record_ids_processed: Number of virtual record IDs processed
+                - virtual_record_ids_processed: Number of virtual record IDs eligible for deletion
                 - success: Boolean indicating success
 
         Raises:
@@ -437,7 +142,7 @@ class IndexingPipeline:
         try:
             if not virtual_record_ids:
                 self.logger.info("No virtual record IDs provided for bulk deletion")
-                return {"deleted_count": 0, "virtual_record_ids_processed": 0, "success": True}
+                return {"virtual_record_ids_processed": 0, "success": True}
 
             # Normalize IDs: remove empty values and deduplicate while preserving order
             normalized_virtual_record_ids = list(
@@ -450,7 +155,7 @@ class IndexingPipeline:
 
             if not normalized_virtual_record_ids:
                 self.logger.info("No valid virtual record IDs provided for bulk deletion")
-                return {"deleted_count": 0, "virtual_record_ids_processed": 0, "success": True}
+                return {"virtual_record_ids_processed": 0, "success": True}
 
             self.logger.info(
                 f"🗑️ Starting bulk deletion candidate evaluation for {len(normalized_virtual_record_ids)} virtual record IDs"
@@ -489,7 +194,7 @@ class IndexingPipeline:
                 self.logger.info(
                     "No virtual record IDs are eligible for bulk deletion after safety checks"
                 )
-                return {"deleted_count": 0, "virtual_record_ids_processed": 0, "success": True}
+                return {"virtual_record_ids_processed": 0, "success": True}
 
             self.logger.info(
                 f"🗑️ Proceeding with bulk deletion for {len(safe_virtual_record_ids)} safe virtual record IDs"
@@ -535,10 +240,12 @@ class IndexingPipeline:
                     # Continue with next batch even if one fails
                     continue
 
-            self.logger.info(f"✅ Bulk deletion complete: embeddings deleted for {len(virtual_record_ids)} virtual record IDs")
+            self.logger.info(
+                f"✅ Bulk deletion complete: embeddings deleted for {len(safe_virtual_record_ids)} virtual record IDs"
+            )
 
             return {
-                "virtual_record_ids_processed": len(virtual_record_ids),
+                "virtual_record_ids_processed": len(safe_virtual_record_ids),
                 "success": True
             }
 

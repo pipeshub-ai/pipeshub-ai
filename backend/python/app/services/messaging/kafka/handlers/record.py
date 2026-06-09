@@ -149,8 +149,8 @@ class RecordEventHandler(BaseEventService):
                 )
 
                 self.logger.info(
-                    f"✅ Bulk deletion complete: {result.get('deleted_count', 0)} embeddings deleted "
-                    f"for {result.get('virtual_record_ids_processed', 0)} virtual record IDs"
+                    f"✅ Bulk deletion complete: embeddings deleted for "
+                    f"{result.get('virtual_record_ids_processed', 0)} virtual record IDs"
                 )
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
