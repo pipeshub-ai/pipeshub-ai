@@ -34,7 +34,7 @@ interface ConnectorCatalogLayoutProps {
   activeTab: string;
   /** Tab change handler. */
   onTabChange: (value: string) => void;
-  /** Optional right-side element next to segmented control (e.g. "Your Connectors →" link). */
+  /** Optional right-side element next to segmented control (e.g. "Your Personal Connectors →" link). */
   trailingAction?: React.ReactNode;
   /** Registry connectors to display as cards. */
   registryConnectors: Connector[];

@@ -30,6 +30,82 @@ class KnowledgeBaseService:
         self.graph_provider = graph_provider
         self.kafka_service = kafka_service
 
+    async def _resolve_user_and_kb_access(
+        self,
+        kb_id: str,
+        user_id: str,
+        required_roles: Optional[List[str]] = None,
+        permission_denied_reason: Optional[str] = None,
+    ) -> tuple[Optional[str], Optional[str], Optional[Dict]]:
+        """
+        Resolve user + KB access in one place, minimising DB round-trips.
+
+        Returns (user_key, user_role, error_dict).
+        On success error_dict is None.
+        On failure user_key and user_role are None and error_dict carries the
+        structured response (success=False, code, reason).
+
+        Strategy — lazy existence check:
+        - Happy path (user has any role): 2 DB calls (user lookup + permission).
+        - Error path (no role): 3 DB calls — kb_exists is called ONLY when
+          get_user_kb_permission returns None, to distinguish 404 vs 403.
+          This avoids the extra call on every successful operation.
+
+        Invariant assumption: if get_user_kb_permission returns a non-None role,
+        the KB document must exist.  This holds as long as KB deletion atomically
+        removes permission edges in the same transaction.  Write operations (upload,
+        delete-records, create-folder) are additionally guarded by an eager
+        kb_exists check inside the provider's _validate_upload_context /
+        _validate_folder_creation methods, so orphaned-edge survivors are caught
+        there before any data is mutated.
+
+        Args:
+            required_roles: roles that grant access (None = any role).
+            permission_denied_reason: custom message when the user's role is
+                insufficient (overrides the generic message).
+        """
+        user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+        if not user:
+            self.logger.warning(f"⚠️ User not found: {user_id}")
+            return None, None, {"success": False, "code": 404, "reason": f"User not found: {user_id}"}
+
+        user_key = user.get("id") or user.get("_key")
+        if not user_key:
+            self.logger.error(
+                f"❌ User record for {user_id} has no 'id' or '_key' field — "
+                f"keys present: {list(user.keys())}"
+            )
+            return None, None, {"success": False, "code": 500, "reason": "Internal error: user record is malformed"}
+
+        # Check permission first — if the user has any role, the KB must exist
+        # (see invariant assumption in the docstring above).
+        user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
+
+        if not user_role:
+            # Lazy existence check: only hit DB again when we need to distinguish
+            # "KB not found" (404) from "user has no permission" (403).
+            kb_found = await self.graph_provider.kb_exists(kb_id)
+            if not kb_found:
+                self.logger.warning(f"⚠️ KB {kb_id} does not exist")
+                return None, None, {"success": False, "code": 404, "reason": "Knowledge base not found"}
+            self.logger.warning(f"⚠️ User {user_key} has no permission on KB {kb_id}")
+            return None, None, {
+                "success": False,
+                "code": 403,
+                "reason": "You do not have permission to access this knowledge base",
+            }
+
+        if required_roles and user_role not in required_roles:
+            reason = permission_denied_reason or (
+                "You do not have permission to perform this action on this knowledge base"
+            )
+            self.logger.warning(
+                f"⚠️ User {user_key} role '{user_role}' insufficient for KB {kb_id} "
+                f"(required: {', '.join(required_roles)})"
+            )
+            return None, None, {"success": False, "code": 403, "reason": reason}
+
+        return user_key, user_role, None
 
     async def create_knowledge_base(
         self,
@@ -176,59 +252,35 @@ class KnowledgeBaseService:
 
     async def get_knowledge_base(
         self,
-        kb_id:str,
-        user_id:str
-    )-> Optional[Dict]:
+        kb_id: str,
+        user_id: str,
+    ) -> Optional[Dict]:
         """Get Knowledge base details"""
         try:
             self.logger.info(f"Getting knowledge base {kb_id} for user {user_id}")
-            self.logger.info(f"🔍 Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
 
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-            # validates permissions and gets kb for the user
-            user_role = await self.graph_provider.get_user_kb_permission(
-                kb_id=kb_id,
-                user_id=user_key
-            )
-            if not user_role:
-                self.logger.warning(f"⚠️ User {user_key} has no access to KB {kb_id}")
-                response = {
-                    "success": False,
-                    "reason": "User has no permission for KnowledgeBase",
-                    "code": "403"
-                }
-                return response
+            user_key, user_role, err = await self._resolve_user_and_kb_access(kb_id, user_id)
+            if err:
+                return err
 
             result = await self.graph_provider.get_knowledge_base(
-                kb_id = kb_id,
-                user_id = user_key
+                kb_id=kb_id,
+                user_id=user_key,
             )
 
             if result:
-                self.logger.info(f"Knowledge base retrieved successfullu: {result}")
+                self.logger.info(f"Knowledge base retrieved successfully: {result}")
                 return result
-            else :
-                self.logger.warning("Knowledge base not found")
-                return {
-                    "success":False,
-                    "reason":"Knowledge base not found",
-                    "code":"404"
-                }
+            else:
+                self.logger.warning("Knowledge base not found after permission check")
+                return {"success": False, "reason": "Knowledge base not found", "code": 404}
 
         except Exception as e:
             self.logger.error(f"❌ Failed to get knowledge base: {str(e)}")
             return {
                 "success": False,
                 "reason": str(e),
-                "code":"500"
+                "code": 500
             }
 
     async def list_user_knowledge_bases(
@@ -334,28 +386,12 @@ class KnowledgeBaseService:
         try:
             self.logger.info(f"🚀 Updating knowledge base {kb_id}")
             timestamp = get_epoch_timestamp_in_ms()
-            # Check user permissions
-            self.logger.info(f"🔍 Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-            if user_role not in ["OWNER", "WRITER","ORGANIZER","FILEORGANIZER"]:
-                self.logger.warning(f"⚠️ User {user_id} lacks permission to update KB {kb_id}")
-                response = {
-                    "success": False,
-                    "reason": "User has no permission for KnowledgeBase",
-                    "code": "403"
-                }
-                return response
+            user_key, user_role, err = await self._resolve_user_and_kb_access(
+                kb_id, user_id,
+                required_roles=["OWNER", "WRITER", "ORGANIZER", "FILEORGANIZER"],
+            )
+            if err:
+                return err
             updates["updatedAtTimestamp"] = timestamp
             # Update in database
             result = await self.graph_provider.update_knowledge_base(
@@ -368,14 +404,14 @@ class KnowledgeBaseService:
                 return {
                     "success":True,
                     "reason":"Knowledge base updated successfully",
-                    "code":"200"
+                    "code":200
                 }
             else:
                 self.logger.warning("⚠️ Failed to update knowledge base")
                 return {
                     "success":False,
                     "reason":"Knowledge base not found",
-                    "code":"404"
+                    "code":404
                 }
 
         except Exception as e:
@@ -394,31 +430,16 @@ class KnowledgeBaseService:
         """Delete a knowledge base"""
         try:
             self.logger.info(f"🚀 Deleting knowledge base {kb_id}")
-            self.logger.info(f"🔍 Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+            user_key, user_role, err = await self._resolve_user_and_kb_access(
+                kb_id, user_id, required_roles=["OWNER"],
+                permission_denied_reason="Only KB owners can delete knowledge bases",
+            )
+            if err:
+                # _resolve_user_and_kb_access already logged the denial at warning level;
+                # re-logging here at error would inflate error-rate metrics with auth events.
+                return err
 
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-            user_name = user.get('fullName') or f"{user.get('firstName', '')} {user.get('lastName', '')}".strip() or 'Unknown'
-            self.logger.info(f"✅ Found user: {user_name} (key: {user_key})")
-
-            # Check user permissions
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-            if user_role != "OWNER":
-                self.logger.warning(f"⚠️ User {user_name} lacks permission to delete KB {kb_id}")
-                return {
-                    "success": False,
-                    "reason": "Only KB owners can delete knowledge bases",
-                    "code": 403
-                }
-
-            self.logger.info(f"🔐 User {user_name} has OWNER permission - proceeding with deletion")
+            self.logger.info(f"🔐 User {user_key} has OWNER permission - proceeding with deletion")
 
             # Delete in database with transaction
             result = await self.graph_provider.delete_knowledge_base(
@@ -426,7 +447,7 @@ class KnowledgeBaseService:
            )
 
             if result and result.get("success"):
-                self.logger.info(f"✅ Knowledge base {kb_id} deleted successfully by {user_name}")
+                self.logger.info(f"✅ Knowledge base {kb_id} deleted successfully by user_key={user_key}")
                 return {
                     "success": True,
                     "reason": "Knowledge base and all contents deleted successfully",
@@ -569,27 +590,9 @@ class KnowledgeBaseService:
         """Get contents of a folder"""
         try:
             self.logger.info(f"🔍 Getting contents of folder {folder_id} in KB {kb_id}")
-            self.logger.info(f"Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-            # Check user permissions
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-            if not user_role:
-                self.logger.warning(f"⚠️ User {user_key} lacks access to KB {kb_id}")
-                response = {
-                    "success": False,
-                    "reason": "User has no permission for KnowledgeBase",
-                    "code": "403"
-                }
-                return response
+            user_key, user_role, err = await self._resolve_user_and_kb_access(kb_id, user_id)
+            if err:
+                return err
 
             # Get folder contents
             result = await self.graph_provider.get_folder_contents(
@@ -625,37 +628,20 @@ class KnowledgeBaseService:
     ) -> Dict:
         try:
             self.logger.info(f"🚀 Updating folder {folder_id} in KB {kb_id}")
-            # timestamp = get_epoch_timestamp_in_ms()
-            self.logger.info(f"Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+            user_key, user_role, err = await self._resolve_user_and_kb_access(
+                kb_id, user_id, required_roles=["OWNER", "WRITER"]
+            )
+            if err:
+                return err
 
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-            # Check user permissions
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-            if user_role not in ["OWNER", "WRITER"]:
-                self.logger.warning(f"⚠️ User {user_key} lacks permission to update folder in KB {kb_id}")
-                response = {
-                    "success": False,
-                    "reason": "User has no permission for KnowledgeBase",
-                    "code": "403"
-                }
-                return response
-
-             # Validate that folder exists and belongs to the KB
+            # Validate that folder exists and belongs to the KB
             folder_exists = await self.graph_provider.validate_folder_in_kb(kb_id, folder_id)
             if not folder_exists:
                 self.logger.warning(f"⚠️ Folder {folder_id} not found in KB {kb_id}")
                 return {
                     "success": False,
                     "reason": "Folder not found in knowledge base",
-                    "code": "404"
+                    "code": 404
                 }
 
             updates = {
@@ -715,27 +701,12 @@ class KnowledgeBaseService:
         """Delete a folder """
         try:
             self.logger.info(f" Deleting folder {folder_id} in  knowledge base {kb_id}")
-            self.logger.info(f"Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-
-            # Check user permissions
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-            if user_role != "OWNER":
-                self.logger.warning(f"⚠️ User {user_key} lacks permission to delete folder in KB {kb_id}")
-                return {
-                    "success": False,
-                    "reason": "User lacks permission to delete folder",
-                    "code": "403"
-                }
+            user_key, user_role, err = await self._resolve_user_and_kb_access(
+                kb_id, user_id, required_roles=["OWNER"],
+                permission_denied_reason="User lacks permission to delete folder",
+            )
+            if err:
+                return err
             # Validate that folder exists and belongs to the KB
             folder_exists = await self.graph_provider.validate_folder_in_kb(kb_id, folder_id)
             if not folder_exists:
@@ -743,7 +714,7 @@ class KnowledgeBaseService:
                 return {
                     "success": False,
                     "reason": "Folder not found in knowledge base",
-                    "code": "404"
+                    "code": 404
                 }
 
             # Delete in database
@@ -853,26 +824,13 @@ class KnowledgeBaseService:
         try:
             self.logger.info(f"🚀 Bulk deleting {len(record_ids)} records from KB {kb_id} root")
 
-            # Step 1: Validate user and permissions
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-            if not user:
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
+            user_key, user_role, err = await self._resolve_user_and_kb_access(
+                kb_id, user_id, required_roles=["OWNER", "WRITER", "FILEORGANIZER"]
+            )
+            if err:
+                return err
 
-            user_key = user.get('id') or user.get('_key')
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-
-            if user_role not in ["OWNER", "WRITER", "FILEORGANIZER"]:
-                return {
-                    "success": False,
-                    "reason": "User lacks permission to delete records",
-                    "code": 403
-                }
-
-            # Step 2: Call bulk deletion method (folder_id=None for KB root)
+            # Call bulk deletion method (folder_id=None for KB root)
             result = await self.graph_provider.delete_records(
                 record_ids=record_ids,
                 kb_id=kb_id,
@@ -909,26 +867,13 @@ class KnowledgeBaseService:
         try:
             self.logger.info(f"🚀 Bulk deleting {len(record_ids)} records from folder {folder_id} in KB {kb_id}")
 
-            # Step 1: Validate user and permissions
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-            if not user:
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
+            user_key, user_role, err = await self._resolve_user_and_kb_access(
+                kb_id, user_id, required_roles=["OWNER", "WRITER", "FILEORGANIZER"]
+            )
+            if err:
+                return err
 
-            user_key = user.get('id') or user.get('_key')
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-
-            if user_role not in ["OWNER", "WRITER", "FILEORGANIZER"]:
-                return {
-                    "success": False,
-                    "reason": "User lacks permission to delete records",
-                    "code": 403
-                }
-
-            # Step 2: Validate folder exists in KB
+            # Validate folder exists in KB
             folder_exists = await self.graph_provider.validate_folder_exists_in_kb(kb_id, folder_id)
             if not folder_exists:
                 return {
@@ -987,22 +932,12 @@ class KnowledgeBaseService:
                     return {"success": False, "reason": f"Invalid role: {role}. Role is required for users.", "code": 400}
 
             self.logger.info(f"Looking up requester for create_kb_permissions: {requester_id}")
-            requester = await self.graph_provider.get_user_by_user_id(user_id=requester_id)
-            if not requester:
-                self.logger.warning(f"⚠️ User not found for user_id: {requester_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {requester_id}",
-                }
-            requester_key = requester.get("id") or requester.get("_key")
-            requester_role = await self.graph_provider.get_user_kb_permission(kb_id, requester_key)
-            if requester_role not in ["OWNER"]:
-                return {
-                    "success": False,
-                    "reason": "Only KB owners can grant permissions",
-                    "code": 403,
-                }
+            requester_key, _, err = await self._resolve_user_and_kb_access(
+                kb_id, requester_id, required_roles=["OWNER"],
+                permission_denied_reason="Only KB owners can grant permissions",
+            )
+            if err:
+                return err
 
             # Step 2: Single AQL query to do everything at once
             # Pass role even if only teams (it will be ignored for teams)
@@ -1042,7 +977,7 @@ class KnowledgeBaseService:
                 return {
                     "success": False,
                     "reason": "No users or teams provided for permission update",
-                    "code": "400"
+                    "code": 400
                 }
 
             # Teams don't have roles - they just have access or not
@@ -1051,29 +986,16 @@ class KnowledgeBaseService:
                 return {
                     "success": False,
                     "reason": "Teams don't have roles. Only user permissions can be updated.",
-                    "code": "400"
+                    "code": 400
                 }
 
             self.logger.info(f"Looking up requester by requester: {requester_id}")
-            requester = await self.graph_provider.get_user_by_user_id(user_id=requester_id)
-
-            if not requester:
-                self.logger.warning(f"⚠️ User not found for user_id: {requester_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {requester_id}"
-                }
-            requester_key = requester.get('id') or requester.get('_key')
-
-            # Validate requester has permission to update permissions
-            requester_role = await self.graph_provider.get_user_kb_permission(kb_id, requester_key)
-            if requester_role not in ["OWNER"]:
-                return {
-                    "success": False,
-                    "reason": "Only KB owners can update permissions",
-                    "code": "403"
-                }
+            requester_key, _, err = await self._resolve_user_and_kb_access(
+                kb_id, requester_id, required_roles=["OWNER"],
+                permission_denied_reason="Only KB owners can update permissions",
+            )
+            if err:
+                return err
 
             # Validate new role
             valid_roles = ["OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER", "COMMENTER", "READER"]
@@ -1081,7 +1003,7 @@ class KnowledgeBaseService:
                 return {
                     "success": False,
                     "reason": f"Invalid role. Must be one of: {', '.join(valid_roles)}",
-                    "code": "400"
+                    "code": 400
                 }
 
             # Get current permissions for all users and teams in a single batch query
@@ -1120,7 +1042,7 @@ class KnowledgeBaseService:
                 return {
                     "success": False,
                     "reason": "No users or teams with existing permissions found to update",
-                    "code": "404",
+                    "code": 404,
                     "skipped_users": skipped_users,
                     "skipped_teams": skipped_teams
                 }
@@ -1143,7 +1065,7 @@ class KnowledgeBaseService:
                     return {
                         "success": False,
                         "reason": "Cannot perform bulk operations on Owner permissions. Please update Owners one at a time.",
-                        "code": "400"
+                        "code": 400
                     }
 
             # Single Owner Update Validation
@@ -1155,7 +1077,7 @@ class KnowledgeBaseService:
                         return {
                             "success": False,
                             "reason": "Cannot remove all owners from the knowledge base. At least one owner must remain.",
-                            "code": "400"
+                            "code": 400
                         }
                     self.logger.info(f"⚠️ Downgrading Owner {owner_user_id} to {new_role} on KB {kb_id} (remaining owners: {total_owner_count - 1})")
                 # If new_role == "OWNER", it's a no-op (no change), which is fine
@@ -1186,7 +1108,7 @@ class KnowledgeBaseService:
                 return {
                     "success": False,
                     "reason": "Failed to update permission",
-                    "code": "500"
+                    "code": 500
                 }
 
         except Exception as e:
@@ -1194,7 +1116,7 @@ class KnowledgeBaseService:
             return {
                 "success": False,
                 "reason": str(e),
-                "code": "500"
+                "code": 500
             }
 
     async def remove_kb_permission(
@@ -1213,29 +1135,16 @@ class KnowledgeBaseService:
                 return {
                     "success": False,
                     "reason": "No users or teams provided for permission removal",
-                    "code": "400"
+                    "code": 400
                 }
 
             self.logger.info(f"Looking up requester by requester: {requester_id}")
-            requester = await self.graph_provider.get_user_by_user_id(user_id=requester_id)
-
-            if not requester:
-                self.logger.warning(f"⚠️ User not found for user_id: {requester_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {requester_id}"
-                }
-            requester_key = requester.get('id') or requester.get('_key')
-
-            # Validate requester has permission to remove permissions
-            requester_role = await self.graph_provider.get_user_kb_permission(kb_id, requester_key)
-            if requester_role not in ["OWNER"]:
-                return {
-                    "success": False,
-                    "reason": "Only KB owners can remove permissions",
-                    "code": "403"
-                }
+            requester_key, _, err = await self._resolve_user_and_kb_access(
+                kb_id, requester_id, required_roles=["OWNER"],
+                permission_denied_reason="Only KB owners can remove permissions",
+            )
+            if err:
+                return err
 
             # Get current permissions for all users and teams in a single batch query
             current_permissions = await self.graph_provider.get_kb_permissions(
@@ -1275,7 +1184,7 @@ class KnowledgeBaseService:
                 return {
                     "success": False,
                     "reason": "No users or teams with existing permissions found to remove",
-                    "code": "404",
+                    "code": 404,
                     "skipped_users": skipped_users,
                     "skipped_teams": skipped_teams
                 }
@@ -1288,7 +1197,7 @@ class KnowledgeBaseService:
                     return {
                         "success": False,
                         "reason": "Cannot remove all owners from the knowledge base. At least one owner must remain.",
-                        "code": "400",
+                        "code": 400,
                         "owner_users": owner_users_to_remove
                     }
 
@@ -1316,7 +1225,7 @@ class KnowledgeBaseService:
                 return {
                     "success": False,
                     "reason": "Failed to remove permissions",
-                    "code": "500"
+                    "code": 500
                 }
 
         except Exception as e:
@@ -1324,7 +1233,7 @@ class KnowledgeBaseService:
             return {
                 "success": False,
                 "reason": str(e),
-                "code": "500"
+                "code": 500
             }
 
 
@@ -1336,26 +1245,11 @@ class KnowledgeBaseService:
         """List all permissions for a knowledge base"""
         try:
             self.logger.info(f"🔍 Listing permissions for KB {kb_id}")
-            self.logger.info(f"Looking up requester by requester: {requester_id}")
-            requester = await self.graph_provider.get_user_by_user_id(user_id=requester_id)
-
-            if not requester:
-                self.logger.warning(f"⚠️ User not found for user_id: {requester_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {requester_id}"
-                }
-            requester_key = requester.get('id') or requester.get('_key')
-
-            # Validate requester has access to the KB
-            requester_role = await self.graph_provider.get_user_kb_permission(kb_id, requester_key)
-            if not requester_role:
-                return {
-                    "success": False,
-                    "reason": "User does not have access to this knowledge base",
-                    "code": "403"
-                }
+            requester_key, _, err = await self._resolve_user_and_kb_access(
+                kb_id, requester_id
+            )
+            if err:
+                return err
 
             # Get all permissions
             permissions = await self.graph_provider.list_kb_permissions(kb_id)
@@ -1373,7 +1267,7 @@ class KnowledgeBaseService:
             return {
                 "success": False,
                 "reason": str(e),
-                "code": "500"
+                "code": 500
             }
 
     async def list_all_records(
@@ -1489,11 +1383,13 @@ class KnowledgeBaseService:
     ) -> Dict:
         """
         List all records in a specific KB (including all folders and direct records), with filters.
+        The underlying provider filters results to only records the user has access to.
+        Service-level permission enforcement is intentionally NOT applied here — doing so
+        would change the historical API contract (empty list → 403) and break callers that
+        rely on receiving an empty result when the user has no access to a particular KB.
         """
         try:
-            self.logger.info(f"Looking up user by user_id: {user_id}")
             user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-
             if not user:
                 self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
                 return {
@@ -1582,17 +1478,9 @@ class KnowledgeBaseService:
         try:
             self.logger.info(f"🔍 Getting KB {kb_id} children with pagination (page {page}, limit {limit})")
 
-            # Validate user
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-            if not user:
-                return self._error_response(404, f"User not found: {user_id}")
-
-            user_key = user.get('id') or user.get('_key')
-
-            # Check user permissions
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-            if not user_role:
-                return self._error_response(403, "User has no permission for KnowledgeBase")
+            user_key, user_role, err = await self._resolve_user_and_kb_access(kb_id, user_id)
+            if err:
+                return err
 
             # Calculate offset
             skip = (page - 1) * limit
@@ -1690,17 +1578,9 @@ class KnowledgeBaseService:
         try:
             self.logger.info(f"🔍 Getting folder {folder_id} children with pagination (page {page}, limit {limit})")
 
-            # Validate user
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-            if not user:
-                return self._error_response(404, f"User not found: {user_id}")
-
-            user_key = user.get('id') or user.get('_key')
-
-            # Check user permissions
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-            if not user_role:
-                return self._error_response(403, "User has no permission for KnowledgeBase")
+            user_key, user_role, err = await self._resolve_user_and_kb_access(kb_id, user_id)
+            if err:
+                return err
 
             # Calculate offset
             skip = (page - 1) * limit
@@ -1800,6 +1680,15 @@ class KnowledgeBaseService:
         """Upload to specific folder"""
         return await self.graph_provider.upload_records(kb_id, user_id, org_id, files, parent_folder_id=folder_id)
 
+    async def validate_folder_for_upload(self, kb_id: str, folder_id: str, user_id: str, org_id: str) -> Dict:
+        """Validate that a folder exists and belongs to the KB before upload."""
+        return await self.graph_provider.validate_folder_for_upload(
+            kb_id=kb_id,
+            folder_id=folder_id,
+            user_id=user_id,
+            org_id=org_id,
+        )
+
     async def move_record(
         self,
         kb_id: str,
@@ -1827,20 +1716,12 @@ class KnowledgeBaseService:
             destination = "KB root" if new_parent_id is None else f"folder {new_parent_id}"
             self.logger.info(f"🚀 Moving record {record_id} → {destination} in KB {kb_id}")
 
-            # ── 1. Resolve user ──────────────────────────────────────────────
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-            if not user:
-                return {"success": False, "code": 404, "reason": f"User not found: {user_id}"}
-            user_key = user.get("id") or user.get("_key")
-
-            # ── 2. Permission check ──────────────────────────────────────────
-            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
-            if user_role not in ["OWNER", "WRITER"]:
-                return {
-                    "success": False,
-                    "code": 403,
-                    "reason": f"Insufficient permissions to move records. Role: {user_role}",
-                }
+            # ── 1. Resolve user + KB access ──────────────────────────────────
+            user_key, user_role, err = await self._resolve_user_and_kb_access(
+                kb_id, user_id, required_roles=["OWNER", "WRITER"]
+            )
+            if err:
+                return err
 
             self.logger.info(f"User role: {user_role}")
 

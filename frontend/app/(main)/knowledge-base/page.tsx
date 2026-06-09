@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useCallback, useState, useMemo, useRef, Suspense } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex } from '@radix-ui/themes';
 import { ServiceGate } from '@/app/components/ui/service-gate';
@@ -20,6 +21,7 @@ import {
   BulkDeleteConfirmationDialog,
   DeleteConfirmationDialog,
   FolderDetailsSidebar,
+  ReindexScopeDialog,
 } from './components';
 import type { UploadFileItem } from './components';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
@@ -40,6 +42,7 @@ import type {
 } from './types';
 import {
   categorizeNodes,
+  effectiveHasChildrenAfterSidebarExpand,
   mergeChildrenIntoTree,
   categorizeNode,
   buildConnectorAppSidebarTree,
@@ -64,11 +67,22 @@ import {
   buildNavUrl as buildNavUrlFn,
 } from './url-params';
 import { getIsAllRecordsMode, buildNavUrl as buildCleanNavUrl } from './utils/nav';
-import { FOLDER_REINDEX_DEPTH, SIDEBAR_PAGINATION_PAGE_SIZE } from './constants';
+import { FOLDER_REINDEX_DEPTH, REINDEX_SELF_DEPTH, SIDEBAR_PAGINATION_PAGE_SIZE } from './constants';
 import { sidebarNodeChildrenMetaFromResponse } from './utils/sidebar-child-pagination-meta';
 import { refreshKbTree } from './utils/refresh-kb-tree';
-import { getReindexSuccessTitle } from './utils/reindex-label';
+import {
+  getPrimaryReindexMenuLabelKey,
+  getReindexLoadingTitle,
+  getReindexNodeFromHubItem,
+  getReindexSuccessTitle,
+  needsReindexScopeModal,
+  requiresForceReindexConfirmation,
+  supportsBulkReindex,
+} from './utils/reindex-label';
+import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
+import type { ReindexMenuLabelKey } from './utils/reindex-label';
 import { getCollectionsHubBootstrapFromToken } from './utils/collections-hub-app';
+import { fetchAppDirectChildren } from './utils/fetch-app-direct-children';
 import {
   resolveHubNodeNotFoundNavigation,
   resolvePostDeleteNavigation,
@@ -87,6 +101,7 @@ import { useDebouncedSearch } from './hooks/use-debounced-search';
 import { ErrorType, isProcessedError } from '@/lib/api/api-error';
 
 function KnowledgeBasePageContent() {
+  const { t } = useTranslation();
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -107,7 +122,6 @@ function KnowledgeBasePageContent() {
     setCurrentFolderId,
     expandFolderExclusive,
     categorizedNodes,
-    setNodes,
     addNodes,
     setCategorizedNodes,
     cacheNodeChildren,
@@ -140,10 +154,6 @@ function KnowledgeBasePageContent() {
     setAllRecordsSearchQuery,
     setAppNodes,
     setAppRootListPagination,
-    setAppChildPagination,
-    cacheAppChildren,
-    setConnectorAppTree,
-    setAppLoading,
     setAllRecordsTableData,
     syncAllRecordsPaginationMeta,
     setIsLoadingAllRecordsTable,
@@ -429,6 +439,17 @@ function KnowledgeBasePageContent() {
   const [itemToDelete, setItemToDelete] = useState<{ id: string; name: string; nodeType?: NodeType; rootKbId?: string } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // Reindex scope dialog (indexable parent records with children)
+  const [reindexScopePending, setReindexScopePending] = useState<{
+    item: KnowledgeHubNode | AllRecordItem;
+    primaryLabelKey: ReindexMenuLabelKey;
+  } | null>(null);
+  const [forceReindexPending, setForceReindexPending] = useState<{
+    item: KnowledgeHubNode | AllRecordItem;
+    statusFilters?: string[];
+  } | null>(null);
+  const [isReindexSubmitting, setIsReindexSubmitting] = useState(false);
+
   // Bulk delete confirmation dialog state
   const [isBulkDeleteDialogOpen, setIsBulkDeleteDialogOpen] = useState(false);
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
@@ -456,6 +477,10 @@ function KnowledgeBasePageContent() {
   // Upload store actions
   const { addItems: addUploadItems, startUpload, completeUpload, failUpload, bulkUpdateItemStatus } = useUploadStore();
 
+  /**
+   * Tracks last page we fetched for so filter/sort resets (page → 1) do not trigger a
+   * duplicate fetch from the pagination effect when page actually changes (e.g. 2 → 1).
+   */
   const prevAllRecordsPageRef = useRef(allRecordsPagination.page);
   const accessToken = useAuthStore((s) => s.accessToken);
 
@@ -544,71 +569,23 @@ function KnowledgeBasePageContent() {
     setLoadingFlatCollections,
   ]);
 
-  // Fetch children for each app node (lazy loading); for the KB app, also
-  // populate nodes + categorizedNodes so the Collections sidebar tree is driven
-  // from the same data source.
+  // Collections mode: prefetch KB app children only. All Records loads per-app on expand.
   useEffect(() => {
-    if (appNodes.length === 0) return;
+    if (appNodes.length === 0 || isAllRecordsMode) return;
 
     appNodes.forEach(async (app) => {
-      // Use fresh state to avoid stale closure and prevent effect loops
       const { appChildrenCache: freshCache } = useKnowledgeBaseStore.getState();
       if (freshCache.has(app.id)) return;
 
-      // In Collections mode, only prefetch the KB app's children.
-      // Non-KB connector apps are fetched lazily when the user enters All Records mode.
-      const isKbApp = isKbCollectionsHubApp(app);
-      if (!isKbApp && !isAllRecordsMode) return;
+      if (!isKbCollectionsHubApp(app)) return;
 
-      setAppLoading(app.id, true);
       try {
-        const response = await KnowledgeHubApi.getNodeChildren('app', app.id, {
-          onlyContainers: true,
-          page: 1,
-          limit: SIDEBAR_PAGINATION_PAGE_SIZE,
-          sortBy: 'name',
-          sortOrder: 'asc',
-        });
-        cacheAppChildren(app.id, response.items);
-
-        const pag = response.pagination;
-        setAppChildPagination(
-          app.id,
-          pag
-            ? {
-                hasNext: pag.hasNext,
-                nextPage: pag.hasNext ? pag.page + 1 : pag.page,
-              }
-            : { hasNext: false, nextPage: 1 }
-        );
-
-        if (isKbApp) {
-          setNodes(response.items);
-          const categorized = categorizeNodes(response.items, `apps/${app.id}`);
-          setCategorizedNodes(categorized);
-        } else {
-          addNodes(response.items);
-          const connectorTree = buildConnectorAppSidebarTree(app.id, response.items);
-          setConnectorAppTree(app.id, connectorTree);
-        }
-      } catch (error) {
-        console.error(`Error fetching children for app ${app.name}:`, error);
-      } finally {
-        setAppLoading(app.id, false);
+        await fetchAppDirectChildren(app.id);
+      } catch {
+        // fetchAppDirectChildren logs errors
       }
     });
-  // appChildrenCache intentionally omitted — read fresh via getState() to avoid infinite loop
-  }, [
-    appNodes,
-    isAllRecordsMode,
-    setAppLoading,
-    cacheAppChildren,
-    setAppChildPagination,
-    setNodes,
-    setCategorizedNodes,
-    addNodes,
-    setConnectorAppTree,
-  ]);
+  }, [appNodes, isAllRecordsMode]);
 
   // All Records mode: Fetch table data (reusable callback)
   const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string) => {
@@ -694,23 +671,29 @@ function KnowledgeBasePageContent() {
       isFirstFilterSortFetch.current = false;
       return;
     }
+    // setAllRecordsFilter / setAllRecordsSort reset page to 1; sync ref so pagination effect
+    // does not duplicate-fetch when page changes (e.g. 2 → 1), without a skip flag that can
+    // stick when page stays 1 and the pagination effect never runs.
+    prevAllRecordsPageRef.current =
+      useKnowledgeBaseStore.getState().allRecordsPagination.page;
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [allRecordsFilter, allRecordsSort]);
 
   // All Records mode: Re-fetch when pagination page changes
   useEffect(() => {
-    if (isAllRecordsMode) {
-      if (allRecordsPagination.page === prevAllRecordsPageRef.current) return;
-      prevAllRecordsPageRef.current = allRecordsPagination.page;
-      fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
-    }
+    if (!isAllRecordsMode) return;
+    if (allRecordsPagination.page === prevAllRecordsPageRef.current) return;
+    prevAllRecordsPageRef.current = allRecordsPagination.page;
+    fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [allRecordsPagination.page]);
 
   // All Records mode: Re-fetch when pagination limit changes
   useEffect(() => {
-    if (isAllRecordsMode && allRecordsPagination.limit !== DEFAULT_PAGE_SIZE) {
-      fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
-    }
+    if (!isAllRecordsMode || allRecordsPagination.limit === DEFAULT_PAGE_SIZE) return;
+    // setAllRecordsLimit resets page to 1; keep pagination ref in sync (same as filter effect).
+    prevAllRecordsPageRef.current =
+      useKnowledgeBaseStore.getState().allRecordsPagination.page;
+    fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [allRecordsPagination.limit]);
 
   // All Records mode: Transform API response items to include source display info
@@ -824,9 +807,9 @@ function KnowledgeBasePageContent() {
                   page: 1,
                   limit: 50,
                 });
-                const kbFoldersCount =
-                  kbChildren.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;
-                const kbEffectiveHasChildFolders = kbFoldersCount > 0;
+                const kbEffectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(
+                  kbChildren.items,
+                );
 
                 cacheNodeChildren(kbBreadcrumb.id, kbChildren.items);
                 addNodes(kbChildren.items);
@@ -871,9 +854,9 @@ function KnowledgeBasePageContent() {
                     breadcrumb.id,
                     { onlyContainers: true, page: 1, limit: 50 }
                   );
-                  const foldersCount =
-                    folderChildren.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;
-                  const effectiveHasChildFolders = foldersCount > 0;
+                  const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(
+                    folderChildren.items,
+                  );
 
                   cacheNodeChildren(breadcrumb.id, folderChildren.items);
                   addNodes(folderChildren.items);
@@ -1053,7 +1036,9 @@ function KnowledgeBasePageContent() {
       hasSearchedAllRecords.current = true;
     }
 
-    // Pass parent context to ensure scoped search when inside a parent node
+    // setAllRecordsSearchQuery resets page to 1; keep pagination ref in sync (same as filter effect).
+    prevAllRecordsPageRef.current =
+      useKnowledgeBaseStore.getState().allRecordsPagination.page;
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [debouncedAllRecordsSearchQuery, isAllRecordsMode]);
 
@@ -1061,27 +1046,6 @@ function KnowledgeBasePageContent() {
   useEffect(() => {
     setCurrentViewMode(pageViewMode);
   }, [pageViewMode, setCurrentViewMode]);
-
-  // Bridge: consume pending sidebar actions (reindex/delete/create-collection) and open corresponding dialogs
-  useEffect(() => {
-    if (!pendingSidebarAction) return;
-    if (pendingSidebarAction.type === 'create-collection') {
-      setCreateFolderContext({ type: 'collection' });
-      setIsCreateFolderDialogOpen(true);
-    } else {
-      const { type, nodeId, nodeName, nodeType, rootKbId, statusFilters } = pendingSidebarAction;
-      if (type === 'reindex') {
-        handleReindexClick(
-          { id: nodeId, name: nodeName, nodeType } as KnowledgeHubNode,
-          statusFilters
-        );
-      } else if (type === 'delete') {
-        setItemToDelete({ id: nodeId, name: nodeName, nodeType, rootKbId });
-        setIsDeleteDialogOpen(true);
-      }
-    }
-    clearPendingSidebarAction();
-  }, [pendingSidebarAction, clearPendingSidebarAction]);
 
   // Clear search when switching between Collections and All Records modes
   // Skip initial mount to avoid clearing URL-hydrated search/pagination values
@@ -1170,6 +1134,8 @@ function KnowledgeBasePageContent() {
     setIsSearchOpen(false);
     if (isAllRecordsMode) {
       setAllRecordsSearchQuery('');
+      prevAllRecordsPageRef.current =
+        useKnowledgeBaseStore.getState().allRecordsPagination.page;
       // Immediate refetch when clearing search (bypasses debounce).
       // Preserve drill-down: fetchAllRecordsTableData() with no args loads the global root only.
       const nt = searchParams.get('nodeType');
@@ -1225,9 +1191,7 @@ function KnowledgeBasePageContent() {
         sortOrder: 'asc',
       });
 
-      const foldersCount =
-        response.counts?.items?.find((x) => x.label === 'folders')?.count ?? response.items.length;
-      const effectiveHasChildFolders = foldersCount > 0;
+      const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(response.items);
       const state = useKnowledgeBaseStore.getState();
       const selectedApp = nodeType === 'app' ? state.appNodes.find((app) => app.id === nodeId) : null;
 
@@ -2098,61 +2062,174 @@ function KnowledgeBasePageContent() {
     [router, isAllRecordsMode, setIsSearchOpen]
   );
 
-  // Handle reindex - directly reindexes the item with loading/success/error toasts
-  const handleReindexClick = useCallback(async (
-    item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem,
-    statusFilters?: string[]
-  ) => {
-
-    const toastId = toast.loading('Re-indexing...', {
-      icon: 'lap_timer',
-    });
-
-    try {
-      const nodeType = (item as KnowledgeHubNode).nodeType;
-
-      if (nodeType === 'recordGroup') {
-        // RecordGroups are connector-app folders — use record-group endpoint
-        await KnowledgeBaseApi.reindexRecordGroup(item.id, statusFilters);
-      } else if (nodeType === 'folder') {
-        // KB folders — reindex all children
-        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH, statusFilters);
-      } else {
-        // Regular records — include children in reindex
-        await KnowledgeBaseApi.reindexItem(item.id, FOLDER_REINDEX_DEPTH, statusFilters);
-      }
-
-      toast.update(toastId, {
-        variant: 'success',
-        title: getReindexSuccessTitle({
-          nodeType,
-          indexingStatus: (item as KnowledgeHubNode).indexingStatus,
-        }),
+  const executeReindex = useCallback(
+    async (
+      item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem,
+      depth: number,
+      statusFilters?: string[],
+    ) => {
+      const hubItem = item as KnowledgeHubNode;
+      const reindexNode = getReindexNodeFromHubItem({
+        nodeType: hubItem.nodeType,
+        indexingStatus: hubItem.indexingStatus,
+        hasChildren: hubItem.hasChildren,
       });
 
-      await refreshData();
-    } catch (error: unknown) {
-      // Extract error message from ProcessedError or fallback to generic message
-      let errorMessage = 'Failed to start reindexing';
+      const toastId = toast.loading(getReindexLoadingTitle(reindexNode, depth, statusFilters), {
+        icon: 'lap_timer',
+      });
 
-      if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
-        errorMessage = error.message;
-      }
+      try {
+        if (hubItem.nodeType === 'recordGroup') {
+          await KnowledgeBaseApi.reindexRecordGroup(item.id, depth, statusFilters);
+        } else {
+          await KnowledgeBaseApi.reindexItem(item.id, depth, statusFilters);
+        }
 
-      toast.update(toastId, {
-        variant: 'error',
-        title: errorMessage,
-        action: {
-          label: 'Try Again',
-          icon: 'refresh',
-          onClick: () => {
-            toast.dismiss(toastId);
-            handleReindexClick(item, statusFilters);
+        toast.update(toastId, {
+          variant: 'success',
+          title: getReindexSuccessTitle(reindexNode, depth, statusFilters),
+        });
+
+        await refreshData();
+      } catch (error: unknown) {
+        let errorMessage = 'Failed to start reindexing';
+
+        if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
+          errorMessage = error.message;
+        }
+
+        toast.update(toastId, {
+          variant: 'error',
+          title: errorMessage,
+          action: {
+            label: 'Try Again',
+            icon: 'refresh',
+            onClick: () => {
+              toast.dismiss(toastId);
+              void executeReindex(item, depth, statusFilters);
+            },
           },
-        },
+        });
+      }
+    },
+    [refreshData],
+  );
+
+  const proceedWithReindex = useCallback(
+    async (
+      item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem,
+      statusFilters?: string[],
+    ) => {
+      const hubItem = item as KnowledgeHubNode;
+      const reindexNode = getReindexNodeFromHubItem({
+        nodeType: hubItem.nodeType,
+        indexingStatus: hubItem.indexingStatus,
+        hasChildren: hubItem.hasChildren,
       });
+
+      if (statusFilters?.length) {
+        await executeReindex(item, FOLDER_REINDEX_DEPTH, statusFilters);
+        return;
+      }
+
+      if (needsReindexScopeModal(reindexNode)) {
+        setReindexScopePending({
+          item: hubItem,
+          primaryLabelKey: getPrimaryReindexMenuLabelKey(reindexNode),
+        });
+        return;
+      }
+
+      const depth = supportsBulkReindex(reindexNode) ? FOLDER_REINDEX_DEPTH : REINDEX_SELF_DEPTH;
+      await executeReindex(item, depth);
+    },
+    [executeReindex],
+  );
+
+  const handleReindexClick = useCallback(
+    async (
+      item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem,
+      statusFilters?: string[],
+    ) => {
+      const hubItem = item as KnowledgeHubNode;
+      const reindexNode = getReindexNodeFromHubItem({
+        nodeType: hubItem.nodeType,
+        indexingStatus: hubItem.indexingStatus,
+        hasChildren: hubItem.hasChildren,
+      });
+
+      if (requiresForceReindexConfirmation(reindexNode, statusFilters)) {
+        setForceReindexPending({ item: hubItem, statusFilters });
+        return;
+      }
+
+      await proceedWithReindex(item, statusFilters);
+    },
+    [proceedWithReindex],
+  );
+
+  // Bridge: consume pending sidebar actions (reindex/delete/create-collection) and open corresponding dialogs
+  useEffect(() => {
+    if (!pendingSidebarAction) return;
+    if (pendingSidebarAction.type === 'create-collection') {
+      setCreateFolderContext({ type: 'collection' });
+      setIsCreateFolderDialogOpen(true);
+    } else {
+      const {
+        type,
+        nodeId,
+        nodeName,
+        nodeType,
+        rootKbId,
+        statusFilters,
+        indexingStatus,
+        hasChildren,
+      } = pendingSidebarAction;
+      if (type === 'reindex') {
+        void handleReindexClick(
+          {
+            id: nodeId,
+            name: nodeName,
+            nodeType,
+            indexingStatus,
+            hasChildren,
+          } as KnowledgeHubNode,
+          statusFilters,
+        );
+      } else if (type === 'delete') {
+        setItemToDelete({ id: nodeId, name: nodeName, nodeType, rootKbId });
+        setIsDeleteDialogOpen(true);
+      }
     }
-  }, [refreshData]);
+    clearPendingSidebarAction();
+  }, [pendingSidebarAction, clearPendingSidebarAction, handleReindexClick]);
+
+  const handleForceReindexConfirm = useCallback(async () => {
+    if (!forceReindexPending) return;
+    const pending = forceReindexPending;
+    setIsReindexSubmitting(true);
+    try {
+      await proceedWithReindex(pending.item, pending.statusFilters);
+    } finally {
+      setIsReindexSubmitting(false);
+      setForceReindexPending(null);
+    }
+  }, [forceReindexPending, proceedWithReindex]);
+
+  const handleReindexScopeConfirm = useCallback(
+    async (depth: number) => {
+      if (!reindexScopePending) return;
+      setIsReindexSubmitting(true);
+      try {
+        await executeReindex(reindexScopePending.item, depth);
+        setReindexScopePending(null);
+      } finally {
+        setIsReindexSubmitting(false);
+      }
+    },
+    [reindexScopePending, executeReindex],
+  );
 
   // Bridge: consume pending sidebar actions (reindex/delete/create-collection) and open corresponding dialogs
   useEffect(() => {
@@ -2567,8 +2644,37 @@ function KnowledgeBasePageContent() {
         } */}
       </Flex>
 
-      {/* Collections mode only dialogs */}
-      {/* Delete Confirmation Dialog (sidebar) */}
+      {/* Force reindex confirmation (table, grid, and sidebar) */}
+      <ConfirmationDialog
+        open={forceReindexPending !== null}
+        onOpenChange={(open) => {
+          if (!open && !isReindexSubmitting) setForceReindexPending(null);
+        }}
+        title={t('forceReindexConfirm.title', { defaultValue: 'Start force reindex?' })}
+        message={t('forceReindexConfirm.message', {
+          defaultValue:
+            'This re-indexes the document from scratch and may incur extra cost. Use this when search results are stale, or the document is not searchable even after indexing is complete.',
+        })}
+        confirmLabel={t('forceReindexConfirm.confirm', { defaultValue: 'Confirm' })}
+        cancelLabel={t('common.cancel', { defaultValue: 'Cancel' })}
+        confirmVariant="primary"
+        isLoading={isReindexSubmitting}
+        onConfirm={() => void handleForceReindexConfirm()}
+      />
+
+      {reindexScopePending && (
+        <ReindexScopeDialog
+          open
+          onOpenChange={(open) => {
+            if (!open && !isReindexSubmitting) setReindexScopePending(null);
+          }}
+          itemName={reindexScopePending.item.name}
+          primaryLabelKey={reindexScopePending.primaryLabelKey}
+          onConfirm={handleReindexScopeConfirm}
+          isSubmitting={isReindexSubmitting}
+        />
+      )}
+
       {itemToDelete && (
         <DeleteConfirmationDialog
           open={isDeleteDialogOpen}

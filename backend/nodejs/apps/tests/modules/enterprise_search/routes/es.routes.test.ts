@@ -376,6 +376,19 @@ describe('Enterprise Search Routes', () => {
     ).to.exist
   })
 
+  it('should register validation middleware on the agent delete conversation route', () => {
+    const router = createAgentConversationalRouter(container)
+    const layer = router.stack.find(
+      (l: any) =>
+        l.route &&
+        l.route.path === '/:agentKey/conversations/:conversationId' &&
+        l.route.methods.delete,
+    )
+
+    expect(layer).to.exist
+    expect(layer.route.stack.length).to.equal(5)
+  })
+
   it('should register internal agent stream route', () => {
     const router = createAgentConversationalRouter(container)
     const routes = router.stack

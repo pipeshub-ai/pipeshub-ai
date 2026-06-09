@@ -144,13 +144,13 @@ class TestGetKnowledgeBase:
         kb_service.graph_provider.get_user_kb_permission = AsyncMock(return_value=None)
         result = await kb_service.get_knowledge_base(kb_id="kb-1", user_id="user-1")
         assert result["success"] is False
-        assert result["code"] == "403"
+        assert result["code"] == 403
 
     async def test_kb_not_found(self, kb_service):
         kb_service.graph_provider.get_knowledge_base = AsyncMock(return_value=None)
         result = await kb_service.get_knowledge_base(kb_id="missing", user_id="user-1")
         assert result["success"] is False
-        assert result["code"] == "404"
+        assert result["code"] == 404
 
     async def test_exception_handled(self, kb_service):
         kb_service.graph_provider.get_user_by_user_id = AsyncMock(
@@ -158,7 +158,7 @@ class TestGetKnowledgeBase:
         )
         result = await kb_service.get_knowledge_base(kb_id="kb-1", user_id="user-1")
         assert result["success"] is False
-        assert result["code"] == "500"
+        assert result["code"] == 500
 
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,16 @@ export function shouldHideIndexingStatusForHubRecord(item: KbTableItem): boolean
 }
 
 /**
+ * Row ⋮ menu Download: collection file records only (not connector-sourced records).
+ */
+export function shouldShowDownloadForTableItem(item: KbTableItem): boolean {
+  if (!isKnowledgeHubTableItem(item)) {
+    return item.type === 'file';
+  }
+  return item.nodeType === 'record' && item.origin === 'COLLECTION';
+}
+
+/**
  * Row ⋮ menu "Open": open preview for Hub/legacy file records when `onPreview` exists;
  * otherwise use the same handler as primary row click (navigate into containers, etc.).
  */

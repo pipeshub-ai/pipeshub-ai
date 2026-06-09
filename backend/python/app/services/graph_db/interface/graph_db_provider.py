@@ -1053,7 +1053,7 @@ class IGraphDBProvider(ABC):
         self, record_ids: list[str]
     ) -> None:
         """
-        Set indexingStatus to QUEUED for each id (deduplicated) if not already QUEUED or EMPTY.
+        Set indexingStatus to QUEUED for each id (deduplicated) if not already QUEUED.
         Skips records with isInternal true. Non-string ids are ignored. Pass a one-element list
         for a single record. Used before reindex (API and batched sync). Skips missing records;
         logs errors without raising.
@@ -1542,6 +1542,11 @@ class IGraphDBProvider(ABC):
             Dict with success, container, folders, records, totalCount, counts,
             availableFilters, paginationMode; or { success: False, reason: str }.
         """
+        pass
+
+    @abstractmethod
+    async def kb_exists(self, kb_id: str) -> bool:
+        """Return True if a KB document with this id exists, regardless of permissions."""
         pass
 
     @abstractmethod
@@ -4132,5 +4137,30 @@ class IGraphDBProvider(ABC):
         Returns:
             List of dicts with ``{name, _key, creatorName}`` for each matching
             agent.  Returns an empty list when no agents match.
+        """
+        pass
+
+    @abstractmethod
+    async def validate_folder_for_upload(
+        self,
+        kb_id: str,
+        folder_id: str,
+        user_id: str,
+        org_id: str,
+    ) -> dict:
+        """
+        Validate that a folder exists and belongs to the KB, and that the user
+        has write access, before accepting an upload request.
+
+        Args:
+            kb_id:     Knowledge base ID.
+            folder_id: Folder ID to validate.
+            user_id:   Requesting user's external ID.
+            org_id:    Organization ID.
+
+        Returns:
+            Dict with ``valid: True`` and context on success, or
+            ``valid: False, success: False, code: <4xx|5xx>, reason: <str>``
+            on failure.
         """
         pass

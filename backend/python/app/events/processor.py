@@ -44,7 +44,7 @@ from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import is_multimodal_llm
-from app.utils.llm import get_embedding_model_config, get_llm
+from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -146,7 +146,7 @@ class Processor:
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
 
-            _ , config = await get_llm(self.config_service)
+            _ , config = await get_llm_for_role(self.config_service, "indexing")
             is_multimodal_llm = config.get("isMultimodal")
 
             embedding_config = await get_embedding_model_config(self.config_service)
@@ -1388,7 +1388,7 @@ class Processor:
 
         try:
             self.logger.debug("📊 Processing Excel content")
-            llm, _ = await get_llm(self.config_service)
+            llm, _ = await get_llm_for_role(self.config_service, "indexing")
             parser = self.parsers[ExtensionTypes.XLSX.value]
             if not excel_binary:
                 self.logger.info(f"No Excel binary found for record: {recordName}")
@@ -1478,7 +1478,7 @@ class Processor:
             else:
                 parser = self.parsers[extension]
 
-            llm, _ = await get_llm(self.config_service)
+            llm, _ = await get_llm_for_role(self.config_service, "indexing")
 
             # Try different encodings to decode binary data
             encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]

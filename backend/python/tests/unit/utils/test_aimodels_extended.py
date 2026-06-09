@@ -95,12 +95,10 @@ class TestGetEmbeddingModelExtended:
             },
             "isDefault": True,
         }
-        with patch("langchain_community.embeddings.HuggingFaceEmbeddings") as mock_hf:
-            mock_hf.return_value = MagicMock()
-            result = get_embedding_model(EmbeddingProvider.HUGGING_FACE.value, config)
-            mock_hf.assert_called_once()
-            call_kwargs = mock_hf.call_args
-            assert "api_key" in call_kwargs.kwargs.get("model_kwargs", {})
+        with patch("app.utils.aimodels.get_embedding_server_embeddings") as mock_fn:
+            mock_fn.return_value = MagicMock()
+            get_embedding_model(EmbeddingProvider.HUGGING_FACE.value, config)
+            mock_fn.assert_called_once_with("sentence-transformers/all-MiniLM-L6-v2", trust_remote_code=False)
 
     def test_hugging_face_without_api_key(self):
         config = {
@@ -110,10 +108,10 @@ class TestGetEmbeddingModelExtended:
             },
             "isDefault": True,
         }
-        with patch("langchain_community.embeddings.HuggingFaceEmbeddings") as mock_hf:
-            mock_hf.return_value = MagicMock()
-            result = get_embedding_model(EmbeddingProvider.HUGGING_FACE.value, config)
-            mock_hf.assert_called_once()
+        with patch("app.utils.aimodels.get_embedding_server_embeddings") as mock_fn:
+            mock_fn.return_value = MagicMock()
+            get_embedding_model(EmbeddingProvider.HUGGING_FACE.value, config)
+            mock_fn.assert_called_once_with("sentence-transformers/all-MiniLM-L6-v2", trust_remote_code=False)
 
     def test_hugging_face_normalize_defaults(self):
         config = {
@@ -122,11 +120,26 @@ class TestGetEmbeddingModelExtended:
             },
             "isDefault": True,
         }
-        with patch("langchain_community.embeddings.HuggingFaceEmbeddings") as mock_hf:
-            mock_hf.return_value = MagicMock()
-            result = get_embedding_model(EmbeddingProvider.HUGGING_FACE.value, config)
-            call_kwargs = mock_hf.call_args
-            assert call_kwargs.kwargs.get("encode_kwargs", {}).get("normalize_embeddings") is True
+        with patch("app.utils.aimodels.get_embedding_server_embeddings") as mock_fn:
+            mock_fn.return_value = MagicMock()
+            get_embedding_model(EmbeddingProvider.HUGGING_FACE.value, config)
+            mock_fn.assert_called_once_with("sentence-transformers/all-MiniLM-L6-v2", trust_remote_code=False)
+
+    def test_hugging_face_trust_remote_code(self):
+        config = {
+            "configuration": {
+                "model": "nomic-ai/nomic-embed-text-v2-moe",
+                "trustRemoteCode": True,
+            },
+            "isDefault": True,
+        }
+        with patch("app.utils.aimodels.get_embedding_server_embeddings") as mock_fn:
+            mock_fn.return_value = MagicMock()
+            get_embedding_model(EmbeddingProvider.HUGGING_FACE.value, config)
+            mock_fn.assert_called_once_with(
+                "nomic-ai/nomic-embed-text-v2-moe",
+                trust_remote_code=True,
+            )
 
 
 # ============================================================================

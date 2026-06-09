@@ -58,6 +58,8 @@
     "embeddingDefaultNotInRegistry": "Für diese Bereitstellung ist kein systemseitiges Standard-Embedding verfügbar.",
     "failedToLoadEmbeddingProviders": "Embedding-Anbieter konnten nicht geladen werden.",
     "failedToLoadConfiguredModels": "Konfigurierte Modelle konnten nicht geladen werden.",
+    "toastModelAddedAi": "{{name}} wurde erfolgreich als KI-Modell hinzugefügt.",
+    "toastModelAddedEmbedding": "{{name}} wurde erfolgreich als Embedding-Modell hinzugefügt.",
     "nextDisabledEmbeddingHintNoRegistryDefault": "Fügen Sie unten einen Embedding-Anbieter hinzu, um fortzufahren",
     "steps": {
       "aiModel": {
@@ -370,8 +372,17 @@
     "reindexAll": "Alle neu indizieren",
     "reindexFailed": "Fehlgeschlagene neu indizieren",
     "reindexManual": "Manuelle neu indizieren",
+    "startIndexing": "Indizierung starten",
+    "startManualIndex": "Manuelle Indizierung starten",
+    "forceReindexing": "Reindex erzwingen",
+    "retryIndexing": "Indizierung wiederholen",
     "rename": "Umbenennen",
     "delete": "Löschen"
+  },
+  "forceReindexConfirm": {
+    "title": "Erzwungene Neuindizierung starten?",
+    "message": "Das Dokument wird von Grund auf neu indiziert; dies kann zusätzliche Kosten verursachen. Verwenden Sie dies, wenn Suchergebnisse veraltet sind oder das Dokument nach abgeschlossener Indizierung nicht durchsuchbar ist.",
+    "confirm": "Bestätigen"
   },
   "kb": {
     "viewToggle": "Ansicht wechseln",
@@ -1122,6 +1133,28 @@
       "actionSetDefault": "Als Standard setzen",
       "actionDelete": "Löschen",
       "moreOptions": "Weitere Optionen",
+      "roles": {
+        "sectionTitle": "Modell-Rollenzuweisungen",
+        "sectionDescription": "Weisen Sie bestimmten Aufgaben dedizierte Modelle zu. Wenn keine Zuweisung erfolgt, wird das Standardmodell verwendet.",
+        "onboardingTitle": "Wie werden Ihre Modelle eingesetzt?",
+        "onboardingTip": "Verwenden Sie ein kleines, kostengünstiges Modell (z. B. gpt-5.4-mini, gemini-2.5-flash) für Indizierungsaufgaben wie Zusammenfassung und Klassifizierung. Behalten Sie Ihr leistungsstärkstes Modell (z. B. gpt-5.5, claude-sonnet) für Abfragen und Agenten, wo Reasoning-Qualität am meisten zählt.",
+        "queryRole": "Abfrage & Chat",
+        "queryRoleSubtitle": "Suche, Agenten & Konversationen",
+        "queryRoleDescription": "Beantwortet Suchanfragen, Fragen und KI-Agentenantworten. Verwenden Sie hier Ihr leistungsfähigstes Modell.",
+        "queryRoleDefault": "Standardmodell",
+        "defaultBadge": "Standard",
+        "indexingRole": "Indizierungsmodell",
+        "indexingRoleSubtitle": "Dokumentenverarbeitung",
+        "indexingRoleDescription": "Modell für Dokumentzusammenfassung, Klassifizierung und Datenextraktion während der Indizierung. Ein kleineres, kostengünstigeres Modell reduziert Kosten.",
+        "indexingRoleAssigned": "Verwende {{model}} für die Indizierung",
+        "indexingRoleFallback": "Nicht gesetzt – fällt auf Ihr Abfragemodell zurück.",
+        "requiredHint": "Bitte wählen Sie das Verhalten des Indizierungsmodells, um fortzufahren.",
+        "useDefaultModel": "Wie Abfragemodell",
+        "selectModel": "Modell auswählen",
+        "noModelsConfigured": "Noch keine LLM-Modelle konfiguriert. Fügen Sie oben ein Modell hinzu, um Rollen zuzuweisen.",
+        "toastSaved": "Modell-Rollenzuweisung gespeichert",
+        "toastSaveError": "Fehler beim Speichern der Modell-Rollenzuweisung"
+      },
       "capabilities": {
         "text_generation": {
           "label": "LLM",
@@ -1202,7 +1235,7 @@
         "developerSettings": "Entwicklereinstellungen",
         "oauth2": "OAuth 2.0 Apps",
         "profile": "Profil",
-        "yourConnectors": "Ihre Konnektoren",
+        "yourConnectors": "Ihre persönlichen Konnektoren",
         "yourActions": "Ihre Aktionen",
         "archivedChats": "Archivierte Chats",
         "users": "Benutzer",
@@ -1517,6 +1550,8 @@
       "emptyState": "Keine Konnektoren gefunden",
       "noInstances": "Noch keine Instanzen konfiguriert",
       "addInstance": "Weitere Instanz hinzufügen",
+      "refreshAllInstances": "Alle aktualisieren",
+      "refreshInstance": "Instanzdetails aktualisieren",
       "saveConfig": "Konfiguration speichern",
       "continueToConfiguration": "Weiter zur Konfiguration →",
       "oauthSigningIn": "Schließen Sie die Anmeldung bei Ihrem Anbieter ab…",
@@ -1532,6 +1567,7 @@
         "syncStartedDescription": "Ihre Datensätze sind in Kürze verfügbar.",
         "syncStartedLongDescription": "Dies kann einige Minuten dauern. Sie werden benachrichtigt, sobald es abgeschlossen ist.",
         "syncError": "Synchronisierung konnte nicht gestartet werden",
+        "refreshInstancesError": "Konnektor-Instanzen konnten nicht aktualisiert werden",
         "configLoadError": "Konnektor-Konfiguration konnte nicht geladen werden",
         "createError": "Konnektor konnte nicht erstellt werden",
         "createSuccess": "Konnektor-Instanz „{{name}}“ wurde erfolgreich erstellt",
@@ -1568,6 +1604,11 @@
         "wideSyncMessage": "Dieser Vorgang kann eine große Anzahl von Datensätzen synchronisieren. Möchten Sie die Synchronisation wirklich starten? Erwägen Sie Filter unter „Filter“, um die Datenmenge zu reduzieren.",
         "confirm": "Bestätigen",
         "cancel": "Abbrechen"
+      },
+      "fullSyncConfirm": {
+        "title": "Vollständige Synchronisation starten?",
+        "message": "Überschreibt und synchronisiert alle Daten von Grund auf neu; langsamer als die normale Synchronisation. Verwenden Sie die vollständige Synchronisation, wenn Inhalte fehlen, doppelt vorhanden sind oder nicht mit der Quelle übereinstimmen. Für routinemäßige Updates nutzen Sie stattdessen Synchronisieren.",
+        "confirm": "Bestätigen"
       },
       "disableFirstDialog": {
         "title": "Connector ist derzeit aktiviert",
@@ -1714,6 +1755,27 @@
         "syncStrategy": "Synchronisierungsstrategie",
         "authBannerTitle": "Persönliches Konto authentifizieren",
         "authBannerDescription": "Verbinden Sie Ihr Konto, um Zugriff und Arbeitsbereichskonfiguration zu aktivieren"
+      },
+      "instanceStatus": {
+        "setup": {
+          "kind": "Setup",
+          "rowLabel": "Konfiguration",
+          "notConfigured": "Unvollständig",
+          "notConfiguredTooltip": "Die Konfiguration ist nicht abgeschlossen. Öffnen Sie das Setup, um Sync- und Filtereinstellungen zu vervollständigen.",
+          "needsAuth": "Auth nötig",
+          "needsAuthTooltip": "Die Konfiguration ist gespeichert, aber diese Instanz muss noch authentifiziert werden.",
+          "ready": "Abgeschlossen",
+          "readyTooltip": "Konfiguration ist abgeschlossen und authentifiziert. Sync kann bei Aktivierung laufen."
+        },
+        "sync": {
+          "kind": "Sync",
+          "syncing": "Synchronisiert",
+          "syncingTooltip": "Ein Sync-Job läuft für diese Instanz.",
+          "fullSyncing": "Vollsync",
+          "fullSyncingTooltip": "Ein vollständiger Sync läuft für diese Instanz.",
+          "removing": "Entfernen",
+          "removingTooltip": "Diese Instanz wird gelöscht."
+        }
       },
       "schemaForm": {
         "tagsPlaceholder": "Tippen und Enter drücken, um Tags hinzuzufügen",
@@ -2392,7 +2454,7 @@
     "openFullscreen": "Vollbild öffnen",
     "exitFullscreen": "Vollbild beenden",
     "close": "Schließen",
-    "forceReindex": "Neu indizieren",
+    "forceReindex": "Reindex erzwingen",
     "retryIndexing": "Indizierung wiederholen",
     "startIndexing": "Indizierung starten",
     "resumeIndexing": "Indizierung fortsetzen",

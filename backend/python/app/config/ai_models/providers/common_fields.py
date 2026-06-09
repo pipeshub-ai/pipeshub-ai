@@ -119,6 +119,19 @@ DIMENSIONS = AIModelField(
     validation={"minLength": 1, "maxLength": 65536},
 )
 
+TRUST_REMOTE_CODE = AIModelField(
+    name="trustRemoteCode",
+    display_name="Trust Remote Code",
+    field_type="BOOLEAN",
+    required=False,
+    default_value=False,
+    description=(
+        "Allow loading custom model code from HuggingFace Hub "
+        "(required for models like nomic-ai/nomic-embed-text-v2-moe). "
+        "Only enable for models you trust."
+    ),
+)
+
 # ---------------------------------------------------------------------------
 # AWS Bedrock fields
 # ---------------------------------------------------------------------------

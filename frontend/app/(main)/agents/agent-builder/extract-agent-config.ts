@@ -350,8 +350,7 @@ export function extractAgentConfigFromFlow(
     tools: ts.tools,
   }));
 
-  const knowledge: KnowledgeReference[] = knowledgeInternal.map((k, index) => ({
-    id: k.connectorId || `knowledge-${index}`,
+  const knowledge: KnowledgeReference[] = knowledgeInternal.map((k) => ({
     connectorId: k.connectorId,
     filters: k.filters,
   }));

@@ -32,9 +32,7 @@ export function AdminAccessRequiredDialog({
 
   const appGroup = connector?.appGroup ?? connector?.name ?? '';
   const connectorName = connector?.name ?? '';
-  const personalConnectorType = connector
-    ? getPersonalConnectorRedirectType(connector)
-    : undefined;
+  const personalConnectorType = getPersonalConnectorRedirectType(connector);
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {

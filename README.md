@@ -31,8 +31,11 @@
   </a>
   <br/>
   <a href="https://x.com/PipesHub"><img src="https://img.shields.io/twitter/follow/PipesHub?style=social" alt="Twitter"></a>
+  <a href="https://www.linkedin.com/company/pipeshub"><img src="https://img.shields.io/badge/LinkedIn-PipesHub-blue?logo=linkedin&amp;logoColor=white" alt="LinkedIn"></a>
   
 </p>
+
+**Translations:** [Français](docs/i18n/fr/README.md) · [Deutsch](docs/i18n/de/README.md) · [简体中文](docs/i18n/zh-CN/README.md) · [日本語](docs/i18n/ja/README.md) · [Русский](docs/i18n/ru/README.md) · [עברית](docs/i18n/he/README.md) · [한국어](docs/i18n/ko/README.md) · [Español](docs/i18n/es/README.md) · [Português](docs/i18n/pt/README.md) · [Türkçe](docs/i18n/tr/README.md) · [Tiếng Việt](docs/i18n/vi/README.md) · [Italiano](docs/i18n/it/README.md)
 
 </div>
 

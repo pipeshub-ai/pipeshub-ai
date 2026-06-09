@@ -18,6 +18,27 @@ trap cleanup SIGTERM SIGINT SIGQUIT
 
 log "Starting development environment..."
 
+log "Starting Embedding service..."
+cd /app/python
+EMBEDDING_PORT="${EMBEDDING_SERVER_PORT:-8002}"
+python -m app.embedding_main &
+EMBEDDING_PID=$!
+
+log "Waiting for Embedding service health check..."
+EMBEDDING_RETRIES=0
+EMBEDDING_MAX_RETRIES=120
+while [ "$EMBEDDING_RETRIES" -lt "$EMBEDDING_MAX_RETRIES" ]; do
+    if curl -s -f "http://localhost:${EMBEDDING_PORT}/health" > /dev/null 2>&1; then
+        log "Embedding service health check passed!"
+        break
+    fi
+    EMBEDDING_RETRIES=$((EMBEDDING_RETRIES + 1))
+    sleep 2
+done
+if [ "$EMBEDDING_RETRIES" -eq "$EMBEDDING_MAX_RETRIES" ]; then
+    log "WARNING: Embedding service health check timed out; continuing startup"
+fi
+
 log "Starting Python services..."
 cd /app/python
 watchmedo auto-restart --recursive --pattern="*.py" --directory="." -- python -m app.connectors_main &

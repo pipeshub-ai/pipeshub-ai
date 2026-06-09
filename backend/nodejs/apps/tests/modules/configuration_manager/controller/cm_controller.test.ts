@@ -5,6 +5,7 @@ import * as cmConfig from '../../../../src/modules/configuration_manager/config/
 import * as encryptorModule from '../../../../src/libs/encryptor/encryptor'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import * as generateAuthTokenModule from '../../../../src/modules/auth/utils/generateAuthToken'
+import * as s3HealthCheckModule from '../../../../src/modules/storage/utils/s3-health-check.util'
 import {
   createStorageConfig,
   getStorageConfig,
@@ -39,6 +40,7 @@ import {
   setMetricsCollectionRemoteServer,
   getAIModelsConfig,
   getAIModelsProviders,
+  getWebSearchProviders,
   getModelsByType,
   getAvailableModelsByType,
   deleteAIModelProvider,
@@ -175,6 +177,21 @@ describe('ConfigurationManager Controller', () => {
   // Storage Config
   // -----------------------------------------------------------------------
   describe('createStorageConfig', () => {
+    let validateS3Stub: sinon.SinonStub
+
+    beforeEach(() => {
+      validateS3Stub = sinon.stub(s3HealthCheckModule, 'validateS3Capabilities').resolves({
+        success: true,
+        checks: [
+          { capability: 'bucketAccess', passed: true },
+          { capability: 'upload', passed: true },
+          { capability: 'read', passed: true },
+          { capability: 'signedUrlGet', passed: true },
+          { capability: 'signedUrlPut', passed: true },
+        ],
+      })
+    })
+
     it('should return a handler function', () => {
       const kvs = createMockKeyValueStore()
       const handler = createStorageConfig(kvs, { endpoint: 'http://localhost:3003' } as any)
@@ -199,6 +216,7 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(kvs.set.calledOnce).to.be.true
+      expect(validateS3Stub.calledOnce).to.be.true
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.calledOnce).to.be.true
       expect(next.called).to.be.false
@@ -262,6 +280,36 @@ describe('ConfigurationManager Controller', () => {
       expect(res.status.calledWith(200)).to.be.true
     })
 
+    it('should reject S3 config when health check fails', async () => {
+      validateS3Stub.resolves({
+        success: false,
+        checks: [
+          { capability: 'bucketAccess', passed: true },
+          { capability: 'upload', passed: false, error: 'AccessDenied' },
+        ],
+      })
+
+      const kvs = createMockKeyValueStore()
+      const handler = createStorageConfig(kvs, { endpoint: 'http://localhost:3003' } as any)
+      const req = createMockRequest({
+        body: {
+          storageType: 's3',
+          s3AccessKeyId: 'AKIA...',
+          s3SecretAccessKey: 'secret',
+          s3Region: 'us-east-1',
+          s3BucketName: 'my-bucket',
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(kvs.set.called).to.be.false
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.include('S3 health check failed')
+    })
+
     it('should call next with BadRequestError for unsupported storage type', async () => {
       const kvs = createMockKeyValueStore()
       const handler = createStorageConfig(kvs, { endpoint: 'http://localhost:3003' } as any)
@@ -299,6 +347,13 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.calledOnce).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        storageType: 's3',
+        accessKeyId: 'AK',
+        secretAccessKey: 'SK',
+        region: 'us-east-1',
+        bucketName: 'b',
+      })
     })
 
     it('should call next with error when storageType is missing', async () => {
@@ -1017,6 +1072,118 @@ describe('ConfigurationManager Controller', () => {
       const response = res.json.firstCall.args[0]
       expect(response.status).to.equal('success')
       expect(response.models.llm).to.have.length(1)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Web Search Providers
+  // -----------------------------------------------------------------------
+  describe('getWebSearchProviders', () => {
+    const duckDuckGoProvider = {
+      provider: 'duckduckgo',
+      providerKey: 'duckduckgo',
+      configuration: {},
+    }
+
+    it('should return DuckDuckGo as default when no config exists', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = getWebSearchProviders(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(next.called).to.be.false
+      const response = res.json.firstCall.args[0]
+      expect(response.status).to.equal('success')
+      expect(response.providers).to.deep.equal([
+        { ...duckDuckGoProvider, isDefault: true },
+      ])
+      expect(response.settings).to.deep.equal({
+        includeImages: false,
+        maxImages: 3,
+      })
+      expect(response.message).to.equal('No web search providers found')
+    })
+
+    it('should prepend DuckDuckGo as default when stored providers have no default', async () => {
+      const storedSerper = {
+        provider: 'serper',
+        providerKey: 'serper-key-1',
+        configuration: { apiKey: 'secret' },
+        isDefault: false,
+      }
+      mockEncService.decrypt.returns(
+        JSON.stringify({ providers: [storedSerper] }),
+      )
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:web-search-config'),
+      })
+      const handler = getWebSearchProviders(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.providers).to.deep.equal([
+        { ...duckDuckGoProvider, isDefault: true },
+        storedSerper,
+      ])
+      expect(response.message).to.equal(
+        'Web search providers retrieved successfully',
+      )
+    })
+
+    it('should prepend DuckDuckGo with isDefault false when another provider is default', async () => {
+      const storedTavily = {
+        provider: 'tavily',
+        providerKey: 'tavily-key-1',
+        configuration: { apiKey: 'secret' },
+        isDefault: true,
+      }
+      mockEncService.decrypt.returns(
+        JSON.stringify({ providers: [storedTavily], settings: { includeImages: true } }),
+      )
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:web-search-config'),
+      })
+      const handler = getWebSearchProviders(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.providers).to.deep.equal([
+        { ...duckDuckGoProvider, isDefault: false },
+        storedTavily,
+      ])
+      expect(response.settings).to.deep.equal({
+        includeImages: true,
+        maxImages: 3,
+      })
+    })
+
+    it('should call next on error', async () => {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().rejects(new Error('kv unavailable')),
+      })
+      const handler = getWebSearchProviders(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(Error)
     })
   })
 
@@ -3477,6 +3644,10 @@ describe('ConfigurationManager Controller', () => {
   // -----------------------------------------------------------------------
   describe('createStorageConfig (additional)', () => {
     it('should call next on kvs.set failure', async () => {
+      sinon.stub(s3HealthCheckModule, 'validateS3Capabilities').resolves({
+        success: true,
+        checks: [{ capability: 'bucketAccess', passed: true }],
+      })
       const kvs = createMockKeyValueStore({
         set: sinon.stub().rejects(new Error('store failed')),
       })

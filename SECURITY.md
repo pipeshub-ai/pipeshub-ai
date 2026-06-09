@@ -1,5 +1,11 @@
 # Security Policy
 
+<div align="center">
+
+**Translations:** [Français](docs/i18n/fr/SECURITY.md) · [Deutsch](docs/i18n/de/SECURITY.md) · [简体中文](docs/i18n/zh-CN/SECURITY.md) · [日本語](docs/i18n/ja/SECURITY.md) · [Русский](docs/i18n/ru/SECURITY.md) · [עברית](docs/i18n/he/SECURITY.md) · [한국어](docs/i18n/ko/SECURITY.md) · [Español](docs/i18n/es/SECURITY.md) · [Português](docs/i18n/pt/SECURITY.md) · [Türkçe](docs/i18n/tr/SECURITY.md) · [Tiếng Việt](docs/i18n/vi/SECURITY.md) · [Italiano](docs/i18n/it/SECURITY.md)
+
+</div>
+
 ## Reporting a Vulnerability
 
 We take security vulnerabilities seriously and appreciate your efforts to responsibly disclose any issues you find.

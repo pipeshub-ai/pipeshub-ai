@@ -96,7 +96,7 @@ kubectl port-forward -n pipeshub-local svc/pipeshub-ai 3001:3001
 kubectl port-forward -n pipeshub-local svc/pipeshub-ai 3001:3001 8088:8088
 ```
 
-Query (8000), indexing (8091), and docling (8081) run inside the pod; the Node API on 3001 calls them in-cluster. You do not need to forward those ports for normal UI use.
+Query (8000), indexing (8091), embedding (8002), and docling (8081) run inside the pod; the Node API on 3001 calls them in-cluster. You do not need to forward those ports for normal UI use.
 
 ### 2b. Cloud (HA)
 
@@ -127,7 +127,7 @@ want to point at a different Service or expose port 8088 (see below).
 
 ### Public exposure
 
-Only **port 3001** (UI + Node API) is exposed via the Ingress by default. Query (8000), indexing (8091), docling (8081), and connector (8088) stay on the in-cluster `ClusterIP` Service because the Node API calls them directly inside the cluster.
+Only **port 3001** (UI + Node API) is exposed via the Ingress by default. Query (8000), indexing (8091), embedding (8002), docling (8081), and connector (8088) stay on the in-cluster `ClusterIP` Service because the Node API calls them directly inside the cluster.
 
 **When to expose 8088:** if you use OAuth-based connectors (Google, Microsoft, Slack, ...) or receive provider webhooks. Add a second ingress host *and* set `config.connectorPublicBackend` to that public URL so OAuth callbacks resolve correctly:
 

@@ -51,12 +51,12 @@ class GroqProvider:
 # ---------------------------------------------------------------------------
 
 @AIModelProviderBuilder("MiniMax", "minimax") \
-    .with_description("MiniMax M2.7 models with 1M context") \
+    .with_description("MiniMax M3 and M2.7 models with 1M context") \
     .with_capabilities([ModelCapability.TEXT_GENERATION]) \
     .with_icon("/icons/ai-models/minimax.svg") \
     .with_color("#1A1A2E") \
     .add_field(API_KEY) \
-    .add_field(model_field("e.g., MiniMax-M2.7, MiniMax-M2.7-highspeed")) \
+    .add_field(model_field("e.g., MiniMax-M3, MiniMax-M2.7, MiniMax-M2.7-highspeed")) \
     .add_field(LLM_COMMON_TAIL[0]) \
     .add_field(LLM_COMMON_TAIL[1]) \
     .add_field(LLM_COMMON_TAIL[2]) \

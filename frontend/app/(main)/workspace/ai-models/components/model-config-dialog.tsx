@@ -15,7 +15,7 @@ import type { AIModelProvider, AIModelProviderField, ConfiguredModel } from '../
 import { CAPABILITY_TO_MODEL_TYPE } from '../types';
 import { AIModelsApi } from '../api';
 
-const COMPAT_FIELD_NAMES = ['isReasoning', 'isMultimodal'] as const;
+const COMPAT_FIELD_NAMES = ['isReasoning', 'isMultimodal', 'trustRemoteCode'] as const;
 
 const READONLY_ROW_STYLE: React.CSSProperties = {
   display: 'flex',
@@ -36,6 +36,39 @@ const CARD_STYLE: React.CSSProperties = {
   borderRadius: 'var(--radius-3)',
   padding: 16,
 };
+
+function parseNoticeBullets(notice: string): { isBulletList: boolean; items: string[] } {
+  const lines = notice.split('\n').map((line) => line.trim()).filter(Boolean);
+  const bulletItems = lines
+    .filter((line) => line.startsWith('- '))
+    .map((line) => line.slice(2).trim());
+  if (bulletItems.length > 0 && bulletItems.length === lines.length) {
+    return { isBulletList: true, items: bulletItems };
+  }
+  return { isBulletList: false, items: [notice] };
+}
+
+function ProviderNoticeBody({ notice }: { notice: string }) {
+  const { isBulletList, items } = parseNoticeBullets(notice);
+  if (isBulletList) {
+    return (
+      <ul style={{ margin: 0, paddingLeft: 20, color: 'var(--gray-12)' }}>
+        {items.map((item, index) => (
+          <li key={index}>
+            <Text as="span" size="2" style={{ color: 'var(--gray-12)' }}>
+              {item}
+            </Text>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  return (
+    <Text size="2" style={{ color: 'var(--gray-12)', whiteSpace: 'pre-line' }}>
+      {notice}
+    </Text>
+  );
+}
 
 /** Azure OpenAI: single model id / deployment name — no comma-separated list. */
 function sanitizeAzureOpenAiCommaFreeValue(value: unknown): unknown {
@@ -65,6 +98,7 @@ function allRequiredFieldsValid(fields: AIModelProviderField[], values: Record<s
 function compatIcon(fieldName: string): string {
   if (fieldName === 'isReasoning') return 'lightbulb';
   if (fieldName === 'isMultimodal') return 'image';
+  if (fieldName === 'trustRemoteCode') return 'verified_user';
   return 'tune';
 }
 
@@ -76,6 +110,28 @@ function fieldStartAdornment(fieldName: string): React.ReactNode | undefined {
     return <MaterialIcon name="widgets" size={16} color="var(--gray-10)" />;
   }
   return undefined;
+}
+
+export interface ModelConfigSaveResult {
+  mode: 'add' | 'edit';
+  modelName: string;
+  modelCategory: 'ai' | 'embedding';
+}
+
+function resolveModelDisplayName(
+  values: Record<string, unknown>,
+  provider: AIModelProvider | null
+): string {
+  const friendly = String(values.modelFriendlyName ?? '').trim();
+  if (friendly) return friendly;
+  const model = String(values.model ?? values.deploymentName ?? '').trim();
+  if (model) return model;
+  if (provider?.modelName?.trim()) return provider.modelName.trim();
+  return provider?.name?.trim() || 'Model';
+}
+
+function modelCategoryFromCapability(capability: string): 'ai' | 'embedding' {
+  return capability === 'embedding' ? 'embedding' : 'ai';
 }
 
 interface ModelConfigDialogProps {
@@ -94,7 +150,7 @@ interface ModelConfigDialogProps {
    */
   existingModelsCount?: number;
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: (result: ModelConfigSaveResult) => void;
 }
 
 export function ModelConfigDialog({
@@ -269,7 +325,11 @@ export function ModelConfigDialog({
         });
       }
 
-      onSaved();
+      onSaved({
+        mode,
+        modelName: resolveModelDisplayName(values, provider),
+        modelCategory: modelCategoryFromCapability(capability),
+      });
       onClose();
     } catch (err: unknown) {
       const e = err as { response?: { data?: { error?: { message?: string }; message?: string } }; message?: string };
@@ -429,7 +489,8 @@ function ModelConfigFormBody({
         (f) =>
           f.name !== 'modelFriendlyName' &&
           f.name !== 'isReasoning' &&
-          f.name !== 'isMultimodal'
+          f.name !== 'isMultimodal' &&
+          f.name !== 'trustRemoteCode'
       ),
     [fields]
   );
@@ -440,12 +501,23 @@ function ModelConfigFormBody({
     return (
       <Flex direction="column" gap="3">
         {provider?.notice ? (
-          <Callout.Root color="amber" size="1" variant="surface">
-            <Callout.Text>
-              <Text size="2" style={{ color: 'var(--gray-12)' }}>
-                {provider.notice}
-              </Text>
-            </Callout.Text>
+          <Callout.Root
+            color="red"
+            variant="surface"
+            size="2"
+            style={{ backgroundColor: 'var(--red-a3)' }}
+          >
+            <Callout.Icon style={{ paddingTop: 'var(--space-1)' }}>
+              <MaterialIcon name="report_problem" size={28} color="var(--red-11)" />
+            </Callout.Icon>
+            <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
+              {provider.noticeTitle ? (
+                <Text size="2" weight="bold">
+                  {provider.noticeTitle}
+                </Text>
+              ) : null}
+              <ProviderNoticeBody notice={provider.notice} />
+            </Flex>
           </Callout.Root>
         ) : null}
         {provider.modelName && (

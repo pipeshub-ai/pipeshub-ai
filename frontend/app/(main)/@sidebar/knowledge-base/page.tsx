@@ -13,11 +13,13 @@ import { sidebarNodeChildrenMetaFromResponse } from '../../knowledge-base/utils/
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import {
   categorizeNode,
+  effectiveHasChildrenAfterSidebarExpand,
   mergeChildrenIntoTree,
   treeHasNodeWithId,
 } from '../../knowledge-base/utils/tree-builder';
 import { useKnowledgeBaseSidebarAutoExpand } from './use-knowledge-base-sidebar-auto-expand';
 import { refreshKbTree } from '../../knowledge-base/utils/refresh-kb-tree';
+import { fetchAppDirectChildren } from '../../knowledge-base/utils/fetch-app-direct-children';
 import { buildNavUrl, getIsAllRecordsMode } from '../../knowledge-base/utils/nav';
 import { findNodeInCategorized } from '../../knowledge-base/utils/find-node';
 import { useCallback, useMemo, Suspense } from 'react';
@@ -62,7 +64,9 @@ function KnowledgeBaseSidebarSlotContent() {
   } = useKnowledgeBaseStore();
 
   const kbApp = useMemo(() => appNodes.find((n) => n.connector === 'KB'), [appNodes]);
-  const isSidebarTreeLoading = isLoadingFlatCollections || (kbApp ? loadingAppIds.has(kbApp.id) : false);
+  const isSidebarTreeLoading = isAllRecordsMode
+    ? isLoadingFlatCollections
+    : isLoadingFlatCollections || (kbApp ? loadingAppIds.has(kbApp.id) : false);
 
   const pageViewMode = isAllRecordsMode ? 'all-records' : 'collections';
 
@@ -82,6 +86,15 @@ function KnowledgeBaseSidebarSlotContent() {
 
   const handleNodeExpand = useCallback(
     async (nodeId: string, nodeType: NodeType) => {
+      if (nodeType === 'app') {
+        try {
+          await fetchAppDirectChildren(nodeId);
+        } catch (error) {
+          console.error('Failed to expand app', { nodeId, error });
+        }
+        return;
+      }
+
       const {
         categorizedNodes: freshCategorized,
         nodeChildrenCache: freshCache,
@@ -122,8 +135,13 @@ function KnowledgeBaseSidebarSlotContent() {
       };
 
       const cachedChildren = freshCache.get(nodeId);
-      if (cachedChildren && cachedChildren.length > 0) {
-        addNodes(cachedChildren);
+      if (cachedChildren !== undefined) {
+        const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(cachedChildren);
+
+        if (cachedChildren.length > 0) {
+          addNodes(cachedChildren);
+        }
+
         const latest = useKnowledgeBaseStore.getState();
         if (latest.categorizedNodes) {
           const parentNode = latest.nodes.find((n) => n.id === nodeId);
@@ -132,18 +150,21 @@ function KnowledgeBaseSidebarSlotContent() {
             const updatedTree = mergeChildrenIntoTree(
               latest.categorizedNodes[section],
               nodeId,
-              cachedChildren
+              cachedChildren,
+              effectiveHasChildFolders
             );
             setCategorizedNodes({ ...latest.categorizedNodes, [section]: updatedTree });
           }
         }
-        mergeIntoConnectorTrees(cachedChildren);
+        mergeIntoConnectorTrees(cachedChildren, effectiveHasChildFolders);
         return;
       }
 
       try {
         setNodeLoading(nodeId, true);
-        const response = await KnowledgeHubApi.getNodeChildren(nodeType, nodeId, {
+        const nodeInStore = useKnowledgeBaseStore.getState().nodes.find((n) => n.id === nodeId);
+        const resolvedNodeType = (nodeInStore?.nodeType ?? nodeType) as NodeType;
+        const response = await KnowledgeHubApi.getNodeChildren(resolvedNodeType, nodeId, {
           onlyContainers: true,
           page: 1,
           limit: SIDEBAR_PAGINATION_PAGE_SIZE,
@@ -156,21 +177,19 @@ function KnowledgeBaseSidebarSlotContent() {
         addNodes(response.items);
 
         const { setNodeChildrenPagination } = useKnowledgeBaseStore.getState();
-        if (nodeType !== 'app') {
+        if (resolvedNodeType !== 'app') {
           setNodeChildrenPagination(
             nodeId,
             sidebarNodeChildrenMetaFromResponse(
               response.pagination,
               response.items.length,
               SIDEBAR_PAGINATION_PAGE_SIZE,
-              nodeType
+              resolvedNodeType
             )
           );
         }
 
-        const foldersCount =
-          response.counts?.items?.find((x) => x.label === 'folders')?.count ?? 0;
-        const effectiveHasChildFolders = foldersCount > 0;
+        const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(response.items);
 
         const latest = useKnowledgeBaseStore.getState();
         if (latest.categorizedNodes) {
@@ -207,6 +226,7 @@ function KnowledgeBaseSidebarSlotContent() {
     appNodes,
     appChildrenCache,
     connectorAppTrees,
+    loadingAppIds,
     handleNodeExpand,
     setCurrentFolderId,
     setAllRecordsSidebarSelection,
@@ -255,13 +275,22 @@ function KnowledgeBaseSidebarSlotContent() {
   );
 
   const handleSidebarReindex = useCallback(
-    (nodeId: string, nodeType: NodeType, name: string, statusFilters?: string[]) => {
+    (
+      nodeId: string,
+      nodeType: NodeType,
+      name: string,
+      statusFilters?: string[],
+      indexingStatus?: string | null,
+      hasChildren?: boolean,
+    ) => {
       setPendingSidebarAction({
         type: 'reindex',
         nodeId,
         nodeName: name,
         nodeType,
         statusFilters,
+        indexingStatus,
+        hasChildren,
       });
     },
     [setPendingSidebarAction]
@@ -337,7 +366,7 @@ function KnowledgeBaseSidebarSlotContent() {
       connectors={storeConnectors}
       moreConnectors={isAdmin === true ? ADMIN_MORE_CONNECTORS : PERSONAL_MORE_CONNECTORS}
       onSidebarReindex={handleSidebarReindex}
-      onSidebarRename={isAllRecordsMode ? undefined : handleSidebarRename}
+      onSidebarRename={handleSidebarRename}
       onSidebarDelete={handleSidebarDelete}
       onAllRecordsSelectAll={handleAllRecordsSelectAll}
       onAllRecordsSelectCollection={handleAllRecordsSelectCollection}

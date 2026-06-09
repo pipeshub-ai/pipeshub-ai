@@ -221,3 +221,7 @@ frontend-new/.next/
 frontend-new/node_modules/
 frontend/.next/
 frontend/node_modules/
+
+.opencode
+.codex
+.commandcode

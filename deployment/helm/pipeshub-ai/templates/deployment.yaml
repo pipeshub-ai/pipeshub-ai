@@ -102,6 +102,8 @@ spec:
               value: "http://localhost:8088"
             - name: INDEXING_BACKEND
               value: "http://localhost:8091"
+            - name: EMBEDDING_SERVER_URL
+              value: "http://localhost:8002"
             
             {{- if .Values.etcd.enabled }}
             # ETCD config

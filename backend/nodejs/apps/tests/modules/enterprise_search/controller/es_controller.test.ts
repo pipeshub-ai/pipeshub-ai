@@ -2755,7 +2755,7 @@ describe('Enterprise Search Controller', () => {
 
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
-        data: { agentKey: 'agent-1' },
+        data: { agent: { id: 'remove-me', agentKey: 'agent-1' } },
       } as any)
 
       const req = createMockRequest({
@@ -2769,6 +2769,7 @@ describe('Enterprise Search Controller', () => {
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
+        expect(res.json.firstCall.args[0].agent).to.not.have.property('id')
       }
     })
 
@@ -2801,7 +2802,18 @@ describe('Enterprise Search Controller', () => {
 
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
-        data: [{ agentKey: 'agent-1' }],
+        data: {
+          success: true,
+          agents: [{ id: 'remove-me', agentKey: 'agent-1' }],
+          pagination: {
+            currentPage: 1,
+            limit: 20,
+            totalItems: 1,
+            totalPages: 1,
+            hasNext: false,
+            hasPrev: false,
+          },
+        },
       } as any)
 
       const req = createMockRequest({
@@ -2814,7 +2826,46 @@ describe('Enterprise Search Controller', () => {
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
+        expect(res.json.firstCall.args[0].agents[0]).to.not.have.property('id')
+        expect(res.json.firstCall.args[0].agents[0].agentKey).to.equal('agent-1')
       }
+    })
+
+    it('should forward all supported query params to the AI backend', async () => {
+      const handler = listAgents(createMockAppConfig())
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+        expect(this.uri).to.equal(
+          'http://localhost:8000/api/v1/agent/?page=2&limit=50&search=roadmap&sort_by=createdAtTimestamp&sort_order=asc',
+        )
+        return Promise.resolve({
+          statusCode: 200,
+          data: {
+            success: true,
+            agents: [{ id: 'remove-me', agentKey: 'agent-1' }],
+            pagination: { currentPage: 2, limit: 50 },
+          },
+        } as any)
+      })
+
+      const req = createMockRequest({
+        query: {
+          page: 2,
+          limit: 50,
+          search: 'roadmap',
+          sort_by: 'createdAtTimestamp',
+          sort_order: 'asc',
+        },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0].agents[0]).to.not.have.property('id')
     })
 
     it('should return empty array on non-200 response', async () => {

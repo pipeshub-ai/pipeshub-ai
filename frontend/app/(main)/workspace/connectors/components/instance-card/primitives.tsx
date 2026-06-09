@@ -1,14 +1,12 @@
 'use client';
 
 import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { ConnectorsApi } from '../../api';
+import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
 import { useToastStore } from '@/lib/store/toast-store';
 import { runConnectorResync } from '../../utils/connector-sync-actions';
-
-/** Brief busy state after instance-card async actions so rapid double-clicks do not stack requests. */
-const INSTANCE_ACTION_BUTTON_BUSY_MS = 800;
 
 // ========================================
 // InfoRow
@@ -159,10 +157,12 @@ export function FullSyncButton({
   connectorId: string;
   connectorType: string;
 }) {
+  const { t } = useTranslation();
   const [state, setState] = useState<SyncState>('idle');
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const addToast = useToastStore((s) => s.addToast);
 
-  const handleClick = async () => {
+  const handleConfirmFullSync = async () => {
     if (state === 'syncing') return;
     setState('syncing');
     try {
@@ -186,6 +186,8 @@ export function FullSyncButton({
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('failed');
       addToast({ variant: 'error', title: 'Full sync failed' });
+    } finally {
+      setConfirmOpen(false);
     }
   };
 
@@ -208,103 +210,39 @@ export function FullSyncButton({
   }[state];
 
   return (
-    <Button
-      variant={state === 'syncing' ? 'soft' : 'solid'}
-      color={state === 'failed' ? 'red' : state === 'syncing' ? 'gray' : 'blue'}
-      size="1"
-      onClick={handleClick}
-      disabled={state === 'syncing'}
-      style={{ cursor: state === 'syncing' ? 'default' : 'pointer', flexShrink: 0 }}
-    >
-      <MaterialIcon name={config.icon} size={16} color={config.color} />
-      {config.label}
-    </Button>
-  );
-}
-
-/** Reindex failed records (parity with legacy connector stats card). */
-export function ReindexFailedButton({
-  connectorId,
-  connectorType,
-  failedCount,
-}: {
-  connectorId: string;
-  connectorType: string;
-  failedCount: number;
-}) {
-  const [busy, setBusy] = useState(false);
-  const addToast = useToastStore((s) => s.addToast);
-
-  if (failedCount <= 0) return null;
-
-  const handleClick = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await ConnectorsApi.reindexFailedConnector(connectorId, connectorType);
-      addToast({ variant: 'success', title: 'Reindexing failed records…' });
-    } catch {
-      addToast({ variant: 'error', title: 'Failed to reindex failed records' });
-    } finally {
-      setTimeout(() => setBusy(false), INSTANCE_ACTION_BUTTON_BUSY_MS);
-    }
-  };
-
-  return (
-    <Button
-      variant="soft"
-      color="orange"
-      size="1"
-      onClick={handleClick}
-      disabled={busy}
-      style={{ cursor: busy ? 'wait' : 'pointer', flexShrink: 0 }}
-    >
-      <MaterialIcon name="error_outline" size={16} color="var(--orange-11)" />
-      Retry failed ({failedCount})
-    </Button>
-  );
-}
-
-/** Index records stuck in AUTO_INDEX_OFF (manual sync path from legacy UI). */
-export function ManualIndexButton({
-  connectorId,
-  connectorType,
-  autoIndexOffCount,
-}: {
-  connectorId: string;
-  connectorType: string;
-  autoIndexOffCount: number;
-}) {
-  const [busy, setBusy] = useState(false);
-  const addToast = useToastStore((s) => s.addToast);
-
-  if (autoIndexOffCount <= 0) return null;
-
-  const handleClick = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await ConnectorsApi.reindexFailedConnector(connectorId, connectorType, ['AUTO_INDEX_OFF']);
-      addToast({ variant: 'success', title: 'Indexing manual-sync records…' });
-    } catch {
-      addToast({ variant: 'error', title: 'Failed to start manual index' });
-    } finally {
-      setTimeout(() => setBusy(false), INSTANCE_ACTION_BUTTON_BUSY_MS);
-    }
-  };
-
-  return (
-    <Button
-      variant="soft"
-      color="gray"
-      size="1"
-      onClick={handleClick}
-      disabled={busy}
-      style={{ cursor: busy ? 'wait' : 'pointer', flexShrink: 0 }}
-    >
-      <MaterialIcon name="touch_app" size={16} color="var(--gray-11)" />
-      Manual index ({autoIndexOffCount})
-    </Button>
+    <>
+      <Button
+        variant={state === 'syncing' ? 'soft' : 'solid'}
+        color={state === 'failed' ? 'red' : state === 'syncing' ? 'gray' : 'blue'}
+        size="1"
+        onClick={() => {
+          if (state !== 'syncing') setConfirmOpen(true);
+        }}
+        disabled={state === 'syncing'}
+        style={{ cursor: state === 'syncing' ? 'default' : 'pointer', flexShrink: 0 }}
+      >
+        <MaterialIcon name={config.icon} size={16} color={config.color} />
+        {config.label}
+      </Button>
+      <ConfirmationDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title={t('workspace.connectors.fullSyncConfirm.title', {
+          defaultValue: 'Start full sync?',
+        })}
+        message={t('workspace.connectors.fullSyncConfirm.message', {
+          defaultValue:
+            'Overwrites and re-syncs all data from scratch and is slower than normal Sync. Use full sync when content is missing, duplicated, or doesn’t match the source. For routine updates, use Sync instead.',
+        })}
+        confirmLabel={t('workspace.connectors.fullSyncConfirm.confirm', {
+          defaultValue: 'Confirm',
+        })}
+        cancelLabel={t('common.cancel', { defaultValue: 'Cancel' })}
+        confirmVariant="primary"
+        isLoading={state === 'syncing'}
+        onConfirm={() => void handleConfirmFullSync()}
+      />
+    </>
   );
 }
 

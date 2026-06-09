@@ -3611,3 +3611,290 @@ class TestNeo4jGetUserAccessibleTeamAppIds:
         query = call_args[0][0] if call_args[0] else call_args.args[0]
         assert "userId" in query, "query must match on user.userId, not user.id"
         assert "{id:" not in query.replace(" ", ""), "query must not match on user.id"
+# _validate_upload_context
+# ---------------------------------------------------------------------------
+
+
+class TestValidateUploadContext:
+    """Tests for Neo4jProvider._validate_upload_context."""
+
+    @pytest.mark.asyncio
+    async def test_success_kb_root(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "id": "uk1", "userId": "u1"}
+        )
+        neo4j_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+
+        result = await neo4j_provider._validate_upload_context("kb1", "u1", "org1")
+
+        assert result["valid"] is True
+        assert result["upload_target"] == "kb_root"
+        assert result["user_role"] == "OWNER"
+
+    @pytest.mark.asyncio
+    async def test_success_folder(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "id": "uk1", "userId": "u1"}
+        )
+        neo4j_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
+        neo4j_provider.get_and_validate_folder_in_kb = AsyncMock(
+            return_value={"_key": "f1", "path": "/reports"}
+        )
+
+        result = await neo4j_provider._validate_upload_context(
+            "kb1", "u1", "org1", parent_folder_id="f1"
+        )
+
+        assert result["valid"] is True
+        assert result["upload_target"] == "folder"
+        assert result["parent_folder"]["_key"] == "f1"
+
+    @pytest.mark.asyncio
+    async def test_user_not_found(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.get_user_by_user_id = AsyncMock(return_value=None)
+
+        result = await neo4j_provider._validate_upload_context("kb1", "ghost", "org1")
+
+        assert result["valid"] is False
+        assert result["code"] == 404
+        assert "ghost" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_malformed_user_record_returns_500(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.get_user_by_user_id = AsyncMock(
+            return_value={"userId": "u1"}
+        )
+
+        result = await neo4j_provider._validate_upload_context("kb1", "u1", "org1")
+
+        assert result["valid"] is False
+        assert result["code"] == 500
+        assert "malformed" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_reader_role_rejected_with_role_in_message(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "id": "uk1"}
+        )
+        neo4j_provider.get_user_kb_permission = AsyncMock(return_value="READER")
+        neo4j_provider._fetch_kb_name = AsyncMock(return_value="My KB")
+
+        result = await neo4j_provider._validate_upload_context("kb1", "u1", "org1")
+
+        assert result["valid"] is False
+        assert result["code"] == 403
+        assert "READER" in result["reason"]
+        assert "My KB" in result["reason"]
+        assert "OWNER or WRITER" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_no_role_rejected_with_no_access_message(self, neo4j_provider: Neo4jProvider):
+        """User with no KB role (None) must not see 'Role: None'; gets 'no access' message."""
+        neo4j_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "id": "uk1"}
+        )
+        neo4j_provider.get_user_kb_permission = AsyncMock(return_value=None)
+        neo4j_provider._fetch_kb_name = AsyncMock(return_value="My KB")
+
+        result = await neo4j_provider._validate_upload_context("kb1", "u1", "org1")
+
+        assert result["valid"] is False
+        assert result["code"] == 403
+        assert "Role: None" not in result["reason"]
+        assert "My KB" in result["reason"]
+        assert "OWNER or WRITER" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_folder_not_in_kb_includes_names_in_message(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "id": "uk1"}
+        )
+        neo4j_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        neo4j_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
+        neo4j_provider._fetch_kb_name = AsyncMock(return_value="Engineering Docs")
+        neo4j_provider._fetch_record_name = AsyncMock(return_value="Wrong Folder")
+
+        result = await neo4j_provider._validate_upload_context(
+            "kb1", "u1", "org1", parent_folder_id="wrong-folder"
+        )
+
+        assert result["valid"] is False
+        assert result["code"] == 404
+        assert "wrong-folder" in result["reason"]
+        assert "Engineering Docs" in result["reason"]
+        assert "Wrong Folder" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_folder_not_in_kb_falls_back_to_ids(self, neo4j_provider: Neo4jProvider):
+        """When name lookups return None, the error still contains the raw IDs."""
+        neo4j_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "id": "uk1"}
+        )
+        neo4j_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        neo4j_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
+        neo4j_provider._fetch_kb_name = AsyncMock(return_value=None)
+        neo4j_provider._fetch_record_name = AsyncMock(return_value=None)
+
+        result = await neo4j_provider._validate_upload_context(
+            "kb1", "u1", "org1", parent_folder_id="wrong-folder"
+        )
+
+        assert result["valid"] is False
+        assert result["code"] == 404
+        assert "wrong-folder" in result["reason"]
+        assert "kb1" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_500(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.get_user_by_user_id = AsyncMock(
+            side_effect=RuntimeError("db timeout")
+        )
+
+        result = await neo4j_provider._validate_upload_context("kb1", "u1", "org1")
+
+        assert result["valid"] is False
+        assert result["code"] == 500
+
+
+# ---------------------------------------------------------------------------
+# validate_folder_for_upload (public interface method)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateFolderForUpload:
+    """Tests for Neo4jProvider.validate_folder_for_upload."""
+
+    @pytest.mark.asyncio
+    async def test_valid_folder_returns_valid(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "id": "uk1"}
+        )
+        neo4j_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        neo4j_provider.get_and_validate_folder_in_kb = AsyncMock(
+            return_value={"_key": "f1", "path": "/docs"}
+        )
+
+        result = await neo4j_provider.validate_folder_for_upload(
+            kb_id="kb1", folder_id="f1", user_id="u1", org_id="org1"
+        )
+
+        assert result["valid"] is True
+        assert result["upload_target"] == "folder"
+        neo4j_provider.get_and_validate_folder_in_kb.assert_awaited_once_with("kb1", "f1")
+
+    @pytest.mark.asyncio
+    async def test_folder_not_in_kb_returns_404_with_names(self, neo4j_provider: Neo4jProvider):
+        """Folder belongs to a different KB: 404 with KB/folder names in reason."""
+        neo4j_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "id": "uk1"}
+        )
+        neo4j_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        neo4j_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
+        neo4j_provider._fetch_kb_name = AsyncMock(return_value="Docs KB")
+        neo4j_provider._fetch_record_name = AsyncMock(return_value="Foreign Folder")
+
+        result = await neo4j_provider.validate_folder_for_upload(
+            kb_id="kb1", folder_id="foreign-folder", user_id="u1", org_id="org1"
+        )
+
+        assert result["valid"] is False
+        assert result["code"] == 404
+        assert "foreign-folder" in result["reason"]
+        assert "Docs KB" in result["reason"]
+        assert "Foreign Folder" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_nonexistent_folder_falls_back_to_ids(self, neo4j_provider: Neo4jProvider):
+        """Completely unknown folder: 404 with bare IDs when name lookup returns None."""
+        neo4j_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "id": "uk1"}
+        )
+        neo4j_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
+        neo4j_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
+        neo4j_provider._fetch_kb_name = AsyncMock(return_value=None)
+        neo4j_provider._fetch_record_name = AsyncMock(return_value=None)
+
+        result = await neo4j_provider.validate_folder_for_upload(
+            kb_id="kb1", folder_id="ghost", user_id="u1", org_id="org1"
+        )
+
+        assert result["valid"] is False
+        assert result["code"] == 404
+        assert "ghost" in result["reason"]
+        assert "kb1" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_reader_role_returns_403_with_role_in_message(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "id": "uk1"}
+        )
+        neo4j_provider.get_user_kb_permission = AsyncMock(return_value="READER")
+        neo4j_provider._fetch_kb_name = AsyncMock(return_value=None)
+
+        result = await neo4j_provider.validate_folder_for_upload(
+            kb_id="kb1", folder_id="f1", user_id="u1", org_id="org1"
+        )
+
+        assert result["valid"] is False
+        assert result["code"] == 403
+        assert "READER" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_no_role_returns_403_without_role_none_text(self, neo4j_provider: Neo4jProvider):
+        """User with no KB role at all must not see 'Role: None'."""
+        neo4j_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "id": "uk1"}
+        )
+        neo4j_provider.get_user_kb_permission = AsyncMock(return_value=None)
+        neo4j_provider._fetch_kb_name = AsyncMock(return_value="Docs KB")
+
+        result = await neo4j_provider.validate_folder_for_upload(
+            kb_id="kb1", folder_id="f1", user_id="u1", org_id="org1"
+        )
+
+        assert result["valid"] is False
+        assert result["code"] == 403
+        assert "Role: None" not in result["reason"]
+        assert "Docs KB" in result["reason"]
+        assert "OWNER or WRITER" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_user_not_found_returns_404(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.get_user_by_user_id = AsyncMock(return_value=None)
+
+        result = await neo4j_provider.validate_folder_for_upload(
+            kb_id="kb1", folder_id="f1", user_id="unknown", org_id="org1"
+        )
+
+        assert result["valid"] is False
+        assert result["code"] == 404
+
+    @pytest.mark.asyncio
+    async def test_writer_role_accepted(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "id": "uk1"}
+        )
+        neo4j_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
+        neo4j_provider.get_and_validate_folder_in_kb = AsyncMock(
+            return_value={"_key": "f1", "path": "/shared"}
+        )
+
+        result = await neo4j_provider.validate_folder_for_upload(
+            kb_id="kb1", folder_id="f1", user_id="u1", org_id="org1"
+        )
+
+        assert result["valid"] is True
+        assert result["user_role"] == "WRITER"
+
+    @pytest.mark.asyncio
+    async def test_db_error_returns_500(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.get_user_by_user_id = AsyncMock(
+            side_effect=Exception("neo4j unreachable")
+        )
+
+        result = await neo4j_provider.validate_folder_for_upload(
+            kb_id="kb1", folder_id="f1", user_id="u1", org_id="org1"
+        )
+
+        assert result["valid"] is False
+        assert result["code"] == 500

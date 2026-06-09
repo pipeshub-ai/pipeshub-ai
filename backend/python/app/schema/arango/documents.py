@@ -43,7 +43,7 @@ user_schema = {
             "middleName": {"type": "string"},
             "lastName": {"type": "string"},
             "fullName": {"type": "string"},
-            "email": {"type": "string", "format": "email"},
+            "email": {"type": "string"},
             "designation": {"type": "string"},
             "profileId": {"type": ["string", "null"]},
             "businessPhones": {
@@ -1113,7 +1113,7 @@ people_schema = {
         "type": "object",
         "properties": {
             "_key": {"type": "string"},  # deterministic UUID based on email
-            "email": {"type": "string", "format": "email"},
+            "email": {"type": "string"},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
             "firstName": {"type": ["string", "null"]},

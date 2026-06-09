@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Text } from '@radix-ui/themes';
+import { Box, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import { toast } from '@/lib/store/toast-store';
@@ -13,7 +13,7 @@ import { AIModelsApi } from './api';
 import type { AIModelProvider, ConfiguredModel } from './types';
 import { CAPABILITY_TO_MODEL_TYPE } from './types';
 import { DestructiveTypedConfirmationDialog } from '@/app/(main)/workspace/components';
-import { ProviderGrid, ModelConfigDialog } from './components';
+import { ProviderGrid, ModelConfigDialog, ModelRolesSection } from './components';
 
 export default function AIModelsPage() {
   const { t } = useTranslation();
@@ -108,14 +108,6 @@ export default function AIModelsPage() {
     }
   }, [loadModels, t]);
 
-  const isLoading = store.isLoadingProviders || store.isLoadingModels;
-  const deleteKeyword = store.deleteTarget?.modelName ?? '';
-
-  if (!isProfileInitialized || isAdmin === false) return null;
-
-  // For the Add dialog, compute how many models of the target model type are
-  // already configured. The dialog uses this to decide whether to auto-default
-  // the new model — only the very first model of a type is auto-defaulted.
   const dialogExistingModelsCount = useMemo(() => {
     if (store.dialogMode !== 'add') return 0;
     const capability = store.dialogCapability;
@@ -125,8 +117,33 @@ export default function AIModelsPage() {
     return store.configuredModels[targetModelType]?.length ?? 0;
   }, [store.dialogMode, store.dialogCapability, store.configuredModels]);
 
+  const isLoading = store.isLoadingProviders || store.isLoadingModels;
+  const deleteKeyword = store.deleteTarget?.modelName ?? '';
+
+  if (!isProfileInitialized || isAdmin === false) return null;
+
+  const pagePaddingX = 'clamp(var(--space-4), 4vw, 100px)';
+  const pagePaddingY = 'clamp(var(--space-6), 3vw, 64px)';
+
   return (
     <ServiceGate services={['query']}>
+      {/* Role assignments sit above the provider grid, sharing the same page margins */}
+      {store.capabilitySection === 'text_generation' && (
+        <Box
+          style={{
+            paddingTop: pagePaddingY,
+            paddingLeft: pagePaddingX,
+            paddingRight: pagePaddingX,
+            paddingBottom: 0,
+          }}
+        >
+          <ModelRolesSection
+            configuredModels={store.configuredModels}
+            onRolesUpdated={handleRefresh}
+          />
+        </Box>
+      )}
+
       <ProviderGrid
         providers={store.providers}
         configuredModels={store.configuredModels}
@@ -152,7 +169,9 @@ export default function AIModelsPage() {
         editModel={store.dialogEditModel}
         existingModelsCount={dialogExistingModelsCount}
         onClose={store.closeDialog}
-        onSaved={loadModels}
+        onSaved={() => {
+          void loadModels();
+        }}
       />
 
       <DestructiveTypedConfirmationDialog

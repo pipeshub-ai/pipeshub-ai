@@ -1623,7 +1623,7 @@ class TestEnsureIndexes:
     async def test_ensure_indexes_success(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        connected_provider.http_client.ensure_persistent_index.assert_called_once()
+        assert connected_provider.http_client.ensure_persistent_index.call_count == 14
 
 
 # ---------------------------------------------------------------------------

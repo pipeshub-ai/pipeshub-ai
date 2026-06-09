@@ -385,12 +385,13 @@ export class Application {
     this.app.use(express.urlencoded({ extended: true }));
     this.app.use(xssSanitizationMiddleware);
 
-    // Logging
+    // Logging — only log API requests, skip static assets
     this.app.use(
       morgan('combined', {
         stream: {
           write: (message: string) => this.logger.info(message.trim()),
         },
+        skip: (req) => !req.path.startsWith('/api/'),
       }),
     );
 

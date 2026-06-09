@@ -34,7 +34,7 @@ from app.utils.aimodels import (
     get_default_embedding_model,
     get_embedding_model,
 )
-from app.utils.llm import get_llm
+from app.utils.llm import get_llm_for_role
 
 # Module-level shared spaCy pipeline to avoid repeated heavy loads
 _SHARED_NLP: Optional[Language] = None
@@ -1062,7 +1062,7 @@ class VectorStore(Transformer):
             )
 
         try:
-            llm, config = await get_llm(self.config_service)
+            llm, config = await get_llm_for_role(self.config_service, "indexing")
             is_multimodal_llm = config.get("isMultimodal")
         except Exception as e:
             raise IndexingError(

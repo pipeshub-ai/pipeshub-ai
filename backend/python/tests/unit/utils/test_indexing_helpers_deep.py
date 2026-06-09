@@ -24,7 +24,7 @@ from app.utils.indexing_helpers import (
 
 class TestGetRowsText:
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role")
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
     async def test_with_column_headers(self, mock_invoke, mock_get_llm):
         mock_llm = MagicMock()
@@ -49,7 +49,7 @@ class TestGetRowsText:
         assert len(rows) == 2  # Excludes header row
 
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role")
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
     async def test_without_column_headers(self, mock_invoke, mock_get_llm):
         mock_llm = MagicMock()
@@ -78,7 +78,7 @@ class TestGetRowsText:
         assert rows == []
 
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role")
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
     async def test_grid_with_dict_cells(self, mock_invoke, mock_get_llm):
         mock_llm = MagicMock()
@@ -105,7 +105,7 @@ class TestGetRowsText:
 
 class TestGetTableSummaryNHeadersExtra:
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role")
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
     async def test_list_of_dicts(self, mock_invoke, mock_get_llm):
         mock_llm = MagicMock()
@@ -122,7 +122,7 @@ class TestGetTableSummaryNHeadersExtra:
         assert "Name" in result.headers
 
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role")
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
     async def test_empty_table(self, mock_invoke, mock_get_llm):
         mock_llm = MagicMock()
@@ -133,7 +133,7 @@ class TestGetTableSummaryNHeadersExtra:
         assert result.summary == "Empty"
 
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role")
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
     async def test_non_list_input(self, mock_invoke, mock_get_llm):
         mock_llm = MagicMock()
@@ -144,7 +144,7 @@ class TestGetTableSummaryNHeadersExtra:
         assert result is not None
 
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role")
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
     async def test_returns_default_on_none_response(self, mock_invoke, mock_get_llm):
         mock_llm = MagicMock()
@@ -157,7 +157,7 @@ class TestGetTableSummaryNHeadersExtra:
         assert result.headers == []
 
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role")
     async def test_exception_raised(self, mock_get_llm):
         mock_get_llm.side_effect = Exception("LLM unavailable")
 
@@ -165,7 +165,7 @@ class TestGetTableSummaryNHeadersExtra:
             await get_table_summary_n_headers(MagicMock(), [["a"]])
 
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role")
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
     async def test_list_of_lists_truncation(self, mock_invoke, mock_get_llm):
         """Test that tables with more than MAX_TABLE_ROWS_FOR_SUMMARY rows are truncated."""
@@ -179,7 +179,7 @@ class TestGetTableSummaryNHeadersExtra:
         assert result.summary == "Large table"
 
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role")
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
     async def test_list_of_dicts_truncation(self, mock_invoke, mock_get_llm):
         """Test list-of-dicts with more than MAX_TABLE_ROWS_FOR_SUMMARY rows."""
@@ -192,7 +192,7 @@ class TestGetTableSummaryNHeadersExtra:
         assert result.summary == "Large dict table"
 
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.get_llm")
+    @patch("app.utils.indexing_helpers.get_llm_for_role")
     @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
     async def test_list_with_non_list_non_dict_items(self, mock_invoke, mock_get_llm):
         """Test list with items that are neither list nor dict."""

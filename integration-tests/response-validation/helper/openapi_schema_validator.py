@@ -226,7 +226,6 @@ def assert_request_body_matches_openapi_operation(data: object, operation_id: st
             f"operationId={operation_id!r}: {e}"
         ) from e
 
-
 def assert_response_matches_openapi_operation(
     data: object,
     operation_id: str,

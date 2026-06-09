@@ -262,7 +262,15 @@ class JiraCloudPersonalConnector(JiraConnector):
         """Sync projects and issues visible to the configured user; no permission APIs."""
         try:
             if not self.data_source:
-                await self.init()
+                # ``init()`` returns False on missing/invalid auth config; check
+                # the return so a misconfigured connector raises here instead of
+                # surfacing ``ValueError("DataSource not initialized")`` from
+                # the first datasource call several layers down.
+                if not await self.init():
+                    raise RuntimeError(
+                        f"Jira Cloud Personal connector {self.connector_id} init failed; "
+                        "check auth configuration"
+                    )
 
             # Force a fresh ConnectorGroup upsert each run so re-runs after the
             # creator email is rotated pick up the new identity instead of

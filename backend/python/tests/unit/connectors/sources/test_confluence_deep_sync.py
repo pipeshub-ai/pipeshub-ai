@@ -861,13 +861,21 @@ class TestFetchSpacePermissions:
         ds = MagicMock()
         ds.get_space_permissions_assignments = AsyncMock(side_effect=mock_perms)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
-        connector._transform_space_permission = AsyncMock(return_value=Permission(
-            entity_type=EntityType.GROUP, external_id="g1", type=PermissionType.READ
-        ))
+
+        async def mock_transform(perm_data: dict[str, Any]) -> Permission:
+            group_id = perm_data.get("group", {}).get("id", "g1")
+            return Permission(
+                entity_type=EntityType.GROUP,
+                external_id=group_id,
+                type=PermissionType.READ,
+            )
+
+        connector._transform_space_permission = AsyncMock(side_effect=mock_transform)
         connector._extract_cursor_from_next_link = MagicMock(side_effect=["abc", None])
 
         perms = await connector._fetch_space_permissions("s1", "Dev Space")
         assert len(perms) == 2
+        assert {p.external_id for p in perms} == {"g1", "g2"}
 
     @pytest.mark.asyncio
     async def test_api_failure_returns_empty(self):

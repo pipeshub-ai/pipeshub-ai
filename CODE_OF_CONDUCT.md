@@ -1,5 +1,11 @@
 # Contributor Covenant Code of Conduct
 
+<div align="center">
+
+**Translations:** [Français](docs/i18n/fr/CODE_OF_CONDUCT.md) · [Deutsch](docs/i18n/de/CODE_OF_CONDUCT.md) · [简体中文](docs/i18n/zh-CN/CODE_OF_CONDUCT.md) · [日本語](docs/i18n/ja/CODE_OF_CONDUCT.md) · [Русский](docs/i18n/ru/CODE_OF_CONDUCT.md) · [עברית](docs/i18n/he/CODE_OF_CONDUCT.md) · [한국어](docs/i18n/ko/CODE_OF_CONDUCT.md) · [Español](docs/i18n/es/CODE_OF_CONDUCT.md) · [Português](docs/i18n/pt/CODE_OF_CONDUCT.md) · [Türkçe](docs/i18n/tr/CODE_OF_CONDUCT.md) · [Tiếng Việt](docs/i18n/vi/CODE_OF_CONDUCT.md) · [Italiano](docs/i18n/it/CODE_OF_CONDUCT.md)
+
+</div>
+
 ## Our Pledge
 
 We as members, contributors, and leaders pledge to make participation in our

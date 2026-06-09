@@ -591,7 +591,8 @@ class ConnectorRegistry:
             instance_data: Optional instance-specific data from database
             scope: Optional scope override
             include_config: When False, omits the full ``config`` blob and promotes
-                ``documentationLinks`` to a top-level field.  Use False for list
+                ``documentationLinks``, ``isAdminAccessRequired``, and
+                ``personalConnectorType`` to top-level fields.  Use False for list
                 endpoints to keep payloads lean; use True (default) only for the
                 single-item / schema endpoints that genuinely need the full config.
 
@@ -612,16 +613,22 @@ class ConnectorRegistry:
             'supportsSync': connector_config.get('supportsSync', False),
             'supportsAgent': connector_config.get('supportsAgent', False),
             'documentationLinks': connector_config.get('documentationLinks', []),
+            'isAdminAccessRequired': connector_config.get('isAdminAccessRequired', False),
+            'personalConnectorType': connector_config.get('personalConnectorType'),
             'scope': scope if scope else metadata.get('connectorScopes', [ConnectorScope.PERSONAL.value]),
             'connectorInfo': metadata.get('connectorInfo'),
         }
 
+        _promoted_config_keys = frozenset({
+            'documentationLinks',
+            'isAdminAccessRequired',
+            'personalConnectorType',
+        })
+
         if include_config:
-            # Exclude documentationLinks from the config blob since it is already
-            # promoted to a top-level field above.  This avoids duplication and
-            # makes the canonical location unambiguous for all callers.
+            # Exclude promoted keys from the config blob to avoid duplication.
             connector_info['config'] = {
-                k: v for k, v in connector_config.items() if k != 'documentationLinks'
+                k: v for k, v in connector_config.items() if k not in _promoted_config_keys
             }
 
         # Add instance-specific data if provided

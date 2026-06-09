@@ -10,7 +10,11 @@ import { isProcessedError } from '@/lib/api/api-error';
 import { AIModelsApi } from '@/app/(main)/workspace/ai-models/api';
 import type { AIModelProvider, ConfiguredModel, CapabilitySection } from '@/app/(main)/workspace/ai-models/types';
 import type { MainSection } from '@/app/(main)/workspace/ai-models/store';
-import { ProviderGrid, ModelConfigDialog } from '@/app/(main)/workspace/ai-models/components';
+import {
+  ProviderGrid,
+  ModelConfigDialog,
+  type ModelConfigSaveResult,
+} from '@/app/(main)/workspace/ai-models/components';
 
 /** If the registry includes `providerId: 'default'`, show it first; otherwise preserve API order. */
 function orderDefaultEmbeddingProviderFirst(providers: AIModelProvider[]): AIModelProvider[] {
@@ -21,6 +25,9 @@ function orderDefaultEmbeddingProviderFirst(providers: AIModelProvider[]): AIMod
   list.unshift(row);
   return list;
 }
+
+/** Longer than default success toasts so users can read the model name before continuing. */
+const MODEL_ADDED_TOAST_DURATION_MS = 6000;
 
 interface StepEmbeddingModelProps {
   systemStepIndex: number;
@@ -139,10 +146,18 @@ export function StepEmbeddingModel({
     setEmbeddingDefaultDialog(false);
   }, [setEmbeddingDefaultDialog]);
 
-  const handleModelConfigSaved = useCallback(() => {
-    void loadModels();
-    setEmbeddingDefaultDialog(false);
-  }, [loadModels, setEmbeddingDefaultDialog]);
+  const handleModelConfigSaved = useCallback(
+    (result: ModelConfigSaveResult) => {
+      if (result.mode === 'add') {
+        toast.success(t('onboarding.toastModelAddedEmbedding', { name: result.modelName }), {
+          duration: MODEL_ADDED_TOAST_DURATION_MS,
+        });
+      }
+      void loadModels();
+      setEmbeddingDefaultDialog(false);
+    },
+    [loadModels, setEmbeddingDefaultDialog, t]
+  );
 
   const handleAdd = useCallback((provider: AIModelProvider, capability: string) => {
     setDialogMode('add');

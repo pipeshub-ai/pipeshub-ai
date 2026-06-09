@@ -1075,3 +1075,103 @@ class TestMoveRecord:
         client = TestClient(app)
         resp = client.put("/api/v1/kb/kb1/record/r1/move", json={"newParentId": "f1"})
         assert resp.status_code == 500
+
+
+class TestValidateFolderForUpload:
+    """Tests for GET /api/v1/kb/{kb_id}/folder/{folder_id}/validate."""
+
+    def test_valid_folder_returns_200(self):
+        app, kb_svc, _ = _make_app()
+        kb_svc.validate_folder_for_upload = AsyncMock(
+            return_value={"valid": True, "upload_target": "folder"}
+        )
+        client = TestClient(app)
+        resp = client.get("/api/v1/kb/kb1/folder/f1/validate")
+        assert resp.status_code == 200
+        assert resp.json()["message"] == "Folder is valid for upload"
+
+    def test_folder_not_in_kb_returns_404(self):
+        app, kb_svc, _ = _make_app()
+        kb_svc.validate_folder_for_upload = AsyncMock(
+            return_value={
+                "valid": False, "success": False,
+                "code": 404, "reason": "Folder f1 not found in KB kb1",
+            }
+        )
+        client = TestClient(app)
+        resp = client.get("/api/v1/kb/kb1/folder/f1/validate")
+        assert resp.status_code == 404
+
+    def test_nonexistent_folder_returns_404(self):
+        app, kb_svc, _ = _make_app()
+        kb_svc.validate_folder_for_upload = AsyncMock(
+            return_value={
+                "valid": False, "success": False,
+                "code": 404, "reason": "Folder ghost not found",
+            }
+        )
+        client = TestClient(app)
+        resp = client.get("/api/v1/kb/kb1/folder/ghost/validate")
+        assert resp.status_code == 404
+
+    def test_insufficient_permission_returns_403(self):
+        app, kb_svc, _ = _make_app()
+        kb_svc.validate_folder_for_upload = AsyncMock(
+            return_value={
+                "valid": False, "success": False,
+                "code": 403, "reason": "Insufficient permissions",
+            }
+        )
+        client = TestClient(app)
+        resp = client.get("/api/v1/kb/kb1/folder/f1/validate")
+        assert resp.status_code == 403
+
+    def test_service_error_returns_500(self):
+        app, kb_svc, _ = _make_app()
+        kb_svc.validate_folder_for_upload = AsyncMock(
+            return_value={
+                "valid": False, "success": False,
+                "code": 500, "reason": "Internal error",
+            }
+        )
+        client = TestClient(app)
+        resp = client.get("/api/v1/kb/kb1/folder/f1/validate")
+        assert resp.status_code == 500
+
+    def test_unexpected_exception_returns_500(self):
+        app, kb_svc, _ = _make_app()
+        kb_svc.validate_folder_for_upload = AsyncMock(side_effect=RuntimeError("db crash"))
+        client = TestClient(app)
+        resp = client.get("/api/v1/kb/kb1/folder/f1/validate")
+        assert resp.status_code == 500
+
+    def test_missing_user_id_returns_400(self):
+        """Middleware injects userId; simulate missing userId to hit the 400 guard."""
+        from app.connectors.sources.localKB.api.kb_router import get_kb_service
+        from app.api.middlewares.auth import require_scopes
+
+        app = FastAPI()
+        from app.connectors.sources.localKB.api.kb_router import kb_router
+        app.include_router(kb_router)
+
+        kb_svc = AsyncMock()
+        container = MagicMock()
+        container.logger.return_value = MagicMock()
+        app.container = container
+        app.state.graph_provider = AsyncMock()
+        app.dependency_overrides[get_kb_service] = lambda: kb_svc
+
+        def _noop(*a, **kw):
+            async def _dep():
+                pass
+            return _dep
+        app.dependency_overrides[require_scopes] = _noop
+
+        @app.middleware("http")
+        async def inject_no_user(request, call_next):
+            request.state.user = {"userId": None, "orgId": None}
+            return await call_next(request)
+
+        client = TestClient(app)
+        resp = client.get("/api/v1/kb/kb1/folder/f1/validate")
+        assert resp.status_code == 400

@@ -342,6 +342,11 @@ def create_fetch_full_record_tool(
 
         Returns: Complete content of the records or {"ok": false, "error": "..."}.
         """
+        logger.info(
+            "fetch_full_record called: record_ids=%s, reason=%r",
+            record_ids,
+            reason,
+        )
         try:
             return await _fetch_multiple_records_impl(
                 record_ids,

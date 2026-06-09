@@ -52,6 +52,7 @@ services:
       - QUERY_BACKEND=http://localhost:8000
       - CONNECTOR_BACKEND=http://localhost:8088
       - INDEXING_BACKEND=http://localhost:8091
+      - EMBEDDING_SERVER_URL=http://localhost:8002
 
       # Key-Value Store Configuration
       - KV_STORE_TYPE=${KV_STORE_TYPE:-etcd}
@@ -103,7 +104,7 @@ services:
       - OLLAMA_API_URL=http://host.docker.internal:11434
 
       # Rate limit config
-      - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-2000}
+      - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-5000}
       - MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE=${MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE:-1000}
 
       # Set to true to replace secrets in config API responses with **** markers
@@ -151,6 +152,9 @@ services:
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
+      # Persist the HuggingFace model cache so models pulled at runtime survive
+      # container recreation instead of being re-downloaded on every restart.
+      - pipeshub_hf_cache:/root/.cache/huggingface
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -305,4 +309,6 @@ volumes:
   pipeshub_data:
     driver: local
   pipeshub_root_local:
+    driver: local
+  pipeshub_hf_cache:
     driver: local

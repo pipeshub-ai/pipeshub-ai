@@ -373,10 +373,24 @@ class TestJiraDataCenterCreateConnector:
 
 class TestJiraDataCenterRunSyncSmoke:
     @pytest.mark.asyncio
-    async def test_run_sync_exits_when_no_active_users(self) -> None:
+    async def test_run_sync_skips_when_pipeshub_directory_empty(self) -> None:
+        """Empty PipesHub directory short-circuits run_sync early.
+
+        ``get_all_active_users`` returns the org/directory roster. When it is
+        empty (fresh or single-user deployment) ``run_sync`` returns early
+        without hitting Jira — downstream methods must not be called.
+        """
         conn = _make_connector()
         conn.data_source = MagicMock()
         conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        conn._fetch_users = AsyncMock(return_value=[])
+        conn._sync_user_groups = AsyncMock(return_value={})
+        conn._fetch_application_roles_to_groups_mapping = AsyncMock(return_value={})
+        conn._fetch_projects = AsyncMock(return_value=([], []))
+        conn._sync_all_project_issues = AsyncMock(
+            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0}
+        )
+        conn._handle_issue_deletions = AsyncMock()
 
         with patch(
             "app.connectors.sources.atlassian.jira_data_center.connector.load_connector_filters",
@@ -384,6 +398,97 @@ class TestJiraDataCenterRunSyncSmoke:
             return_value=(None, None),
         ):
             await conn.run_sync()
+
+        # Early return — none of the Jira-side fetches should have been called.
+        conn._fetch_users.assert_not_awaited()
+        conn._fetch_projects.assert_not_awaited()
+        conn._sync_all_project_issues.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_run_sync_raises_when_init_fails(self) -> None:
+        """Regression: ``init()`` returning False must raise (not silently sync
+        against a None datasource).
+        """
+        conn = _make_connector()
+        conn.data_source = None
+        conn.init = AsyncMock(return_value=False)
+
+        with pytest.raises(RuntimeError, match="init failed"):
+            await conn.run_sync()
+        conn.init.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_run_sync_hoists_app_roles_mapping_call(self) -> None:
+        """``_fetch_application_roles_to_groups_mapping`` must be called exactly
+        once per ``run_sync`` and passed into ``_fetch_projects`` rather than
+        being re-fetched inside it.
+        """
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        # Non-empty directory so the early-return gate does not fire.
+        conn.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[MagicMock()]
+        )
+        conn._fetch_users = AsyncMock(return_value=[])
+        conn._sync_user_groups = AsyncMock(return_value={})
+        roles_mapping = {"jira-software": [{"name": "g1", "groupId": "g1"}]}
+        conn._fetch_application_roles_to_groups_mapping = AsyncMock(
+            return_value=roles_mapping
+        )
+        conn._fetch_projects = AsyncMock(return_value=([], []))
+        conn._sync_project_roles = AsyncMock()
+        conn._sync_project_lead_roles = AsyncMock()
+        conn._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        conn._sync_all_project_issues = AsyncMock(
+            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0}
+        )
+        conn._update_issues_sync_checkpoint = AsyncMock()
+        conn._handle_issue_deletions = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_data_center.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(None, None),
+        ):
+            await conn.run_sync()
+
+        conn._fetch_application_roles_to_groups_mapping.assert_awaited_once()
+        # The mapping must be threaded through to _fetch_projects so it is not
+        # re-fetched inside that call.
+        kwargs = conn._fetch_projects.await_args.kwargs
+        assert kwargs.get("app_roles_mapping") is roles_mapping
+
+    @pytest.mark.asyncio
+    async def test_run_sync_calls_handle_issue_deletions(self) -> None:
+        """DC ``run_sync`` must invoke deletion reconciliation after the
+        checkpoint update."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        # Non-empty directory so the early-return gate does not fire.
+        conn.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[MagicMock()]
+        )
+        conn._fetch_users = AsyncMock(return_value=[])
+        conn._sync_user_groups = AsyncMock(return_value={})
+        conn._fetch_application_roles_to_groups_mapping = AsyncMock(return_value={})
+        conn._fetch_projects = AsyncMock(return_value=([], []))
+        conn._sync_project_roles = AsyncMock()
+        conn._sync_project_lead_roles = AsyncMock()
+        conn._get_issues_sync_checkpoint = AsyncMock(return_value=1_700_000_000_000)
+        conn._sync_all_project_issues = AsyncMock(
+            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0}
+        )
+        conn._update_issues_sync_checkpoint = AsyncMock()
+        conn._handle_issue_deletions = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_data_center.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(None, None),
+        ):
+            await conn.run_sync()
+
+        conn._handle_issue_deletions.assert_awaited_once_with(1_700_000_000_000)
 
 
 # -----------------------------------------------------------------------------
@@ -424,3 +529,351 @@ class TestJiraDataCenterModuleHelpers:
     def test_adf_to_text_minimal(self) -> None:
         body = {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Hi"}]}]}
         assert "Hi" in adf_to_text(body)
+
+
+# -----------------------------------------------------------------------------
+# Deletion handling (DC v2 audit endpoint)
+# -----------------------------------------------------------------------------
+
+
+def _audit_record(
+    type_name: str = "ISSUE",
+    summary: str = "Issue deleted",
+    name: str = "PROJ-1",
+) -> dict:
+    return {
+        "summary": summary,
+        "category": "issue tracking",
+        "objectItem": {"name": name, "typeName": type_name},
+    }
+
+
+def _audit_response(records: list[dict], total: int | None = None):
+    resp = MagicMock()
+    resp.status = HttpStatusCode.OK.value
+    body = {"records": records}
+    if total is not None:
+        body["total"] = total
+    resp.json.return_value = body
+    return resp
+
+
+class TestJiraDataCenterDeletionAudit:
+    @pytest.mark.asyncio
+    async def test_handle_issue_deletions_skips_when_no_baseline(self) -> None:
+        """First sync (no audit checkpoint, no global checkpoint) is a no-op."""
+        conn = _make_connector()
+        conn.issues_sync_point.read_sync_point = AsyncMock(return_value=None)
+        conn._detect_and_handle_deletions = AsyncMock()
+
+        await conn._handle_issue_deletions(None)
+
+        conn._detect_and_handle_deletions.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_issue_deletions_uses_audit_checkpoint(self) -> None:
+        """Audit cursor advances independently of the JQL ``updated`` window."""
+        conn = _make_connector()
+        conn.issues_sync_point.read_sync_point = AsyncMock(
+            return_value={"last_sync_time": 1_700_000_000_000}
+        )
+        conn.issues_sync_point.update_sync_point = AsyncMock()
+        conn._detect_and_handle_deletions = AsyncMock(return_value=2)
+
+        # global_last_sync_time is older — audit checkpoint wins.
+        await conn._handle_issue_deletions(1_600_000_000_000)
+
+        conn._detect_and_handle_deletions.assert_awaited_once_with(1_700_000_000_000)
+        conn.issues_sync_point.update_sync_point.assert_awaited_once()
+        args, kwargs = conn.issues_sync_point.update_sync_point.await_args
+        assert args[0] == "issues_audit_deletions"
+        assert "last_sync_time" in args[1]
+
+    @pytest.mark.asyncio
+    async def test_handle_issue_deletions_falls_back_to_global_checkpoint(self) -> None:
+        conn = _make_connector()
+        conn.issues_sync_point.read_sync_point = AsyncMock(return_value=None)
+        conn.issues_sync_point.update_sync_point = AsyncMock()
+        conn._detect_and_handle_deletions = AsyncMock(return_value=0)
+
+        await conn._handle_issue_deletions(1_600_000_000_000)
+
+        conn._detect_and_handle_deletions.assert_awaited_once_with(1_600_000_000_000)
+
+    @pytest.mark.asyncio
+    async def test_handle_issue_deletions_swallows_detect_errors(self) -> None:
+        """Audit pass is a reconciliation pass — failures must NOT raise into
+        the outer ``run_sync`` try/except."""
+        conn = _make_connector()
+        conn.issues_sync_point.read_sync_point = AsyncMock(
+            return_value={"last_sync_time": 1_700_000_000_000}
+        )
+        conn.issues_sync_point.update_sync_point = AsyncMock()
+        conn._detect_and_handle_deletions = AsyncMock(side_effect=RuntimeError("boom"))
+
+        # No exception should propagate.
+        await conn._handle_issue_deletions(None)
+
+        # And the checkpoint must NOT be advanced if the pass failed.
+        conn.issues_sync_point.update_sync_point.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fetch_deleted_issues_from_audit_filters_non_issue_rows(self) -> None:
+        """Only ``objectItem.typeName == "ISSUE"`` rows with a delete-shaped
+        summary are returned; everything else (USER, ISSUE without "delete"
+        summary, etc.) is ignored."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+
+        records = [
+            _audit_record(name="PROJ-1"),  # match
+            _audit_record(type_name="USER", name="alice"),  # wrong type
+            _audit_record(summary="Issue updated", name="PROJ-2"),  # wrong summary
+            _audit_record(summary="ISSUE DELETED", name="PROJ-3"),  # case-insensitive match
+            {"summary": "Issue deleted", "objectItem": {}},  # no name
+        ]
+        mock_ds = MagicMock()
+        mock_ds.get_audit_records_v2 = AsyncMock(
+            return_value=_audit_response(records, total=len(records))
+        )
+
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
+            keys = await conn._fetch_deleted_issues_from_audit("from", "to")
+
+        assert keys == ["PROJ-1", "PROJ-3"]
+
+    @pytest.mark.asyncio
+    async def test_fetch_deleted_issues_from_audit_handles_forbidden(self) -> None:
+        """Non-admin (403) callers must NOT raise and must NOT loop — audit is
+        admin-gated on DC."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        resp = MagicMock()
+        resp.status = HttpStatusCode.FORBIDDEN.value
+        resp.text.return_value = "forbidden"
+        mock_ds = MagicMock()
+        mock_ds.get_audit_records_v2 = AsyncMock(return_value=resp)
+
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
+            keys = await conn._fetch_deleted_issues_from_audit("from", "to")
+
+        assert keys == []
+        mock_ds.get_audit_records_v2.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_fetch_deleted_issues_paginates_until_total_reached(self) -> None:
+        """Pagination must stop when ``offset + len(records) >= total`` — guard
+        against infinite loops when the server reports a non-decreasing total.
+        """
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+
+        page1 = _audit_response(
+            [_audit_record(name=f"PROJ-{i}") for i in range(500)], total=750
+        )
+        page2 = _audit_response(
+            [_audit_record(name=f"PROJ-{i}") for i in range(500, 750)], total=750
+        )
+
+        mock_ds = MagicMock()
+        mock_ds.get_audit_records_v2 = AsyncMock(side_effect=[page1, page2])
+
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
+            keys = await conn._fetch_deleted_issues_from_audit("from", "to")
+
+        assert len(keys) == 750
+        assert mock_ds.get_audit_records_v2.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_handle_deleted_issue_skips_when_still_in_jira(self) -> None:
+        """Audit hit + 200 OK from ``get_issue_v2`` means the issue was moved or
+        renamed, not deleted. Don't cascade-delete from our side."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        resp = MagicMock()
+        resp.status = HttpStatusCode.OK.value
+        mock_ds = MagicMock()
+        mock_ds.get_issue_v2 = AsyncMock(return_value=resp)
+
+        tx_store = MagicMock()
+        tx_store.get_record_by_issue_key = AsyncMock()
+        tx_store.delete_records_and_relations = AsyncMock()
+        conn.data_store_provider = MagicMock()
+        conn.data_store_provider.transaction = MagicMock(
+            return_value=_aenter_ctx(tx_store)
+        )
+
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
+            await conn._handle_deleted_issue("PROJ-1")
+
+        # Must not have touched the DB at all.
+        tx_store.get_record_by_issue_key.assert_not_called()
+        tx_store.delete_records_and_relations.assert_not_called()
+
+
+class _AsyncContext:
+    def __init__(self, target) -> None:
+        self._target = target
+
+    async def __aenter__(self):
+        return self._target
+
+    async def __aexit__(self, *a, **kw) -> None:
+        return None
+
+
+def _aenter_ctx(target):
+    return _AsyncContext(target)
+
+
+# -----------------------------------------------------------------------------
+# _fetch_users() — bulk-forbidden fallback (mirrors _app_roles_forbidden)
+# -----------------------------------------------------------------------------
+
+
+def _user_search_response(status: int, payload=None):
+    resp = MagicMock()
+    resp.status = status
+    resp.json = MagicMock(return_value=payload if payload is not None else [])
+    resp.text = MagicMock(return_value="")
+    return resp
+
+
+class TestJiraDataCenterUserBulkForbidden:
+    """Regression: ``GET /rest/api/2/user/search`` requires the *Browse users
+    and groups* global permission. Non-admin sync users get 401/403 there, and
+    before the fallback this raised through ``_fetch_users`` and killed the
+    whole ``run_sync``. The fallback now (a) returns the partial users
+    collected so far, (b) sets ``_user_bulk_forbidden``, and (c) lets Phase 5
+    sweep the PipesHub directory via per-email ``user/search?username=<email>``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_bulk_403_returns_partial_and_sets_flag(self) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        mock_ds = MagicMock()
+        mock_ds.get_user_search_v2 = AsyncMock(
+            return_value=_user_search_response(HttpStatusCode.FORBIDDEN.value)
+        )
+        conn._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await conn._fetch_users()
+
+        assert result == []
+        assert conn._user_bulk_forbidden is True
+        # No PipesHub candidates → Phase 5 short-circuits (no reverse lookup).
+        # ``get_user_search_v2`` was only called once (the bulk attempt).
+        assert mock_ds.get_user_search_v2.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_bulk_401_treated_as_forbidden(self) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        mock_ds = MagicMock()
+        mock_ds.get_user_search_v2 = AsyncMock(
+            return_value=_user_search_response(HttpStatusCode.UNAUTHORIZED.value)
+        )
+        conn._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await conn._fetch_users()
+
+        assert result == []
+        assert conn._user_bulk_forbidden is True
+
+    @pytest.mark.asyncio
+    async def test_bulk_500_still_raises(self) -> None:
+        """5xx is real infra failure — must continue to propagate so the
+        sync surfaces it (retry / alerting) rather than silently degrading.
+        """
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        mock_ds = MagicMock()
+        mock_ds.get_user_search_v2 = AsyncMock(
+            return_value=_user_search_response(HttpStatusCode.INTERNAL_SERVER_ERROR.value)
+        )
+        conn._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        with pytest.raises(Exception, match="Failed to fetch users"):
+            await conn._fetch_users()
+        assert conn._user_bulk_forbidden is False
+
+    @pytest.mark.asyncio
+    async def test_bulk_forbidden_triggers_directory_sweep(self) -> None:
+        """With bulk forbidden, Phase 5 must still sweep every PipesHub
+        directory candidate via per-email lookup, not be skipped by the
+        ``unresolved_count == 0`` early exit.
+        """
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        conn.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[
+                MagicMock(email="alice@example.com"),
+                MagicMock(email="bob@example.com"),
+            ]
+        )
+
+        forbidden_resp = _user_search_response(HttpStatusCode.FORBIDDEN.value)
+        alice_resp = _user_search_response(
+            HttpStatusCode.OK.value,
+            [{"key": "alice-key", "name": "alice", "displayName": "Alice"}],
+        )
+        bob_resp = _user_search_response(
+            HttpStatusCode.OK.value,
+            [{"key": "bob-key", "name": "bob", "displayName": "Bob"}],
+        )
+
+        # First call = bulk (`username="."`) -> 403.
+        # Subsequent calls = per-email reverse lookup -> 200 with one user.
+        per_email_responses = {"alice@example.com": alice_resp, "bob@example.com": bob_resp}
+
+        async def get_user_search_v2(**kwargs):
+            username = kwargs.get("username")
+            if username == ".":
+                return forbidden_resp
+            return per_email_responses.get(username, _user_search_response(404))
+
+        mock_ds = MagicMock()
+        mock_ds.get_user_search_v2 = AsyncMock(side_effect=get_user_search_v2)
+        conn._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await conn._fetch_users()
+
+        assert conn._user_bulk_forbidden is True
+        emails = {u.email for u in result}
+        assert emails == {"alice@example.com", "bob@example.com"}
+        # 1 bulk + 2 per-email = 3 total calls; both candidates must be swept
+        # rather than the early-exit firing on unresolved_count==0.
+        assert mock_ds.get_user_search_v2.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_bulk_forbidden_with_empty_directory_resolves_nothing(self) -> None:
+        """Both bulk forbidden AND empty directory → return cleanly, no
+        per-email lookups, no exception.
+        """
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+
+        mock_ds = MagicMock()
+        mock_ds.get_user_search_v2 = AsyncMock(
+            return_value=_user_search_response(HttpStatusCode.FORBIDDEN.value)
+        )
+        conn._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await conn._fetch_users()
+        assert result == []
+        assert conn._user_bulk_forbidden is True
+        # Only the bulk attempt; no per-email follow-ups.
+        assert mock_ds.get_user_search_v2.await_count == 1

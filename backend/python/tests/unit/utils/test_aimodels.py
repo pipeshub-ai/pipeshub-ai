@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.utils.aimodels import (
     MAX_OUTPUT_TOKENS,
     MAX_OUTPUT_TOKENS_CLAUDE_4_5,
@@ -99,25 +100,16 @@ class TestGetAnthropicMaxTokens:
 class TestGetDefaultEmbeddingModel:
     """Tests for get_default_embedding_model()."""
 
-    @patch("app.utils.aimodels.HuggingFaceEmbeddings", create=True)
-    def test_creates_huggingface_model(self, _mock_hf_class):
-        """Verify the function attempts to create a HuggingFaceEmbeddings model."""
-        # We need to patch the import inside the function
-        mock_hf = MagicMock()
-        with patch.dict("sys.modules", {"langchain_huggingface": MagicMock(HuggingFaceEmbeddings=mock_hf)}):
-            # Re-import to pick up the mock
-            import importlib
-            import sys
-
-            # Clear the cached import
-            mod_name = "app.utils.aimodels"
-            if mod_name in sys.modules:
-                mod = sys.modules[mod_name]
-            # Call the function which internally imports HuggingFaceEmbeddings
-            from app.utils.aimodels import get_default_embedding_model
-            result = get_default_embedding_model()
-            # The function should return whatever HuggingFaceEmbeddings() returns
-            assert result is not None
+    @patch("app.utils.embedding_server_client.EmbeddingServerEmbeddings")
+    def test_creates_embedding_server_client(self, mock_cls):
+        """Default embeddings route through the local embedding server."""
+        mock_cls.return_value = MagicMock()
+        result = get_default_embedding_model()
+        mock_cls.assert_called_once_with(
+            model=DEFAULT_EMBEDDING_MODEL,
+            trust_remote_code=False,
+        )
+        assert result is mock_cls.return_value
 
 
 # ---------------------------------------------------------------------------
@@ -198,13 +190,13 @@ class TestGetEmbeddingModel:
         # Should NOT double-prefix
         assert call_kwargs.kwargs["model"] == "models/text-embedding-004"
 
-    @patch("langchain_community.embeddings.HuggingFaceEmbeddings")
-    def test_hugging_face(self, mock_cls):
-        mock_cls.return_value = MagicMock()
+    @patch("app.utils.aimodels.get_embedding_server_embeddings")
+    def test_hugging_face(self, mock_fn):
+        mock_fn.return_value = MagicMock()
         config = self._base_config()
         result = get_embedding_model(EmbeddingProvider.HUGGING_FACE.value, config)
-        mock_cls.assert_called_once()
-        assert result is mock_cls.return_value
+        mock_fn.assert_called_once_with("test-model", trust_remote_code=False)
+        assert result is mock_fn.return_value
 
     @patch("langchain_community.embeddings.jina.JinaEmbeddings")
     def test_jina_ai(self, mock_cls):
@@ -248,13 +240,13 @@ class TestGetEmbeddingModel:
         mock_cls.assert_called_once()
         assert result is mock_cls.return_value
 
-    @patch("langchain_community.embeddings.SentenceTransformerEmbeddings")
-    def test_sentence_transformers(self, mock_cls):
-        mock_cls.return_value = MagicMock()
+    @patch("app.utils.aimodels.get_embedding_server_embeddings")
+    def test_sentence_transformers(self, mock_fn):
+        mock_fn.return_value = MagicMock()
         config = self._base_config()
         result = get_embedding_model(EmbeddingProvider.SENTENCE_TRANSFOMERS.value, config)
-        mock_cls.assert_called_once()
-        assert result is mock_cls.return_value
+        mock_fn.assert_called_once_with("test-model", trust_remote_code=False)
+        assert result is mock_fn.return_value
 
     @patch("langchain_openai.embeddings.OpenAIEmbeddings")
     def test_openai_compatible(self, mock_cls):
@@ -499,11 +491,11 @@ class TestGetGeneratorModel:
     @patch("langchain_openai.ChatOpenAI")
     def test_minimax(self, mock_cls):
         mock_cls.return_value = MagicMock()
-        config = self._base_config("MiniMax-M2.7")
+        config = self._base_config("MiniMax-M3")
         result = get_generator_model(LLMProvider.MINIMAX.value, config)
         mock_cls.assert_called_once()
         call_kwargs = mock_cls.call_args.kwargs
-        assert call_kwargs["model"] == "MiniMax-M2.7"
+        assert call_kwargs["model"] == "MiniMax-M3"
         assert call_kwargs["base_url"] == "https://api.minimax.io/v1"
         assert call_kwargs["stream_usage"] is True
         assert result is mock_cls.return_value
@@ -511,7 +503,7 @@ class TestGetGeneratorModel:
     @patch("langchain_openai.ChatOpenAI")
     def test_minimax_temperature_clamping(self, mock_cls):
         mock_cls.return_value = MagicMock()
-        config = self._base_config("MiniMax-M2.7")
+        config = self._base_config("MiniMax-M3")
         config["configuration"]["temperature"] = 0.0
         result = get_generator_model(LLMProvider.MINIMAX.value, config)
         call_kwargs = mock_cls.call_args.kwargs
@@ -521,7 +513,7 @@ class TestGetGeneratorModel:
     @patch("langchain_openai.ChatOpenAI")
     def test_minimax_temperature_upper_bound(self, mock_cls):
         mock_cls.return_value = MagicMock()
-        config = self._base_config("MiniMax-M2.7")
+        config = self._base_config("MiniMax-M3")
         config["configuration"]["temperature"] = 2.0
         result = get_generator_model(LLMProvider.MINIMAX.value, config)
         call_kwargs = mock_cls.call_args.kwargs

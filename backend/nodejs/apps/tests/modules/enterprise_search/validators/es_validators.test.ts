@@ -10,21 +10,27 @@ import {
   enterpriseSearchSearchSchema,
   searchIdParamsSchema,
   agentConversationParamsSchema,
+  deleteAgentConversationParamsSchema,
   agentConversationTitleParamsSchema,
   addMessageParamsSchema,
   regenerateAnswersParamsSchema,
+  AGENT_CHAT_MODES,
   agentStreamCreateSchema,
   agentAddMessageParamsSchema,
   updateFeedbackParamsSchema,
   updateAgentFeedbackParamsSchema,
   getAllConversationsQuerySchema,
   listAllArchivesConversationQuerySchema,
+  listAllArchivesAgentConversationQuerySchema,
   searchArchivedConversationsQuerySchema,
   FEEDBACK_CATEGORIES,
   attachmentUploadSchema,
   attachmentRecordIdParamsSchema,
   agentAttachmentUploadSchema,
   agentAttachmentRecordIdParamsSchema,
+  createAgentSchema,
+  updateAgentSchema,
+  listAgentsQuerySchema,
 } from '../../../../src/modules/enterprise_search/validators/es_validators'
 
 describe('enterprise_search/validators/es_validators', () => {
@@ -205,6 +211,41 @@ describe('enterprise_search/validators/es_validators', () => {
     })
   })
 
+  describe('deleteAgentConversationParamsSchema', () => {
+    it('should accept valid agent key and conversation id', () => {
+      const data = {
+        params: {
+          agentKey: 'agent-1',
+          conversationId: '507f1f77bcf86cd799439011',
+        },
+      }
+      const result = deleteAgentConversationParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject empty agent key', () => {
+      const data = {
+        params: {
+          agentKey: '',
+          conversationId: '507f1f77bcf86cd799439011',
+        },
+      }
+      const result = deleteAgentConversationParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject invalid conversation id', () => {
+      const data = {
+        params: {
+          agentKey: 'agent-1',
+          conversationId: 'not-an-objectid',
+        },
+      }
+      const result = deleteAgentConversationParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+  })
+
   describe('conversationShareParamsSchema', () => {
     it('should accept valid userIds array', () => {
       const data = {
@@ -221,6 +262,56 @@ describe('enterprise_search/validators/es_validators', () => {
         body: { userIds: [] },
       }
       const result = conversationShareParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+  })
+
+  describe('listAgentsQuerySchema', () => {
+    it('should apply documented defaults for omitted sort params', () => {
+      const result = listAgentsQuerySchema.safeParse({ query: {} })
+      expect(result.success).to.be.true
+      expect(result.data?.query).to.deep.equal({
+        page: 1,
+        limit: 20,
+        sort_by: 'updatedAtTimestamp',
+        sort_order: 'desc',
+      })
+    })
+
+    it('should accept and preserve all supported query params', () => {
+      const result = listAgentsQuerySchema.safeParse({
+        query: {
+          page: '2',
+          limit: '50',
+          search: ' roadmap ',
+          sort_by: ' createdAtTimestamp ',
+          sort_order: 'asc',
+        },
+      })
+
+      expect(result.success).to.be.true
+      expect(result.data?.query).to.deep.equal({
+        page: 2,
+        limit: 50,
+        search: 'roadmap',
+        sort_by: 'createdAtTimestamp',
+        sort_order: 'asc',
+      })
+    })
+
+    it('should reject search with XSS patterns', () => {
+      const result = listAgentsQuerySchema.safeParse({
+        query: { search: '<script>alert(1)</script>' },
+      })
+
+      expect(result.success).to.be.false
+    })
+
+    it('should reject search with format specifiers', () => {
+      const result = listAgentsQuerySchema.safeParse({
+        query: { search: 'hello %s' },
+      })
+
       expect(result.success).to.be.false
     })
   })
@@ -318,6 +409,94 @@ describe('enterprise_search/validators/es_validators', () => {
       }
       const result = agentAddMessageParamsSchema.safeParse(data)
       expect(result.success).to.be.true
+    })
+  })
+
+  describe('agentStreamCreateSchema — chatMode', () => {
+    const validParams = { agentKey: 'slack-bot-agent' }
+
+    for (const chatMode of AGENT_CHAT_MODES) {
+      it(`should accept chatMode ${chatMode}`, () => {
+        const data = {
+          params: validParams,
+          body: { query: 'hello', chatMode },
+        }
+        const result = agentStreamCreateSchema.safeParse(data)
+        expect(result.success, `chatMode ${chatMode} should be accepted`).to.be.true
+      })
+    }
+
+    it('should reject assistant-style chatMode internal_search', () => {
+      const data = {
+        params: validParams,
+        body: { query: 'hello', chatMode: 'internal_search' },
+      }
+      const result = agentStreamCreateSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should strip quickMode and caller context from agent stream create body', () => {
+      const data = {
+        params: validParams,
+        body: {
+          query: 'hello',
+          quickMode: true,
+          callerDisplayName: 'Slack User',
+          callerEmail: 'slack-user@example.com',
+        },
+      }
+      const result = agentStreamCreateSchema.safeParse(data)
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body).to.not.have.property('quickMode')
+        expect(result.data.body).to.not.have.property('callerDisplayName')
+        expect(result.data.body).to.not.have.property('callerEmail')
+      }
+    })
+  })
+
+  describe('agentAddMessageParamsSchema — chatMode', () => {
+    const validParams = {
+      agentKey: 'slack-bot-agent',
+      conversationId: '507f1f77bcf86cd799439011',
+    }
+
+    for (const chatMode of AGENT_CHAT_MODES) {
+      it(`should accept chatMode ${chatMode}`, () => {
+        const data = {
+          params: validParams,
+          body: { query: 'follow up', chatMode },
+        }
+        const result = agentAddMessageParamsSchema.safeParse(data)
+        expect(result.success, `chatMode ${chatMode} should be accepted`).to.be.true
+      })
+    }
+
+    it('should reject assistant-style chatMode internal_search', () => {
+      const data = {
+        params: validParams,
+        body: { query: 'follow up', chatMode: 'internal_search' },
+      }
+      const result = agentAddMessageParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject agent-prefixed chatMode agent:auto', () => {
+      const data = {
+        params: validParams,
+        body: { query: 'follow up', chatMode: 'agent:auto' },
+      }
+      const result = agentAddMessageParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    it('should reject empty chatMode', () => {
+      const data = {
+        params: validParams,
+        body: { query: 'follow up', chatMode: '' },
+      }
+      const result = agentAddMessageParamsSchema.safeParse(data)
+      expect(result.success).to.be.false
     })
   })
 
@@ -424,28 +603,27 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
 
-    it('should accept feedback with suggestions comment', () => {
-      const data = {
-        params: validParams,
-        body: {
-          isHelpful: false,
-          comments: { suggestions: 'Include more details' },
-        },
-      }
-      const result = updateFeedbackParamsSchema.safeParse(data)
-      expect(result.success).to.be.true
-    })
-
-    it('should accept feedback with metrics', () => {
+    it('should strip removed submit fields from parsed body', () => {
       const data = {
         params: validParams,
         body: {
           isHelpful: true,
+          categories: ['excellent_answer'],
+          ratings: { accuracy: 5 },
           metrics: { userInteractionTime: 5000, feedbackSessionId: 'session-1' },
+          comments: {
+            positive: 'Clear and useful.',
+            suggestions: 'Include more details',
+          },
         },
       }
       const result = updateFeedbackParamsSchema.safeParse(data)
       expect(result.success).to.be.true
+      expect(result.data?.body).to.deep.equal({
+        isHelpful: true,
+        categories: ['excellent_answer'],
+        comments: { positive: 'Clear and useful.' },
+      })
     })
 
     it('should reject invalid conversationId format', () => {
@@ -518,7 +696,7 @@ describe('enterprise_search/validators/es_validators', () => {
         body: {
           isHelpful: false,
           categories: ['poor_citations', 'unclear_explanation'],
-          comments: { negative: 'Citations were wrong', suggestions: 'Improve sources' },
+          comments: { negative: 'Citations were wrong' },
         },
       }
       const result = updateAgentFeedbackParamsSchema.safeParse(data)
@@ -871,6 +1049,52 @@ describe('enterprise_search/validators/es_validators', () => {
   })
 
   // ---------------------------------------------------------------------------
+  // listAllArchivesAgentConversationQuerySchema
+  // ---------------------------------------------------------------------------
+
+  describe('listAllArchivesAgentConversationQuerySchema', () => {
+    const base = {
+      params: { agentKey: 'test-agent-key' },
+    }
+
+    it('should accept empty query (pagination defaults apply)', () => {
+      const result = listAllArchivesAgentConversationQuerySchema.safeParse({
+        ...base,
+        query: {},
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.query.page).to.equal(1)
+        expect(result.data.query.limit).to.equal(20)
+      }
+    })
+
+    it('should reject unknown query keys such as shared', () => {
+      const result = listAllArchivesAgentConversationQuerySchema.safeParse({
+        ...base,
+        query: { shared: 'maybe' },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject invalid startDate format', () => {
+      const result = listAllArchivesAgentConversationQuerySchema.safeParse({
+        ...base,
+        query: { startDate: 'not-a-date' },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject invalid endDate format', () => {
+      const result = listAllArchivesAgentConversationQuerySchema.safeParse({
+        ...base,
+        query: { endDate: 'still-not-a-date' },
+      })
+      expect(result.success).to.be.false
+    })
+  })
+
+  // ---------------------------------------------------------------------------
   // attachmentRecordIdParamsSchema
   // ---------------------------------------------------------------------------
   describe('attachmentRecordIdParamsSchema', () => {
@@ -979,6 +1203,383 @@ describe('enterprise_search/validators/es_validators', () => {
       const data = { query: { search: 'test', page: '1000', limit: '100' } }
       const result = searchArchivedConversationsQuerySchema.safeParse(data)
       expect(result.success).to.be.true
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // createAgentSchema
+  // ---------------------------------------------------------------------------
+  describe('createAgentSchema', () => {
+    const validModel = {
+      modelKey: 'mk1',
+      modelName: 'mn1',
+      isReasoning: true,
+    }
+
+    it('should accept minimal valid body', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'My Agent', models: [validModel] },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept dialog-style body with empty optional strings', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Quick Agent',
+          description: '',
+          startMessage: '',
+          systemPrompt: '',
+          models: [validModel],
+          tags: [],
+          shareWithOrg: false,
+          isServiceAccount: false,
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept the agent builder create payload shape', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Test agent',
+          description: '',
+          startMessage: '',
+          systemPrompt: '',
+          models: [
+            {
+              provider: 'openAI',
+              modelName: 'gpt-5.4',
+              modelKey: '8c26d3bf-0e95-42f0-b81d-d65e9d1eecc0',
+              isReasoning: true,
+            },
+          ],
+          tags: [],
+          shareWithOrg: false,
+          isServiceAccount: false,
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept optional toolsets, knowledge, and webSearch', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Full Agent',
+          models: [validModel],
+          toolsets: [
+            {
+              name: 'slack',
+              displayName: 'Slack',
+              type: 'app',
+              tools: [{ name: 'send', fullName: 'slack.send' }],
+            },
+          ],
+          knowledge: [{ connectorId: 'conn-1', filters: { recordGroups: [] } }],
+          webSearch: { provider: 'serper', providerKey: 'key-1' },
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should strip unknown fields from create-agent payload objects', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [
+            {
+              modelKey: 'mk1',
+              modelName: 'mn1',
+              isReasoning: true,
+              provider: 'openai',
+              unexpectedModelField: 'drop-me',
+            },
+          ],
+          toolsets: [
+            {
+              name: 'slack',
+              displayName: 'Slack',
+              type: 'app',
+              tools: [
+                {
+                  name: 'send',
+                  fullName: 'slack.send',
+                  extraToolField: 'drop-me',
+                },
+              ],
+              extraToolsetField: 'drop-me',
+            },
+          ],
+          knowledge: [
+            {
+              connectorId: 'conn-1',
+              filters: { group: 'x' },
+              extraKnowledgeField: 'drop-me',
+            },
+          ],
+          webSearch: {
+            provider: 'serper',
+            providerKey: 'key-1',
+            unknownWebSearchField: 'drop-me',
+          },
+          unexpectedTopLevelField: 'drop-me',
+        },
+      })
+
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body).to.not.have.property('unexpectedTopLevelField')
+
+        const model = result.data.body.models[0]
+        expect(typeof model).to.equal('object')
+        if (typeof model === 'object') {
+          expect(model).to.not.have.property('unexpectedModelField')
+        }
+
+        const toolset = result.data.body.toolsets?.[0]
+        expect(toolset).to.exist
+        expect(toolset).to.not.have.property('extraToolsetField')
+        const tool = toolset?.tools?.[0]
+        expect(tool).to.exist
+        expect(tool).to.not.have.property('extraToolField')
+
+        const knowledge = result.data.body.knowledge?.[0]
+        expect(knowledge).to.exist
+        expect(knowledge).to.not.have.property('extraKnowledgeField')
+
+        if (result.data.body.webSearch && typeof result.data.body.webSearch === 'object') {
+          expect(result.data.body.webSearch).to.not.have.property('unknownWebSearchField')
+        }
+      }
+    })
+
+    it('should reject toolset name with uppercase display-style value', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          toolsets: [{ name: 'Jira', displayName: 'Jira', tools: [] }],
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject unknown toolset name', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          toolsets: [{ name: 'unknown_toolset', displayName: 'Unknown', tools: [] }],
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should accept webSearch as provider string', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Agent', models: [validModel], webSearch: 'tavily' },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept webSearch null', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Agent', models: [validModel], webSearch: null },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject missing name', () => {
+      const result = createAgentSchema.safeParse({
+        body: { models: [validModel] },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject blank name', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: '   ', models: [validModel] },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject empty models array', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Agent', models: [] },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject missing models without throwing', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Agent' },
+      })
+      expect(result.success).to.be.false
+      if (!result.success) {
+        expect(result.error.issues.some((i) => i.path.join('.') === 'body.models')).to
+          .be.true
+      }
+    })
+
+    it('should reject invalid models types without throwing', () => {
+      for (const models of [undefined, null, 'not-an-array', 42]) {
+        const result = createAgentSchema.safeParse({
+          body: { name: 'Agent', models },
+        })
+        expect(result.success).to.be.false
+      }
+    })
+
+    it('should reject null elements in models array without throwing', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Agent', models: [null] },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject models without isReasoning true', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [{ modelKey: 'mk1', modelName: 'mn1' }],
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject string-only model entries without a reasoning model', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Agent', models: ['mk1_mn1'] },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject models with dict entries missing modelKey', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [{ modelName: 'mn1', isReasoning: true }],
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should accept unknown webSearch provider strings', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          webSearch: { provider: 'invalid' },
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject name exceeding max length', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'a'.repeat(201), models: [validModel] },
+      })
+      expect(result.success).to.be.false
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // updateAgentSchema
+  // ---------------------------------------------------------------------------
+  describe('updateAgentSchema', () => {
+    const validModel = {
+      modelKey: 'mk1',
+      modelName: 'mn1',
+      isReasoning: true,
+    }
+
+    it('should accept empty body (no fields required for partial update)', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: {},
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept partial update with name only', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { name: 'Renamed Agent' },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept models with valid reasoning model', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: {
+          models: [
+            {
+              modelKey: 'mk1',
+              modelName: 'mn1',
+              provider: 'openai',
+              isReasoning: true,
+            },
+          ],
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject missing agentKey param', () => {
+      const result = updateAgentSchema.safeParse({
+        params: {},
+        body: { name: 'Some Agent' },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject empty agentKey param', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: '' },
+        body: { name: 'Some Agent' },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject empty models array', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { models: [] },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject models without isReasoning true', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: {
+          models: [
+            {
+              modelKey: 'mk1',
+              modelName: 'mn1',
+              isReasoning: false,
+            },
+          ],
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject string-only models without a reasoning model', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { models: ['some-model-string'] },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject name exceeding max length', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { name: 'a'.repeat(201) },
+      })
+      expect(result.success).to.be.false
     })
   })
 

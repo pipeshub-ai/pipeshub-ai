@@ -521,7 +521,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 await self._ensure_edge_definitions_up_to_date(GraphNames.KNOWLEDGE_GRAPH.value)
 
             # 3. Ensure persistent indexes for frequent query patterns
-            # await self._ensure_indexes()
+            await self._ensure_indexes()
 
             # 4. Seed departments collection with predefined department types
             await self._ensure_departments_seed()
@@ -595,12 +595,99 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Edge collections have automatic indexes on _from and _to fields which optimize
         graph traversals. Custom indexes below cover document-lookup hot paths.
         """
+        # ==================== RECORD INDEXES (Highest Priority) ====================
+        # Records are the most queried entity, especially in permission checks
+
         # COMPOSITE: virtualRecordId + orgId
         # Pattern: FOR record IN records FILTER record.virtualRecordId IN @ids AND record.orgId == @orgId
         # Used in: get_records_by_virtual_record_ids (Phase 3 batch fetch after Qdrant search)
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
             ["virtualRecordId", "orgId"],
+        )
+
+        # COMPOSITE: externalRecordId + connectorId (ALWAYS queried together)
+        # Pattern: FOR record IN records FILTER record.externalRecordId == @id AND record.connectorId == @cid
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["externalRecordId", "connectorId"],
+        )
+
+        # SINGLE: orgId (queried independently and with other fields)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["orgId"],
+        )
+
+        # SINGLE: connectorId (queried independently in many patterns)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["connectorId"],
+        )
+
+        # SINGLE: indexingStatus (pipeline queries)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["indexingStatus"],
+        )
+
+        # SINGLE: origin (heavily used in permission WHERE clauses)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["origin"],
+        )
+
+        # SINGLE: md5Checksum (duplicate detection)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["md5Checksum"],
+        )
+
+        # ==================== USER INDEXES (High Priority) ====================
+
+        # SINGLE: email (authentication, lookups)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.USERS.value,
+            ["email"],
+        )
+
+        # SINGLE: userId (user identification)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.USERS.value,
+            ["userId"],
+        )
+
+        # SINGLE: orgId (org-scoped queries)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.USERS.value,
+            ["orgId"],
+        )
+
+        # ==================== RECORDGROUP INDEXES (High Priority) ====================
+
+        # COMPOSITE: externalGroupId + connectorId (ALWAYS queried together)
+        # Pattern: FOR rg IN record_groups FILTER rg.externalGroupId == @id AND rg.connectorId == @cid
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORD_GROUPS.value,
+            ["externalGroupId", "connectorId"],
+        )
+
+        # SINGLE: orgId (org-scoped queries)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORD_GROUPS.value,
+            ["orgId"],
+        )
+
+        # SINGLE: connectorId (cleanup operations, queried independently)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORD_GROUPS.value,
+            ["connectorId"],
+        )
+
+        # SINGLE: groupType (KB filtering)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORD_GROUPS.value,
+            ["groupType"],
         )
 
     async def _ensure_departments_seed(self) -> None:
@@ -1287,13 +1374,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def reset_indexing_status_to_queued_for_record_ids(self, record_ids: list[str]) -> None:
         """
         Bulk-fetch records, then batch upsert indexingStatus=QUEUED where appropriate.
-        Skips missing ids, isInternal records, and docs already QUEUED or EMPTY.
+        Skips missing ids, isInternal records, and docs already QUEUED.
         """
         unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
         if not unique_ids:
             return
         coll = CollectionNames.RECORDS.value
-        skip_status = frozenset({ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value})
+        skip_status = frozenset({ProgressStatus.QUEUED.value})
         try:
             query = """
             FOR doc IN @@collection
@@ -3259,8 +3346,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "record_group_id": record_group_id,
                 "connector_id": connector_id,
                 "org_id": org_id,
-                "max_depth": max_depth,
             }
+            if max_depth > 0:
+                bind_vars["max_depth"] = max_depth
             if status_filters:
                 bind_vars["status_filters"] = status_filters
 
@@ -3340,14 +3428,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 rg_permission_filter = ""
                 record_permission_filter = ""
 
-            query = f"""
-            LET recordGroup = DOCUMENT(@@record_group_collection, @record_group_id)
-            FILTER recordGroup != null
-            FILTER recordGroup.orgId == @org_id
-
-            // Collect all record groups: starting group + nested groups up to max_depth
-            // Using belongsTo edges (child -> parent direction, so INBOUND from parent)
-            LET allRecordGroups = @max_depth > 0 ? UNION_DISTINCT(
+            # ArangoDB rejects 1..0 at parse time; build traversal only when max_depth > 0
+            if max_depth == 0:
+                all_record_groups_aql = "LET allRecordGroups = [recordGroup]"
+            else:
+                all_record_groups_aql = f"""
+            LET allRecordGroups = UNION_DISTINCT(
                 [recordGroup],
                 (FOR nestedRg IN (
                     FOR v IN 1..@max_depth INBOUND recordGroup._id {CollectionNames.BELONGS_TO.value}
@@ -3358,7 +3444,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     {rg_permission_filter}
                     RETURN nestedRg
                 )
-            ) : [recordGroup]
+            )"""
+
+            query = f"""
+            LET recordGroup = DOCUMENT(@@record_group_collection, @record_group_id)
+            FILTER recordGroup != null
+            FILTER recordGroup.orgId == @org_id
+
+            // Collect all record groups: starting group + nested groups up to max_depth
+            // Using belongsTo edges (child -> parent direction, so INBOUND from parent)
+            {all_record_groups_aql}
 
             // Get all records from all record groups via belongsTo edges
             LET allRecordsRaw = (
@@ -7456,6 +7551,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Check KB permissions
             user_role = await self.get_user_kb_permission(kb_context["kb_id"], user_key, transaction)
+            if not user_role:
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": f"You do not have permission to access this knowledge base"
+                }
             if user_role not in self.connector_delete_permissions[Connectors.KNOWLEDGE_BASE.value]["allowed_roles"]:
                 return {
                     "success": False,
@@ -10337,6 +10438,27 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to check name conflict: {str(e)}")
             return {"has_conflict": False, "conflicts": []}
 
+    async def kb_exists(self, kb_id: str) -> bool:
+        """Return True if a KB document with this id exists, regardless of permissions.
+
+        DB exceptions are intentionally NOT caught here — they must propagate
+        so callers return 500, not a misleading 404, during infrastructure failures.
+        """
+        query = """
+        FOR kb IN @@collection
+            FILTER kb._key == @kb_id
+            LIMIT 1
+            RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query,
+            bind_vars={
+                "kb_id": kb_id,
+                "@collection": CollectionNames.RECORD_GROUPS.value,
+            },
+        )
+        return bool(result)
+
     async def get_knowledge_base(
         self,
         kb_id: str,
@@ -10905,15 +11027,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
             user = await self.get_user_by_user_id(user_id)
             if not user:
                 return {"valid": False, "success": False, "code": 404, "reason": f"User not found: {user_id}"}
-            user_key = user.get("_key")
+            user_key = user.get("_key") or user.get("id")
+            if not user_key:
+                self.logger.error(
+                    f"❌ User record for {user_id} has no '_key' or 'id' field — "
+                    f"keys present: {list(user.keys())}"
+                )
+                return {"valid": False, "success": False, "code": 500, "reason": "Internal error: user record is malformed"}
+            if not await self.kb_exists(kb_id):
+                return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
             user_role = await self.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER"]:
-                return {
-                    "valid": False,
-                    "success": False,
-                    "code": 403,
-                    "reason": f"Insufficient permissions. Role: {user_role}",
-                }
+                kb_name = await self._fetch_kb_name(kb_id)
+                kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
+                if user_role is None:
+                    reason = (
+                        f"You do not have access to knowledge base {kb_label}. "
+                        "OWNER or WRITER role is required to create folders."
+                    )
+                else:
+                    reason = (
+                        f"Insufficient permissions on knowledge base {kb_label}. "
+                        f"OWNER or WRITER role required, but your role is: {user_role}."
+                    )
+                return {"valid": False, "success": False, "code": 403, "reason": reason}
             return {"valid": True, "user": user, "user_key": user_key, "user_role": user_role}
         except Exception as e:
             return {"valid": False, "success": False, "code": 500, "reason": str(e)}
@@ -11958,7 +12095,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Quick validation of inputs
             if not user_ids and not team_ids:
-                return {"success": False, "reason": "No users or teams provided", "code": "400"}
+                return {"success": False, "reason": "No users or teams provided", "code": 400}
 
             # Validate new role
             valid_roles = ["OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER", "COMMENTER", "READER"]
@@ -11966,7 +12103,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return {
                     "success": False,
                     "reason": f"Invalid role. Must be one of: {', '.join(valid_roles)}",
-                    "code": "400"
+                    "code": 400
                 }
 
             # Single atomic operation: check requester permission + get current permissions + update
@@ -12049,7 +12186,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             result = results[0] if results else None
 
             if not result:
-                return {"success": False, "reason": "Query execution failed", "code": "500"}
+                return {"success": False, "reason": "Query execution failed", "code": 500}
 
             # Log the raw result for debugging
             self.logger.debug(f"🔍 Update query result: {result}")
@@ -12057,7 +12194,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Check for validation errors
             if result["validation_error"]:
                 error = result["validation_error"]
-                return {"success": False, "reason": error["error"], "code": error["code"]}
+                return {"success": False, "reason": error["error"], "code": int(error["code"])}
 
             updated_permissions = result["updated_permissions"]
 
@@ -12093,7 +12230,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return {
                 "success": False,
                 "reason": str(e),
-                "code": "500"
+                "code": 500
             }
 
     async def list_kb_permissions(
@@ -12452,6 +12589,28 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Helper to create validation error response."""
         return {"valid": False, "success": False, "code": code, "reason": reason}
 
+    async def _fetch_kb_name(self, kb_id: str) -> str | None:
+        """Fetch just the KB display name for use in error messages. Returns None on any failure."""
+        try:
+            results = await self.execute_query(
+                "FOR kb IN @@col FILTER kb._key == @id RETURN kb.groupName",
+                bind_vars={"@col": CollectionNames.RECORD_GROUPS.value, "id": kb_id},
+            )
+            return results[0] if results else None
+        except Exception:
+            return None
+
+    async def _fetch_record_name(self, record_id: str) -> str | None:
+        """Fetch just a record's display name for use in error messages. Returns None on any failure."""
+        try:
+            results = await self.execute_query(
+                "FOR r IN @@col FILTER r._key == @id RETURN r.recordName",
+                bind_vars={"@col": CollectionNames.RECORDS.value, "id": record_id},
+            )
+            return results[0] if results else None
+        except Exception:
+            return None
+
     async def _validate_upload_context(
         self,
         kb_id: str,
@@ -12467,15 +12626,38 @@ class ArangoHTTPProvider(IGraphDBProvider):
             user_key = user.get("_key") or user.get("id")
             if not user_key:
                 return self._validation_error(404, "User key not found")
+            # Check KB existence before permission so we can return 404 vs 403 accurately
+            if not await self.kb_exists(kb_id):
+                return self._validation_error(404, f"Knowledge base {kb_id} not found")
             user_role = await self.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER"]:
-                return self._validation_error(403, f"Insufficient permissions. Role: {user_role}")
+                kb_name = await self._fetch_kb_name(kb_id)
+                kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
+                if user_role is None:
+                    reason = (
+                        f"You do not have access to knowledge base {kb_label}. "
+                        "OWNER or WRITER role is required to upload files."
+                    )
+                else:
+                    reason = (
+                        f"Insufficient permissions on knowledge base {kb_label}. "
+                        f"OWNER or WRITER role required, but your role is: {user_role}."
+                    )
+                return self._validation_error(403, reason)
             parent_folder = None
             parent_path = "/"
             if parent_folder_id:
                 parent_folder = await self.get_and_validate_folder_in_kb(kb_id, parent_folder_id)
                 if not parent_folder:
-                    return self._validation_error(404, f"Folder {parent_folder_id} not found in KB {kb_id}")
+                    kb_name = await self._fetch_kb_name(kb_id)
+                    folder_name = await self._fetch_record_name(parent_folder_id)
+                    kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
+                    folder_label = f"'{folder_name}' ({parent_folder_id})" if folder_name else parent_folder_id
+                    return self._validation_error(
+                        404,
+                        f"Folder {folder_label} was not found in knowledge base {kb_label}. "
+                        "The folder may not exist or may belong to a different knowledge base.",
+                    )
                 parent_path = parent_folder.get("path", "/")
             return {
                 "valid": True,
@@ -12488,6 +12670,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
         except Exception as e:
             return self._validation_error(500, f"Validation failed: {str(e)}")
+
+    async def validate_folder_for_upload(
+        self,
+        kb_id: str,
+        folder_id: str,
+        user_id: str,
+        org_id: str,
+    ) -> dict:
+        """Public interface method: validate folder membership and user write access before upload."""
+        return await self._validate_upload_context(
+            kb_id=kb_id,
+            user_id=user_id,
+            org_id=org_id,
+            parent_folder_id=folder_id,
+        )
 
     def _analyze_upload_structure(self, files: list[dict], validation_result: dict) -> dict:
         """Analyze folder hierarchy from file paths for upload."""
@@ -13716,6 +13913,676 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self.logger.debug(f"get_knowledge_hub_children finished in {elapsed * 1000} ms")
         return result[0] if result else {"nodes": [], "total": 0}
 
+    # Max depth for INHERIT_PERMISSIONS traversals in knowledge hub search.
+    _KNOWLEDGE_HUB_INHERIT_MAX_DEPTH = 20
+
+    @staticmethod
+    def _knowledge_hub_origin_filter_lines(
+        origins: list[str] | None,
+        var: str,
+    ) -> list[str]:
+        if not origins:
+            return []
+        has_collection = "COLLECTION" in origins
+        has_connector = "CONNECTOR" in origins
+        if has_collection and not has_connector:
+            return [f'{var}.connectorName == "KB"']
+        if has_connector and not has_collection:
+            return [f'{var}.connectorName != "KB"']
+        return []
+
+    @staticmethod
+    def _knowledge_hub_rg_projected_created_at_expr(var: str) -> str:
+        """Match minimal/hydration node.createdAt for record groups (KB vs connector)."""
+        return (
+            f'{var}.connectorName == "KB"'
+            f" ? ({var}.createdAtTimestamp != null ? {var}.createdAtTimestamp : 0)"
+            f" : ({var}.sourceCreatedAtTimestamp != null ? {var}.sourceCreatedAtTimestamp"
+            f" : ({var}.createdAtTimestamp != null ? {var}.createdAtTimestamp : 0))"
+        )
+
+    @staticmethod
+    def _knowledge_hub_rg_projected_updated_at_expr(var: str) -> str:
+        """Match minimal/hydration node.updatedAt for record groups (KB vs connector)."""
+        return (
+            f'{var}.connectorName == "KB"'
+            f" ? ({var}.updatedAtTimestamp != null ? {var}.updatedAtTimestamp : 0)"
+            f" : ({var}.sourceLastModifiedTimestamp != null ? {var}.sourceLastModifiedTimestamp"
+            f" : ({var}.updatedAtTimestamp != null ? {var}.updatedAtTimestamp : 0))"
+        )
+
+    @staticmethod
+    def _knowledge_hub_record_projected_created_at_expr(var: str) -> str:
+        """Match minimal record node.createdAt (source-side timestamps)."""
+        return f"({var}.sourceCreatedAtTimestamp != null ? {var}.sourceCreatedAtTimestamp : 0)"
+
+    @staticmethod
+    def _knowledge_hub_record_projected_updated_at_expr(var: str) -> str:
+        """Match minimal record node.updatedAt (source-side timestamps)."""
+        return (
+            f"({var}.sourceLastModifiedTimestamp != null ? {var}.sourceLastModifiedTimestamp : 0)"
+        )
+
+    @staticmethod
+    def _build_knowledge_hub_seed_prefilter_aql() -> str:
+        """Permission anchor RGs must not be filtered by search/dates/origins.
+
+        Those filters run on projected nodes in phase 1 so inherited children can
+        match even when the seed record group name does not.
+        """
+        return ""
+
+    def _build_knowledge_hub_traversal_document_prefilter_aql(
+        self,
+        var: str,
+        *,
+        is_record_group: bool,
+        search_query: str | None,
+        origins: list[str] | None,
+        connector_ids: list[str] | None,
+        record_types: list[str] | None,
+        indexing_status: list[str] | None,
+        size: dict[str, int | None] | None,
+    ) -> str:
+        """Early filters on inherited/direct documents during graph expansion.
+
+        Omits created_at/updated_at so phase-1 filter_conditions stay the single
+        source of truth (projected node.* timestamps). Arango FILTER on traversal
+        vertices does not stop exploration of descendants (use PRUNE for that).
+        """
+        lines: list[str] = list(self._knowledge_hub_origin_filter_lines(origins, var))
+
+        if search_query:
+            name_field = "groupName" if is_record_group else "recordName"
+            lines.append(f'LOWER({var}.{name_field}) LIKE CONCAT("%", LOWER(@search_query), "%")')
+
+        if connector_ids:
+            lines.append(f"{var}.connectorId IN @connector_ids")
+
+        if record_types and not is_record_group:
+            lines.append(f"{var}.recordType IN @record_types")
+        if indexing_status and not is_record_group:
+            lines.append(f"{var}.indexingStatus IN @indexing_status")
+
+        if size and not is_record_group:
+            if size.get("gte") is not None:
+                lines.append(
+                    f"({var}.sizeInBytes == null OR {var}.sizeInBytes >= @size_gte)"
+                )
+            if size.get("lte") is not None:
+                lines.append(
+                    f"({var}.sizeInBytes == null OR {var}.sizeInBytes <= @size_lte)"
+                )
+
+        if not lines:
+            return ""
+        return "\n                ".join(f"FILTER {line}" for line in lines)
+
+    def _build_knowledge_hub_direct_record_prefilter_aql(
+        self,
+        var: str,
+        *,
+        search_query: str | None,
+        origins: list[str] | None,
+        connector_ids: list[str] | None,
+        record_types: list[str] | None,
+        indexing_status: list[str] | None,
+        created_at: dict[str, int | None] | None,
+        updated_at: dict[str, int | None] | None,
+        size: dict[str, int | None] | None,
+    ) -> str:
+        """Prefilters for direct record permission paths (paths 5-7)."""
+        lines: list[str] = list(self._knowledge_hub_origin_filter_lines(origins, var))
+
+        if search_query:
+            lines.append(f'LOWER({var}.recordName) LIKE CONCAT("%", LOWER(@search_query), "%")')
+
+        if connector_ids:
+            lines.append(f"{var}.connectorId IN @connector_ids")
+
+        if record_types:
+            lines.append(f"{var}.recordType IN @record_types")
+        if indexing_status:
+            lines.append(f"{var}.indexingStatus IN @indexing_status")
+
+        created_expr = self._knowledge_hub_record_projected_created_at_expr(var)
+        updated_expr = self._knowledge_hub_record_projected_updated_at_expr(var)
+        if created_at:
+            if created_at.get("gte") is not None:
+                lines.append(f"{created_expr} >= @created_at_gte")
+            if created_at.get("lte") is not None:
+                lines.append(f"{created_expr} <= @created_at_lte")
+        if updated_at:
+            if updated_at.get("gte") is not None:
+                lines.append(f"{updated_expr} >= @updated_at_gte")
+            if updated_at.get("lte") is not None:
+                lines.append(f"{updated_expr} <= @updated_at_lte")
+        if size:
+            if size.get("gte") is not None:
+                lines.append(f"({var}.sizeInBytes == null OR {var}.sizeInBytes >= @size_gte)")
+            if size.get("lte") is not None:
+                lines.append(f"({var}.sizeInBytes == null OR {var}.sizeInBytes <= @size_lte)")
+
+        if not lines:
+            return ""
+        return "\n                ".join(f"FILTER {line}" for line in lines)
+
+    def _build_knowledge_hub_inherited_access_filter_aql(self) -> str:
+        return """
+                        LET record_app = is_record ? DOCUMENT(CONCAT("apps/", inherited_node.connectorId)) : null
+                        LET record_rg = is_record ? DOCUMENT(CONCAT("recordGroups/", inherited_node.connectorId)) : null
+                        FILTER (
+                            (is_rg AND (inherited_node.connectorName == "KB" OR inherited_node.connectorId IN user_accessible_apps)) OR
+                            (is_record AND (
+                                (record_app != null AND record_app._key IN user_accessible_apps) OR
+                                (record_rg != null AND (record_rg.connectorName == "KB" OR record_rg.connectorId IN user_accessible_apps))
+                            ))
+                        )"""
+
+    def _build_knowledge_hub_inherited_document_prefilter_aql(
+        self,
+        *,
+        search_query: str | None,
+        origins: list[str] | None,
+        connector_ids: list[str] | None,
+        record_types: list[str] | None,
+        indexing_status: list[str] | None,
+        size: dict[str, int | None] | None,
+    ) -> str:
+        """Prefilter inherited nodes by type (recordGroup vs record fields)."""
+        rg_block = self._build_knowledge_hub_traversal_document_prefilter_aql(
+            "inherited_node",
+            is_record_group=True,
+            search_query=search_query,
+            origins=origins,
+            connector_ids=connector_ids,
+            record_types=None,
+            indexing_status=None,
+            size=None,
+        )
+        record_block = self._build_knowledge_hub_traversal_document_prefilter_aql(
+            "inherited_node",
+            is_record_group=False,
+            search_query=search_query,
+            origins=origins,
+            connector_ids=connector_ids,
+            record_types=record_types,
+            indexing_status=indexing_status,
+            size=size,
+        )
+        rg_expr = self._inline_filter_expr_from_lines(rg_block) or "true"
+        record_expr = self._inline_filter_expr_from_lines(record_block) or "true"
+        if rg_expr == "true" and record_expr == "true":
+            return ""
+        return f"""
+                        FILTER (
+                            (is_rg AND ({rg_expr})) OR
+                            (is_record AND ({record_expr}))
+                        )"""
+
+    @staticmethod
+    def _inline_filter_expr_from_lines(filter_block: str) -> str:
+        if not filter_block.strip():
+            return ""
+        parts = []
+        for line in filter_block.strip().split("\n"):
+            line = line.strip()
+            if line.startswith("FILTER "):
+                parts.append(line[len("FILTER ") :])
+        return " AND ".join(parts)
+
+    def _build_knowledge_hub_permission_expansion_aql(
+        self,
+        scope_filter_rg: str,
+        scope_filter_record: str,
+        scope_filter_rg_inline: str,
+        scope_filter_record_inline: str,
+        children_intersection_aql: str,
+        *,
+        rg_seed_prefilter: str,
+        record_prefilter: str,
+        inherited_document_prefilter: str,
+    ) -> str:
+        inherited_access = self._build_knowledge_hub_inherited_access_filter_aql()
+        return f"""
+        // ========== SEED RECORDGROUPS (paths 1-4) ==========
+
+        LET path1_seed_rgs = (
+            FOR perm IN permission
+                FILTER perm._from == user_from AND perm.type == "USER"
+                FILTER STARTS_WITH(perm._to, "recordGroups/")
+                LET rg = DOCUMENT(perm._to)
+                FILTER rg != null AND rg.orgId == @org_id
+                FILTER rg.connectorName == "KB" OR rg.connectorId IN user_accessible_apps
+                {scope_filter_rg}
+                {rg_seed_prefilter}
+                RETURN rg
+        )
+
+        LET path2_seed_rgs = (
+            FOR group, userEdge IN 1..1 ANY user_from permission
+                FILTER userEdge.type == "USER"
+                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+                FOR rg, groupEdge IN 1..1 ANY group._id permission
+                    FILTER groupEdge.type == "GROUP" OR groupEdge.type == "ROLE"
+                    FILTER IS_SAME_COLLECTION("recordGroups", rg)
+                    FILTER rg.orgId == @org_id
+                    FILTER rg.connectorName == "KB" OR rg.connectorId IN user_accessible_apps
+                    {scope_filter_rg}
+                    {rg_seed_prefilter}
+                    RETURN rg
+        )
+
+        LET path3_seed_rgs = (
+            FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
+                FILTER belongsEdge.entityType == "ORGANIZATION"
+                FOR rg, orgPerm IN 1..1 ANY org._id permission
+                    FILTER orgPerm.type == "ORG"
+                    FILTER IS_SAME_COLLECTION("recordGroups", rg)
+                    FILTER rg.orgId == @org_id
+                    FILTER rg.connectorName == "KB" OR rg.connectorId IN user_accessible_apps
+                    {scope_filter_rg}
+                    {rg_seed_prefilter}
+                    RETURN rg
+        )
+
+        LET path4_seed_rgs = (
+            FOR teamPerm IN permission
+                FILTER teamPerm._from == user_from AND teamPerm.type == "USER"
+                FILTER STARTS_WITH(teamPerm._to, "teams/")
+                FOR rgPerm IN permission
+                    FILTER rgPerm._from == teamPerm._to AND rgPerm.type == "TEAM"
+                    FILTER STARTS_WITH(rgPerm._to, "recordGroups/")
+                    LET rg = DOCUMENT(rgPerm._to)
+                    FILTER rg != null AND rg.orgId == @org_id
+                    FILTER rg.connectorName == "KB" OR rg.connectorId IN user_accessible_apps
+                    {scope_filter_rg}
+                    {rg_seed_prefilter}
+                    RETURN rg
+        )
+
+        LET seed_rgs = UNION_DISTINCT(path1_seed_rgs, path2_seed_rgs, path3_seed_rgs, path4_seed_rgs)
+
+        // Single inherit traversal from all seed recordGroups
+        LET inherited_items = (
+            FOR seed IN seed_rgs
+                FOR inherited_node, edge IN 1..@inherit_max_depth INBOUND seed._id inheritPermissions
+                    PRUNE inherited_node.orgId != @org_id
+                    OPTIONS {{ bfs: true, uniqueVertices: "global" }}
+                    FILTER inherited_node != null AND inherited_node.orgId == @org_id
+                    LET is_rg = IS_SAME_COLLECTION("recordGroups", inherited_node)
+                    LET is_record = IS_SAME_COLLECTION("records", inherited_node)
+                    FILTER is_rg OR is_record
+                    {inherited_access}
+                    FILTER (
+                        (is_rg AND ({scope_filter_rg_inline})) OR
+                        (is_record AND ({scope_filter_record_inline}))
+                    )
+                    {inherited_document_prefilter}
+                    RETURN {{
+                        node: inherited_node,
+                        type: is_rg ? "recordGroup" : "record"
+                    }}
+        )
+
+        LET inherited_rgs = (
+            FOR item IN inherited_items
+                FILTER item.type == "recordGroup"
+                RETURN item.node
+        )
+
+        LET inherited_records = (
+            FOR item IN inherited_items
+                FILTER item.type == "record"
+                RETURN item.node
+        )
+
+        LET accessible_rgs = UNION_DISTINCT(seed_rgs, inherited_rgs)
+
+        // ========== DIRECT RECORD ACCESS (paths 5-7) ==========
+
+        LET user_direct_records = (
+            FOR perm IN permission
+                FILTER perm._from == user_from AND perm.type == "USER"
+                FILTER STARTS_WITH(perm._to, "records/")
+                LET record = DOCUMENT(perm._to)
+                FILTER record != null AND record.orgId == @org_id
+                LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
+                LET record_rg = DOCUMENT(CONCAT("recordGroups/", record.connectorId))
+                FILTER (
+                    (record_app != null AND record_app._key IN user_accessible_apps) OR
+                    (record_rg != null AND (record_rg.connectorName == "KB" OR record_rg.connectorId IN user_accessible_apps))
+                )
+                {scope_filter_record}
+                {record_prefilter}
+                RETURN record
+        )
+
+        LET user_group_records = (
+            FOR group, userEdge IN 1..1 ANY user_from permission
+                FILTER userEdge.type == "USER"
+                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+                FOR record, groupEdge IN 1..1 ANY group._id permission
+                    FILTER groupEdge.type == "GROUP" OR groupEdge.type == "ROLE"
+                    FILTER IS_SAME_COLLECTION("records", record)
+                    FILTER record.orgId == @org_id
+                    LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
+                    LET record_rg = DOCUMENT(CONCAT("recordGroups/", record.connectorId))
+                    FILTER (
+                        (record_app != null AND record_app._key IN user_accessible_apps) OR
+                        (record_rg != null AND (record_rg.connectorName == "KB" OR record_rg.connectorId IN user_accessible_apps))
+                    )
+                    {scope_filter_record}
+                    {record_prefilter}
+                    RETURN record
+        )
+
+        LET user_org_records = (
+            FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
+                FILTER belongsEdge.entityType == "ORGANIZATION"
+                FOR record, orgPerm IN 1..1 ANY org._id permission
+                    FILTER orgPerm.type == "ORG"
+                    FILTER IS_SAME_COLLECTION("records", record)
+                    FILTER record.orgId == @org_id
+                    LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
+                    LET record_rg = DOCUMENT(CONCAT("recordGroups/", record.connectorId))
+                    FILTER (
+                        (record_app != null AND record_app._key IN user_accessible_apps) OR
+                        (record_rg != null AND (record_rg.connectorName == "KB" OR record_rg.connectorId IN user_accessible_apps))
+                    )
+                    {scope_filter_record}
+                    {record_prefilter}
+                    RETURN record
+        )
+
+        LET accessible_records = UNION_DISTINCT(
+            inherited_records,
+            user_direct_records,
+            user_group_records,
+            user_org_records
+        )
+
+        {children_intersection_aql}
+        """
+
+    def _build_knowledge_hub_phase1_query(
+        self,
+        scope_filter_rg: str,
+        scope_filter_record: str,
+        scope_filter_rg_inline: str,
+        scope_filter_record_inline: str,
+        children_intersection_aql: str,
+        filter_conditions: str,
+        minimal_rg_aql: str,
+        minimal_record_aql: str,
+        *,
+        rg_seed_prefilter: str,
+        record_prefilter: str,
+        inherited_document_prefilter: str,
+    ) -> str:
+        """Phase 1: permission expansion, minimal projection, filter, paginate.
+
+        Pagination / count (Arango AQL):
+        - LENGTH(filtered_nodes) is O(n) over every accessible node that passes
+          filter_conditions; there is no built-in sublinear total for arbitrary
+          FILTER + SORT on computed projections.
+        - We avoid a separate sorted_nodes array: count unsorted filtered_nodes,
+          then SORT + LIMIT only for the page (Arango may use a top-k plan when
+          @limit is small, but large filtered sets remain the dominant cost).
+        - Further wins need indexes on persisted sort fields, a dedicated count
+          query path, or ArangoSearch for text — not pushing search/date filters
+          onto permission seeds (that breaks inheritPermissions expansion).
+        """
+        permission_aql = self._build_knowledge_hub_permission_expansion_aql(
+            scope_filter_rg,
+            scope_filter_record,
+            scope_filter_rg_inline,
+            scope_filter_record_inline,
+            children_intersection_aql,
+            rg_seed_prefilter=rg_seed_prefilter,
+            record_prefilter=record_prefilter,
+            inherited_document_prefilter=inherited_document_prefilter,
+        )
+        return f"""
+        LET user_from = CONCAT("users/", @user_key)
+        LET user_accessible_apps = @user_accessible_apps
+
+        {permission_aql}
+
+        {minimal_rg_aql}
+
+        {minimal_record_aql}
+
+        LET all_nodes = UNION(rg_nodes, record_nodes)
+
+        LET filtered_nodes = (
+            FOR node IN all_nodes
+                {filter_conditions}
+                RETURN node
+        )
+
+        LET total_count = LENGTH(filtered_nodes)
+        LET paginated_refs = (
+            FOR node IN filtered_nodes
+                SORT node[@sort_field] @sort_dir
+                LIMIT @skip, @limit
+                RETURN {{ id: node.id, nodeType: node.nodeType }}
+        )
+
+        RETURN {{ total: total_count, paginated_refs: paginated_refs }}
+        """
+
+    @staticmethod
+    def _needs_knowledge_hub_folder_detection(node_types: list[str] | None) -> bool:
+        if not node_types:
+            return True
+        return any(nt in ("folder", "record") for nt in node_types)
+
+    def _build_knowledge_hub_minimal_rg_nodes_aql(self, *, only_containers: bool) -> str:
+        has_children_block = ""
+        has_children_field = "false"
+        if only_containers:
+            has_children_block = """
+                LET has_children = LENGTH(
+                    FOR edge IN belongsTo
+                        FILTER edge._to == rg._id
+                        LIMIT 1
+                        RETURN 1
+                ) > 0"""
+            has_children_field = "has_children"
+
+        return f"""
+        LET rg_nodes = (
+            FOR rg IN final_accessible_rgs
+                {has_children_block}
+                RETURN {{
+                    id: rg._key,
+                    name: rg.groupName,
+                    nodeType: "recordGroup",
+                    origin: rg.connectorName == "KB" ? "COLLECTION" : "CONNECTOR",
+                    connector: rg.connectorName,
+                    connectorId: rg.connectorName != "KB" ? rg.connectorId : null,
+                    recordType: null,
+                    recordGroupType: rg.groupType,
+                    indexingStatus: null,
+                    createdAt: rg.connectorName == "KB"
+                        ? (rg.createdAtTimestamp != null ? rg.createdAtTimestamp : 0)
+                        : (rg.sourceCreatedAtTimestamp != null ? rg.sourceCreatedAtTimestamp : (rg.createdAtTimestamp != null ? rg.createdAtTimestamp : 0)),
+                    updatedAt: rg.connectorName == "KB"
+                        ? (rg.updatedAtTimestamp != null ? rg.updatedAtTimestamp : 0)
+                        : (rg.sourceLastModifiedTimestamp != null ? rg.sourceLastModifiedTimestamp : (rg.updatedAtTimestamp != null ? rg.updatedAtTimestamp : 0)),
+                    sizeInBytes: null,
+                    hasChildren: {has_children_field}
+                }}
+        )"""
+
+    def _build_knowledge_hub_minimal_record_nodes_aql(
+        self,
+        *,
+        only_containers: bool,
+        detect_folder: bool,
+    ) -> str:
+        file_info_block = ""
+        node_type_expr = '"record"'
+        if detect_folder:
+            file_info_block = """
+                LET file_info = FIRST(
+                    FOR file_edge IN isOfType FILTER file_edge._from == record._id
+                    LET file = DOCUMENT(file_edge._to) RETURN file
+                )
+                LET is_folder = file_info != null AND file_info.isFile == false"""
+            node_type_expr = 'is_folder ? "folder" : "record"'
+
+        has_children_block = ""
+        has_children_field = "false"
+        if only_containers:
+            has_children_block = """
+                LET has_children = LENGTH(
+                    FOR edge IN recordRelations
+                        FILTER edge._from == record._id
+                        FILTER edge.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+                        LIMIT 1
+                        RETURN 1
+                ) > 0"""
+            has_children_field = "has_children"
+
+        size_expr = "record.sizeInBytes"
+        if detect_folder:
+            size_expr = (
+                "record.sizeInBytes != null ? record.sizeInBytes : "
+                "(file_info ? file_info.fileSizeInBytes : null)"
+            )
+
+        return f"""
+        LET record_nodes = (
+            FOR record IN final_accessible_records
+                {file_info_block}
+                {has_children_block}
+                LET source = record.connectorName == "KB" ? "COLLECTION" : "CONNECTOR"
+                RETURN {{
+                    id: record._key,
+                    name: record.recordName,
+                    nodeType: {node_type_expr},
+                    origin: source,
+                    connector: record.connectorName,
+                    connectorId: source == "CONNECTOR" ? record.connectorId : null,
+                    recordType: record.recordType,
+                    recordGroupType: null,
+                    indexingStatus: record.indexingStatus,
+                    createdAt: record.sourceCreatedAtTimestamp != null ? record.sourceCreatedAtTimestamp : 0,
+                    updatedAt: record.sourceLastModifiedTimestamp != null ? record.sourceLastModifiedTimestamp : 0,
+                    sizeInBytes: {size_expr},
+                    hasChildren: {has_children_field}
+                }}
+        )"""
+
+    def _build_knowledge_hub_phase2_hydration_query(self) -> str:
+        """Hydrate full API node objects for a single page of {{id, nodeType}} refs."""
+        return """
+        LET hydrated_nodes = (
+            FOR ref IN @paginated_refs
+                LET rg = ref.nodeType == "recordGroup" ? DOCUMENT(CONCAT("recordGroups/", ref.id)) : null
+                LET record = ref.nodeType != "recordGroup" ? DOCUMENT(CONCAT("records/", ref.id)) : null
+
+                LET rg_node = rg != null ? (
+                    LET has_children = LENGTH(
+                        FOR edge IN belongsTo
+                            FILTER edge._to == rg._id
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0
+                    LET sharingStatus = rg.connectorName == "KB" ? (
+                        LET user_perm_count = LENGTH(
+                            FOR perm IN permission
+                                FILTER perm._to == rg._id
+                                FILTER perm.type == "USER"
+                                RETURN 1
+                        )
+                        LET team_perm_count = LENGTH(
+                            FOR perm IN permission
+                                FILTER perm._to == rg._id
+                                FILTER perm.type == "TEAM"
+                                RETURN 1
+                        )
+                        LET has_multiple_access = (user_perm_count > 1 OR team_perm_count > 0)
+                        RETURN (has_multiple_access ? "shared" : "private")
+                    )[0] : null
+                    RETURN {
+                        id: rg._key,
+                        name: rg.groupName,
+                        nodeType: "recordGroup",
+                        parentId: rg.parentId,
+                        origin: rg.connectorName == "KB" ? "COLLECTION" : "CONNECTOR",
+                        connector: rg.connectorName,
+                        connectorId: rg.connectorName != "KB" ? rg.connectorId : null,
+                        externalGroupId: rg.externalGroupId,
+                        recordType: null,
+                        recordGroupType: rg.groupType,
+                        indexingStatus: null,
+                        createdAt: rg.connectorName == "KB"
+                            ? (rg.createdAtTimestamp != null ? rg.createdAtTimestamp : 0)
+                            : (rg.sourceCreatedAtTimestamp != null ? rg.sourceCreatedAtTimestamp : (rg.createdAtTimestamp != null ? rg.createdAtTimestamp : 0)),
+                        updatedAt: rg.connectorName == "KB"
+                            ? (rg.updatedAtTimestamp != null ? rg.updatedAtTimestamp : 0)
+                            : (rg.sourceLastModifiedTimestamp != null ? rg.sourceLastModifiedTimestamp : (rg.updatedAtTimestamp != null ? rg.updatedAtTimestamp : 0)),
+                        sizeInBytes: null,
+                        mimeType: null,
+                        extension: null,
+                        webUrl: rg.webUrl,
+                        hasChildren: has_children,
+                        previewRenderable: true,
+                        sharingStatus: sharingStatus,
+                        isInternal: rg.isInternal ? true : false
+                    }
+                )[0] : null
+
+                LET record_node = record != null ? (
+                    LET file_info = FIRST(
+                        FOR file_edge IN isOfType FILTER file_edge._from == record._id
+                        LET file = DOCUMENT(file_edge._to) RETURN file
+                    )
+                    LET is_folder = file_info != null AND file_info.isFile == false
+                    LET has_children = LENGTH(
+                        FOR edge IN recordRelations
+                            FILTER edge._from == record._id
+                            FILTER edge.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0
+                    LET source = record.connectorName == "KB" ? "COLLECTION" : "CONNECTOR"
+                    RETURN {
+                        id: record._key,
+                        name: record.recordName,
+                        nodeType: is_folder ? "folder" : "record",
+                        parentId: record.parentId,
+                        origin: source,
+                        connector: record.connectorName,
+                        connectorId: source == "CONNECTOR" ? record.connectorId : null,
+                        externalGroupId: record.externalGroupId,
+                        recordType: record.recordType,
+                        recordGroupType: null,
+                        indexingStatus: record.indexingStatus,
+                        reason: record.reason,
+                        createdAt: record.sourceCreatedAtTimestamp != null ? record.sourceCreatedAtTimestamp : 0,
+                        updatedAt: record.sourceLastModifiedTimestamp != null ? record.sourceLastModifiedTimestamp : 0,
+                        sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : (file_info ? file_info.fileSizeInBytes : null),
+                        mimeType: record.mimeType,
+                        extension: file_info ? file_info.extension : null,
+                        webUrl: record.webUrl,
+                        hasChildren: has_children,
+                        previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
+                        isInternal: record.isInternal ? true : false
+                    }
+                )[0] : null
+
+                LET final_node = rg_node != null ? rg_node : record_node
+                FILTER final_node != null
+                RETURN final_node
+        )
+
+        RETURN { nodes: hydrated_nodes }
+        """
+
     async def get_knowledge_hub_search(
         self,
         org_id: str,
@@ -13753,8 +14620,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         - Records via inheritPermissions from accessible recordGroups
         - Direct user/group/org permissions on records
         """
-        start = time.perf_counter()
-
         # Build filters using existing helper
         filter_conditions_list, filter_params = self._build_knowledge_hub_filter_conditions(
             search_query=search_query,
@@ -13778,8 +14643,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         # Build scope filters
         parent_connector_id = None
-        # Determine parent_connector_id when parent_type is "record" or "folder"
-        # This is needed because _build_scope_filters uses @parent_connector_id for these types
         if parent_id and parent_type in ("record", "folder"):
             try:
                 record_doc = await self.get_document(
@@ -13815,6 +14678,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             "limit": limit,
             "sort_field": sort_field,
             "sort_dir": sort_dir,
+            "inherit_max_depth": self._KNOWLEDGE_HUB_INHERIT_MAX_DEPTH,
         }
 
         # Add record_group_ids to bind vars for scope filter binding
@@ -13836,508 +14700,74 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         bind_vars["user_accessible_apps"] = await self.get_user_app_ids(user_key, transaction)
 
-        # Build children intersection AQL (only for recordGroup/kb/record/folder parents)
         children_intersection_aql = self._build_children_intersection_aql(parent_id, parent_type)
 
-
-        query = f"""
-        LET user_from = CONCAT("users/", @user_key)
-
-        LET user_accessible_apps = @user_accessible_apps
-
-        // ========== UNIFIED TRAVERSAL: RecordGroups + Nested RecordGroups + Records ==========
-
-        // Path 1: User -> RecordGroup (direct) + Nested RecordGroups + Records
-        LET user_direct_rg_data = (
-            FOR perm IN permission
-                FILTER perm._from == user_from AND perm.type == "USER"
-                FILTER STARTS_WITH(perm._to, "recordGroups/")
-                LET rg = DOCUMENT(perm._to)
-                FILTER rg != null AND rg.orgId == @org_id
-                // Only include recordGroups from apps user has access to
-                FILTER rg.connectorName == "KB" OR rg.connectorId IN user_accessible_apps
-                {scope_filter_rg}
-
-                // Get all child recordGroups + records via inheritPermissions (recursive)
-                LET inherited_data = (
-                    FOR inherited_node, edge IN 0..100 INBOUND rg._id inheritPermissions
-                        FILTER inherited_node != null AND inherited_node.orgId == @org_id
-
-                        // Separate recordGroups from records
-                        LET is_rg = IS_SAME_COLLECTION("recordGroups", inherited_node)
-                        LET is_record = IS_SAME_COLLECTION("records", inherited_node)
-
-                        FILTER is_rg OR is_record
-
-                        // For records, check if connectorId points to accessible app or accessible recordGroup
-                        LET record_app = is_record ? DOCUMENT(CONCAT("apps/", inherited_node.connectorId)) : null
-                        LET record_rg = is_record ? DOCUMENT(CONCAT("recordGroups/", inherited_node.connectorId)) : null
-
-                        // Filter by app access: recordGroups must be from accessible apps
-                        FILTER (
-                            (is_rg AND (inherited_node.connectorName == "KB" OR inherited_node.connectorId IN user_accessible_apps)) OR
-                            (is_record AND (
-                                (record_app != null AND record_app._key IN user_accessible_apps) OR
-                                (record_rg != null AND (record_rg.connectorName == "KB" OR record_rg.connectorId IN user_accessible_apps))
-                            ))
-                        )
-
-                        // Apply scope filters
-                        FILTER (
-                            (is_rg AND ({scope_filter_rg_inline})) OR
-                            (is_record AND ({scope_filter_record_inline}))
-                        )
-
-                        RETURN {{
-                            node: inherited_node,
-                            type: is_rg ? "recordGroup" : "record"
-                        }}
-                )
-
-                // Extract recordGroups and records separately
-                LET nested_rgs = (
-                    FOR item IN inherited_data
-                        FILTER item.type == "recordGroup"
-                        RETURN item.node
-                )
-
-                LET nested_records = (
-                    FOR item IN inherited_data
-                        FILTER item.type == "record"
-                        RETURN item.node
-                )
-
-                RETURN {{
-                    recordGroup: rg,
-                    nestedRecordGroups: nested_rgs,
-                    records: nested_records
-                }}
+        rg_seed_prefilter = self._build_knowledge_hub_seed_prefilter_aql()
+        record_prefilter = self._build_knowledge_hub_direct_record_prefilter_aql(
+            "record",
+            search_query=search_query,
+            origins=origins,
+            connector_ids=connector_ids,
+            record_types=record_types,
+            indexing_status=indexing_status,
+            created_at=created_at,
+            updated_at=updated_at,
+            size=size,
+        )
+        inherited_document_prefilter = self._build_knowledge_hub_inherited_document_prefilter_aql(
+            search_query=search_query,
+            origins=origins,
+            connector_ids=connector_ids,
+            record_types=record_types,
+            indexing_status=indexing_status,
+            size=size,
         )
 
-        // Path 2: User -> Group/Role -> RecordGroup + Nested RecordGroups + Records
-        LET user_group_rg_data = (
-            FOR group, userEdge IN 1..1 ANY user_from permission
-                FILTER userEdge.type == "USER"
-                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                FOR rg, groupEdge IN 1..1 ANY group._id permission
-                    FILTER groupEdge.type == "GROUP" OR groupEdge.type == "ROLE"
-                    FILTER IS_SAME_COLLECTION("recordGroups", rg)
-                    FILTER rg.orgId == @org_id
-                    // Only include recordGroups from apps user has access to
-                    FILTER rg.connectorName == "KB" OR rg.connectorId IN user_accessible_apps
-                    {scope_filter_rg}
-
-                    // Get all child recordGroups + records via inheritPermissions (recursive)
-                    LET inherited_data = (
-                        FOR inherited_node, edge IN 0..100 INBOUND rg._id inheritPermissions
-                            FILTER inherited_node != null AND inherited_node.orgId == @org_id
-
-                            LET is_rg = IS_SAME_COLLECTION("recordGroups", inherited_node)
-                            LET is_record = IS_SAME_COLLECTION("records", inherited_node)
-
-                            FILTER is_rg OR is_record
-
-                            // For records, check if connectorId points to accessible app or accessible recordGroup
-                            LET record_app = is_record ? DOCUMENT(CONCAT("apps/", inherited_node.connectorId)) : null
-                            LET record_rg = is_record ? DOCUMENT(CONCAT("recordGroups/", inherited_node.connectorId)) : null
-
-                            // Filter by app access: recordGroups must be from accessible apps
-                            FILTER (
-                                (is_rg AND (inherited_node.connectorName == "KB" OR inherited_node.connectorId IN user_accessible_apps)) OR
-                                (is_record AND (
-                                    (record_app != null AND record_app._key IN user_accessible_apps) OR
-                                    (record_rg != null AND (record_rg.connectorName == "KB" OR record_rg.connectorId IN user_accessible_apps))
-                                ))
-                            )
-
-                            FILTER (
-                                (is_rg AND ({scope_filter_rg_inline})) OR
-                                (is_record AND ({scope_filter_record_inline}))
-                            )
-
-                            RETURN {{
-                                node: inherited_node,
-                                type: is_rg ? "recordGroup" : "record"
-                            }}
-                    )
-
-                    LET nested_rgs = (
-                        FOR item IN inherited_data
-                            FILTER item.type == "recordGroup"
-                            RETURN item.node
-                    )
-
-                    LET nested_records = (
-                        FOR item IN inherited_data
-                            FILTER item.type == "record"
-                            RETURN item.node
-                    )
-
-                    RETURN {{
-                        recordGroup: rg,
-                        nestedRecordGroups: nested_rgs,
-                        records: nested_records
-                    }}
+        detect_folder = self._needs_knowledge_hub_folder_detection(node_types)
+        minimal_rg_aql = self._build_knowledge_hub_minimal_rg_nodes_aql(
+            only_containers=only_containers
         )
-
-        // Path 3: User -> Org -> RecordGroup + Nested RecordGroups + Records
-        LET user_org_rg_data = (
-            FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
-                FILTER belongsEdge.entityType == "ORGANIZATION"
-                FOR rg, orgPerm IN 1..1 ANY org._id permission
-                    FILTER orgPerm.type == "ORG"
-                    FILTER IS_SAME_COLLECTION("recordGroups", rg)
-                    FILTER rg.orgId == @org_id
-                    // Only include recordGroups from apps user has access to
-                    FILTER rg.connectorName == "KB" OR rg.connectorId IN user_accessible_apps
-                    {scope_filter_rg}
-
-                    LET inherited_data = (
-                        FOR inherited_node, edge IN 0..100 INBOUND rg._id inheritPermissions
-                            FILTER inherited_node != null AND inherited_node.orgId == @org_id
-
-                            LET is_rg = IS_SAME_COLLECTION("recordGroups", inherited_node)
-                            LET is_record = IS_SAME_COLLECTION("records", inherited_node)
-
-                            FILTER is_rg OR is_record
-
-                            // For records, check if connectorId points to accessible app or accessible recordGroup
-                            LET record_app = is_record ? DOCUMENT(CONCAT("apps/", inherited_node.connectorId)) : null
-                            LET record_rg = is_record ? DOCUMENT(CONCAT("recordGroups/", inherited_node.connectorId)) : null
-
-                            // Filter by app access: recordGroups must be from accessible apps
-                            FILTER (
-                                (is_rg AND (inherited_node.connectorName == "KB" OR inherited_node.connectorId IN user_accessible_apps)) OR
-                                (is_record AND (
-                                    (record_app != null AND record_app._key IN user_accessible_apps) OR
-                                    (record_rg != null AND (record_rg.connectorName == "KB" OR record_rg.connectorId IN user_accessible_apps))
-                                ))
-                            )
-
-                            FILTER (
-                                (is_rg AND ({scope_filter_rg_inline})) OR
-                                (is_record AND ({scope_filter_record_inline}))
-                            )
-
-                            RETURN {{
-                                node: inherited_node,
-                                type: is_rg ? "recordGroup" : "record"
-                            }}
-                    )
-
-                    LET nested_rgs = (
-                        FOR item IN inherited_data
-                            FILTER item.type == "recordGroup"
-                            RETURN item.node
-                    )
-
-                    LET nested_records = (
-                        FOR item IN inherited_data
-                            FILTER item.type == "record"
-                            RETURN item.node
-                    )
-
-                    RETURN {{
-                        recordGroup: rg,
-                        nestedRecordGroups: nested_rgs,
-                        records: nested_records
-                    }}
+        minimal_record_aql = self._build_knowledge_hub_minimal_record_nodes_aql(
+            only_containers=only_containers,
+            detect_folder=detect_folder,
         )
+        phase2_query = self._build_knowledge_hub_phase2_hydration_query()
 
-        // Path 4: User -> Team -> RecordGroup + Nested RecordGroups + Records (for KB)
-        LET user_team_rg_data = (
-            FOR teamPerm IN permission
-                FILTER teamPerm.type == "TEAM"
-                FILTER STARTS_WITH(teamPerm._to, "recordGroups/")
-                LET rg = DOCUMENT(teamPerm._to)
-                FILTER rg != null AND rg.orgId == @org_id
-                // Only include recordGroups from apps user has access to
-                FILTER rg.connectorName == "KB" OR rg.connectorId IN user_accessible_apps
-                LET team_id = SPLIT(teamPerm._from, "/")[1]
-                LET is_member = (LENGTH(
-                    FOR userPerm IN permission
-                        FILTER userPerm._from == user_from
-                        FILTER userPerm._to == CONCAT("teams/", team_id)
-                        RETURN 1
-                ) > 0)
-                FILTER is_member
-                {scope_filter_rg}
-
-                LET inherited_data = (
-                    FOR inherited_node, edge IN 0..100 INBOUND rg._id inheritPermissions
-                        FILTER inherited_node != null AND inherited_node.orgId == @org_id
-
-                        LET is_rg = IS_SAME_COLLECTION("recordGroups", inherited_node)
-                        LET is_record = IS_SAME_COLLECTION("records", inherited_node)
-
-                        FILTER is_rg OR is_record
-
-                        // For records, check if connectorId points to accessible app or accessible recordGroup
-                        LET record_app = is_record ? DOCUMENT(CONCAT("apps/", inherited_node.connectorId)) : null
-                        LET record_rg = is_record ? DOCUMENT(CONCAT("recordGroups/", inherited_node.connectorId)) : null
-
-                        // Filter by app access: recordGroups must be from accessible apps
-                        FILTER (
-                            (is_rg AND (inherited_node.connectorName == "KB" OR inherited_node.connectorId IN user_accessible_apps)) OR
-                            (is_record AND (
-                                (record_app != null AND record_app._key IN user_accessible_apps) OR
-                                (record_rg != null AND (record_rg.connectorName == "KB" OR record_rg.connectorId IN user_accessible_apps))
-                            ))
-                        )
-
-                        FILTER (
-                            (is_rg AND ({scope_filter_rg_inline})) OR
-                            (is_record AND ({scope_filter_record_inline}))
-                        )
-
-                        RETURN {{
-                            node: inherited_node,
-                            type: is_rg ? "recordGroup" : "record"
-                        }}
-                )
-
-                LET nested_rgs = (
-                    FOR item IN inherited_data
-                        FILTER item.type == "recordGroup"
-                        RETURN item.node
-                )
-
-                LET nested_records = (
-                    FOR item IN inherited_data
-                        FILTER item.type == "record"
-                        RETURN item.node
-                )
-
-                RETURN {{
-                    recordGroup: rg,
-                    nestedRecordGroups: nested_rgs,
-                    records: nested_records
-                }}
+        phase1_query = self._build_knowledge_hub_phase1_query(
+            scope_filter_rg,
+            scope_filter_record,
+            scope_filter_rg_inline,
+            scope_filter_record_inline,
+            children_intersection_aql,
+            filter_conditions,
+            minimal_rg_aql,
+            minimal_record_aql,
+            rg_seed_prefilter=rg_seed_prefilter,
+            record_prefilter=record_prefilter,
+            inherited_document_prefilter=inherited_document_prefilter,
         )
-
-        // Combine all recordGroup+records data
-        LET all_rg_data = UNION(user_direct_rg_data, user_group_rg_data, user_org_rg_data, user_team_rg_data)
-
-        // Extract unique recordGroups (parent + nested)
-        LET parent_rgs = (
-            FOR data IN all_rg_data
-                RETURN data.recordGroup
-        )
-
-        LET nested_rgs = FLATTEN(
-            FOR data IN all_rg_data
-                RETURN data.nestedRecordGroups
-        )
-
-        LET accessible_rgs = UNION_DISTINCT(parent_rgs, nested_rgs)
-
-        // Extract unique records from recordGroups
-        LET rg_inherited_records = FLATTEN(
-            FOR data IN all_rg_data
-                RETURN data.records
-        )
-
-        // ========== DIRECT RECORD ACCESS (not via recordGroup) ==========
-
-        // Path 5: User -> Record (direct, no recordGroup)
-        LET user_direct_records = (
-            FOR perm IN permission
-                FILTER perm._from == user_from AND perm.type == "USER"
-                FILTER STARTS_WITH(perm._to, "records/")
-                LET record = DOCUMENT(perm._to)
-                FILTER record != null AND record.orgId == @org_id
-                // Check if record's connectorId points to accessible app or accessible recordGroup
-                LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
-                LET record_rg = DOCUMENT(CONCAT("recordGroups/", record.connectorId))
-                FILTER (
-                    (record_app != null AND record_app._key IN user_accessible_apps) OR
-                    (record_rg != null AND (record_rg.connectorName == "KB" OR record_rg.connectorId IN user_accessible_apps))
-                )
-                {scope_filter_record}
-                RETURN record
-        )
-
-        // Path 6: User -> Group/Role -> Record (direct, no recordGroup)
-        LET user_group_records = (
-            FOR group, userEdge IN 1..1 ANY user_from permission
-                FILTER userEdge.type == "USER"
-                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                FOR record, groupEdge IN 1..1 ANY group._id permission
-                    FILTER groupEdge.type == "GROUP" OR groupEdge.type == "ROLE"
-                    FILTER IS_SAME_COLLECTION("records", record)
-                    FILTER record.orgId == @org_id
-                    // Check if record's connectorId points to accessible app or accessible recordGroup
-                    LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
-                    LET record_rg = DOCUMENT(CONCAT("recordGroups/", record.connectorId))
-                    FILTER (
-                        (record_app != null AND record_app._key IN user_accessible_apps) OR
-                        (record_rg != null AND (record_rg.connectorName == "KB" OR record_rg.connectorId IN user_accessible_apps))
-                    )
-                    {scope_filter_record}
-                    RETURN record
-        )
-
-        // Path 7: User -> Org -> Record (direct, no recordGroup)
-        LET user_org_records = (
-            FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
-                FILTER belongsEdge.entityType == "ORGANIZATION"
-                FOR record, orgPerm IN 1..1 ANY org._id permission
-                    FILTER orgPerm.type == "ORG"
-                    FILTER IS_SAME_COLLECTION("records", record)
-                    FILTER record.orgId == @org_id
-                    // Check if record's connectorId points to accessible app or accessible recordGroup
-                    LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
-                    LET record_rg = DOCUMENT(CONCAT("recordGroups/", record.connectorId))
-                    FILTER (
-                        (record_app != null AND record_app._key IN user_accessible_apps) OR
-                        (record_rg != null AND (record_rg.connectorName == "KB" OR record_rg.connectorId IN user_accessible_apps))
-                    )
-                    {scope_filter_record}
-                    RETURN record
-        )
-
-        // Combine all record sources and deduplicate
-        LET accessible_records = UNION_DISTINCT(
-            rg_inherited_records,
-            user_direct_records,
-            user_group_records,
-            user_org_records
-        )
-
-        // ========== CHILDREN TRAVERSAL & INTERSECTION (for recordGroup/kb/record/folder parents) ==========
-        // If parent_type is recordGroup/kb/record/folder, traverse children and intersect with accessible nodes
-
-        {children_intersection_aql}
-
-        // ========== BUILD RECORDGROUP NODES ==========
-        LET rg_nodes = (
-            FOR rg IN final_accessible_rgs
-                // Check hasChildren via belongsTo edge (uses edge index on _to)
-                LET has_children = LENGTH(
-                    FOR edge IN belongsTo
-                        FILTER edge._to == rg._id
-                        LIMIT 1
-                        RETURN 1
-                ) > 0
-
-                // Compute sharingStatus for KB recordGroups only
-                LET sharingStatus = rg.connectorName == "KB" ? (
-                    LET user_perm_count = LENGTH(
-                        FOR perm IN permission
-                            FILTER perm._to == rg._id
-                            FILTER perm.type == "USER"
-                            RETURN 1
-                    )
-                    LET team_perm_count = LENGTH(
-                        FOR perm IN permission
-                            FILTER perm._to == rg._id
-                            FILTER perm.type == "TEAM"
-                            RETURN 1
-                    )
-                    LET has_multiple_access = (user_perm_count > 1 OR team_perm_count > 0)
-                    RETURN (has_multiple_access ? "shared" : "private")
-                )[0] : null
-
-                RETURN {{
-                    id: rg._key,
-                    name: rg.groupName,
-                    nodeType: "recordGroup",
-                    parentId: rg.parentId,
-                    origin: rg.connectorName == "KB" ? "COLLECTION" : "CONNECTOR",
-                    connector: rg.connectorName,
-                    connectorId: rg.connectorName != "KB" ? rg.connectorId : null,
-                    externalGroupId: rg.externalGroupId,
-                    recordType: null,
-                    recordGroupType: rg.groupType,
-                    indexingStatus: null,
-                    createdAt: rg.connectorName == "KB"
-                        ? (rg.createdAtTimestamp != null ? rg.createdAtTimestamp : 0)
-                        : (rg.sourceCreatedAtTimestamp != null ? rg.sourceCreatedAtTimestamp : (rg.createdAtTimestamp != null ? rg.createdAtTimestamp : 0)),
-                    updatedAt: rg.connectorName == "KB"
-                        ? (rg.updatedAtTimestamp != null ? rg.updatedAtTimestamp : 0)
-                        : (rg.sourceLastModifiedTimestamp != null ? rg.sourceLastModifiedTimestamp : (rg.updatedAtTimestamp != null ? rg.updatedAtTimestamp : 0)),
-                    sizeInBytes: null,
-                    mimeType: null,
-                    extension: null,
-                    webUrl: rg.webUrl,
-                    hasChildren: has_children,
-                    previewRenderable: true,
-                    sharingStatus: sharingStatus,
-                    isInternal: rg.isInternal ? true : false
-                }}
-        )
-
-        // ========== BUILD RECORD NODES ==========
-        LET record_nodes = (
-            FOR record IN final_accessible_records
-                LET file_info = FIRST(
-                    FOR file_edge IN isOfType FILTER file_edge._from == record._id
-                    LET file = DOCUMENT(file_edge._to) RETURN file
-                )
-                LET is_folder = file_info != null AND file_info.isFile == false
-
-                // Check hasChildren via recordRelations edge (uses edge index on _from)
-                LET has_children = LENGTH(
-                    FOR edge IN recordRelations
-                        FILTER edge._from == record._id
-                        FILTER edge.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
-                        LIMIT 1
-                        RETURN 1
-                ) > 0
-
-                LET source = record.connectorName == "KB" ? "COLLECTION" : "CONNECTOR"
-
-                RETURN {{
-                    id: record._key,
-                    name: record.recordName,
-                    nodeType: is_folder ? "folder" : "record",
-                    parentId: record.parentId,
-                    origin: source,
-                    connector: record.connectorName,
-                    connectorId: source == "CONNECTOR" ? record.connectorId : null,
-                    externalGroupId: record.externalGroupId,
-                    recordType: record.recordType,
-                    recordGroupType: null,
-                    indexingStatus: record.indexingStatus,
-                    reason: record.reason,
-                    createdAt: record.sourceCreatedAtTimestamp != null ? record.sourceCreatedAtTimestamp : 0,
-                    updatedAt: record.sourceLastModifiedTimestamp != null ? record.sourceLastModifiedTimestamp : 0,
-                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : (file_info ? file_info.fileSizeInBytes : null),
-                    mimeType: record.mimeType,
-                    extension: file_info ? file_info.extension : null,
-                    webUrl: record.webUrl,
-                    hasChildren: has_children,
-                    previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    isInternal: record.isInternal ? true : false
-                }}
-        )
-
-        // ========== COMBINE & FILTER ==========
-        LET all_nodes = UNION(rg_nodes, record_nodes)
-
-        // Apply search and filter conditions
-        LET filtered_nodes = (
-            FOR node IN all_nodes
-                {filter_conditions}
-                RETURN node
-        )
-
-        LET sorted_nodes = (FOR node IN filtered_nodes SORT node[@sort_field] @sort_dir RETURN node)
-        LET total_count = LENGTH(sorted_nodes)
-        LET paginated_nodes = SLICE(sorted_nodes, @skip, @limit)
-
-        RETURN {{ nodes: paginated_nodes, total: total_count }}
-        """
 
         try:
-            result = await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction)
-            duration = time.perf_counter() - start
-            self.logger.debug(f"Knowledge hub unified search completed in {duration:.3f}s")
-            return result[0] if result else {"nodes": [], "total": 0}
+            phase1_result = await self.http_client.execute_aql(
+                phase1_query, bind_vars=bind_vars, txn_id=transaction
+            )
+            phase1_payload = phase1_result[0] if phase1_result else {}
+            total_count = int(phase1_payload.get("total") or 0)
+            paginated_refs = phase1_payload.get("paginated_refs") or []
+
+            nodes: list[dict[str, Any]] = []
+            if paginated_refs:
+                phase2_result = await self.http_client.execute_aql(
+                    phase2_query,
+                    bind_vars={"paginated_refs": paginated_refs},
+                    txn_id=transaction,
+                )
+                if phase2_result:
+                    nodes = phase2_result[0].get("nodes") or []
+
+            return {"nodes": nodes, "total": total_count}
         except Exception as e:
             self.logger.error(f"Error in knowledge hub unified search: {str(e)}")
-            self.logger.error(f"Query: {query}")
-            self.logger.error(f"Bind vars: {bind_vars}")
             raise
 
     async def get_knowledge_hub_breadcrumbs(
@@ -15352,43 +15782,47 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             self.logger.debug(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
 
-            query = f"""
-            LET app = DOCUMENT(CONCAT("apps/", @connector_id))
+            query = """
+            FOR doc IN @@records
+                FILTER doc.connectorId == @connector_id
+                FILTER doc.orgId == @org_id
+                FILTER doc.isInternal != true
 
-            LET allRecordGroups = (
-                FOR rg IN 1..10 INBOUND app._id {CollectionNames.BELONGS_TO.value}
-                    OPTIONS {{ bfs: true, uniqueVertices: "global" }}
-                    FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", rg._id)
-                    RETURN rg._id
-            )
+                LET hasParentRecordGroup = FIRST(
+                    FOR e IN @@belongs_to
+                        FILTER e._from == doc._id
+                        FILTER STARTS_WITH(e._to, @record_group_prefix)
+                        LIMIT 1
+                        RETURN 1
+                )
+                FILTER hasParentRecordGroup == 1
 
-            LET allRecords = (
-                FOR rgId IN allRecordGroups
-                    FOR doc IN 1..1 INBOUND rgId {CollectionNames.BELONGS_TO.value}
-                        FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", doc._id)
-                        FILTER doc.recordType != @drive_record_type
-                        FILTER doc.isInternal != true
+                LET targetInfo = doc.recordType == @file_record_type ? FIRST(
+                    FOR e IN @@is_of_type
+                        FILTER e._from == doc._id
+                        LIMIT 1
+                        LET t = DOCUMENT(e._to)
+                        RETURN t == null ? null : { id: t._id, isFile: t.isFile }
+                ) : null
+                FILTER targetInfo == null
+                    OR PARSE_IDENTIFIER(targetInfo.id).collection != @files_collection
+                    OR targetInfo.isFile == true
 
-                        LET targetDoc = FIRST(
-                            FOR v IN 1..1 OUTBOUND doc._id {CollectionNames.IS_OF_TYPE.value}
-                                LIMIT 1
-                                RETURN v
-                        )
-                        FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
-
-                        RETURN {{ recordType: doc.recordType, indexingStatus: doc.indexingStatus }}
-            )
-
-            FOR r IN allRecords
-                COLLECT recordType = r.recordType, indexingStatus = r.indexingStatus WITH COUNT INTO cnt
-                RETURN {{ recordType, indexingStatus, cnt }}
+                COLLECT recordType = doc.recordType, indexingStatus = doc.indexingStatus WITH COUNT INTO cnt
+                RETURN { recordType, indexingStatus, cnt }
             """
 
             rows = await self.http_client.execute_aql(
                 query,
                 bind_vars={
                     "connector_id": connector_id,
-                    "drive_record_type": RecordTypes.DRIVE.value
+                    "org_id": org_id,
+                    "@records": CollectionNames.RECORDS.value,
+                    "@belongs_to": CollectionNames.BELONGS_TO.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                    "record_group_prefix": f"{CollectionNames.RECORD_GROUPS.value}/",
+                    "file_record_type": RecordTypes.FILE.value,
+                    "files_collection": CollectionNames.FILES.value,
                 },
                 txn_id=transaction
             )
@@ -16118,7 +16552,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         filter_conditions = []
         filter_params = {}
 
-        # Search query filter - will be combined with other conditions
+        # Search query filter - lowercased for case-insensitive LIKE (see LOWER(@search_query) in AQL)
         if search_query:
             filter_params["search_query"] = search_query.lower()
 
@@ -16147,26 +16581,26 @@ class ArangoHTTPProvider(IGraphDBProvider):
             filter_conditions.append('(node.nodeType == "record" AND node.indexingStatus != null AND node.indexingStatus IN @indexing_status)')
 
         if created_at:
-            if created_at.get("gte"):
+            if created_at.get("gte") is not None:
                 filter_params["created_at_gte"] = created_at["gte"]
                 filter_conditions.append("node.createdAt >= @created_at_gte")
-            if created_at.get("lte"):
+            if created_at.get("lte") is not None:
                 filter_params["created_at_lte"] = created_at["lte"]
                 filter_conditions.append("node.createdAt <= @created_at_lte")
 
         if updated_at:
-            if updated_at.get("gte"):
+            if updated_at.get("gte") is not None:
                 filter_params["updated_at_gte"] = updated_at["gte"]
                 filter_conditions.append("node.updatedAt >= @updated_at_gte")
-            if updated_at.get("lte"):
+            if updated_at.get("lte") is not None:
                 filter_params["updated_at_lte"] = updated_at["lte"]
                 filter_conditions.append("node.updatedAt <= @updated_at_lte")
 
         if size:
-            if size.get("gte"):
+            if size.get("gte") is not None:
                 filter_params["size_gte"] = size["gte"]
                 filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes >= @size_gte)")
-            if size.get("lte"):
+            if size.get("lte") is not None:
                 filter_params["size_lte"] = size["lte"]
                 filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes <= @size_lte)")
 
@@ -16190,7 +16624,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         # Add search condition to filter conditions if present
         if search_query:
-            filter_conditions.insert(0, "LOWER(node.name) LIKE CONCAT('%', @search_query, '%')")
+            filter_conditions.insert(0, "LOWER(node.name) LIKE CONCAT('%', LOWER(@search_query), '%')")
 
         # Add only_containers filter
         if only_containers:

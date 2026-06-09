@@ -747,6 +747,16 @@ li > blockquote {
   }
 }
 
+@keyframes attention-ring {
+  0%   { box-shadow: 0 0 0 0   var(--amber-7); }
+  40%  { box-shadow: 0 0 0 4px var(--amber-7); }
+  100% { box-shadow: 0 0 0 0   var(--amber-7); }
+}
+
+.roles-attention {
+  animation: attention-ring 0.6s ease-out 2;
+}
+
 /* ========================
    Agent builder (React Flow) — neutral canvas, matches dashboard panels
    ======================== */
