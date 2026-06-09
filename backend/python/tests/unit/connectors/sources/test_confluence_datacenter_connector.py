@@ -730,7 +730,7 @@ class TestSyncPermissionChangesFromAuditLog:
         connector.audit_log_sync_point = MagicMock()
         connector.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time_ms": 1000})
         connector.audit_log_sync_point.update_sync_point = AsyncMock()
-        connector._fetch_permission_audit_logs = AsyncMock(return_value=[])
+        connector._fetch_permission_audit_content_ids = AsyncMock(return_value=[])
 
         await connector._sync_permission_changes_from_audit_log()
 
@@ -743,12 +743,12 @@ class TestSyncPermissionChangesFromAuditLog:
         connector.audit_log_sync_point = MagicMock()
         connector.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time_ms": 1000})
         connector.audit_log_sync_point.update_sync_point = AsyncMock()
-        connector._fetch_permission_audit_logs = AsyncMock(return_value=["Page Title"])
-        connector._sync_content_permissions_by_titles = AsyncMock()
+        connector._fetch_permission_audit_content_ids = AsyncMock(return_value=["131103"])
+        connector._sync_content_permissions_by_ids = AsyncMock()
 
         await connector._sync_permission_changes_from_audit_log()
 
-        connector._sync_content_permissions_by_titles.assert_awaited_once_with(["Page Title"])
+        connector._sync_content_permissions_by_ids.assert_awaited_once_with(["131103"])
         connector.audit_log_sync_point.update_sync_point.assert_awaited()
 
 
@@ -818,49 +818,6 @@ class TestExtractContentTitleFromAuditRecord:
         }
         result = connector._extract_content_title_from_audit_record(record)
         assert result is None
-
-
-# ===========================================================================
-# ConfluenceDataCenterConnector._fetch_permission_audit_logs
-# ===========================================================================
-
-
-class TestFetchPermissionAuditLogs:
-
-    @pytest.mark.asyncio
-    async def test_fetches_and_extracts_titles(self):
-        connector = _make_connector()
-        mock_ds = MagicMock()
-        mock_ds.get_audit_logs = AsyncMock(return_value=_make_mock_response(200, {
-            "results": [
-                {
-                    "category": "Pages and blogs",
-                    "associatedObjects": [
-                        {"objectType": "Page", "name": "Restricted Page"},
-                        {"objectType": "Space", "name": "ENG"},
-                    ],
-                },
-                {
-                    "category": "Security",
-                    "associatedObjects": [],
-                },
-            ],
-            "size": 2,
-        }))
-        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-
-        titles = await connector._fetch_permission_audit_logs(1000, 2000)
-        assert "Restricted Page" in titles
-
-    @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
-        connector = _make_connector()
-        mock_ds = MagicMock()
-        mock_ds.get_audit_logs = AsyncMock(return_value=_make_mock_response(500, {}))
-        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-
-        titles = await connector._fetch_permission_audit_logs(1000, 2000)
-        assert titles == []
 
 
 # ===========================================================================
@@ -1553,8 +1510,12 @@ class TestTransformToUserGroup:
         assert result.source_user_group_id == "g1"
 
     def test_missing_id(self):
+        """When ID is missing, name is used as source_user_group_id."""
         c = _conn()
-        assert c._transform_to_user_group({"name": "devs"}) is None
+        result = c._transform_to_user_group({"name": "devs"})
+        assert result is not None
+        assert result.name == "devs"
+        assert result.source_user_group_id == "devs"  # Falls back to name when id missing
 
     def test_missing_name(self):
         c = _conn()
@@ -3477,8 +3438,12 @@ class TestTransformToUserGroupFullCoverage:
         assert g.name == "devs"
 
     def test_no_id(self):
+        """When ID is missing, name is used as source_user_group_id."""
         c = _c()
-        assert c._transform_to_user_group({"name": "devs"}) is None
+        result = c._transform_to_user_group({"name": "devs"})
+        assert result is not None
+        assert result.name == "devs"
+        assert result.source_user_group_id == "devs"  # Falls back to name when id missing
 
     def test_no_name(self):
         c = _c()

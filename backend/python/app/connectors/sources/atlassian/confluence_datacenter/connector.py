@@ -83,11 +83,18 @@ from app.utils.streaming import create_stream_record_response
 TIME_OFFSET_HOURS = 24
 
 def _extract_item_last_modified_when(item_data: dict[str, Any]) -> Optional[str]:
-    history = item_data.get("history") or {}
-    last_updated = history.get("lastUpdated") or {}
-    if isinstance(last_updated, dict):
-        return last_updated.get("when")
-    version = item_data.get("version") or {}
+    """Extract last modified timestamp from Confluence item data.
+    
+    Tries history.lastUpdated.when first, then falls back to version.when or version.createdAt.
+    """
+    history = item_data.get("history")
+    if isinstance(history, dict):
+        last_updated = history.get("lastUpdated")
+        if isinstance(last_updated, dict):
+            when = last_updated.get("when")
+            if when:
+                return when
+    version = item_data.get("version")
     if isinstance(version, dict):
         return version.get("when") or version.get("createdAt")
     return None
@@ -1735,6 +1742,9 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 )
 
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
+                    if response and response.status == HttpStatusCode.NOT_FOUND.value:
+                        self.logger.info(f"Content {content_id} not found (likely deleted), skipping permission sync")
+                        continue
                     self.logger.warning(
                         f"⚠️ Failed to fetch content {content_id}: "
                         f"{response.status if response else 'No response'}"

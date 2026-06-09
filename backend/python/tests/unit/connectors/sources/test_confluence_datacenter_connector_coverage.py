@@ -175,8 +175,12 @@ class TestTransformToUserGroup:
         assert result.source_user_group_id == "g1"
 
     def test_missing_id(self):
+        """When ID is missing, name is used as source_user_group_id."""
         c = _conn()
-        assert c._transform_to_user_group({"name": "devs"}) is None
+        result = c._transform_to_user_group({"name": "devs"})
+        assert result is not None
+        assert result.name == "devs"
+        assert result.source_user_group_id == "devs"  # Falls back to name when id missing
 
     def test_missing_name(self):
         c = _conn()

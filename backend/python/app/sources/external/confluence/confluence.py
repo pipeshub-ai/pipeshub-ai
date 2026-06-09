@@ -97,6 +97,8 @@ class ConfluenceDataSource:
         chunk_size: int = 8192,
     ) -> AsyncGenerator[bytes, None]:
         """Stream bytes from a download URL using the configured client auth headers."""
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
         auth_headers = self._client.headers.copy()
         async with httpx.AsyncClient(follow_redirects=True) as client:
             async with client.stream(
