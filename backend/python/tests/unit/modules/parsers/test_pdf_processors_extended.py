@@ -827,7 +827,181 @@ class TestPyMuPDFOpenCVProcessorExtended:
 
         assert len(result) == 1
 
+    @pytest.mark.asyncio
+    async def test_parse_document_unlink_oserror_is_swallowed(self):
+        """parse_document swallows OSError when cleaning up the temp PDF file."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+
+        mock_pdf = MagicMock()
+        mock_page = MagicMock()
+        mock_page.width = 612
+        mock_page.height = 792
+        mock_pdf.pages = [mock_page]
+        mock_cm = MagicMock()
+        mock_cm.__enter__.return_value = mock_pdf
+        mock_cm.__exit__.return_value = None
+
+        with patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.pdfplumber.open",
+            return_value=mock_cm,
+        ), patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.extract_layout_regions",
+            return_value=[],
+        ), patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.os.unlink",
+            side_effect=OSError("permission denied"),
+        ):
+            result = await proc.parse_document("test.pdf", b"fake-pdf-bytes")
+
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_parse_document_tempfile_failure_skips_unlink(self):
+        """parse_document skips unlink when temp file creation never assigns tmp_path."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+
+        with patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.tempfile.NamedTemporaryFile",
+            side_effect=OSError("disk full"),
+        ), patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.os.unlink",
+        ) as mock_unlink:
+            with pytest.raises(OSError, match="disk full"):
+                await proc.parse_document("test.pdf", b"fake-pdf-bytes")
+
+        mock_unlink.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_build_table_group_skip_llm_enrichment(self):
+        """_build_table_group derives headers and row text locally when LLM is skipped."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion,
+            LayoutRegionType,
+            ParsedPageData,
+            PDFPlumberOpenCVProcessor,
+        )
+
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        region = LayoutRegion(
+            type=LayoutRegionType.TABLE,
+            bbox=(0, 0, 200, 100),
+            table_grid=[
+                [{"text": "Name"}, {"text": "Age"}],
+                [{"text": "Alice"}, {"text": "30"}],
+                ["Bob", None],
+            ],
+        )
+        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[])
+        blocks: list = []
+        block_groups: list = []
+
+        with patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.get_table_summary_n_headers",
+            new_callable=AsyncMock,
+        ) as mock_summary, patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.get_rows_text",
+            new_callable=AsyncMock,
+        ) as mock_rows:
+            bg = await proc._build_table_group(
+                region, pd, blocks, block_groups, skip_llm_enrichment=True
+            )
+
+        mock_summary.assert_not_called()
+        mock_rows.assert_not_called()
+        assert bg is not None
+        assert bg.type.value == "table"
+        assert len(blocks) == 2
+        assert blocks[0].data["row_number"] == 1
+        assert "Name:" in blocks[0].data["row_natural_language_text"]
+        assert blocks[1].data["row_number"] == 2
+
+    @pytest.mark.asyncio
+    async def test_build_table_group_empty_grid(self):
+        """_build_table_group returns None for an empty table grid."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion,
+            LayoutRegionType,
+            ParsedPageData,
+            PDFPlumberOpenCVProcessor,
+        )
+
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        region = LayoutRegion(
+            type=LayoutRegionType.TABLE, bbox=(0, 0, 200, 100), table_grid=[]
+        )
+        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[])
+        result = await proc._build_table_group(region, pd, [], [])
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_create_blocks_skip_llm_enrichment(self):
+        """create_blocks forwards skip_llm_enrichment to table group building."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion,
+            LayoutRegionType,
+            ParsedPageData,
+            PDFPlumberOpenCVProcessor,
+        )
+
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        region = LayoutRegion(
+            type=LayoutRegionType.TABLE,
+            bbox=(0, 0, 100, 100),
+            table_grid=[["ColA", "ColB"], ["1", "2"]],
+        )
+        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[region])
+
+        with patch.object(
+            proc, "_build_table_group", new_callable=AsyncMock, return_value=MagicMock()
+        ) as mock_build:
+            await proc.create_blocks([pd], skip_llm_enrichment=True)
+
+        mock_build.assert_awaited_once()
+        assert mock_build.await_args.kwargs["skip_llm_enrichment"] is True
+
+    @pytest.mark.asyncio
+    async def test_build_table_group_missing_row_text_fallback(self):
+        """Row blocks use empty string when table_rows_text is shorter than table_rows."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion,
+            LayoutRegionType,
+            ParsedPageData,
+            PDFPlumberOpenCVProcessor,
+        )
+
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        region = LayoutRegion(
+            type=LayoutRegionType.TABLE,
+            bbox=(0, 0, 200, 100),
+            table_grid=[["A", "B"], ["1", "2"], ["3", "4"]],
+        )
+        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[])
+        blocks: list = []
+        block_groups: list = []
+
+        mock_response = MagicMock()
+        mock_response.summary = "Table summary"
+        mock_response.headers = ["A", "B"]
+
+        with patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.get_table_summary_n_headers",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ), patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.get_rows_text",
+            new_callable=AsyncMock,
+            return_value=(["Only one row text"], [["1", "2"], ["3", "4"]]),
+        ):
+            bg = await proc._build_table_group(region, pd, blocks, block_groups)
+
+        assert bg is not None
+        assert len(blocks) == 2
+        assert blocks[0].data["row_natural_language_text"] == "Only one row text"
+        assert blocks[1].data["row_natural_language_text"] == ""
 
 
 # ============================================================================

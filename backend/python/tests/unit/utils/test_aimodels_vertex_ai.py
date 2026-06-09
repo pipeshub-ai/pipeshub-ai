@@ -101,6 +101,18 @@ class TestGetEmbeddingModelVertexAI:
         get_embedding_model(EmbeddingProvider.VERTEX_AI.value, cfg)
         assert mock_emb_cls.call_args.kwargs["output_dimensionality"] == 768
 
+    def test_missing_service_account_raises(self):
+        cfg = self._config()
+        del cfg["configuration"]["serviceAccountJson"]
+        with pytest.raises(ValueError, match="service account JSON"):
+            get_embedding_model(EmbeddingProvider.VERTEX_AI.value, cfg)
+
+    def test_missing_project_raises(self):
+        cfg = self._config()
+        del cfg["configuration"]["project"]
+        with pytest.raises(ValueError, match="GCP Project ID"):
+            get_embedding_model(EmbeddingProvider.VERTEX_AI.value, cfg)
+
 
 class TestGetGeneratorModelVertexAI:
     def _config(self, **overrides):
@@ -162,3 +174,15 @@ class TestGetGeneratorModelVertexAI:
         cfg["isReasoning"] = True
         get_generator_model(LLMProvider.VERTEX_AI.value, cfg)
         assert mock_chat_cls.call_args.kwargs["temperature"] == 1
+
+    def test_missing_service_account_raises(self):
+        cfg = self._config()
+        del cfg["configuration"]["serviceAccountJson"]
+        with pytest.raises(ValueError, match="service account JSON"):
+            get_generator_model(LLMProvider.VERTEX_AI.value, cfg)
+
+    def test_missing_project_raises(self):
+        cfg = self._config()
+        del cfg["configuration"]["project"]
+        with pytest.raises(ValueError, match="GCP Project ID"):
+            get_generator_model(LLMProvider.VERTEX_AI.value, cfg)
