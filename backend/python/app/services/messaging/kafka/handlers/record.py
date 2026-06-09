@@ -179,7 +179,7 @@ class RecordEventHandler(BaseEventService):
 
             # Handle delete event - no parsing/indexing phases
             if event_type == EventTypes.DELETE_RECORD.value:
-                await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([ virtual_record_id])
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -208,7 +208,7 @@ class RecordEventHandler(BaseEventService):
                         f"skipping full embedding deletion"
                     )
                 else:
-                    await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+                    await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([virtual_record_id])
 
             doc = dict(record)
 
