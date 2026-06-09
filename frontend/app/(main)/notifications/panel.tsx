@@ -1,6 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from 'react';
 import { SidebarLoadMoreButton } from '@/app/(main)/knowledge-base/sidebar/sidebar-load-more-button';
 import { createPortal } from 'react-dom';
 import { Theme, Flex, Text, Box, IconButton, Tooltip } from '@radix-ui/themes';
@@ -17,6 +24,7 @@ import { usePathname, useSearchParams } from 'next/navigation';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import {
+  PANEL_COMPACT_TIME_WIDTH,
   PANEL_MAX_WIDTH,
   PANEL_MIN_WIDTH,
   useNotificationPanelWidthStore,
@@ -67,8 +75,11 @@ export function NotificationsPanel() {
   const sidebarWidth = useSidebarWidthStore((s) => s.sidebarWidth);
   const isNavCollapsed = useSidebarWidthStore((s) => s.isNavCollapsed);
   const isMobile = useIsMobile();
-  const panelWidth = useNotificationPanelWidthStore((s) => s.panelWidth);
+  const storedPanelWidth = useNotificationPanelWidthStore((s) => s.panelWidth);
   const setPanelWidth = useNotificationPanelWidthStore((s) => s.setPanelWidth);
+  const panelWidth = Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, storedPanelWidth));
+  /** Live rendered width — updates during drag (store `panelWidth` only commits on mouseup). */
+  const [layoutPanelWidth, setLayoutPanelWidth] = useState(panelWidth);
 
   // On mobile the sidebar is a fixed overlay and doesn't consume layout space,
   // so the panel should start from the left edge.
@@ -116,6 +127,23 @@ export function NotificationsPanel() {
   useEffect(() => {
     widthRef.current = panelWidth;
   }, [panelWidth]);
+
+  useLayoutEffect(() => {
+    setLayoutPanelWidth(panelWidth);
+  }, [panelWidth]);
+
+  useLayoutEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    const syncWidth = () => {
+      const next = el.getBoundingClientRect().width;
+      setLayoutPanelWidth((prev) => (Math.abs(prev - next) < 0.5 ? prev : next));
+    };
+    syncWidth();
+    const ro = new ResizeObserver(syncWidth);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [isVisible]);
 
   const handleResizeMouseDown = useCallback(
     (e: ReactMouseEvent) => {
@@ -318,6 +346,7 @@ export function NotificationsPanel() {
         }
         .rt-TooltipContent.${NOTIFICATIONS_PANEL_TOOLTIP_CLASS} {
           z-index: 9200 !important;
+          pointer-events: none;
         }
         [data-ph-notifications-header-actions] > * {
           position: relative;
@@ -329,17 +358,43 @@ export function NotificationsPanel() {
         [data-ph-notification-row]:hover {
           background-color: var(--olive-3);
         }
+        [data-ph-notification-row-meta] {
+          position: relative;
+          flex-shrink: 0;
+          align-self: flex-start;
+          min-width: 88px;
+          min-height: var(--space-5);
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+        }
         [data-ph-notification-row] [data-ph-notification-row-actions] {
-          display: none;
+          position: absolute;
+          right: 0;
+          top: 50%;
+          transform: translateY(-50%);
+          opacity: 0;
+          visibility: hidden;
+          pointer-events: none;
         }
         [data-ph-notification-row]:hover [data-ph-notification-row-actions] {
-          display: flex;
+          opacity: 1;
+          visibility: visible;
+          pointer-events: auto;
         }
         [data-ph-notification-row] [data-ph-notification-row-time] {
-          display: block;
+          position: absolute;
+          right: 0;
+          top: 50%;
+          transform: translateY(-50%);
+          opacity: 1;
+          visibility: visible;
+          white-space: nowrap;
         }
         [data-ph-notification-row]:hover [data-ph-notification-row-time] {
-          display: none;
+          opacity: 0;
+          visibility: hidden;
+          pointer-events: none;
         }
         [data-ph-notification-row] [data-ph-notification-row-title-link] {
           text-decoration: none;
@@ -352,7 +407,7 @@ export function NotificationsPanel() {
         ref={panelRef}
         data-ph-notifications-panel=""
         role="complementary"
-        aria-label={t('inbox.title', { defaultValue: 'Inbox' })}
+        aria-label={t('nav.inbox')}
         onAnimationEnd={handleAnimationEnd}
         style={{
           position: 'fixed',
@@ -416,7 +471,7 @@ export function NotificationsPanel() {
           <Flex align="center" gap="2" style={{ minWidth: 0 }}>
             <MaterialIcon name="inbox" size={16} color="var(--slate-11)" />
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              {t('inbox.title', { defaultValue: 'Inbox' })}
+              {t('nav.inbox')}
             </Text>
           </Flex>
           <Flex
@@ -528,6 +583,7 @@ export function NotificationsPanel() {
                 <NotificationRow
                   key={n._id}
                   notification={n}
+                  compactTime={layoutPanelWidth < PANEL_COMPACT_TIME_WIDTH}
                   onMarkRead={(item) => void onMarkRead(item)}
                   onArchive={(item) => void onArchive(item)}
                   onUnarchive={(item) => void onUnarchive(item)}

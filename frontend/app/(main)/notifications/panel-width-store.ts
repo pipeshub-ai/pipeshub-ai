@@ -3,9 +3,11 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 
-export const PANEL_DEFAULT_WIDTH = 360;
-export const PANEL_MIN_WIDTH = 280;
+export const PANEL_DEFAULT_WIDTH = 420;
+export const PANEL_MIN_WIDTH = 360;
 export const PANEL_MAX_WIDTH = 520;
+/** Below this width, notification rows use narrow relative timestamps (e.g. "19h ago"). */
+export const PANEL_COMPACT_TIME_WIDTH = 420;
 
 interface NotificationPanelWidthState {
   panelWidth: number;

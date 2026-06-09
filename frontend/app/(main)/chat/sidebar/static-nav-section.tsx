@@ -126,7 +126,7 @@ export function StaticNavSection() {
       <div data-ph-notifications-trigger style={{ width: '100%' }}>
         <SidebarItem
           icon={<MaterialIcon name="inbox" size={ICON_SIZE_DEFAULT} />}
-          label={t('nav.inbox', { defaultValue: 'Inbox' })}
+          label={t('nav.inbox')}
           onClick={() => {
             if (isMobile) closeMobileSidebar();
             toggleNotificationsPanel();

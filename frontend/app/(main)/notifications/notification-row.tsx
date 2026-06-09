@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, useRef, useLayoutEffect } from 'react';
+import { useState, useRef, useLayoutEffect, useCallback, type CSSProperties, type RefObject } from 'react';
 import Link from 'next/link';
-import { Flex, Text, Box, IconButton } from '@radix-ui/themes';
+import { Flex, Text, Box, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useTranslation } from 'react-i18next';
 import type { NotificationListItem, NotificationSeverity } from './api';
+import { NOTIFICATIONS_PANEL_TOOLTIP_CLASS } from './notification-filter-menu';
 
 /** App-relative paths from the API may omit a leading slash; Next.js Link needs one. */
 function notificationHref(redirectLink: string): string | null {
@@ -15,7 +16,11 @@ function notificationHref(redirectLink: string): string | null {
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
 }
 
-function formatRelativeTime(iso: string | undefined, lang: string): string {
+function formatRelativeTime(
+  iso: string | undefined,
+  lang: string,
+  compact = false,
+): string {
   if (!iso) return '';
   const ts = new Date(iso).getTime();
   if (Number.isNaN(ts)) return '';
@@ -24,7 +29,10 @@ function formatRelativeTime(iso: string | undefined, lang: string): string {
   const mins = Math.floor(diff / 60000);
   const hrs = Math.floor(mins / 60);
   const days = Math.floor(hrs / 24);
-  const rtf = new Intl.RelativeTimeFormat(lang, { numeric: 'auto' });
+  const rtf = new Intl.RelativeTimeFormat(lang, {
+    numeric: 'auto',
+    style: compact ? 'narrow' : 'long',
+  });
   if (secs < 60) return rtf.format(0, 'second');
   if (mins < 60) return rtf.format(-mins, 'minute');
   if (hrs < 24) return rtf.format(-hrs, 'hour');
@@ -61,6 +69,119 @@ function severityColor(severity: NotificationSeverity): string {
   }
 }
 
+const titleTruncateStyle: CSSProperties = {
+  minWidth: 0,
+  display: 'block',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+function NotificationTitle({
+  title,
+  href,
+  style,
+  onNavigate,
+}: {
+  title: string;
+  href: string | null;
+  style: CSSProperties;
+  onNavigate?: () => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLElement>(null);
+  const [isTitleTruncated, setIsTitleTruncated] = useState(false);
+
+  const measure = useCallback(() => {
+    const el = textRef.current;
+    if (!el) return;
+    setIsTitleTruncated(el.scrollWidth > el.clientWidth + 1);
+  }, []);
+
+  useLayoutEffect(() => {
+    measure();
+    const container = containerRef.current;
+    if (!container) return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [measure, title, href]);
+
+  const textEl = href ? (
+    <Text size="2" weight="medium" style={style} truncate asChild>
+      <Link
+        ref={textRef as RefObject<HTMLAnchorElement>}
+        href={href}
+        data-ph-notification-row-title-link=""
+        style={{ ...titleTruncateStyle, width: '100%' }}
+        onClick={onNavigate}
+        {...(/^https?:\/\//i.test(href)
+          ? { target: '_blank', rel: 'noopener noreferrer' }
+          : {})}
+      >
+        {title}
+      </Link>
+    </Text>
+  ) : (
+    <Text
+      ref={textRef as RefObject<HTMLSpanElement>}
+      size="2"
+      weight="medium"
+      style={{ ...style, ...titleTruncateStyle, width: '100%' }}
+      truncate
+    >
+      {title}
+    </Text>
+  );
+
+  return (
+    <Box ref={containerRef} style={{ minWidth: 0, width: '100%' }}>
+      {!title || !isTitleTruncated ? (
+        textEl
+      ) : (
+        <Tooltip
+          className={NOTIFICATIONS_PANEL_TOOLTIP_CLASS}
+          content={title}
+          side="bottom"
+        >
+          {textEl}
+        </Tooltip>
+      )}
+    </Box>
+  );
+}
+
+function NotificationActionButton({
+  label,
+  icon,
+  onClick,
+}: {
+  label: string;
+  icon: string;
+  onClick: () => void;
+}) {
+  return (
+    <Box style={{ display: 'inline-flex', flexShrink: 0, position: 'relative' }}>
+      <Tooltip
+        className={NOTIFICATIONS_PANEL_TOOLTIP_CLASS}
+        content={label}
+        side="bottom"
+      >
+        <IconButton
+          variant="ghost"
+          color="gray"
+          size="1"
+          onClick={onClick}
+          aria-label={label}
+          style={{ flexShrink: 0 }}
+        >
+          <MaterialIcon name={icon} size={16} color="var(--slate-11)" />
+        </IconButton>
+      </Tooltip>
+    </Box>
+  );
+}
+
 export function NotificationRow({
   notification: n,
   onMarkRead,
@@ -71,6 +192,7 @@ export function NotificationRow({
   archiveLabel,
   unarchiveLabel,
   dismissLabel,
+  compactTime = false,
 }: {
   notification: NotificationListItem;
   onMarkRead: (n: NotificationListItem) => void;
@@ -81,6 +203,7 @@ export function NotificationRow({
   archiveLabel: string;
   unarchiveLabel: string;
   dismissLabel: string;
+  compactTime?: boolean;
 }) {
   const { i18n } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(false);
@@ -89,9 +212,10 @@ export function NotificationRow({
   // scrollHeight on a -webkit-line-clamp element is unreliable in some browsers
   // (it can return the clamped height instead of the full content height), so we
   // measure on a separate, unconstrained div instead.
+  const messageContainerRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLDivElement>(null);
 
-  const timeLabel = formatRelativeTime(n.createdAt, i18n.language);
+  const timeLabel = formatRelativeTime(n.createdAt, i18n.language, compactTime);
   const severity = n.severity ?? 'error';
   const title = n.title ?? '';
   const message = n.message ?? '';
@@ -100,12 +224,29 @@ export function NotificationRow({
   const isRead = n.status === 'read' || n.status === 'archived';
   const titleStyle = { color: 'var(--slate-12)' };
 
-  useLayoutEffect(() => {
+  const measureMessageTruncation = useCallback(() => {
     const el = measureRef.current;
     if (!el) return;
     const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 16;
-    setIsTruncated(el.scrollHeight > lineHeight * 2 + 1);
+    const truncated = el.scrollHeight > lineHeight * 2 + 1;
+    setIsTruncated(truncated);
+    if (!truncated) {
+      setIsExpanded(false);
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    setIsExpanded(false);
   }, [message]);
+
+  useLayoutEffect(() => {
+    measureMessageTruncation();
+    const container = messageContainerRef.current;
+    if (!container) return;
+    const ro = new ResizeObserver(measureMessageTruncation);
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [measureMessageTruncation, message]);
 
   return (
     <Box
@@ -140,29 +281,15 @@ export function NotificationRow({
 
         <Flex align="start" justify="between" gap="2" style={{ flex: 1, minWidth: 0 }}>
           <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
-            {href ? (
-              <Text size="2" weight="medium" style={titleStyle} truncate asChild>
-                <Link
-                  href={href}
-                  data-ph-notification-row-title-link=""
-                  style={{
-                    minWidth: 0,
-                    display: 'block',
-                  }}
-                  onClick={() => { if (!isRead) onMarkRead(n); }}
-                  {...(/^https?:\/\//i.test(href)
-                    ? { target: '_blank', rel: 'noopener noreferrer' }
-                    : {})}
-                >
-                  {title}
-                </Link>
-              </Text>
-            ) : (
-              <Text size="2" weight="medium" style={titleStyle} truncate>
-                {title}
-              </Text>
-            )}
-            <Box style={{ position: 'relative' }}>
+            <NotificationTitle
+              title={title}
+              href={href}
+              style={titleStyle}
+              onNavigate={() => {
+                if (!isRead) onMarkRead(n);
+              }}
+            />
+            <Box ref={messageContainerRef} style={{ position: 'relative', minWidth: 0, width: '100%' }}>
               {/* Invisible unclamped clone — used only to measure full text height */}
               <div
                 ref={measureRef}
@@ -244,72 +371,43 @@ export function NotificationRow({
             )}
           </Flex>
 
-          <Box
-            style={{
-              flexShrink: 0,
-              alignSelf: 'flex-start',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 'var(--space-2)',
-            }}
-          >
+          <Box data-ph-notification-row-meta="">
             <Flex
               data-ph-notification-row-actions=""
               align="center"
               gap="2"
-              style={{ minWidth: '76px', justifyContent: 'flex-end' }}
+              style={{ justifyContent: 'flex-end' }}
             >
               {n.status === 'unread' && (
-                <IconButton
-                  variant="ghost"
-                  color="gray"
-                  size="1"
+                <NotificationActionButton
+                  label={markReadLabel}
+                  icon="done"
                   onClick={() => onMarkRead(n)}
-                  aria-label={markReadLabel}
-                  style={{ flexShrink: 0 }}
-                >
-                  <MaterialIcon name="done" size={16} color="var(--slate-11)" />
-                </IconButton>
+                />
               )}
               {n.status !== 'archived' ? (
-                <IconButton
-                  variant="ghost"
-                  color="gray"
-                  size="1"
+                <NotificationActionButton
+                  label={archiveLabel}
+                  icon="archive"
                   onClick={() => onArchive(n)}
-                  aria-label={archiveLabel}
-                  style={{ flexShrink: 0 }}
-                >
-                  <MaterialIcon name="archive" size={16} color="var(--slate-11)" />
-                </IconButton>
+                />
               ) : (
-                <IconButton
-                  variant="ghost"
-                  color="gray"
-                  size="1"
+                <NotificationActionButton
+                  label={unarchiveLabel}
+                  icon="unarchive"
                   onClick={() => onUnarchive(n)}
-                  aria-label={unarchiveLabel}
-                  style={{ flexShrink: 0 }}
-                >
-                  <MaterialIcon name="unarchive" size={16} color="var(--slate-11)" />
-                </IconButton>
+                />
               )}
-              <IconButton
-                variant="ghost"
-                color="gray"
-                size="1"
+              <NotificationActionButton
+                label={dismissLabel}
+                icon="close"
                 onClick={() => onDismiss(n)}
-                aria-label={dismissLabel}
-                style={{ flexShrink: 0 }}
-              >
-                <MaterialIcon name="close" size={16} color="var(--slate-11)" />
-              </IconButton>
+              />
             </Flex>
             <Text
               data-ph-notification-row-time=""
               size="1"
               color="gray"
-              style={{ whiteSpace: 'nowrap' }}
             >
               {timeLabel}
             </Text>

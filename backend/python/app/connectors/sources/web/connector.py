@@ -591,7 +591,7 @@ class WebConnector(BaseConnector):
                     severity=NotificationSeverity.ERROR,
                     title=f"Website not accessible",
                     message=f"Website {self.url} is not accessible.",
-                    recipient_user_ids=[NotificationRecipientRole.ADMIN],
+                    recipient_roles=[NotificationRecipientRole.ADMIN],
                 )
                 return False
 
@@ -610,7 +610,7 @@ class WebConnector(BaseConnector):
                     severity=NotificationSeverity.ERROR,
                     title=f"Website not accessible",
                     message=f"Website {self.url} returned status {result.status_code}",
-                    recipient_user_ids=[NotificationRecipientRole.ADMIN],
+                    recipient_roles=[NotificationRecipientRole.ADMIN],
                 )
                 return False
 
@@ -817,7 +817,7 @@ class WebConnector(BaseConnector):
                     message=f"Failed to crawl {len(self.retry_urls)} pages.\nCrawled {len(self.visited_urls)} pages.\nProcessed {self.processed_urls} pages.",
                     recipient_user_ids=[self.created_by],
                 )
-            elif self.processed_urls > 0:
+            else:
                 await self.notify(
                     type=NotificationType.CONNECTOR_INFO,
                     severity=NotificationSeverity.INFO,
