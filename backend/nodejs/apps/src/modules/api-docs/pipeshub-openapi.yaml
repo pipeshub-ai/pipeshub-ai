@@ -20829,13 +20829,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Record group not found
-          description: Conflict - the connector instance is disabled. Enable it from Connector Settings and try again.
+          content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: Conflict — the connector instance is disabled. Enable it from Connector Settings and try again.
-
+          description: Conflict - the connector instance is disabled. Enable it from Connector Settings and try again.
           content:
             application/json:
               schema:
