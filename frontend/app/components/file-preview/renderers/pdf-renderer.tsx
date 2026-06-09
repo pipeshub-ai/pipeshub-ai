@@ -142,14 +142,11 @@ export function PDFRenderer({
   pagination,
   citations,
   activeCitationId,
+  citationClickVersion,
   onHighlightClick,
 }: PDFRendererProps) {
   const scrollViewerTo = useRef<(highlight: IHighlight) => void>(() => {});
-  const [selectedHighlightId, setSelectedHighlightId] = useState<string | null>(null);
   const [viewerReadyEpoch, setViewerReadyEpoch] = useState(0);
-  // Increments each time activeCitationId changes, forcing the highlight element
-  // to remount so the blink animation always plays from scratch.
-  const [blinkEpoch, setBlinkEpoch] = useState(0);
 
   // Stable ref to latest pagination callbacks — avoids effects re-running on every render
   const paginationRef = useRef(pagination);
@@ -390,16 +387,6 @@ export function PDFRenderer({
     }
   }, [scale, fileUrl]);
 
-  // Sync selected highlight with activeCitationId from external citation panel.
-  // Increment blinkEpoch so the key changes and the highlight element remounts,
-  // replaying the blink animation regardless of which citation was previously active.
-  useEffect(() => {
-    setSelectedHighlightId(activeCitationId ?? null);
-    if (activeCitationId) {
-      setBlinkEpoch((n) => n + 1);
-    }
-  }, [activeCitationId]);
-
   // Scroll to a citation when activeCitationId changes or when highlights load.
   // If the viewer isn't ready yet (PDF still loading), park the scroll in
   // pendingCitationScroll and execute it from the scrollRef callback below.
@@ -534,7 +521,7 @@ export function PDFRenderer({
               onSelectionFinished={() => null}
               highlightTransform={(
                 highlight,
-                index,
+                _index,
                 setTip,
                 hideTip,
                 _viewportToScaled,
@@ -542,14 +529,13 @@ export function PDFRenderer({
                 _isScrolledTo,
               ) => {
                 const isHighlighted =
-                  selectedHighlightId !== null &&
-                  selectedHighlightId === highlight.id;
+                  activeCitationId !== null &&
+                  activeCitationId === highlight.id;
 
                 const isTextHighlight = !highlight.content?.image;
                 const component = isTextHighlight ? (
                   <div
                     onClick={() => {
-                      setSelectedHighlightId(highlight.id);
                       onHighlightClick?.(highlight.id);
                     }}
                     style={{
@@ -575,15 +561,15 @@ export function PDFRenderer({
                     popupContent={<div />}
                     onMouseOver={() => {}}
                     onMouseOut={hideTip}
-                    key={`${highlight.id}-${blinkEpoch}`}
+                    key={`${activeCitationId ?? 'none'}-${citationClickVersion ?? 0}`}
                   >
                     {component}
                   </Popup>
                 );
               }}
               highlights={
-                selectedHighlightId
-                  ? highlights.filter((h) => h.id === selectedHighlightId)
+                activeCitationId
+                  ? highlights.filter((h) => h.id === activeCitationId)
                   : []
               }
             />

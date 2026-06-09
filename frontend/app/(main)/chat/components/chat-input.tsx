@@ -1009,6 +1009,9 @@ export function ChatInput({
       setIsAgentResourcesPanelOpen(false);
       setIsModelPanelOpen(false);
       setExpansionViewMode('inline');
+      // Clear any stale drag overlay state so the panel overlay doesn't bleed
+      // into the upload area UI when files were dragged prior to opening it.
+      setIsPanelDragging(false);
     }
     setShowUploadArea(next);
   };
@@ -2168,8 +2171,9 @@ export function ChatInput({
         </Flex>
       </Flex>
 
-      {/* Drop overlay — covers only the input box; chip row above stays visible */}
-      {isPanelDragging && (
+      {/* Drop overlay — shown only when the dedicated upload area is NOT open.
+          When showUploadArea=true the inner drop box handles drag/drop directly. */}
+      {isPanelDragging && !showUploadArea && (
         <Box
           style={{
             position: 'absolute',
