@@ -24,7 +24,6 @@ import {
   deleteFolder,
   getKBContent,
   getFolderContents,
-  getAllRecords,
   uploadRecordsToFolder,
   createNestedFolder,
   createRootFolder,
@@ -53,7 +52,6 @@ import {
   deletePermissionsSchema,
   updateFolderSchema,
   deleteFolderSchema,
-  getAllRecordsSchema,
   getAllKBRecordsSchema,
   uploadRecordsSchema,
   uploadRecordsToFolderSchema,
@@ -217,16 +215,6 @@ export function createKnowledgeBaseRouter(
     metricsMiddleware(container),
     ValidationMiddleware.validate(listKnowledgeBasesSchema),
     listKnowledgeBases(appConfig),
-  );
-
-  // Get all records (new)
-  router.get(
-    '/records',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(getAllRecordsSchema),
-    getAllRecords(appConfig),
   );
 
   // Knowledge Hub unified browse API - Root

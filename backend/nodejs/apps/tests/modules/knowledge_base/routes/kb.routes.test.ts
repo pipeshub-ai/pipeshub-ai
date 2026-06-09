@@ -108,19 +108,6 @@ describe('Knowledge Base Routes', () => {
     expect(paths).to.include('/record/:recordId')
   })
 
-  it('should register all records route', () => {
-    const router = createKnowledgeBaseRouter(container)
-    const routes = router.stack
-      .filter((layer: any) => layer.route)
-      .map((layer: any) => ({
-        path: layer.route.path,
-        methods: layer.route.methods,
-      }))
-    const paths = routes.map((r: any) => r.path)
-
-    expect(paths).to.include('/records')
-  })
-
   it('should register knowledge hub nodes route', () => {
     const router = createKnowledgeBaseRouter(container)
     const routes = router.stack
