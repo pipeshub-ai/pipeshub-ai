@@ -3441,6 +3441,38 @@ components:
           format: int64
           nullable: true
 
+    reIndexRecordResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by POST /knowledgeBase/reindex/record/{recordId}.
+      required:
+        - success
+        - message
+        - eventPublished
+        - depth
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        message:
+          type: string
+        recordId:
+          type: string
+          nullable: true
+        recordName:
+          type: string
+          nullable: true
+        connector:
+          type: string
+          nullable: true
+        eventPublished:
+          type: boolean
+        userRole:
+          type: string
+          nullable: true
+        depth:
+          type: integer
+
     GetKnowledgeBaseRecordsResponseSchema:
       type: object
       additionalProperties: false
@@ -20631,12 +20663,18 @@ paths:
         - Connector
       summary: Reindex single record
       description: |
-        Trigger reindexing for a specific record.<br><br>
-        <b>Overview:</b><br>
-        Reprocesses the record's content to update search indexes and AI embeddings. Useful after content changes or to fix indexing failures.<br><br>
-        <b>Depth Parameter:</b><br>
-        Controls processing depth for complex documents (-1 for full depth, 0-100 for limited).<br><br>
-        <b>Status filters:</b><br>
+        Trigger reindexing for a specific record.
+
+        **Overview:**
+
+        Reprocesses the record's content to update search indexes and AI embeddings. Useful after content changes or to fix indexing failures.
+
+        **Depth parameter:**
+
+        Controls processing depth for complex documents (`-1` for full depth, `0`–`100` for limited).
+
+        **Status filters:**
+
         Optional `statusFilters` array limits reindex to records in matching indexing states
         (e.g. `FAILED`, `AUTO_INDEX_OFF`).
       operationId: reindexRecord
@@ -20658,12 +20696,53 @@ paths:
       responses:
         '200':
           description: Reindexing triggered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/reIndexRecordResponseSchema'
+        '400':
+          description: Invalid request body or parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: OAuth token is missing the required kb:write scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: Conflict — the connector instance for this record is disabled. Enable it from Connector Settings and try again.
+
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while reindexing the record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /knowledgeBase/reindex/record-group/{recordGroupId}:
     post:

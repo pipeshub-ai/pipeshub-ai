@@ -24,6 +24,7 @@ class TestKnowledgeBaseRecordsCrud:
         self.client = pipeshub_client
         self.client._ensure_access_token()
         self.record_url = f"{self.client.base_url}/api/v1/knowledgeBase/record/"
+        self.reindex_url = f"{self.client.base_url}/api/v1/knowledgeBase/reindex/record/"
         self.headers = {
             "Authorization": f"Bearer {self.client._access_token}",
             "Content-Type": "application/json",
@@ -173,3 +174,84 @@ class TestKnowledgeBaseRecordsCrud:
         assert_response_matches_openapi_operation(
             resp.json(), "deleteRecord", status_code=str(resp.status_code)
         )
+
+    def test_reindex_record_by_id_success(
+        self, six_kb_records: dict[str, object]
+    ) -> None:
+        record_id = str(six_kb_records["record_ids"][1])  # type: ignore[index]
+
+        resp = requests.post(
+            f"{self.reindex_url}{record_id}",
+            headers=self.headers,
+            json={},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "reindexRecord")
+
+        assert body["success"] is True
+        assert body["recordId"] == record_id
+        assert body["depth"] == 0
+        assert "message" in body
+
+    def test_reindex_record_by_id_negative(
+        self, six_kb_records: dict[str, object]
+    ) -> None:
+        missing_id = str(uuid4())
+        reindex_url = f"{self.reindex_url}{missing_id}"
+
+        resp = requests.post(reindex_url, json={}, timeout=self.client.timeout_seconds)
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "reindexRecord", status_code="401"
+        )
+
+        resp = requests.post(
+            reindex_url,
+            headers={"Authorization": "Bearer invalid", "Content-Type": "application/json"},
+            json={},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "reindexRecord", status_code="401"
+        )
+
+        resp = requests.post(
+            f"{self.reindex_url}{uuid4()}",
+            headers=self.headers,
+            json={},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 404, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "reindexRecord", status_code="404"
+        )
+
+        record_id = str(six_kb_records["record_ids"][1])  # type: ignore[index]
+        record_reindex_url = f"{self.reindex_url}{record_id}"
+
+        resp = requests.post(
+            record_reindex_url,
+            headers=self.headers,
+            json={"depth": 101},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+
+        resp = requests.post(
+            record_reindex_url,
+            headers=self.headers,
+            json={"depth": -2},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+
+        resp = requests.post(
+            record_reindex_url,
+            headers=self.headers,
+            json={"statusFilters": [1]},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
