@@ -845,25 +845,19 @@ class DataSourceEntitiesProcessor:
         Only skips if status is already QUEUED.
         """
         try:
-            # Get the record
+            # Get the record — get_record_by_key delegates to get_document which returns a raw dict
             record = await tx_store.get_record_by_key(record_id)
             if not record:
                 self.logger.warning(f"Record {record_id} not found for status reset")
                 return
-
-            current_status = record.indexing_status
-
+            self.logger.debug(f"Record: {record}")
+            # The document uses camelCase keys (indexingStatus), not snake_case attributes
+            current_status = record.get("indexingStatus")
             if current_status == ProgressStatus.QUEUED.value:
                 self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
                 return
-
-            # Update indexing status to QUEUED
-            status_doc = {
-                "_key": record_id,
-                "indexingStatus": ProgressStatus.QUEUED.value,
-            }
-
-            await tx_store.batch_upsert_nodes([status_doc], CollectionNames.RECORDS.value)
+            record["indexingStatus"] = ProgressStatus.QUEUED.value
+            await tx_store.batch_upsert_nodes([record], CollectionNames.RECORDS.value)
             self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
         except Exception as e:
             # Log but don't fail the main operation if status update fails
