@@ -110,6 +110,48 @@ class TestConfluenceConstants:
         assert PSEUDO_USER_GROUP_PREFIX == "[Pseudo-User]"
 
 
+class TestParseServerVersionNumbers:
+
+    def test_parses_version_numbers_array(self):
+        data = {"version": "9.1.0", "versionNumbers": [9, 1, 0]}
+        assert ConfluenceDataCenterConnector._parse_server_version_numbers(data) == (9, 1, 0)
+
+    def test_parses_version_string_when_numbers_missing(self):
+        data = {
+            "baseUrl": "http://localhost:8090",
+            "version": "10.2.13",
+            "buildNumber": 9422,
+        }
+        assert ConfluenceDataCenterConnector._parse_server_version_numbers(data) == (10, 2, 13)
+
+    def test_returns_empty_tuple_when_unparseable(self):
+        assert ConfluenceDataCenterConnector._parse_server_version_numbers({}) == ()
+
+
+@pytest.mark.asyncio
+class TestGetServerVersion:
+
+    async def test_get_server_version_from_dc_10_response(self):
+        connector = _make_connector()
+        mock_ds = MagicMock()
+        mock_ds.get_server_information = AsyncMock(
+            return_value=_make_mock_response(
+                status=HttpStatusCode.SUCCESS.value,
+                data={
+                    "baseUrl": "http://localhost:8090",
+                    "version": "10.2.13",
+                    "buildNumber": 9422,
+                },
+            )
+        )
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        version = await connector._get_server_version()
+
+        assert version == (10, 2, 13)
+        assert connector._server_version == (10, 2, 13)
+
+
 # ===========================================================================
 # ConfluenceDataCenterConnector.__init__
 # ===========================================================================
@@ -619,7 +661,6 @@ class TestRunSync:
             mock_space.short_name = "ENG"
             mock_space.name = "Engineering"
 
-            connector._sync_folders = AsyncMock()
             connector._sync_users = AsyncMock()
             connector._sync_user_groups = AsyncMock()
             connector._sync_spaces = AsyncMock(return_value=[mock_space])
@@ -631,7 +672,6 @@ class TestRunSync:
             connector._sync_users.assert_awaited_once()
             connector._sync_user_groups.assert_awaited_once()
             connector._sync_spaces.assert_awaited_once()
-            connector._sync_folders.assert_awaited_once()
             # Two calls to _sync_content: one for pages, one for blogposts
             assert connector._sync_content.await_count == 2
 
@@ -824,6 +864,266 @@ class TestFetchPermissionAuditLogs:
 
 
 # ===========================================================================
+# ConfluenceDataCenterConnector._normalize_audit_record
+# ===========================================================================
+
+
+class TestNormalizeAuditRecord:
+
+    def test_normalizes_dc_auditing_api_record(self):
+        """DC Auditing API: category in type.category, affectedObjects, type field."""
+        record = {
+            "timestamp": "2026-06-09T14:04:28.902Z",
+            "type": {"category": "Pages and blogs", "action": "Content restriction added"},
+            "affectedObjects": [
+                {"name": "My Page", "type": "Page", "id": "131103"},
+                {"name": "Soft dev", "type": "Space", "id": "65547"}
+            ]
+        }
+        result = ConfluenceDataCenterConnector._normalize_audit_record(record)
+        assert result["category"] == "pages and blogs"
+        assert len(result["objects"]) == 2
+        assert result["objects"][0] == {"name": "My Page", "type": "page", "id": "131103"}
+        assert result["objects"][1] == {"name": "Soft dev", "type": "space", "id": "65547"}
+
+    def test_normalizes_cloud_legacy_record(self):
+        """Cloud/legacy: category at top level, associatedObjects, objectType field."""
+        record = {
+            "category": "Pages and blogs",
+            "associatedObjects": [
+                {"objectType": "Page", "name": "Legacy Page"},
+                {"objectType": "Space", "name": "ENG"},
+            ]
+        }
+        result = ConfluenceDataCenterConnector._normalize_audit_record(record)
+        assert result["category"] == "pages and blogs"
+        assert len(result["objects"]) == 2
+        assert result["objects"][0] == {"name": "Legacy Page", "type": "page", "id": None}
+        assert result["objects"][1] == {"name": "ENG", "type": "space", "id": None}
+
+    def test_handles_missing_fields(self):
+        """Handle missing or empty fields gracefully."""
+        record = {}
+        result = ConfluenceDataCenterConnector._normalize_audit_record(record)
+        assert result["category"] == ""
+        assert result["objects"] == []
+
+
+# ===========================================================================
+# ConfluenceDataCenterConnector._extract_content_id_from_audit_record
+# ===========================================================================
+
+
+class TestExtractContentIdFromAuditRecord:
+
+    def test_dc_permission_change_with_page_and_space(self):
+        """Extract content ID from DC audit record with Page and Space."""
+        connector = _make_connector()
+        record = {
+            "type": {"category": "Pages and blogs"},
+            "affectedObjects": [
+                {"type": "Page", "name": "My Page", "id": "131103"},
+                {"type": "Space", "name": "Soft dev", "id": "65547"}
+            ]
+        }
+        result = connector._extract_content_id_from_audit_record(record)
+        assert result == "131103"
+
+    def test_dc_permission_change_with_blogpost_and_space(self):
+        """Extract content ID from DC audit record with BlogPost and Space."""
+        connector = _make_connector()
+        record = {
+            "type": {"category": "Pages and blogs"},
+            "affectedObjects": [
+                {"type": "BlogPost", "name": "My Blog", "id": "131104"},
+                {"type": "Space", "name": "ENG", "id": "65548"}
+            ]
+        }
+        result = connector._extract_content_id_from_audit_record(record)
+        assert result == "131104"
+
+    def test_dc_permission_change_without_id_returns_none(self):
+        """Return None if content object has no ID field."""
+        connector = _make_connector()
+        record = {
+            "type": {"category": "Pages and blogs"},
+            "affectedObjects": [
+                {"type": "Page", "name": "My Page"},  # No ID
+                {"type": "Space", "name": "Soft dev", "id": "65547"}
+            ]
+        }
+        result = connector._extract_content_id_from_audit_record(record)
+        assert result is None
+
+    def test_non_pages_and_blogs_category_returns_none(self):
+        """Return None for non-'Pages and blogs' category."""
+        connector = _make_connector()
+        record = {
+            "type": {"category": "Security"},
+            "affectedObjects": [
+                {"type": "Page", "name": "Test", "id": "123"},
+                {"type": "Space", "name": "ENG", "id": "456"}
+            ]
+        }
+        result = connector._extract_content_id_from_audit_record(record)
+        assert result is None
+
+    def test_no_space_returns_none(self):
+        """Permission change without Space is global, not content-level."""
+        connector = _make_connector()
+        record = {
+            "type": {"category": "Pages and blogs"},
+            "affectedObjects": [
+                {"type": "Page", "name": "Test", "id": "123"}
+            ]
+        }
+        result = connector._extract_content_id_from_audit_record(record)
+        assert result is None
+
+    def test_no_content_returns_none(self):
+        """Permission change with Space but no Page/Blog is space-level."""
+        connector = _make_connector()
+        record = {
+            "type": {"category": "Pages and blogs"},
+            "affectedObjects": [
+                {"type": "Space", "name": "ENG", "id": "456"}
+            ]
+        }
+        result = connector._extract_content_id_from_audit_record(record)
+        assert result is None
+
+
+# ===========================================================================
+# ConfluenceDataCenterConnector._fetch_permission_audit_content_ids
+# ===========================================================================
+
+
+class TestFetchPermissionAuditContentIds:
+
+    @pytest.mark.asyncio
+    async def test_fetches_and_extracts_content_ids(self):
+        """Fetch audit events and extract content IDs using DC Auditing API."""
+        connector = _make_connector()
+        mock_ds = MagicMock()
+        mock_ds.get_auditing_events_v1 = AsyncMock(return_value=_make_mock_response(200, {
+            "entities": [
+                {
+                    "timestamp": "2026-06-09T14:04:28.902Z",
+                    "type": {"category": "Pages and blogs", "action": "Content restriction added"},
+                    "affectedObjects": [
+                        {"name": "Restricted Page", "type": "Page", "id": "131103"},
+                        {"name": "Soft dev", "type": "Space", "id": "65547"}
+                    ]
+                },
+                {
+                    "timestamp": "2026-06-09T14:05:00.000Z",
+                    "type": {"category": "Security", "action": "User added"},
+                    "affectedObjects": []
+                }
+            ],
+            "pagingInfo": {
+                "lastPage": True,
+                "nextPageCursor": None,
+                "size": 2
+            }
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        content_ids = await connector._fetch_permission_audit_content_ids(1000, 2000)
+        assert "131103" in content_ids
+
+    @pytest.mark.asyncio
+    async def test_pagination_with_page_cursor(self):
+        """Test pageCursor pagination through multiple pages."""
+        connector = _make_connector()
+        mock_ds = MagicMock()
+        
+        # First page
+        first_response = _make_mock_response(200, {
+            "entities": [
+                {
+                    "type": {"category": "Pages and blogs"},
+                    "affectedObjects": [
+                        {"type": "Page", "name": "Page 1", "id": "101"},
+                        {"type": "Space", "name": "ENG", "id": "1"}
+                    ]
+                }
+            ],
+            "pagingInfo": {
+                "lastPage": False,
+                "nextPageCursor": "cursor-abc123",
+                "size": 1
+            }
+        })
+        
+        # Second page
+        second_response = _make_mock_response(200, {
+            "entities": [
+                {
+                    "type": {"category": "Pages and blogs"},
+                    "affectedObjects": [
+                        {"type": "Page", "name": "Page 2", "id": "102"},
+                        {"type": "Space", "name": "ENG", "id": "1"}
+                    ]
+                }
+            ],
+            "pagingInfo": {
+                "lastPage": True,
+                "nextPageCursor": None,
+                "size": 1
+            }
+        })
+        
+        mock_ds.get_auditing_events_v1 = AsyncMock(side_effect=[first_response, second_response])
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        content_ids = await connector._fetch_permission_audit_content_ids(1000, 2000)
+        assert "101" in content_ids
+        assert "102" in content_ids
+        assert len(content_ids) == 2
+
+    @pytest.mark.asyncio
+    async def test_deduplicates_content_ids(self):
+        """Ensure duplicate content IDs are deduplicated."""
+        connector = _make_connector()
+        mock_ds = MagicMock()
+        mock_ds.get_auditing_events_v1 = AsyncMock(return_value=_make_mock_response(200, {
+            "entities": [
+                {
+                    "type": {"category": "Pages and blogs"},
+                    "affectedObjects": [
+                        {"type": "Page", "name": "Same Page", "id": "131103"},
+                        {"type": "Space", "name": "ENG", "id": "1"}
+                    ]
+                },
+                {
+                    "type": {"category": "Pages and blogs"},
+                    "affectedObjects": [
+                        {"type": "Page", "name": "Same Page", "id": "131103"},
+                        {"type": "Space", "name": "ENG", "id": "1"}
+                    ]
+                }
+            ],
+            "pagingInfo": {"lastPage": True, "size": 2}
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        content_ids = await connector._fetch_permission_audit_content_ids(1000, 2000)
+        assert content_ids == ["131103"]
+
+    @pytest.mark.asyncio
+    async def test_api_failure_returns_empty(self):
+        """Return empty list when API call fails."""
+        connector = _make_connector()
+        mock_ds = MagicMock()
+        mock_ds.get_auditing_events_v1 = AsyncMock(return_value=_make_mock_response(500, {}))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        content_ids = await connector._fetch_permission_audit_content_ids(1000, 2000)
+        assert content_ids == []
+
+
+# ===========================================================================
 # ConfluenceDataCenterConnector._fetch_space_permissions
 # ===========================================================================
 
@@ -883,11 +1183,24 @@ class TestFetchPagePermissions:
     async def test_fetches_page_permissions(self):
         connector = _make_connector()
         mock_ds = MagicMock()
-        mock_ds.get_page_permissions_v1 = AsyncMock(return_value=_make_mock_response(200, {
-            "results": [
-                {"operation": "read", "restrictions": {"user": {"results": []}, "group": {"results": []}}},
-            ],
-        }))
+        mock_ds.get_page_relevant_view_restrictions_v1 = AsyncMock(
+            return_value=_make_mock_response(
+                200,
+                {
+                    "viewContentRestrictions": {
+                        "results": [
+                            {
+                                "operation": "read",
+                                "restrictions": {
+                                    "user": {"results": []},
+                                    "group": {"results": []},
+                                },
+                            }
+                        ],
+                    }
+                },
+            )
+        )
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_page_restriction_to_permissions = AsyncMock(return_value=[])
 
@@ -899,7 +1212,9 @@ class TestFetchPagePermissions:
     async def test_api_failure_returns_empty(self):
         connector = _make_connector()
         mock_ds = MagicMock()
-        mock_ds.get_page_permissions_v1 = AsyncMock(return_value=_make_mock_response(403, {}))
+        mock_ds.get_page_relevant_view_restrictions_v1 = AsyncMock(
+            return_value=_make_mock_response(403, {})
+        )
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         permissions = await connector._fetch_page_permissions("page-1")
@@ -2814,14 +3129,12 @@ class TestRunSyncCoverage:
         space.short_name = "TEST"
         space.name = "Test Space"
         c._sync_spaces = AsyncMock(return_value=[space])
-        c._sync_folders = AsyncMock()
         c._sync_content = AsyncMock()
         c._sync_permission_changes_from_audit_log = AsyncMock()
 
         await c.run_sync()
         c._sync_users.assert_awaited_once()
         c._sync_user_groups.assert_awaited_once()
-        c._sync_folders.assert_awaited_once()
         assert c._sync_content.await_count == 2  # pages + blogposts
 
 
