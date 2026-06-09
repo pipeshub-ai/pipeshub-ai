@@ -38,12 +38,10 @@ PDF_RASTER_WORKERS = _get_pdf_raster_worker_count()
 
 @lru_cache(maxsize=1)
 def _get_pdf_raster_pool() -> ProcessPoolExecutor:
-    pool = ProcessPoolExecutor(
+    return ProcessPoolExecutor(
         max_workers=PDF_RASTER_WORKERS,
         mp_context=multiprocessing.get_context("spawn"),
     )
-    atexit.register(pool.shutdown, wait=False, cancel_futures=True)
-    return pool
 
 
 def shutdown_pdf_raster_pool() -> bool:
@@ -53,6 +51,11 @@ def shutdown_pdf_raster_pool() -> bool:
     _get_pdf_raster_pool().shutdown(wait=False, cancel_futures=True)
     _get_pdf_raster_pool.cache_clear()
     return True
+
+
+@atexit.register
+def _shutdown_pdf_raster_pool_on_exit() -> None:
+    shutdown_pdf_raster_pool()
 
 
 def _page_to_rgb_array(page, resolution: float) -> Tuple[np.ndarray, float]:

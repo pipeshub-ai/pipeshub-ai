@@ -76,20 +76,7 @@ class OCRHandler:
         """Factory method to create appropriate OCR strategy"""
         self.logger.debug(f"🏭 Creating OCR strategy: {strategy_type}")
 
-        if strategy_type == OCRProvider.AZURE_DI.value:
-            self.logger.debug("☁️ Creating Azure OCR strategy")
-            from app.modules.parsers.pdf.azure_document_intelligence_processor import (
-                AzureOCRStrategy,
-            )
-
-            return AzureOCRStrategy(
-                logger=self.logger,
-                endpoint=kwargs["endpoint"],
-                key=kwargs["key"],
-                model_id=kwargs.get("model_id", "prebuilt-document"),
-                config=kwargs.get("config"),
-            )
-        elif strategy_type == OCRProvider.VLM_OCR.value:
+        if strategy_type == OCRProvider.VLM_OCR.value:
             self.logger.debug("🤖 Creating VLM OCR strategy")
             from app.modules.parsers.pdf.vlm_ocr_strategy import (
                 VLMOCRStrategy,
