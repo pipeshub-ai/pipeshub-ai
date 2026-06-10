@@ -34,10 +34,6 @@ _SLACK_CONNECTOR_TYPES = {
     Connectors.SLACK_WORKSPACE.value,
 }
 
-_SLACK_THREAD_GROUP_TYPE = "SLACK_THREAD"
-_SLACK_CHANNEL_GROUP_TYPE = "SLACK_CHANNEL"
-
-
 async def has_slack_connector_configured(
     graph_provider: "IGraphDBProvider",
     user_id: str,
@@ -83,8 +79,8 @@ class FetchSlackThreadArgs(BaseModel):
         ...,
         description=(
             "The Record ID of any Slack record currently in your context — typically a "
-            "thread-burst record (its metadata shows recordGroupType='SLACK_THREAD'), or a "
-            "channel-level Slack message that is the parent of a thread. Use the exact "
+            "thread-burst record (its metadata shows isReply=True), or a "
+            "channel-level Slack message that has replies. Use the exact "
             "'Record ID :' value from the context — do NOT invent or guess."
         ),
     )
@@ -117,10 +113,11 @@ async def _resolve_thread_record_group(
     Two cases the caller might hand us:
 
     1. The record is already inside a SLACK_THREAD RG (thread-burst / file inside
-       a thread). We just read `record_group_id` straight off the record.
-    2. The record is a channel-level message that happens to be a thread parent
-       (record_group_type=SLACK_CHANNEL, is_thread_parent=True). We derive the
-       thread external id `thread_<channel>_<ts>` and look up the RG.
+       a thread). Identified by `is_reply=True` (or legacy record_group_type
+       SLACK_THREAD on non-message records). We read `record_group_id` off the record.
+    2. The record is a channel-level thread parent with replies
+       (`is_reply=False`, `has_replies=True`). We derive the thread external id
+       `thread_<channel>_<ts>` and look up the RG.
 
     Anything else (channel burst, non-parent single, non-Slack record) returns None
     — there is no thread to expand.
@@ -135,14 +132,20 @@ async def _resolve_thread_record_group(
         return None
 
     meta = _model_to_dict(record)
-    rg_type = meta.get("record_group_type")
-    rg_type_str = rg_type if isinstance(rg_type, str) else getattr(rg_type, "value", None)
+    is_reply = bool(meta.get("is_reply"))
+    # Legacy fallback: thread file records still carry record_group_type only.
+    if not is_reply:
+        rg_type = meta.get("record_group_type")
+        rg_type_str = (
+            rg_type if isinstance(rg_type, str) else getattr(rg_type, "value", None)
+        )
+        is_reply = rg_type_str == "SLACK_THREAD"
 
     connector_id = meta.get("connector_id") or ""
     org_id = meta.get("org_id") or ""
 
     # Case 1: already inside a SLACK_THREAD record group
-    if rg_type_str == _SLACK_THREAD_GROUP_TYPE:
+    if is_reply:
         rg_id = meta.get("record_group_id")
         if rg_id:
             return {
@@ -153,32 +156,31 @@ async def _resolve_thread_record_group(
             }
 
     # Case 2: channel-level thread parent — look up the thread RG by external id
-    if rg_type_str == _SLACK_CHANNEL_GROUP_TYPE:
-        is_parent = bool(meta.get("is_thread_parent"))
-        thread_ts = meta.get("thread_id") or meta.get("thread_ts") or meta.get("external_record_id")
-        channel_id = meta.get("external_record_group_id")
-        if is_parent and thread_ts and channel_id and connector_id:
-            ext_thread_id = f"thread_{channel_id}_{thread_ts}"
-            try:
-                thread_rg = await graph_provider.get_record_group_by_external_id(
-                    connector_id=connector_id,
-                    external_id=ext_thread_id,
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to look up thread RG external_id={ext_thread_id}: {e}"
-                )
-                return None
-            if thread_rg:
-                rg_dict = _model_to_dict(thread_rg)
-                rg_id = rg_dict.get("id") or rg_dict.get("_key")
-                if rg_id:
-                    return {
-                        "record_group_id": rg_id,
-                        "external_record_group_id": ext_thread_id,
-                        "connector_id": connector_id,
-                        "org_id": org_id,
-                    }
+    has_replies = bool(meta.get("has_replies"))
+    thread_ts = meta.get("thread_id") or meta.get("external_record_id")
+    channel_id = meta.get("external_record_group_id")
+    if not is_reply and has_replies and thread_ts and channel_id and connector_id:
+        ext_thread_id = f"thread_{channel_id}_{thread_ts}"
+        try:
+            thread_rg = await graph_provider.get_record_group_by_external_id(
+                connector_id=connector_id,
+                external_id=ext_thread_id,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to look up thread RG external_id={ext_thread_id}: {e}"
+            )
+            return None
+        if thread_rg:
+            rg_dict = _model_to_dict(thread_rg)
+            rg_id = rg_dict.get("id") or rg_dict.get("_key")
+            if rg_id:
+                return {
+                    "record_group_id": rg_id,
+                    "external_record_group_id": ext_thread_id,
+                    "connector_id": connector_id,
+                    "org_id": org_id,
+                }
 
     return None
 
@@ -215,7 +217,7 @@ async def _fetch_thread_records_impl(
             "error": (
                 f"Record '{record_id}' is not part of a Slack thread "
                 f"(no SLACK_THREAD record group found). Pass a thread-burst record id, "
-                f"or a channel message that is itself a thread parent."
+                f"or a channel message that has replies."
             ),
         }
 
@@ -341,8 +343,8 @@ def create_fetch_slack_thread_tool(
         """Fetch every record belonging to a Slack thread.
 
         Use this when the conversation context shows a Slack thread record
-        (recordGroupType='SLACK_THREAD') OR a channel-level Slack message
-        that is itself a thread parent, and you need the full back-and-forth
+        (isReply=True) OR a channel-level Slack message
+        that has replies, and you need the full back-and-forth
         of replies + any files shared in the thread to answer the question.
 
         Pass the 'Record ID :' value from the context exactly. The tool will:
@@ -354,7 +356,7 @@ def create_fetch_slack_thread_tool(
              match the records you already see.
 
         Args:
-            record_id: Record ID of a Slack thread / thread-parent record.
+            record_id: Record ID of a Slack thread record or channel message with replies.
             reason: Brief explanation of why the thread expansion is needed.
 
         Returns:

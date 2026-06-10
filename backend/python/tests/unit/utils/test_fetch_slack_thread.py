@@ -164,7 +164,7 @@ class TestResolveThreadRecordGroup:
         graph = AsyncMock()
         graph.get_record_by_id = AsyncMock(
             return_value={
-                "record_group_type": "SLACK_THREAD",
+                "is_reply": True,
                 "record_group_id": "rg1",
                 "external_record_group_id": "ext",
                 "connector_id": "c1",
@@ -179,48 +179,48 @@ class TestResolveThreadRecordGroup:
             "org_id": "o1",
         }
 
-    async def test_slack_thread_enum_like_rg_type(self):
+    async def test_legacy_slack_thread_rg_type_fallback(self):
         graph = AsyncMock()
         graph.get_record_by_id = AsyncMock(
             return_value={
                 "record_group_type": _DummyRgType.SLACK_THREAD,
-                "record_group_id": "rg-enum",
+                "record_group_id": "rg-legacy",
                 "connector_id": "c",
                 "org_id": "o",
             }
         )
         out = await fst._resolve_thread_record_group("rid", graph)
-        assert out["record_group_id"] == "rg-enum"
+        assert out["record_group_id"] == "rg-legacy"
 
     async def test_slack_thread_missing_rg_id_returns_none(self):
         graph = AsyncMock()
         graph.get_record_by_id = AsyncMock(
             return_value={
-                "record_group_type": "SLACK_THREAD",
+                "is_reply": True,
                 "record_group_id": "",
                 "connector_id": "c",
             }
         )
         assert await fst._resolve_thread_record_group("rid", graph) is None
 
-    async def test_slack_channel_not_thread_parent(self):
+    async def test_slack_channel_without_replies(self):
         graph = AsyncMock()
         graph.get_record_by_id = AsyncMock(
             return_value={
-                "record_group_type": "SLACK_CHANNEL",
-                "is_thread_parent": False,
+                "is_reply": False,
+                "has_replies": False,
                 "connector_id": "c",
             }
         )
         assert await fst._resolve_thread_record_group("rid", graph) is None
 
-    async def test_slack_channel_parent_resolves_via_external_id(self):
+    async def test_slack_channel_with_replies_resolves_via_external_id(self):
         graph = AsyncMock()
         graph.get_record_by_id = AsyncMock(
             return_value={
-                "record_group_type": "SLACK_CHANNEL",
-                "is_thread_parent": True,
-                "thread_ts": "1.234",
+                "is_reply": False,
+                "has_replies": True,
+                "thread_id": "1.234",
                 "external_record_group_id": "C123",
                 "connector_id": "conn",
                 "org_id": "org",
@@ -245,8 +245,8 @@ class TestResolveThreadRecordGroup:
         graph = AsyncMock()
         graph.get_record_by_id = AsyncMock(
             return_value={
-                "record_group_type": "SLACK_CHANNEL",
-                "is_thread_parent": True,
+                "is_reply": False,
+                "has_replies": True,
                 "thread_id": "9.9",
                 "external_record_group_id": "chan",
                 "connector_id": "c2",
@@ -259,12 +259,12 @@ class TestResolveThreadRecordGroup:
         out = await fst._resolve_thread_record_group("rid", graph)
         assert out["record_group_id"] == "k-from-arangodb"
 
-    async def test_slack_channel_uses_external_record_id_when_no_thread_ts(self):
+    async def test_slack_channel_uses_external_record_id_when_no_thread_id(self):
         graph = AsyncMock()
         graph.get_record_by_id = AsyncMock(
             return_value={
-                "record_group_type": "SLACK_CHANNEL",
-                "is_thread_parent": True,
+                "is_reply": False,
+                "has_replies": True,
                 "external_record_id": "7.7",
                 "external_record_group_id": "ch2",
                 "connector_id": "cx",
@@ -279,9 +279,9 @@ class TestResolveThreadRecordGroup:
         graph = AsyncMock()
         graph.get_record_by_id = AsyncMock(
             return_value={
-                "record_group_type": "SLACK_CHANNEL",
-                "is_thread_parent": True,
-                "thread_ts": "1",
+                "is_reply": False,
+                "has_replies": True,
+                "thread_id": "1",
                 "external_record_group_id": "C",
                 "connector_id": "c",
                 "org_id": "o",
@@ -294,9 +294,9 @@ class TestResolveThreadRecordGroup:
         graph = AsyncMock()
         graph.get_record_by_id = AsyncMock(
             return_value={
-                "record_group_type": "SLACK_CHANNEL",
-                "is_thread_parent": True,
-                "thread_ts": "1",
+                "is_reply": False,
+                "has_replies": True,
+                "thread_id": "1",
                 "external_record_group_id": "C",
                 "connector_id": "c",
                 "org_id": "o",
@@ -309,9 +309,9 @@ class TestResolveThreadRecordGroup:
         graph = AsyncMock()
         graph.get_record_by_id = AsyncMock(
             return_value={
-                "record_group_type": "SLACK_CHANNEL",
-                "is_thread_parent": True,
-                "thread_ts": "1",
+                "is_reply": False,
+                "has_replies": True,
+                "thread_id": "1",
                 "external_record_group_id": "C",
                 "connector_id": "c",
                 "org_id": "o",
@@ -320,10 +320,10 @@ class TestResolveThreadRecordGroup:
         graph.get_record_group_by_external_id = AsyncMock(return_value={})
         assert await fst._resolve_thread_record_group("rid", graph) is None
 
-    async def test_unknown_record_group_type(self):
+    async def test_not_a_thread_record(self):
         graph = AsyncMock()
         graph.get_record_by_id = AsyncMock(
-            return_value={"record_group_type": "OTHER", "record_group_id": "x"}
+            return_value={"is_reply": False, "has_replies": False, "record_group_id": "x"}
         )
         assert await fst._resolve_thread_record_group("rid", graph) is None
 

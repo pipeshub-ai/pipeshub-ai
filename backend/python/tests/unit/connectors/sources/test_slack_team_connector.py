@@ -769,57 +769,18 @@ class TestIsInvalidCursorError:
 
 
 # ===========================================================================
-# 10. _reactions_changed
-# ===========================================================================
-
-class TestReactionsChanged:
-    def test_no_change(self):
-        from app.connectors.sources.slack.team.connector import SlackConnector
-        r = [{"name": "thumbsup", "count": 2, "users": ["U1", "U2"]}]
-        assert SlackConnector._reactions_changed(r, r) is False
-
-    def test_count_changed(self):
-        from app.connectors.sources.slack.team.connector import SlackConnector
-        cur = [{"name": "thumbsup", "count": 3, "users": ["U1", "U2", "U3"]}]
-        old = [{"name": "thumbsup", "count": 2, "users": ["U1", "U2"]}]
-        assert SlackConnector._reactions_changed(cur, old) is True
-
-    def test_new_reaction_added(self):
-        from app.connectors.sources.slack.team.connector import SlackConnector
-        cur = [{"name": "+1", "count": 1, "users": ["U1"]}, {"name": "heart", "count": 1, "users": ["U2"]}]
-        old = [{"name": "+1", "count": 1, "users": ["U1"]}]
-        assert SlackConnector._reactions_changed(cur, old) is True
-
-    def test_reaction_removed(self):
-        from app.connectors.sources.slack.team.connector import SlackConnector
-        cur = []
-        old = [{"name": "+1", "count": 1, "users": ["U1"]}]
-        assert SlackConnector._reactions_changed(cur, old) is True
-
-    def test_both_empty(self):
-        from app.connectors.sources.slack.team.connector import SlackConnector
-        assert SlackConnector._reactions_changed([], []) is False
-
-    def test_user_list_order_irrelevant(self):
-        from app.connectors.sources.slack.team.connector import SlackConnector
-        cur = [{"name": "+1", "count": 2, "users": ["U2", "U1"]}]
-        old = [{"name": "+1", "count": 2, "users": ["U1", "U2"]}]
-        assert SlackConnector._reactions_changed(cur, old) is False
-
-
-# ===========================================================================
-# 11. _record_changed
+# 10. _record_changed
 # ===========================================================================
 
 class TestRecordChanged:
     def setup_method(self):
         self.c = _make_connector()
 
-    def _existing(self, is_edited=False, content="", reactions=None):
+    def _existing(self, is_edited=False, source_updated_at=None):
         e = MagicMock()
         e.is_edited = is_edited
-        e.content = content
-        e.reactions = reactions or []
+        e.source_updated_at = source_updated_at
+        e.source_created_at = None
         return e
 
     def test_newly_edited(self):
@@ -829,24 +790,19 @@ class TestRecordChanged:
         assert self.c._record_changed(md, existing) is True
 
     def test_edited_text_changed(self):
-        md = {"text": "new text", "edited": {"ts": "1.0"}}
-        existing = self._existing(is_edited=True, content="old text")
+        md = {"text": "new text", "edited": {"ts": "2.0"}}
+        existing = self._existing(is_edited=True, source_updated_at=1000)
         assert self.c._record_changed(md, existing) is True
 
     def test_edited_text_same(self):
-        """Same text, same reactions → not changed."""
-        md = {"text": "same text", "edited": {"ts": "1.0"}, "reactions": []}
-        existing = self._existing(is_edited=True, content="same text", reactions=[])
+        """Same edit timestamp → not changed."""
+        md = {"text": "same text", "edited": {"ts": "1.0"}}
+        existing = self._existing(is_edited=True, source_updated_at=1000)
         assert self.c._record_changed(md, existing) is False
 
-    def test_reactions_changed(self):
-        md = {"text": "hi", "reactions": [{"name": "+1", "count": 2, "users": ["U1", "U2"]}]}
-        existing = self._existing(content="hi", reactions=[{"name": "+1", "count": 1, "users": ["U1"]}])
-        assert self.c._record_changed(md, existing) is True
-
     def test_no_changes(self):
-        md = {"text": "hello", "reactions": []}
-        existing = self._existing(content="hello", reactions=[])
+        md = {"text": "hello"}
+        existing = self._existing()
         assert self.c._record_changed(md, existing) is False
 
 
@@ -1065,11 +1021,6 @@ class TestSlackIndividualConnectorSharedUtils:
         from app.connectors.sources.slack.team.connector import SlackConnector
         assert SlackConnector._is_invalid_cursor_error("invalid_cursor") is True
         assert SlackConnector._is_invalid_cursor_error("other") is False
-
-    def test_reactions_changed(self):
-        from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
-        assert SlackIndividualConnector._reactions_changed([], []) is False
-        assert SlackIndividualConnector._reactions_changed([{"name": "+1", "count": 1, "users": ["U1"]}], []) is True
 
     def test_get_file_extension(self):
         from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
@@ -2724,6 +2675,16 @@ class TestBlockBuildersAndDetectBursts:
         b2 = c._build_message_block(bot_msg, 0, 0, ctx)
         assert "Botty" in b2.data or "bot" in b2.data
 
+        thread_parent = {
+            "ts": "103.0",
+            "user": "U1",
+            "text": "thread root",
+            "reply_count": 3,
+            "thread_ts": "103.0",
+        }
+        b3 = c._build_message_block(thread_parent, 0, 0, ctx)
+        assert "Reply Count: 3" in b3.data
+
     def test_build_burst_single_containers_and_detect_bursts(self):
         from app.connectors.sources.slack.team.connector import (
             ProcessingContext,
@@ -3291,7 +3252,6 @@ class TestHandleEditedAndNewThread:
             mime_type=MimeTypes.BLOCKS.value,
             content="same",
             is_edited=True,
-            reactions=[],
         )
         tx = MagicMock()
         tx.get_record_by_external_id = AsyncMock(return_value=existing)
@@ -3323,7 +3283,6 @@ class TestHandleEditedAndNewThread:
             connector_id=c.connector_id,
             mime_type=MimeTypes.BLOCKS.value,
             content="old",
-            reactions=[],
         )
         existing.id = "mid"
         existing.source_created_at = 1000
@@ -3358,7 +3317,6 @@ class TestHandleEditedAndNewThread:
             content="old burst",
             start_ts="1.0",
             end_ts="3.0",
-            slack_subtype="burst",
         )
         burst_rec.id = "bid"
         tx = MagicMock()
@@ -3597,7 +3555,6 @@ class TestBuildMessageBlocksForStreaming:
             connector_name=Connectors.SLACK_WORKSPACE,
             connector_id=c.connector_id,
             mime_type=MimeTypes.BLOCKS.value,
-            slack_subtype="burst",
             start_ts="1.0",
             end_ts="2.0",
         )
@@ -3636,10 +3593,9 @@ class TestBuildMessageBlocksForStreaming:
             connector_name=Connectors.SLACK_WORKSPACE,
             connector_id=c.connector_id,
             mime_type=MimeTypes.BLOCKS.value,
-            slack_subtype="thread_burst",
             start_ts="1.0",
             end_ts="2.0",
-            thread_ts="1.0",
+            thread_id="1.0",
         )
         ds = MagicMock()
         ds.conversations_replies = AsyncMock(
@@ -3885,10 +3841,8 @@ class TestReindexAndCheckUpdated:
             connector_id=c.connector_id,
             mime_type=MimeTypes.BLOCKS.value,
             content="old",
-            reactions=[],
         )
         msg.id = "mid"
-        msg.slack_subtype = None
         ds = MagicMock()
         ds.conversations_history = AsyncMock(
             return_value=MagicMock(
@@ -4523,7 +4477,6 @@ class TestSlackConnectorCoverageExtended:
             connector_name=Connectors.SLACK_WORKSPACE,
             connector_id=c.connector_id,
             mime_type=MimeTypes.BLOCKS.value,
-            slack_subtype="burst",
             start_ts="1.0",
             end_ts="2.0",
         )
@@ -4542,7 +4495,6 @@ class TestSlackConnectorCoverageExtended:
             connector_name=Connectors.SLACK_WORKSPACE,
             connector_id=c.connector_id,
             mime_type=MimeTypes.BLOCKS.value,
-            slack_subtype="burst",
             start_ts="1.0",
             end_ts="2.0",
         )
@@ -4664,7 +4616,6 @@ class TestSlackConnectorCoverageExtended:
             connector_name=Connectors.SLACK_WORKSPACE,
             connector_id=c.connector_id,
             mime_type=MimeTypes.BLOCKS.value,
-            slack_subtype="burst",
         )
         assert await c._check_updated_message(bmsg) is None
 
