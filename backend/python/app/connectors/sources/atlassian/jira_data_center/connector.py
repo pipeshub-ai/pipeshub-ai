@@ -92,12 +92,10 @@ from app.utils.streaming import create_stream_record_response
 DEFAULT_MAX_RESULTS: int = 50
 BATCH_PROCESSING_SIZE: int = 100
 USER_PAGE_SIZE: int = 50
-GROUP_PAGE_SIZE: int = 50
 GROUP_MEMBER_PAGE_SIZE: int = 50
-# DC audit endpoint (/rest/api/2/auditing/record) caps ``limit`` server-side; the
-# documented hard cap is 1000 but values above 500 occasionally time out on
-# large installs. Mirror Cloud's 500.
-AUDIT_PAGE_SIZE: int = 500
+GROUPS_PICKER_MAX: int = 1000  # maxResults for GET /rest/api/2/groups/picker
+AUDIT_PAGE_SIZE: int = 500  # page size for GET /rest/auditing/1.0/events
+DC_AUDIT_ISSUE_DELETED_ACTION: str = "Issue deleted"
 
 # JQL query constants
 ISSUE_SEARCH_FIELDS: list[str] = [
@@ -109,21 +107,23 @@ ISSUE_SEARCH_FIELDS: list[str] = [
 
 
 def _normalize_jira_dc_group_row(raw: dict[str, Any]) -> dict[str, Any] | None:
-    """Map a Jira DC group bulk/picker row to ``{name, groupId}``.
-
-    On Server / Data Center, ``GET /rest/api/2/group/bulk`` and ``/groups/picker`` often
-    return only ``{"name": ...}`` without ``groupId``/``id`` (groups are identified by
-    name across the v2 API). Treat ``name`` as the canonical DC group identifier and
-    only fall back to ``groupId``/``id`` when the server exposes one. The returned
-    ``groupId`` is used as ``AppUserGroup.source_user_group_id`` and must match the
-    ``Permission.external_id`` produced from permission-scheme holders (which also
-    carry the group **name** on DC) — keep both sides keyed by the same value.
-    """
+    """Normalize a DC groups/picker row to ``{name, groupId}`` (name is the DC group key)."""
     name = raw.get("name")
     if not name:
         return None
     gid = raw.get("groupId") or raw.get("id") or name
     return {"name": str(name), "groupId": str(gid)}
+
+
+def _application_role_groups_from_dc_role(role: dict[str, Any]) -> list[dict[str, str]]:
+    """Map DC ``GET /rest/api/2/applicationrole`` ``groups`` strings to ``{name, groupId}``."""
+    normalized: list[dict[str, str]] = []
+    for group_name in role.get("groups") or []:
+        if not isinstance(group_name, str) or not group_name.strip():
+            continue
+        name = group_name.strip()
+        normalized.append({"groupId": name, "name": name})
+    return normalized
 
 
 def extract_media_from_adf(adf_content: dict[str, Any]) -> list[dict[str, Any]]:
@@ -669,19 +669,25 @@ async def adf_to_text_with_images(
     return adf_to_text(adf_content, media_cache)
 
 
-# Jira wiki inline attachment: !filename.png|width=100,alt="..."!
-_JIRA_WIKI_INLINE_ATTACHMENT_RE = re.compile(r"!([^!]+)!")
+# Jira wiki attachments: !filename.png|width=100! or [^filename.pdf]
+_JIRA_WIKI_ATTACHMENT_RE = re.compile(r"!([^!]+)!|\[\^([^\]]+)\]")
+
+
+def _wiki_match_filename(match: re.Match[str]) -> str:
+    """Extract filename from a combined wiki attachment regex match."""
+    if match.group(1) is not None:
+        return match.group(1).split("|", 1)[0].strip()
+    return (match.group(2) or "").strip()
 
 
 def extract_jira_wiki_attachment_filenames(text: str) -> list[str]:
-    """Return attachment filenames referenced by Jira wiki ``!file.ext|...!`` markers."""
+    """Return filenames from Jira wiki ``!file.ext|...!`` and ``[^file.ext]`` markers."""
     if not text:
         return []
     filenames: list[str] = []
     seen: set[str] = set()
-    for match in _JIRA_WIKI_INLINE_ATTACHMENT_RE.finditer(text):
-        inner = match.group(1)
-        filename = inner.split("|", 1)[0].strip()
+    for match in _JIRA_WIKI_ATTACHMENT_RE.finditer(text):
+        filename = _wiki_match_filename(match)
         if not filename:
             continue
         key = filename.lower()
@@ -747,7 +753,7 @@ async def jira_storage_text_to_markdown_with_images(
     """
     Convert Jira wiki/plain storage text to markdown, inlining image attachments as base64.
 
-    Handles ``!filename.png|width=...!`` markers (Server/DC wiki and similar storage).
+    Handles ``!filename.png|width=...!`` and ``[^filename.pdf]`` markers (Server/DC wiki).
     Returns (markdown_text, attachment_ids_inlined_as_images).
     """
     embedded_image_ids: set[str] = set()
@@ -756,10 +762,9 @@ async def jira_storage_text_to_markdown_with_images(
 
     parts: list[str] = []
     last_end = 0
-    for match in _JIRA_WIKI_INLINE_ATTACHMENT_RE.finditer(text):
+    for match in _JIRA_WIKI_ATTACHMENT_RE.finditer(text):
         parts.append(text[last_end:match.start()])
-        inner = match.group(1)
-        filename = inner.split("|", 1)[0].strip()
+        filename = _wiki_match_filename(match)
         replaced = False
         if filename:
             attachment_id = resolve_jira_attachment_id_by_filename(
@@ -960,13 +965,10 @@ class JiraDataCenterConnector(BaseConnector):
         self.value_mapper = ValueMapper()
         self._issue_attachments_cache: dict[str, list[dict[str, Any]]] = {}
 
-        # Tracks whether /applicationrole returned 403 (non-admin user)
-        self._app_roles_forbidden: bool = False
-        # Tracks whether /user/search returned 401/403 (configuring user lacks
-        # "Browse users and groups" global permission). When True, downstream
-        # consumers can branch to per-email reverse-lookup instead of relying
-        # on the bulk enumeration.
-        self._user_bulk_forbidden: bool = False
+        self._app_roles_forbidden: bool = False  # GET /applicationrole returned 403
+        self._user_bulk_forbidden: bool = False  # GET /user/search returned 401/403
+        # DC username (``name``) -> source_user_id (``key``); built during _fetch_users
+        self._dc_name_to_source_id: dict[str, str] = {}
 
     async def init(self) -> bool:
         try:
@@ -1196,11 +1198,6 @@ class JiraDataCenterConnector(BaseConnector):
             # Fetch and sync user groups (returns mapping for role resolution)
             groups_members_map = await self._sync_user_groups(jira_users)
 
-            # Hoisted out of ``_fetch_projects``: this is a single
-            # ``GET /rest/api/2/applicationrole`` call, but ``_fetch_projects``
-            # may be called more than once in future code paths (e.g. delta
-            # vs. full reconciliation). Computing it here ties the call rate
-            # to ``run_sync`` instead of to the number of project sweeps.
             app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
             # Get project_keys filter if configured (to fetch only those projects)
@@ -1242,11 +1239,6 @@ class JiraDataCenterConnector(BaseConnector):
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
 
-            # Reconcile deletions via the DC audit log. Independent of the
-            # forward sync — uses its own ``issues_audit_deletions`` checkpoint
-            # so the audit cursor can advance even when no new issues were
-            # written. Internal failures are swallowed inside the method so a
-            # broken audit endpoint never tanks the whole ``run_sync``.
             await self._handle_issue_deletions(last_sync_time)
 
             self.logger.info(
@@ -1320,23 +1312,7 @@ class JiraDataCenterConnector(BaseConnector):
         await self.issues_sync_point.update_sync_point(sync_point_key, sync_point_data)
 
     async def _handle_issue_deletions(self, global_last_sync_time: Optional[int]) -> None:
-        """Detect and reconcile issue deletions via the DC audit log.
-
-        Uses a dedicated ``issues_audit_deletions`` sync point so the audit
-        cursor advances independently of the JQL ``updated`` window. Order of
-        precedence for the deletion-check baseline:
-
-        1. ``issues_audit_deletions`` checkpoint (audit cursor from a prior run),
-        2. ``global_last_sync_time`` passed in by ``run_sync`` (the JQL global
-           ``updated`` watermark) when the audit cursor doesn't exist yet.
-
-        If neither is available this is the first sync — there's nothing to
-        reconcile against, so skip. All failures are swallowed: a broken or
-        admin-gated audit endpoint must not kill the forward sync. The audit
-        checkpoint is only advanced when the pass actually completes, so a
-        transient failure causes the next run to retry the same window rather
-        than silently skipping it.
-        """
+        """Reconcile deleted issues via ``GET /rest/auditing/1.0/events`` (separate sync checkpoint)."""
         audit_sync_key = "issues_audit_deletions"
 
         try:
@@ -1352,9 +1328,6 @@ class JiraDataCenterConnector(BaseConnector):
         try:
             await self._detect_and_handle_deletions(deletion_check_time)
         except Exception as e:
-            # Reconciliation pass — never raise into the outer ``run_sync``
-            # try/except. Skip the checkpoint advance so the next run retries
-            # this window.
             self.logger.error(
                 "❌ Audit deletion pass failed (window from %s): %s",
                 deletion_check_time, e,
@@ -1377,63 +1350,31 @@ class JiraDataCenterConnector(BaseConnector):
     # ============================================================================
 
     async def _detect_and_handle_deletions(self, last_sync_time: int) -> int:
-        """Fetch deleted issue keys from the DC audit log and cascade-delete
-        each one's records. Returns the number of issues successfully handled.
+        """Fetch deleted issue keys from the audit log and cascade-delete each one."""
+        self.logger.info("🔍 Checking for deleted issues via Jira DC audit log...")
 
-        Failures inside the per-issue loop are logged and skipped so a single
-        bad row doesn't abort the rest of the reconciliation.
-        """
-        try:
-            self.logger.info("🔍 Checking for deleted issues via DC Audit API...")
-
-            # DC ``/auditing/record`` accepts ISO-8601 strings for ``from`` / ``to``.
-            from_date = datetime.fromtimestamp(
-                last_sync_time / 1000, tz=timezone.utc,
-            ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-            to_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-
-            deleted_issue_keys = await self._fetch_deleted_issues_from_audit(from_date, to_date)
-
-            if not deleted_issue_keys:
-                self.logger.info("ℹ️ No deleted issues found in DC audit log")
-                return 0
-
-            deleted_count = 0
-            for issue_key in deleted_issue_keys:
-                try:
-                    await self._handle_deleted_issue(issue_key)
-                    deleted_count += 1
-                except Exception as e:
-                    self.logger.error(f"❌ Error handling deleted issue {issue_key}: {e}")
-                    continue
-
-            return deleted_count
-
-        except Exception as e:
-            self.logger.error(f"❌ Error detecting deletions: {e}", exc_info=True)
+        deleted_issue_keys = await self._fetch_deleted_issues_from_audit(last_sync_time)
+        if not deleted_issue_keys:
+            self.logger.info("ℹ️ No deleted issues found in DC audit log")
             return 0
 
-    async def _fetch_deleted_issues_from_audit(
-        self,
-        from_date: str,
-        to_date: str,
-    ) -> list[str]:
-        """Paginated read of ``GET /rest/api/2/auditing/record`` filtering for
-        issue-deletion events.
+        deleted_count = 0
+        for issue_key in deleted_issue_keys:
+            try:
+                await self._handle_deleted_issue(issue_key)
+                deleted_count += 1
+            except Exception as e:
+                self.logger.error("❌ Error handling deleted issue %s: %s", issue_key, e)
 
-        DC's audit row shape differs from Cloud:
+        return deleted_count
 
-        - ``objectItem.typeName`` is the entity type (``"ISSUE"``, ``"USER"``,
-          etc.) — NOT the event verb.
-        - The verb lives in ``summary`` (e.g. ``"Issue deleted"``,
-          ``"Issue updated"``). Match it case-insensitively against ``"delete"``
-          to cover both ``"Issue deleted"`` and locale/casing variants.
+    async def _fetch_deleted_issues_from_audit(self, last_sync_time: int) -> list[str]:
+        """Return issue keys deleted since ``last_sync_time`` (admin-only auditing API)."""
+        from_date = datetime.fromtimestamp(
+            last_sync_time / 1000, tz=timezone.utc,
+        ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        to_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
-        Admin-gated: non-admin sync users get 401/403 here. Mirror the other
-        admin-fallbacks in this connector — return ``[]`` on the first
-        forbidden response without retrying or paginating further, so the
-        sync proceeds without deletion reconciliation rather than dying.
-        """
         deleted_issue_keys: list[str] = []
         offset = 0
         limit = AUDIT_PAGE_SIZE
@@ -1441,11 +1382,13 @@ class JiraDataCenterConnector(BaseConnector):
         while True:
             try:
                 datasource = await self._get_fresh_datasource()
-                response = await datasource.get_audit_records_v2(
+                response = await datasource.get_auditing_events_v1(
                     offset=offset,
                     limit=limit,
                     from_=from_date,
                     to=to_date,
+                    actions=DC_AUDIT_ISSUE_DELETED_ACTION,
+                    categories="issues",
                 )
 
                 if response.status in (
@@ -1453,80 +1396,74 @@ class JiraDataCenterConnector(BaseConnector):
                     HttpStatusCode.FORBIDDEN.value,
                 ):
                     self.logger.warning(
-                        "⚠️ DC /auditing/record returned %s — configuring user "
-                        "lacks Jira System Administrator. Skipping deletion "
-                        "reconciliation; orphaned records will be cleaned up on "
-                        "the next sync where an admin token is available.",
+                        "⚠️ DC /rest/auditing/1.0/events returned %s — configuring "
+                        "user lacks Jira System Administrator. Skipping deletion "
+                        "reconciliation.",
                         response.status,
+                    )
+                    return []
+
+                if response.status == HttpStatusCode.NOT_FOUND.value:
+                    self.logger.warning(
+                        "⚠️ DC /rest/auditing/1.0/events unavailable (404). "
+                        "Skipping deletion reconciliation."
                     )
                     return []
 
                 if response.status != HttpStatusCode.OK.value:
                     self.logger.warning(
-                        "⚠️ Failed to fetch DC audit records (HTTP %s): %s",
+                        "⚠️ Failed to fetch DC auditing events (HTTP %s): %s",
                         response.status, response.text(),
                     )
-                    break
+                    return []
 
                 audit_data = response.json() or {}
-                records = audit_data.get("records") or []
-                if not records:
+                entities = audit_data.get("entities") or []
+                if not entities:
                     break
 
-                for record in records:
-                    object_item = record.get("objectItem") or {}
-                    type_name = object_item.get("typeName")
-                    summary = (record.get("summary") or "").lower()
-                    issue_key = object_item.get("name")
-                    # DC: entity type must be ISSUE, summary must contain
-                    # "delete" (covers "Issue deleted" / "ISSUE DELETED" /
-                    # localized "Issue deleted by ..."), and the row must
-                    # carry the issue key in ``objectItem.name``.
-                    if (
-                        type_name == "ISSUE"
-                        and "delete" in summary
-                        and issue_key
-                    ):
+                for entity in entities:
+                    issue_key = self._issue_key_from_auditing_event(entity)
+                    if issue_key:
                         deleted_issue_keys.append(issue_key)
                         self.logger.debug(
                             "Audit: Issue %s deleted at %s",
-                            issue_key, record.get("created"),
+                            issue_key, entity.get("timestamp"),
                         )
 
-                # Stop when we've consumed everything the server told us about.
-                # Guards against infinite loops if the server reports a
-                # non-decreasing ``total`` across pages.
-                total = audit_data.get("total", 0)
-                if offset + len(records) >= total:
+                paging = audit_data.get("pagingInfo") or {}
+                if paging.get("lastPage", True):
                     break
 
-                offset += limit
+                next_offset = paging.get("nextPageOffset")
+                if next_offset is not None:
+                    offset = int(next_offset)
+                else:
+                    offset += len(entities)
 
             except Exception as e:
                 self.logger.error(
-                    "❌ Error fetching DC audit records at offset %s: %s",
+                    "❌ Error fetching DC auditing events at offset %s: %s",
                     offset, e,
                 )
-                break
+                return deleted_issue_keys
 
         return deleted_issue_keys
 
+    @staticmethod
+    def _issue_key_from_auditing_event(entity: dict[str, Any]) -> str | None:
+        """Extract an issue key from a ``/rest/auditing/1.0/events`` row."""
+        for obj in entity.get("affectedObjects") or []:
+            if not isinstance(obj, dict):
+                continue
+            if (obj.get("type") or "").upper() == "ISSUE":
+                name = obj.get("name")
+                if name:
+                    return str(name)
+        return None
+
     async def _handle_deleted_issue(self, issue_key: str) -> None:
-        """Cascade-delete records for an issue surfaced by the audit log.
-
-        Mirrors Cloud's behavior:
-
-        - First confirm the issue is *actually* gone by hitting
-          ``GET /rest/api/2/issue/{key}``. A 200 here means the audit row was
-          a move/rename, not a deletion — bail out without touching the DB.
-        - Look up our local record by issue key inside a single transaction.
-        - Cascade per Jira's own delete semantics:
-            * Epic → keep child tasks (they only lose their epic link in Jira).
-            * Task/Story → delete subtasks (recursive) and attachments.
-            * Subtask → delete attachments only.
-        - Hard-delete the issue record itself last so any partial failure
-          above leaves the parent in place for the next reconciliation pass.
-        """
+        """Delete local records for an issue confirmed gone in Jira (epic children kept)."""
         try:
             self.logger.info(f"🗑️ Handling deletion of issue {issue_key}")
 
@@ -1541,8 +1478,6 @@ class JiraDataCenterConnector(BaseConnector):
                     )
                     return
             except Exception:
-                # The issue not being fetchable is consistent with a real
-                # deletion; fall through to the DB cleanup below.
                 pass
 
             async with self.data_store_provider.transaction() as tx_store:
@@ -1562,8 +1497,6 @@ class JiraDataCenterConnector(BaseConnector):
                 issue_id = issue_record.external_record_id
                 record_internal_id = issue_record.id
 
-                # Both enum (Type.EPIC) and string ("EPIC") representations
-                # are accepted on TicketRecord — normalize before comparing.
                 issue_type = getattr(issue_record, "type", None)
                 if issue_type:
                     type_value = (
@@ -1702,6 +1635,8 @@ class JiraDataCenterConnector(BaseConnector):
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
+        self._dc_name_to_source_id = {}
+
         # ====================================================================
         # Phase 1: DB reads (0 API calls)
         # ====================================================================
@@ -1737,6 +1672,10 @@ class JiraDataCenterConnector(BaseConnector):
 
             all_active_user_keys.add(user_key)
             key_to_display[user_key] = user.get("displayName", "")
+
+            username = user.get("name")
+            if username:
+                self._dc_name_to_source_id[username.lower()] = user_key
 
             email = user.get("emailAddress")
             if email:
@@ -1886,7 +1825,8 @@ class JiraDataCenterConnector(BaseConnector):
         self,
         candidate_emails: set[str],
         unresolved_user_keys: set[str],
-        resolved: dict[str, "AppUser"]
+        resolved: dict[str, "AppUser"],
+        name_to_source_id: dict[str, str] | None = None,
     ) -> int:
         """
         Reverse-lookup PipesHub emails against Jira DC to resolve hidden-email users.
@@ -1921,6 +1861,9 @@ class JiraDataCenterConnector(BaseConnector):
                     user_key = user.get("accountId") or user.get("key") or user.get("name")
                     if not user_key:
                         return None
+                    username = user.get("name")
+                    if username:
+                        self._dc_name_to_source_id[username.lower()] = user_key
                     display_name = user.get("displayName") or email
                     return (user_key, email, display_name)
                 except Exception as e:
@@ -1994,30 +1937,22 @@ class JiraDataCenterConnector(BaseConnector):
                 return {}
 
             roles_data = response.json()
+            if not isinstance(roles_data, list):
+                roles_data = []
 
             for role in roles_data:
+                if not isinstance(role, dict):
+                    continue
                 role_key = role.get("key")
-                group_details = role.get("groupDetails", [])
+                if not role_key:
+                    continue
 
-                if role_key and group_details:
-                    # DC ``groupDetails`` entries commonly carry only ``name``; treat name as
-                    # the canonical DC group identifier (same convention as
-                    # ``_normalize_jira_dc_group_row``) so application-role groups don't get
-                    # silently dropped and the BROWSE_PROJECTS fallback below doesn't
-                    # over-grant ORG-wide access.
-                    normalized: list[dict[str, str]] = []
-                    for g in group_details:
-                        name = g.get("name")
-                        gid = g.get("groupId") or g.get("id") or name
-                        if not (name or gid):
-                            continue
-                        normalized.append({
-                            "groupId": str(gid) if gid else "",
-                            "name": str(name) if name else "",
-                        })
-                    if normalized:
-                        mapping[role_key] = normalized
-                        self.logger.debug(f"ApplicationRole '{role_key}' → {len(normalized)} groups")
+                normalized = _application_role_groups_from_dc_role(role)
+                if normalized:
+                    mapping[role_key] = normalized
+                    self.logger.debug(
+                        "ApplicationRole '%s' → %s groups", role_key, len(normalized),
+                    )
 
             self.logger.info(f"🔐 Fetched {len(mapping)} application roles with group mappings")
 
@@ -2070,9 +2005,10 @@ class JiraDataCenterConnector(BaseConnector):
         """
         Fetch permission holders for a project from its Permission Scheme (Data Center).
 
-        Uses ``GET /rest/api/2/project/{projectKeyOrId}/permissionscheme`` then
-        ``GET /rest/api/2/permissionscheme/{schemeId}/permission`` — same holder model as Cloud;
-        parsing matches ``jira_cloud``.
+        Uses ``GET /rest/api/2/project/{projectKeyOrId}/permissionscheme?expand=all``,
+        which embeds fully expanded ``permissions`` (including ``user.key`` / email).
+        Falls back to ``GET /rest/api/2/permissionscheme/{schemeId}/permission`` only
+        when the project scheme response has no ``permissions`` array.
 
         Permission Schemes grant permissions (like BROWSE_PROJECTS) through different holder types:
         - group: Direct group permissions (e.g., "jira-software-users")
@@ -2120,31 +2056,37 @@ class JiraDataCenterConnector(BaseConnector):
 
             scheme_data = scheme_response.json()
             scheme_id = scheme_data.get("id")
+            permission_grants = scheme_data.get("permissions")
 
-            # Step 2: permission grants in this scheme (DC REST v2)
-            grants_response = await datasource.get_permission_scheme_grants_v2(
-                schemeId=scheme_id,
-                expand="all",
-            )
+            if not permission_grants:
+                # Fallback when expand=all did not embed permissions (older DC / tests).
+                grants_response = await datasource.get_permission_scheme_grants_v2(
+                    schemeId=scheme_id,
+                    expand="all",
+                )
 
-            if grants_response.status != HttpStatusCode.OK.value:
-                # Same admin-only gating applies to the grants endpoint; apply
-                # the same fallback so a partial admin (can read scheme name
-                # but not grants) doesn't yield empty ACLs either.
-                if grants_response.status in (
-                    HttpStatusCode.UNAUTHORIZED.value,
-                    HttpStatusCode.FORBIDDEN.value,
-                ):
-                    return self._fallback_permissions_for_forbidden_scheme(
-                        project_key=project_key,
-                        status=grants_response.status,
-                        stage=f"permission grants (scheme {scheme_id})",
+                if grants_response.status != HttpStatusCode.OK.value:
+                    if grants_response.status in (
+                        HttpStatusCode.UNAUTHORIZED.value,
+                        HttpStatusCode.FORBIDDEN.value,
+                    ):
+                        return self._fallback_permissions_for_forbidden_scheme(
+                            project_key=project_key,
+                            status=grants_response.status,
+                            stage=f"permission grants (scheme {scheme_id})",
+                        )
+                    self.logger.warning(
+                        "⚠️ Failed to fetch permission grants for scheme %s: %s",
+                        scheme_id,
+                        grants_response.text(),
                     )
-                self.logger.warning(f"⚠️ Failed to fetch permission grants for scheme {scheme_id}: {grants_response.text()}")
-                return []
+                    return []
 
-            grants_data = grants_response.json()
-            permission_grants = grants_data.get("permissions", [])
+                grants_data = grants_response.json()
+                permission_grants = grants_data.get("permissions", [])
+
+            if not isinstance(permission_grants, list):
+                permission_grants = []
 
             # Step 3: Filter for BROWSE_PROJECTS permission (determines who can see the project)
             relevant_permission_types = ["BROWSE_PROJECTS"]
@@ -2169,13 +2111,15 @@ class JiraDataCenterConnector(BaseConnector):
                 seen_holders.add(holder_key)
 
                 # Process different holder types and create Permission objects
-                if holder_type == "group" and holder_value:
-                    # Group has BROWSE_PROJECTS permission
-                    permissions.append(Permission(
-                        entity_type=EntityType.GROUP,
-                        external_id=holder_value,
-                        type=PermissionType.READ
-                    ))
+                if holder_type == "group":
+                    # DC uses ``parameter``; Cloud often uses ``value`` — accept either.
+                    group_id = holder_param or holder_value
+                    if group_id:
+                        permissions.append(Permission(
+                            entity_type=EntityType.GROUP,
+                            external_id=group_id,
+                            type=PermissionType.READ
+                        ))
 
                 elif holder_type == "applicationRole":
                     role_key = holder_param
@@ -2386,202 +2330,48 @@ class JiraDataCenterConnector(BaseConnector):
             return {}
 
     async def _fetch_groups(self) -> list[dict[str, Any]]:
-        """
-        Fetch Jira Data Center groups via ``GET /rest/api/2/group/bulk``, normalized to
-        ``groupId`` + ``name``.
-        """
+        """List DC groups via ``GET /rest/api/2/groups/picker?query=&maxResults=1000``."""
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
-        groups: list[dict[str, Any]] = []
-        start_at = 0
-        max_results = GROUP_PAGE_SIZE
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.groups_picker_get_v2(
+                query="",
+                maxResults=GROUPS_PICKER_MAX,
+            )
 
-        while True:
-            try:
-                datasource = await self._get_fresh_datasource()
-                response = await datasource.bulk_get_groups_v2(
-                    startAt=start_at,
-                    maxResults=max_results,
-                )
-
-                if response.status == HttpStatusCode.NOT_FOUND.value:
-                    # /rest/api/2/group/bulk was introduced in Jira Data Center 11.x.
-                    # Older Server/DC builds (8.x / 9.x / 10.x) reply with a Tomcat
-                    # 404 (HTML/XML, not a JSON Jira error). Without a fallback the
-                    # outer loop would silently treat the tenant as having zero
-                    # groups and drop every group-based permission downstream.
-                    # /rest/api/2/groups/picker has existed since Jira 4.x and is the
-                    # documented enumeration endpoint on legacy DC.
-                    self.logger.warning(
-                        "DC /group/bulk unavailable on this Jira version (404) — "
-                        "falling back to /groups/picker for group enumeration"
-                    )
-                    return await self._fetch_groups_via_picker()
-
-                if response.status != HttpStatusCode.OK.value:
-                    self.logger.error(
-                        "DC group bulk failed (%s): %s",
-                        response.status,
-                        response.text()[:500],
-                    )
-                    break
-
-                payload = response.json()
-                if isinstance(payload, list):
-                    batch_raw = payload
-                    is_last = None
-                elif isinstance(payload, dict):
-                    vals = payload.get("values", [])
-                    batch_raw = vals if isinstance(vals, list) else []
-                    is_last = payload.get("isLast")
-                else:
-                    batch_raw = []
-                    is_last = True
-                batch_norm = [g for g in (_normalize_jira_dc_group_row(r) for r in batch_raw) if g]
-
-                if not batch_norm:
-                    break
-
-                groups.extend(batch_norm)
-
-                if is_last is True:
-                    break
-                if is_last is None:
-                    if len(batch_norm) < max_results:
-                        break
-                    start_at += len(batch_norm)
-                    continue
-                start_at += len(batch_norm)
-                if len(batch_norm) < max_results:
-                    break
-
-            except Exception as e:
-                self.logger.error("❌ Error fetching groups at offset %s: %s", start_at, e)
-                break
-
-        self.logger.info("👥 Fetched %s total groups (DC)", len(groups))
-        return groups
-
-    async def _fetch_groups_via_picker(self) -> list[dict[str, Any]]:
-        """Enumerate groups via ``GET /rest/api/2/groups/picker``.
-
-        Used as a fallback when ``/group/bulk`` returns 404 on Jira DC versions
-        prior to 11.x. The picker endpoint does not support ``startAt`` pagination
-        and is typically capped server-side by ``jira.ajax.autocomplete.limit``
-        (default 50, configurable up to a few thousand). To approximate full
-        enumeration we sweep across an empty query plus alphanumeric prefixes
-        and deduplicate by group name (which is the canonical DC group key —
-        see ``_normalize_jira_dc_group_row``).
-
-        Short-circuits the sweep when the server's reported ``total`` matches
-        the number of groups already collected, so small/medium tenants exit
-        after the first call instead of doing 36 useless round trips. Also
-        bails out early when several consecutive prefixes contribute nothing
-        new (convergence on a large tenant).
-        """
-        if not self.data_source:
-            raise ValueError("DataSource not initialized")
-
-        seen_names: set[str] = set()
-        groups: list[dict[str, Any]] = []
-
-        # Empty query first (covers small tenants in one shot); then prefix sweep
-        # to pick up the tail when the server caps results below the true total.
-        prefix_queries: list[str] = [""] + list("abcdefghijklmnopqrstuvwxyz0123456789")
-        # Request a high cap; the server clamps to its own limit
-        # (``jira.ajax.autocomplete.limit``, default 50 on most DC installs).
-        picker_max = 1000
-        # Stop scanning prefixes once this many in a row contribute zero new
-        # groups — we've converged and further sweeps just burn API budget.
-        empty_streak_limit = 5
-        empty_streak = 0
-
-        for idx, q in enumerate(prefix_queries):
-            try:
-                datasource = await self._get_fresh_datasource()
-                response = await datasource.groups_picker_get_v2(
-                    query=q,
-                    maxResults=picker_max,
-                )
-
-                if response.status != HttpStatusCode.OK.value:
-                    self.logger.warning(
-                        "DC /groups/picker fallback failed for query %r (%s): %s",
-                        q,
-                        response.status,
-                        response.text()[:300],
-                    )
-                    continue
-
-                payload = response.json() or {}
-                if not isinstance(payload, dict):
-                    continue
-                raw_groups = payload.get("groups") or []
-                if not isinstance(raw_groups, list):
-                    continue
-                # Server-reported total for this query (may be absent on very
-                # old Server builds). Used only for the empty-query short-circuit.
-                reported_total = payload.get("total")
-                try:
-                    reported_total = int(reported_total) if reported_total is not None else None
-                except (TypeError, ValueError):
-                    reported_total = None
-
-                added_this_round = 0
-                for row in raw_groups:
-                    norm = _normalize_jira_dc_group_row(row)
-                    if not norm:
-                        continue
-                    name = norm["name"]
-                    if name in seen_names:
-                        continue
-                    seen_names.add(name)
-                    groups.append(norm)
-                    added_this_round += 1
-
-                self.logger.info(
-                    "groups/picker q=%r returned %s rows (%s new, running total=%s, server total=%s)",
-                    q, len(raw_groups), added_this_round, len(groups), reported_total,
-                )
-
-                # Short-circuit: if this was the empty query and the server told
-                # us how many matched in total, and we already have all of them
-                # (deduped), there is nothing left to enumerate.
-                if q == "" and reported_total is not None and len(groups) >= reported_total:
-                    self.logger.info(
-                        "groups/picker empty-query returned full set "
-                        "(%s of %s) — skipping prefix sweep",
-                        len(groups), reported_total,
-                    )
-                    break
-
-                # Convergence bail-out: large tenants where prefix sweeps stop
-                # producing new groups for several rounds in a row.
-                if idx > 0:
-                    if added_this_round == 0:
-                        empty_streak += 1
-                        if empty_streak >= empty_streak_limit:
-                            self.logger.info(
-                                "groups/picker prefix sweep converged "
-                                "(%s consecutive prefixes returned 0 new groups) — "
-                                "stopping at total=%s",
-                                empty_streak, len(groups),
-                            )
-                            break
-                    else:
-                        empty_streak = 0
-
-            except Exception as e:
+            if response.status != HttpStatusCode.OK.value:
                 self.logger.warning(
-                    "Error in /groups/picker fallback for query %r: %s", q, e
+                    "DC /groups/picker failed (%s): %s",
+                    response.status,
+                    response.text()[:300],
                 )
-                continue
+                return []
 
-        self.logger.info(
-            "👥 Fetched %s total groups (DC, /groups/picker fallback)", len(groups)
-        )
-        return groups
+            payload = response.json() or {}
+            if not isinstance(payload, dict):
+                return []
+
+            raw_groups = payload.get("groups") or []
+            if not isinstance(raw_groups, list):
+                return []
+
+            groups = [
+                norm for row in raw_groups
+                if (norm := _normalize_jira_dc_group_row(row))
+            ]
+
+            self.logger.info(
+                "👥 Fetched %s groups from /groups/picker (server total=%s)",
+                len(groups),
+                payload.get("total"),
+            )
+            return groups
+
+        except Exception as e:
+            self.logger.error("❌ Error fetching groups via /groups/picker: %s", e)
+            return []
 
     async def _fetch_group_members(self, group_id: str, group_name: str) -> list[str]:
         """
@@ -2656,6 +2446,53 @@ class JiraDataCenterConnector(BaseConnector):
                 break
 
         return member_keys
+
+    def _resolve_dc_app_user_from_role_actor(
+        self,
+        actor: dict[str, Any],
+        user_by_account_id: dict[str, AppUser],
+        user_by_email: dict[str, AppUser],
+        name_to_source_id: dict[str, str] | None = None,
+    ) -> AppUser | None:
+        """Resolve a DC project-role user actor to a synced ``AppUser``.
+
+        DC often omits nested ``actorUser`` and exposes only top-level ``name``
+        (username). ``_fetch_users`` stores ``source_user_id`` as the immutable
+        ``key``, so fall back through ``name_to_source_id`` when needed.
+        """
+        actor_user = actor.get("actorUser") or {}
+        if not isinstance(actor_user, dict):
+            actor_user = {}
+
+        for identifier in (
+            actor_user.get("accountId"),
+            actor_user.get("key"),
+            actor_user.get("name"),
+        ):
+            if identifier:
+                user = user_by_account_id.get(identifier)
+                if user:
+                    return user
+
+        email = actor_user.get("emailAddress")
+        if email:
+            user = user_by_email.get(email.lower())
+            if user:
+                return user
+
+        for identifier in (actor.get("key"), actor.get("name")):
+            if identifier:
+                user = user_by_account_id.get(identifier)
+                if user:
+                    return user
+
+        actor_name = actor.get("name")
+        if actor_name and name_to_source_id:
+            source_id = name_to_source_id.get(actor_name.lower())
+            if source_id:
+                return user_by_account_id.get(source_id)
+
+        return None
 
     async def _sync_project_roles(
         self,
@@ -2757,31 +2594,23 @@ class JiraDataCenterConnector(BaseConnector):
                             actor_type = actor.get("type", "")
 
                             if actor_type == "atlassian-user-role-actor":
-                                # Direct user actor. On DC the actor often has only
-                                # ``name``/``key`` (no ``accountId``); ``_fetch_users``
-                                # stores ``source_user_id`` as ``accountId or key or name``
-                                # (~1326), so try each identifier in turn.
-                                actor_user = actor.get("actorUser", {})
-                                account_id = actor_user.get("accountId")
-                                user_key = actor_user.get("key")
-                                user_name = actor_user.get("name")
-                                email = actor_user.get("emailAddress")
-
-                                user = None
-                                for identifier in (account_id, user_key, user_name):
-                                    if identifier:
-                                        user = user_by_account_id.get(identifier)
-                                        if user:
-                                            break
-                                if not user and email:
-                                    user = user_by_email.get(email.lower())
+                                user = self._resolve_dc_app_user_from_role_actor(
+                                    actor,
+                                    user_by_account_id,
+                                    user_by_email,
+                                    self._dc_name_to_source_id,
+                                )
 
                                 if user:
                                     member_users.append(user)
                                 else:
+                                    actor_user = actor.get("actorUser") or {}
                                     self.logger.debug(
                                         f"  {project_key}/{role_name}: User not found - "
-                                        f"accountId={account_id}, key={user_key}, name={user_name}, email={email}"
+                                        f"accountId={actor_user.get('accountId')}, "
+                                        f"key={actor_user.get('key') or actor.get('key')}, "
+                                        f"name={actor_user.get('name') or actor.get('name')}, "
+                                        f"email={actor_user.get('emailAddress')}"
                                     )
 
                             elif actor_type == "atlassian-group-role-actor":

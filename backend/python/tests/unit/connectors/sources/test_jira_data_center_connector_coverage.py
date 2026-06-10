@@ -928,6 +928,85 @@ async def test_fetch_users_paginates_and_maps_legacy_key():
 
 
 @pytest.mark.asyncio
+async def test_fetch_users_builds_name_to_source_id():
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+
+    r1 = MagicMock()
+    r1.status = HttpStatusCode.OK.value
+    r1.json = MagicMock(
+        return_value=[
+            {
+                "name": "darshan",
+                "key": "JIRAUSER10000",
+                "emailAddress": "d@example.com",
+                "active": True,
+            }
+        ]
+    )
+    r2 = MagicMock()
+    r2.status = HttpStatusCode.OK.value
+    r2.json = MagicMock(return_value=[])
+
+    ds = MagicMock()
+    ds.get_user_search_v2 = AsyncMock(side_effect=[r1, r2])
+
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        users = await conn._fetch_users()
+
+    assert len(users) == 1
+    assert users[0].source_user_id == "JIRAUSER10000"
+    assert conn._dc_name_to_source_id["darshan"] == "JIRAUSER10000"
+
+
+@pytest.mark.asyncio
+async def test_sync_project_roles_resolves_top_level_username():
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn._dc_name_to_source_id = {"darshan": "JIRAUSER10000"}
+    u = AppUser(
+        app_name=Connectors.JIRA_DATA_CENTER,
+        connector_id=conn.connector_id,
+        source_user_id="JIRAUSER10000",
+        org_id="org-dc-cov",
+        email="d@example.com",
+        full_name="Darshan",
+        is_active=True,
+    )
+    list_resp = MagicMock()
+    list_resp.status = HttpStatusCode.OK.value
+    list_resp.json = MagicMock(
+        return_value={"Administrators": "https://jira/rest/api/2/project/P/role/10002"}
+    )
+    role_resp = MagicMock()
+    role_resp.status = HttpStatusCode.OK.value
+    role_resp.json = MagicMock(
+        return_value={
+            "name": "Administrators",
+            "actors": [
+                {
+                    "type": "atlassian-user-role-actor",
+                    "name": "darshan",
+                    "displayName": "Darshan",
+                },
+            ],
+        }
+    )
+
+    ds = MagicMock()
+    ds.get_project_roles_v2 = AsyncMock(return_value=list_resp)
+    ds.get_project_role_v2 = AsyncMock(return_value=role_resp)
+
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        await conn._sync_project_roles(["P"], [u], {})
+
+    conn.data_entities_processor.on_new_app_roles.assert_awaited()
+    args = conn.data_entities_processor.on_new_app_roles.call_args[0][0]
+    assert len(args) == 1
+    assert args[0][1] == [u]
+
+
+@pytest.mark.asyncio
 async def test_fetch_users_non_ok_raises():
     conn = _make_connector()
     conn.data_source = MagicMock()
@@ -964,14 +1043,25 @@ async def test_fetch_application_roles_ok():
     ok.status = HttpStatusCode.OK.value
     ok.json = MagicMock(
         return_value=[
-            {"key": "k", "groupDetails": [{"groupId": "g2", "name": "G2"}]},
+            {
+                "key": "jira-software",
+                "groups": [
+                    "jira-administrators",
+                    "jira-software-users",
+                    "jira-system-administrators",
+                ],
+                "name": "Jira Software",
+                "defaultGroups": ["jira-software-users"],
+            },
         ]
     )
     ds = MagicMock()
     ds.get_all_application_roles_v2 = AsyncMock(return_value=ok)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         m = await conn._fetch_application_roles_to_groups_mapping()
-    assert "k" in m and m["k"][0]["groupId"] == "g2"
+    assert "jira-software" in m
+    assert len(m["jira-software"]) == 3
+    assert m["jira-software"][0]["name"] == "jira-administrators"
 
 
 @pytest.mark.asyncio
@@ -989,54 +1079,47 @@ async def test_fetch_application_roles_non_ok_returns_empty():
 
 
 def _perm_resp():
+    permissions = [
+        {"permission": "OTHER", "holder": {"type": "group", "value": "x"}},
+        {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "value": "gid1"}},
+        {
+            "permission": "BROWSE_PROJECTS",
+            "holder": {"type": "applicationRole", "parameter": "jira-software"},
+        },
+        {
+            "permission": "BROWSE_PROJECTS",
+            "holder": {
+                "type": "user",
+                "parameter": "acc",
+                "user": {"emailAddress": "u@example.com"},
+            },
+        },
+        {"permission": "BROWSE_PROJECTS", "holder": {"type": "anyone"}},
+        {
+            "permission": "BROWSE_PROJECTS",
+            "holder": {
+                "type": "projectRole",
+                "parameter": "10400",
+                "projectRole": {"name": "Developers", "id": "10400"},
+            },
+        },
+        {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectLead"}},
+        {
+            "permission": "BROWSE_PROJECTS",
+            "holder": {
+                "type": "projectRole",
+                "parameter": "1",
+                "projectRole": {"name": "atlassian-addons-project-access"},
+            },
+        },
+        {"permission": "BROWSE_PROJECTS", "holder": {"type": "unknownThing", "parameter": "z"}},
+    ]
     sch = MagicMock()
     sch.status = HttpStatusCode.OK.value
-    sch.json = MagicMock(
-        return_value={
-            "id": 10,
-        }
-    )
+    sch.json = MagicMock(return_value={"id": 10, "permissions": permissions})
     grants = MagicMock()
     grants.status = HttpStatusCode.OK.value
-    grants.json = MagicMock(
-        return_value={
-            "permissions": [
-                {"permission": "OTHER", "holder": {"type": "group", "value": "x"}},
-                {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "value": "gid1"}},
-                {
-                    "permission": "BROWSE_PROJECTS",
-                    "holder": {"type": "applicationRole", "parameter": "jira-software"},
-                },
-                {
-                    "permission": "BROWSE_PROJECTS",
-                    "holder": {
-                        "type": "user",
-                        "parameter": "acc",
-                        "user": {"emailAddress": "u@example.com"},
-                    },
-                },
-                {"permission": "BROWSE_PROJECTS", "holder": {"type": "anyone"}},
-                {
-                    "permission": "BROWSE_PROJECTS",
-                    "holder": {
-                        "type": "projectRole",
-                        "parameter": "10400",
-                        "projectRole": {"name": "Developers", "id": "10400"},
-                    },
-                },
-                {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectLead"}},
-                {
-                    "permission": "BROWSE_PROJECTS",
-                    "holder": {
-                        "type": "projectRole",
-                        "parameter": "1",
-                        "projectRole": {"name": "atlassian-addons-project-access"},
-                    },
-                },
-                {"permission": "BROWSE_PROJECTS", "holder": {"type": "unknownThing", "parameter": "z"}},
-            ],
-        }
-    )
+    grants.json = MagicMock(return_value={"permissions": permissions})
     return sch, grants
 
 
@@ -1053,6 +1136,7 @@ async def test_fetch_project_permission_scheme_dc_branches():
     }
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         perms = await conn._fetch_project_permission_scheme("PROJ", app_map)
+    ds.get_permission_scheme_grants_v2.assert_not_awaited()
     types = {(p.entity_type, p.email, p.external_id) for p in perms}
     assert (EntityType.GROUP, None, "gid1") in types
     assert (EntityType.GROUP, None, "expanded-g") in types
@@ -1060,6 +1144,75 @@ async def test_fetch_project_permission_scheme_dc_branches():
     assert (EntityType.ORG, None, "anyone_authenticated") in types
     assert (EntityType.ROLE, None, "PROJ_10400") in types
     assert (EntityType.ROLE, None, "PROJ_projectLead") in types
+
+
+@pytest.mark.asyncio
+async def test_fetch_project_permission_scheme_group_uses_parameter():
+    """DC permission schemes put the group name in ``holder.parameter``, not ``value``."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    sch = MagicMock()
+    sch.status = HttpStatusCode.OK.value
+    sch.json = MagicMock(
+        return_value={
+            "id": 10000,
+            "permissions": [
+                {
+                    "permission": "BROWSE_PROJECTS",
+                    "holder": {
+                        "type": "group",
+                        "parameter": "jira-software-users",
+                    },
+                },
+            ],
+        }
+    )
+    ds = MagicMock()
+    ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
+    ds.get_permission_scheme_grants_v2 = AsyncMock()
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        perms = await conn._fetch_project_permission_scheme("TEST", {})
+    ds.get_permission_scheme_grants_v2.assert_not_awaited()
+    assert len(perms) == 1
+    assert perms[0].entity_type == EntityType.GROUP
+    assert perms[0].external_id == "jira-software-users"
+
+
+@pytest.mark.asyncio
+async def test_fetch_project_permission_scheme_user_from_embedded_scheme():
+    """Step 1 project permissionscheme embeds ``user.key``; step 2 only has username."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    sch = MagicMock()
+    sch.status = HttpStatusCode.OK.value
+    sch.json = MagicMock(
+        return_value={
+            "id": 10000,
+            "permissions": [
+                {
+                    "permission": "BROWSE_PROJECTS",
+                    "holder": {
+                        "type": "user",
+                        "parameter": "JIRAUSER10000",
+                        "user": {
+                            "key": "JIRAUSER10000",
+                            "name": "darshan",
+                            "emailAddress": "darshan@example.com",
+                        },
+                    },
+                },
+            ],
+        }
+    )
+    ds = MagicMock()
+    ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
+    ds.get_permission_scheme_grants_v2 = AsyncMock()
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        perms = await conn._fetch_project_permission_scheme("TEST", {})
+    ds.get_permission_scheme_grants_v2.assert_not_awaited()
+    assert len(perms) == 1
+    assert perms[0].entity_type == EntityType.USER
+    assert perms[0].email == "darshan@example.com"
 
 
 @pytest.mark.asyncio
@@ -1255,52 +1408,6 @@ async def test_sync_user_groups_no_groups_returns_empty():
     with patch.object(conn, "_fetch_groups", new_callable=AsyncMock, return_value=[]):
         assert await conn._sync_user_groups([]) == {}
     conn.data_entities_processor.on_new_user_groups.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_fetch_groups_paginates_dict_payload_is_last():
-    conn = _make_connector()
-    conn.data_source = MagicMock()
-    r1 = MagicMock()
-    r1.status = HttpStatusCode.OK.value
-    r1.json = MagicMock(
-        return_value={
-            "values": [{"name": "a", "groupId": "1"}],
-            "isLast": False,
-        }
-    )
-    r2 = MagicMock()
-    r2.status = HttpStatusCode.OK.value
-    r2.json = MagicMock(
-        return_value={
-            "values": [{"name": "b", "groupId": "2"}],
-            "isLast": True,
-        }
-    )
-    ds = MagicMock()
-    ds.bulk_get_groups_v2 = AsyncMock(side_effect=[r1, r2])
-    # DC pagination stops after a short page unless maxResults/page size matches: with default
-    # GROUP_PAGE_SIZE=50 a single-row ``isLast: false`` batch still breaks (len < max_results).
-    with patch(
-        "app.connectors.sources.atlassian.jira_data_center.connector.GROUP_PAGE_SIZE",
-        1,
-    ):
-        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            groups = await conn._fetch_groups()
-    assert [g["groupId"] for g in groups] == ["1", "2"]
-
-
-@pytest.mark.asyncio
-async def test_fetch_groups_non_ok_stops():
-    conn = _make_connector()
-    conn.data_source = MagicMock()
-    bad = MagicMock()
-    bad.status = 500
-    bad.text = MagicMock(return_value="err")
-    ds = MagicMock()
-    ds.bulk_get_groups_v2 = AsyncMock(return_value=bad)
-    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        assert await conn._fetch_groups() == []
 
 
 @pytest.mark.asyncio
@@ -1678,6 +1785,19 @@ def test_extract_jira_wiki_attachment_filenames():
     assert extract_jira_wiki_attachment_filenames(text) == ["image-20260516-133226.png"]
 
 
+def test_extract_jira_wiki_attachment_filenames_bracket_syntax():
+    text = "[^Ack p2.pdf]Root cause fixed.\r\n[^Certificate-1.pdf]Next steps."
+    assert extract_jira_wiki_attachment_filenames(text) == [
+        "Ack p2.pdf",
+        "Certificate-1.pdf",
+    ]
+
+
+def test_extract_jira_wiki_attachment_filenames_mixed_syntax_dedupes():
+    text = "!doc.pdf|width=100! and [^doc.pdf] again"
+    assert extract_jira_wiki_attachment_filenames(text) == ["doc.pdf"]
+
+
 @pytest.mark.asyncio
 async def test_jira_storage_text_to_markdown_with_images_inlines_png():
     mime = {"13352": "image/png"}
@@ -1698,6 +1818,29 @@ async def test_jira_storage_text_to_markdown_with_images_inlines_png():
     assert "data:image/png;base64,QUJD" in md
     assert "!image-20260516" not in md
     assert embedded == {"13352"}
+
+
+@pytest.mark.asyncio
+async def test_jira_storage_text_to_markdown_bracket_syntax_inlines_png():
+    mime = {"10014": "image/png"}
+    lookup = build_jira_attachment_filename_lookup(
+        mime,
+        None,
+        [{"id": "10014", "filename": "dk.png", "mimeType": "image/png"}],
+    )
+
+    async def fetcher(att_id: str, filename: str) -> str:
+        assert att_id == "10014"
+        assert filename == "dk.png"
+        return "data:image/png;base64,QUJD"
+
+    wiki = "[^dk.png]Screenshot attached."
+    md, embedded = await jira_storage_text_to_markdown_with_images(
+        wiki, fetcher, lookup, mime
+    )
+    assert "data:image/png;base64,QUJD" in md
+    assert "[^dk.png]" not in md
+    assert embedded == {"10014"}
 
 
 @pytest.mark.asyncio
@@ -2407,45 +2550,6 @@ async def test_sync_user_groups_single_group_failure_continues():
         with patch.object(conn, "_fetch_group_members", new_callable=AsyncMock, side_effect=flaky):
             await conn._sync_user_groups([])
     assert conn.data_entities_processor.on_new_user_groups.await_count >= 1
-
-
-@pytest.mark.asyncio
-async def test_fetch_groups_list_payload_two_calls():
-    conn = _make_connector()
-    conn.data_source = MagicMock()
-    r1 = MagicMock()
-    r1.status = HttpStatusCode.OK.value
-    r1.json = MagicMock(return_value=[{"name": "a", "groupId": "1"}])
-    r2 = MagicMock()
-    r2.status = HttpStatusCode.OK.value
-    r2.json = MagicMock(return_value=[{"name": "b", "groupId": "2"}])
-    ds = MagicMock()
-    ds.bulk_get_groups_v2 = AsyncMock(side_effect=[r1, r2])
-    with patch("app.connectors.sources.atlassian.jira_data_center.connector.GROUP_PAGE_SIZE", 1):
-        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            groups = await conn._fetch_groups()
-    assert [g["groupId"] for g in groups] == ["1", "2"]
-
-
-@pytest.mark.asyncio
-async def test_fetch_groups_malformed_payload_and_exception():
-    conn = _make_connector()
-    conn.data_source = MagicMock()
-    bad = MagicMock()
-    bad.status = HttpStatusCode.OK.value
-    bad.json = MagicMock(return_value=12345)
-    ds = MagicMock()
-    ds.bulk_get_groups_v2 = AsyncMock(return_value=bad)
-    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        assert await conn._fetch_groups() == []
-
-    boom = MagicMock()
-    boom.status = HttpStatusCode.OK.value
-    boom.json = MagicMock(side_effect=OSError("net"))
-    ds2 = MagicMock()
-    ds2.bulk_get_groups_v2 = AsyncMock(return_value=boom)
-    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds2):
-        assert await conn._fetch_groups() == []
 
 
 @pytest.mark.asyncio
@@ -3201,7 +3305,11 @@ async def test_fetch_users_reverse_lookup_resolves_hidden_email():
 
     reverse_resp = MagicMock()
     reverse_resp.status = HttpStatusCode.OK.value
-    reverse_resp.json = MagicMock(return_value=[{"key": "k2", "displayName": "Hidden User", "active": True}])
+    reverse_resp.json = MagicMock(
+        return_value=[
+            {"key": "k2", "name": "hiddenuser", "displayName": "Hidden User", "active": True}
+        ]
+    )
 
     ds = MagicMock()
     # Bulk returns 2 items < USER_PAGE_SIZE so it breaks after 1st call; then reverse lookup
@@ -3212,6 +3320,7 @@ async def test_fetch_users_reverse_lookup_resolves_hidden_email():
     assert "hidden@example.com" in emails
     assert "visible@example.com" in emails
     assert len(users) == 2
+    assert conn._dc_name_to_source_id["hiddenuser"] == "k2"
 
 
 @pytest.mark.asyncio
@@ -3669,6 +3778,75 @@ async def test_parse_issue_to_blocks_rich_comments_and_attachments():
 
 
 @pytest.mark.asyncio
+async def test_parse_issue_to_blocks_bracket_attachment_in_comment():
+    conn = _make_connector()
+    conn.site_url = "https://jira.example"
+    child_ack = ChildRecord(child_type=ChildType.RECORD, child_id="aid", child_name="Ack p2.pdf")
+    child_cert = ChildRecord(
+        child_type=ChildType.RECORD, child_id="cid", child_name="Certificate-1.pdf"
+    )
+    child_standalone = ChildRecord(
+        child_type=ChildType.RECORD, child_id="sid", child_name="BlackBookAiReport.pdf"
+    )
+    att_map = {
+        "10013": child_ack,
+        "10010": child_cert,
+        "10012": child_standalone,
+    }
+    att_mimes = {
+        "10013": "application/pdf",
+        "10010": "application/pdf",
+        "10012": "application/pdf",
+    }
+    issue_data = {
+        "id": "10003",
+        "key": "TEST-1",
+        "fields": {
+            "summary": "Password reset bug",
+            "description": "Steps to reproduce",
+            "attachment": [
+                {"id": "10013", "filename": "Ack p2.pdf", "mimeType": "application/pdf"},
+                {"id": "10010", "filename": "Certificate-1.pdf", "mimeType": "application/pdf"},
+                {"id": "10012", "filename": "BlackBookAiReport.pdf", "mimeType": "application/pdf"},
+            ],
+        },
+        "comments": [
+            {
+                "id": "10000",
+                "author": {"displayName": "Darshan"},
+                "created": "2026-06-10T18:20:30.927+0000",
+                "body": "[^Ack p2.pdf]Root cause identified and fixed.",
+            },
+            {
+                "id": "10001",
+                "author": {"displayName": "Darshan"},
+                "created": "2026-06-10T18:21:30.118+0000",
+                "body": "[^Certificate-1.pdf]Initial investigation completed.",
+            },
+        ],
+    }
+
+    with patch.object(conn, "_create_media_fetcher", return_value=AsyncMock(return_value=None)):
+        box = await conn._parse_issue_to_blocks(
+            issue_data,
+            issue_key="TEST-1",
+            weburl="https://jira.example/browse/TEST-1",
+            attachment_children_map=att_map,
+            attachment_mime_types=att_mimes,
+        )
+
+    comment_bgs = [bg for bg in box.block_groups if bg.sub_type == GroupSubType.COMMENT]
+    assert len(comment_bgs) == 2
+    assert comment_bgs[0].children_records
+    assert comment_bgs[0].children_records[0].child_name == "Ack p2.pdf"
+    assert comment_bgs[1].children_records
+    assert comment_bgs[1].children_records[0].child_name == "Certificate-1.pdf"
+    assert box.block_groups[0].children_records
+    assert len(box.block_groups[0].children_records) == 1
+    assert box.block_groups[0].children_records[0].child_name == "BlackBookAiReport.pdf"
+
+
+@pytest.mark.asyncio
 async def test_parse_issue_to_blocks_description_child_for_standalone_pdf():
     conn = _make_connector()
     conn.site_url = "https://jira.example"
@@ -3857,128 +4035,57 @@ def _mock_ds_attachment_download_fail(final_status: int = 404, final_body: str =
 
 
 # ===========================================================================
-# Patch fix 1: _fetch_groups — 404 from /group/bulk triggers picker fallback
+# _fetch_groups — DC uses /groups/picker (no /group/bulk on Server/DC)
 # ===========================================================================
 
 
-class TestFetchGroups404Fallback:
-
-    @pytest.mark.asyncio
-    async def test_404_delegates_to_picker(self):
-        conn = _make_connector()
-        conn.data_source = MagicMock()
-        ds = MagicMock()
-        ds.bulk_get_groups_v2 = AsyncMock(return_value=_err_resp(HttpStatusCode.NOT_FOUND.value, "<html>404</html>"))
-        expected = [{"name": "devs", "groupId": "devs"}]
-        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            with patch.object(conn, "_fetch_groups_via_picker", new_callable=AsyncMock, return_value=expected) as pm:
-                result = await conn._fetch_groups()
-        pm.assert_awaited_once()
-        assert result == expected
-
-    @pytest.mark.asyncio
-    async def test_non_404_error_does_not_call_picker(self):
-        conn = _make_connector()
-        conn.data_source = MagicMock()
-        ds = MagicMock()
-        ds.bulk_get_groups_v2 = AsyncMock(return_value=_err_resp(500, "Internal error"))
-        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            with patch.object(conn, "_fetch_groups_via_picker", new_callable=AsyncMock) as pm:
-                result = await conn._fetch_groups()
-        pm.assert_not_awaited()
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_ok_does_not_call_picker(self):
-        conn = _make_connector()
-        conn.data_source = MagicMock()
-        ds = MagicMock()
-        ds.bulk_get_groups_v2 = AsyncMock(return_value=_ok_resp({"values": [{"name": "a", "groupId": "1"}], "isLast": True}))
-        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            with patch.object(conn, "_fetch_groups_via_picker", new_callable=AsyncMock) as pm:
-                result = await conn._fetch_groups()
-        pm.assert_not_awaited()
-        assert len(result) == 1
-
-
-# ===========================================================================
-# Patch fix 2: _fetch_groups_via_picker
-# ===========================================================================
-
-
-class TestFetchGroupsViaPicker:
+class TestFetchGroupsPicker:
 
     @pytest.mark.asyncio
     async def test_happy_path_returns_groups(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         ds = MagicMock()
-
-        def side_effect(**kwargs):
-            if kwargs.get("query", "") == "":
-                return _ok_resp({"groups": [{"name": "alpha", "groupId": "g-alpha"}, {"name": "beta", "groupId": "g-beta"}]})
-            return _ok_resp({"groups": []})
-
-        ds.groups_picker_get_v2 = AsyncMock(side_effect=side_effect)
+        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({
+            "header": "Showing 3 of 3 matching groups",
+            "total": 3,
+            "groups": [
+                {"name": "jira-administrators", "html": "jira-administrators"},
+                {"name": "jira-software-users", "html": "jira-software-users"},
+                {"name": "jira-system-administrators", "html": "jira-system-administrators"},
+            ],
+        }))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            groups = await conn._fetch_groups_via_picker()
-        names = [g["name"] for g in groups]
-        assert "alpha" in names
-        assert "beta" in names
+            groups = await conn._fetch_groups()
+        assert len(groups) == 3
+        assert groups[0]["name"] == "jira-administrators"
+        assert groups[0]["groupId"] == "jira-administrators"
+        ds.groups_picker_get_v2.assert_awaited_once_with(query="", maxResults=1000)
 
     @pytest.mark.asyncio
-    async def test_deduplicates_groups_across_prefix_sweeps(self):
+    async def test_non_ok_returns_empty(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         ds = MagicMock()
-        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({"groups": [{"name": "devs", "groupId": "devs"}]}))
+        ds.groups_picker_get_v2 = AsyncMock(return_value=_err_resp(403, "Forbidden"))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            groups = await conn._fetch_groups_via_picker()
-        assert len(groups) == 1
+            assert await conn._fetch_groups() == []
 
     @pytest.mark.asyncio
-    async def test_non_ok_query_skips_and_continues(self):
+    async def test_transport_exception_returns_empty(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         ds = MagicMock()
-
-        def side_effect(**kwargs):
-            if kwargs.get("query", "") == "":
-                return _err_resp(403, "Forbidden")
-            if kwargs.get("query") == "a":
-                return _ok_resp({"groups": [{"name": "admins", "groupId": "admins"}]})
-            return _ok_resp({"groups": []})
-
-        ds.groups_picker_get_v2 = AsyncMock(side_effect=side_effect)
+        ds.groups_picker_get_v2 = AsyncMock(side_effect=httpx.RemoteProtocolError("disconnected"))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            groups = await conn._fetch_groups_via_picker()
-        assert any(g["name"] == "admins" for g in groups)
-
-    @pytest.mark.asyncio
-    async def test_transport_exception_on_one_prefix_does_not_abort(self):
-        conn = _make_connector()
-        conn.data_source = MagicMock()
-        ds = MagicMock()
-        call_count = 0
-
-        def side_effect(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise httpx.RemoteProtocolError("disconnected")
-            return _ok_resp({"groups": [{"name": "team", "groupId": "team"}]})
-
-        ds.groups_picker_get_v2 = AsyncMock(side_effect=side_effect)
-        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            groups = await conn._fetch_groups_via_picker()
-        assert any(g["name"] == "team" for g in groups)
+            assert await conn._fetch_groups() == []
 
     @pytest.mark.asyncio
     async def test_raises_when_data_source_not_initialized(self):
         conn = _make_connector()
         conn.data_source = None
         with pytest.raises(ValueError, match="not initialized"):
-            await conn._fetch_groups_via_picker()
+            await conn._fetch_groups()
 
     @pytest.mark.asyncio
     async def test_normalizes_group_without_group_id_uses_name(self):
@@ -3987,60 +4094,9 @@ class TestFetchGroupsViaPicker:
         ds = MagicMock()
         ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({"groups": [{"name": "no-id-group"}]}))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            groups = await conn._fetch_groups_via_picker()
+            groups = await conn._fetch_groups()
         match = next(g for g in groups if g["name"] == "no-id-group")
         assert match["groupId"] == "no-id-group"
-
-    @pytest.mark.asyncio
-    async def test_short_circuits_when_empty_query_returns_full_set(self):
-        """``total`` reported by the server equals what we received => no prefix sweep."""
-        conn = _make_connector()
-        conn.data_source = MagicMock()
-        ds = MagicMock()
-        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({
-            "groups": [{"name": "alpha"}, {"name": "beta"}, {"name": "gamma"}],
-            "total": 3,
-        }))
-        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            groups = await conn._fetch_groups_via_picker()
-        assert len(groups) == 3
-        # Empty query only — must not iterate the alphanumeric prefix sweep.
-        assert ds.groups_picker_get_v2.await_count == 1
-
-    @pytest.mark.asyncio
-    async def test_short_circuit_does_not_fire_when_total_exceeds_returned(self):
-        """If server caps results below ``total``, the prefix sweep must still run."""
-        conn = _make_connector()
-        conn.data_source = MagicMock()
-        ds = MagicMock()
-
-        def side_effect(**kwargs):
-            if kwargs.get("query", "") == "":
-                return _ok_resp({
-                    "groups": [{"name": "alpha"}],
-                    "total": 50,
-                })
-            return _ok_resp({"groups": []})
-
-        ds.groups_picker_get_v2 = AsyncMock(side_effect=side_effect)
-        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            await conn._fetch_groups_via_picker()
-        assert ds.groups_picker_get_v2.await_count > 1
-
-    @pytest.mark.asyncio
-    async def test_converges_after_consecutive_empty_prefixes(self):
-        """Sweep bails out after 5 consecutive prefixes return 0 new groups."""
-        conn = _make_connector()
-        conn.data_source = MagicMock()
-        ds = MagicMock()
-        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({
-            "groups": [{"name": "shared"}],
-        }))
-        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            groups = await conn._fetch_groups_via_picker()
-        assert len(groups) == 1
-        # 1 empty-query call + 5 prefix calls that each contribute 0 new groups.
-        assert ds.groups_picker_get_v2.await_count == 6
 
 
 # ===========================================================================

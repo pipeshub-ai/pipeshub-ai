@@ -20123,7 +20123,7 @@ class JiraDataSource:
     #   list_projects_get_v2, get_project_v2,
     #   get_myself_v2, get_current_user_v2,
     #   get_user_search_v2, get_all_application_roles_v2,
-    #   get_audit_records_v2,
+    #   get_auditing_events_v1,
     #   get_assigned_permission_scheme_v2, get_permission_scheme_grants_v2,
     #   get_project_roles_v2, get_project_role_v2,
     #   bulk_get_groups_v2, get_users_from_group_v2, groups_picker_get_v2,
@@ -20404,14 +20404,7 @@ class JiraDataSource:
         userIds: Optional[Union[str, list[str]]] = None,
         headers: Optional[Dict[str, Any]] = None,
     ) -> HTTPResponse:
-        """GET /rest/api/2/auditing/record (Data Center / Server; auditing + permissions).
-
-        Query params: ``offset``, ``limit``, ``filter``, ``from``, ``to`` (see server
-        ``AuditingResource``), plus optional ``projectIds`` / ``userIds`` as a single
-        string or list (comma-joined for the request).
-
-        https://developer.atlassian.com/server/jira/platform/rest/v11002/intro/#gettingstarted
-        """
+        """GET /rest/api/2/auditing/record — removed in Jira 10.0; unused by connectors."""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
@@ -20439,6 +20432,57 @@ class JiraDataSource:
             )
         _body = None
         rel_path = '/rest/api/2/auditing/record'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_auditing_events_v1(
+        self,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+        from_: Optional[str] = None,
+        to: Optional[str] = None,
+        actions: Optional[Union[str, list[str]]] = None,
+        categories: Optional[Union[str, list[str]]] = None,
+        pageCursor: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/auditing/1.0/events — Jira DC/Server 10.0+ audit log."""
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {}
+        _query: Dict[str, Any] = {}
+        if offset is not None:
+            _query['offset'] = offset
+        if limit is not None:
+            _query['limit'] = limit
+        if from_ is not None:
+            _query['from'] = from_
+        if to is not None:
+            _query['to'] = to
+        if actions is not None:
+            _query['actions'] = (
+                actions if isinstance(actions, str) else ','.join(str(x) for x in actions)
+            )
+        if categories is not None:
+            _query['categories'] = (
+                categories
+                if isinstance(categories, str)
+                else ','.join(str(x) for x in categories)
+            )
+        if pageCursor is not None:
+            _query['pageCursor'] = pageCursor
+        _body = None
+        rel_path = '/rest/auditing/1.0/events'
         url = self.base_url + _safe_format_url(rel_path, _path)
         req = HTTPRequest(
             method='GET',
@@ -20585,12 +20629,7 @@ class JiraDataSource:
         applicationKey: Optional[str] = None,
         headers: Optional[Dict[str, Any]] = None,
     ) -> HTTPResponse:
-        """GET /rest/api/2/group/bulk (Data Center / Server).
-
-        Same query model as Cloud ``bulk_get_groups`` (``GET /rest/api/3/group/bulk``).
-
-        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-group/#api-rest-api-2-group-bulk-get
-        """
+        """GET /rest/api/2/group/bulk — Jira Cloud only; DC uses groups_picker_get_v2."""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})

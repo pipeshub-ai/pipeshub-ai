@@ -532,29 +532,39 @@ class TestJiraDataCenterModuleHelpers:
 
 
 # -----------------------------------------------------------------------------
-# Deletion handling (DC v2 audit endpoint)
+# Deletion handling (DC auditing API)
 # -----------------------------------------------------------------------------
 
 
-def _audit_record(
-    type_name: str = "ISSUE",
-    summary: str = "Issue deleted",
-    name: str = "PROJ-1",
+def _auditing_event(
+    action: str = "Issue deleted",
+    issue_name: str = "PROJ-1",
+    extra_objects: list[dict] | None = None,
 ) -> dict:
+    affected = list(extra_objects or [])
+    affected.insert(0, {"name": issue_name, "type": "ISSUE", "id": "10001"})
     return {
-        "summary": summary,
-        "category": "issue tracking",
-        "objectItem": {"name": name, "typeName": type_name},
+        "timestamp": "2026-06-10T10:00:00.000Z",
+        "type": {"action": action, "category": "issues"},
+        "affectedObjects": affected,
     }
 
 
-def _audit_response(records: list[dict], total: int | None = None):
+def _auditing_events_response(
+    entities: list[dict],
+    *,
+    last_page: bool = True,
+    next_page_offset: int | None = None,
+):
     resp = MagicMock()
     resp.status = HttpStatusCode.OK.value
-    body = {"records": records}
-    if total is not None:
-        body["total"] = total
-    resp.json.return_value = body
+    paging: dict = {"lastPage": last_page}
+    if next_page_offset is not None:
+        paging["nextPageOffset"] = next_page_offset
+    resp.json.return_value = {
+        "entities": entities,
+        "pagingInfo": paging,
+    }
     return resp
 
 
@@ -619,28 +629,41 @@ class TestJiraDataCenterDeletionAudit:
 
     @pytest.mark.asyncio
     async def test_fetch_deleted_issues_from_audit_filters_non_issue_rows(self) -> None:
-        """Only ``objectItem.typeName == "ISSUE"`` rows with a delete-shaped
-        summary are returned; everything else (USER, ISSUE without "delete"
-        summary, etc.) is ignored."""
+        """Only issue-deletion auditing events with an ISSUE affected object are returned."""
         conn = _make_connector()
         conn.data_source = MagicMock()
 
-        records = [
-            _audit_record(name="PROJ-1"),  # match
-            _audit_record(type_name="USER", name="alice"),  # wrong type
-            _audit_record(summary="Issue updated", name="PROJ-2"),  # wrong summary
-            _audit_record(summary="ISSUE DELETED", name="PROJ-3"),  # case-insensitive match
-            {"summary": "Issue deleted", "objectItem": {}},  # no name
+        entities = [
+            _auditing_event(issue_name="PROJ-1"),
+            {
+                "type": {"action": "Issue updated"},
+                "affectedObjects": [{"name": "PROJ-2", "type": "PROJECT", "id": "1"}],
+            },
+            {
+                "type": {"action": "Issue deleted"},
+                "affectedObjects": [{"name": "alice", "type": "USER", "id": "u1"}],
+            },
+            _auditing_event(action="ISSUE DELETED", issue_name="PROJ-3"),
+            {
+                "type": {"action": "Issue deleted"},
+                "affectedObjects": [{"name": "", "type": "ISSUE", "id": "x"}],
+            },
         ]
         mock_ds = MagicMock()
-        mock_ds.get_audit_records_v2 = AsyncMock(
-            return_value=_audit_response(records, total=len(records))
+        mock_ds.get_auditing_events_v1 = AsyncMock(
+            return_value=_auditing_events_response(entities)
         )
 
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            keys = await conn._fetch_deleted_issues_from_audit("from", "to")
+            keys = await conn._fetch_deleted_issues_from_audit(1_700_000_000_000)
 
         assert keys == ["PROJ-1", "PROJ-3"]
+        mock_ds.get_auditing_events_v1.assert_awaited()
+        call_kwargs = mock_ds.get_auditing_events_v1.await_args.kwargs
+        assert call_kwargs["actions"] == "Issue deleted"
+        assert call_kwargs["categories"] == "issues"
+        assert call_kwargs["from_"].endswith("Z")
+        assert call_kwargs["to"].endswith("Z")
 
     @pytest.mark.asyncio
     async def test_fetch_deleted_issues_from_audit_handles_forbidden(self) -> None:
@@ -652,37 +675,52 @@ class TestJiraDataCenterDeletionAudit:
         resp.status = HttpStatusCode.FORBIDDEN.value
         resp.text.return_value = "forbidden"
         mock_ds = MagicMock()
-        mock_ds.get_audit_records_v2 = AsyncMock(return_value=resp)
+        mock_ds.get_auditing_events_v1 = AsyncMock(return_value=resp)
 
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            keys = await conn._fetch_deleted_issues_from_audit("from", "to")
+            keys = await conn._fetch_deleted_issues_from_audit(1_700_000_000_000)
 
         assert keys == []
-        mock_ds.get_audit_records_v2.assert_awaited_once()
+        mock_ds.get_auditing_events_v1.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_fetch_deleted_issues_paginates_until_total_reached(self) -> None:
-        """Pagination must stop when ``offset + len(records) >= total`` — guard
-        against infinite loops when the server reports a non-decreasing total.
-        """
+    async def test_fetch_deleted_issues_from_audit_returns_empty_on_404(self) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        missing = MagicMock()
+        missing.status = HttpStatusCode.NOT_FOUND.value
+        missing.text.return_value = "404"
+        mock_ds = MagicMock()
+        mock_ds.get_auditing_events_v1 = AsyncMock(return_value=missing)
+
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
+            keys = await conn._fetch_deleted_issues_from_audit(1_700_000_000_000)
+
+        assert keys == []
+
+    @pytest.mark.asyncio
+    async def test_fetch_deleted_issues_auditing_events_pagination(self) -> None:
+        """Auditing 1.0 API paginates via ``pagingInfo.nextPageOffset``."""
         conn = _make_connector()
         conn.data_source = MagicMock()
 
-        page1 = _audit_response(
-            [_audit_record(name=f"PROJ-{i}") for i in range(500)], total=750
+        page1 = _auditing_events_response(
+            [_auditing_event(issue_name=f"PROJ-{i}") for i in range(500)],
+            last_page=False,
+            next_page_offset=500,
         )
-        page2 = _audit_response(
-            [_audit_record(name=f"PROJ-{i}") for i in range(500, 750)], total=750
+        page2 = _auditing_events_response(
+            [_auditing_event(issue_name=f"PROJ-{i}") for i in range(500, 750)],
+            last_page=True,
         )
-
         mock_ds = MagicMock()
-        mock_ds.get_audit_records_v2 = AsyncMock(side_effect=[page1, page2])
+        mock_ds.get_auditing_events_v1 = AsyncMock(side_effect=[page1, page2])
 
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            keys = await conn._fetch_deleted_issues_from_audit("from", "to")
+            keys = await conn._fetch_deleted_issues_from_audit(1_700_000_000_000)
 
         assert len(keys) == 750
-        assert mock_ds.get_audit_records_v2.await_count == 2
+        assert mock_ds.get_auditing_events_v1.await_count == 2
 
     @pytest.mark.asyncio
     async def test_handle_deleted_issue_skips_when_still_in_jira(self) -> None:
