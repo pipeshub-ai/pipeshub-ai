@@ -258,6 +258,7 @@ class ExtensionTypes(Enum):
     TXT = "txt"
     MD = "md"
     MDX = "mdx"
+    JSON = "json"
     HTML = "html"
     PNG = "png"
     JPG = "jpg"
@@ -323,6 +324,7 @@ RECONCILIATION_ENABLED_MIME_TYPES = {
     MimeTypes.DOC.value,
     MimeTypes.PLAIN_TEXT.value,
     MimeTypes.HTML.value,
+    MimeTypes.JSON.value,
 }
 
 RECONCILIATION_ENABLED_EXTENSIONS = {
@@ -334,7 +336,8 @@ RECONCILIATION_ENABLED_EXTENSIONS = {
     ExtensionTypes.TXT.value,
     ExtensionTypes.MD.value,
     ExtensionTypes.MDX.value,
-    ExtensionTypes.HTML.value
+    ExtensionTypes.HTML.value,
+    ExtensionTypes.JSON.value,
 }
 
 

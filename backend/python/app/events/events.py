@@ -750,6 +750,17 @@ class EventProcessor:
                 ):
                     yield event
 
+            elif extension == ExtensionTypes.JSON.value or mime_type == MimeTypes.JSON.value:
+                async for event in self.processor.process_json_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    json_binary=file_content,
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+
             elif extension == ExtensionTypes.MDX.value or mime_type == MimeTypes.MDX.value:
                 async for event in self.processor.process_mdx_document(
                     recordName=record_name,
