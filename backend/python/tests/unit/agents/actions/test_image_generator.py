@@ -813,7 +813,7 @@ class TestGenerateImageInputSchema:
 def _load_is_internal_tool():
     """Load ``_is_internal_tool`` without importing the full tool_system chain.
 
-    The production module pulls in etcd3, fitz, bs4, googleapiclient, etc. —
+    The production module pulls in etcd3, bs4, googleapiclient, etc. —
     none of which are needed for this pure-function test. We parse the source
     with ast, extract the function, and exec it in a minimal namespace so the
     test remains hermetic and never drifts from production.

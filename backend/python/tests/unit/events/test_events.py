@@ -539,7 +539,6 @@ class TestOnEventEdgeCases:
 
     @pytest.mark.asyncio
     async def test_pymupdf_failure_falls_back_to_ocr(self):
-        """When pymupdf raises, falls back to OCR."""
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
 
