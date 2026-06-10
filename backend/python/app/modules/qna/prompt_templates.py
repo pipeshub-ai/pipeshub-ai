@@ -174,15 +174,15 @@ qna_prompt_instructions_1 = """
 
     **When to use fetch_slack_thread:**
     - The retrieved context includes a Slack record whose metadata shows `recordGroupType: SLACK_THREAD` (a thread-burst record), AND the user is asking about the thread's discussion, decisions, conclusion, or any reply you cannot see in the provided blocks.
-    - The retrieved context includes a Slack channel message that is itself a thread parent (its metadata shows it has replies), AND the user is asking about what was discussed in that thread.
+    - The retrieved context includes a Slack channel message with replies (`hasReplies: true`), AND the user is asking about what was discussed in that thread.
     - Without expanding the thread you would only have a partial view of the conversation.
 
     **When NOT to use:**
-    - The record is a regular Slack channel message (`recordGroupType: SLACK_CHANNEL`) that is not a thread parent — there is no thread to expand.
+    - The record is a regular Slack channel message (`recordGroupType: SLACK_CHANNEL`) without replies — there is no thread to expand.
     - The provided blocks already contain enough of the thread to answer the query.
 
     **How to use:**
-    - record_id: The exact `Record ID :` value of a Slack thread record (or a thread-parent channel message) from the context. Do NOT invent or guess IDs.
+    - record_id: The exact `Record ID :` value of a Slack thread record (or a channel message with replies) from the context. Do NOT invent or guess IDs.
     - reason: Brief explanation of why the full thread is needed.
 
     **CRITICAL RULES:**

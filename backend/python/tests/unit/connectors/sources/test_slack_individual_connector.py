@@ -265,23 +265,17 @@ class TestMentionsAndUrls:
 
 
 class TestReactionsAndRecordChanged:
-    def test_reactions_changed(self):
-        from app.connectors.sources.slack.individual.connector import SlackIndividualConnector as S
-
-        a = [{"name": "eyes", "count": 1, "users": ["U1"]}]
-        b = [{"name": "eyes", "count": 2, "users": ["U1"]}]
-        assert S._reactions_changed(a, b) is True
-        assert S._reactions_changed(a, a) is False
-
     def test_record_changed(self):
         c = _make_connector()
         ex = MagicMock()
         ex.is_edited = False
-        ex.content = "old"
-        ex.reactions = []
+        ex.source_updated_at = None
+        ex.source_created_at = None
         assert c._record_changed({"edited": {}, "text": "x"}, ex) is True
         ex.is_edited = True
-        assert c._record_changed({"edited": {}, "text": "old"}, ex) is False
+        ex.source_updated_at = 1000
+        assert c._record_changed({"edited": {"ts": "1.0"}, "text": "old"}, ex) is False
+        assert c._record_changed({"edited": {"ts": "2.0"}, "text": "new"}, ex) is True
 
 
 class TestDetectBursts:
@@ -848,6 +842,14 @@ class TestBuildBlocks:
         chs = [ChildRecord(child_type=ChildType.RECORD, child_id="f1", child_name="f.bin")]
         b3 = c._build_message_block(msg, 0, 0, ctx, children_records=chs)
         assert "Attachments" in b3.data
+
+        b4 = c._build_message_block(
+            {"ts": "102.0", "user": "U1", "text": "thread", "reply_count": 2},
+            0,
+            0,
+            ctx,
+        )
+        assert "Reply Count: 2" in b4.data
 
     def test_build_containers(self):
         c = _make_connector()
@@ -1575,7 +1577,6 @@ class TestBuildMessageBlocksForStreaming:
             await c._build_message_blocks_for_streaming(mr)
 
         mr.external_record_id = "burst_C1_abc"
-        mr.slack_subtype = "burst"
         mr.start_ts = None
         mr.end_ts = "2"
         mr.external_record_group_id = "C1"
@@ -1615,10 +1616,9 @@ class TestBuildMessageBlocksForStreaming:
         mr2 = MagicMock(spec=MessageRecord)
         mr2.id = "id"
         mr2.external_record_id = "thread_burst_x"
-        mr2.slack_subtype = "thread_burst"
         mr2.start_ts = "1"
         mr2.end_ts = "2"
-        mr2.thread_ts = "0.5"
+        mr2.thread_id = "0.5"
         mr2.external_record_group_id = "C1"
         ds2 = MagicMock()
         ds2.conversations_replies = AsyncMock(
@@ -1635,7 +1635,6 @@ class TestBuildMessageBlocksForStreaming:
         mr3.id = "id"
         mr3.external_record_id = "10.0"
         mr3.external_record_group_id = "thread_C1_9.0"
-        mr3.slack_subtype = None
         mr3.thread_id = None
         ds3 = MagicMock()
         ds3.conversations_history = AsyncMock(
@@ -1756,13 +1755,11 @@ class TestReindexAndCheckUpdated:
         mr.external_record_id = None
         assert await c._check_updated(mr) is None
 
-        mr.external_record_id = "1.0"
+        mr.external_record_id = "burst_C1_abc"
         mr.external_record_group_id = "C1"
-        mr.slack_subtype = "burst"
         assert await c._check_updated_message(mr) is None
 
-        mr.slack_subtype = None
-        mr.external_record_id = "burst_x"
+        mr.external_record_id = "thread_burst_x"
         assert await c._check_updated_message(mr) is None
 
         mr.external_record_id = "10.0"

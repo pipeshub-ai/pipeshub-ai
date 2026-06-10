@@ -3429,32 +3429,20 @@ class TestMessageRecordDefaults:
     def test_content_defaults_to_none(self):
         assert _make_msg().content is None
 
-    def test_is_thread_parent_default_false(self):
-        assert _make_msg().is_thread_parent is False
+    def test_has_replies_default_false(self):
+        assert _make_msg().has_replies is False
 
-    def test_reply_count_default_zero(self):
-        assert _make_msg().reply_count == 0
-
-    def test_reactions_default_empty(self):
-        assert _make_msg().reactions == []
+    def test_is_reply_default_false(self):
+        assert _make_msg().is_reply is False
 
     def test_mentioned_user_ids_default_empty(self):
         assert _make_msg().mentioned_user_ids == []
 
-    def test_extracted_urls_default_empty(self):
-        assert _make_msg().extracted_urls == []
-
     def test_is_edited_default_false(self):
         assert _make_msg().is_edited is False
 
-    def test_slack_blocks_default_empty(self):
-        assert _make_msg().slack_blocks == []
-
     def test_involved_user_source_ids_default_empty(self):
         assert _make_msg().involved_user_source_ids == []
-
-    def test_attachments_metadata_default_empty(self):
-        assert _make_msg().attachments_metadata == []
 
 
 class TestMessageRecordToArangoRecord:
@@ -3463,53 +3451,24 @@ class TestMessageRecordToArangoRecord:
         doc = msg.to_arango_record()
         assert doc["_key"] == msg.id
         assert doc["orgId"] == "org-1"
-        assert doc["content"] == "Hello"
+        assert "content" not in doc
         assert doc["authorId"] == "U123"
 
-    def test_reactions_serialised_as_json_string(self):
-        msg = _make_msg(reactions=[{"name": "thumbsup", "count": 1}])
-        doc = msg.to_arango_record()
-        assert isinstance(doc["reactions"], str)
-        assert _json.loads(doc["reactions"])[0]["name"] == "thumbsup"
-
-    def test_no_reactions_returns_none(self):
-        assert _make_msg(reactions=[]).to_arango_record()["reactions"] is None
-
-    def test_attachments_serialised(self):
-        msg = _make_msg(attachments=[{"id": "F123"}])
-        doc = msg.to_arango_record()
-        assert isinstance(doc["attachments"], str)
-        assert _json.loads(doc["attachments"])[0]["id"] == "F123"
-
-    def test_slack_blocks_empty_returns_none(self):
-        assert _make_msg(slack_blocks=[]).to_arango_record()["slackBlocks"] is None
-
-    def test_slack_blocks_serialised(self):
-        msg = _make_msg(slack_blocks=[{"type": "section"}])
-        doc = msg.to_arango_record()
-        assert isinstance(doc["slackBlocks"], str)
-
-    def test_is_edited_and_reply_count(self):
-        msg = _make_msg(is_edited=True, edited_timestamp=1620000001000, reply_count=5)
+    def test_is_edited(self):
+        msg = _make_msg(is_edited=True)
         doc = msg.to_arango_record()
         assert doc["isEdited"] is True
-        assert doc["editedTimestamp"] == 1620000001000
-        assert doc["replyCount"] == 5
 
-    def test_attachments_metadata_serialised(self):
-        msg = _make_msg(attachments_metadata=[{"record_id": "r1", "name": "file.pdf"}])
+    def test_is_reply(self):
+        msg = _make_msg(is_reply=True)
         doc = msg.to_arango_record()
-        assert isinstance(doc["attachmentsMetadata"], str)
-        assert _json.loads(doc["attachmentsMetadata"])[0]["record_id"] == "r1"
+        assert doc["isReply"] is True
 
     def test_to_arango_record_matches_messages_schema(self):
         """All persisted message fields must be declared in message_record_schema."""
         schema = get_node_schema(CollectionNames.MESSAGES.value)
         msg = _make_msg(
-            record_group_type=RecordGroupType.SLACK_CHANNEL,
-            author_name="Alice",
             author_email="alice@example.com",
-            attachments_metadata=[{"record_id": "r1", "name": "file.pdf"}],
             start_ts="1620000000.000100",
             end_ts="1620000000.000200",
         )
@@ -3541,33 +3500,15 @@ class TestMessageRecordFromArangoRecord:
         return base
 
     def _msg_doc(self, **overrides):
-        base = {"content": "Hello world", "threadId": None, "isThreadParent": False, "replyCount": 0, "authorId": "U123"}
+        base = {"threadId": None, "hasReplies": False, "authorId": "U123"}
         base.update(overrides)
         return base
 
     def test_basic_round_trip(self):
         rec = MessageRecord.from_arango_record(self._msg_doc(), self._record_doc())
         assert rec.org_id == "org-1"
-        assert rec.content == "Hello world"
+        assert rec.content is None
         assert rec.author_id == "U123"
-
-    def test_reactions_parsed_from_json_string(self):
-        rec = MessageRecord.from_arango_record(
-            self._msg_doc(reactions=_json.dumps([{"name": "wave", "count": 1}])),
-            self._record_doc(),
-        )
-        assert rec.reactions[0]["name"] == "wave"
-
-    def test_reactions_none_returns_empty_list(self):
-        rec = MessageRecord.from_arango_record(self._msg_doc(reactions=None), self._record_doc())
-        assert rec.reactions == []
-
-    def test_attachments_metadata_parsed(self):
-        rec = MessageRecord.from_arango_record(
-            self._msg_doc(attachmentsMetadata=_json.dumps([{"record_id": "r1"}])),
-            self._record_doc(),
-        )
-        assert rec.attachments_metadata[0]["record_id"] == "r1"
 
     def test_start_ts_end_ts(self):
         rec = MessageRecord.from_arango_record(
@@ -3584,11 +3525,10 @@ class TestMessageRecordFromArangoRecord:
 
     def test_is_edited_propagated(self):
         rec = MessageRecord.from_arango_record(
-            self._msg_doc(isEdited=True, editedTimestamp=1620000001000),
+            self._msg_doc(isEdited=True),
             self._record_doc(),
         )
         assert rec.is_edited is True
-        assert rec.edited_timestamp == 1620000001000
 
 
 class TestMessageRecordToKafkaRecord:
@@ -3622,17 +3562,6 @@ class TestMessageRecordToLlmContext:
     def test_includes_base_context(self):
         ctx = _make_msg(content="test content").to_llm_context()
         assert isinstance(ctx, str) and len(ctx) > 0
-
-    def test_author_name_present(self):
-        assert "Alice" in _make_msg(author_name="Alice").to_llm_context()
-
-    def test_reactions_shown(self):
-        assert "thumbsup" in _make_msg(reactions=[{"name": "thumbsup", "count": 2}]).to_llm_context()
-
-    def test_attachments_metadata_shown(self):
-        assert "report.pdf" in _make_msg(
-            attachments_metadata=[{"record_id": "r1", "name": "report.pdf"}]
-        ).to_llm_context()
 
     def test_start_and_end_message_ids_in_iso(self):
         start_ts = "1700000000.000000"

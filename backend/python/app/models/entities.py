@@ -638,62 +638,30 @@ class MessageRecord(Record):
     Generic message record for all messaging platforms (Slack, Teams, Discord, WhatsApp, etc.)
 
     Generic fields that apply across platforms:
-    - content: Message text content
     - thread_id: Thread/conversation identifier (platform-agnostic)
-    - is_thread_parent: True if this is the thread parent message
-    - reply_count: Number of replies in thread
-    - reply_user_ids: list of user IDs who replied
-    - latest_reply_timestamp: Timestamp of latest reply
-    - reactions: list of reaction objects (platform-agnostic format)
+    - has_replies: True if this message is a thread parent with one or more replies
+    - is_reply: True if this message record belongs to a thread (reply context)
     - mentioned_user_ids: list of mentioned user IDs
     - mentioned_group_ids: list of mentioned channel/group/room IDs (platform-agnostic)
-    - extracted_urls: list of URLs extracted from message
     - is_edited: True if message was edited
-    - edited_timestamp: Timestamp when edited
-    - original_text: Original text before edit (if edited)
     - author_id: User ID who sent the message (platform-agnostic)
-    - author_name: Name of the user who sent the message
     - author_email: Email of the user who sent the message
-    - bot_id: Bot ID if message is from a bot
-    - app_id: App ID if message is from an app
-    - attachments: Message attachments (platform-agnostic format)
-    - rich_content: Structured content (blocks, cards, etc.) in platform-agnostic format
-    - connector_metadata: Platform-specific metadata stored as JSON
     """
-    content: str | None = None
+    content: str | None = None  # In-memory only during sync; not persisted (streamed as blocks)
     thread_id: str | None = None
-    is_thread_parent: bool = False
-    reply_count: int = 0
-    reply_user_ids: list[str] = Field(default_factory=list)
-    latest_reply_timestamp: int | None = None
-    reactions: list[dict[str, Any]] = Field(default_factory=list)
+    has_replies: bool = False
+    is_reply: bool = False
     mentioned_user_ids: list[str] = Field(default_factory=list)
     mentioned_group_ids: list[str] = Field(default_factory=list)
-    extracted_urls: list[str] = Field(default_factory=list)
     is_edited: bool = False
-    edited_timestamp: int | None = None
-    original_text: str | None = None
     author_id: str | None = None
-    bot_id: str | None = None
-    app_id: str | None = None
-    attachments: list[dict[str, Any]] = Field(default_factory=list)
-    rich_content: dict[str, Any] | None = None
-    connector_metadata: dict[str, Any] | None = None
-    author_name: str | None = None
     author_email: str | None = None
-    # Slack-specific optional fields (stored flat, not nested)
-    thread_ts: str | None = None  # Slack thread timestamp
-    slack_subtype: str | None = None  # Slack message subtype
-    slack_user_id: str | None = None  # Slack user ID (in addition to author_id)
-    slack_blocks: list[dict[str, Any]] = Field(default_factory=list)  # Slack blocks
     # Burst tracking timestamps (string Slack ts values, e.g. "1620000000.000100")
     start_ts: str | None = None  # ts of the first message in the burst / thread
     end_ts: str | None = None    # ts of the last message in the burst / thread
     # Source user IDs of all users who authored messages in a burst/single record
     # Used by the processor to create INVOLVED_IN entity relations
     involved_user_source_ids: list[str] = Field(default_factory=list)
-    # Attachment metadata for child FileRecords (record_id + name)
-    attachments_metadata: list[dict[str, str]] = Field(default_factory=list)
 
     def to_llm_context(self, frontend_url: str | None = None) -> str:
         """Returns formatted message-specific metadata for LLM context"""
@@ -701,8 +669,6 @@ class MessageRecord(Record):
         lines = [base]
 
         specific_lines = []
-        if self.author_name:
-            specific_lines.append(f"* Author Name: {self.author_name}")
         if self.author_email:
             specific_lines.append(f"* Author Email: {self.author_email}")
         if self.author_id:
@@ -717,27 +683,11 @@ class MessageRecord(Record):
             dt = datetime.fromtimestamp(float(self.end_ts), tz=timezone.utc)
             end_iso = dt.isoformat().replace("+00:00", "Z")
             specific_lines.append(f"* End Message ID: {end_iso}")
-        specific_lines.append(f"* Is Thread Parent: {self.is_thread_parent}")
-        if self.reply_count:
-            specific_lines.append(f"* Reply Count: {self.reply_count}")
+        specific_lines.append(f"* Has Replies: {self.has_replies}")
+        if self.is_reply:
+            specific_lines.append("* Is Reply: True")
         if self.is_edited:
             specific_lines.append(f"* Edited: True")
-        if self.reactions:
-            reaction_strs = [f"{r.get('name', '?')}({r.get('count', 1)})" for r in self.reactions[:10]]
-            specific_lines.append(f"* Reactions: {', '.join(reaction_strs)}")
-        if self.attachments_metadata:
-            att_lines = [
-                f"  - {a.get('name', 'unknown')} (RecordId: {a.get('record_id', '?')})"
-                for a in self.attachments_metadata
-            ]
-            specific_lines.append("* Attachments:\n" + "\n".join(att_lines))
-        if self.record_group_type:
-            rg_type_str = (
-                self.record_group_type.value
-                if hasattr(self.record_group_type, "value")
-                else str(self.record_group_type)
-            )
-            specific_lines.append(f"* Record Group Type: {rg_type_str}")
         if specific_lines:
             lines.append("Message Details:")
             lines.extend(specific_lines)
@@ -747,37 +697,15 @@ class MessageRecord(Record):
         return {
             "_key": self.id,
             "orgId": self.org_id,
-            "content": self.content,
             "threadId": self.thread_id,
-            "isThreadParent": self.is_thread_parent,
-            "replyCount": self.reply_count,
-            "replyUserIds": self.reply_user_ids,
-            "latestReplyTimestamp": self.latest_reply_timestamp,
-            "reactions": json.dumps(self.reactions) if self.reactions else None,  # JSON string for Neo4j compatibility
-            # "mentionedUserIds": self.mentioned_user_ids,
-            # "mentionedGroupIds": self.mentioned_group_ids,
-            "extractedUrls": self.extracted_urls,
+            "hasReplies": self.has_replies,
+            "isReply": self.is_reply,
             "isEdited": self.is_edited,
-            "editedTimestamp": self.edited_timestamp,
-            "originalText": self.original_text,
             "authorId": self.author_id,
-            "botId": self.bot_id,
-            "appId": self.app_id,
-            "attachments": json.dumps(self.attachments) if self.attachments else None,  # JSON string for Neo4j compatibility
-            "richContent": json.dumps(self.rich_content) if self.rich_content else None,  # JSON string for Neo4j compatibility
-            "connectorMetadata": json.dumps(self.connector_metadata) if self.connector_metadata else None,  # JSON string for Neo4j compatibility
-            # Slack-specific fields (flat, not nested)
-            "authorName": self.author_name,
             "authorEmail": self.author_email,
-            "threadTs": self.thread_ts,
-            "slackSubtype": self.slack_subtype,
-            "slackUserId": self.slack_user_id,
-            "slackBlocks": json.dumps(self.slack_blocks) if self.slack_blocks else None,  # JSON string for Neo4j compatibility
             # Burst / thread range timestamps
             "startTs": self.start_ts,
             "endTs": self.end_ts,
-            "attachmentsMetadata": json.dumps(self.attachments_metadata) if self.attachments_metadata else None,
-            "recordGroupType": self.record_group_type.value if self.record_group_type else None,
             # "involvedUserSourceIds": self.involved_user_source_ids,
         }
 
@@ -799,10 +727,8 @@ class MessageRecord(Record):
             org_id=record_doc["orgId"],
             record_name=record_doc["recordName"],
             record_type=RecordType(record_doc["recordType"]),
-            record_group_type=(
-                message_doc.get("recordGroupType")
-                or record_doc.get("recordGroupType")
-            ),
+            # Legacy message docs may still carry recordGroupType; base records do not.
+            record_group_type=message_doc.get("recordGroupType"),
             external_record_id=record_doc["externalRecordId"],
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
@@ -821,36 +747,17 @@ class MessageRecord(Record):
             virtual_record_id=record_doc.get("virtualRecordId"),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId", None),
-            content=message_doc.get("content"),
             thread_id=message_doc.get("threadId"),
-            is_thread_parent=message_doc.get("isThreadParent", False),
-            reply_count=message_doc.get("replyCount", 0),
-            reply_user_ids=message_doc.get("replyUserIds", []),
-            latest_reply_timestamp=message_doc.get("latestReplyTimestamp"),
-            reactions=_parse_json_field(message_doc.get("reactions"), []),  # Parse JSON string to list
-            mentioned_user_ids=message_doc.get("mentionedUserIds", []),
-            mentioned_group_ids=message_doc.get("mentionedGroupIds", []),
-            extracted_urls=message_doc.get("extractedUrls", []),
+            has_replies=message_doc.get(
+                "hasReplies", message_doc.get("isThreadParent", False)
+            ),
+            is_reply=message_doc.get("isReply", False),
             is_edited=message_doc.get("isEdited", False),
-            edited_timestamp=message_doc.get("editedTimestamp"),
-            original_text=message_doc.get("originalText"),
             author_id=message_doc.get("authorId"),
-            bot_id=message_doc.get("botId"),
-            app_id=message_doc.get("appId"),
-            attachments=_parse_json_field(message_doc.get("attachments"), []),  # Parse JSON string to list
-            rich_content=_parse_json_field(message_doc.get("richContent"), None),  # Parse JSON string to dict
-            connector_metadata=_parse_json_field(message_doc.get("connectorMetadata"), None),  # Parse JSON string to dict
-            # Slack-specific fields (flat, not nested)
-            author_name=message_doc.get("authorName"),
             author_email=message_doc.get("authorEmail"),
-            thread_ts=message_doc.get("threadTs"),
-            slack_subtype=message_doc.get("slackSubtype"),
-            slack_user_id=message_doc.get("slackUserId"),
-            slack_blocks=_parse_json_field(message_doc.get("slackBlocks"), []),  # Parse JSON string to list
             # Burst / thread range timestamps
             start_ts=message_doc.get("startTs"),
             end_ts=message_doc.get("endTs"),
-            attachments_metadata=_parse_json_field(message_doc.get("attachmentsMetadata"), []),
             involved_user_source_ids=message_doc.get("involvedUserSourceIds", []),
         )
 

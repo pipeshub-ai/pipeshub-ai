@@ -409,22 +409,12 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
             return DealRecord(**base_args, **specific_args)
 
         elif record_type == RecordType.MESSAGE.value and graph_doc:
-            raw_att_meta = graph_doc.get("attachmentsMetadata", [])
-            if isinstance(raw_att_meta, str):
-                import json as _json
-                try:
-                    raw_att_meta = _json.loads(raw_att_meta)
-                except (ValueError, TypeError):
-                    raw_att_meta = []
-
             specific_args = {
                 "record_type": RecordType.MESSAGE,
-                "content": graph_doc.get("content"),
                 "thread_id": graph_doc.get("threadId"),
-                "is_thread_parent": graph_doc.get("isThreadParent", False),
-                "author_name": graph_doc.get("authorName"),
+                "has_replies": graph_doc.get("hasReplies"),
+                "is_reply": graph_doc.get("isReply", False),
                 "author_id": graph_doc.get("authorId"),
-                "attachments_metadata": raw_att_meta or [],
                 "record_group_type": graph_doc.get("recordGroupType"),
             }
             return MessageRecord(**base_args, **specific_args)

@@ -1421,6 +1421,17 @@ class SlackConnector(BaseConnector):
     # 5b.  Block-building helpers
     # =========================================================================
 
+    @staticmethod
+    def _format_reactions_line(reactions: list[dict[str, Any]]) -> str | None:
+        """Format Slack message reactions for inclusion in block text."""
+        if not reactions:
+            return None
+        parts = [
+            f":{r.get('name', '?')}: ({r.get('count', 1)})"
+            for r in reactions[:20]
+        ]
+        return f"Reactions: {', '.join(parts)}"
+
     def _build_message_block(
         self,
         msg: dict[str, Any],
@@ -1493,6 +1504,12 @@ class SlackConnector(BaseConnector):
         urls = self._extract_urls(msg.get("text", ""))
         if urls:
             block_data = f"{block_data}\n\nLinks: {', '.join(urls)}"
+        reaction_line = self._format_reactions_line(msg.get("reactions") or [])
+        if reaction_line:
+            block_data = f"{block_data}\n\n{reaction_line}"
+        reply_count = msg.get("reply_count")
+        if isinstance(reply_count, int) and reply_count > 0:
+            block_data = f"{block_data}\n\nReply Count: {reply_count}"
 
         return Block(
             index=block_index,
@@ -1713,14 +1730,10 @@ class SlackConnector(BaseConnector):
 
         mentioned_user_ids:  set[str] = set()
         mentioned_group_ids: set[str] = set()
-        extracted_urls:      set[str] = set()
-        all_reactions: list[dict[str, Any]] = []
         for msg in burst.messages:
             t = msg.get("text", "")
             mentioned_user_ids.update(self._extract_user_mentions(t))
             mentioned_group_ids.update(self._extract_channel_mentions(t))
-            extracted_urls.update(self._extract_urls(t))
-            all_reactions.extend(msg.get("reactions", []))
 
         src_ts_ms  = int(float(first_ts) * 1000)
         last_ts_ms = int(float(last_ts) * 1000) if last_ts else src_ts_ms
@@ -1748,22 +1761,12 @@ class SlackConnector(BaseConnector):
             m.get("user", "") for m in burst.messages if m.get("user")
         ))
 
-        attachments_meta = []
-        if file_child_records:
-            for crs in file_child_records.values():
-                for cr in crs:
-                    attachments_meta.append({
-                        "record_id": cr.child_id,
-                        "name": cr.child_name,
-                    })
-
         channel_name = ctx.channel_id_to_name.get(ctx.channel_id, ctx.channel_id)
         try:
             return MessageRecord(
                 org_id=self.data_entities_processor.org_id,
                 record_name=f"{channel_name}_{self._slack_ts_to_utc_label(first_ts)}",
                 record_type=RecordType.MESSAGE,
-                record_group_type=RecordGroupType.SLACK_THREAD,
                 external_record_id=burst_id,
                 external_record_group_id=f"thread_{ctx.channel_id}_{thread_ts}",
                 record_group_id=thread_rg_id,
@@ -1777,22 +1780,16 @@ class SlackConnector(BaseConnector):
                 source_updated_at=last_ts_ms,
                 content=aggregated_text,
                 thread_id=thread_ts,
-                is_thread_parent=False,
-                reply_count=len(burst.messages),
+                has_replies=False,
+                is_reply=True,
                 mentioned_user_ids=list(mentioned_user_ids),
                 mentioned_group_ids=list(mentioned_group_ids),
-                extracted_urls=list(extracted_urls),
-                reactions=all_reactions,
                 author_id=burst_authors[0] if burst_authors else "",
-                slack_user_id=burst_authors[0] if burst_authors else "",
-                slack_subtype="thread_burst",
-                thread_ts=thread_ts,
                 start_ts=first_ts,
                 end_ts=last_ts,
                 inherit_permissions=True,
                 preview_renderable=False,
                 block_containers=bc,
-                attachments_metadata=attachments_meta,
                 involved_user_source_ids=burst_authors,
             )
         except Exception as exc:
@@ -2099,25 +2096,15 @@ class SlackConnector(BaseConnector):
         # ── Aggregate burst-level metadata ────────────────────────────────────
         mentioned_user_ids:  set[str] = set()
         mentioned_group_ids: set[str] = set()
-        extracted_urls:      set[str] = set()
-        all_reactions: list[dict[str, Any]] = []
         reply_count = 0
-        latest_reply_timestamp: Optional[int] = None
 
         for msg in burst.messages:
             t = msg.get("text", "")
             mentioned_user_ids.update(self._extract_user_mentions(t))
             mentioned_group_ids.update(self._extract_channel_mentions(t))
-            extracted_urls.update(self._extract_urls(t))
-            all_reactions.extend(msg.get("reactions", []))
             rc = msg.get("reply_count", 0)
             if rc > reply_count:
                 reply_count = rc
-            lr = msg.get("latest_reply")
-            if lr:
-                lr_ms = int(float(lr) * 1000)
-                if not latest_reply_timestamp or lr_ms > latest_reply_timestamp:
-                    latest_reply_timestamp = lr_ms
 
         # ── Build file FileRecords first so we can attach ChildRecords ────────
         file_children_by_ts: dict[str, list[ChildRecord]] = {}
@@ -2161,18 +2148,12 @@ class SlackConnector(BaseConnector):
             m.get("user", "") for m in burst.messages if m.get("user")
         ))
 
-        attachments_meta = [
-            {"record_id": fr.id, "name": fr.record_name}
-            for fr in file_recs
-        ]
-
         channel_name = ctx.channel_id_to_name.get(ctx.channel_id, ctx.channel_id)
         try:
             burst_rec = MessageRecord(
                 org_id=self.data_entities_processor.org_id,
                 record_name=f"{channel_name}_{self._slack_ts_to_utc_label(first_ts)}",
                 record_type=RecordType.MESSAGE,
-                record_group_type=RecordGroupType.SLACK_CHANNEL,
                 external_record_id=burst_id,
                 external_record_group_id=ctx.channel_id,
                 record_group_id=rg_id,
@@ -2185,21 +2166,14 @@ class SlackConnector(BaseConnector):
                 source_created_at=src_ts_ms,
                 source_updated_at=last_ts_ms,
                 content=aggregated_text,
-                reply_count=reply_count,
-                latest_reply_timestamp=latest_reply_timestamp,
                 mentioned_user_ids=list(mentioned_user_ids),
                 mentioned_group_ids=list(mentioned_group_ids),
-                extracted_urls=list(extracted_urls),
-                reactions=all_reactions,
                 author_id=burst_authors[0] if burst_authors else "",
-                slack_user_id=burst_authors[0] if burst_authors else "",
-                slack_subtype="burst",
                 start_ts=first_ts,
                 end_ts=last_ts,
                 inherit_permissions=True,
                 preview_renderable=False,
                 block_containers=bc,
-                attachments_metadata=attachments_meta,
                 involved_user_source_ids=burst_authors,
             )
         except Exception as exc:
@@ -2317,7 +2291,10 @@ class SlackConnector(BaseConnector):
                 upd_ts_ms = int(float(raw_ets) * 1000)
 
         thread_ts = msg.get("thread_ts")
-        is_thread_parent = thread_ts == ts if thread_ts else False
+        has_replies = (
+            (thread_ts == ts if thread_ts else False)
+            and msg.get("reply_count", 0) > 0
+        )
 
         try:
             url = self._message_url(ctx.channel_id, ts)
@@ -2327,18 +2304,12 @@ class SlackConnector(BaseConnector):
         mentioned_user_ids  = self._extract_user_mentions(msg.get("text", ""))
         mentioned_group_ids = self._extract_channel_mentions(msg.get("text", ""))
 
-        attachments_meta = [
-            {"record_id": fr.id, "name": fr.record_name}
-            for fr in file_recs
-        ]
-
         channel_name = ctx.channel_id_to_name.get(ctx.channel_id, ctx.channel_id)
         try:
             rec = MessageRecord(
                 org_id=self.data_entities_processor.org_id,
                 record_name=f"{channel_name}_{self._slack_ts_to_utc_label(ts)}",
                 record_type=RecordType.MESSAGE,
-                record_group_type=RecordGroupType.SLACK_CHANNEL,
                 external_record_id=ts,
                 external_record_group_id=ctx.channel_id,
                 record_group_id=rg_id,
@@ -2352,36 +2323,17 @@ class SlackConnector(BaseConnector):
                 source_updated_at=upd_ts_ms,
                 content=text,
                 thread_id=thread_ts,
-                is_thread_parent=is_thread_parent,
-                reply_count=msg.get("reply_count", 0),
-                reply_user_ids=msg.get("reply_users", []),
-                latest_reply_timestamp=(
-                    int(float(msg.get("latest_reply")) * 1000)
-                    if msg.get("latest_reply") else None
-                ),
-                reactions=msg.get("reactions", []),
+                has_replies=has_replies,
                 mentioned_user_ids=mentioned_user_ids,
                 mentioned_group_ids=mentioned_group_ids,
-                extracted_urls=self._extract_urls(msg.get("text", "")),
                 is_edited=is_edited,
-                edited_timestamp=upd_ts_ms if is_edited else None,
                 author_id=msg.get("user", ""),
-                author_name=ctx.user_id_to_name.get(msg.get("user", "")),
                 author_email=ctx.user_id_to_email.get(msg.get("user", "")),
-                bot_id=msg.get("bot_id"),
-                app_id=msg.get("app_id"),
-                attachments=msg.get("attachments", []),
-                rich_content={"blocks": msg["blocks"]} if msg.get("blocks") else None,
-                thread_ts=thread_ts,
-                slack_subtype=msg.get("subtype"),
-                slack_user_id=msg.get("user", ""),
-                slack_blocks=msg.get("blocks", []),
                 start_ts=ts,
                 end_ts=ts,
                 inherit_permissions=True,
                 preview_renderable=False,
                 block_containers=bc,
-                attachments_metadata=attachments_meta,
                 involved_user_source_ids=[msg.get("user", "")] if msg.get("user") else [],
             )
         except Exception as exc:
@@ -2410,7 +2362,7 @@ class SlackConnector(BaseConnector):
                 recs.append((lr, []))
 
         # ── Collect thread parent for deferred processing ──────────────────
-        if is_thread_parent and msg.get("reply_count", 0) > 0:
+        if has_replies:
             deferred_threads.append(DeferredThread(msg=msg, ctx=ctx, rg_id=rg_id))
 
         return recs, deferred_threads
@@ -2656,29 +2608,17 @@ class SlackConnector(BaseConnector):
         src_ts     = int(float(ts) * 1000)
         upd_ts     = src_ts
         is_edited  = "edited" in msg
-        edited_ts: Optional[int] = None
-        original_text: Optional[str] = None
 
         if is_edited:
             raw_ets = msg.get("edited", {}).get("ts")
             if raw_ets:
-                edited_ts = int(float(raw_ets) * 1000)
-                upd_ts    = edited_ts
-            # Get original text if available
-            original_text = msg.get("message", {}).get("text", "")
+                upd_ts = int(float(raw_ets) * 1000)
 
         # Replace mentions in content
         content_with_mentions = self._replace_mentions_in_text(
             text, ctx.user_id_to_name, ctx.channel_id_to_name
         )
 
-        # Replace mentions in original_text if edited
-        if original_text:
-            original_text = self._replace_mentions_in_text(
-                original_text, ctx.user_id_to_name, ctx.channel_id_to_name
-            )
-
-        latest_reply_ts = msg.get("latest_reply")
         rg_id           = ctx.channel_groups_map.get(ctx.channel_id)
 
         channel_name = ctx.channel_id_to_name.get(ctx.channel_id, ctx.channel_id)
@@ -2705,29 +2645,14 @@ class SlackConnector(BaseConnector):
                 # Content (with mentions replaced)
                 content=content_with_mentions,
                 thread_id=thread_ts,
-                is_thread_parent=(thread_ts == ts) if thread_ts else False,
-                reply_count=msg.get("reply_count", 0),
-                reply_user_ids=msg.get("reply_users", []),
-                latest_reply_timestamp=(
-                    int(float(latest_reply_ts) * 1000) if latest_reply_ts else None
+                has_replies=(
+                    (thread_ts == ts if thread_ts else False)
+                    and msg.get("reply_count", 0) > 0
                 ),
-                reactions=msg.get("reactions", []),
                 mentioned_user_ids=self._extract_user_mentions(text),  # Keep original IDs for edges
                 mentioned_group_ids=self._extract_channel_mentions(text),  # Keep original IDs for edges
-                extracted_urls=self._extract_urls(text),
                 is_edited=is_edited,
-                edited_timestamp=edited_ts,
-                original_text=original_text,
                 author_id=user_id,
-                bot_id=msg.get("bot_id"),
-                app_id=msg.get("app_id"),
-                attachments=msg.get("attachments", []),
-                rich_content={"blocks": msg["blocks"]} if msg.get("blocks") else None,
-                # Slack-specific
-                thread_ts=thread_ts,
-                slack_subtype=msg.get("subtype"),
-                slack_user_id=user_id,
-                slack_blocks=msg.get("blocks", []),
                 # Hierarchy
                 inherit_permissions=True,
                 preview_renderable=False,
@@ -3363,7 +3288,6 @@ class SlackConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 record_name=f"{channel_name}_{self._slack_ts_to_utc_label(ts)}",
                 record_type=RecordType.MESSAGE,
-                record_group_type=RecordGroupType.SLACK_CHANNEL,
                 external_record_id=ts,
                 external_record_group_id=channel_id,
                 record_group_id=rg_id,
@@ -3378,11 +3302,8 @@ class SlackConnector(BaseConnector):
                 source_updated_at=upd_ts_ms,
                 content=text,
                 is_edited=is_edited,
-                edited_timestamp=upd_ts_ms if is_edited else None,
                 start_ts=ts,
                 end_ts=ts,
-                slack_subtype=md.get("subtype"),
-                slack_user_id=md.get("user", ""),
                 author_id=md.get("user", ""),
                 inherit_permissions=True,
                 preview_renderable=False,
@@ -3556,24 +3477,18 @@ class SlackConnector(BaseConnector):
         # Edit newly detected
         if "edited" in md and not getattr(existing, "is_edited", False):
             return True
-        # Text changed after edit
+        # Re-edit detected via Slack edited timestamp vs stored source_updated_at
         if "edited" in md:
-            if md.get("text", "") != getattr(existing, "content", ""):
-                return True
-        # Reactions changed
-        return self._reactions_changed(
-            md.get("reactions", []),
-            getattr(existing, "reactions", []) or [],
-        )
-
-    @staticmethod
-    def _reactions_changed(
-        current: list[dict], existing: list[dict]
-    ) -> bool:
-        def _key(r: dict) -> tuple:
-            return (r.get("name", ""), r.get("count", 0),
-                    tuple(sorted(r.get("users", []))))
-        return {_key(r) for r in current} != {_key(r) for r in existing}
+            raw_ets = md.get("edited", {}).get("ts")
+            if raw_ets:
+                edited_ms = int(float(raw_ets) * 1000)
+                existing_ts = (
+                    getattr(existing, "source_updated_at", None)
+                    or getattr(existing, "source_created_at", None)
+                )
+                if existing_ts is None or edited_ms > existing_ts:
+                    return True
+        return False
 
     # =========================================================================
     # 8.  DB / cache helpers
@@ -3980,10 +3895,8 @@ class SlackConnector(BaseConnector):
         rg_id = getattr(record, "record_group_id", None)
         ctx   = self._make_ctx(ch, rg_id)
 
-        slack_subtype = getattr(record, "slack_subtype", None)
-
         # ── Burst record: fetch messages in the time window ───────────────
-        if slack_subtype == "burst" or ext_id.startswith("burst_"):
+        if ext_id.startswith("burst_"):
             start_ts = getattr(record, "start_ts", None)
             end_ts   = getattr(record, "end_ts", None)
             if not start_ts or not end_ts:
@@ -4034,14 +3947,14 @@ class SlackConnector(BaseConnector):
             )
 
         # ── Thread burst record: fetch thread replies in burst window ────
-        elif slack_subtype == "thread_burst" or ext_id.startswith("thread_burst_"):
+        elif ext_id.startswith("thread_burst_"):
             start_ts = getattr(record, "start_ts", None)
             end_ts   = getattr(record, "end_ts", None)
-            thread_ts_val = getattr(record, "thread_ts", None)
+            thread_ts_val = getattr(record, "thread_id", None)
             if not start_ts or not end_ts or not thread_ts_val:
                 raise HTTPException(
                     400,
-                    f"Thread burst record {ext_id} missing start_ts/end_ts/thread_ts",
+                    f"Thread burst record {ext_id} missing start_ts/end_ts/thread_id",
                 )
 
             await self.rate_limiter.acquire(Tier.T3)
@@ -4234,9 +4147,7 @@ class SlackConnector(BaseConnector):
 
         # Burst records and thread-burst records are synthetic aggregates.
         # They are updated via _check_channel_changes, not here.
-        if getattr(rec, "slack_subtype", None) in ("burst", "thread_burst"):
-            return None
-        if rec.external_record_id and rec.external_record_id.startswith(("burst_", "thread_")):
+        if rec.external_record_id and rec.external_record_id.startswith(("burst_", "thread_burst_")):
             return None
 
         await self.rate_limiter.acquire(Tier.T3)

@@ -5599,10 +5599,8 @@ def _ch_graph_doc(**overrides):
     defaults = {
         "content": "Hello world",
         "threadId": None,
-        "isThreadParent": False,
-        "authorName": "Alice",
+        "hasReplies": False,
         "authorId": "U123",
-        "attachmentsMetadata": [],
     }
     defaults.update(overrides)
     return defaults
@@ -5633,33 +5631,18 @@ class TestCreateRecordInstanceFromDictMessage:
         assert record is not None
         assert isinstance(record, MessageRecord)
 
-    def test_content_populated(self):
+    def test_content_not_hydrated_from_graph(self):
         from app.utils.chat_helpers import create_record_instance_from_dict
-        assert create_record_instance_from_dict(_ch_record_dict(), _ch_graph_doc(content="Test message")).content == "Test message"
+        record = create_record_instance_from_dict(
+            _ch_record_dict(), _ch_graph_doc(content="Test message")
+        )
+        assert record.content is None
 
-    def test_author_name_populated(self):
+    def test_author_id_populated(self):
         from app.utils.chat_helpers import create_record_instance_from_dict
-        assert create_record_instance_from_dict(_ch_record_dict(), _ch_graph_doc(authorName="Alice")).author_name == "Alice"
-
-    def test_attachments_metadata_list_passthrough(self):
-        from app.utils.chat_helpers import create_record_instance_from_dict
-        meta = [{"record_id": "r1", "name": "file.pdf"}]
-        assert create_record_instance_from_dict(_ch_record_dict(), _ch_graph_doc(attachmentsMetadata=meta)).attachments_metadata == meta
-
-    def test_attachments_metadata_json_string_parsed(self):
-        from app.utils.chat_helpers import create_record_instance_from_dict
-        meta_json = _json_ch.dumps([{"record_id": "r2", "name": "img.png"}])
-        record = create_record_instance_from_dict(_ch_record_dict(), _ch_graph_doc(attachmentsMetadata=meta_json))
-        assert record.attachments_metadata == [{"record_id": "r2", "name": "img.png"}]
-
-    def test_attachments_metadata_invalid_json_fallback(self):
-        from app.utils.chat_helpers import create_record_instance_from_dict
-        record = create_record_instance_from_dict(_ch_record_dict(), _ch_graph_doc(attachmentsMetadata="{invalid json}"))
-        assert record.attachments_metadata == []
-
-    def test_attachments_metadata_none_returns_empty_list(self):
-        from app.utils.chat_helpers import create_record_instance_from_dict
-        assert create_record_instance_from_dict(_ch_record_dict(), _ch_graph_doc(attachmentsMetadata=None)).attachments_metadata == []
+        assert create_record_instance_from_dict(
+            _ch_record_dict(), _ch_graph_doc(authorId="U999")
+        ).author_id == "U999"
 
     def test_record_type_is_message(self):
         from app.utils.chat_helpers import create_record_instance_from_dict

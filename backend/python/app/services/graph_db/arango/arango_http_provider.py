@@ -2799,7 +2799,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         Find the Slack burst MessageRecord whose startTs <= ts <= endTs.
 
-        Joins the MESSAGES collection (which holds startTs / endTs / slackSubtype)
+        Joins the MESSAGES collection (which holds startTs / endTs / isReply)
         with the RECORDS collection (which holds connectorId / externalGroupId) via
         the shared document _key.
 
@@ -2812,7 +2812,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 AND    m.startTs <= @ts
                 AND    m.endTs   >= @ts
                 AND    m.startTs != m.endTs
-                AND    m.slackSubtype == "burst"
                 LET r = DOCUMENT({CollectionNames.RECORDS.value}, m._key)
                 FILTER r != null
                 AND    r.connectorId     == @connector_id
