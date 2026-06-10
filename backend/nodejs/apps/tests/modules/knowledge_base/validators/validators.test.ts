@@ -20,7 +20,6 @@ import {
   deleteKBSchema,
   createFolderSchema,
   kbPermissionSchema,
-  getFolderSchema,
   updateFolderSchema,
   deleteFolderSchema,
   getPermissionsSchema,
@@ -341,26 +340,6 @@ describe('knowledge_base/validators/validators', () => {
     it('should reject folderName over 255 characters', () => {
       const data = { body: { folderName: 'x'.repeat(256) } }
       const result = createFolderSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-  })
-
-  describe('getFolderSchema', () => {
-    it('should accept valid params', () => {
-      const data = { params: { kbId: 'kb-1', folderId: 'f-1' } }
-      const result = getFolderSchema.safeParse(data)
-      expect(result.success).to.be.true
-    })
-
-    it('should reject empty kbId', () => {
-      const data = { params: { kbId: '', folderId: 'f-1' } }
-      const result = getFolderSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-
-    it('should reject empty folderId', () => {
-      const data = { params: { kbId: 'kb-1', folderId: '' } }
-      const result = getFolderSchema.safeParse(data)
       expect(result.success).to.be.false
     })
   })

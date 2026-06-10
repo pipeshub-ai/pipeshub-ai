@@ -23,7 +23,6 @@ import {
   updateFolder,
   deleteFolder,
   getKBContent,
-  getFolderContents,
   uploadRecordsToFolder,
   createNestedFolder,
   createRootFolder,
@@ -46,7 +45,6 @@ import {
   deleteKBSchema,
   createFolderSchema,
   kbPermissionSchema,
-  getFolderSchema,
   getPermissionsSchema,
   updatePermissionsSchema,
   deletePermissionsSchema,
@@ -478,26 +476,6 @@ export function createKnowledgeBaseRouter(
     metricsMiddleware(container),
     ValidationMiddleware.validate(createFolderSchema),
     createNestedFolder(appConfig),
-  );
-
-  // Get folder contents
-  router.get(
-    '/:kbId/folder/:folderId',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(getFolderSchema),
-    getFolderContents(appConfig),
-  );
-
-  // Get folder children - alias for folder contents
-  router.get(
-    '/:kbId/folder/:folderId/children',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(getFolderSchema),
-    getFolderContents(appConfig),
   );
 
   // update folder

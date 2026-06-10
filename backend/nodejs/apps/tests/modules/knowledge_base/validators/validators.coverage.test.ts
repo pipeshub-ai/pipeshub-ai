@@ -19,7 +19,6 @@ import {
   deleteKBSchema,
   createFolderSchema,
   kbPermissionSchema,
-  getFolderSchema,
   updateFolderSchema,
   deleteFolderSchema,
   getPermissionsSchema,

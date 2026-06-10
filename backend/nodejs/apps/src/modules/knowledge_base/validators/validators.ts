@@ -514,10 +514,6 @@ export const kbPermissionSchema = z.object({
   }),
 });
 
-export const getFolderSchema = z.object({
-  params: z.object({ kbId: z.string().min(1), folderId: z.string().min(1) }),
-});
-
 export const updateFolderSchema = z.object({
   body: z.object({
     folderName: z.string().min(1).max(255),

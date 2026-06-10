@@ -19,7 +19,6 @@ import {
   uploadRecordsToFolder,
   updateRecord,
   getKBContent,
-  getFolderContents,
   getRecordById,
   reindexRecord,
   reindexRecordGroup,
@@ -724,35 +723,6 @@ describe('Knowledge Base Controller', () => {
     it('should call next when kbId is missing', async () => {
       const handler = getKBContent(createMockAppConfig())
       const req = createMockRequest({ params: {} })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('getFolderContents', () => {
-    it('should return a handler function', () => {
-      const handler = getFolderContents(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should call next when user not authenticated', async () => {
-      const handler = getFolderContents(createMockAppConfig())
-      const req = createMockRequest({ user: undefined })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when kbId is missing', async () => {
-      const handler = getFolderContents(createMockAppConfig())
-      const req = createMockRequest({ params: { folderId: 'f-1' } })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -1565,29 +1535,6 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('getFolderContents (happy path)', () => {
-    it('should get folder contents successfully', async () => {
-      const handler = getFolderContents(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { records: [{ name: 'child.pdf' }], total: 1 },
-      })
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
-        query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
     })
   })
 
@@ -3058,25 +3005,6 @@ describe('Knowledge Base Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('should call next when getFolderContents connector returns non-200', async () => {
-      const handler = getFolderContents(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 404,
-        data: { detail: 'Folder not found' },
-      })
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
-        query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
     it('should call next when getRecordById connector returns non-200', async () => {
       const handler = getRecordById(createMockAppConfig())
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
@@ -3385,7 +3313,7 @@ describe('Knowledge Base Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // getKBContent and getFolderContents with all query filters
+  // getKBContent with all query filters
   // -----------------------------------------------------------------------
   describe('getKBContent (additional filter coverage)', () => {
     it('should handle connector returning null data', async () => {
@@ -3405,55 +3333,6 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       // Should call next since data is null
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('getFolderContents (additional paths)', () => {
-    it('should pass all filter query params to connector', async () => {
-      const handler = getFolderContents(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { records: [], total: 0 },
-      })
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'f-1' },
-        query: {
-          page: '2',
-          limit: '10',
-          search: 'report',
-          recordTypes: 'file,folder',
-          origins: 'upload',
-          connectors: 'c1',
-          indexingStatus: 'completed',
-          dateFrom: '1000000',
-          dateTo: '2000000',
-          sortBy: 'name',
-          sortOrder: 'asc',
-        },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next when folderId is missing', async () => {
-      const handler = getFolderContents(createMockAppConfig())
-      const req = createMockRequest({
-        params: { kbId: 'kb-1' },
-        query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
       expect(next.calledOnce).to.be.true
     })
   })
