@@ -325,14 +325,27 @@ async def handle_model_change(
             f"new model produces {embedding_size}"
         )
 
+    if points_count > 0:
+        logger.error(
+            f"Rejected embedding change: collection "
+            f"'{retrieval_service.collection_name}' contains {points_count} "
+            f"point(s) indexed with the previous model."
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": "not healthy",
+                "error": (
+                    "Embedding model cannot be changed while the vector store "
+                    "contains data indexed with a different model. Please "
+                    "remove existing indexed documents first, then change the "
+                    "embedding model."
+                ),
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
+
     if qdrant_vector_size != 0:
-        if points_count > 0:
-            logger.warning(
-                f"Collection '{retrieval_service.collection_name}' contains "
-                f"{points_count} point(s) that are incompatible with the new "
-                f"embedding model — deleting and recreating. Documents will "
-                f"need to be re-indexed."
-            )
         await recreate_collection(retrieval_service, embedding_size, logger)
 
 async def recreate_collection(retrieval_service, embedding_size, logger) -> None:
