@@ -2657,6 +2657,36 @@ components:
         - name
         - webUrl
 
+    FolderUpdateResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by PUT /knowledgeBase/{kbId}/folder/{folderId} (updateFolder).
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Folder updated successfully"
+
+    FolderDeleteResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by DELETE /knowledgeBase/{kbId}/folder/{folderId} (deleteFolder).
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Folder deleted successfully"
+
     GetAllKnowledgeBaseResponseSchema:
       type: object
       additionalProperties: false
@@ -3921,6 +3951,25 @@ components:
             available:
               type: object
               description: Available filter options with counts
+
+    UploadLimitsResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Upload constraints returned by GET /knowledgeBase/limits.
+      required:
+        - maxFilesPerRequest
+        - maxFileSizeBytes
+      properties:
+        maxFilesPerRequest:
+          type: integer
+          minimum: 1
+          example: 1000
+          description: Maximum number of files per upload request
+        maxFileSizeBytes:
+          type: integer
+          minimum: 1
+          example: 31457280
+          description: Maximum file size in bytes (default 30MB when platform settings unavailable)
 
     UploadResult:
       type: object
@@ -20302,19 +20351,50 @@ paths:
                 - folderName
       responses:
         '200':
-          description: Folder updated
+          description: Folder updated successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Folder'
+                $ref: '#/components/schemas/FolderUpdateResponseSchema'
         '400':
-          description: Invalid folder name
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing or empty folder name
+            - Folder name exceeds 255 characters
+            - XSS or invalid characters in folder name
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient permissions
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:write` scope
+            - User lacks FILEORGANIZER or higher permission on the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Folder not found
+          description: Knowledge base or folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Folder with this name already exists at the knowledge base root
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
@@ -20344,12 +20424,32 @@ paths:
       responses:
         '200':
           description: Folder deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FolderDeleteResponseSchema'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient permissions
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:delete` scope
+            - User lacks OWNER permission on the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Folder not found
+          description: Knowledge base or folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Upload Endpoints --------------------
   /knowledgeBase/{kbId}/upload:
@@ -20501,9 +20601,10 @@ paths:
         - Upload
       summary: Get upload limits
       description: |
-        Retrieve current upload constraints for the organization.<br><br>
-        <b>Use Case:</b><br>
-        Call this before uploads to validate file sizes on the client side and display appropriate limits to users.
+        Retrieve current upload constraints for the organization.
+
+        **Use case:** Call this before uploads to validate file sizes on the client
+        side and display appropriate limits to users.
       operationId: getUploadLimits
       security:
         - bearerAuth: []
@@ -20514,46 +20615,13 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  maxFilesPerRequest:
-                    type: integer
-                    example: 1000
-                    description: Maximum number of files per upload request
-                  maxFileSizeBytes:
-                    type: integer
-                    example: 31457280
-                    description: Maximum file size in bytes (default 30MB)
+                $ref: '#/components/schemas/UploadLimitsResponseSchema'
         '401':
-          description: Unauthorized
-
-  # Same contract as GET /knowledgeBase/limits (clients may use lowercase path under /api/v1)
-  /knowledgebase/limits:
-    get:
-      tags:
-        - Upload
-      summary: Get upload limits
-      description: Alias path for <code>GET /knowledgeBase/limits</code>.
-      operationId: getUploadLimitsKnowledgebaseAlias
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:read]
-      responses:
-        '200':
-          description: Upload limits retrieved
+          description: Unauthorized - Valid bearer token required
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  maxFilesPerRequest:
-                    type: integer
-                    example: 1000
-                  maxFileSizeBytes:
-                    type: integer
-                    example: 31457280
-        '401':
-          description: Unauthorized
+                $ref: '#/components/schemas/ErrorResponse'
 
   # Local KB connector — router prefix /api/v1/kb (PUT response includes UpdateRecordEnrichment)
   /kb/record/{recordId}:

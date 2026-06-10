@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { Container } from 'inversify'
+import type { Router } from 'express'
 import { createKnowledgeBaseRouter } from '../../../../src/modules/knowledge_base/routes/kb.routes'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
@@ -9,14 +10,33 @@ import { RecordsEventProducer } from '../../../../src/modules/knowledge_base/ser
 import { SyncEventProducer } from '../../../../src/modules/knowledge_base/services/sync_events.service'
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
 import { PrometheusService } from '../../../../src/libs/services/prometheus/prometheus.service'
+import { KB_UPLOAD_LIMITS } from '../../../../src/modules/knowledge_base/constants/kb.constants'
+import * as configurationUtil from '../../../../src/modules/configuration_manager/utils/util'
 
 describe('Knowledge Base Routes', () => {
   let container: Container
+  let router: Router
   let mockAuthMiddleware: any
   let mockAppConfig: any
   let mockRecordsEventProducer: any
   let mockSyncEventProducer: any
   let mockKeyValueStore: any
+
+  function findHandler(path: string, method: string) {
+    const layer = router.stack.find(
+      (l: any) => l.route && l.route.path === path && l.route.methods[method],
+    )
+    if (!layer?.route) return null
+    return layer.route.stack[layer.route.stack.length - 1].handle
+  }
+
+  function mockRes() {
+    return {
+      status: sinon.stub().returnsThis(),
+      json: sinon.stub().returnsThis(),
+      end: sinon.stub().returnsThis(),
+    }
+  }
 
   beforeEach(() => {
     container = new Container()
@@ -66,6 +86,8 @@ describe('Knowledge Base Routes', () => {
     container.bind<SyncEventProducer>('SyncEventProducer').toConstantValue(mockSyncEventProducer)
     container.bind<KeyValueStoreService>('KeyValueStoreService').toConstantValue(mockKeyValueStore)
     container.bind(PrometheusService).toConstantValue(mockPrometheusService as any)
+
+    router = createKnowledgeBaseRouter(container)
   })
 
   afterEach(() => {
@@ -73,13 +95,11 @@ describe('Knowledge Base Routes', () => {
   })
 
   it('should return a valid Express router', () => {
-    const router = createKnowledgeBaseRouter(container)
     expect(router).to.exist
     expect(router).to.have.property('stack')
   })
 
   it('should register knowledge base CRUD routes', () => {
-    const router = createKnowledgeBaseRouter(container)
     const routes = router.stack
       .filter((layer: any) => layer.route)
       .map((layer: any) => ({
@@ -96,7 +116,6 @@ describe('Knowledge Base Routes', () => {
   })
 
   it('should register record routes', () => {
-    const router = createKnowledgeBaseRouter(container)
     const routes = router.stack
       .filter((layer: any) => layer.route)
       .map((layer: any) => ({
@@ -109,7 +128,6 @@ describe('Knowledge Base Routes', () => {
   })
 
   it('should register knowledge hub nodes route', () => {
-    const router = createKnowledgeBaseRouter(container)
     const routes = router.stack
       .filter((layer: any) => layer.route)
       .map((layer: any) => ({
@@ -122,7 +140,6 @@ describe('Knowledge Base Routes', () => {
   })
 
   it('should register stream record route', () => {
-    const router = createKnowledgeBaseRouter(container)
     const routes = router.stack
       .filter((layer: any) => layer.route)
       .map((layer: any) => ({
@@ -132,5 +149,80 @@ describe('Knowledge Base Routes', () => {
     const paths = routes.map((r: any) => r.path)
 
     expect(paths).to.include('/stream/record/:recordId')
+  })
+
+  describe('GET /limits', () => {
+    it('should register upload limits route', () => {
+      const routes = router.stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => ({
+          path: layer.route.path,
+          methods: layer.route.methods,
+        }))
+
+      const limitsRoute = routes.find((r: any) => r.path === '/limits' && r.methods.get)
+      expect(limitsRoute).to.exist
+    })
+
+    it('should return platform max file size when settings resolve', async () => {
+      const platformBytes = 64 * 1024 * 1024
+      sinon.stub(configurationUtil, 'getPlatformSettingsFromStore').resolves({
+        fileUploadMaxSizeBytes: platformBytes,
+        featureFlags: {},
+      })
+
+      const handler = findHandler('/limits', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler({}, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.calledOnce).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        maxFilesPerRequest: KB_UPLOAD_LIMITS.maxFilesPerRequest,
+        maxFileSizeBytes: platformBytes,
+      })
+      expect(res.end.calledOnce).to.be.true
+      expect(next.called).to.be.false
+    })
+
+    it('should fall back to default max file size when platform settings fail', async () => {
+      sinon.stub(configurationUtil, 'getPlatformSettingsFromStore').rejects(new Error('kv unavailable'))
+
+      const handler = findHandler('/limits', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler({}, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        maxFilesPerRequest: KB_UPLOAD_LIMITS.maxFilesPerRequest,
+        maxFileSizeBytes: KB_UPLOAD_LIMITS.defaultMaxFileSizeBytes,
+      })
+      expect(next.called).to.be.false
+    })
+
+    it('should forward errors when response methods throw', async () => {
+      sinon.stub(configurationUtil, 'getPlatformSettingsFromStore').resolves({
+        fileUploadMaxSizeBytes: 1024,
+        featureFlags: {},
+      })
+
+      const handler = findHandler('/limits', 'get')
+      const resError = new Error('response failed')
+      const res = {
+        status: sinon.stub().throws(resError),
+        json: sinon.stub().returnsThis(),
+        end: sinon.stub().returnsThis(),
+      }
+      const next = sinon.stub()
+
+      await handler({}, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.equal(resError)
+    })
   })
 })

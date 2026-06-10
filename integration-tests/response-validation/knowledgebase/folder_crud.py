@@ -40,6 +40,9 @@ class TestFolderCrud:
         assert resp.status_code == 200, resp.text
         return resp.json()["id"]
 
+    def _folder_url(self, kb_id: str, folder_id: str) -> str:
+        return f"{self.kb_url}{kb_id}/folder/{folder_id}"
+
     def test_create_root_folder_success(
         self, six_kb_records: dict[str, object]
     ) -> None:
@@ -321,4 +324,220 @@ class TestFolderCrud:
         assert resp.status_code == 409, resp.text
         assert_response_matches_openapi_operation(
             resp.json(), "createFolder", status_code="409"
+        )
+
+    def test_update_folder_success(
+        self, six_kb_records: dict[str, object]
+    ) -> None:
+        kb_id = str(six_kb_records["kb_id"])
+        folder_id = self._create_root_folder(kb_id)
+        new_name = f"folder-updated-{uuid4().hex[:8]}"
+
+        resp = requests.put(
+            self._folder_url(kb_id, folder_id),
+            headers=self.headers,
+            json={"folderName": new_name},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "updateFolder")
+
+        assert body["success"] is True
+        assert isinstance(body["message"], str) and body["message"]
+
+    def test_update_folder_negative(
+        self, six_kb_records: dict[str, object]
+    ) -> None:
+        kb_id = str(six_kb_records["kb_id"])
+        folder_id = self._create_root_folder(kb_id)
+        folder_url = self._folder_url(kb_id, folder_id)
+        valid_body = {"folderName": f"rename-{uuid4().hex[:8]}"}
+
+        resp = requests.put(
+            folder_url,
+            headers=self.headers,
+            json={},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateFolder", status_code="400"
+        )
+
+        resp = requests.put(
+            folder_url,
+            headers=self.headers,
+            json={"folderName": ""},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateFolder", status_code="400"
+        )
+
+        resp = requests.put(
+            folder_url,
+            headers=self.headers,
+            json={"folderName": "x" * 256},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateFolder", status_code="400"
+        )
+
+        resp = requests.put(
+            folder_url,
+            headers=self.headers,
+            json={"folderName": "<script>alert(1)</script>"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateFolder", status_code="400"
+        )
+
+        resp = requests.put(
+            folder_url,
+            headers={"Content-Type": "application/json"},
+            json=valid_body,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateFolder", status_code="401"
+        )
+
+        resp = requests.put(
+            folder_url,
+            headers={
+                "Authorization": "Bearer invalid",
+                "Content-Type": "application/json",
+            },
+            json=valid_body,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateFolder", status_code="401"
+        )
+
+        missing_kb_id = str(uuid4())
+        resp = requests.put(
+            self._folder_url(missing_kb_id, folder_id),
+            headers=self.headers,
+            json=valid_body,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code in (403, 404), resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(),
+            "updateFolder",
+            status_code=str(resp.status_code),
+        )
+
+        resp = requests.put(
+            self._folder_url(kb_id, str(uuid4())),
+            headers=self.headers,
+            json=valid_body,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 404, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateFolder", status_code="404"
+        )
+
+        name_a = f"dup-a-{uuid4().hex[:8]}"
+        name_b = f"dup-b-{uuid4().hex[:8]}"
+        id_a = self._create_root_folder(kb_id, name_a)
+        id_b = self._create_root_folder(kb_id, name_b)
+
+        resp = requests.put(
+            self._folder_url(kb_id, id_b),
+            headers=self.headers,
+            json={"folderName": name_a},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 409, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateFolder", status_code="409"
+        )
+        assert id_a != id_b
+
+    def test_delete_folder_success(
+        self, six_kb_records: dict[str, object]
+    ) -> None:
+        kb_id = str(six_kb_records["kb_id"])
+        folder_id = self._create_root_folder(kb_id)
+
+        resp = requests.delete(
+            self._folder_url(kb_id, folder_id),
+            headers=self.headers,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "deleteFolder")
+
+        assert body["success"] is True
+        assert body["message"] == "Folder deleted successfully"
+
+        resp = requests.delete(
+            self._folder_url(kb_id, folder_id),
+            headers=self.headers,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 404, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteFolder", status_code="404"
+        )
+
+    def test_delete_folder_negative(
+        self, six_kb_records: dict[str, object]
+    ) -> None:
+        kb_id = str(six_kb_records["kb_id"])
+        folder_id = self._create_root_folder(kb_id)
+        folder_url = self._folder_url(kb_id, folder_id)
+
+        resp = requests.delete(
+            folder_url,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteFolder", status_code="401"
+        )
+
+        resp = requests.delete(
+            folder_url,
+            headers={"Authorization": "Bearer invalid"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteFolder", status_code="401"
+        )
+
+        missing_kb_id = str(uuid4())
+        resp = requests.delete(
+            self._folder_url(missing_kb_id, folder_id),
+            headers=self.headers,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code in (403, 404), resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(),
+            "deleteFolder",
+            status_code=str(resp.status_code),
+        )
+
+        resp = requests.delete(
+            self._folder_url(kb_id, str(uuid4())),
+            headers=self.headers,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 404, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteFolder", status_code="404"
         )
