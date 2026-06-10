@@ -399,6 +399,19 @@ class EventProcessor:
             if virtual_record_id is None:
                 virtual_record_id = str(uuid4())
 
+            if record_type == "CODE_FILE":
+                self.logger.info(f"🚀 Processing code file: {record_name}")
+                async for event in self.processor.process_code_file(
+                    recordName=record_name,
+                    recordId=record_id,
+                    file_content=file_content,
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+                return
+
             if mime_type == MimeTypes.GOOGLE_SLIDES.value:
                 self.logger.info("🚀 Processing Google Slides")
                 async for event in self.processor.process_pptx_document(

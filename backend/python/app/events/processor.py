@@ -1899,6 +1899,51 @@ class Processor:
         ):
             yield event
 
+    async def process_code_file(
+        self, recordName: str, recordId: str, file_content: bytes, virtual_record_id: str,
+        event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process a source-code file into semantic blocks, yielding phase completion events.
+
+        Uses CodeFileParser to convert tree-sitter semantic blocks into:
+        - BlockGroups for top-level containers (classes, impls, traits, …)
+        - Blocks for functions, methods, imports, statements, and comments
+        """
+        from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
+
+        self.logger.info(f"🚀 Starting code-file processing for record: {recordName}")
+        try:
+            parser = CodeFileParser()
+            block_containers = parser.parse(file_content, recordName)
+
+            if not block_containers.blocks and not block_containers.block_groups:
+                self.logger.warning(f"No blocks produced for code file: {recordName} — language may be unsupported")
+
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+
+            record = await self.graph_provider.get_document(recordId, CollectionNames.RECORDS.value)
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                return
+
+            record = convert_record_dict_to_record(record)
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+
+            ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
+
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+            self.logger.info(
+                f"✅ Code-file processing completed: {recordName} "
+                f"({len(block_containers.block_groups)} group(s), {len(block_containers.blocks)} block(s))"
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Error processing code file: {str(e)}")
+            raise
+
     async def process_sql_structured_data(
         self, recordName: str, recordId: str, json_content: bytes, virtual_record_id: str,
         record_type: str = "SQL_TABLE", event_type: str = None, prev_virtual_record_id: Optional[str] = None
