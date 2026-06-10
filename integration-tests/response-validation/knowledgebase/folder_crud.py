@@ -54,7 +54,7 @@ class TestFolderCrud:
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert_response_matches_openapi_operation(body, "createRootFolder")
+        assert_response_matches_openapi_operation(body, "createFolder")
 
         assert body["name"] == folder_name
         assert isinstance(body["id"], str) and body["id"]
@@ -74,7 +74,7 @@ class TestFolderCrud:
         )
         assert resp.status_code == 400, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "createRootFolder", status_code="400"
+            resp.json(), "createFolder", status_code="400"
         )
 
         resp = requests.post(
@@ -85,7 +85,7 @@ class TestFolderCrud:
         )
         assert resp.status_code == 400, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "createRootFolder", status_code="400"
+            resp.json(), "createFolder", status_code="400"
         )
 
         resp = requests.post(
@@ -96,7 +96,7 @@ class TestFolderCrud:
         )
         assert resp.status_code == 400, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "createRootFolder", status_code="400"
+            resp.json(), "createFolder", status_code="400"
         )
 
         resp = requests.post(
@@ -107,7 +107,7 @@ class TestFolderCrud:
         )
         assert resp.status_code == 400, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "createRootFolder", status_code="400"
+            resp.json(), "createFolder", status_code="400"
         )
 
         resp = requests.post(
@@ -118,7 +118,7 @@ class TestFolderCrud:
         )
         assert resp.status_code == 401, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "createRootFolder", status_code="401"
+            resp.json(), "createFolder", status_code="401"
         )
 
         resp = requests.post(
@@ -132,7 +132,7 @@ class TestFolderCrud:
         )
         assert resp.status_code == 401, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "createRootFolder", status_code="401"
+            resp.json(), "createFolder", status_code="401"
         )
 
         missing_kb_id = str(uuid4())
@@ -145,7 +145,7 @@ class TestFolderCrud:
         assert resp.status_code in (403, 404), resp.text
         assert_response_matches_openapi_operation(
             resp.json(),
-            "createRootFolder",
+            "createFolder",
             status_code=str(resp.status_code),
         )
 
@@ -166,7 +166,7 @@ class TestFolderCrud:
         )
         assert resp.status_code == 409, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "createRootFolder", status_code="409"
+            resp.json(), "createFolder", status_code="409"
         )
 
     def test_create_subfolder_success(
@@ -177,14 +177,15 @@ class TestFolderCrud:
         folder_name = f"subfolder-create-{uuid4().hex[:8]}"
 
         resp = requests.post(
-            f"{self.kb_url}{kb_id}/folder/{parent_id}/subfolder",
+            f"{self.kb_url}{kb_id}/folder",
             headers=self.headers,
+            params={"folderId": parent_id},
             json={"folderName": folder_name},
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert_response_matches_openapi_operation(body, "createSubfolder")
+        assert_response_matches_openapi_operation(body, "createFolder")
 
         assert body["name"] == folder_name
         assert isinstance(body["id"], str) and body["id"]
@@ -195,61 +196,67 @@ class TestFolderCrud:
     ) -> None:
         kb_id = str(six_kb_records["kb_id"])
         parent_id = self._create_root_folder(kb_id)
-        subfolder_url = f"{self.kb_url}{kb_id}/folder/{parent_id}/subfolder"
+        subfolder_url = f"{self.kb_url}{kb_id}/folder"
+        subfolder_params = {"folderId": parent_id}
 
         resp = requests.post(
             subfolder_url,
             headers=self.headers,
+            params=subfolder_params,
             json={},
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 400, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "createSubfolder", status_code="400"
+            resp.json(), "createFolder", status_code="400"
         )
 
         resp = requests.post(
             subfolder_url,
             headers=self.headers,
+            params=subfolder_params,
             json={"folderName": ""},
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 400, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "createSubfolder", status_code="400"
+            resp.json(), "createFolder", status_code="400"
         )
 
         resp = requests.post(
             subfolder_url,
             headers=self.headers,
+            params=subfolder_params,
             json={"folderName": "x" * 256},
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 400, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "createSubfolder", status_code="400"
+            resp.json(), "createFolder", status_code="400"
         )
 
         resp = requests.post(
             subfolder_url,
             headers=self.headers,
+            params=subfolder_params,
             json={"folderName": "<script>alert(1)</script>"},
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 400, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "createSubfolder", status_code="400"
+            resp.json(), "createFolder", status_code="400"
         )
 
         resp = requests.post(
             subfolder_url,
             headers={"Content-Type": "application/json"},
+            params=subfolder_params,
             json={"folderName": "should-fail"},
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 401, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "createSubfolder", status_code="401"
+            resp.json(), "createFolder", status_code="401"
         )
 
         resp = requests.post(
@@ -258,43 +265,47 @@ class TestFolderCrud:
                 "Authorization": "Bearer invalid",
                 "Content-Type": "application/json",
             },
+            params=subfolder_params,
             json={"folderName": "should-fail"},
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 401, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "createSubfolder", status_code="401"
+            resp.json(), "createFolder", status_code="401"
         )
 
         missing_kb_id = str(uuid4())
         resp = requests.post(
-            f"{self.kb_url}{missing_kb_id}/folder/{parent_id}/subfolder",
+            f"{self.kb_url}{missing_kb_id}/folder",
             headers=self.headers,
+            params={"folderId": parent_id},
             json={"folderName": "missing-kb-subfolder"},
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code in (403, 404), resp.text
         assert_response_matches_openapi_operation(
             resp.json(),
-            "createSubfolder",
+            "createFolder",
             status_code=str(resp.status_code),
         )
 
         resp = requests.post(
-            f"{self.kb_url}{kb_id}/folder/{uuid4()}/subfolder",
+            f"{self.kb_url}{kb_id}/folder",
             headers=self.headers,
+            params={"folderId": str(uuid4())},
             json={"folderName": "missing-parent-subfolder"},
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 404, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "createSubfolder", status_code="404"
+            resp.json(), "createFolder", status_code="404"
         )
 
         duplicate_name = f"dup-subfolder-{uuid4().hex[:8]}"
         first = requests.post(
             subfolder_url,
             headers=self.headers,
+            params=subfolder_params,
             json={"folderName": duplicate_name},
             timeout=self.client.timeout_seconds,
         )
@@ -303,10 +314,11 @@ class TestFolderCrud:
         resp = requests.post(
             subfolder_url,
             headers=self.headers,
+            params=subfolder_params,
             json={"folderName": duplicate_name},
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 409, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "createSubfolder", status_code="409"
+            resp.json(), "createFolder", status_code="409"
         )

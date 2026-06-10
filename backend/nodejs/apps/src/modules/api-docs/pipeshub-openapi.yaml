@@ -20161,16 +20161,18 @@ paths:
     post:
       tags:
         - Folders
-      summary: Create root folder
+      summary: Create folder
       description: |
-        Create a new folder at the root level of a knowledge base.
+        Create a folder in a knowledge base. Omit `folderId` to create at the KB root;
+        pass `folderId` as a query parameter to create a nested subfolder inside an
+        existing parent folder.
 
         **Required permission:** FILEORGANIZER or higher
 
         **Folder features:**
 
         - Organize records hierarchically
-        - Support nested subfolders
+        - Support nested subfolders (unlimited depth)
         - Inherit parent KB permissions
 
         **Naming rules:**
@@ -20178,9 +20180,10 @@ paths:
         - 1–255 characters
         - XSS protection applied
         - Spaces and special characters allowed
+        - Duplicate names rejected within the same parent (`409`)
 
         **Response:** Returns `id`, `name`, and `webUrl` for the created folder.
-      operationId: createRootFolder
+      operationId: createFolder
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -20189,6 +20192,12 @@ paths:
           in: path
           required: true
           description: Knowledge base ID
+          schema:
+            type: string
+        - name: folderId
+          in: query
+          required: false
+          description: Parent folder ID. Omit to create at the knowledge base root.
           schema:
             type: string
       requestBody:
@@ -20242,13 +20251,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Knowledge base not found
+          description: Knowledge base or parent folder not found
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: Folder with this name already exists at the knowledge base root
+          description: Folder with this name already exists at the knowledge base root or within the parent folder
           content:
             application/json:
               schema:
@@ -20341,104 +20350,6 @@ paths:
           description: Insufficient permissions
         '404':
           description: Folder not found
-
-  /knowledgeBase/{kbId}/folder/{folderId}/subfolder:
-    post:
-      tags:
-        - Folders
-      summary: Create subfolder
-      description: |
-        Create a nested folder inside an existing parent folder.
-
-        **Required permission:** FILEORGANIZER or higher
-
-        **Nesting:**
-
-        - Unlimited folder depth supported
-        - Parent folder must exist in the same knowledge base
-        - Duplicate names are rejected within the same parent (`409`)
-
-        **Naming rules:**
-
-        - Same rules as root folder create (`folderName`, 1–255 characters, XSS validation)
-
-        **Response:** Same shape as root folder create — `id`, `name`, and `webUrl`.
-      operationId: createSubfolder
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:write]
-      parameters:
-        - name: kbId
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: folderId
-          in: path
-          required: true
-          description: Parent folder ID
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                folderName:
-                  type: string
-                  minLength: 1
-                  maxLength: 255
-              required:
-                - folderName
-      responses:
-        '200':
-          description: Subfolder created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/FolderCreateResponseSchema'
-        '400':
-          description: |
-            Invalid request. Possible reasons:
-
-            - Missing or empty folder name
-            - Folder name exceeds 255 characters
-            - XSS or invalid characters in folder name
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          description: Unauthorized - Valid bearer token required
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '403':
-          description: |
-            Forbidden. Possible reasons:
-
-            - OAuth token lacks the `kb:write` scope
-            - User lacks FILEORGANIZER or higher permission on the knowledge base
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: Parent folder or knowledge base not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '409':
-          description: Folder with this name already exists in the parent folder
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Upload Endpoints --------------------
   /knowledgeBase/{kbId}/upload:

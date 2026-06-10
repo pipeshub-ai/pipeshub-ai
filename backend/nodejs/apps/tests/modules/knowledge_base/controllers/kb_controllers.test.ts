@@ -11,8 +11,7 @@ import {
   listKnowledgeBases,
   updateKnowledgeBase,
   deleteKnowledgeBase,
-  createRootFolder,
-  createNestedFolder,
+  createFolder,
   updateFolder,
   deleteFolder,
   uploadRecordsToKB,
@@ -396,14 +395,14 @@ describe('Knowledge Base Controller', () => {
   // -----------------------------------------------------------------------
   // Folder Operations
   // -----------------------------------------------------------------------
-  describe('createRootFolder', () => {
+  describe('createFolder', () => {
     it('should return a handler function', () => {
-      const handler = createRootFolder(createMockAppConfig())
+      const handler = createFolder(createMockAppConfig())
       expect(handler).to.be.a('function')
     })
 
     it('should call next when user not authenticated', async () => {
-      const handler = createRootFolder(createMockAppConfig())
+      const handler = createFolder(createMockAppConfig())
       const req = createMockRequest({ user: undefined })
       const res = createMockResponse()
       const next = createMockNext()
@@ -414,7 +413,7 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when userId is missing', async () => {
-      const handler = createRootFolder(createMockAppConfig())
+      const handler = createFolder(createMockAppConfig())
       const req = createMockRequest({ user: { orgId: 'org-1' }, params: { kbId: 'kb-1' } })
       const res = createMockResponse()
       const next = createMockNext()
@@ -425,37 +424,8 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when orgId is missing', async () => {
-      const handler = createRootFolder(createMockAppConfig())
+      const handler = createFolder(createMockAppConfig())
       const req = createMockRequest({ user: { userId: 'user-1' }, params: { kbId: 'kb-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('createNestedFolder', () => {
-    it('should return a handler function', () => {
-      const handler = createNestedFolder(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should call next when user not authenticated', async () => {
-      const handler = createNestedFolder(createMockAppConfig())
-      const req = createMockRequest({ user: undefined, params: { kbId: 'kb-1', folderId: 'f-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when userId is missing', async () => {
-      const handler = createNestedFolder(createMockAppConfig())
-      const req = createMockRequest({ user: { orgId: 'org-1' }, params: { kbId: 'kb-1', folderId: 'f-1' } })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -1361,9 +1331,9 @@ describe('Knowledge Base Controller', () => {
     })
   })
 
-  describe('createRootFolder (happy path)', () => {
+  describe('createFolder (happy path)', () => {
     it('should create a root folder successfully', async () => {
-      const handler = createRootFolder(createMockAppConfig())
+      const handler = createFolder(createMockAppConfig())
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
         statusCode: 201,
         data: { _key: 'folder-1', name: 'New Folder' },
@@ -1382,18 +1352,17 @@ describe('Knowledge Base Controller', () => {
         expect(res.json.calledOnce).to.be.true
       }
     })
-  })
 
-  describe('createNestedFolder (happy path)', () => {
     it('should create a nested folder successfully', async () => {
-      const handler = createNestedFolder(createMockAppConfig())
+      const handler = createFolder(createMockAppConfig())
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
         statusCode: 201,
         data: { _key: 'folder-2', name: 'Sub Folder' },
       })
 
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'folder-1' },
         body: { folderName: 'Sub Folder' },
       })
       const res = createMockResponse()
@@ -3079,8 +3048,8 @@ describe('Knowledge Base Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('should call next when createRootFolder connector returns non-200', async () => {
-      const handler = createRootFolder(createMockAppConfig())
+    it('should call next when createFolder connector returns non-200 for root folder', async () => {
+      const handler = createFolder(createMockAppConfig())
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
         statusCode: 409,
         data: { detail: 'Folder already exists' },
@@ -3098,15 +3067,16 @@ describe('Knowledge Base Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('should call next when createNestedFolder connector returns non-200', async () => {
-      const handler = createNestedFolder(createMockAppConfig())
+    it('should call next when createFolder connector returns non-200 for nested folder', async () => {
+      const handler = createFolder(createMockAppConfig())
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
         statusCode: 400,
         data: { detail: 'Invalid parent folder' },
       })
 
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'folder-1' },
         body: { folderName: 'Sub Folder' },
       })
       const res = createMockResponse()

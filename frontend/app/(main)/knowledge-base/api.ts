@@ -414,20 +414,22 @@ export const KnowledgeBaseApi = {
     return data;
   },
 
-  // Create folder (root or nested)
+  // Create folder (root or nested via optional folderId query param)
   async createFolder(knowledgeBaseId: string, name: string, description?: string, parentId?: string | null) {
-    // Choose correct endpoint based on whether we're creating root or nested folder
-    const endpoint = parentId
-      ? `${BASE_URL}/${knowledgeBaseId}/folder/${parentId}/subfolder`
-      : `${BASE_URL}/${knowledgeBaseId}/folder`;
+    const endpoint = `${BASE_URL}/${knowledgeBaseId}/folder`;
 
-    const { data } = await apiClient.post<Record<string, unknown>>(endpoint, {
-      folderName: name,
-      // Note: API currently doesn't support description in request body
-      // If description is needed in future, add it here
-    }, {
-      suppressErrorToast: true,
-    });
+    const { data } = await apiClient.post<Record<string, unknown>>(
+      endpoint,
+      {
+        folderName: name,
+        // Note: API currently doesn't support description in request body
+        // If description is needed in future, add it here
+      },
+      {
+        params: parentId ? { folderId: parentId } : undefined,
+        suppressErrorToast: true,
+      },
+    );
     return data;
   },
 

@@ -487,6 +487,12 @@ export const createFolderSchema = z.object({
   body: z.object({
     folderName: z.string().min(1).max(255),
   }),
+  params: z.object({
+    kbId: z.string().uuid(),
+  }),
+  query: z.object({
+    folderId: z.string().min(1).optional(),
+  }),
 });
 
 export const kbPermissionSchema = z.object({

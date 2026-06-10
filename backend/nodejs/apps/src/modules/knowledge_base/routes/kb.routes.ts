@@ -24,8 +24,7 @@ import {
   deleteFolder,
   getKBContent,
   uploadRecordsToFolder,
-  createNestedFolder,
-  createRootFolder,
+  createFolder,
   uploadRecordsToKB,
   getKnowledgeHubNodes,
   moveRecord,
@@ -458,24 +457,14 @@ export function createKnowledgeBaseRouter(
     ),
   );
 
-  // Create a root folder
+  // Create folder (root or nested via optional folderId query param)
   router.post(
     '/:kbId/folder',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(createFolderSchema),
-    createRootFolder(appConfig),
-  );
-
-  // create a nested subfolder
-  router.post(
-    '/:kbId/folder/:folderId/subfolder',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(createFolderSchema),
-    createNestedFolder(appConfig),
+    createFolder(appConfig),
   );
 
   // update folder

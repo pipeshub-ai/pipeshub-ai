@@ -176,8 +176,13 @@ GET {{esbackend}}/api/v1/knowledgeBase/a77fbf1c-abf2-486d-beac-62459952f001/reco
 Authorization: Bearer {{authToken}}
 ```
 
-#### 9. Create Root Folder
+#### 9. Create Folder
 **POST** `/api/v1/knowledgeBase/:kbId/folder`
+
+Create a folder at the KB root, or pass `folderId` as a query parameter to create a nested subfolder.
+
+**Query params (optional):**
+- `folderId` — parent folder ID for nested creates
 
 **Body:**
 ```json
@@ -186,7 +191,7 @@ Authorization: Bearer {{authToken}}
 }
 ```
 
-**Example:**
+**Example (root folder):**
 ```bash
 POST {{esbackend}}/api/v1/knowledgeBase/a77fbf1c-abf2-486d-beac-62459952f001/folder
 Authorization: Bearer {{authToken}}
@@ -195,26 +200,16 @@ Content-Type: application/json
 {"folderName": "test"}
 ```
 
-#### 10. Create Nested Folder
-**POST** `/api/v1/knowledgeBase/:kbId/folder/:folderId/subfolder`
-
-**Body:**
-```json
-{
-  "folderName": "string"
-}
-```
-
-**Example:**
+**Example (nested folder):**
 ```bash
-POST {{esbackend}}/api/v1/knowledgeBase/a77fbf1c-abf2-486d-beac-62459952f001/folder/77d2cc72/subfolder
+POST {{esbackend}}/api/v1/knowledgeBase/a77fbf1c-abf2-486d-beac-62459952f001/folder?folderId=77d2cc72
 Authorization: Bearer {{authToken}}
 Content-Type: application/json
 
 {"folderName": "subfolder 2"}
 ```
 
-#### 11. Get Folder Contents
+#### 10. Get Folder Contents
 **GET** `/api/v1/knowledgeBase/:kbId/folder/:folderId`
 
 **Example:**
@@ -223,7 +218,7 @@ GET {{esbackend}}/api/v1/knowledgeBase/a77fbf1c-abf2-486d-beac-62459952f001/fold
 Authorization: Bearer {{authToken}}
 ```
 
-#### 12. Update Folder
+#### 11. Update Folder
 **PUT** `/api/v1/knowledgeBase/:kbId/folder/:folderId`
 
 **Body:**
@@ -242,7 +237,7 @@ Content-Type: application/json
 {"folderName": "subfolder 2"}
 ```
 
-#### 13. Delete Folder
+#### 12. Delete Folder
 **DELETE** `/api/v1/knowledgeBase/:kbId/folder/:folderId`
 
 **Example:**
@@ -251,7 +246,7 @@ DELETE {{esbackend}}/api/v1/knowledgeBase/a77fbf1c-abf2-486d-beac-62459952f001/f
 Authorization: Bearer {{authToken}}
 ```
 
-#### 14. Upload Records (Root)
+#### 13. Upload Records (Root)
 **POST** `/api/v1/knowledgebase/:kbId/upload`
 
 **Form Data:**

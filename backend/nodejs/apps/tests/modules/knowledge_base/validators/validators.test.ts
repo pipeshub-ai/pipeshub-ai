@@ -325,20 +325,54 @@ describe('knowledge_base/validators/validators', () => {
   // Folder Schemas
   // -----------------------------------------------------------------------
   describe('createFolderSchema', () => {
-    it('should accept valid folderName', () => {
-      const data = { body: { folderName: 'My Folder' } }
+    const validKbId = '550e8400-e29b-41d4-a716-446655440000'
+
+    it('should accept valid root folder input', () => {
+      const data = {
+        body: { folderName: 'My Folder' },
+        params: { kbId: validKbId },
+        query: {},
+      }
       const result = createFolderSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
+    it('should accept valid nested folder input with folderId query', () => {
+      const data = {
+        body: { folderName: 'My Subfolder' },
+        params: { kbId: validKbId },
+        query: { folderId: 'parent-folder-1' },
+      }
+      const result = createFolderSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject invalid kbId', () => {
+      const data = {
+        body: { folderName: 'My Folder' },
+        params: { kbId: 'not-a-uuid' },
+        query: {},
+      }
+      const result = createFolderSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
     it('should reject empty folderName', () => {
-      const data = { body: { folderName: '' } }
+      const data = {
+        body: { folderName: '' },
+        params: { kbId: validKbId },
+        query: {},
+      }
       const result = createFolderSchema.safeParse(data)
       expect(result.success).to.be.false
     })
 
     it('should reject folderName over 255 characters', () => {
-      const data = { body: { folderName: 'x'.repeat(256) } }
+      const data = {
+        body: { folderName: 'x'.repeat(256) },
+        params: { kbId: validKbId },
+        query: {},
+      }
       const result = createFolderSchema.safeParse(data)
       expect(result.success).to.be.false
     })

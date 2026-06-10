@@ -537,7 +537,7 @@ export const deleteKnowledgeBase =
     }
   };
 
-export const createRootFolder =
+export const createFolder =
   (appConfig: AppConfig) =>
   async (
     req: AuthenticatedUserRequest,
@@ -547,22 +547,30 @@ export const createRootFolder =
     try {
       const { userId, orgId } = req.user || {};
       const { kbId } = req.params;
+      const { folderId } = req.query as { folderId?: string };
       const { folderName } = req.body;
 
       if (!userId || !orgId) {
         throw new UnauthorizedError('User authentication required');
       }
 
-      // Validate folderName for XSS and format specifiers
       if (folderName) {
         validateNoXSS(folderName, 'Folder name');
         validateNoFormatSpecifiers(folderName, 'Folder name');
       }
 
-      logger.info(`Creating folder '${folderName}' in KB ${kbId}`);
+      if (folderId) {
+        logger.info(`Creating folder '${folderName}' in folder ${folderId}`);
+      } else {
+        logger.info(`Creating folder '${folderName}' in KB ${kbId}`);
+      }
+
+      const connectorUrl = folderId
+        ? `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/subfolder`
+        : `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder`;
 
       const response = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder`,
+        connectorUrl,
         HttpMethod.POST,
         req.headers as Record<string, string>,
         {
@@ -573,7 +581,7 @@ export const createRootFolder =
       handleConnectorResponse(
         response,
         res,
-        'Creating folder',
+        folderId ? 'Creating nested folder' : 'Creating folder',
         'Folder not found',
       );
     } catch (error: any) {
@@ -584,59 +592,7 @@ export const createRootFolder =
         status: error.response?.status,
         data: error.response?.data,
       });
-      const handleError = handleBackendError(error, 'create root folder');
-      next(handleError);
-    }
-  };
-
-export const createNestedFolder =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      const { userId, orgId } = req.user || {};
-      const { kbId, folderId } = req.params;
-      const { folderName } = req.body;
-
-      if (!userId || !orgId) {
-        throw new UnauthorizedError('User authentication required');
-      }
-
-      // Validate folderName for XSS and format specifiers
-      if (folderName) {
-        validateNoXSS(folderName, 'Folder name');
-        validateNoFormatSpecifiers(folderName, 'Folder name');
-      }
-
-      logger.info(`Creating folder '${folderName}' in folder ${folderId}`);
-
-      const response = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/subfolder`,
-        HttpMethod.POST,
-        req.headers as Record<string, string>,
-        {
-          name: folderName,
-        },
-      );
-
-      handleConnectorResponse(
-        response,
-        res,
-        'Creating nested folder',
-        'Folder not found',
-      );
-    } catch (error: any) {
-      logger.error('Error creating subfolder folder', {
-        error: error.message,
-        kbId: req.params.kbId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
-      const handleError = handleBackendError(error, 'create nested folder');
+      const handleError = handleBackendError(error, 'create folder');
       next(handleError);
     }
   };

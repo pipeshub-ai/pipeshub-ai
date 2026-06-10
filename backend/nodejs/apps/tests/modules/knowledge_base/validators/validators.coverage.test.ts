@@ -335,6 +335,8 @@ describe('Knowledge Base Validators - coverage', () => {
     it('createFolderSchema should accept valid input', () => {
       const result = createFolderSchema.safeParse({
         body: { folderName: 'New Folder' },
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+        query: { folderId: 'parent-folder-1' },
       })
       expect(result.success).to.be.true
     })
