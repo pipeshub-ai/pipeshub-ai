@@ -11,7 +11,10 @@ Welcome to our open source project! We're excited that you're interested in cont
 ## 💻 Developer Contribution Build
 
 ## Table of Contents
-- [Setting Up the Development Environment](#setting-up-the-development-environment)
+- [Prerequisites](#prerequisites)
+- [Graph Database — Two Ways to Run Neo4j](#graph-database--two-ways-to-run-neo4j)
+- [Quick Start](#quick-start)
+- [Manual Setup (advanced)](#manual-setup-advanced)
 - [Project Architecture](#project-architecture)
 - [Contribution Workflow](#contribution-workflow)
 - [Code Style Guidelines](#code-style-guidelines)
@@ -19,47 +22,129 @@ Welcome to our open source project! We're excited that you're interested in cont
 - [Documentation](#documentation)
 - [Community Guidelines](#community-guidelines)
 
-## Setting Up the Development Environment
+> **Translations may lag behind this English version, which is authoritative.**
 
-### System Dependencies
+## Prerequisites
 
-#### Linux
+Install the following tools (links go to the official installers):
+
+| Tool | Version | Install |
+|------|---------|---------|
+| **Git** | latest | [git-scm.com](https://git-scm.com/downloads) |
+| **GNU Make** | latest | Runs all the `make` targets below. Linux: install `make` (e.g. `build-essential`); macOS: `xcode-select --install`; Windows: use **Git Bash** or **WSL2**. [GNU Make](https://www.gnu.org/software/make/) |
+| **Docker** | latest | [Get Docker](https://docs.docker.com/get-docker/) — Docker Desktop on Windows/macOS, Docker Engine on Linux |
+| **Node.js** | v22.15.0 | [nodejs.org](https://nodejs.org/) |
+| **uv** | latest | [Astral uv install guide](https://docs.astral.sh/uv/getting-started/installation/) — the Python package & project manager used by the backend |
+| **Python** | 3.12 | **Not required separately** — `uv` manages it for you (`uv python install 3.12`). Fallback: [python.org](https://www.python.org/downloads/) |
+| **LibreOffice** | latest | [libreoffice.org](https://www.libreoffice.org/download/download-libreoffice/) — used by the docling service to parse office documents |
+| **MariaDB Connector/C** | latest | Required to build some Python dependencies. Linux: `libmariadb-dev`; macOS: `brew install mariadb-connector-c`; Windows: [MariaDB Connector/C](https://mariadb.com/downloads/connectors/) |
+| **OpenCV runtime libs** *(Linux only)* | latest | Required by OpenCV (`cv2`), used in PDF parsing. Linux: `libgl1 libglib2.0-0` (`apt install`).Not needed on macOS/Windows. |
+
+> **Windows:** run the `make` commands below under **Git Bash** or **WSL2** with
+> GNU Make installed — the Makefile uses shell recipes that `cmd`/PowerShell
+> cannot run. Docker Desktop must be running.
+
+## Graph Database — Two Ways to Run Neo4j
+
+PipesHub stores its knowledge graph in **Neo4j** (selected by `DATA_STORE=neo4j`,
+which is the default). Choose **one** of the two options below to provide Neo4j.
+This section only sets up the database — you'll launch the app later in
+[Quick Start](#quick-start), and each option tells you which command to use there.
+
+### Option 1 — Neo4j Desktop *(preferred)*
+
+A local GUI with the Neo4j Browser for inspecting the graph, multiple DBMSs, and
+plugins such as APOC. The most convenient option for day-to-day development.
+
+> ⚠️ **License:** Neo4j Desktop is distributed under the
+> [**Neo4j Desktop License**](https://neo4j.com/legal-terms/desktop-license/) —
+> intended for **development and evaluation**. Review the terms before commercial use.
+
+1. Install [Neo4j Desktop](https://neo4j.com/download/), create a **local DBMS**,
+   set a password, and **Start** it (leave the Bolt listener on `localhost:7687`).
+2. Do **not** also run a Neo4j Docker container — Desktop already provides one.
+3. In your `.env` files (`backend/nodejs/apps/.env` and `backend/python/.env`,
+   both created by `make install`), set `NEO4J_PASSWORD` to the password you gave
+   the DBMS. The other Neo4j values already default correctly:
+   ```bash
+   DATA_STORE=neo4j
+   NEO4J_URI=bolt://localhost:7687
+   NEO4J_USERNAME=neo4j
+   NEO4J_PASSWORD=<your DBMS password>
+   NEO4J_DATABASE=neo4j
+   ```
+
+➡️ In **[Quick Start](#quick-start)**, run **`make services`** — it starts only
+the supporting containers (Redis, Qdrant, MongoDB), since Neo4j Desktop already
+provides the graph database.
+
+### Option 2 — Neo4j in Docker *(quick alternative)*
+
+No GUI, no license click-through, zero configuration — Neo4j runs in a container
+alongside the other services. The default `.env` values already target it
+(`NEO4J_URI=bolt://localhost:7687`), so no extra setup is needed.
+
+➡️ In **[Quick Start](#quick-start)**, run **`make services-neo4j`** instead of
+`make services` — it starts the supporting containers **and** Neo4j together
+(`neo4j:5.26-community`), so you don't run `make services` separately.
+
+## Quick Start
+
+All commands run from the `scripts/` directory.
+
 ```bash
-sudo apt update
-sudo apt install python3.12-venv
-sudo apt-get install libreoffice
-sudo apt install libmariadb-dev
+cd scripts
+
+make doctor    # verify system deps, Docker, and Neo4j reachability
+make install   # install Node.js, Python (via uv), and frontend dependencies
+make services  # start supporting Docker services (redis, qdrant, mongo)
+make start     # run all PipesHub services (5 Python + Node.js + frontend)
 ```
 
-#### Mac
-```bash
-# Install Homebrew if not already installed
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+> Local dev uses **Redis** for both the config store and messaging (Redis
+> Streams), so the supporting stack is just Redis, Qdrant, and MongoDB. The
+> `.env` template defaults to `KV_STORE_TYPE=redis` and `MESSAGE_BROKER=redis`.
 
+**What each command does:**
 
-# Install required packages
-brew install python@3.12
-brew install libreoffice
-brew install mariadb-connector-c # Add to path
-```
+- **`make services`** starts only the supporting containers (Redis, Qdrant,
+  MongoDB) — it does **not** start a graph database, because the preferred setup
+  runs **Neo4j Desktop** locally (see [Graph Database](#graph-database--two-ways-to-run-neo4j)
+  above). To run everything in Docker instead, use **`make services-neo4j`**,
+  which starts the supporting containers **and** Neo4j; then skip Neo4j Desktop.
+- **`make start`** runs all seven processes together via `npx concurrently`, with
+  prefixed, color-coded logs. Press **Ctrl-C once** to stop them all.
+- **`make help`** lists every available target.
 
-#### Windows
-```bash
-- Install Python 3.12
-- Consider using WSL2 for a Linux-like environment
-```
+### Running services individually
 
-### Application Dependencies
-```bash
-1. **Docker** - Install Docker for your platform
-2. **Node.js** - Install Node.js(v22.15.0)
-3. **Python 3.12** - Install as shown above
-4. **Optional debugging tools:**
-   - MongoDB Compass or Studio 3T
-   - etcd-manager
-```
+Prefer a terminal per service — for example, to restart one without the others
+or to watch a single service's logs? Run the per-service `make` targets instead
+of `make start`. Start the embedding server first if you use the built-in local
+embedding model.
 
-### Starting Required Docker Containers
+| Service | Command | Port |
+|---------|---------|------|
+| Embedding   | `make embedding`  | 8002 |
+| Connectors  | `make connectors` | 8088 |
+| Indexing    | `make indexing`   | 8091 |
+| Query       | `make query`      | 8000 |
+| Docling     | `make docling`    | 8081 |
+| Node.js API | `make nodejs`     | 3000 |
+| Frontend    | `make frontend`   | 3001 |
+
+Each Python target activates the project's `uv` environment automatically; the
+backing Docker services must already be running (start them with `make services`).
+
+## Manual Setup (advanced)
+
+The `make` targets above are the recommended path. The steps below document the
+underlying setup for contributors who want to run things by hand.
+
+<details>
+<summary><strong>Show manual setup steps</strong></summary>
+
+### Starting infrastructure containers manually
 
 **Redis:**
 ```bash
@@ -71,53 +156,13 @@ docker run -d --name redis --restart always -p 6379:6379 redis:bookworm
 docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.13.6
 ```
 
-**ETCD Server:**
+**Neo4j:** see [Graph Database — Two Ways to Run Neo4j](#graph-database--two-ways-to-run-neo4j)
+above for the recommended setup. To start Neo4j in Docker by hand:
 
-
-Bash:
 ```bash
-docker run -d --name etcd-server --restart always -p 2379:2379 -p 2380:2380 quay.io/coreos/etcd:v3.5.17 /usr/local/bin/etcd \
-  --name etcd0 \
-  --data-dir /etcd-data \
-  --listen-client-urls http://0.0.0.0:2379 \
-  --advertise-client-urls http://0.0.0.0:2379 \
-  --listen-peer-urls http://0.0.0.0:2380
+docker run -d --name neo4j --restart always -p 7474:7474 -p 7687:7687 \
+  -e NEO4J_AUTH=neo4j/your_password neo4j:5.26.2-community
 ```
-
-Powershell:
-```powershell
-docker run -d --name etcd-server --restart always `
-  -p 2379:2379 -p 2380:2380 `
-  quay.io/coreos/etcd:v3.5.17 /usr/local/bin/etcd `
-  --name etcd0 `
-  --data-dir /etcd-data `
-  --listen-client-urls http://0.0.0.0:2379 `
-  --advertise-client-urls http://0.0.0.0:2379 `
-  --listen-peer-urls http://0.0.0.0:2380
-```
-
-**ArangoDB:** (Password must match with .env)
-```bash
-docker run -e ARANGO_ROOT_PASSWORD=your_password -p 8529:8529 --name arango --restart always -d arangodb:3.12.4
-```
-
-**Neo4j Desktop (instead of ArangoDB):** PipesHub can use **Neo4j** as the graph database (`DATA_STORE=neo4j`) instead of ArangoDB. This is useful if you prefer a local GUI and do not want the ArangoDB container.
-
-1. Install [Neo4j Desktop](https://neo4j.com/download/), create a **local DBMS**, set its password, and **Start** it.
-2. Leave the default Bolt listener on **localhost:7687** (or note the host/port shown in Desktop if you changed them).
-3. **Do not** start the ArangoDB Docker container above when using Neo4j.
-4. In `backend/.env` (the template you copy into `backend/nodejs/apps/.env` and `backend/python/.env`), set at least:
-   ```bash
-   DATA_STORE=neo4j
-   NEO4J_URI=bolt://localhost:7687
-   NEO4J_USERNAME=neo4j
-   NEO4J_PASSWORD=<same password as your DBMS>
-   NEO4J_DATABASE=neo4j
-   ```
-   The Python services read `DATA_STORE` and write `dataStoreType` into the KV store (etcd/Redis) on startup; the Node.js API uses that for health checks and treats `NEO4J_*` as the live Neo4j connection.
-5. Start the **connectors** Python service (`python -m app.connectors_main`) before or with the rest of the stack so deployment metadata stays consistent. If you already bootstrapped against ArangoDB on the same etcd data, reset etcd or the deployment key in KV store before switching graph backends to avoid mismatched state.
-
-For a full stack in Docker with Neo4j instead of ArangoDB, see `docker-compose.build.neo4j.yml` in `deployment/docker-compose/` (documented in the repository `README.md`).
 
 **MongoDB:** (Password must match with .env MONGO URI)
 
@@ -137,50 +182,8 @@ docker run -d --name mongodb --restart always -p 27017:27017 `
   mongo:8.0.6
 ```
 
-**Zookeeper:**
-
-Bash:
-```bash
-docker run -d --name zookeeper --restart always -p 2181:2181 \
-  -e ZOOKEEPER_CLIENT_PORT=2181 \
-  -e ZOOKEEPER_TICK_TIME=2000 \
-  confluentinc/cp-zookeeper:7.9.0
-```
-
-Powershell:
-```powershell
-docker run -d --name zookeeper --restart always -p 2181:2181 `
-  -e ZOOKEEPER_CLIENT_PORT=2181 `
-  -e ZOOKEEPER_TICK_TIME=2000 `
-  confluentinc/cp-zookeeper:7.9.0
-```
-
-
-**Apache Kafka:**
-
-Bash:
-```bash
-docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9092 \
-  -e KAFKA_BROKER_ID=1 \
-  -e KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181 \
-  -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
-  -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT \
-  -e KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT \
-  -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
-  confluentinc/cp-kafka:7.9.0
-```
-
-Powershell:
-```powershell
-docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9092 `
-  -e KAFKA_BROKER_ID=1 `
-  -e KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181 `
-  -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 `
-  -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT `
-  -e KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT `
-  -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 `
-  confluentinc/cp-kafka:7.9.0
-```
+> `make install` performs all three setups below (and copies the `.env` files
+> from the templates). Run the steps by hand only if you need to.
 
 ### Starting Node.js Backend Service
 ```bash
@@ -191,22 +194,28 @@ npm run dev
 ```
 
 ### Starting Python Backend Services
+
+The Python backend uses [**uv**](https://docs.astral.sh/uv/). `uv` creates the
+virtual environment and can also provide Python 3.12 itself.
+
 ```bash
 cd backend/python
 cp ../env.template .env
-# Create and activate virtual environment
-python3.12 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install dependencies
-pip install -e .
+# Create and activate the virtual environment (uv installs Python 3.12 if needed)
+uv venv venv --python 3.12
+source venv/bin/activate          # Windows (Git Bash): source venv/Scripts/activate
+
+# Install dependencies into the venv
+uv pip install -e . --no-build-isolation-package grpcio-tools
 
 # Install additional language models
 python -m spacy download en_core_web_sm
 python -c "import nltk; nltk.download('punkt')"
 
-# Run each service in a separate terminal: First, cd backend/python and activate the existing virtual environment
-# Start the embedding server before indexing and query when using default local embeddings (HuggingFace / SentenceTransformers).
+# Run each service (with the venv activated). Start the embedding server before
+# indexing and query when using the default local embeddings (HuggingFace /
+# SentenceTransformers).
 python -m app.embedding_main
 python -m app.connectors_main
 python -m app.indexing_main
@@ -214,15 +223,20 @@ python -m app.query_main
 python -m app.docling_main
 ```
 
+> `make start` runs all of these (plus the Node.js backend and frontend) at once
+> with `concurrently`, so you don't need a terminal per service.
+
 ### Setting Up Frontend
 ```bash
 cd frontend
-cp env.template .env  # Modify port if Node.js backend uses a different one
+cp env.template .env
 npm install
-PORT=3001 npm run dev
+npm run dev   # runs on http://localhost:3001 by default
 ```
 
-Then open your browser to the displayed URL (typically `http://localhost:3001` when using `PORT=3001`; Next.js defaults to port 3000 if `PORT` is unset).
+Then open your browser to `http://localhost:3001`.
+
+</details>
 
 ## Project Architecture
 
