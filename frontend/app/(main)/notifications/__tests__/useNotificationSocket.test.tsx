@@ -25,23 +25,29 @@ vi.mock('@/lib/socket/notification-socket', () => ({
   disconnectNotificationSocket: () => disconnectMock(),
 }));
 
+const getStatsMock = vi.fn(() =>
+  Promise.resolve({
+    unreadCount: 0,
+    readCount: 0,
+    archivedCount: 0,
+  }),
+);
+
+const listMock = vi.fn(() =>
+  Promise.resolve({
+    notifications: [],
+    cursor: null,
+    hasMore: false,
+  }),
+);
+
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>();
   return {
     ...actual,
     NotificationsApi: {
-      list: () =>
-        Promise.resolve({
-          notifications: [],
-          cursor: null,
-          hasMore: false,
-        }),
-      getStats: () =>
-        Promise.resolve({
-          unreadCount: 0,
-          readCount: 0,
-          archivedCount: 0,
-        }),
+      list: (...args: unknown[]) => listMock(...args),
+      getStats: () => getStatsMock(),
     },
   };
 });
@@ -67,5 +73,23 @@ describe('useNotificationSocket', () => {
     });
     unmount();
     expect(disconnectMock).toHaveBeenCalled();
+  });
+
+  it('refetches stats when the tab becomes visible', async () => {
+    renderHook(() => {
+      useNotificationSocket();
+    });
+
+    getStatsMock.mockClear();
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'visible',
+    });
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    await vi.waitFor(() => {
+      expect(getStatsMock).toHaveBeenCalled();
+    });
   });
 });

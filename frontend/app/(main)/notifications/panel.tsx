@@ -13,7 +13,7 @@ import { createPortal } from 'react-dom';
 import { Theme, Flex, Text, Box, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { NotificationsApi, type NotificationListFilter, type NotificationListItem } from './api';
-import { useNotificationStore } from './store';
+import { useNotificationStore, getVisibleNotifications } from './store';
 import { NotificationRow } from './notification-row';
 import {
   NotificationFilterMenu,
@@ -48,6 +48,7 @@ export function NotificationsPanel() {
   const hasMore = useNotificationStore((s) => s.hasMore);
   const isLoadingMore = useNotificationStore((s) => s.isLoadingMore);
   const loadMore = useNotificationStore((s) => s.loadMore);
+  const ensureBackfill = useNotificationStore((s) => s.ensureBackfill);
   const setInitialPage = useNotificationStore((s) => s.setInitialPage);
   const setStats = useNotificationStore((s) => s.setStats);
   const markReadStore = useNotificationStore((s) => s.markRead);
@@ -230,12 +231,12 @@ export function NotificationsPanel() {
     setListFilter(next);
   };
 
-  const displayNotifications =
-    listFilter === 'unread'
-      ? notifications.filter((n) => n.status === 'unread')
-      : listFilter === 'archived'
-      ? notifications.filter((n) => n.status === 'archived')
-      : notifications.filter((n) => n.status !== 'archived');
+  const displayNotifications = getVisibleNotifications(notifications, listFilter);
+
+  useEffect(() => {
+    if (!isPanelOpen || loading) return;
+    void ensureBackfill();
+  }, [isPanelOpen, loading, displayNotifications.length, hasMore, listFilter, ensureBackfill]);
 
   // Close on Escape
   useEffect(() => {
@@ -278,6 +279,8 @@ export function NotificationsPanel() {
     try {
       await NotificationsApi.markRead(n._id);
       markReadStore(n._id);
+      const stats = await NotificationsApi.getStats();
+      setStats(stats);
     } catch {
       setError(t('notifications.updateFailed'));
     }
@@ -290,6 +293,8 @@ export function NotificationsPanel() {
     try {
       await NotificationsApi.markAllRead();
       markAllReadStore();
+      const stats = await NotificationsApi.getStats();
+      setStats(stats);
     } catch {
       setError(t('notifications.updateFailed'));
     } finally {
@@ -302,6 +307,8 @@ export function NotificationsPanel() {
     try {
       await NotificationsApi.remove(n._id);
       removeStore(n._id);
+      const stats = await NotificationsApi.getStats();
+      setStats(stats);
     } catch {
       setError(t('notifications.removeFailed'));
     }
@@ -312,6 +319,8 @@ export function NotificationsPanel() {
     try {
       await NotificationsApi.archive(n._id);
       archiveStore(n._id);
+      const stats = await NotificationsApi.getStats();
+      setStats(stats);
     } catch {
       setError(t('notifications.updateFailed'));
     }
@@ -355,8 +364,23 @@ export function NotificationsPanel() {
         [data-ph-notifications-header-actions] > *:hover {
           z-index: 1;
         }
+        [data-ph-notification-row][data-read="true"] {
+          background-color: var(--gray-a2);
+        }
+        html.dark [data-ph-notification-row][data-read="true"] {
+          background-color: transparent;
+        }
+        html.dark [data-ph-notification-row][data-read="false"] {
+          background-color: var(--gray-a2);
+        }
         [data-ph-notification-row]:hover {
           background-color: var(--olive-3);
+        }
+        html.dark [data-ph-notification-row][data-read="true"]:hover {
+          background-color: var(--gray-a3);
+        }
+        html.dark [data-ph-notification-row][data-read="false"]:hover {
+          background-color: var(--gray-a6);
         }
         [data-ph-notification-row-meta] {
           position: relative;
@@ -551,6 +575,12 @@ export function NotificationsPanel() {
           )}
 
           {loading && displayNotifications.length === 0 ? (
+            <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
+              <Text size="2" color="gray">
+                {t('notifications.loading')}
+              </Text>
+            </Flex>
+          ) : displayNotifications.length === 0 && (hasMore || isLoadingMore) ? (
             <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
               <Text size="2" color="gray">
                 {t('notifications.loading')}

@@ -1186,7 +1186,7 @@ class JiraConnector(BaseConnector):
                 type=NotificationType.CONNECTOR_SUCCESS,
                 severity=NotificationSeverity.SUCCESS,
                 title=f"Jira sync completed",
-                message=f"Jira sync completed. Total: {sync_stats['total_synced']} issues (New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']})",
+                message=f"Total: {sync_stats['total_synced']} issues (New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']})",
                 recipient_user_ids=[self.created_by],
             )
 
@@ -1348,7 +1348,7 @@ class JiraConnector(BaseConnector):
                         type=NotificationType.CONNECTOR_WARNING,
                         severity=NotificationSeverity.WARNING,
                         title=f"Failed to fetch audit records",
-                        message=f"You do not have the Jira Administrator permission required to get auditing records.",
+                        message=f"You do not have the Jira Administrator permission required to get audit records.",
                         recipient_user_ids=[self.created_by],
                     )
                     break
@@ -1867,9 +1867,12 @@ class JiraConnector(BaseConnector):
                     await self.notify(
                         type=NotificationType.CONNECTOR_WARNING,
                         severity=NotificationSeverity.WARNING,
-                        title=f"Application roles API returned 403",
-                        message=f"configuring user is not a Jira admin. Projects whose permission scheme uses applicationRole holders will grant the configuring user direct access instead.",
+                        title=f"Application roles API inaccessible",
+                        message=f"You do not have the Jira Admin permission required to get application roles. Application roles permissions will not be synced.",
                         recipient_user_ids=[self.created_by],
+                        payload={
+                            "redirect_link": None
+                        }
                     )
                 else:
                     self.logger.warning(
@@ -1923,8 +1926,11 @@ class JiraConnector(BaseConnector):
             await self.notify(
                 type=NotificationType.CONNECTOR_WARNING,
                 severity=NotificationSeverity.WARNING,
-                title=f"Permission scheme API returned 403",
-                message=f"Permission scheme API returned 403 for project {project_key}. Granting configuring user '{self.creator_email}' direct BROWSE access instead of dropping all ACLs for this project.",
+                title=f"Could not read permissions for {project_key}",
+                message=f"Ask your Jira admin to add {self.creator_email} as a project admin. Until then, only you can access this project.",
+                payload={
+                    "redirect_link": f"{self.site_url}/plugins/servlet/project-config/{project_key}/permissions",
+                },
                 recipient_user_ids=[self.created_by],
             )
             return [Permission(
@@ -4665,7 +4671,7 @@ class JiraConnector(BaseConnector):
             await self.notify(
                 type=NotificationType.CONNECTOR_AUTH_ERROR,
                 severity=NotificationSeverity.ERROR,
-                title=f"Connection test failed",
+                title=f"Connection failed",
                 message=f"{self.connector_name.value}: {e}",
                 recipient_roles=[NotificationRecipientRole.ADMIN],
             )

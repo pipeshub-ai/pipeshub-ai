@@ -1,6 +1,17 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { useNotificationStore } from '../store';
-import type { NotificationListItem, NotificationListResponse } from '../api';
+import { getVisibleNotifications, useNotificationStore } from '../store';
+import { NotificationsApi, type NotificationListItem, type NotificationListResponse } from '../api';
+
+vi.mock('../api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api')>();
+  return {
+    ...actual,
+    NotificationsApi: {
+      ...actual.NotificationsApi,
+      list: vi.fn(),
+    },
+  };
+});
 
 function makeNotification(
   overrides: Partial<NotificationListItem> & Pick<NotificationListItem, '_id' | 'status'>,
@@ -30,8 +41,15 @@ function makePage(
   };
 }
 
+function makeUnreadBatch(count: number, startId = 1): NotificationListItem[] {
+  return Array.from({ length: count }, (_, i) =>
+    makeNotification({ _id: String(startId + i), status: 'unread' }),
+  );
+}
+
 describe('useNotificationStore', () => {
   beforeEach(() => {
+    vi.mocked(NotificationsApi.list).mockReset();
     useNotificationStore.setState({
       notifications: [],
       unreadCount: 0,
@@ -234,5 +252,91 @@ describe('useNotificationStore', () => {
     useNotificationStore.getState().remove('1');
     expect(useNotificationStore.getState().notifications.map((n) => n._id)).toEqual(['2']);
     expect(useNotificationStore.getState().unreadCount).toBe(1);
+  });
+
+  describe('ensureBackfill', () => {
+    it('loads pages until visible count reaches 20', async () => {
+      useNotificationStore.getState().setInitialPage(
+        makePage([makeNotification({ _id: '1', status: 'unread' })], {
+          hasMore: true,
+          cursor: 'c1',
+        }),
+      );
+      vi.mocked(NotificationsApi.list).mockResolvedValueOnce(
+        makePage(makeUnreadBatch(19, 2), { hasMore: false, cursor: null }),
+      );
+
+      await useNotificationStore.getState().ensureBackfill();
+
+      expect(NotificationsApi.list).toHaveBeenCalledTimes(1);
+      const visible = getVisibleNotifications(
+        useNotificationStore.getState().notifications,
+        'all',
+      );
+      expect(visible).toHaveLength(20);
+    });
+
+    it('does not call API when visible count is already 20', async () => {
+      useNotificationStore.getState().setInitialPage(
+        makePage(makeUnreadBatch(20), { hasMore: true, cursor: 'c1' }),
+      );
+
+      await useNotificationStore.getState().ensureBackfill();
+
+      expect(NotificationsApi.list).not.toHaveBeenCalled();
+    });
+
+    it('does not call API when hasMore is false despite visible below 20', async () => {
+      useNotificationStore.getState().setInitialPage(
+        makePage(makeUnreadBatch(5), { hasMore: false, cursor: null }),
+      );
+
+      await useNotificationStore.getState().ensureBackfill();
+
+      expect(NotificationsApi.list).not.toHaveBeenCalled();
+    });
+
+    it('stops after max page cap when pages add no visible items in all view', async () => {
+      useNotificationStore.getState().setInitialPage(
+        makePage([makeNotification({ _id: '1', status: 'unread' })], {
+          hasMore: true,
+          cursor: 'c1',
+        }),
+      );
+      vi.mocked(NotificationsApi.list).mockImplementation(async () =>
+        makePage([makeNotification({ _id: 'archived-only', status: 'archived' })], {
+          hasMore: true,
+          cursor: 'next',
+        }),
+      );
+
+      await useNotificationStore.getState().ensureBackfill();
+
+      expect(NotificationsApi.list).toHaveBeenCalledTimes(5);
+      expect(
+        getVisibleNotifications(useNotificationStore.getState().notifications, 'all'),
+      ).toHaveLength(1);
+    });
+
+    it('refills after remove when visible count drops below 20', async () => {
+      useNotificationStore.getState().setInitialPage(
+        makePage([makeNotification({ _id: '1', status: 'unread' })], {
+          hasMore: true,
+          cursor: 'c1',
+        }),
+      );
+      vi.mocked(NotificationsApi.list).mockResolvedValueOnce(
+        makePage([makeNotification({ _id: '2', status: 'unread' })], {
+          hasMore: false,
+          cursor: null,
+        }),
+      );
+
+      useNotificationStore.getState().remove('1');
+      await useNotificationStore.getState().ensureBackfill();
+
+      expect(NotificationsApi.list).toHaveBeenCalledTimes(1);
+      expect(useNotificationStore.getState().notifications.map((n) => n._id)).toEqual(['2']);
+    });
   });
 });

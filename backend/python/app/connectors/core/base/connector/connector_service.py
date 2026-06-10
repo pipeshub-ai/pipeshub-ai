@@ -340,7 +340,10 @@ class BaseConnector(ABC):
             return
         org_id = getattr(self.data_entities_processor, "org_id", None) or ""
         connector_type = self.connector_name.value if isinstance(self.connector_name, Connectors) else self.connector_name
-        redirect_link = DEFAULT_CONNECTOR_NOTIFICATION_LINK + f"{self.scope}/?connectorType={connector_type}"
+        if payload and "redirect_link" in payload:
+            redirect_link = payload["redirect_link"]
+        else:
+            redirect_link = DEFAULT_CONNECTOR_NOTIFICATION_LINK + f"{self.scope}/?connectorType={connector_type}"
 
         if not recipient_user_ids and not recipient_roles:
             recipient_user_ids = [self.created_by]

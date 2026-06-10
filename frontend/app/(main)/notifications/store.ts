@@ -8,6 +8,29 @@ import {
   type NotificationStatsResponse,
 } from './api';
 
+const MAX_BACKFILL_PAGES = 5;
+const MIN_VISIBLE = DEFAULT_NOTIFICATION_PAGE_SIZE;
+
+function visibleForFilter(
+  notifications: NotificationListItem[],
+  filter: NotificationListFilter,
+): NotificationListItem[] {
+  if (filter === 'unread') {
+    return notifications.filter((n) => n.status === 'unread');
+  }
+  if (filter === 'archived') {
+    return notifications.filter((n) => n.status === 'archived');
+  }
+  return notifications.filter((n) => n.status !== 'archived');
+}
+
+export function getVisibleNotifications(
+  notifications: NotificationListItem[],
+  filter: NotificationListFilter,
+): NotificationListItem[] {
+  return visibleForFilter(notifications, filter);
+}
+
 function listParamsForFilter(
   filter: NotificationListFilter,
   extra?: { cursor?: string },
@@ -38,6 +61,7 @@ interface NotificationState {
   setStats: (stats: NotificationStatsResponse) => void;
   appendPage: (response: NotificationListResponse) => void;
   loadMore: () => Promise<void>;
+  ensureBackfill: () => Promise<void>;
   addNotification: (item: NotificationListItem) => void;
   markRead: (id: string) => void;
   markAllRead: () => void;
@@ -113,6 +137,18 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     }
   },
 
+  ensureBackfill: async () => {
+    for (let i = 0; i < MAX_BACKFILL_PAGES; i++) {
+      const { listFilter, notifications, hasMore, cursor, isLoadingMore } = get();
+      if (!hasMore || !cursor || isLoadingMore) break;
+
+      const visible = visibleForFilter(notifications, listFilter);
+      if (visible.length >= MIN_VISIBLE) break;
+
+      await get().loadMore();
+    }
+  },
+
   addNotification: (item) => {
     const prev = get().notifications;
     const isDuplicate = prev.some((n) => n._id === item._id);
@@ -132,7 +168,6 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     );
     set({
       notifications: next,
-      unreadCount: wasUnread ? Math.max(0, get().unreadCount - 1) : get().unreadCount,
     });
   },
 
@@ -140,30 +175,25 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     const { listFilter, notifications } = get();
     set({
       notifications: notifications.map((n) => ({ ...n, status: 'read' as const })),
-      unreadCount: 0,
       ...(listFilter === 'unread' ? { hasMore: false, cursor: null } : {}),
     });
   },
 
   remove: (id) => {
     const target = get().notifications.find((n) => n._id === id);
-    const wasUnread = target?.status === 'unread';
     const next = get().notifications.filter((n) => n._id !== id);
     set({
       notifications: next,
-      unreadCount: wasUnread ? Math.max(0, get().unreadCount - 1) : get().unreadCount,
     });
   },
 
   archive: (id) => {
     const target = get().notifications.find((n) => n._id === id);
     if (!target || target.status === 'archived') return;
-    const wasUnread = target.status === 'unread';
     set({
       notifications: get().notifications.map((n) =>
         n._id === id ? { ...n, status: 'archived' as const } : n,
       ),
-      unreadCount: wasUnread ? Math.max(0, get().unreadCount - 1) : get().unreadCount,
       archivedCount: get().archivedCount + 1,
     });
   },

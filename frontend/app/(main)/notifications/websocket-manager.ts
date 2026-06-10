@@ -9,6 +9,28 @@ import { useAuthStore } from '@/lib/store/auth-store';
 import { useNotificationStore } from './store';
 import { NotificationsApi, type NotificationListItem } from './api';
 
+/** Refetch stats (and list when the panel is open) from the server. */
+async function syncNotificationsFromServer(): Promise<void> {
+  try {
+    const { isPanelOpen, listFilter, setStats, setInitialPage } =
+      useNotificationStore.getState();
+    const stats = await NotificationsApi.getStats();
+    setStats(stats);
+    if (isPanelOpen) {
+      const page = await NotificationsApi.list(
+        listFilter === 'unread'
+          ? { status: 'unread' }
+          : listFilter === 'archived'
+            ? { status: 'archived' }
+            : {},
+      );
+      setInitialPage(page);
+    }
+  } catch {
+    // non-fatal: user still gets live events
+  }
+}
+
 /** Subscribes to real-time notifications when authenticated. Mount once under the main app shell. */
 export function useNotificationSocket(): void {
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -58,7 +80,21 @@ export function useNotificationSocket(): void {
       sock.off('newNotification', onNew);
       disconnectNotificationSocket();
     };
-  }, [accessToken, isAuthenticated, isHydrated, setInitialPage, setStats, addNotification]);
+  }, [accessToken, isAuthenticated, isHydrated, addNotification]);
+
+  // When the user returns to this tab, refresh counts (and panel list) after actions in another tab.
+  useEffect(() => {
+    if (!isHydrated || !isAuthenticated || !accessToken) return;
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void syncNotificationsFromServer();
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [accessToken, isAuthenticated, isHydrated]);
 }
 
 /** Thin wrapper so layout can mount the hook once. */

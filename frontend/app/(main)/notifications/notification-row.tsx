@@ -222,6 +222,7 @@ export function NotificationRow({
   const href = notificationHref(n.redirectLink ?? '');
 
   const isRead = n.status === 'read' || n.status === 'archived';
+  const readOpacity = isRead ? 0.65 : 1;
   const titleStyle = { color: 'var(--slate-12)' };
 
   const measureMessageTruncation = useCallback(() => {
@@ -251,12 +252,12 @@ export function NotificationRow({
   return (
     <Box
       data-ph-notification-row=""
+      data-read={isRead ? 'true' : 'false'}
       style={{
         width: '100%',
         boxSizing: 'border-box',
         borderBottom: '1px solid var(--olive-4)',
         padding: 'var(--space-3) var(--space-4)',
-        opacity: isRead ? 0.65 : 1,
       }}
     >
       <Flex align="start" gap="2">
@@ -270,6 +271,7 @@ export function NotificationRow({
             borderRadius: 'var(--radius-2)',
             backgroundColor: 'var(--olive-3)',
             flexShrink: 0,
+            opacity: readOpacity,
           }}
         >
           <MaterialIcon
@@ -281,14 +283,16 @@ export function NotificationRow({
 
         <Flex align="start" justify="between" gap="2" style={{ flex: 1, minWidth: 0 }}>
           <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
-            <NotificationTitle
-              title={title}
-              href={href}
-              style={titleStyle}
-              onNavigate={() => {
-                if (!isRead) onMarkRead(n);
-              }}
-            />
+            <Box style={{ opacity: readOpacity }}>
+              <NotificationTitle
+                title={title}
+                href={href}
+                style={titleStyle}
+                onNavigate={() => {
+                  if (!isRead) onMarkRead(n);
+                }}
+              />
+            </Box>
             <Box ref={messageContainerRef} style={{ position: 'relative', minWidth: 0, width: '100%' }}>
               {/* Invisible unclamped clone — used only to measure full text height */}
               <div

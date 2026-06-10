@@ -591,7 +591,8 @@ class WebConnector(BaseConnector):
                     severity=NotificationSeverity.ERROR,
                     title=f"Website not accessible",
                     message=f"Website {self.url} is not accessible.",
-                    recipient_roles=[NotificationRecipientRole.ADMIN],
+                    recipient_roles=[NotificationRecipientRole.ADMIN] if self.scope == ConnectorScope.TEAM.value else None,
+                    recipient_user_ids=[self.created_by] if self.scope == ConnectorScope.PERSONAL.value else None
                 )
                 return False
 
@@ -610,7 +611,8 @@ class WebConnector(BaseConnector):
                     severity=NotificationSeverity.ERROR,
                     title=f"Website not accessible",
                     message=f"Website {self.url} returned status {result.status_code}",
-                    recipient_roles=[NotificationRecipientRole.ADMIN],
+                    recipient_roles=[NotificationRecipientRole.ADMIN] if self.scope == ConnectorScope.TEAM.value else None,
+                    recipient_user_ids=[self.created_by] if self.scope == ConnectorScope.PERSONAL.value else None
                 )
                 return False
 
@@ -852,27 +854,10 @@ class WebConnector(BaseConnector):
                     await self.data_entities_processor.on_new_records([pair])
                     self.processed_urls += 1
                 self.logger.info(f"✅ Indexed single page: {url}")
-                payload = {
-                    "url": url,
-                    "record_name": file_record.record_name,
-                    "record_id": file_record.id,
-                }
-                await self.notify(
-                    type=NotificationType.CONNECTOR_SUCCESS,
-                    title="Web page indexed",
-                    message=f"Web page {file_record.record_name} indexed successfully",
-                    severity=NotificationSeverity.SUCCESS,
-                    payload=payload,
-                )
 
         except Exception as e:
             self.logger.error(f"❌ Error crawling single page {url}: {e}", exc_info=True)
-            await self.notify(
-                type=NotificationType.CONNECTOR_SYNC_ERROR,
-                title="Error crawling web page",
-                message=f"Error crawling web page {url}: {e}",
-                severity=NotificationSeverity.ERROR,
-            )
+
 
     async def _create_ancestor_placeholder_records(self, start_url: str) -> None:
         """Create and upsert placeholder WEBPAGE records for every intermediate path
