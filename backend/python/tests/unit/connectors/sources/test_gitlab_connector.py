@@ -12750,21 +12750,32 @@ class TestIncrementalCodeRepoSync:
         ]
         compare_res = MagicMock(success=True, data={"diffs": diffs}, error=None)
         connector._ds_call = AsyncMock(return_value=compare_res)
+        connector._reconcile_sha_moves = AsyncMock(
+            side_effect=lambda pid, pp, d, a, ref="HEAD": (d, a, [])
+        )
         connector._delete_code_files_by_paths = AsyncMock()
-        connector._upsert_code_files_by_paths = AsyncMock()
+        connector._apply_code_renames = AsyncMock(return_value=True)
+        connector._upsert_code_files_by_paths = AsyncMock(return_value=True)
 
         ok = await connector._sync_repo_incremental(
             10, "group/proj", "fromsha", "tosha"
         )
 
         assert ok is True
+        connector._reconcile_sha_moves.assert_awaited_once_with(
+            10, "group/proj", ["removed.py"], ["added.py"], ref="tosha"
+        )
+        connector._apply_code_renames.assert_awaited_once_with(
+            10, "group/proj", [("old_name.py", "new_name.py")], ref="tosha"
+        )
         connector._delete_code_files_by_paths.assert_awaited_once_with(
-            10, "group/proj", ["removed.py", "old_name.py"]
+            10, "group/proj", ["removed.py"]
         )
         connector._upsert_code_files_by_paths.assert_awaited_once_with(
             10,
             "group/proj",
-            ["new_name.py", "added.py", "changed.py"],
+            ["added.py", "changed.py"],
+            ref="tosha",
         )
 
     @pytest.mark.asyncio

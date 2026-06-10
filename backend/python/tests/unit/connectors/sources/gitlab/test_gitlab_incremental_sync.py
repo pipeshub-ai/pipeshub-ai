@@ -387,7 +387,7 @@ class TestReconcileShaMoves:
         old_record.external_revision_id = "sha-abc"
 
         # The newly added path also has SHA "sha-abc" in the live tree
-        c._resolve_blob_sha_by_path = AsyncMock(return_value={"src/util.py": "sha-abc"})
+        c._resolve_blob_sha_by_path = AsyncMock(return_value=({"src/util.py": "sha-abc"}, True))
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=old_record)
 
         remaining_deletes, remaining_adds, extra_renames = await c._reconcile_sha_moves(
@@ -408,7 +408,7 @@ class TestReconcileShaMoves:
         old_record = MagicMock()
         old_record.external_revision_id = "sha-old"
 
-        c._resolve_blob_sha_by_path = AsyncMock(return_value={"src/util.py": "sha-new"})
+        c._resolve_blob_sha_by_path = AsyncMock(return_value=({"src/util.py": "sha-new"}, True))
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=old_record)
 
         remaining_deletes, remaining_adds, extra_renames = await c._reconcile_sha_moves(
@@ -425,7 +425,7 @@ class TestReconcileShaMoves:
     async def test_empty_deletes_no_op(self) -> None:
         """No deletes → nothing to reconcile → adds/deletes unchanged."""
         c = _make_connector()
-        c._resolve_blob_sha_by_path = AsyncMock(return_value={})
+        c._resolve_blob_sha_by_path = AsyncMock(return_value=({}, True))
 
         remaining_deletes, remaining_adds, extra_renames = await c._reconcile_sha_moves(
             project_id=10,
@@ -443,7 +443,7 @@ class TestReconcileShaMoves:
     async def test_empty_adds_no_op(self) -> None:
         """No adds → nothing to reconcile → deletes unchanged."""
         c = _make_connector()
-        c._resolve_blob_sha_by_path = AsyncMock(return_value={})
+        c._resolve_blob_sha_by_path = AsyncMock(return_value=({}, True))
 
         remaining_deletes, remaining_adds, extra_renames = await c._reconcile_sha_moves(
             project_id=10,
@@ -461,7 +461,7 @@ class TestReconcileShaMoves:
         """Deleted path not found in DB → skip promotion (never stored)."""
         c = _make_connector()
 
-        c._resolve_blob_sha_by_path = AsyncMock(return_value={"src/a.py": "sha-abc"})
+        c._resolve_blob_sha_by_path = AsyncMock(return_value=({"src/a.py": "sha-abc"}, True))
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         remaining_deletes, remaining_adds, extra_renames = await c._reconcile_sha_moves(
@@ -482,7 +482,7 @@ class TestReconcileShaMoves:
         old_record = MagicMock()
         old_record.external_revision_id = ""
 
-        c._resolve_blob_sha_by_path = AsyncMock(return_value={"src/a.py": "sha-abc"})
+        c._resolve_blob_sha_by_path = AsyncMock(return_value=({"src/a.py": "sha-abc"}, True))
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=old_record)
 
         remaining_deletes, remaining_adds, extra_renames = await c._reconcile_sha_moves(
@@ -506,7 +506,7 @@ class TestReconcileShaMoves:
             side_effect=lambda cid, eid: records.get(eid)
         )
         c._resolve_blob_sha_by_path = AsyncMock(
-            return_value={"src/a.py": "sha-1", "src/b.py": "sha-2"}
+            return_value=({"src/a.py": "sha-1", "src/b.py": "sha-2"}, True)
         )
 
         remaining_deletes, remaining_adds, extra_renames = await c._reconcile_sha_moves(
@@ -620,7 +620,7 @@ class TestSyncRepoIncremental:
         c._ds_call = AsyncMock(return_value=_ok_compare(diffs))
         # Let _reconcile_sha_moves be a no-op (no SHA-promoted renames)
         c._reconcile_sha_moves = AsyncMock(
-            side_effect=lambda pid, pp, d, a: (d, a, [])
+            side_effect=lambda pid, pp, d, a, ref="HEAD": (d, a, [])
         )
 
         async def track_delete(*a, **kw):
@@ -628,9 +628,11 @@ class TestSyncRepoIncremental:
 
         async def track_renames(*a, **kw):
             call_order.append("renames")
+            return True
 
         async def track_upserts(*a, **kw):
             call_order.append("upserts")
+            return True
 
         async def track_cleanup(*a, **kw):
             call_order.append("cleanup")
@@ -658,7 +660,7 @@ class TestSyncRepoIncremental:
             _diff_entry(old_path="lib/old.py", new_path="src/old.py", renamed_file=True),
         ]
         c._ds_call = AsyncMock(return_value=_ok_compare(diffs))
-        c._reconcile_sha_moves = AsyncMock(side_effect=lambda pid, pp, d, a: (d, a, []))
+        c._reconcile_sha_moves = AsyncMock(side_effect=lambda pid, pp, d, a, ref="HEAD": (d, a, []))
         c._delete_code_files_by_paths = AsyncMock()
         c._apply_code_renames = AsyncMock()
         c._upsert_code_files_by_paths = AsyncMock()
@@ -684,7 +686,7 @@ class TestSyncRepoIncremental:
         c._ds_call = AsyncMock(return_value=_ok_compare(diffs))
         # Reconcile promotes the delete+add pair to an extra rename
         c._reconcile_sha_moves = AsyncMock(
-            side_effect=lambda pid, pp, d, a: ([], [], [("lib/x.py", "src/x.py")])
+            side_effect=lambda pid, pp, d, a, ref="HEAD": ([], [], [("lib/x.py", "src/x.py")])
         )
         c._delete_code_files_by_paths = AsyncMock()
         c._apply_code_renames = AsyncMock()
@@ -708,7 +710,7 @@ class TestSyncRepoIncremental:
             _diff_entry(old_path="changed.py", new_path="changed.py"),
         ]
         c._ds_call = AsyncMock(return_value=_ok_compare(diffs))
-        c._reconcile_sha_moves = AsyncMock(side_effect=lambda pid, pp, d, a: (d, a, []))
+        c._reconcile_sha_moves = AsyncMock(side_effect=lambda pid, pp, d, a, ref="HEAD": (d, a, []))
         c._delete_code_files_by_paths = AsyncMock()
         c._apply_code_renames = AsyncMock()
         c._upsert_code_files_by_paths = AsyncMock()
@@ -729,7 +731,7 @@ class TestSyncRepoIncremental:
             _diff_entry(old_path="new.py", new_path="new.py", new_file=True),
         ]
         c._ds_call = AsyncMock(return_value=_ok_compare(diffs))
-        c._reconcile_sha_moves = AsyncMock(side_effect=lambda pid, pp, d, a: (d, a, []))
+        c._reconcile_sha_moves = AsyncMock(side_effect=lambda pid, pp, d, a, ref="HEAD": (d, a, []))
         c._delete_code_files_by_paths = AsyncMock()
         c._apply_code_renames = AsyncMock()
         c._upsert_code_files_by_paths = AsyncMock()
@@ -748,7 +750,7 @@ class TestSyncRepoIncremental:
         """
         c = _make_connector()
         c._ds_call = AsyncMock(return_value=_ok_compare([]))
-        c._reconcile_sha_moves = AsyncMock(side_effect=lambda pid, pp, d, a: (d, a, []))
+        c._reconcile_sha_moves = AsyncMock(side_effect=lambda pid, pp, d, a, ref="HEAD": (d, a, []))
 
         await c._sync_repo_incremental(10, _NS, "sha1", "sha2")
 
@@ -856,7 +858,7 @@ class TestApplyCodeRenames:
         await c._apply_code_renames(10, _NS, [("src/old.py", "src/new.py")])
 
         c._delete_code_files_by_paths.assert_awaited_once_with(10, _NS, ["src/old.py"])
-        c._upsert_code_files_by_paths.assert_awaited_once_with(10, _NS, ["src/new.py"])
+        c._upsert_code_files_by_paths.assert_awaited_once_with(10, _NS, ["src/new.py"], ref="HEAD")
         c.data_entities_processor.on_records_moved.assert_not_awaited()
 
     async def test_dotfile_new_target_deletes_old_only(self) -> None:
@@ -1240,7 +1242,7 @@ class TestModifyFiresReindex:
                 error=None,
             ),
         ])
-        c._reconcile_sha_moves = AsyncMock(side_effect=lambda pid, pp, d, a: (d, a, []))
+        c._reconcile_sha_moves = AsyncMock(side_effect=lambda pid, pp, d, a, ref="HEAD": (d, a, []))
         c._ensure_folder_records_for_paths = AsyncMock()
         c._delete_code_files_by_paths = AsyncMock()
         c._apply_code_renames = AsyncMock()
@@ -1264,7 +1266,7 @@ class TestModifyFiresReindex:
                 error=None,
             ),
         ])
-        c._reconcile_sha_moves = AsyncMock(side_effect=lambda pid, pp, d, a: (d, a, []))
+        c._reconcile_sha_moves = AsyncMock(side_effect=lambda pid, pp, d, a, ref="HEAD": (d, a, []))
         c._ensure_folder_records_for_paths = AsyncMock()
         c._delete_code_files_by_paths = AsyncMock()
         c._apply_code_renames = AsyncMock()
