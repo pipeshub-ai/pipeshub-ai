@@ -3808,6 +3808,7 @@ class GitLabConnector(BaseConnector):
         self,
         project_id: int,
         repo_paths: list[str],
+        ref: str = "HEAD",
     ) -> tuple[dict[str, str], bool]:
         """Fetch blob SHAs for a list of repo-relative paths via list_repo_tree.
 
@@ -3827,7 +3828,7 @@ class GitLabConnector(BaseConnector):
             tree_res = await self._paged_list(
                 self.data_source.list_repo_tree,
                 project_id=project_id,
-                ref="HEAD",
+                ref=ref,
                 path=parent,
                 recursive=False,
                 progress_label=f"resolve-sha tree {parent or '/'} project {project_id}",
@@ -3855,6 +3856,7 @@ class GitLabConnector(BaseConnector):
         project_path: str,
         deletes: list[str],
         adds: list[str],
+        ref: str = "HEAD",
     ) -> tuple[list[str], list[str], list[tuple[str, str]]]:
         """Promote delete+add pairs sharing the same blob SHA into renames.
 
@@ -3876,7 +3878,7 @@ class GitLabConnector(BaseConnector):
         # to delete+add — that is safe and idempotent. We do not surface
         # all_ok here; the caller (_sync_repo_incremental) tracks completeness
         # through the downstream upsert/rename results.
-        added_sha_map, _ = await self._resolve_blob_sha_by_path(project_id, adds)
+        added_sha_map, _ = await self._resolve_blob_sha_by_path(project_id, adds, ref=ref)
 
         # Build a reverse map: SHA → new_path (first match wins for uniqueness).
         sha_to_new_path: dict[str, str] = {}
@@ -3916,6 +3918,7 @@ class GitLabConnector(BaseConnector):
         project_id: int,
         project_path: str,
         renames: list[tuple[str, str]],
+        ref: str = "HEAD",
     ) -> bool:
         """Apply in-place rename / move for a list of ``(old_path, new_path)`` pairs.
 
@@ -3934,7 +3937,7 @@ class GitLabConnector(BaseConnector):
             return True
 
         new_paths = [new_p for _, new_p in renames]
-        await self._ensure_folder_records_for_paths(project_id, project_path, new_paths)
+        await self._ensure_folder_records_for_paths(project_id, project_path, new_paths, ref=ref)
 
         # Single list_repo_tree pass per parent directory to collect both
         # blob SHA and file name for all rename targets.
@@ -3950,7 +3953,7 @@ class GitLabConnector(BaseConnector):
             tree_res = await self._paged_list(
                 self.data_source.list_repo_tree,
                 project_id=project_id,
-                ref="HEAD",
+                ref=ref,
                 path=parent,
                 recursive=False,
                 progress_label=f"rename tree {parent or '/'} project {project_id}",
@@ -3996,7 +3999,7 @@ class GitLabConnector(BaseConnector):
                     project_id,
                 )
                 await self._delete_code_files_by_paths(project_id, project_path, [old_path])
-                await self._upsert_code_files_by_paths(project_id, project_path, [new_path])
+                await self._upsert_code_files_by_paths(project_id, project_path, [new_path], ref=ref)
                 continue
 
             # Skip dotfile targets (classifier should have already handled this,
@@ -4014,8 +4017,8 @@ class GitLabConnector(BaseConnector):
 
             parent_external_record_id: str | None
             if "/" in new_path:
-                parent_blob_path = web_path.rpartition("/")[0]
-                parent_external_record_id = parent_blob_path.replace("/-/blob/", "/-/tree/", 1)
+                parent_dir = new_path.rpartition("/")[0]
+                parent_external_record_id = self._code_tree_web_path(project_path, parent_dir)
             else:
                 parent_external_record_id = None
 
@@ -4131,7 +4134,7 @@ class GitLabConnector(BaseConnector):
         # Content-SHA reconcile: promote identical-content delete+add pairs to
         # in-place renames (catches moves GitLab didn't flag as renamed_file).
         deletes, adds, extra_renames = await self._reconcile_sha_moves(
-            project_id, project_path, deletes, adds
+            project_id, project_path, deletes, adds, ref=to_sha
         )
         renames = renames + extra_renames
 
@@ -4162,12 +4165,12 @@ class GitLabConnector(BaseConnector):
             await self._delete_code_files_by_paths(project_id, project_path, deletes)
 
         if renames:
-            rename_ok = await self._apply_code_renames(project_id, project_path, renames)
+            rename_ok = await self._apply_code_renames(project_id, project_path, renames, ref=to_sha)
             all_ok = all_ok and rename_ok
 
         upsert_paths = list(dict.fromkeys(adds + modifies))
         if upsert_paths:
-            upsert_ok = await self._upsert_code_files_by_paths(project_id, project_path, upsert_paths)
+            upsert_ok = await self._upsert_code_files_by_paths(project_id, project_path, upsert_paths, ref=to_sha)
             all_ok = all_ok and upsert_ok
 
         # Folder cleanup: after all file operations are applied, delete folder
@@ -4267,7 +4270,7 @@ class GitLabConnector(BaseConnector):
                 await self.data_entities_processor.on_record_deleted(record.id)
 
     async def _upsert_code_files_by_paths(
-        self, project_id: int, project_path: str, paths: list[str]
+        self, project_id: int, project_path: str, paths: list[str], ref: str = "HEAD"
     ) -> bool:
         """Upsert code file records for the given repo-relative paths.
 
@@ -4280,7 +4283,7 @@ class GitLabConnector(BaseConnector):
             return True
 
         await self._ensure_folder_records_for_paths(
-            project_id, project_path, unique_paths
+            project_id, project_path, unique_paths, ref=ref
         )
 
         all_ok = True
@@ -4297,7 +4300,7 @@ class GitLabConnector(BaseConnector):
             tree_res = await self._paged_list(
                 self.data_source.list_repo_tree,
                 project_id=project_id,
-                ref="HEAD",
+                ref=ref,
                 path=parent,
                 recursive=False,
                 progress_label=f"upsert tree {parent or '/'} project {project_id}",
@@ -4370,7 +4373,7 @@ class GitLabConnector(BaseConnector):
         return all_ok
 
     async def _ensure_folder_records_for_paths(
-        self, project_id: int, project_path: str, file_paths: list[str]
+        self, project_id: int, project_path: str, file_paths: list[str], ref: str = "HEAD"
     ) -> None:
         """Create missing folder records for parent directories of changed files."""
         prefixes: set[str] = set()
@@ -4384,6 +4387,8 @@ class GitLabConnector(BaseConnector):
 
         external_group_id = f"{project_id}-code-repository"
         sorted_prefixes = sorted(prefixes, key=lambda p: p.count("/"))
+
+        record_updates: list[RecordUpdate] = []
 
         for prefix in sorted_prefixes:
             tree_external_id = self._code_tree_web_path(project_path, prefix)
@@ -4402,7 +4407,7 @@ class GitLabConnector(BaseConnector):
             tree_res = await self._paged_list(
                 self.data_source.list_repo_tree,
                 project_id=project_id,
-                ref="HEAD",
+                ref=ref,
                 path=parent_prefix,
                 recursive=False,
                 progress_label=f"folder tree {parent_prefix or '/'} project {project_id}",
@@ -4481,19 +4486,23 @@ class GitLabConnector(BaseConnector):
                 inherit_permissions=True,
                 weburl=weburl,
             )
-            record_update = RecordUpdate(
-                record=tree_record,
-                is_new=True,
-                is_updated=False,
-                is_deleted=False,
-                metadata_changed=False,
-                content_changed=False,
-                permissions_changed=False,
-                external_record_id=web_path,
-                new_permissions=[],
-                old_permissions=[],
+            record_updates.append(
+                RecordUpdate(
+                    record=tree_record,
+                    is_new=True,
+                    is_updated=False,
+                    is_deleted=False,
+                    metadata_changed=False,
+                    content_changed=False,
+                    permissions_changed=False,
+                    external_record_id=web_path,
+                    new_permissions=[],
+                    old_permissions=[],
+                )
             )
-            await self._process_new_records([record_update])
+
+        if record_updates:
+            await self._process_new_records(record_updates)
 
     async def build_code_file_records(
         self, code_file_list: list[dict[str, Any]], project_id: int, project_path: str
