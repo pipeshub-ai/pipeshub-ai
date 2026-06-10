@@ -3333,8 +3333,15 @@ class GitLabConnector(BaseConnector):
                 "No code-repo checkpoint for project %s; running full sync",
                 project_id,
             )
-            await self._sync_repo_full(project_id, project_path)
-            await self._update_code_repo_checkpoint(project_id, current_sha)
+            full_ok = await self._sync_repo_full(project_id, project_path)
+            if full_ok:
+                await self._update_code_repo_checkpoint(project_id, current_sha)
+            else:
+                self.logger.warning(
+                    "Full sync for project %s completed with errors; "
+                    "checkpoint not advanced so the next run will retry",
+                    project_id,
+                )
             return
 
         if last_sha == current_sha:
@@ -3356,11 +3363,23 @@ class GitLabConnector(BaseConnector):
             "Incremental code sync failed for project %s; falling back to full sync",
             project_id,
         )
-        await self._sync_repo_full(project_id, project_path)
-        await self._update_code_repo_checkpoint(project_id, current_sha)
+        full_ok = await self._sync_repo_full(project_id, project_path)
+        if full_ok:
+            await self._update_code_repo_checkpoint(project_id, current_sha)
+        else:
+            self.logger.warning(
+                "Full sync fallback for project %s completed with errors; "
+                "checkpoint not advanced so the next run will retry",
+                project_id,
+            )
 
-    async def _sync_repo_full(self, project_id: int, project_path: str) -> None:
-        """Full sync of default-branch folders and blobs via paginated GraphQL."""
+    async def _sync_repo_full(self, project_id: int, project_path: str) -> bool:
+        """Full sync of default-branch folders and blobs via paginated GraphQL.
+
+        Returns ``True`` when the sync completed without any API errors,
+        ``False`` when a recoverable error caused an early exit (in which case
+        the caller must *not* advance the checkpoint so the next run retries).
+        """
         # fetching file tree
         tree_list = []
         after_cursor = ""
@@ -3376,7 +3395,7 @@ class GitLabConnector(BaseConnector):
                 self.logger.error(
                     f"Error in fetching tree skipping repo code files sync for {project_id}: {e}"
                 )
-                return
+                return False
             if not tree_res.data:
                 self.logger.info(f"No tree found for project {project_id}")
                 return
@@ -3537,7 +3556,7 @@ class GitLabConnector(BaseConnector):
                 kind, file_path_nodes, page_info = await pending
                 pending = None
                 if kind == "abort":
-                    return
+                    return False
                 if kind == "no_nodes":
                     if blobs_processed == 0:
                         self.logger.info(
@@ -3588,6 +3607,8 @@ class GitLabConnector(BaseConnector):
                     await pending
                 except (asyncio.CancelledError, Exception):
                     pass
+
+        return True
 
     async def _fetch_blob_page(
         self, project_path: str, project_id: int, after_cursor: str
@@ -3744,7 +3765,6 @@ class GitLabConnector(BaseConnector):
             if path and path not in seen_modify and not self._should_skip_dotfile_repo_path(path):
                 modifies.append(path)
                 seen_modify.add(path)
-        self.logger.debug("diffs: %s", diffs)
         for diff in diffs:
             old_path = self._compare_diff_entry(diff, "old_path") or ""
             new_path = self._compare_diff_entry(diff, "new_path") or ""
@@ -3788,11 +3808,13 @@ class GitLabConnector(BaseConnector):
         self,
         project_id: int,
         repo_paths: list[str],
-    ) -> dict[str, str]:
+    ) -> tuple[dict[str, str], bool]:
         """Fetch blob SHAs for a list of repo-relative paths via list_repo_tree.
 
-        Returns a mapping ``{repo_path: blob_sha}``.  Paths not found in the
-        tree (deleted, wrong type, API error) are omitted silently.
+        Returns ``(sha_map, all_ok)`` where ``sha_map`` maps
+        ``{repo_path: blob_sha}`` for every path that was found, and
+        ``all_ok`` is ``False`` when any tree lookup failed (so the caller
+        knows the map may be incomplete).
         """
         by_parent: dict[str | None, list[str]] = {}
         for repo_path in repo_paths:
@@ -3800,15 +3822,18 @@ class GitLabConnector(BaseConnector):
             by_parent.setdefault(parent, []).append(repo_path)
 
         sha_map: dict[str, str] = {}
+        all_ok = True
         for parent, child_paths in by_parent.items():
-            tree_res = await self._ds_call(
+            tree_res = await self._paged_list(
                 self.data_source.list_repo_tree,
                 project_id=project_id,
                 ref="HEAD",
                 path=parent,
                 recursive=False,
+                progress_label=f"resolve-sha tree {parent or '/'} project {project_id}",
             )
             if not tree_res.success or not tree_res.data:
+                all_ok = False
                 continue
             for entry in tree_res.data:
                 entry_path = (
@@ -3822,7 +3847,7 @@ class GitLabConnector(BaseConnector):
                 )
                 if entry_path and entry_type == "blob" and blob_sha and str(entry_path) in child_paths:
                     sha_map[str(entry_path)] = str(blob_sha)
-        return sha_map
+        return sha_map, all_ok
 
     async def _reconcile_sha_moves(
         self,
@@ -3846,7 +3871,12 @@ class GitLabConnector(BaseConnector):
             return deletes, adds, []
 
         # Resolve SHAs of the added paths from the current tree.
-        added_sha_map = await self._resolve_blob_sha_by_path(project_id, adds)
+        # _reconcile_sha_moves is best-effort: a partial SHA map simply means
+        # some identical-content moves aren't promoted to renames and fall back
+        # to delete+add — that is safe and idempotent. We do not surface
+        # all_ok here; the caller (_sync_repo_incremental) tracks completeness
+        # through the downstream upsert/rename results.
+        added_sha_map, _ = await self._resolve_blob_sha_by_path(project_id, adds)
 
         # Build a reverse map: SHA → new_path (first match wins for uniqueness).
         sha_to_new_path: dict[str, str] = {}
@@ -3886,7 +3916,7 @@ class GitLabConnector(BaseConnector):
         project_id: int,
         project_path: str,
         renames: list[tuple[str, str]],
-    ) -> None:
+    ) -> bool:
         """Apply in-place rename / move for a list of ``(old_path, new_path)`` pairs.
 
         For each pair:
@@ -3895,15 +3925,20 @@ class GitLabConnector(BaseConnector):
         3. Builds a ``CodeFileRecord`` with the new path/name/SHA.
         4. Delegates to ``on_records_moved`` which handles id reuse, edge swap,
            and conditional re-indexing.
+
+        Returns ``True`` when every rename target was resolved successfully,
+        ``False`` when any tree lookup failed (the caller should not advance
+        the checkpoint).
         """
         if not renames:
-            return
+            return True
 
         new_paths = [new_p for _, new_p in renames]
         await self._ensure_folder_records_for_paths(project_id, project_path, new_paths)
 
         # Single list_repo_tree pass per parent directory to collect both
         # blob SHA and file name for all rename targets.
+        all_ok = True
         by_parent: dict[str | None, list[str]] = {}
         for repo_path in new_paths:
             parent = repo_path.rpartition("/")[0] if "/" in repo_path else None
@@ -3912,14 +3947,16 @@ class GitLabConnector(BaseConnector):
         new_sha_map: dict[str, str] = {}
         name_map: dict[str, str] = {}
         for parent, child_paths in by_parent.items():
-            tree_res = await self._ds_call(
+            tree_res = await self._paged_list(
                 self.data_source.list_repo_tree,
                 project_id=project_id,
                 ref="HEAD",
                 path=parent,
                 recursive=False,
+                progress_label=f"rename tree {parent or '/'} project {project_id}",
             )
             if not tree_res.success or not tree_res.data:
+                all_ok = False
                 continue
             for entry in tree_res.data:
                 entry_path = (
@@ -4015,6 +4052,8 @@ class GitLabConnector(BaseConnector):
         if moves:
             await self.data_entities_processor.on_records_moved(moves)
 
+        return all_ok
+
     async def _sync_repo_incremental(
         self,
         project_id: int,
@@ -4054,8 +4093,19 @@ class GitLabConnector(BaseConnector):
         compare_data = compare_res.data
         if isinstance(compare_data, dict):
             diffs = compare_data.get("diffs") or []
+            overflow = compare_data.get("overflow")
         else:
             diffs = getattr(compare_data, "diffs", None) or []
+            overflow = getattr(compare_data, "overflow", None)
+
+        if overflow:
+            self.logger.warning(
+                "compare_commits returned overflow=true for project %s "
+                "(%s diffs visible); falling back to full sync",
+                project_id,
+                len(diffs),
+            )
+            return False
 
         if len(diffs) >= GITLAB_COMPARE_DIFF_LIMIT:
             self.logger.warning(
@@ -4103,15 +4153,22 @@ class GitLabConnector(BaseConnector):
         )
 
         # Apply in order: deletes first, then renames, then adds/modifies.
+        # Track whether every operation completed without data loss; if any
+        # sub-operation reports a failure the checkpoint must not advance so
+        # the next run retries from the same base SHA.
+        all_ok = True
+
         if deletes:
             await self._delete_code_files_by_paths(project_id, project_path, deletes)
 
         if renames:
-            await self._apply_code_renames(project_id, project_path, renames)
+            rename_ok = await self._apply_code_renames(project_id, project_path, renames)
+            all_ok = all_ok and rename_ok
 
         upsert_paths = list(dict.fromkeys(adds + modifies))
         if upsert_paths:
-            await self._upsert_code_files_by_paths(project_id, project_path, upsert_paths)
+            upsert_ok = await self._upsert_code_files_by_paths(project_id, project_path, upsert_paths)
+            all_ok = all_ok and upsert_ok
 
         # Folder cleanup: after all file operations are applied, delete folder
         # records that are now empty (cascade up to emptied ancestors).
@@ -4119,7 +4176,14 @@ class GitLabConnector(BaseConnector):
         if removed_paths:
             await self._cleanup_emptied_folders(project_id, project_path, removed_paths)
 
-        return True
+        if not all_ok:
+            self.logger.warning(
+                "Incremental sync for project %s completed with partial failures; "
+                "checkpoint not advanced so the next run will retry",
+                project_id,
+            )
+
+        return all_ok
 
     async def _cleanup_emptied_folders(
         self, project_id: int, project_path: str, removed_paths: list[str]
@@ -4204,15 +4268,22 @@ class GitLabConnector(BaseConnector):
 
     async def _upsert_code_files_by_paths(
         self, project_id: int, project_path: str, paths: list[str]
-    ) -> None:
+    ) -> bool:
+        """Upsert code file records for the given repo-relative paths.
+
+        Returns ``True`` when every path was successfully resolved and
+        written, ``False`` when any tree lookup failed or any blob was not
+        found in the tree (the caller should not advance the checkpoint).
+        """
         unique_paths = list(dict.fromkeys(paths))
         if not unique_paths:
-            return
+            return True
 
         await self._ensure_folder_records_for_paths(
             project_id, project_path, unique_paths
         )
 
+        all_ok = True
         nodes: list[dict[str, Any]] = []
         by_parent: dict[str | None, list[str]] = {}
         for repo_path in unique_paths:
@@ -4223,12 +4294,13 @@ class GitLabConnector(BaseConnector):
             by_parent.setdefault(parent, []).append(repo_path)
 
         for parent, child_paths in by_parent.items():
-            tree_res = await self._ds_call(
+            tree_res = await self._paged_list(
                 self.data_source.list_repo_tree,
                 project_id=project_id,
                 ref="HEAD",
                 path=parent,
                 recursive=False,
+                progress_label=f"upsert tree {parent or '/'} project {project_id}",
             )
             if not tree_res.success or not tree_res.data:
                 self.logger.warning(
@@ -4237,6 +4309,7 @@ class GitLabConnector(BaseConnector):
                     parent,
                     tree_res.error,
                 )
+                all_ok = False
                 continue
 
             entries_by_path: dict[str, Any] = {}
@@ -4258,6 +4331,7 @@ class GitLabConnector(BaseConnector):
                         parent,
                         project_id,
                     )
+                    all_ok = False
                     continue
                 entry_type = (
                     entry.get("type")
@@ -4293,6 +4367,8 @@ class GitLabConnector(BaseConnector):
         if nodes:
             await self.build_code_file_records(nodes, project_id, project_path)
 
+        return all_ok
+
     async def _ensure_folder_records_for_paths(
         self, project_id: int, project_path: str, file_paths: list[str]
     ) -> None:
@@ -4323,12 +4399,13 @@ class GitLabConnector(BaseConnector):
             else:
                 parent_prefix = None
 
-            tree_res = await self._ds_call(
+            tree_res = await self._paged_list(
                 self.data_source.list_repo_tree,
                 project_id=project_id,
                 ref="HEAD",
                 path=parent_prefix,
                 recursive=False,
+                progress_label=f"folder tree {parent_prefix or '/'} project {project_id}",
             )
             if not tree_res.success or not tree_res.data:
                 self.logger.warning(

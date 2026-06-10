@@ -1269,8 +1269,17 @@ class GitLabDataSource:
         path: str | None = None,
         recursive: bool | None = None,
         get_all: bool | None = None,
+        iterator: bool | None = None,
     ) -> GitLabResponse:
-        """List repository tree."""
+        """List repository tree.
+
+        Pass ``get_all=True`` to fetch every page in one call (materialises
+        the full list in memory).  Pass ``iterator=True`` to get a
+        ``GitlabList`` lazy iterator back in ``data`` — preferred for large
+        directories because pages are fetched on demand rather than all at
+        once.  ``get_all`` and ``iterator`` are mutually exclusive per the
+        python-gitlab SDK contract.
+        """
         try:
             p = self._sdk.projects.get(project_id)
             payload = self._params(
@@ -1278,6 +1287,7 @@ class GitLabDataSource:
                 path=path,
                 recursive=recursive,
                 get_all=get_all,
+                iterator=iterator,
             )
             items = p.repository_tree(**payload)
             return GitLabResponse(success=True, data=items)
