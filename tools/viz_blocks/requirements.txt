@@ -1,0 +1,4 @@
+dominate>=2.9.0
+markdown>=3.4.0
+zstandard>=0.21.0
+msgspec>=0.18.0
