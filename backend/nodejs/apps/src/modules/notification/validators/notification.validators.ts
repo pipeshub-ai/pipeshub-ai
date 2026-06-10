@@ -36,6 +36,9 @@ const notificationIdParams = z.object({
 /** `PATCH /:id/read` */
 export const markReadSchema = notificationIdParams;
 
+/** `PATCH /:id/unread` */
+export const markUnreadSchema = notificationIdParams;
+
 /** `PATCH /:id/archive` */
 export const archiveNotificationSchema = notificationIdParams;
 

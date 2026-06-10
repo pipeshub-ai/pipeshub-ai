@@ -138,17 +138,33 @@ describe('useNotificationStore', () => {
     expect(useNotificationStore.getState().unreadCount).toBe(1);
   });
 
-  it('markRead updates status and decrements unreadCount', () => {
+  it('markRead updates status without changing unreadCount', () => {
     useNotificationStore.getState().setInitialPage(
       makePage([makeNotification({ _id: '1', status: 'unread' })]),
     );
     useNotificationStore.setState({ unreadCount: 1 });
     useNotificationStore.getState().markRead('1');
     expect(useNotificationStore.getState().notifications[0].status).toBe('read');
-    expect(useNotificationStore.getState().unreadCount).toBe(0);
+    expect(useNotificationStore.getState().unreadCount).toBe(1);
   });
 
-  it('markAllRead sets all items read and clears unreadCount', () => {
+  it('markUnread updates status from read to unread', () => {
+    useNotificationStore.getState().setInitialPage(
+      makePage([makeNotification({ _id: '1', status: 'read' })]),
+    );
+    useNotificationStore.getState().markUnread('1');
+    expect(useNotificationStore.getState().notifications[0].status).toBe('unread');
+  });
+
+  it('markUnread updates status from archived to unread', () => {
+    useNotificationStore.getState().setInitialPage(
+      makePage([makeNotification({ _id: '1', status: 'archived' })]),
+    );
+    useNotificationStore.getState().markUnread('1');
+    expect(useNotificationStore.getState().notifications[0].status).toBe('unread');
+  });
+
+  it('markAllRead sets all items read without changing unreadCount', () => {
     useNotificationStore.getState().setInitialPage(
       makePage(
         [
@@ -162,7 +178,7 @@ describe('useNotificationStore', () => {
     useNotificationStore.getState().markAllRead();
     const s = useNotificationStore.getState();
     expect(s.notifications.every((n) => n.status === 'read')).toBe(true);
-    expect(s.unreadCount).toBe(0);
+    expect(s.unreadCount).toBe(2);
   });
 
   it('markAllRead on unread filter clears pagination', () => {
@@ -180,7 +196,7 @@ describe('useNotificationStore', () => {
     expect(s.cursor).toBe(null);
   });
 
-  it('archive sets status to archived, increments archivedCount, decrements unreadCount when was unread', () => {
+  it('archive sets status to archived and increments archivedCount without changing unreadCount', () => {
     useNotificationStore.getState().setInitialPage(
       makePage([makeNotification({ _id: '1', status: 'unread' })]),
     );
@@ -188,7 +204,7 @@ describe('useNotificationStore', () => {
     useNotificationStore.getState().archive('1');
     const s = useNotificationStore.getState();
     expect(s.notifications[0].status).toBe('archived');
-    expect(s.unreadCount).toBe(0);
+    expect(s.unreadCount).toBe(1);
     expect(s.archivedCount).toBe(1);
   });
 
@@ -239,7 +255,7 @@ describe('useNotificationStore', () => {
     expect(s.readCount).toBe(0);
   });
 
-  it('remove drops notification and decrements unreadCount', () => {
+  it('remove drops notification without changing unreadCount', () => {
     useNotificationStore.getState().setInitialPage(
       makePage(
         [
@@ -251,7 +267,7 @@ describe('useNotificationStore', () => {
     useNotificationStore.setState({ unreadCount: 2 });
     useNotificationStore.getState().remove('1');
     expect(useNotificationStore.getState().notifications.map((n) => n._id)).toEqual(['2']);
-    expect(useNotificationStore.getState().unreadCount).toBe(1);
+    expect(useNotificationStore.getState().unreadCount).toBe(2);
   });
 
   describe('ensureBackfill', () => {

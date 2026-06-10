@@ -90,6 +90,13 @@ export const NotificationsApi = {
     return data.notification;
   },
 
+  async markUnread(id: string): Promise<NotificationListItem> {
+    const { data } = await apiClient.patch<{ notification: NotificationListItem }>(
+      `/api/v1/notifications/${encodeURIComponent(id)}/unread`,
+    );
+    return data.notification;
+  },
+
   async archive(id: string): Promise<NotificationListItem> {
     const { data } = await apiClient.patch<{ notification: NotificationListItem }>(
       `/api/v1/notifications/${encodeURIComponent(id)}/archive`,

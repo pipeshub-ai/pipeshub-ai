@@ -11505,6 +11505,55 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /notifications/{id}/unread:
+    patch:
+      tags:
+        - Notifications
+      summary: Mark a notification as unread
+      description: |
+        Marks a single notification as unread when it belongs to the authenticated user.
+      operationId: markInAppNotificationUnread
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Notification document ID (MongoDB ObjectId)
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+      responses:
+        '200':
+          description: Notification updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - notification
+                properties:
+                  notification:
+                    $ref: '#/components/schemas/InAppNotification'
+        '400':
+          description: Invalid user or notification id
+        '401':
+          description: Unauthorized — missing or invalid access token
+        '404':
+          description: Notification not found
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /notifications/{id}/archive:
     patch:
       tags:

@@ -7,6 +7,7 @@ import {
   getNotificationStats,
   markAllRead,
   markRead,
+  markUnread,
   archiveNotification,
   unarchiveNotification,
   deleteNotification,
@@ -16,6 +17,7 @@ import {
   notificationStatsSchema,
   markAllReadSchema,
   markReadSchema,
+  markUnreadSchema,
   archiveNotificationSchema,
   unarchiveNotificationSchema,
   deleteNotificationSchema,
@@ -55,6 +57,13 @@ export function createNotificationRouter(
     ValidationMiddleware.validate(markReadSchema),
     markRead,
   );
+
+  router.patch(
+    '/:id/unread',
+    auth,
+    ValidationMiddleware.validate(markUnreadSchema),
+    markUnread,
+  )
 
   router.patch(
     '/:id/archive',

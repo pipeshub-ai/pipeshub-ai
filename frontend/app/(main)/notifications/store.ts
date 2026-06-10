@@ -64,6 +64,7 @@ interface NotificationState {
   ensureBackfill: () => Promise<void>;
   addNotification: (item: NotificationListItem) => void;
   markRead: (id: string) => void;
+  markUnread: (id: string) => void;
   markAllRead: () => void;
   remove: (id: string) => void;
   archive: (id: string) => void;
@@ -161,10 +162,17 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   markRead: (id) => {
-    const target = get().notifications.find((n) => n._id === id);
-    const wasUnread = target?.status === 'unread';
     const next = get().notifications.map((n) =>
       n._id === id ? { ...n, status: 'read' as const } : n,
+    );
+    set({
+      notifications: next,
+    });
+  },
+
+  markUnread: (id) => {
+    const next = get().notifications.map((n) =>
+      n._id === id ? { ...n, status: 'unread' as const } : n,
     );
     set({
       notifications: next,
@@ -180,7 +188,6 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   remove: (id) => {
-    const target = get().notifications.find((n) => n._id === id);
     const next = get().notifications.filter((n) => n._id !== id);
     set({
       notifications: next,

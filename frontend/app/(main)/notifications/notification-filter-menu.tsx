@@ -28,13 +28,12 @@ export function NotificationFilterMenu({ value, onChange }: NotificationFilterMe
   const [open, setOpen] = useState(false);
 
   const labels: Record<NotificationListFilter, string> = {
-    all: t('notifications.filterAll', { defaultValue: 'All' }),
-    unread: t('notifications.filterOnlyUnread', { defaultValue: 'Only Unread' }),
-    archived: t('notifications.filterArchived', { defaultValue: 'Archived' }),
+    all: t('notifications.filterAll'),
+    unread: t('notifications.filterOnlyUnread'),
+    archived: t('notifications.filterArchived'),
   };
 
   const filterTooltip = t('notifications.filterTooltip', {
-    defaultValue: 'Filter: {{filter}}',
     filter: labels[value],
   });
 
@@ -51,7 +50,7 @@ export function NotificationFilterMenu({ value, onChange }: NotificationFilterMe
               variant="ghost"
               size="1"
               color="gray"
-              aria-label={t('notifications.filter', { defaultValue: 'Filter notifications' })}
+              aria-label={t('notifications.filter')}
               onClick={(e) => e.stopPropagation()}
               style={{
                 cursor: 'pointer',

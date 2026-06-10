@@ -201,6 +201,49 @@ describe('notification/routes/notification.routes', () => {
     expect(body.notification).to.deep.equal(doc);
   });
 
+  it('PATCH /:id/unread marks notification unread', async () => {
+    const notifId = new mongoose.Types.ObjectId().toString();
+    const doc = { _id: notifId, status: 'unread' };
+    const stub = sinon.stub(Notifications, 'findOneAndUpdate').returns({
+      lean: sinon.stub().resolves(doc),
+    } as any);
+
+    const port = await listen();
+    const res = await fetch(
+      `http://127.0.0.1:${port}/api/v1/notifications/${notifId}/unread`,
+      { method: 'PATCH' },
+    );
+    expect(res.status).to.equal(200);
+    const body = await res.json();
+    expect(body.notification).to.deep.equal(doc);
+
+    const update = stub.firstCall.args[1] as Record<string, unknown>;
+    expect((update as any).$set.status).to.equal('unread');
+  });
+
+  it('PATCH /:id/unread returns 404 when notification not found', async () => {
+    const notifId = new mongoose.Types.ObjectId().toString();
+    sinon.stub(Notifications, 'findOneAndUpdate').returns({
+      lean: sinon.stub().resolves(null),
+    } as any);
+
+    const port = await listen();
+    const res = await fetch(
+      `http://127.0.0.1:${port}/api/v1/notifications/${notifId}/unread`,
+      { method: 'PATCH' },
+    );
+    expect(res.status).to.equal(404);
+  });
+
+  it('PATCH /:id/unread returns 400 for invalid id', async () => {
+    const port = await listen();
+    const res = await fetch(
+      `http://127.0.0.1:${port}/api/v1/notifications/not-an-objectid/unread`,
+      { method: 'PATCH' },
+    );
+    expect(res.status).to.equal(400);
+  });
+
   it('DELETE /:id soft-deletes notification', async () => {
     const notifId = new mongoose.Types.ObjectId().toString();
     sinon.stub(Notifications, 'findOneAndUpdate').returns({

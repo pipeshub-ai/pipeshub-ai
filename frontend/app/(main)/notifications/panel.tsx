@@ -52,6 +52,7 @@ export function NotificationsPanel() {
   const setInitialPage = useNotificationStore((s) => s.setInitialPage);
   const setStats = useNotificationStore((s) => s.setStats);
   const markReadStore = useNotificationStore((s) => s.markRead);
+  const markUnreadStore = useNotificationStore((s) => s.markUnread);
   const markAllReadStore = useNotificationStore((s) => s.markAllRead);
   const removeStore = useNotificationStore((s) => s.remove);
   const archiveStore = useNotificationStore((s) => s.archive);
@@ -286,6 +287,18 @@ export function NotificationsPanel() {
     }
   };
 
+  const onMarkUnread = async (n: NotificationListItem) => {
+    if (n.status === 'unread' || !n._id) return;
+    try {
+      await NotificationsApi.markUnread(n._id);
+      markUnreadStore(n._id);
+      const stats = await NotificationsApi.getStats();
+      setStats(stats);
+    } catch {
+      setError(t('notifications.updateFailed'));
+    }
+  };
+
   const onMarkAllRead = async () => {
     if (unreadCount === 0 || markingAllRead) return;
     setMarkingAllRead(true);
@@ -507,7 +520,7 @@ export function NotificationsPanel() {
             <Box style={{ display: 'inline-flex', flexShrink: 0, position: 'relative' }}>
               <Tooltip
                 className={NOTIFICATIONS_PANEL_TOOLTIP_CLASS}
-                content={t('notifications.markAllRead', { defaultValue: 'Mark all as read' })}
+                content={t('notifications.markAllRead')}
                 side="bottom"
               >
                 <IconButton
@@ -515,40 +528,11 @@ export function NotificationsPanel() {
                   size="1"
                   color="gray"
                   disabled={unreadCount === 0 || markingAllRead}
-                  aria-label={t('notifications.markAllRead', { defaultValue: 'Mark all as read' })}
+                  aria-label={t('notifications.markAllRead')}
                   onClick={() => void onMarkAllRead()}
                   style={{ cursor: unreadCount === 0 ? 'not-allowed' : 'pointer' }}
                 >
                   <MaterialIcon name="done_all" size={18} color="var(--slate-11)" />
-                </IconButton>
-              </Tooltip>
-            </Box>
-            <Box style={{ display: 'inline-flex', flexShrink: 0, position: 'relative' }}>
-              <Tooltip
-                className={NOTIFICATIONS_PANEL_TOOLTIP_CLASS}
-                content={
-                  listFilter === 'archived'
-                    ? t('notifications.showAll', { defaultValue: 'Show all' })
-                    : t('notifications.showArchived', { defaultValue: 'Show archived' })
-                }
-                side="bottom"
-              >
-                <IconButton
-                  variant="ghost"
-                  size="1"
-                  color="gray"
-                  aria-label={
-                    listFilter === 'archived'
-                      ? t('notifications.showAll', { defaultValue: 'Show all' })
-                      : t('notifications.showArchived', { defaultValue: 'Show archived' })
-                  }
-                  onClick={() => handleFilterChange(listFilter === 'archived' ? 'all' : 'archived')}
-                  style={{
-                    cursor: 'pointer',
-                    backgroundColor: listFilter === 'archived' ? 'var(--olive-5)' : undefined,
-                  }}
-                >
-                  <MaterialIcon name="archive" size={18} color="var(--slate-11)" />
                 </IconButton>
               </Tooltip>
             </Box>
@@ -597,13 +581,9 @@ export function NotificationsPanel() {
               <MaterialIcon name="inbox" size={40} color="var(--slate-8)" />
               <Text size="2" color="gray">
                 {listFilter === 'unread'
-                  ? t('notifications.emptyUnread', {
-                      defaultValue: 'No unread notifications',
-                    })
+                  ? t('notifications.emptyUnread')
                   : listFilter === 'archived'
-                  ? t('notifications.emptyArchived', {
-                      defaultValue: 'No archived notifications',
-                    })
+                  ? t('notifications.emptyArchived')
                   : t('notifications.empty')}
               </Text>
             </Flex>
@@ -615,12 +595,14 @@ export function NotificationsPanel() {
                   notification={n}
                   compactTime={layoutPanelWidth < PANEL_COMPACT_TIME_WIDTH}
                   onMarkRead={(item) => void onMarkRead(item)}
+                  onMarkUnread={(item) => void onMarkUnread(item)}
                   onArchive={(item) => void onArchive(item)}
                   onUnarchive={(item) => void onUnarchive(item)}
                   onDismiss={(item) => void onDismiss(item)}
                   markReadLabel={t('notifications.markRead')}
-                  archiveLabel={t('notifications.archive', { defaultValue: 'Archive' })}
-                  unarchiveLabel={t('notifications.unarchive', { defaultValue: 'Unarchive' })}
+                  markUnreadLabel={t('notifications.markUnread')}
+                  archiveLabel={t('notifications.archive')}
+                  unarchiveLabel={t('notifications.unarchive')}
                   dismissLabel={t('notifications.dismiss')}
                 />
               ))}

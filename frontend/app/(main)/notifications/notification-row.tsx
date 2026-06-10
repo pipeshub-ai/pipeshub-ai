@@ -155,11 +155,16 @@ function NotificationActionButton({
   label,
   icon,
   onClick,
+  variant = 'default',
 }: {
   label: string;
   icon: string;
   onClick: () => void;
+  variant?: 'default' | 'danger';
 }) {
+  const [isHovered, setIsHovered] = useState(false);
+  const isDangerHover = variant === 'danger' && isHovered;
+
   return (
     <Box style={{ display: 'inline-flex', flexShrink: 0, position: 'relative' }}>
       <Tooltip
@@ -173,9 +178,15 @@ function NotificationActionButton({
           size="1"
           onClick={onClick}
           aria-label={label}
+          onMouseEnter={() => setIsHovered(true)}
+          onMouseLeave={() => setIsHovered(false)}
           style={{ flexShrink: 0 }}
         >
-          <MaterialIcon name={icon} size={16} color="var(--slate-11)" />
+          <MaterialIcon
+            name={icon}
+            size={16}
+            color={isDangerHover ? 'var(--red-11)' : 'var(--slate-11)'}
+          />
         </IconButton>
       </Tooltip>
     </Box>
@@ -185,10 +196,12 @@ function NotificationActionButton({
 export function NotificationRow({
   notification: n,
   onMarkRead,
+  onMarkUnread,
   onArchive,
   onUnarchive,
   onDismiss,
   markReadLabel,
+  markUnreadLabel,
   archiveLabel,
   unarchiveLabel,
   dismissLabel,
@@ -196,10 +209,12 @@ export function NotificationRow({
 }: {
   notification: NotificationListItem;
   onMarkRead: (n: NotificationListItem) => void;
+  onMarkUnread: (n: NotificationListItem) => void;
   onArchive: (n: NotificationListItem) => void;
   onUnarchive: (n: NotificationListItem) => void;
   onDismiss: (n: NotificationListItem) => void;
   markReadLabel: string;
+  markUnreadLabel: string;
   archiveLabel: string;
   unarchiveLabel: string;
   dismissLabel: string;
@@ -382,13 +397,19 @@ export function NotificationRow({
               gap="2"
               style={{ justifyContent: 'flex-end' }}
             >
-              {n.status === 'unread' && (
+              {n.status === 'unread' ? (
                 <NotificationActionButton
                   label={markReadLabel}
                   icon="done"
                   onClick={() => onMarkRead(n)}
                 />
-              )}
+              ): n.status != 'archived' ? (
+                <NotificationActionButton
+                  label={markUnreadLabel}
+                  icon="mark_email_unread"
+                  onClick={() => onMarkUnread(n)}
+                />
+              ) : null}
               {n.status !== 'archived' ? (
                 <NotificationActionButton
                   label={archiveLabel}
@@ -405,6 +426,7 @@ export function NotificationRow({
               <NotificationActionButton
                 label={dismissLabel}
                 icon="close"
+                variant="danger"
                 onClick={() => onDismiss(n)}
               />
             </Flex>

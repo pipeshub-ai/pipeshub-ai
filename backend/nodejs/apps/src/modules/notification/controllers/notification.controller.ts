@@ -130,6 +130,36 @@ export async function markRead(
   }
 }
 
+export async function markUnread(
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = req.user?.userId;
+    if (!userId || !mongoose.isValidObjectId(userId)) {
+      res.status(401).json({ message: 'Unauthorized' });
+      return;
+    }
+    const userOid = new mongoose.Types.ObjectId(userId);
+    const doc = await Notifications.findOneAndUpdate(
+      {
+        _id: new mongoose.Types.ObjectId(req.params.id),
+        ...buildRetentionFilter(userOid, null),
+      },
+      { $set: { status: 'unread' } },
+      { new: true },
+    ).lean();
+    if (!doc) {
+      res.status(404).json({ message: 'Notification not found' });
+      return;
+    }
+    res.json({ notification: doc });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function archiveNotification(
   req: AuthenticatedUserRequest,
   res: Response,
