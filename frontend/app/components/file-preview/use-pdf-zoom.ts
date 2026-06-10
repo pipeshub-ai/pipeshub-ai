@@ -41,8 +41,9 @@ function clearLockedZoomScale(): void {
 }
 
 export function usePdfZoom(fileId: string, fileUrl: string, initialPage?: number) {
-  const [pdfScale, setPdfScale] = useState(() => readLockedZoomScale() ?? PDF_ZOOM_DEFAULT);
-  const [isZoomLocked, setIsZoomLocked] = useState(() => readLockedZoomScale() !== null);
+  const [pdfScale, setPdfScale] = useState(PDF_ZOOM_DEFAULT);
+  const [isZoomLocked, setIsZoomLocked] = useState(false);
+  const [isHydrated, setIsHydrated] = useState(false);
 
   const isZoomLockedRef = useRef(isZoomLocked);
   useEffect(() => {
@@ -50,19 +51,30 @@ export function usePdfZoom(fileId: string, fileUrl: string, initialPage?: number
   }, [isZoomLocked]);
 
   useEffect(() => {
-    if (isZoomLockedRef.current) return;
-    setPdfScale(PDF_ZOOM_DEFAULT);
-  }, [fileId, fileUrl, initialPage]);
+    const savedScale = readLockedZoomScale();
+    if (savedScale !== null) {
+      setPdfScale(savedScale);
+      setIsZoomLocked(true);
+    }
+    setIsHydrated(true);
+  }, []);
 
   useEffect(() => {
-    if (isZoomLocked) saveLockedZoomScale(pdfScale);
-  }, [isZoomLocked, pdfScale]);
+    if (!isHydrated || isZoomLockedRef.current) return;
+    setPdfScale(PDF_ZOOM_DEFAULT);
+  }, [fileId, fileUrl, initialPage, isHydrated]);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    if (isZoomLocked) {
+      saveLockedZoomScale(pdfScale);
+    } else {
+      clearLockedZoomScale();
+    }
+  }, [isZoomLocked, pdfScale, isHydrated]);
 
   const toggleZoomLock = useCallback(() => {
-    setIsZoomLocked((locked) => {
-      if (locked) clearLockedZoomScale();
-      return !locked;
-    });
+    setIsZoomLocked((locked) => !locked);
   }, []);
 
   const handlePdfZoomIn = useCallback(() => {

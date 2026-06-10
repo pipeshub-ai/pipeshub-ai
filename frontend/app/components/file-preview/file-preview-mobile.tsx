@@ -383,8 +383,8 @@ export function FilePreviewMobile({
                   size="1"
                   onClick={toggleZoomLock}
                   style={{ width: '24px', height: '24px', padding: 0 }}
-                  title={isZoomLocked ? 'Unlock zoom level' : 'Lock zoom level'}
-                  aria-label={isZoomLocked ? 'Unlock zoom level' : 'Lock zoom level'}
+                  title={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
+                  aria-label={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
                   aria-pressed={isZoomLocked}
                 >
                   <MaterialIcon

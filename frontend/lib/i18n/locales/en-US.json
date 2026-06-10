@@ -2127,7 +2127,9 @@
     "page": "Page {{number}}",
     "paragraph": "Paragraph {{number}}",
     "showMore": "Show more",
-    "showLess": "Show less"
+    "showLess": "Show less",
+    "lockZoom": "Lock zoom level",
+    "unlockZoom": "Unlock zoom level"
   },
   "agentBuilder": {
     "goBack": "Go back",

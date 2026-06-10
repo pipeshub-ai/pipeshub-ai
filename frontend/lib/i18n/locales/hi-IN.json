@@ -2111,7 +2111,9 @@
     "page": "पृष्ठ {{number}}",
     "paragraph": "अनुच्छेद {{number}}",
     "showMore": "अधिक दिखाएं",
-    "showLess": "कम दिखाएं"
+    "showLess": "कम दिखाएं",
+    "lockZoom": "ज़ूम स्तर लॉक करें",
+    "unlockZoom": "ज़ूम स्तर अनलॉक करें"
   },
   "agentBuilder": {
     "goBack": "वापस जाएं",

@@ -2110,7 +2110,9 @@
     "page": "Página {{number}}",
     "paragraph": "Párrafo {{number}}",
     "showMore": "Ver más",
-    "showLess": "Ver menos"
+    "showLess": "Ver menos",
+    "lockZoom": "Bloquear nivel de zoom",
+    "unlockZoom": "Desbloquear nivel de zoom"
   },
   "agentBuilder": {
     "goBack": "Volver",
