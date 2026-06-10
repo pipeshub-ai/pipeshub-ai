@@ -2638,6 +2638,25 @@ components:
         - createdAtTimestamp
         - updatedAtTimestamp
 
+    FolderCreateResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned when a folder is created (root or nested subfolder)
+      properties:
+        id:
+          type: string
+          description: Unique folder identifier
+        name:
+          type: string
+          description: Name of the folder
+        webUrl:
+          type: string
+          description: Web URL path to the folder
+      required:
+        - id
+        - name
+        - webUrl
+
     GetAllKnowledgeBaseResponseSchema:
       type: object
       additionalProperties: false
@@ -3902,6 +3921,483 @@ components:
             available:
               type: object
               description: Available filter options with counts
+
+    FolderContentResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by folder content endpoints.
+      required:
+        - success
+        - error
+        - id
+        - currentNode
+        - parentNode
+        - items
+        - pagination
+        - filters
+        - breadcrumbs
+        - counts
+        - permissions
+      properties:
+        success:
+          type: boolean
+        error:
+          type: string
+          nullable: true
+        id:
+          type: string
+        currentNode:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+            - name
+            - nodeType
+            - subType
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            nodeType:
+              type: string
+            subType:
+              type: string
+              nullable: true
+        parentNode:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required:
+            - id
+            - name
+            - nodeType
+            - subType
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            nodeType:
+              type: string
+            subType:
+              type: string
+              nullable: true
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - id
+              - name
+              - nodeType
+              - parentId
+              - origin
+              - connector
+              - recordType
+              - recordGroupType
+              - indexingStatus
+              - reason
+              - createdAt
+              - updatedAt
+              - sizeInBytes
+              - mimeType
+              - extension
+              - webUrl
+              - hasChildren
+              - previewRenderable
+              - permission
+              - sharingStatus
+              - isInternal
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              nodeType:
+                type: string
+              parentId:
+                type: string
+                nullable: true
+              origin:
+                type: string
+                nullable: true
+              connector:
+                type: string
+                nullable: true
+              recordType:
+                type: string
+                nullable: true
+              recordGroupType:
+                type: string
+                nullable: true
+              indexingStatus:
+                type: string
+                nullable: true
+              reason:
+                type: string
+                nullable: true
+              createdAt:
+                type: integer
+                format: int64
+                nullable: true
+              updatedAt:
+                type: integer
+                format: int64
+                nullable: true
+              sizeInBytes:
+                type: integer
+                format: int64
+                nullable: true
+              mimeType:
+                type: string
+                nullable: true
+              extension:
+                type: string
+                nullable: true
+              webUrl:
+                type: string
+                nullable: true
+              hasChildren:
+                type: boolean
+              previewRenderable:
+                type: boolean
+              permission:
+                type: object
+                additionalProperties: false
+                required:
+                  - role
+                  - canEdit
+                  - canDelete
+                properties:
+                  role:
+                    type: string
+                  canEdit:
+                    type: boolean
+                  canDelete:
+                    type: boolean
+              sharingStatus:
+                type: string
+                nullable: true
+              isInternal:
+                type: boolean
+        pagination:
+          type: object
+          additionalProperties: false
+          required:
+            - page
+            - limit
+            - totalItems
+            - totalPages
+            - hasNext
+            - hasPrev
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalItems:
+              type: integer
+            totalPages:
+              type: integer
+            hasNext:
+              type: boolean
+            hasPrev:
+              type: boolean
+        filters:
+          type: object
+          additionalProperties: false
+          required:
+            - applied
+            - available
+          properties:
+            applied:
+              type: object
+              additionalProperties: false
+              required:
+                - q
+                - nodeTypes
+                - recordTypes
+                - origins
+                - connectorIds
+                - indexingStatus
+                - createdAt
+                - updatedAt
+                - size
+                - sortBy
+                - sortOrder
+              properties:
+                q:
+                  type: string
+                  nullable: true
+                nodeTypes:
+                  type: array
+                  nullable: true
+                  items:
+                    type: string
+                recordTypes:
+                  type: array
+                  nullable: true
+                  items:
+                    type: string
+                origins:
+                  type: array
+                  nullable: true
+                  items:
+                    type: string
+                connectorIds:
+                  type: array
+                  nullable: true
+                  items:
+                    type: string
+                indexingStatus:
+                  type: array
+                  nullable: true
+                  items:
+                    type: string
+                createdAt:
+                  type: object
+                  nullable: true
+                  additionalProperties: true
+                updatedAt:
+                  type: object
+                  nullable: true
+                  additionalProperties: true
+                size:
+                  type: object
+                  nullable: true
+                  additionalProperties: true
+                sortBy:
+                  type: string
+                  nullable: true
+                sortOrder:
+                  type: string
+                  nullable: true
+            available:
+              type: object
+              additionalProperties: false
+              required:
+                - nodeTypes
+                - recordTypes
+                - origins
+                - connectors
+                - indexingStatus
+                - sortBy
+                - sortOrder
+              properties:
+                nodeTypes:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - id
+                      - label
+                      - type
+                      - connectorType
+                    properties:
+                      id:
+                        type: string
+                      label:
+                        type: string
+                      type:
+                        type: string
+                        nullable: true
+                      connectorType:
+                        type: string
+                        nullable: true
+                recordTypes:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - id
+                      - label
+                      - type
+                      - connectorType
+                    properties:
+                      id:
+                        type: string
+                      label:
+                        type: string
+                      type:
+                        type: string
+                        nullable: true
+                      connectorType:
+                        type: string
+                        nullable: true
+                origins:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - id
+                      - label
+                      - type
+                      - connectorType
+                    properties:
+                      id:
+                        type: string
+                      label:
+                        type: string
+                      type:
+                        type: string
+                        nullable: true
+                      connectorType:
+                        type: string
+                        nullable: true
+                connectors:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - id
+                      - label
+                      - type
+                      - connectorType
+                    properties:
+                      id:
+                        type: string
+                      label:
+                        type: string
+                      type:
+                        type: string
+                        nullable: true
+                      connectorType:
+                        type: string
+                        nullable: true
+                indexingStatus:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - id
+                      - label
+                      - type
+                      - connectorType
+                    properties:
+                      id:
+                        type: string
+                      label:
+                        type: string
+                      type:
+                        type: string
+                        nullable: true
+                      connectorType:
+                        type: string
+                        nullable: true
+                sortBy:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - id
+                      - label
+                      - type
+                      - connectorType
+                    properties:
+                      id:
+                        type: string
+                      label:
+                        type: string
+                      type:
+                        type: string
+                        nullable: true
+                      connectorType:
+                        type: string
+                        nullable: true
+                sortOrder:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - id
+                      - label
+                      - type
+                      - connectorType
+                    properties:
+                      id:
+                        type: string
+                      label:
+                        type: string
+                      type:
+                        type: string
+                        nullable: true
+                      connectorType:
+                        type: string
+                        nullable: true
+        breadcrumbs:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - id
+              - name
+              - nodeType
+              - subType
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              nodeType:
+                type: string
+              subType:
+                type: string
+                nullable: true
+        counts:
+          type: object
+          additionalProperties: false
+          required:
+            - items
+            - total
+          properties:
+            items:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - label
+                  - count
+                properties:
+                  label:
+                    type: string
+                  count:
+                    type: integer
+            total:
+              type: integer
+        permissions:
+          type: object
+          additionalProperties: false
+          required:
+            - role
+            - canUpload
+            - canCreateFolders
+            - canEdit
+            - canDelete
+            - canManagePermissions
+          properties:
+            role:
+              type: string
+            canUpload:
+              type: boolean
+            canCreateFolders:
+              type: boolean
+            canEdit:
+              type: boolean
+            canDelete:
+              type: boolean
+            canManagePermissions:
+              type: boolean
 
     UploadResult:
       type: object
@@ -20144,20 +20640,23 @@ paths:
         - Folders
       summary: Create root folder
       description: |
-        Create a new folder at the root level of a knowledge base.<br><br>
-        <b>Required Permission:</b> FILEORGANIZER or higher<br><br>
-        <b>Folder Features:</b><br>
-        <ul>
-        <li>Organize records hierarchically</li>
-        <li>Support nested subfolders</li>
-        <li>Inherit parent KB permissions</li>
-        </ul>
-        <b>Naming Rules:</b><br>
-        <ul>
-        <li>1-255 characters</li>
-        <li>XSS protection applied</li>
-        <li>Can contain spaces and special characters</li>
-        </ul>
+        Create a new folder at the root level of a knowledge base.
+
+        **Required permission:** FILEORGANIZER or higher
+
+        **Folder features:**
+
+        - Organize records hierarchically
+        - Support nested subfolders
+        - Inherit parent KB permissions
+
+        **Naming rules:**
+
+        - 1–255 characters
+        - XSS protection applied
+        - Spaces and special characters allowed
+
+        **Response:** Returns `id`, `name`, and `webUrl` for the created folder.
       operationId: createRootFolder
       security:
         - bearerAuth: []
@@ -20191,15 +20690,46 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Folder'
+                $ref: '#/components/schemas/FolderCreateResponseSchema'
         '400':
-          description: Invalid folder name
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing or empty folder name
+            - Folder name exceeds 255 characters
+            - XSS or invalid characters in folder name
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient permissions
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:write` scope
+            - User lacks FILEORGANIZER or higher permission on the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Knowledge base not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Folder with this name already exists at the knowledge base root
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /knowledgeBase/{kbId}/folder/{folderId}:
     get:
@@ -20261,11 +20791,43 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/RecordsResponse'
+                $ref: '#/components/schemas/FolderContentResponseSchema'
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - Invalid pagination parameters
+            - Invalid date filters
+            - Search parameter contains unsafe content
+            - Search parameter exceeds 1000 characters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden - OAuth token lacks the `kb:read` scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Folder or knowledge base not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while retrieving folder contents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
@@ -20360,11 +20922,15 @@ paths:
         - Folders
       summary: Get folder children (alias for folder contents)
       description: |
-        Retrieve the children (subfolders and records) of a folder.<br><br>
-        <b>Overview:</b><br>
-        This is an alias endpoint for <code>/knowledgeBase/{kbId}/folder/{folderId}</code>. Returns paginated list of records within the folder, with same filtering options as KB-level record listing.<br><br>
-        <b>Navigation:</b><br>
-        Use this endpoint to browse folder hierarchies. Response includes folder metadata and child items.
+        Retrieve the children (subfolders and records) of a folder.
+
+        **Overview:**
+
+        Alias for `GET /knowledgeBase/{kbId}/folder/{folderId}`. Returns a paginated list of subfolders and records in the folder, with the same filtering options as KB-level record listing.
+
+        **Navigation:**
+
+        Use this endpoint to browse folder hierarchies. The response includes folder metadata and child items.
       operationId: getFolderChildren
       security:
         - bearerAuth: []
@@ -20414,11 +20980,43 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/RecordsResponse'
+                $ref: '#/components/schemas/FolderContentResponseSchema'
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - Invalid pagination parameters
+            - Invalid date filters
+            - Search parameter contains unsafe content
+            - Search parameter exceeds 1000 characters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden - OAuth token lacks the `kb:read` scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Folder or knowledge base not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while retrieving folder children
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /knowledgeBase/{kbId}/folder/{folderId}/subfolder:
     post:
@@ -20426,10 +21024,21 @@ paths:
         - Folders
       summary: Create subfolder
       description: |
-        Create a nested folder within an existing folder.<br><br>
-        <b>Required Permission:</b> FILEORGANIZER or higher<br><br>
-        <b>Nesting:</b><br>
-        Supports unlimited folder nesting depth for complex organizational structures.
+        Create a nested folder inside an existing parent folder.
+
+        **Required permission:** FILEORGANIZER or higher
+
+        **Nesting:**
+
+        - Unlimited folder depth supported
+        - Parent folder must exist in the same knowledge base
+        - Duplicate names are rejected within the same parent (`409`)
+
+        **Naming rules:**
+
+        - Same rules as root folder create (`folderName`, 1–255 characters, XSS validation)
+
+        **Response:** Same shape as root folder create — `id`, `name`, and `webUrl`.
       operationId: createSubfolder
       security:
         - bearerAuth: []
@@ -20466,15 +21075,46 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Folder'
+                $ref: '#/components/schemas/FolderCreateResponseSchema'
         '400':
-          description: Invalid folder name
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing or empty folder name
+            - Folder name exceeds 255 characters
+            - XSS or invalid characters in folder name
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient permissions
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:write` scope
+            - User lacks FILEORGANIZER or higher permission on the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Parent folder not found
+          description: Parent folder or knowledge base not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Folder with this name already exists in the parent folder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Upload Endpoints --------------------
   /knowledgeBase/{kbId}/upload:
