@@ -337,3 +337,199 @@ class TestKBPermissionList:
         assert_response_matches_openapi_operation(
             resp.json(), "listKBPermissions", status_code="401"
         )
+
+
+@pytest.mark.integration
+class TestKBPermissionUpdate:
+    @pytest.fixture(autouse=True)
+    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.client = pipeshub_client
+        self.client._ensure_access_token()
+        self.base_url = self.client.base_url
+        self.headers = {
+            "Authorization": f"Bearer {self.client._access_token}",
+            "Content-Type": "application/json",
+        }
+
+    def test_update_kb_permission_success_user(
+        self,
+        six_kb_records: dict[str, object],
+        four_new_users: list[dict[str, object]],
+    ) -> None:
+        kb_id = str(six_kb_records["kb_id"])
+        grantee = four_new_users[0]
+        grantee_id = _permission_user_id(grantee)
+        perms_url = _permissions_url(self.base_url, kb_id)
+
+        create_resp = requests.post(
+            perms_url,
+            headers=self.headers,
+            json={"userIds": [grantee_id], "teamIds": [], "role": "READER"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        assert _granted_count(create_resp.json()) >= 1, (
+            "Permission create returned grantedCount=0 — grantee graph id not found "
+            "in graph (Arango skips unknown users)"
+        )
+
+        resp = requests.put(
+            perms_url,
+            headers=self.headers,
+            json={"userIds": [grantee_id], "teamIds": [], "role": "WRITER"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "updateKBPermissions")
+        assert body["kbId"] == kb_id
+        assert grantee_id in body["userIds"]
+        assert body.get("teamIds") == []
+        assert body["newRole"] == "WRITER"
+
+        _remove_permission(
+            self.base_url,
+            self.headers,
+            kb_id,
+            user_ids=[grantee_id],
+            timeout=self.client.timeout_seconds,
+        )
+
+    def test_update_kb_permission_negative(
+        self,
+        six_kb_records: dict[str, object],
+        four_new_users: list[dict[str, object]],
+        new_team: dict[str, object],
+    ) -> None:
+        kb_id = str(six_kb_records["kb_id"])
+        grantee_id = _user_id(four_new_users[0])
+        grantee_graph_id = _permission_user_id(four_new_users[0])
+        no_permission_user_id = _permission_user_id(four_new_users[1])
+        team_id = _team_id(new_team)
+        perms_url = _permissions_url(self.base_url, kb_id)
+        valid_body = {
+            "userIds": [grantee_graph_id],
+            "teamIds": [],
+            "role": "WRITER",
+        }
+
+        resp = requests.put(
+            perms_url,
+            headers=self.headers,
+            json={},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateKBPermissions", status_code="400"
+        )
+
+        resp = requests.put(
+            perms_url,
+            headers=self.headers,
+            json={"userIds": [grantee_id], "teamIds": []},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateKBPermissions", status_code="400"
+        )
+
+        resp = requests.put(
+            perms_url,
+            headers=self.headers,
+            json={"userIds": [], "teamIds": [], "role": "WRITER"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateKBPermissions", status_code="400"
+        )
+
+        resp = requests.put(
+            perms_url,
+            headers=self.headers,
+            json={
+                "userIds": [grantee_id],
+                "teamIds": [team_id],
+                "role": "WRITER",
+            },
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateKBPermissions", status_code="400"
+        )
+
+        resp = requests.put(
+            perms_url,
+            headers=self.headers,
+            json={"userIds": [grantee_id], "teamIds": [], "role": "INVALID"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateKBPermissions", status_code="400"
+        )
+
+        resp = requests.put(
+            _permissions_url(self.base_url, "not-a-uuid"),
+            headers=self.headers,
+            json=valid_body,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateKBPermissions", status_code="400"
+        )
+
+        resp = requests.put(
+            _permissions_url(self.base_url, _NONEXISTENT_KB_ID),
+            headers=self.headers,
+            json=valid_body,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 404, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateKBPermissions", status_code="404"
+        )
+
+        resp = requests.put(
+            perms_url,
+            headers=self.headers,
+            json={
+                "userIds": [no_permission_user_id],
+                "teamIds": [],
+                "role": "WRITER",
+            },
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 404, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateKBPermissions", status_code="404"
+        )
+
+        resp = requests.put(
+            perms_url,
+            headers={"Content-Type": "application/json"},
+            json=valid_body,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateKBPermissions", status_code="401"
+        )
+
+        resp = requests.put(
+            perms_url,
+            headers={
+                "Authorization": "Bearer invalid",
+                "Content-Type": "application/json",
+            },
+            json=valid_body,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateKBPermissions", status_code="401"
+        )

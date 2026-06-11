@@ -4686,6 +4686,34 @@ components:
         - permissions
         - totalCount
 
+    KnowledgebaseUpdatePermissionResponse:
+      type: object
+      additionalProperties: false
+      description: Response returned when user permission roles are updated on a knowledge base
+      properties:
+        kbId:
+          type: string
+          description: Knowledge base ID
+        userIds:
+          type: array
+          items:
+            type: string
+          description: Graph user document IDs whose roles were updated (Arango `users/{id}` key, not Mongo user `_id`)
+        teamIds:
+          type: array
+          items:
+            type: string
+          description: Graph team document IDs updated (always empty — teams cannot have roles updated)
+        newRole:
+          type: string
+          enum: [OWNER, WRITER, READER, COMMENTER]
+          description: New role assigned to the updated users
+      required:
+        - kbId
+        - userIds
+        - teamIds
+        - newRole
+
     # ==================== ENTERPRISE SEARCH SCHEMAS ====================
     AppType:
       type: string
@@ -21307,8 +21335,15 @@ paths:
         - Permissions
       summary: Update permissions
       description: |
-        Update permission roles for users or teams.<br><br>
-        <b>Required Permission:</b> OWNER or ORGANIZER
+        Update permission roles for users on a knowledge base.
+
+        **Required access:** Caller must be KB **OWNER** and hold the `kb:write` OAuth scope when using an OAuth token.
+
+        **User IDs:** Provide graph user document IDs (the `id` field from list permissions / user `graphId` after graph sync), not Mongo user `_id` values.
+
+        **Teams:** `teamIds` must be empty or omitted. Teams do not have roles; only user permissions can be updated.
+
+        Users without an existing permission on the KB are skipped. If none of the supplied users have a permission to update, the request returns **404**.
       operationId: updateKBPermissions
       security:
         - bearerAuth: []
@@ -21319,36 +21354,94 @@ paths:
           required: true
           schema:
             type: string
+            format: uuid
+          description: Knowledge base ID (must be a valid UUID)
       requestBody:
         required: true
-        description: "Request body for Update permissions"
+        description: User permission role update payload
         content:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
+                role:
+                  type: string
+                  enum: [OWNER, WRITER, READER, COMMENTER]
+                  description: New permission role to assign (required)
                 userIds:
                   type: array
                   items:
                     type: string
+                  description: Graph user document IDs to update (at least one of `userIds` or `teamIds` must be non-empty)
                 teamIds:
                   type: array
                   items:
                     type: string
-                role:
-                  type: string
-                  enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+                  description: Must be empty or omitted — non-empty values are rejected (teams cannot have roles updated)
               required:
                 - role
       responses:
         '200':
-          description: Permissions updated
+          description: Permissions updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgebaseUpdatePermissionResponse'
         '400':
-          description: Invalid request
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing or invalid `role` (must be OWNER, WRITER, READER, or COMMENTER)
+            - Missing `userIds` and `teamIds`, or both empty
+            - Non-empty `teamIds` (teams cannot have roles updated)
+            - Invalid `kbId` (must be UUID)
+            - Bulk update involving OWNER permissions (owners must be updated one at a time)
+            - Attempt to remove the last OWNER from the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient permissions
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:write` scope
+            - Caller is not KB OWNER (only owners can update permissions)
+            - Caller has no access to the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Not found. Possible reasons:
+
+            - Knowledge base does not exist
+            - Authenticated user not found in graph database
+            - None of the supplied users have an existing permission to update
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error — permission update failed in connector or database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable — connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
