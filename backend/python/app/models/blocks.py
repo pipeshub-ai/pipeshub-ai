@@ -260,6 +260,7 @@ class GroupSubType(str, Enum):
     PR_FILE_CHANGE = "pr_file_change"
     SQL_TABLE = "sql_table" 
     SQL_VIEW = "sql_view"
+    CODE_CLASS = "code_class"
 
 class SemanticMetadata(BaseModel):
     entities: Optional[List[Dict[str, Any]]] = None
