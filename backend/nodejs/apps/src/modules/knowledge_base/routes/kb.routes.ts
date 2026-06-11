@@ -22,7 +22,6 @@ import {
   listKBPermissions,
   updateFolder,
   deleteFolder,
-  getKBContent,
   uploadRecordsToFolder,
   createFolder,
   uploadRecordsToKB,
@@ -49,7 +48,6 @@ import {
   deletePermissionsSchema,
   updateFolderSchema,
   deleteFolderSchema,
-  getAllKBRecordsSchema,
   uploadRecordsSchema,
   uploadRecordsToFolderSchema,
   listKnowledgeBasesSchema,
@@ -385,26 +383,6 @@ export function createKnowledgeBaseRouter(
     metricsMiddleware(container),
     ValidationMiddleware.validate(deleteKBSchema),
     deleteKnowledgeBase(appConfig),
-  );
-
-  // Get records for a specific KB
-  router.get(
-    '/:kbId/records',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(getAllKBRecordsSchema),
-    getKBContent(appConfig),
-  );
-
-  // Get KB children (folders and records) - alias for records endpoint
-  router.get(
-    '/:kbId/children',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(getAllKBRecordsSchema),
-    getKBContent(appConfig),
   );
 
   // upload folder in the kb along with the direct record creation in the kb

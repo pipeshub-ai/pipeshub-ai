@@ -3,7 +3,6 @@ import { expect } from 'chai'
 import {
   uploadRecordsSchema,
   uploadRecordsToFolderSchema,
-  getAllKBRecordsSchema,
   listKnowledgeBasesSchema,
   kbPermissionSchema,
   updatePermissionsSchema,

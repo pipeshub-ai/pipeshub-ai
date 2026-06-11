@@ -150,19 +150,24 @@ def _delete_permission_test_user(client: PipeshubClient, user_id: str) -> None:
 def _create_one_permission_test_team(client: PipeshubClient) -> dict[str, object]:
     unique = uuid4().hex[:8]
     resp = requests.post(
-        f"{client.base_url}/api/v1/userGroups",
+        f"{client.base_url}/api/v1/teams",
         headers=client._headers(),
-        json={"name": f"rv-kb-perms-team-{unique}", "type": "custom"},
+        json={"name": f"rv-kb-perms-team-{unique}"},
         timeout=client.timeout_seconds,
     )
     resp.raise_for_status()
-    return resp.json()
+    body = resp.json()
+    data = body.get("data") or {}
+    graph_id = data.get("id")
+    assert graph_id, f"createTeam response missing data.id: {body}"
+    body["graphId"] = graph_id
+    return body
 
 
 def _delete_permission_test_team(client: PipeshubClient, team_id: str) -> None:
     try:
         requests.delete(
-            f"{client.base_url}/api/v1/userGroups/{team_id}",
+            f"{client.base_url}/api/v1/teams/{team_id}",
             headers=client._headers(),
             timeout=client.timeout_seconds,
         )
@@ -172,14 +177,14 @@ def _delete_permission_test_team(client: PipeshubClient, team_id: str) -> None:
 
 @pytest.fixture
 def new_team(pipeshub_client: PipeshubClient) -> Generator[dict[str, object], None, None]:
-    """Disposable team (full createUserGroup response body) for permission tests."""
+    """Disposable graph team (createTeam response + graphId) for permission tests."""
     client = pipeshub_client
     client._ensure_access_token()
     team = _create_one_permission_test_team(client)
     try:
         yield team
     finally:
-        team_id = str(team.get("_id") or team.get("id") or "")
+        team_id = str(team.get("graphId") or "")
         if team_id:
             _delete_permission_test_team(client, team_id)
 

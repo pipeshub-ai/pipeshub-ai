@@ -11,7 +11,6 @@ import {
   getConnectorStatsSchema,
   uploadRecordsSchema,
   uploadRecordsToFolderSchema,
-  getAllKBRecordsSchema,
   createKBSchema,
   getKBSchema,
   listKnowledgeBasesSchema,
@@ -148,25 +147,6 @@ describe('Knowledge Base Validators - coverage', () => {
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000', folderId: 'folder-123' },
       })
       expect(result.success).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // getAllKBRecordsSchema
-  // -----------------------------------------------------------------------
-  describe('getAllKBRecordsSchema', () => {
-    it('should accept valid query params', () => {
-      const result = getAllKBRecordsSchema.safeParse({
-        query: { page: '1', limit: '20', search: 'test' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should reject script tags in search', () => {
-      const result = getAllKBRecordsSchema.safeParse({
-        query: { search: '<script>xss</script>' },
-      })
-      expect(result.success).to.be.false
     })
   })
 

@@ -158,14 +158,6 @@ class KBClient:
         )
         return self._client._handle_response(resp)
 
-    def get_kb_records(self, kb_id: str) -> dict[str, Any]:
-        resp = requests.get(
-            self._url(f"/{kb_id}/records"),
-            headers=self._headers(),
-            timeout=self._client.timeout_seconds,
-        )
-        return self._client._handle_response(resp)
-
 
 # ---------------------------------------------------------------------------
 # Helpers

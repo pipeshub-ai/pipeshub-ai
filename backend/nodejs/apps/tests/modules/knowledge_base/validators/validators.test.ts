@@ -12,7 +12,6 @@ import {
   getConnectorStatsSchema,
   uploadRecordsSchema,
   uploadRecordsToFolderSchema,
-  getAllKBRecordsSchema,
   createKBSchema,
   getKBSchema,
   listKnowledgeBasesSchema,

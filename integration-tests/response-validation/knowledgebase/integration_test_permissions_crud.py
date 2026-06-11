@@ -35,9 +35,19 @@ def _permission_user_id(user: dict[str, object]) -> str:
 
 
 def _team_id(team: dict[str, object]) -> str:
+    """Mongo _id from createUserGroup — used in negative validation cases."""
     tid = team.get("_id") or team.get("id")
     assert tid, f"Team object has no id: {team}"
     return str(tid)
+
+
+def _permission_team_id(team: dict[str, object]) -> str:
+    """Graph team document id (teams._key) for KB permission create/delete teamIds body."""
+    graph_id = team.get("graphId")
+    assert graph_id, (
+        f"Team missing graphId (fixture should create graph team): {team}"
+    )
+    return str(graph_id)
 
 
 def _permissions_url(base_url: str, kb_id: str) -> str:
@@ -129,7 +139,7 @@ class TestKBPermissionCreate:
         new_team: dict[str, object],
     ) -> None:
         kb_id = str(six_kb_records["kb_id"])
-        team_id = _team_id(new_team)
+        team_id = _permission_team_id(new_team)
 
         resp = requests.post(
             _permissions_url(self.base_url, kb_id),
@@ -405,7 +415,7 @@ class TestKBPermissionUpdate:
         grantee_id = _user_id(four_new_users[0])
         grantee_graph_id = _permission_user_id(four_new_users[0])
         no_permission_user_id = _permission_user_id(four_new_users[1])
-        team_id = _team_id(new_team)
+        team_id = _permission_team_id(new_team)
         perms_url = _permissions_url(self.base_url, kb_id)
         valid_body = {
             "userIds": [grantee_graph_id],
@@ -588,7 +598,7 @@ class TestKBPermissionDelete:
         new_team: dict[str, object],
     ) -> None:
         kb_id = str(six_kb_records["kb_id"])
-        team_id = _team_id(new_team)
+        team_id = _permission_team_id(new_team)
         perms_url = _permissions_url(self.base_url, kb_id)
 
         create_resp = requests.post(
@@ -622,7 +632,7 @@ class TestKBPermissionDelete:
         kb_id = str(six_kb_records["kb_id"])
         grantee_graph_id = _permission_user_id(four_new_users[0])
         no_permission_user_id = _permission_user_id(four_new_users[1])
-        team_id = _team_id(new_team)
+        team_id = _permission_team_id(new_team)
         perms_url = _permissions_url(self.base_url, kb_id)
         valid_body = {
             "userIds": [grantee_graph_id],

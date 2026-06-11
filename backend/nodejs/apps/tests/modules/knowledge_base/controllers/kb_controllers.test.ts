@@ -17,7 +17,6 @@ import {
   uploadRecordsToKB,
   uploadRecordsToFolder,
   updateRecord,
-  getKBContent,
   getRecordById,
   reindexRecord,
   reindexRecordGroup,
@@ -664,35 +663,6 @@ describe('Knowledge Base Controller', () => {
         createMockAppConfig(),
       )
       const req = createMockRequest({ user: { userId: 'user-1' }, params: { recordId: 'r-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('getKBContent', () => {
-    it('should return a handler function', () => {
-      const handler = getKBContent(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should call next when user not authenticated', async () => {
-      const handler = getKBContent(createMockAppConfig())
-      const req = createMockRequest({ user: undefined })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when kbId is missing', async () => {
-      const handler = getKBContent(createMockAppConfig())
-      const req = createMockRequest({ params: {} })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -1418,92 +1388,6 @@ describe('Knowledge Base Controller', () => {
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
       }
-    })
-  })
-
-  describe('getKBContent (happy path)', () => {
-    it('should get KB content with default params', async () => {
-      const handler = getKBContent(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { records: [{ name: 'file.pdf' }], total: 1 },
-      })
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1' },
-        query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should get KB content with all filters', async () => {
-      const handler = getKBContent(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { records: [], total: 0 },
-      })
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1' },
-        query: {
-          page: '2',
-          limit: '10',
-          search: 'test',
-          recordTypes: 'file,folder',
-          origins: 'upload',
-          connectors: 'c1',
-          indexingStatus: 'completed',
-          dateFrom: '1000000',
-          dateTo: '2000000',
-          sortBy: 'createdAtTimestamp',
-          sortOrder: 'desc',
-        },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next when dateFrom is invalid', async () => {
-      const handler = getKBContent(createMockAppConfig())
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1' },
-        query: { dateFrom: 'invalid' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when dateTo is invalid', async () => {
-      const handler = getKBContent(createMockAppConfig())
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1' },
-        query: { dateTo: 'invalid' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
     })
   })
 
@@ -2955,25 +2839,6 @@ describe('Knowledge Base Controller', () => {
   // Additional error response handling for connector-backed endpoints
   // -----------------------------------------------------------------------
   describe('connector error handling deep paths', () => {
-    it('should call next when getKBContent connector returns non-200', async () => {
-      const handler = getKBContent(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 500,
-        data: { detail: 'Internal error' },
-      })
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1' },
-        query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
     it('should call next when getRecordById connector returns non-200', async () => {
       const handler = getRecordById(createMockAppConfig())
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
@@ -3278,31 +3143,6 @@ describe('Knowledge Base Controller', () => {
 
       await handler(req, res, next)
 
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // getKBContent with all query filters
-  // -----------------------------------------------------------------------
-  describe('getKBContent (additional filter coverage)', () => {
-    it('should handle connector returning null data', async () => {
-      const handler = getKBContent(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: null,
-      })
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1' },
-        query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      // Should call next since data is null
       expect(next.calledOnce).to.be.true
     })
   })
