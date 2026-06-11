@@ -12,6 +12,7 @@ import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStor
 import { PrometheusService } from '../../../../src/libs/services/prometheus/prometheus.service'
 import { KB_UPLOAD_LIMITS } from '../../../../src/modules/knowledge_base/constants/kb.constants'
 import * as configurationUtil from '../../../../src/modules/configuration_manager/utils/util'
+import { FileProcessorService } from '../../../../src/libs/middlewares/file_processor/fp.service'
 
 describe('Knowledge Base Routes', () => {
   let container: Container
@@ -28,6 +29,23 @@ describe('Knowledge Base Routes', () => {
     )
     if (!layer?.route) return null
     return layer.route.stack[layer.route.stack.length - 1].handle
+  }
+
+  function findRouteStack(path: string, method: string) {
+    const layer = router.stack.find(
+      (l: any) => l.route && l.route.path === path && l.route.methods[method],
+    )
+    if (!layer?.route) return []
+    return layer.route.stack.map((stackLayer: any) => stackLayer.handle)
+  }
+
+  function getRegisteredRoutes() {
+    return router.stack
+      .filter((layer: any) => layer.route)
+      .map((layer: any) => ({
+        path: layer.route.path,
+        methods: layer.route.methods,
+      }))
   }
 
   function mockRes() {
@@ -151,6 +169,43 @@ describe('Knowledge Base Routes', () => {
     expect(paths).to.include('/stream/record/:recordId')
   })
 
+  describe('folder route registration', () => {
+    it('should register unified POST /:kbId/folder for root and nested folder creation', () => {
+      const routes = getRegisteredRoutes()
+      const createFolderRoute = routes.find(
+        (r) => r.path === '/:kbId/folder' && r.methods.post,
+      )
+
+      expect(createFolderRoute).to.exist
+    })
+
+    it('should wire createFolderSchema validation before the createFolder handler', () => {
+      const handlers = findRouteStack('/:kbId/folder', 'post')
+
+      expect(handlers).to.have.lengthOf(5)
+      expect(handlers[3]).to.be.a('function')
+      expect(handlers[4]).to.be.a('function')
+    })
+
+    it('should register folder update and delete routes', () => {
+      const routes = getRegisteredRoutes()
+      const folderRoutes = routes.filter((r) => r.path === '/:kbId/folder/:folderId')
+
+      expect(folderRoutes.some((r) => r.methods.put)).to.be.true
+      expect(folderRoutes.some((r) => r.methods.delete)).to.be.true
+    })
+
+    it('should not register removed legacy folder and records routes', () => {
+      const paths = getRegisteredRoutes().map((r) => r.path)
+
+      expect(paths).to.not.include('/records')
+      expect(paths).to.not.include('/:kbId/records')
+      expect(paths).to.not.include('/:kbId/children')
+      expect(paths).to.not.include('/:kbId/folder/:folderId/subfolder')
+      expect(paths).to.not.include('/:kbId/folder/:folderId/children')
+    })
+  })
+
   describe('GET /limits', () => {
     it('should register upload limits route', () => {
       const routes = router.stack
@@ -223,6 +278,110 @@ describe('Knowledge Base Routes', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.equal(resError)
+    })
+  })
+
+  describe('multipart validation middleware', () => {
+    it('should call next() for safe multipart form fields', () => {
+      const handlers = findRouteStack('/record/:recordId', 'put')
+      const validateMultipart = handlers[4]
+      const req = {
+        body: {
+          recordName: 'Quarterly report',
+          folderName: 'Engineering Docs',
+          kbName: 'Company Knowledge',
+        },
+      }
+      const next = sinon.stub()
+
+      validateMultipart(req, {} as any, next)
+
+      expect(next.calledOnceWithExactly()).to.be.true
+    })
+
+    it('should forward validation errors for unsafe multipart form fields', () => {
+      const handlers = findRouteStack('/:kbId/folder/:folderId/upload', 'post')
+      const validateMultipart = handlers[4]
+      const req = {
+        body: {
+          folderName: '<script>alert(1)</script>',
+        },
+      }
+      const next = sinon.stub()
+
+      validateMultipart(req, {} as any, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(Error)
+      expect(next.firstCall.args[0].message).to.include('Folder name contains potentially dangerous content')
+    })
+  })
+
+  describe('dynamic upload middleware', () => {
+    it('should process files after successful upload setup', async () => {
+      sinon.stub(configurationUtil, 'getPlatformSettingsFromStore').resolves({
+        fileUploadMaxSizeBytes: 2048,
+        featureFlags: {},
+      })
+
+      const processMiddleware = sinon.stub().callsFake((_req: any, _res: any, next: any) => next())
+      sinon.stub(FileProcessorService.prototype, 'upload').returns(
+        ((_req: any, _res: any, next: any) => next()) as any,
+      )
+      sinon.stub(FileProcessorService.prototype, 'processFiles').returns(processMiddleware as any)
+
+      const handlers = findRouteStack('/:kbId/upload', 'post')
+      const dynamicUpload = handlers[3]
+      const req = { headers: {} }
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await dynamicUpload(req, res, next)
+
+      expect(processMiddleware.calledOnce).to.be.true
+      expect(processMiddleware.firstCall.args[0]).to.equal(req)
+      expect(processMiddleware.firstCall.args[1]).to.equal(res)
+      expect(processMiddleware.firstCall.args[2]).to.equal(next)
+    })
+
+    it('should forward upload callback errors to next()', async () => {
+      sinon.stub(configurationUtil, 'getPlatformSettingsFromStore').resolves({
+        fileUploadMaxSizeBytes: 2048,
+        featureFlags: {},
+      })
+
+      const uploadError = new Error('upload failed')
+      sinon.stub(FileProcessorService.prototype, 'upload').returns(
+        ((_req: any, _res: any, next: any) => next(uploadError)) as any,
+      )
+      const processFilesStub = sinon.stub(FileProcessorService.prototype, 'processFiles')
+
+      const handlers = findRouteStack('/:kbId/folder/:folderId/upload', 'post')
+      const dynamicUpload = handlers[3]
+      const next = sinon.stub()
+
+      await dynamicUpload({ headers: {} }, mockRes(), next)
+
+      expect(next.calledOnceWithExactly(uploadError)).to.be.true
+      expect(processFilesStub.called).to.be.false
+    })
+
+    it('should forward setup exceptions to next()', async () => {
+      sinon.stub(configurationUtil, 'getPlatformSettingsFromStore').resolves({
+        fileUploadMaxSizeBytes: 2048,
+        featureFlags: {},
+      })
+
+      const setupError = new Error('setup failed')
+      sinon.stub(FileProcessorService.prototype, 'upload').throws(setupError)
+
+      const handlers = findRouteStack('/record/:recordId', 'put')
+      const dynamicUpload = handlers[3]
+      const next = sinon.stub()
+
+      await dynamicUpload({ headers: {} }, mockRes(), next)
+
+      expect(next.calledOnceWithExactly(setupError)).to.be.true
     })
   })
 })
