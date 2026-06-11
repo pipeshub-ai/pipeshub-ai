@@ -365,7 +365,7 @@ class TestExtractIssueData:
             "fields": {
                 "summary": "Title",
                 "description": {"type": "paragraph", "content": [{"type": "text", "text": "d"}]},
-                "issuetype": {"name": "Bug", "hierarchyLevel": 1},
+                "issuetype": {"name": "Epic", "subtask": False},
                 "parent": {"id": "p1", "key": "P-99"},
                 "status": {"name": "Doing"},
                 "priority": {"name": "Highest"},
@@ -383,7 +383,7 @@ class TestExtractIssueData:
         assert row["parent_external_id"] == "p1"
         assert "Issue Type:" in row["description"]
         assert row["creator_email"] == "u@example.com"
-        mapper.map_type.assert_called_once_with("Bug")
+        mapper.map_type.assert_called_once_with("Epic")
 
 
 @pytest.mark.asyncio
@@ -1080,7 +1080,7 @@ class TestExtractIssueDataBranches:
             "key": "K-2",
             "fields": {
                 "summary": "S",
-                "issuetype": {"name": "Bug", "hierarchyLevel": 0},
+                "issuetype": {"name": "Bug", "subtask": False},
             },
         }
         row = conn._extract_issue_data(issue, {})
@@ -3079,7 +3079,7 @@ async def test_build_issue_records_epic_subtask_links_and_indexing_off():
         "key": "E-1",
         "fields": {
             "summary": "Epic",
-            "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+            "issuetype": {"name": "Epic", "subtask": False},
             "updated": "2025-01-01T00:00:00.000+0000",
             "created": "2025-01-01T00:00:00.000+0000",
         },
@@ -3089,7 +3089,7 @@ async def test_build_issue_records_epic_subtask_links_and_indexing_off():
         "key": "S-1",
         "fields": {
             "summary": "Sub",
-            "issuetype": {"name": "Sub-task", "hierarchyLevel": -1},
+            "issuetype": {"name": "Sub-task", "subtask": True},
             "parent": {"id": "e1", "key": "E-1"},
             "updated": "2025-01-02T00:00:00.000+0000",
             "created": "2025-01-01T00:00:00.000+0000",
@@ -3110,6 +3110,129 @@ async def test_build_issue_records_epic_subtask_links_and_indexing_off():
     assert by_id["s1"].parent_external_record_id == "e1"
     assert by_id["s1"].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
     assert by_id["s1"].related_external_records
+
+
+@pytest.mark.asyncio
+async def test_discover_epic_link_field_id():
+    conn = _make_connector()
+    resp = MagicMock()
+    resp.status = HttpStatusCode.OK.value
+    resp.json = MagicMock(
+        return_value=[
+            {"id": "customfield_10108", "name": "Epic Link", "schema": {"custom": "com.pyxis.greenhopper.jira:gh-epic-link"}},
+        ]
+    )
+    ds = MagicMock()
+    ds.get_fields_v2 = AsyncMock(return_value=resp)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        with patch.object(conn, "_safe_json_parse", return_value=resp.json()):
+            await conn._discover_epic_link_field_id()
+    assert conn._epic_link_field_id == "customfield_10108"
+
+
+@pytest.mark.asyncio
+async def test_resolve_hierarchy_parent_epic_link_uses_cache():
+    conn = _make_connector()
+    conn._epic_link_field_id = "customfield_10108"
+    fields = {"customfield_10108": "PA-24"}
+    resp = MagicMock()
+    resp.status = HttpStatusCode.OK.value
+    ds = MagicMock()
+    ds.get_issue_v2 = AsyncMock(return_value=resp)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        with patch.object(conn, "_safe_json_parse", return_value={"id": "10023"}):
+            first = await conn._resolve_hierarchy_parent_id(
+                fields, is_subtask=False, is_epic=False, parent_from_parent_field=None
+            )
+            second = await conn._resolve_hierarchy_parent_id(
+                fields, is_subtask=False, is_epic=False, parent_from_parent_field=None
+            )
+    assert first == "10023"
+    assert second == "10023"
+    ds.get_issue_v2.assert_awaited_once()
+    assert ds.get_issue_v2.call_args.kwargs["fields"] == ["id"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_hierarchy_parent_from_epic_link_string():
+    conn = _make_connector()
+    conn._epic_link_field_id = "customfield_10108"
+    fields = {"customfield_10108": "PA-24"}
+    resp = MagicMock()
+    resp.status = HttpStatusCode.OK.value
+    ds = MagicMock()
+    ds.get_issue_v2 = AsyncMock(return_value=resp)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        with patch.object(conn, "_safe_json_parse", return_value={"id": "10023"}):
+            parent_id = await conn._resolve_hierarchy_parent_id(
+                fields,
+                is_subtask=False,
+                is_epic=False,
+                parent_from_parent_field=None,
+            )
+    assert parent_id == "10023"
+    assert conn._issue_key_to_id_cache["PA-24"] == "10023"
+
+
+@pytest.mark.asyncio
+async def test_build_issue_records_epic_story_subtask_chain():
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn.site_url = "https://jira.example"
+    conn._epic_link_field_id = "customfield_10108"
+    tx = MagicMock()
+    tx.get_record_by_external_id = AsyncMock(return_value=None)
+    epic = {
+        "id": "10023",
+        "key": "PA-24",
+        "fields": {
+            "summary": "Epic",
+            "issuetype": {"name": "Epic", "subtask": False},
+            "updated": "2025-01-01T00:00:00.000+0000",
+            "created": "2025-01-01T00:00:00.000+0000",
+        },
+    }
+    story = {
+        "id": "10024",
+        "key": "PA-25",
+        "fields": {
+            "summary": "Story",
+            "issuetype": {"name": "Story", "subtask": False},
+            "customfield_10108": "PA-24",
+            "updated": "2025-01-02T00:00:00.000+0000",
+            "created": "2025-01-01T00:00:00.000+0000",
+        },
+    }
+    subtask = {
+        "id": "10025",
+        "key": "PA-26",
+        "fields": {
+            "summary": "Sub",
+            "issuetype": {"name": "Sub-task", "subtask": True},
+            "parent": {"id": "10024", "key": "PA-25"},
+            "updated": "2025-01-03T00:00:00.000+0000",
+            "created": "2025-01-01T00:00:00.000+0000",
+        },
+    }
+    mapper = MagicMock()
+    mapper.map_type.return_value = "Task"
+    mapper.map_status.return_value = "Open"
+    mapper.map_priority.return_value = "Low"
+    conn.value_mapper = mapper
+    resp = MagicMock()
+    resp.status = HttpStatusCode.OK.value
+    ds = MagicMock()
+    ds.get_issue_v2 = AsyncMock(return_value=resp)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        with patch.object(conn, "_safe_json_parse", return_value={"id": "10023"}):
+            with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, return_value=[]):
+                rows = await conn._build_issue_records(
+                    [epic, story, subtask], "pid", [], tx, is_new_project=False
+                )
+    by_id = {r[0].external_record_id: r[0] for r in rows}
+    assert by_id["10023"].parent_external_record_id is None
+    assert by_id["10024"].parent_external_record_id == "10023"
+    assert by_id["10025"].parent_external_record_id == "10024"
 
 
 @pytest.mark.asyncio

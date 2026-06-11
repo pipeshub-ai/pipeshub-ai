@@ -102,8 +102,11 @@ ISSUE_SEARCH_FIELDS: list[str] = [
     "summary", "description", "status", "priority",
     "creator", "reporter", "assignee", "created", "updated",
     "issuetype", "project", "parent", "attachment", "security",
-    "issuelinks"
+    "issuelinks",
 ]
+
+DC_EPIC_LINK_FIELD_NAME = "Epic Link"
+DC_EPIC_LINK_SCHEMA_CUSTOM = "com.pyxis.greenhopper.jira:gh-epic-link"
 
 
 def _normalize_jira_dc_group_row(raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -427,6 +430,10 @@ class JiraDataCenterConnector(BaseConnector):
         self._user_bulk_forbidden: bool = False  # GET /user/search returned 401/403
         # DC username (``name``) -> source_user_id (``key``); built during _fetch_users
         self._dc_name_to_source_id: dict[str, str] = {}
+        # Epic Link field id: None = before init, "" = not found, else customfield id
+        self._epic_link_field_id: str | None = None
+        # Epic key -> numeric id; cleared at start of each project sync
+        self._issue_key_to_id_cache: dict[str, str] = {}
 
     async def init(self) -> bool:
         try:
@@ -483,6 +490,8 @@ class JiraDataCenterConnector(BaseConnector):
                         self.creator_email = creator.email
                 except Exception as e:
                     self.logger.warning("Could not resolve creator email for created_by %s: %s", self.created_by, e)
+
+            await self._discover_epic_link_field_id()
 
             return True
         except Exception as e:
@@ -2393,6 +2402,9 @@ class JiraDataCenterConnector(BaseConnector):
         elif resume_from_timestamp:
             self.logger.info(f"🔄 Starting sync for project {project_key} from timestamp {resume_from_timestamp}")
 
+        # Per-project sync: reset Epic Link key→id cache
+        self._issue_key_to_id_cache.clear()
+
         # Fetch and process issues in batches
         total_issues_processed = 0
         batch_number = 0
@@ -2574,6 +2586,7 @@ class JiraDataCenterConnector(BaseConnector):
         start_at = 0
         # Track last issue updated timestamp for resume (starts with resume_from_timestamp if resuming)
         last_issue_updated = resume_from_timestamp
+        search_fields = self._get_issue_search_fields()
 
         while True:
             page_count += 1
@@ -2584,7 +2597,7 @@ class JiraDataCenterConnector(BaseConnector):
                     jql=jql,
                     start_at=start_at,
                     max_results=DEFAULT_MAX_RESULTS,
-                    fields=ISSUE_SEARCH_FIELDS,
+                    fields=search_fields,
                 )
 
                 if response.status != HttpStatusCode.OK.value:
@@ -2762,6 +2775,127 @@ class JiraDataCenterConnector(BaseConnector):
 
         return related_records
 
+    async def _discover_epic_link_field_id(self) -> None:
+        """Discover Epic Link custom field id via GET /rest/api/2/field (once at init)."""
+        if self._epic_link_field_id is not None:
+            return
+        self._epic_link_field_id = ""
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_fields_v2()
+            if response.status != HttpStatusCode.OK.value:
+                self.logger.warning(
+                    "Failed to discover Epic Link field: HTTP %s", response.status
+                )
+                return
+            fields_list = self._safe_json_parse(response, "Epic Link field discovery")
+            if isinstance(fields_list, list):
+                for field in fields_list:
+                    if not isinstance(field, dict):
+                        continue
+                    name = field.get("name")
+                    schema = field.get("schema") or {}
+                    custom = schema.get("custom") if isinstance(schema, dict) else None
+                    if name == DC_EPIC_LINK_FIELD_NAME or custom == DC_EPIC_LINK_SCHEMA_CUSTOM:
+                        field_id = field.get("id")
+                        if field_id:
+                            self._epic_link_field_id = str(field_id)
+                            self.logger.info(
+                                "Discovered Epic Link field: %s", self._epic_link_field_id
+                            )
+                        return
+            self.logger.debug(
+                "Epic Link field not found (non-Scrum or custom epic link configuration)"
+            )
+        except Exception as e:
+            self.logger.warning("Epic Link field discovery failed: %s", e)
+
+    def _get_issue_search_fields(self) -> list[str]:
+        if self._epic_link_field_id:
+            return ISSUE_SEARCH_FIELDS + [self._epic_link_field_id]
+        return list(ISSUE_SEARCH_FIELDS)
+
+    async def _resolve_hierarchy_parent_id(
+        self,
+        fields: dict[str, Any],
+        *,
+        is_subtask: bool,
+        is_epic: bool,
+        parent_from_parent_field: str | None,
+    ) -> str | None:
+        """Resolve parent id from fields.parent (sub-tasks) or Epic Link (stories)."""
+        if is_epic:
+            return None
+        if is_subtask or parent_from_parent_field:
+            return parent_from_parent_field
+
+        epic_link_field_id = self._epic_link_field_id
+        if not epic_link_field_id:
+            return None
+
+        raw = fields.get(epic_link_field_id)
+        if not raw:
+            return None
+
+        epic_key: str | None = None
+        epic_id: str | None = None
+        if isinstance(raw, str) and raw.strip():
+            epic_key = raw.strip()
+        elif isinstance(raw, dict):
+            key = raw.get("key")
+            inline_id = raw.get("id")
+            epic_key = str(key).strip() if key else None
+            epic_id = str(inline_id) if inline_id else None
+
+        if epic_id:
+            if epic_key:
+                self._issue_key_to_id_cache[epic_key] = epic_id
+            return epic_id
+        if not epic_key:
+            return None
+
+        cached = self._issue_key_to_id_cache.get(epic_key)
+        if cached:
+            return cached
+
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_issue_v2(issueIdOrKey=epic_key, fields=["id"])
+            if response.status == HttpStatusCode.NOT_FOUND.value:
+                self.logger.debug("Epic Link target issue %s not found", epic_key)
+                return None
+            if response.status != HttpStatusCode.OK.value:
+                self.logger.warning(
+                    "Failed to resolve Epic Link key %s: HTTP %s", epic_key, response.status
+                )
+                return None
+            issue = self._safe_json_parse(response, f"Epic Link resolve {epic_key}")
+            resolved_id = issue.get("id") if issue else None
+        except Exception as e:
+            self.logger.warning("Failed to resolve Epic Link key %s: %s", epic_key, e)
+            return None
+        if not resolved_id:
+            return None
+        resolved_id = str(resolved_id)
+        self._issue_key_to_id_cache[epic_key] = resolved_id
+        return resolved_id
+
+    async def _extract_issue_data_with_parent(
+        self,
+        issue: dict[str, Any],
+        user_by_account_id: dict[str, AppUser],
+    ) -> dict[str, Any]:
+        """Extract issue fields and resolve hierarchy parent (Epic Link + parent field)."""
+        issue_data = self._extract_issue_data(issue, user_by_account_id)
+        fields = issue.get("fields", {}) or {}
+        issue_data["parent_external_id"] = await self._resolve_hierarchy_parent_id(
+            fields,
+            is_subtask=issue_data["is_subtask"],
+            is_epic=issue_data["is_epic"],
+            parent_from_parent_field=issue_data["parent_external_id"],
+        )
+        return issue_data
+
     def _extract_issue_data(
         self,
         issue: dict[str, Any],
@@ -2782,29 +2916,19 @@ class JiraDataCenterConnector(BaseConnector):
         else:
             description_text = None
 
-        # Extract issue type and hierarchy information
+        # Extract issue type information
         issue_type_obj = fields.get("issuetype", {}) or {}
         raw_issue_type = issue_type_obj.get("name") if issue_type_obj else None
         # Map issue type to standardized value using value mapper
         issue_type = self.value_mapper.map_type(raw_issue_type)
-        hierarchy_level = issue_type_obj.get("hierarchyLevel")
 
-        # Extract parent issue information
+        # Extract parent issue information (sub-task parent at extract time; Epic Link resolved later)
         parent_obj = fields.get("parent")
         parent_external_id = parent_obj.get("id") if parent_obj else None
         parent_key = parent_obj.get("key") if parent_obj else None
 
-        # Categorize issue type. ``hierarchyLevel`` is a Cloud-era / modern-DC field;
-        # older Data Center builds omit it. Fall back to:
-        #   - ``issuetype.subtask == True`` for subtasks (standard DC field).
-        #   - issue-type name match for epics (``"Epic"``); DC's epic detection is
-        #     by name unless customized per-project.
-        if hierarchy_level is not None:
-            is_epic = hierarchy_level == 1
-            is_subtask = hierarchy_level == -1
-        else:
-            is_subtask = bool(issue_type_obj.get("subtask"))
-            is_epic = (raw_issue_type or "").strip().lower() == "epic"
+        is_subtask = bool(issue_type_obj.get("subtask"))
+        is_epic = (raw_issue_type or "").strip().lower() == "epic"
 
         # Build record name with issue key in square brackets at start for better searchability
         issue_name = f"[{issue_key}] {issue_summary}" if issue_key else issue_summary
@@ -2877,7 +3001,6 @@ class JiraDataCenterConnector(BaseConnector):
             "issue_name": issue_name,
             "description": description,
             "issue_type": issue_type,
-            "hierarchy_level": hierarchy_level,
             "is_epic": is_epic,
             "is_subtask": is_subtask,
             "parent_external_id": parent_external_id,
@@ -2920,8 +3043,7 @@ class JiraDataCenterConnector(BaseConnector):
         user_by_account_id = {user.source_user_id: user for user in users if user.source_user_id}
 
         for issue in issues:
-            # Extract and process issue data
-            issue_data = self._extract_issue_data(issue, user_by_account_id)
+            issue_data = await self._extract_issue_data_with_parent(issue, user_by_account_id)
 
             issue_id = issue_data["issue_id"]
             issue_key = issue_data["issue_key"]
@@ -2944,7 +3066,6 @@ class JiraDataCenterConnector(BaseConnector):
             # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
             permissions = []
 
-            # Get fields for attachments (needed by _fetch_issue_attachments)
             fields = issue.get("fields", {})
 
             # Check for existing record (works for both Epics and regular issues)
@@ -4459,8 +4580,8 @@ class JiraDataCenterConnector(BaseConnector):
                         source_user_id=identifier
                     )
 
-            # Extract issue data using existing function
-            issue_data = self._extract_issue_data(issue, user_by_account_id)
+            issue_data = await self._extract_issue_data_with_parent(issue, user_by_account_id)
+            parent_external_id = issue_data["parent_external_id"]
 
             # Get project info
             project = fields.get("project") or {}
@@ -4491,8 +4612,8 @@ class JiraDataCenterConnector(BaseConnector):
                 connector_id=self.connector_id,
                 record_group_type=record.record_group_type if hasattr(record, 'record_group_type') else RecordGroupType.PROJECT,
                 external_record_group_id=record.external_record_group_id if hasattr(record, 'external_record_group_id') else project_id,
-                parent_external_record_id=record.parent_external_record_id if hasattr(record, 'parent_external_record_id') else issue_data.get("parent_external_id"),
-                parent_record_type=record.parent_record_type if hasattr(record, 'parent_record_type') else (RecordType.TICKET if issue_data.get("parent_external_id") else None),
+                parent_external_record_id=parent_external_id,
+                parent_record_type=RecordType.TICKET if parent_external_id else None,
                 version=version,
                 mime_type=MimeTypes.BLOCKS.value,  # Use BLOCKS for blockgroups/blocks streaming
                 weburl=record.weburl if hasattr(record, 'weburl') else None,

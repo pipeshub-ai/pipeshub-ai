@@ -20119,7 +20119,7 @@ class JiraDataSource:
     # Index: https://developer.atlassian.com/server/jira/platform/rest/v11002/intro/#gettingstarted
     #
     # Covers Cloud-connector equivalents (see jira_cloud/connector usage):
-    #   search_issues_post_v2, get_issue_v2,
+    #   search_issues_post_v2, get_issue_v2, get_fields_v2,
     #   list_projects_get_v2, get_project_v2,
     #   get_myself_v2, get_current_user_v2,
     #   get_user_search_v2, get_all_application_roles_v2,
@@ -20357,6 +20357,30 @@ class JiraDataSource:
             _query['expand'] = expand
         _body = None
         rel_path = '/rest/api/2/myself'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_fields_v2(self, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
+        """GET /rest/api/2/field (Data Center / Server).
+
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-issue/#api-api-2-field-get
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {}
+        _query: Dict[str, Any] = {}
+        _body = None
+        rel_path = '/rest/api/2/field'
         url = self.base_url + _safe_format_url(rel_path, _path)
         req = HTTPRequest(
             method='GET',
