@@ -1012,7 +1012,7 @@ class TestProcessDocumentChunksRemoteFailure:
         ]
 
         with pytest.raises(VectorStoreError, match="Failed to store document batch"):
-            await vs._process_document_chunks(chunks)
+            await vs._process_document_chunks(chunks, "test-record")
 
 
 # ===================================================================

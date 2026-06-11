@@ -85,6 +85,7 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         connector_name=connector_name,
         is_vlm_ocr_processed=record_dict.get("isVLMOcrProcessed", False),
         connector_id=record_dict.get("connectorId"),
+        md5_hash=record_dict.get("md5Checksum"),
     )
 
 class Processor:
