@@ -4525,6 +4525,7 @@ class TestGitlabConnectorSyncProjects:
         mock_project = MagicMock()
         mock_project.id = 101
         mock_project.path_with_namespace = "group/project-one"
+        mock_project.default_branch = "main"
 
         # Mock successful projects response
         mock_projects_res = MagicMock()
@@ -4557,7 +4558,7 @@ class TestGitlabConnectorSyncProjects:
         connector._sync_project_members_as_pseudo.assert_called_once_with(mock_project)
         connector._fetch_issues_batched.assert_called_once_with(101)
         connector._fetch_prs_batched.assert_called_once_with(101)
-        connector._sync_repo_main.assert_called_once_with(101, "group/project-one")
+        connector._sync_repo_main.assert_called_once_with(101, "group/project-one", "main")
 
     @pytest.mark.asyncio
     async def test_sync_projects_success_multiple_projects(self) -> None:
@@ -4568,14 +4569,17 @@ class TestGitlabConnectorSyncProjects:
         mock_project1 = MagicMock()
         mock_project1.id = 101
         mock_project1.path_with_namespace = "group/project-one"
+        mock_project1.default_branch = "main"
 
         mock_project2 = MagicMock()
         mock_project2.id = 202
         mock_project2.path_with_namespace = "group/project-two"
+        mock_project2.default_branch = "main"
 
         mock_project3 = MagicMock()
         mock_project3.id = 303
         mock_project3.path_with_namespace = "another-group/project-three"
+        mock_project3.default_branch = "main"
 
         mock_projects_res = MagicMock()
         mock_projects_res.success = True
@@ -4612,9 +4616,9 @@ class TestGitlabConnectorSyncProjects:
         connector._fetch_prs_batched.assert_any_call(202)
         connector._fetch_prs_batched.assert_any_call(303)
 
-        connector._sync_repo_main.assert_any_call(101, "group/project-one")
-        connector._sync_repo_main.assert_any_call(202, "group/project-two")
-        connector._sync_repo_main.assert_any_call(303, "another-group/project-three")
+        connector._sync_repo_main.assert_any_call(101, "group/project-one", "main")
+        connector._sync_repo_main.assert_any_call(202, "group/project-two", "main")
+        connector._sync_repo_main.assert_any_call(303, "another-group/project-three", "main")
 
     @pytest.mark.asyncio
     async def test_sync_projects_fetch_fails_raises_exception(self) -> None:
@@ -4706,6 +4710,7 @@ class TestGitlabConnectorSyncProjects:
         mock_project = MagicMock()
         mock_project.id = 101
         mock_project.path_with_namespace = "group/project"
+        mock_project.default_branch = "main"
 
         mock_projects_res = MagicMock()
         mock_projects_res.success = True
@@ -4726,7 +4731,7 @@ class TestGitlabConnectorSyncProjects:
         async def track_prs(project_id) -> None:
             call_order.append("fetch_prs")
 
-        async def track_repo(project_id, path) -> None:
+        async def track_repo(project_id, path, branch) -> None:
             call_order.append("sync_repo")
 
         connector._sync_project_members_as_pseudo = track_pseudo
@@ -4748,6 +4753,7 @@ class TestGitlabConnectorSyncProjects:
         mock_project = MagicMock()
         mock_project.id = 789
         mock_project.path_with_namespace = "org-name/deep/project-path"
+        mock_project.default_branch = "main"
 
         mock_projects_res = MagicMock()
         mock_projects_res.success = True
@@ -4769,7 +4775,7 @@ class TestGitlabConnectorSyncProjects:
         connector._fetch_issues_batched.assert_called_once_with(789)
         connector._fetch_prs_batched.assert_called_once_with(789)
         connector._sync_repo_main.assert_called_once_with(
-            789, "org-name/deep/project-path"
+            789, "org-name/deep/project-path", "main"
         )
 
     @pytest.mark.asyncio
@@ -4781,6 +4787,7 @@ class TestGitlabConnectorSyncProjects:
         mock_project = MagicMock()
         mock_project.id = 101
         mock_project.path_with_namespace = "group/project"
+        mock_project.default_branch = "main"
 
         mock_projects_res = MagicMock()
         mock_projects_res.success = True
@@ -4803,7 +4810,7 @@ class TestGitlabConnectorSyncProjects:
         # Remaining steps on the same project still ran.
         connector._fetch_issues_batched.assert_called_once_with(101)
         connector._fetch_prs_batched.assert_called_once_with(101)
-        connector._sync_repo_main.assert_called_once_with(101, "group/project")
+        connector._sync_repo_main.assert_called_once_with(101, "group/project", "main")
 
     @pytest.mark.asyncio
     async def test_sync_projects_fetch_issues_raises_is_isolated(self) -> None:
@@ -4813,6 +4820,7 @@ class TestGitlabConnectorSyncProjects:
         mock_project = MagicMock()
         mock_project.id = 101
         mock_project.path_with_namespace = "group/project"
+        mock_project.default_branch = "main"
 
         mock_projects_res = MagicMock()
         mock_projects_res.success = True
@@ -4833,7 +4841,7 @@ class TestGitlabConnectorSyncProjects:
 
         # MRs and code must still be attempted on the same project.
         connector._fetch_prs_batched.assert_called_once_with(101)
-        connector._sync_repo_main.assert_called_once_with(101, "group/project")
+        connector._sync_repo_main.assert_called_once_with(101, "group/project", "main")
 
     @pytest.mark.asyncio
     async def test_sync_projects_fetch_prs_raises_is_isolated(self) -> None:
@@ -4843,6 +4851,7 @@ class TestGitlabConnectorSyncProjects:
         mock_project = MagicMock()
         mock_project.id = 101
         mock_project.path_with_namespace = "group/project"
+        mock_project.default_branch = "main"
 
         mock_projects_res = MagicMock()
         mock_projects_res.success = True
@@ -4861,7 +4870,7 @@ class TestGitlabConnectorSyncProjects:
 
         await connector._sync_projects()
 
-        connector._sync_repo_main.assert_called_once_with(101, "group/project")
+        connector._sync_repo_main.assert_called_once_with(101, "group/project", "main")
 
     @pytest.mark.asyncio
     async def test_sync_projects_sync_repo_raises_is_isolated(self) -> None:
@@ -12270,7 +12279,7 @@ class TestSyncRepoMain:
         file_res = self._gql_file_response(blob_nodes=[], has_next_page=False)
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         assert connector.data_source.get_repo_tree_g.call_count == 2
 
@@ -12718,6 +12727,7 @@ class TestIncrementalCodeRepoSync:
     @pytest.mark.asyncio
     async def test_sync_repo_incremental_partitions_diffs(self) -> None:
         connector = _make_connector()
+        connector.data_source = MagicMock()
         diffs = [
             {
                 "old_path": "removed.py",
@@ -12803,6 +12813,7 @@ class TestIncrementalCodeRepoSync:
         self,
     ) -> None:
         connector = _make_connector()
+        connector.data_source = MagicMock()
         diffs = [{"old_path": f"f{i}.py", "new_path": f"f{i}.py"} for i in range(
             GITLAB_COMPARE_DIFF_LIMIT
         )]
@@ -13658,6 +13669,7 @@ class TestGitlabSyncProjectsIndexingFilters:
         project = MagicMock()
         project.id = 7
         project.path_with_namespace = "org/p"
+        project.default_branch = "main"
 
         connector._resolve_projects_with_filters = AsyncMock(return_value=[project])
         connector._sync_project_members_as_pseudo = AsyncMock()
@@ -13675,7 +13687,7 @@ class TestGitlabSyncProjectsIndexingFilters:
 
         connector._fetch_issues_batched.assert_awaited_once_with(7)
         connector._fetch_prs_batched.assert_awaited_once_with(7)
-        connector._sync_repo_main.assert_awaited_once_with(7, "org/p")
+        connector._sync_repo_main.assert_awaited_once_with(7, "org/p", "main")
 
     @pytest.mark.asyncio
     async def test_issues_disabled_still_syncs_issues(self) -> None:
@@ -13727,7 +13739,7 @@ class TestGitlabSyncProjectsIndexingFilters:
 
         connector._fetch_issues_batched.assert_awaited_once()
         connector._fetch_prs_batched.assert_awaited_once()
-        connector._sync_repo_main.assert_awaited_once_with(7, "org/p")
+        connector._sync_repo_main.assert_awaited_once_with(7, "org/p", "main")
 
     @pytest.mark.asyncio
     async def test_no_projects_returns_early(self) -> None:

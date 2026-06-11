@@ -3408,8 +3408,7 @@ class TestResetIndexingStatusToQueued:
         proc = _make_processor()
         tx_store = _make_tx_store()
 
-        record_mock = MagicMock()
-        record_mock.indexing_status = ProgressStatus.QUEUED.value
+        record_mock = {"indexingStatus": ProgressStatus.QUEUED.value}
         tx_store.get_record_by_key.return_value = record_mock
 
         await proc._reset_indexing_status_to_queued("rec-1", tx_store)
