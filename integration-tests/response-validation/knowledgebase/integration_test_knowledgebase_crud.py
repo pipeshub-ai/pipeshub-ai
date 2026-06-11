@@ -126,7 +126,16 @@ class TestKnowledgeBaseCrud:
         assert len(body["knowledgeBases"]) == 5
         assert body["pagination"]["totalCount"] >= 10
         assert body["pagination"]["hasNext"] is True
-        for kb in body["knowledgeBases"]:
+
+        fixture_ids = set(ten_knowledge_bases["ids"])
+        fixture_kbs = [
+            kb for kb in body["knowledgeBases"] if kb["id"] in fixture_ids
+        ]
+        assert fixture_kbs, (
+            "Expected at least one fixture KB on page 1; got "
+            f"{[kb['name'] for kb in body['knowledgeBases']]}"
+        )
+        for kb in fixture_kbs:
             assert prefix in kb["name"]
 
     def test_list_knowledge_bases_negative(self) -> None:

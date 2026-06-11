@@ -19,14 +19,14 @@ _NONEXISTENT_KB_ID = "00000000-0000-4000-8000-000000000001"
 
 
 def _user_id(user: dict[str, object]) -> str:
-    """Mongo _id from createUser — used in negative validation cases."""
+    """Mongo userId for KB permission request body ``userIds``."""
     uid = user.get("_id") or user.get("id")
     assert uid, f"User object has no id: {user}"
     return str(uid)
 
 
-def _permission_user_id(user: dict[str, object]) -> str:
-    """Graph user document id for KB permission create/delete userIds body."""
+def _graph_user_id(user: dict[str, object]) -> str:
+    """Graph user document id echoed in KB permission response ``userIds``."""
     graph_id = user.get("graphId")
     assert graph_id, (
         f"User missing graphId (fixture should wait for graph sync): {user}"
@@ -105,7 +105,7 @@ class TestKBPermissionCreate:
     ) -> None:
         kb_id = str(six_kb_records["kb_id"])
         grantee = four_new_users[0]
-        grantee_id = _permission_user_id(grantee)
+        grantee_id = _user_id(grantee)
 
         resp = requests.post(
             _permissions_url(self.base_url, kb_id),
@@ -121,8 +121,8 @@ class TestKBPermissionCreate:
         assert body["kbId"] == kb_id
         assert body.get("permissionResult") is not None
         assert _granted_count(body) >= 1, (
-            "Permission create returned grantedCount=0 — grantee graph id not found "
-            "in graph (Arango skips unknown users)"
+            "Permission create returned grantedCount=0 — grantee Mongo userId "
+            "not found in graph yet"
         )
 
         _remove_permission(
@@ -368,7 +368,8 @@ class TestKBPermissionUpdate:
     ) -> None:
         kb_id = str(six_kb_records["kb_id"])
         grantee = four_new_users[0]
-        grantee_id = _permission_user_id(grantee)
+        grantee_id = _user_id(grantee)
+        grantee_graph_id = _graph_user_id(grantee)
         perms_url = _permissions_url(self.base_url, kb_id)
 
         create_resp = requests.post(
@@ -379,8 +380,8 @@ class TestKBPermissionUpdate:
         )
         assert create_resp.status_code == 201, create_resp.text
         assert _granted_count(create_resp.json()) >= 1, (
-            "Permission create returned grantedCount=0 — grantee graph id not found "
-            "in graph (Arango skips unknown users)"
+            "Permission create returned grantedCount=0 — grantee Mongo userId "
+            "not found in graph yet"
         )
 
         resp = requests.put(
@@ -393,7 +394,7 @@ class TestKBPermissionUpdate:
         body = resp.json()
         assert_response_matches_openapi_operation(body, "updateKBPermissions")
         assert body["kbId"] == kb_id
-        assert grantee_id in body["userIds"]
+        assert grantee_graph_id in body["userIds"]
         assert body.get("teamIds") == []
         assert body["newRole"] == "WRITER"
 
@@ -413,12 +414,11 @@ class TestKBPermissionUpdate:
     ) -> None:
         kb_id = str(six_kb_records["kb_id"])
         grantee_id = _user_id(four_new_users[0])
-        grantee_graph_id = _permission_user_id(four_new_users[0])
-        no_permission_user_id = _permission_user_id(four_new_users[1])
+        no_permission_user_id = _user_id(four_new_users[1])
         team_id = _permission_team_id(new_team)
         perms_url = _permissions_url(self.base_url, kb_id)
         valid_body = {
-            "userIds": [grantee_graph_id],
+            "userIds": [grantee_id],
             "teamIds": [],
             "role": "WRITER",
         }
@@ -564,7 +564,8 @@ class TestKBPermissionDelete:
     ) -> None:
         kb_id = str(six_kb_records["kb_id"])
         grantee = four_new_users[0]
-        grantee_id = _permission_user_id(grantee)
+        grantee_id = _user_id(grantee)
+        grantee_graph_id = _graph_user_id(grantee)
         perms_url = _permissions_url(self.base_url, kb_id)
 
         create_resp = requests.post(
@@ -575,8 +576,8 @@ class TestKBPermissionDelete:
         )
         assert create_resp.status_code == 201, create_resp.text
         assert _granted_count(create_resp.json()) >= 1, (
-            "Permission create returned grantedCount=0 — grantee graph id not found "
-            "in graph (Arango skips unknown users)"
+            "Permission create returned grantedCount=0 — grantee Mongo userId "
+            "not found in graph yet"
         )
 
         resp = requests.delete(
@@ -589,7 +590,7 @@ class TestKBPermissionDelete:
         body = resp.json()
         assert_response_matches_openapi_operation(body, "deleteKBPermissions")
         assert body["kbId"] == kb_id
-        assert grantee_id in body["userIds"]
+        assert grantee_graph_id in body["userIds"]
         assert body.get("teamIds") == []
 
     def test_delete_kb_permission_success_team(
@@ -630,12 +631,12 @@ class TestKBPermissionDelete:
         new_team: dict[str, object],
     ) -> None:
         kb_id = str(six_kb_records["kb_id"])
-        grantee_graph_id = _permission_user_id(four_new_users[0])
-        no_permission_user_id = _permission_user_id(four_new_users[1])
+        grantee_id = _user_id(four_new_users[0])
+        no_permission_user_id = _user_id(four_new_users[1])
         team_id = _permission_team_id(new_team)
         perms_url = _permissions_url(self.base_url, kb_id)
         valid_body = {
-            "userIds": [grantee_graph_id],
+            "userIds": [grantee_id],
             "teamIds": [],
         }
 
@@ -655,7 +656,7 @@ class TestKBPermissionDelete:
         resp = requests.delete(
             perms_url,
             headers=self.headers,
-            json={"userIds": [grantee_graph_id]},
+            json={"userIds": [grantee_id]},
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 500, resp.text
@@ -738,7 +739,7 @@ class TestKBPermissionDelete:
         create_resp = requests.post(
             perms_url,
             headers=self.headers,
-            json={"userIds": [grantee_graph_id], "teamIds": [], "role": "READER"},
+            json={"userIds": [grantee_id], "teamIds": [], "role": "READER"},
             timeout=self.client.timeout_seconds,
         )
         assert create_resp.status_code == 201, create_resp.text
@@ -747,7 +748,7 @@ class TestKBPermissionDelete:
         resp = requests.delete(
             perms_url,
             headers=self.headers,
-            json={"userIds": [grantee_graph_id], "teamIds": []},
+            json={"userIds": [grantee_id], "teamIds": []},
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 200, resp.text
