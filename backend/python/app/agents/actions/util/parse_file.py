@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from app.api.routes.chatbot import get_model_config
 from app.config.configuration_service import ConfigurationService
 from app.models.entities import FileRecord, LlmTextContent
-from app.models.blocks import BlockType, BlocksContainer
+from app.models.blocks import BlocksContainer
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
@@ -118,7 +118,7 @@ class FileContentParser:
         self._logger = logger
         self._config = config_service
 
-        self._md_parser = MarkdownParser()
+        self._md_parser = MarkdownParser(logger=logger, config_service=config_service)
         self._mdx_parser = MDXParser()
         self._html_parser = HTMLParser()
         self._doc_parser = DocParser()
@@ -404,26 +404,6 @@ class FileContentParser:
                 if base64_urls[i]:
                     caption_map[image["new_alt_text"]] = base64_urls[i]
 
-        md_bytes = self._md_parser.parse_string(modified_markdown)
-        processor = DoclingProcessor(logger=self._logger, config=self._config)
-        stem = Path(file_name).stem
-        conv_res = await processor.parse_document(f"{stem}.md", md_bytes)
-        block_containers = await processor.create_blocks(conv_res)
-
-        for block in block_containers.blocks:
-            if block.type == BlockType.IMAGE and block.image_metadata:
-                caps = block.image_metadata.captions
-                if caps:
-                    caption = caps[0]
-                    uri = caption_map.get(caption)
-                    if uri:
-                        if block.data is None or not isinstance(block.data, dict):
-                            block.data = {"uri": uri}
-                        else:
-                            block.data["uri"] = uri
-                    else:
-                        self._logger.warning(
-                            "Skipping image with caption %r — no base64 data", caption
-                        )
-
-        return block_containers
+        return await self._md_parser.parse(
+            modified_markdown, caption_map=caption_map or None
+        )

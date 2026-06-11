@@ -764,26 +764,20 @@ class TestMarkdownStringToBlocks:
         assert result.blocks == []
 
     @pytest.mark.asyncio
-    async def test_non_empty_dispatches_to_docling(self):
+    async def test_non_empty_dispatches_to_markdown_parser(self):
         parser = _make_parser()
         parser._md_parser.extract_and_replace_images = MagicMock(
             return_value=("# H", [])
         )
-        parser._md_parser.parse_string = MagicMock(return_value=b"md bytes")
         expected = BlocksContainer(blocks=[], block_groups=[])
+        parser._md_parser.parse = AsyncMock(return_value=expected)
 
-        with patch(
-            "app.agents.actions.util.parse_file.DoclingProcessor"
-        ) as mock_cls:
-            instance = mock_cls.return_value
-            instance.parse_document = AsyncMock(return_value="conv_res")
-            instance.create_blocks = AsyncMock(return_value=expected)
-
-            result = await parser._markdown_string_to_blocks("# H", "myfile.md")
-            assert result is expected
+        result = await parser._markdown_string_to_blocks("# H", "myfile.md")
+        assert result is expected
+        parser._md_parser.parse.assert_awaited_once_with("# H", caption_map=None)
 
     @pytest.mark.asyncio
-    async def test_injects_base64_uri_for_image_blocks(self):
+    async def test_passes_caption_map_to_markdown_parser(self):
         parser = _make_parser()
         parser._md_parser.extract_and_replace_images = MagicMock(
             return_value=(
@@ -791,53 +785,29 @@ class TestMarkdownStringToBlocks:
                 [{"url": "https://example.com/i.png", "new_alt_text": "cap1"}],
             )
         )
-        parser._md_parser.parse_string = MagicMock(return_value=b"bytes")
         parser._image_parser.urls_to_base64 = AsyncMock(return_value=["data:image/png;base64,QQ=="])
+        expected = BlocksContainer(blocks=[], block_groups=[])
+        parser._md_parser.parse = AsyncMock(return_value=expected)
 
-        img_block = Block(
-            type=BlockType.IMAGE,
-            image_metadata=ImageMetadata(captions=["cap1"]),
-            data={"other": 1},
+        result = await parser._markdown_string_to_blocks("# doc", "x.md")
+        assert result is expected
+        parser._md_parser.parse.assert_awaited_once_with(
+            "# doc",
+            caption_map={"cap1": "data:image/png;base64,QQ=="},
         )
-        plain = Block(type=BlockType.TEXT, data="t")
-        expected = BlocksContainer(blocks=[plain, img_block], block_groups=[])
-
-        with patch(
-            "app.agents.actions.util.parse_file.DoclingProcessor"
-        ) as mock_cls:
-            instance = mock_cls.return_value
-            instance.parse_document = AsyncMock(return_value="conv")
-            instance.create_blocks = AsyncMock(return_value=expected)
-
-            result = await parser._markdown_string_to_blocks("# doc", "x.md")
-            assert result.blocks[1].data["uri"] == "data:image/png;base64,QQ=="
-            assert result.blocks[1].data["other"] == 1
 
     @pytest.mark.asyncio
-    async def test_image_block_missing_caption_mapping_logs_warning(self):
+    async def test_empty_base64_url_omitted_from_caption_map(self):
         parser = _make_parser()
         parser._md_parser.extract_and_replace_images = MagicMock(
             return_value=("# x", [{"url": "u", "new_alt_text": "alt"}])
         )
-        parser._md_parser.parse_string = MagicMock(return_value=b"bytes")
         parser._image_parser.urls_to_base64 = AsyncMock(return_value=[""])
+        expected = BlocksContainer(blocks=[], block_groups=[])
+        parser._md_parser.parse = AsyncMock(return_value=expected)
 
-        img_block = Block(
-            type=BlockType.IMAGE,
-            image_metadata=ImageMetadata(captions=["missing"]),
-            data=None,
-        )
-        expected = BlocksContainer(blocks=[img_block], block_groups=[])
-
-        with patch(
-            "app.agents.actions.util.parse_file.DoclingProcessor"
-        ) as mock_cls:
-            instance = mock_cls.return_value
-            instance.parse_document = AsyncMock(return_value="conv")
-            instance.create_blocks = AsyncMock(return_value=expected)
-
-            await parser._markdown_string_to_blocks("# x", "x.md")
-            assert img_block.data is None
+        await parser._markdown_string_to_blocks("# x", "x.md")
+        parser._md_parser.parse.assert_awaited_once_with("# x", caption_map=None)
 
     @pytest.mark.asyncio
     async def test_image_block_sets_uri_when_data_was_none(self):
@@ -845,22 +815,12 @@ class TestMarkdownStringToBlocks:
         parser._md_parser.extract_and_replace_images = MagicMock(
             return_value=("#", [{"url": "u", "new_alt_text": "c1"}])
         )
-        parser._md_parser.parse_string = MagicMock(return_value=b"bytes")
         parser._image_parser.urls_to_base64 = AsyncMock(return_value=["data:x"])
+        expected = BlocksContainer(blocks=[], block_groups=[])
+        parser._md_parser.parse = AsyncMock(return_value=expected)
 
-        img_block = Block(
-            type=BlockType.IMAGE,
-            image_metadata=ImageMetadata(captions=["c1"]),
-            data=None,
+        await parser._markdown_string_to_blocks("#", "x.md")
+        parser._md_parser.parse.assert_awaited_once_with(
+            "#",
+            caption_map={"c1": "data:x"},
         )
-        expected = BlocksContainer(blocks=[img_block], block_groups=[])
-
-        with patch(
-            "app.agents.actions.util.parse_file.DoclingProcessor"
-        ) as mock_cls:
-            instance = mock_cls.return_value
-            instance.parse_document = AsyncMock(return_value="conv")
-            instance.create_blocks = AsyncMock(return_value=expected)
-
-            await parser._markdown_string_to_blocks("#", "x.md")
-            assert img_block.data == {"uri": "data:x"}

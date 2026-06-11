@@ -33,7 +33,7 @@ class MarkdownItParser:
       alt-text to ``Image_N`` labels before parsing.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, **kwargs: object) -> None:
         self._converter = MarkdownToBlocksConverter()
 
     # ------------------------------------------------------------------
@@ -63,6 +63,14 @@ class MarkdownItParser:
             Populated ``BlocksContainer``.
         """
         return self._converter.convert(md_content, caption_map=caption_map)
+
+    async def parse(
+        self,
+        md_content: str,
+        caption_map: Dict[str, str] | None = None,
+    ) -> BlocksContainer:
+        """Async wrapper around ``parse_to_blocks`` for protocol conformance."""
+        return self.parse_to_blocks(md_content, caption_map)
 
     def extract_and_replace_images(
         self, md_content: str
