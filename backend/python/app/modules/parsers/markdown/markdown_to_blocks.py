@@ -269,6 +269,8 @@ class _TokenWalker:
                 if self.table_state is not None:
                     self.table_state.current_row.append(_TableCell(plain=plain, markdown=md_text))
                 return index + 2
+            if self.table_state is not None:
+                self.table_state.current_row.append(_TableCell(plain="", markdown=""))
             return index + 1
 
         if token.type == "tr_close":
@@ -487,7 +489,7 @@ class _TokenWalker:
             return token.content
         if token.type in {"softbreak", "hardbreak"}:
             return "\n"
-        return ""
+        return token.content
 
     def _render_inline_markdown_from_children(self, children: list[Token]) -> str:
         """Reconstruct markdown from a flat list of inline child tokens.
