@@ -32,6 +32,8 @@
   "uploadProgress": {
     "uploadFailedDefault": "अपलोड असफल",
     "uploadIncomplete": "अपलोड अधूरा",
+    "serverError": "सर्वर पर अपलोड असफल",
+    "skippedFolderFailed": "छोड़ा गया: फ़ोल्डर निर्माण असफल",
     "genericFailureHint": "अपलोड असफल। फिर से कोशिश करें या समर्थित फ़ाइल प्रकार उपयोग करें।",
     "ariaFailed": "{{name}}, अपलोड असफल",
     "ariaFailedWithDetail": "{{name}}, अपलोड असफल। {{detail}}",
@@ -39,6 +41,12 @@
     "sizeWithFailed": "{{size}} · असफल",
     "headerCompletedAndFailed": "{{completed}} पूर्ण · {{failed}} असफल",
     "headerFailuresOnly": "{{count}} असफल",
+    "failedSectionTitle": "असफल ({{count}})",
+    "tab_all": "सभी",
+    "tab_completed": "पूर्ण",
+    "tab_failed": "असफल",
+    "emptyTab": "यहाँ अभी कुछ नहीं है",
+    "uploadedAndFailedSize": "{{uploaded}} अपलोड · {{failed}} असफल",
     "headerAllComplete": "{{completed}}/{{total}} अपलोड पूर्ण",
     "sessionFilesAndSize": "{{count}} फ़ाइलें · {{size}}",
     "totalSizeLabel": "कुल: {{size}}",
@@ -47,6 +55,34 @@
       "uploading": "अपलोड हो रहा है",
       "completed": "पूर्ण",
       "failed": "असफल"
+    },
+    "rejectionToast": {
+      "title_one": "{{count}} फ़ाइल अपलोड नहीं हो सकती",
+      "title_other": "{{count}} फ़ाइलें अपलोड नहीं हो सकतीं",
+      "sizeLimitTitle_one": "{{count}} फ़ाइल आकार सीमा से अधिक है",
+      "sizeLimitTitle_other": "{{count}} फ़ाइलें आकार सीमा से अधिक हैं",
+      "sizeLimitDescription": "सीमा प्रति फ़ाइल {{maxMb}} MB है। उच्च सीमा के लिए अपने व्यवस्थापक से संपर्क करें।",
+      "sizeLimitDescriptionAdmin": "सीमा प्रति फ़ाइल {{maxMb}} MB है। आप Workspace Labs में इसे बढ़ा सकते हैं।",
+      "unsupportedDescription": "असमर्थित फ़ाइल प्रकार।",
+      "duplicateDescription": "इस नाम की फ़ाइल यहाँ पहले से मौजूद है।",
+      "trackerHint": "विवरण नीचे अपलोड पैनल में हैं।",
+      "openLabs": "Labs खोलें"
+    },
+    "rejectionSummary": {
+      "tooLarge_one": "{{count}} {{maxMb}} MB से अधिक",
+      "tooLarge_other": "{{count}} {{maxMb}} MB से अधिक",
+      "unsupported_one": "{{count}} असमर्थित प्रकार",
+      "unsupported_other": "{{count}} असमर्थित प्रकार",
+      "duplicate_one": "{{count}} डुप्लिकेट नाम",
+      "duplicate_other": "{{count}} डुप्लिकेट नाम",
+      "other_one": "{{count}} अन्य त्रुटि",
+      "other_other": "{{count}} अन्य त्रुटियाँ"
+    },
+    "reasons": {
+      "tooLarge": "{{maxMb}} MB आकार सीमा से अधिक",
+      "unsupportedType": "असमर्थित फ़ाइल प्रकार",
+      "duplicateName": "इस नाम की फ़ाइल पहले से मौजूद है",
+      "rejected": "फ़ाइल अस्वीकृत"
     }
   },
   "onboarding": {

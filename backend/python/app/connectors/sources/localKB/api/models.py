@@ -379,6 +379,12 @@ class FolderInfo(BaseModel):
     # path: str
     id: str
 
+class SkippedFileInfo(BaseModel):
+    filePath: str = Field("", description="Path of the skipped file")
+    name: str = Field("", description="Name of the skipped file")
+    reason: str = Field("DUPLICATE_NAME", description="Why the file was skipped")
+
+
 class UploadRecordsinKBResponse(BaseModel):
     success: bool = Field(..., description="Success status")
     message: str = Field(None, description="Message")
@@ -386,6 +392,7 @@ class UploadRecordsinKBResponse(BaseModel):
     foldersCreated: int = Field(None, description="Total created folders")
     createdFolders: List[FolderInfo] = Field(None, description="Created folders info")
     failedFiles : List[str] = Field(None, description="Failed files")
+    skippedFiles: List[SkippedFileInfo] = Field(default_factory=list, description="Files skipped because a record with the same name already exists")
     kbId : str = Field(None, description="Knowledge base id")
     parentFolderId : Optional[str] = Field(None, description="Parent folder Id")
 
@@ -402,5 +409,6 @@ class UploadRecordsinFolderResponse(BaseModel):
     foldersCreated: int = Field(None, description="Total created folders")
     createdFolders: List[FolderInfo] = Field(None, description="Created folders info")
     failedFiles : List[str] = Field(None, description="Failed files")
+    skippedFiles: List[SkippedFileInfo] = Field(default_factory=list, description="Files skipped because a record with the same name already exists")
     kbId : str = Field(None, description="Knowledge base id")
     parentFolderId : Optional[str] = Field(None, description="Parent folder Id")

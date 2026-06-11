@@ -6,40 +6,6 @@ import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
-import { toast } from '@/lib/store/toast-store';
-
-// Supported file types
-const SUPPORTED_FILE_TYPES = ['TXT', 'PDF', 'DOC', 'DOCX', 'PNG', 'JPEG', 'JPG', 'SVG', 'XLS', 'XLSX', 'CSV', 'HTML', 'PPT', 'PPTX', 'MD', 'MDX'];
-const SUPPORTED_MIME_TYPES = [
-  'text/plain',
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'image/png',
-  'image/jpeg',
-  'image/svg+xml',
-  'application/vnd.ms-excel',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'text/csv',
-  'application/csv',
-  'text/html',
-  'application/vnd.ms-powerpoint',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  'text/markdown',
-  'text/x-markdown',
-  'application/x-markdown',
-  'text/mdx',
-];
-// Extensions used as a fallback when the browser doesn't report a MIME type
-// (e.g. some OSes send CSV/SVG/Markdown files with an empty or generic `type`).
-const SUPPORTED_EXTENSIONS = [
-  'txt', 'pdf', 'doc', 'docx', 'png', 'jpeg', 'jpg', 'svg', 'xls', 'xlsx', 'csv', 'html', 'htm', 'ppt', 'pptx', 'md', 'markdown', 'mdx',
-];
-function isSupportedFile(file: File): boolean {
-  if (SUPPORTED_MIME_TYPES.includes(file.type)) return true;
-  const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
-  return SUPPORTED_EXTENSIONS.includes(ext);
-}
 
 function createUploadItemId(prefix: 'file' | 'folder'): string {
   const cryptoApi = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
@@ -86,12 +52,10 @@ export interface UploadFileItem {
 interface DropZoneProps {
   type: 'file' | 'folder';
   onDrop: (items: UploadFileItem[]) => void;
-  onSkippedFiles?: (skipped: number) => void;
   isEmpty: boolean;
-  maxFileSizeBytes: number;
 }
 
-function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: DropZoneProps) {
+function DropZone({ type, onDrop, isEmpty }: DropZoneProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -109,34 +73,19 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
 
   const processFiles = useCallback(
     (files: FileList | File[]) => {
-      const items: UploadFileItem[] = [];
-      const fileArray = Array.from(files);
-      let skipped = 0;
-
-      if (type === 'file') {
-        fileArray.forEach((file) => {
-          if (file.size <= maxFileSizeBytes && isSupportedFile(file)) {
-            items.push({
-              id: createUploadItemId('file'),
-              name: file.name,
-              size: file.size,
-              type: 'file',
-              file,
-            });
-          } else {
-            skipped++;
-          }
-        });
-      }
+      const items: UploadFileItem[] = Array.from(files).map((file) => ({
+        id: createUploadItemId('file'),
+        name: file.name,
+        size: file.size,
+        type: 'file' as const,
+        file,
+      }));
 
       if (items.length > 0) {
         onDrop(items);
       }
-      if (skipped > 0 && onSkippedFiles) {
-        onSkippedFiles(skipped);
-      }
     },
-    [type, onDrop, onSkippedFiles, maxFileSizeBytes]
+    [onDrop]
   );
 
   const handleDrop = useCallback(
@@ -149,7 +98,6 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
 
       if (type === 'folder' && items) {
         const folderItems: UploadFileItem[] = [];
-        let totalSkipped = 0;
 
         for (let i = 0; i < items.length; i++) {
           const item = items[i];
@@ -158,7 +106,6 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
           if (entry?.isDirectory) {
             const folderFiles: FileWithPath[] = [];
             let totalSize = 0;
-            let skippedInFolder = 0;
 
             const readDirectory = async (
               dirEntry: FileSystemDirectoryEntry,
@@ -166,32 +113,27 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
             ): Promise<void> => {
               const reader = dirEntry.createReader();
               const entries = await readAllEntries(reader);
-              for (const entry of entries) {
-                if (entry.isFile) {
-                  const fileEntry = entry as FileSystemFileEntry;
+              for (const childEntry of entries) {
+                if (childEntry.isFile) {
+                  const fileEntry = childEntry as FileSystemFileEntry;
                   const file = await new Promise<File>((res, rej) => {
                     fileEntry.file((f) => res(f), rej);
                   });
-                  if (file.size > maxFileSizeBytes || !isSupportedFile(file)) {
-                    skippedInFolder++;
-                    continue;
-                  }
                   const relativePath = currentPath
                     ? `${currentPath}/${file.name}`
                     : file.name;
                   folderFiles.push({ file, relativePath });
                   totalSize += file.size;
-                } else if (entry.isDirectory) {
+                } else if (childEntry.isDirectory) {
                   const newPath = currentPath
-                    ? `${currentPath}/${entry.name}`
-                    : entry.name;
-                  await readDirectory(entry as FileSystemDirectoryEntry, newPath);
+                    ? `${currentPath}/${childEntry.name}`
+                    : childEntry.name;
+                  await readDirectory(childEntry as FileSystemDirectoryEntry, newPath);
                 }
               }
             };
 
             await readDirectory(entry as FileSystemDirectoryEntry);
-            totalSkipped += skippedInFolder;
 
             if (folderFiles.length > 0) {
               folderItems.push({
@@ -208,14 +150,11 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
         if (folderItems.length > 0) {
           onDrop(folderItems);
         }
-        if (totalSkipped > 0 && onSkippedFiles) {
-          onSkippedFiles(totalSkipped);
-        }
       } else if (type === 'file' && files) {
         processFiles(files);
       }
     },
-    [type, onDrop, onSkippedFiles, processFiles, maxFileSizeBytes]
+    [type, onDrop, processFiles]
   );
 
   const handleClick = useCallback(() => {
@@ -228,13 +167,8 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
       if (files) {
         if (type === 'folder') {
           const folderMap = new Map<string, FileWithPath[]>();
-          let skipped = 0;
 
           Array.from(files).forEach((file) => {
-            if (file.size > maxFileSizeBytes || !isSupportedFile(file)) {
-              skipped++;
-              return;
-            }
             const pathParts = file.webkitRelativePath.split('/');
             const folderName = pathParts[0];
             const relativePath = pathParts.slice(1).join('/');
@@ -261,30 +195,19 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
           if (items.length > 0) {
             onDrop(items);
           }
-          if (skipped > 0 && onSkippedFiles) {
-            onSkippedFiles(skipped);
-          }
         } else {
           processFiles(files);
         }
       }
       e.target.value = '';
     },
-    [type, onDrop, onSkippedFiles, processFiles, maxFileSizeBytes]
+    [type, onDrop, processFiles]
   );
 
   const inputProps =
     type === 'folder'
       ? { webkitdirectory: '', directory: '', multiple: true }
-      : {
-          multiple: true,
-          // Include both MIME types and extensions so browsers that can't
-          // resolve a CSV MIME still allow the file via extension match.
-          accept: [
-            ...SUPPORTED_MIME_TYPES,
-            ...SUPPORTED_EXTENSIONS.map((e) => `.${e}`),
-          ].join(','),
-        };
+      : { multiple: true };
 
   return (
      <Flex
@@ -311,7 +234,6 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
         cursor: 'pointer',
         transition: 'all 0.15s ease',
         height: '100%',
-        // minHeight: '120px',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -321,6 +243,7 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
       <input
         ref={inputRef}
         type="file"
+        data-testid={`upload-input-${type}`}
         style={{ display: 'none' }}
         onChange={handleInputChange}
         {...inputProps}
@@ -337,9 +260,7 @@ function DropZone({ type, onDrop, onSkippedFiles, isEmpty, maxFileSizeBytes }: D
               Upload
             </Text>
             <Text size="1" weight="light" style={{ color: 'var(--slate-12)' }}>
-              {type === 'file'
-                ? `Supports: ${SUPPORTED_FILE_TYPES.join(', ')}`
-                : 'Supports: Only folders'}
+              {type === 'file' ? 'Add files' : 'Add a folder'}
             </Text>
           </>
         )}
@@ -367,108 +288,96 @@ function ScrollableList({ children }: ScrollableListProps) {
     const el = scrollRef.current;
     if (!el) return;
     const { scrollTop, scrollHeight, clientHeight } = el;
-    const overflows = scrollHeight - clientHeight > 1;
-    setShowTopFade(overflows && scrollTop > 1);
-    setShowBottomFade(overflows && scrollTop + clientHeight < scrollHeight - 1);
+    const canScroll = scrollHeight > clientHeight + 1;
+    setShowTopFade(canScroll && scrollTop > 4);
+    setShowBottomFade(canScroll && scrollTop + clientHeight < scrollHeight - 4);
   }, []);
 
   useLayoutEffect(() => {
     updateFades();
-  });
+  }, [children, updateFades]);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const handleScroll = () => updateFades();
-    el.addEventListener('scroll', handleScroll, { passive: true });
-
-    const ro = new ResizeObserver(() => updateFades());
+    const ro = new ResizeObserver(updateFades);
     ro.observe(el);
-    Array.from(el.children).forEach((child) => ro.observe(child));
-
+    el.addEventListener('scroll', updateFades, { passive: true });
     return () => {
-      el.removeEventListener('scroll', handleScroll);
       ro.disconnect();
+      el.removeEventListener('scroll', updateFades);
     };
   }, [updateFades]);
 
   return (
     <Box style={{ position: 'relative', flex: 1, minHeight: 0 }}>
+      {showTopFade && (
+        <Box
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            height: '20px',
+            pointerEvents: 'none',
+            zIndex: 1,
+            boxShadow: 'inset 0 12px 12px -8px rgba(0, 0, 0, 0.12)',
+          }}
+        />
+      )}
       <Box
         ref={scrollRef}
-        className="upload-scroll-area"
+        className="no-scrollbar"
         style={{
-          height: '100%',
-          // `scroll` (not `auto`) keeps the scrollbar track reserved so the
-          // styled scrollbar is always visible on browsers/OSes (e.g. macOS)
-          // that otherwise hide overlay scrollbars when idle.
-          overflowY: 'scroll',
-          paddingRight: '4px',
+          flex: 1,
+          minHeight: 0,
+          maxHeight: '100%',
+          overflowY: 'auto',
+          overflowX: 'hidden',
         }}
       >
         {children}
       </Box>
-      {/* Top shadow - hints at content above when scrolled */}
-      <Box
-        aria-hidden
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          height: '12px',
-          pointerEvents: 'none',
-          boxShadow: 'inset 0 8px 8px -8px rgba(0, 0, 0, 0.35)',
-          opacity: showTopFade ? 1 : 0,
-          transition: 'opacity 0.15s ease',
-        }}
-      />
-      {/* Bottom shadow - hints at more content below */}
-      <Box
-        aria-hidden
-        style={{
-          position: 'absolute',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          height: '14px',
-          pointerEvents: 'none',
-          boxShadow: 'inset 0 -10px 10px -8px rgba(0, 0, 0, 0.35)',
-          opacity: showBottomFade ? 1 : 0,
-          transition: 'opacity 0.15s ease',
-        }}
-      />
-      {/* Floating chip - the most obvious "more below" cue */}
-      <Flex
-        align="center"
-        justify="center"
-        gap="1"
-        onClick={() => {
-          const el = scrollRef.current;
-          if (!el) return;
-          el.scrollBy({ top: el.clientHeight * 0.8, behavior: 'smooth' });
-        }}
-        style={{
-          position: 'absolute',
-          bottom: 6,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          padding: '2px 8px',
-          borderRadius: '999px',
-          backgroundColor: 'var(--slate-12)',
-          color: 'var(--slate-1)',
-          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
-          cursor: 'pointer',
-          opacity: showBottomFade ? 0.95 : 0,
-          pointerEvents: showBottomFade ? 'auto' : 'none',
-          transition: 'opacity 0.15s ease',
-        }}
-      >
-        <MaterialIcon name="keyboard_arrow_down" size={14} color="var(--slate-1)" />
-        <Text size="1" weight="medium" style={{ color: 'var(--slate-1)' }}>
-          More
-        </Text>
-      </Flex>
+      {showBottomFade && (
+        <>
+          <Box
+            style={{
+              position: 'absolute',
+              bottom: 0,
+              left: 0,
+              right: 0,
+              height: '28px',
+              pointerEvents: 'none',
+              zIndex: 1,
+              boxShadow: 'inset 0 -14px 14px -8px rgba(0, 0, 0, 0.14)',
+            }}
+          />
+          <Flex
+            justify="center"
+            style={{
+              position: 'absolute',
+              bottom: '6px',
+              left: 0,
+              right: 0,
+              pointerEvents: 'none',
+              zIndex: 2,
+            }}
+          >
+            <Text
+              size="1"
+              style={{
+                color: 'var(--slate-11)',
+                backgroundColor: 'var(--olive-4)',
+                padding: '2px 8px',
+                borderRadius: '999px',
+                border: '1px solid var(--olive-5)',
+              }}
+            >
+              More below
+            </Text>
+          </Flex>
+        </>
+      )}
     </Box>
   );
 }
@@ -481,12 +390,6 @@ interface UploadedItemProps {
 function UploadedItem({ item, onRemove }: UploadedItemProps) {
   const [isHovered, setIsHovered] = useState(false);
 
-  const formatSize = (bytes: number): string => {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  };
-
   return (
     <Flex
       align="center"
@@ -494,48 +397,48 @@ function UploadedItem({ item, onRemove }: UploadedItemProps) {
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
-        padding: 'var(--space-3)',
-        backgroundColor: isHovered ? 'var(--olive-3)' : 'var(--olive-2)',
+        padding: 'var(--space-2) var(--space-3)',
+        background: 'var(--olive-3)',
         borderRadius: 'var(--radius-2)',
-        border: '1px solid var(--olive-3)',
+        border: '1px solid var(--olive-4)',
       }}
     >
-      <Flex align="center" gap="3">
+      <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
         <Box
           style={{
-            // width: '32px',
-            // height: '32px',
+            width: '28px',
+            height: '28px',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             backgroundColor: item.type === 'folder' ? 'var(--accent-a3)' : 'var(--slate-4)',
             borderRadius: 'var(--radius-1)',
+            flexShrink: 0,
           }}
         >
           {item.type === 'folder' ? (
-            <MaterialIcon name="folder" size={16} />
+            <MaterialIcon name="folder" size={16} color="var(--accent-9)" />
           ) : (
             <FileIcon filename={item.name} size={16} />
           )}
         </Box>
-        <Flex direction="column" gap="1">
+        <Flex direction="column" gap="0" style={{ minWidth: 0 }}>
           <Text
             size="2"
             style={{
               color: 'var(--slate-12)',
-              maxWidth: '200px',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
             }}
+            title={item.name}
           >
             {item.name}
           </Text>
           <Text size="1" style={{ color: 'var(--slate-9)' }}>
-            {formatSize(item.size)}
-            {item.type === 'folder' && item.filesWithPaths && (
-              <> · {item.filesWithPaths.length} {item.filesWithPaths.length === 1 ? 'file' : 'files'}</>
-            )}
+            {item.type === 'folder'
+              ? `${item.filesWithPaths?.length ?? 0} files`
+              : formatBytes(item.size)}
           </Text>
         </Flex>
       </Flex>
@@ -550,6 +453,12 @@ function UploadedItem({ item, onRemove }: UploadedItemProps) {
       </IconButton>
     </Flex>
   );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export interface UploadDataSidebarProps {
@@ -567,7 +476,7 @@ export function UploadDataSidebar({
 }: UploadDataSidebarProps) {
   const [fileItems, setFileItems] = useState<UploadFileItem[]>([]);
   const [folderItems, setFolderItems] = useState<UploadFileItem[]>([]);
-  const { maxFileSizeBytes, maxFileSizeMB } = useUploadLimits();
+  const { maxFileSizeMB } = useUploadLimits();
 
   const handleAddFiles = useCallback((items: UploadFileItem[]) => {
     setFileItems((prev) => [...prev, ...items]);
@@ -576,12 +485,6 @@ export function UploadDataSidebar({
   const handleAddFolders = useCallback((items: UploadFileItem[]) => {
     setFolderItems((prev) => [...prev, ...items]);
   }, []);
-
-  const handleSkippedFiles = useCallback((skipped: number) => {
-    toast.warning(`${skipped} file${skipped > 1 ? 's' : ''} skipped`, {
-      description: `Unsupported file types or files exceeding ${maxFileSizeMB} MB were excluded.`,
-    });
-  }, [maxFileSizeMB]);
 
   const handleRemoveFile = useCallback((id: string) => {
     setFileItems((prev) => prev.filter((item) => item.id !== id));
@@ -616,6 +519,7 @@ export function UploadDataSidebar({
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
       <Dialog.Content
+        onInteractOutside={(event) => event.preventDefault()}
         style={{
           position: 'fixed',
           top: 10,
@@ -705,14 +609,13 @@ export function UploadDataSidebar({
               backgroundColor: 'var(--olive-2)',
             }}
           >
-            {/* Header */}
             <Flex align="start" justify="between" gap="2">
               <Flex direction="column" gap="1">
                 <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
                   Upload Files
                 </Text>
                 <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                  You can upload files up to the limit of {maxFileSizeMB} MB
+                  Up to {maxFileSizeMB} MB per file; type and size are validated on upload
                 </Text>
               </Flex>
               {fileItems.length > 0 && (
@@ -733,7 +636,6 @@ export function UploadDataSidebar({
             </Flex>
             <Box style={{ height: '1px', background: 'var(--olive-3)' }} />
 
-            {/* File list - scrollable with overflow affordances */}
             {fileItems.length > 0 && (
               <ScrollableList>
                 <Flex direction="column" gap="2" style={{ paddingBottom: '4px' }}>
@@ -744,13 +646,11 @@ export function UploadDataSidebar({
               </ScrollableList>
             )}
 
-            {/* File drop zone - expands when empty, compact when has items */}
             <Box style={{ ...(fileItems.length === 0 ? { flex: 1 } : {}), ...(fileItems.length > 0 ? { minHeight: '88px' } : {}) }}>
-              <DropZone type="file" onDrop={handleAddFiles} onSkippedFiles={handleSkippedFiles} isEmpty={fileItems.length === 0} maxFileSizeBytes={maxFileSizeBytes} />
+              <DropZone type="file" onDrop={handleAddFiles} isEmpty={fileItems.length === 0} />
             </Box>
           </Flex>
 
-          {/* Divider */}
           <Flex align="center" gap="3">
             <Box style={{ flex: 1, height: '1px', backgroundColor: 'var(--slate-6)' }} />
             <Text size="1" style={{ color: 'var(--slate-9)' }}>
@@ -772,14 +672,13 @@ export function UploadDataSidebar({
               backgroundColor: 'var(--olive-2)',
             }}
           >
-            {/* Header */}
             <Flex align="start" justify="between" gap="2">
               <Flex direction="column" gap="1">
                 <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
                   Upload Folders
                 </Text>
                 <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                  You can upload folders up to the limit of {maxFileSizeMB} MB
+                  Each file is validated on upload (max {maxFileSizeMB} MB per file)
                 </Text>
               </Flex>
               {folderItems.length > 0 && (
@@ -800,7 +699,6 @@ export function UploadDataSidebar({
             </Flex>
             <Box style={{ height: '1px', background: 'var(--olive-3)' }} />
 
-            {/* Folder list - scrollable with overflow affordances */}
             {folderItems.length > 0 && (
               <ScrollableList>
                 <Flex direction="column" gap="2" style={{ paddingBottom: '4px' }}>
@@ -811,9 +709,8 @@ export function UploadDataSidebar({
               </ScrollableList>
             )}
 
-            {/* Folder drop zone - expands when empty, compact when has items */}
             <Box style={{ ...(folderItems.length === 0 ? { flex: 1 } : {}), ...(folderItems.length > 0 ? { minHeight: '88px' } : {}) }}>
-              <DropZone type="folder" onDrop={handleAddFolders} onSkippedFiles={handleSkippedFiles} isEmpty={folderItems.length === 0} maxFileSizeBytes={maxFileSizeBytes} />
+              <DropZone type="folder" onDrop={handleAddFolders} isEmpty={folderItems.length === 0} />
             </Box>
           </Flex>
         </Box>
@@ -822,34 +719,22 @@ export function UploadDataSidebar({
         <Flex
           align="center"
           justify="end"
-          gap="2"
+          gap="3"
           style={{
-            padding: 'var(--space-2)',
+            padding: 'var(--space-3) var(--space-4)',
             borderTop: '1px solid var(--olive-3)',
-            background: 'var(--effects-translucent)',
+            backgroundColor: 'var(--effects-translucent)',
           }}
         >
-          <Button 
-            variant="outline" 
-            color="gray" size="2" 
-            style={{
-              cursor: 'pointer',
-              borderRadius: 'var(--radius-2)'
-            }} 
-            onClick={() => handleOpenChange(false)}
-          >
+          <Button variant="soft" color="gray" size="2" onClick={() => handleOpenChange(false)}>
             Cancel
           </Button>
           <LoadingButton
             variant="solid"
             size="2"
-            style={{
-              backgroundColor: (!hasItems || isSaving) ? 'var(--slate-a3)' : 'var(--emerald-10)'
-            }}
+            onClick={handleSave}
             disabled={!hasItems}
             loading={isSaving}
-            loadingLabel="Saving..."
-            onClick={handleSave}
           >
             Save
           </LoadingButton>

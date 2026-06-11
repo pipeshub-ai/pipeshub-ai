@@ -32,6 +32,8 @@
   "uploadProgress": {
     "uploadFailedDefault": "Upload fehlgeschlagen",
     "uploadIncomplete": "Upload unvollständig",
+    "serverError": "Upload auf dem Server fehlgeschlagen",
+    "skippedFolderFailed": "Übersprungen: Ordnererstellung fehlgeschlagen",
     "genericFailureHint": "Upload fehlgeschlagen. Versuchen Sie es erneut oder verwenden Sie einen unterstützten Dateityp.",
     "ariaFailed": "{{name}}, Upload fehlgeschlagen",
     "ariaFailedWithDetail": "{{name}}, Upload fehlgeschlagen. {{detail}}",
@@ -39,6 +41,12 @@
     "sizeWithFailed": "{{size}} · fehlgeschlagen",
     "headerCompletedAndFailed": "{{completed}} abgeschlossen · {{failed}} fehlgeschlagen",
     "headerFailuresOnly": "{{count}} fehlgeschlagen",
+    "failedSectionTitle": "Fehlgeschlagen ({{count}})",
+    "tab_all": "Alle",
+    "tab_completed": "Abgeschlossen",
+    "tab_failed": "Fehlgeschlagen",
+    "emptyTab": "Noch nichts hier",
+    "uploadedAndFailedSize": "{{uploaded}} hochgeladen · {{failed}} fehlgeschlagen",
     "headerAllComplete": "{{completed}}/{{total}} Uploads abgeschlossen",
     "sessionFilesAndSize": "{{count}} Dateien · {{size}}",
     "totalSizeLabel": "Gesamt: {{size}}",
@@ -47,6 +55,34 @@
       "uploading": "wird hochgeladen",
       "completed": "abgeschlossen",
       "failed": "fehlgeschlagen"
+    },
+    "rejectionToast": {
+      "title_one": "{{count}} Datei kann nicht hochgeladen werden",
+      "title_other": "{{count}} Dateien können nicht hochgeladen werden",
+      "sizeLimitTitle_one": "{{count}} Datei überschreitet das Größenlimit",
+      "sizeLimitTitle_other": "{{count}} Dateien überschreiten das Größenlimit",
+      "sizeLimitDescription": "Limit {{maxMb}} MB pro Datei. Wenden Sie sich an Ihren Administrator, um ein höheres Limit anzufragen.",
+      "sizeLimitDescriptionAdmin": "Limit {{maxMb}} MB pro Datei. Sie können es in Workspace Labs erhöhen.",
+      "unsupportedDescription": "Nicht unterstützter Dateityp.",
+      "duplicateDescription": "Eine Datei mit diesem Namen existiert hier bereits.",
+      "trackerHint": "Details im Upload-Panel unten.",
+      "openLabs": "Labs öffnen"
+    },
+    "rejectionSummary": {
+      "tooLarge_one": "{{count}} über {{maxMb}} MB",
+      "tooLarge_other": "{{count}} über {{maxMb}} MB",
+      "unsupported_one": "{{count}} nicht unterstützter Typ",
+      "unsupported_other": "{{count}} nicht unterstützte Typen",
+      "duplicate_one": "{{count}} doppelter Name",
+      "duplicate_other": "{{count}} doppelte Namen",
+      "other_one": "{{count}} anderer Fehler",
+      "other_other": "{{count}} andere Fehler"
+    },
+    "reasons": {
+      "tooLarge": "Überschreitet das {{maxMb}} MB Größenlimit",
+      "unsupportedType": "Nicht unterstützter Dateityp",
+      "duplicateName": "Eine Datei mit diesem Namen existiert bereits",
+      "rejected": "Datei abgelehnt"
     }
   },
   "onboarding": {
