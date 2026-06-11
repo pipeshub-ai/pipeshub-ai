@@ -43,6 +43,9 @@ class TestFolderCrud:
     def _folder_url(self, kb_id: str, folder_id: str) -> str:
         return f"{self.kb_url}{kb_id}/folder/{folder_id}"
 
+    def _move_record_url(self, kb_id: str, record_id: str) -> str:
+        return f"{self.kb_url}{kb_id}/record/{record_id}/move"
+
     def test_create_root_folder_success(
         self, six_kb_records: dict[str, object]
     ) -> None:
@@ -540,4 +543,135 @@ class TestFolderCrud:
         assert resp.status_code == 404, resp.text
         assert_response_matches_openapi_operation(
             resp.json(), "deleteFolder", status_code="404"
+        )
+
+    def test_move_record_to_folder_success(
+        self, six_kb_records: dict[str, object]
+    ) -> None:
+        kb_id = str(six_kb_records["kb_id"])
+        record_ids = list(six_kb_records["record_ids"])
+        record_id = str(record_ids[0])
+        folder_id = self._create_root_folder(kb_id)
+
+        resp = requests.put(
+            self._move_record_url(kb_id, record_id),
+            headers=self.headers,
+            json={"newParentId": folder_id},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "moveRecord")
+
+        assert body["success"] is True
+        assert body["message"] == "Record moved successfully"
+
+    def test_move_record_to_root_success(
+        self, six_kb_records: dict[str, object]
+    ) -> None:
+        kb_id = str(six_kb_records["kb_id"])
+        record_ids = list(six_kb_records["record_ids"])
+        record_id = str(record_ids[1])
+        folder_id = self._create_root_folder(kb_id)
+
+        into_folder = requests.put(
+            self._move_record_url(kb_id, record_id),
+            headers=self.headers,
+            json={"newParentId": folder_id},
+            timeout=self.client.timeout_seconds,
+        )
+        assert into_folder.status_code == 200, into_folder.text
+
+        resp = requests.put(
+            self._move_record_url(kb_id, record_id),
+            headers=self.headers,
+            json={"newParentId": None},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "moveRecord")
+
+        assert body["success"] is True
+        assert body["message"] == "Record moved successfully"
+
+    def test_move_record_negative(
+        self, six_kb_records: dict[str, object]
+    ) -> None:
+        kb_id = str(six_kb_records["kb_id"])
+        record_ids = list(six_kb_records["record_ids"])
+        record_id = str(record_ids[2])
+        move_url = self._move_record_url(kb_id, record_id)
+        valid_body = {"newParentId": None}
+
+        resp = requests.put(
+            move_url,
+            headers=self.headers,
+            json={},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "moveRecord", status_code="400"
+        )
+
+        resp = requests.put(
+            self._move_record_url("not-a-uuid", record_id),
+            headers=self.headers,
+            json=valid_body,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "moveRecord", status_code="400"
+        )
+
+        resp = requests.put(
+            self._move_record_url(kb_id, str(uuid4())),
+            headers=self.headers,
+            json=valid_body,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 404, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "moveRecord", status_code="404"
+        )
+
+        missing_kb_id = str(uuid4())
+        resp = requests.put(
+            self._move_record_url(missing_kb_id, record_id),
+            headers=self.headers,
+            json=valid_body,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code in (403, 404), resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(),
+            "moveRecord",
+            status_code=str(resp.status_code),
+        )
+
+        resp = requests.put(
+            move_url,
+            headers={"Content-Type": "application/json"},
+            json=valid_body,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "moveRecord", status_code="401"
+        )
+
+        resp = requests.put(
+            move_url,
+            headers={
+                "Authorization": "Bearer invalid",
+                "Content-Type": "application/json",
+            },
+            json=valid_body,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "moveRecord", status_code="401"
         )

@@ -2687,6 +2687,33 @@ components:
           type: string
           example: "Folder deleted successfully"
 
+    KnowledgeBaseMoveRecordRequestBody:
+      type: object
+      additionalProperties: false
+      description: Request body for PUT /knowledgeBase/{kbId}/record/{recordId}/move (moveRecord).
+      required:
+        - newParentId
+      properties:
+        newParentId:
+          type: string
+          nullable: true
+          description: Target folder ID, or null to move the record to the knowledge base root
+
+    KnowledgeBaseMoveRecordResponse:
+      type: object
+      additionalProperties: false
+      description: Response returned by PUT /knowledgeBase/{kbId}/record/{recordId}/move (moveRecord).
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Record moved successfully"
+
     GetAllKnowledgeBaseResponseSchema:
       type: object
       additionalProperties: false
@@ -4713,6 +4740,29 @@ components:
         - userIds
         - teamIds
         - newRole
+
+    KnowledgeBaseDeleteResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned when user or team permissions are removed from a knowledge base
+      properties:
+        kbId:
+          type: string
+          description: Knowledge base ID
+        userIds:
+          type: array
+          items:
+            type: string
+          description: Graph user document IDs whose permissions were removed (Arango `users/{id}` key, not Mongo user `_id`)
+        teamIds:
+          type: array
+          items:
+            type: string
+          description: Graph team document IDs whose permissions were removed
+      required:
+        - kbId
+        - userIds
+        - teamIds
 
     # ==================== ENTERPRISE SEARCH SCHEMAS ====================
     AppType:
@@ -21101,7 +21151,11 @@ paths:
         - Knowledge Bases
       summary: Move record to another location
       description: |
-        Move a record from one location to another within a knowledge base.
+        Move a file or folder record to a different location within the same knowledge base.
+
+        Set `newParentId` to a folder ID to move the record into that folder, or `null` to move it to the knowledge base root.
+
+        **Required Permission:** OWNER or WRITER
       operationId: moveRecord
       security:
         - bearerAuth: []
@@ -21113,32 +21167,68 @@ paths:
           schema:
             type: string
             format: uuid
+          description: Knowledge base UUID
         - name: recordId
           in: path
           required: true
           schema:
             type: string
+            minLength: 1
+          description: Record identifier (file or folder)
       requestBody:
         required: true
-        description: "Request payload"
+        description: Target location for the record
         content:
           application/json:
             schema:
-              type: object
+              $ref: '#/components/schemas/KnowledgeBaseMoveRecordRequestBody'
       responses:
         '200':
           description: Record moved successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
+                $ref: '#/components/schemas/KnowledgeBaseMoveRecordResponse'
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing `newParentId` in the request body
+            - Invalid `kbId` (must be a UUID)
+            - Empty `recordId`
+            - Cannot move a folder into itself
+            - Cannot move a folder into one of its own sub-folders (circular reference)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:write` scope
+            - User lacks OWNER or WRITER permission on the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Record or knowledge base not found
+          description: |
+            Not found. Possible reasons:
+
+            - Knowledge base does not exist
+            - Record does not exist in the knowledge base
+            - Target folder does not exist in the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Permissions Endpoints --------------------
   /knowledgeBase/{kbId}/permissions:
@@ -21448,21 +21538,32 @@ paths:
         - Permissions
       summary: Remove permissions
       description: |
-        Remove access permissions from users or teams.<br><br>
-        <b>Required Permission:</b> OWNER or ORGANIZER<br><br>
-        <b>Note:</b> Cannot remove the last OWNER from a KB.
+        Remove access permissions from users or teams on a knowledge base.
+
+        **Required access:** Caller must be KB **OWNER** and hold the `kb:delete` OAuth scope when using an OAuth token.
+
+        **User IDs:** Provide graph user document IDs (the `id` field from list permissions / user `graphId` after graph sync), not Mongo user `_id` values.
+
+        **Request body:** Send both `userIds` and `teamIds` arrays (use `[]` when not removing that entity type). Omitting either field can cause a server error because the controller reads `.length` on both arrays.
+
+        Users or teams without an existing permission on the KB are skipped. If none of the supplied entities have a permission to remove, the request returns **404**.
+
+        **Owner restriction:** Cannot remove the last OWNER from the knowledge base — at least one owner must remain.
       operationId: deleteKBPermissions
       security:
         - bearerAuth: []
+        - oauth2: [kb:delete]
       parameters:
         - name: kbId
           in: path
           required: true
           schema:
             type: string
+            format: uuid
+          description: Knowledge base ID (must be a valid UUID)
       requestBody:
         required: true
-        description: "Request body for Remove permissions"
+        description: User and/or team permission removal payload
         content:
           application/json:
             schema:
@@ -21472,19 +21573,70 @@ paths:
                   type: array
                   items:
                     type: string
+                  description: Graph user document IDs to remove (at least one of `userIds` or `teamIds` must be non-empty)
                 teamIds:
                   type: array
                   items:
                     type: string
+                  description: Graph team document IDs to remove
       responses:
         '200':
-          description: Permissions removed
+          description: Permissions removed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeBaseDeleteResponseSchema'
         '400':
-          description: Invalid request or cannot remove last owner
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing `userIds` and `teamIds`, or both empty arrays
+            - Invalid `kbId` (must be UUID)
+            - Attempt to remove the last OWNER from the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient permissions
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:delete` scope
+            - Caller is not KB OWNER (only owners can remove permissions)
+            - Caller has no access to the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Not found. Possible reasons:
+
+            - Knowledge base does not exist
+            - Authenticated user not found in graph database
+            - None of the supplied users or teams have an existing permission to remove
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error — permission removal failed in connector or database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable — connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Knowledge Hub --------------------
   /knowledgeBase/knowledge-hub/nodes:

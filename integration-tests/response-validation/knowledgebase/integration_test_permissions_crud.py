@@ -533,3 +533,222 @@ class TestKBPermissionUpdate:
         assert_response_matches_openapi_operation(
             resp.json(), "updateKBPermissions", status_code="401"
         )
+
+
+@pytest.mark.integration
+class TestKBPermissionDelete:
+    @pytest.fixture(autouse=True)
+    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+        self.client = pipeshub_client
+        self.client._ensure_access_token()
+        self.base_url = self.client.base_url
+        self.headers = {
+            "Authorization": f"Bearer {self.client._access_token}",
+            "Content-Type": "application/json",
+        }
+
+    def test_delete_kb_permission_success_user(
+        self,
+        six_kb_records: dict[str, object],
+        four_new_users: list[dict[str, object]],
+    ) -> None:
+        kb_id = str(six_kb_records["kb_id"])
+        grantee = four_new_users[0]
+        grantee_id = _permission_user_id(grantee)
+        perms_url = _permissions_url(self.base_url, kb_id)
+
+        create_resp = requests.post(
+            perms_url,
+            headers=self.headers,
+            json={"userIds": [grantee_id], "teamIds": [], "role": "READER"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        assert _granted_count(create_resp.json()) >= 1, (
+            "Permission create returned grantedCount=0 — grantee graph id not found "
+            "in graph (Arango skips unknown users)"
+        )
+
+        resp = requests.delete(
+            perms_url,
+            headers=self.headers,
+            json={"userIds": [grantee_id], "teamIds": []},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "deleteKBPermissions")
+        assert body["kbId"] == kb_id
+        assert grantee_id in body["userIds"]
+        assert body.get("teamIds") == []
+
+    def test_delete_kb_permission_success_team(
+        self,
+        six_kb_records: dict[str, object],
+        new_team: dict[str, object],
+    ) -> None:
+        kb_id = str(six_kb_records["kb_id"])
+        team_id = _team_id(new_team)
+        perms_url = _permissions_url(self.base_url, kb_id)
+
+        create_resp = requests.post(
+            perms_url,
+            headers=self.headers,
+            json={"userIds": [], "teamIds": [team_id]},
+            timeout=self.client.timeout_seconds,
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        assert create_resp.json().get("permissionResult") is not None
+
+        resp = requests.delete(
+            perms_url,
+            headers=self.headers,
+            json={"userIds": [], "teamIds": [team_id]},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "deleteKBPermissions")
+        assert body["kbId"] == kb_id
+        assert body.get("userIds") == []
+        assert team_id in body["teamIds"]
+
+    def test_delete_kb_permission_negative(
+        self,
+        six_kb_records: dict[str, object],
+        four_new_users: list[dict[str, object]],
+        new_team: dict[str, object],
+    ) -> None:
+        kb_id = str(six_kb_records["kb_id"])
+        grantee_graph_id = _permission_user_id(four_new_users[0])
+        no_permission_user_id = _permission_user_id(four_new_users[1])
+        team_id = _team_id(new_team)
+        perms_url = _permissions_url(self.base_url, kb_id)
+        valid_body = {
+            "userIds": [grantee_graph_id],
+            "teamIds": [],
+        }
+
+        resp = requests.delete(
+            perms_url,
+            headers=self.headers,
+            json={},
+            timeout=self.client.timeout_seconds,
+        )
+        # deletePermissionsSchema allows empty body; controller reads .length on
+        # undefined userIds/teamIds before its empty-array guard.
+        assert resp.status_code == 500, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteKBPermissions", status_code="500"
+        )
+
+        resp = requests.delete(
+            perms_url,
+            headers=self.headers,
+            json={"userIds": [grantee_graph_id]},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 500, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteKBPermissions", status_code="500"
+        )
+
+        resp = requests.delete(
+            perms_url,
+            headers=self.headers,
+            json={"userIds": [], "teamIds": []},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteKBPermissions", status_code="400"
+        )
+
+        resp = requests.delete(
+            _permissions_url(self.base_url, "not-a-uuid"),
+            headers=self.headers,
+            json=valid_body,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteKBPermissions", status_code="400"
+        )
+
+        resp = requests.delete(
+            _permissions_url(self.base_url, _NONEXISTENT_KB_ID),
+            headers=self.headers,
+            json=valid_body,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 404, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteKBPermissions", status_code="404"
+        )
+
+        resp = requests.delete(
+            perms_url,
+            headers=self.headers,
+            json={
+                "userIds": [no_permission_user_id],
+                "teamIds": [],
+            },
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 404, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteKBPermissions", status_code="404"
+        )
+
+        resp = requests.delete(
+            perms_url,
+            headers={"Content-Type": "application/json"},
+            json=valid_body,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteKBPermissions", status_code="401"
+        )
+
+        resp = requests.delete(
+            perms_url,
+            headers={
+                "Authorization": "Bearer invalid",
+                "Content-Type": "application/json",
+            },
+            json=valid_body,
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 401, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteKBPermissions", status_code="401"
+        )
+
+        create_resp = requests.post(
+            perms_url,
+            headers=self.headers,
+            json={"userIds": [grantee_graph_id], "teamIds": [], "role": "READER"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        assert _granted_count(create_resp.json()) >= 1, create_resp.text
+
+        resp = requests.delete(
+            perms_url,
+            headers=self.headers,
+            json={"userIds": [grantee_graph_id], "teamIds": []},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 200, resp.text
+
+        resp = requests.delete(
+            perms_url,
+            headers=self.headers,
+            json={"userIds": [], "teamIds": [team_id]},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 404, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "deleteKBPermissions", status_code="404"
+        )
