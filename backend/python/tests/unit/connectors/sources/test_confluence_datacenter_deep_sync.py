@@ -1200,8 +1200,7 @@ class TestFetchCommentsRecursive:
         mock_file_record.external_record_id = "att789"
         mock_file_record.indexing_status = None
         connector._transform_to_attachment_file_record = MagicMock(return_value=mock_file_record)
-        
-        from app.config.constants.arangodb import RecordType
+
         permissions = []
         
         records = await connector._fetch_attachment_file_records(
@@ -1270,8 +1269,7 @@ class TestFetchCommentsRecursive:
         mock_comment_record.id = "node-comment-1"
         connector._transform_to_comment_record = MagicMock(return_value=mock_comment_record)
         connector._fetch_comment_children_recursive = AsyncMock(return_value=[])
-        
-        from app.config.constants.arangodb import RecordType
+
         comments = await connector._fetch_comments_recursive(
             "131165", "TestPage", "footer", [], "123", "page", "node-page-1",
             page_attachments=page_attachments, attachments_indexing_enabled=True

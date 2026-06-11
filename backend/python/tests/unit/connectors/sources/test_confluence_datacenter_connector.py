@@ -1971,7 +1971,7 @@ class TestTransformToAttachmentFileRecord:
                 "createdDate": "2025-01-01T00:00:00.000Z",
                 "lastUpdated": {"when": "2025-02-01T00:00:00.000Z", "number": 1},
             },
-            "extensions": {"fileSize": 3000},
+            "extensions": {"fileSize": 3000, "mediaType": "application/pdf"},
             "_links": {
                 "webui": "/spaces/SD/pages/131165/attachments/131171",
                 "self": "http://localhost:8090/rest/api/content/att131171",

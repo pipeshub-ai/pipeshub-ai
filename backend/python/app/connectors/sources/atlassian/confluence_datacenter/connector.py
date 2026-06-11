@@ -1236,8 +1236,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                             )
                             # Comments already have indexing status set; just count them
                             # (Note: comments now includes attachment records too)
-                            comment_count = sum(1 for rec, _ in comments if hasattr(rec, 'record_type') and 
-                                              rec.record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT])
+                            comment_count = sum(1 for rec, _ in comments if rec.record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT])
                             records_with_permissions.extend(comments)
                             total_comments_synced += comment_count
 
@@ -2704,7 +2703,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 return None
             
             # Determine parent_record_type (default to WEBPAGE for legacy records)
-            parent_record_type = getattr(record, 'parent_record_type', RecordType.WEBPAGE) or RecordType.WEBPAGE
+            parent_record_type = record.parent_record_type or RecordType.WEBPAGE
             
             # Page parent case
             if parent_record_type == RecordType.WEBPAGE:
@@ -2746,7 +2745,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 
                 # Final fallback: check record's parent if it's a WEBPAGE
                 if not page_id and comment_record:
-                    if getattr(comment_record, 'parent_record_type', None) == RecordType.WEBPAGE:
+                    if comment_record.parent_record_type == RecordType.WEBPAGE:
                         page_id = comment_record.parent_external_record_id
                 
                 if not page_id:
