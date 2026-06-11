@@ -224,7 +224,7 @@ def _apply_caption_map(
 ) -> None:
     """Attach base-64 URIs to image blocks using normalised caption keys."""
     for block in container.blocks:
-        if block.type == BlockType.IMAGE.value and block.image_metadata:
+        if block.type == BlockType.IMAGE and block.image_metadata:
             captions = block.image_metadata.captions
             if captions:
                 caption = captions[0]

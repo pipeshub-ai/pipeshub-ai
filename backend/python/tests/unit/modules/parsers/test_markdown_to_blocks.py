@@ -978,4 +978,4 @@ class TestTokenWalkerUtilities:
         tokens = [Token("td_open", "td", 1), Token("td_close", "td", -1)]
         index = walker._process_token(tokens, 0)
         assert index == 1
-        assert walker.table_state.current_row == []
+        assert walker.table_state.current_row == [_TableCell(plain="", markdown="")]
