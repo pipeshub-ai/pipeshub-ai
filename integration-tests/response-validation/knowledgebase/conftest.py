@@ -33,8 +33,11 @@ _ASANA_PDF_BLOB_URL = (
 
 _KB_COUNT = 10
 _RECORD_COUNT = 6
+_PERMISSION_TEST_USER_COUNT = 4
 _RECORDS_POLL_TIMEOUT_SEC = 180
 _RECORDS_POLL_INTERVAL_SEC = 3
+_GRAPH_USER_POLL_TIMEOUT_SEC = 60
+_GRAPH_USER_POLL_INTERVAL_SEC = 3
 _CLOCK_DRIFT_BUFFER_MS = 10_000
 
 
@@ -87,6 +90,124 @@ class SixKbRecords(TypedDict):
     record_display_names: list[str]
     date_from_ms: int
     date_to_ms: int
+
+
+def _wait_for_graph_user_by_email(
+    client: PipeshubClient, email: str
+) -> dict[str, object]:
+    """Poll users/graph/list until the user exists in the graph (Kafka entity sync)."""
+    email_lower = email.lower()
+    search_term = email.split("@", 1)[0]
+
+    def _user_in_graph() -> dict[str, object] | None:
+        resp = requests.get(
+            f"{client.base_url}/api/v1/users/graph/list",
+            headers=client._headers(),
+            params={"search": search_term, "limit": "50"},
+            timeout=client.timeout_seconds,
+        )
+        if resp.status_code != 200:
+            return None
+        for user in resp.json().get("users") or []:
+            if str(user.get("email") or "").lower() == email_lower:
+                return user
+        return None
+
+    return poll_until(
+        _user_in_graph,
+        timeout=_GRAPH_USER_POLL_TIMEOUT_SEC,
+        interval=_GRAPH_USER_POLL_INTERVAL_SEC,
+        description=f"graph user for email {email!r}",
+    )
+
+
+def _create_one_permission_test_user(client: PipeshubClient) -> dict[str, object]:
+    unique = uuid4().hex[:8]
+    resp = requests.post(
+        f"{client.base_url}/api/v1/users",
+        headers=client._headers(),
+        json={
+            "fullName": f"RV KB Permissions {unique}",
+            "email": f"rv-kb-perms-{unique}@test-pipeshub.com",
+        },
+        timeout=client.timeout_seconds,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _delete_permission_test_user(client: PipeshubClient, user_id: str) -> None:
+    try:
+        requests.delete(
+            f"{client.base_url}/api/v1/users/{user_id}",
+            headers=client._headers(),
+            timeout=client.timeout_seconds,
+        )
+    except requests.RequestException:
+        pass
+
+
+def _create_one_permission_test_team(client: PipeshubClient) -> dict[str, object]:
+    unique = uuid4().hex[:8]
+    resp = requests.post(
+        f"{client.base_url}/api/v1/userGroups",
+        headers=client._headers(),
+        json={"name": f"rv-kb-perms-team-{unique}", "type": "custom"},
+        timeout=client.timeout_seconds,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _delete_permission_test_team(client: PipeshubClient, team_id: str) -> None:
+    try:
+        requests.delete(
+            f"{client.base_url}/api/v1/userGroups/{team_id}",
+            headers=client._headers(),
+            timeout=client.timeout_seconds,
+        )
+    except requests.RequestException:
+        pass
+
+
+@pytest.fixture
+def new_team(pipeshub_client: PipeshubClient) -> Generator[dict[str, object], None, None]:
+    """Disposable team (full createUserGroup response body) for permission tests."""
+    client = pipeshub_client
+    client._ensure_access_token()
+    team = _create_one_permission_test_team(client)
+    try:
+        yield team
+    finally:
+        team_id = str(team.get("_id") or team.get("id") or "")
+        if team_id:
+            _delete_permission_test_team(client, team_id)
+
+
+@pytest.fixture(scope="module")
+def four_new_users(
+    pipeshub_client: PipeshubClient,
+) -> Generator[list[dict[str, object]], None, None]:
+    """Four disposable users (full createUser response bodies) for permission tests."""
+    client = pipeshub_client
+    client._ensure_access_token()
+    users: list[dict[str, object]] = []
+    for _ in range(_PERMISSION_TEST_USER_COUNT):
+        user = _create_one_permission_test_user(client)
+        email = str(user.get("email") or "")
+        assert email, f"createUser response missing email: {user}"
+        graph_user = _wait_for_graph_user_by_email(client, email)
+        graph_id = graph_user.get("id")
+        assert graph_id, f"graph user missing id for {email}: {graph_user}"
+        user["graphId"] = graph_id
+        users.append(user)
+    try:
+        yield users
+    finally:
+        for user in users:
+            uid = str(user.get("_id") or user.get("id") or "")
+            if uid:
+                _delete_permission_test_user(client, uid)
 
 
 @pytest.fixture

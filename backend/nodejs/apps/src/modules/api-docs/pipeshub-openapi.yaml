@@ -4573,6 +4573,119 @@ components:
           type: integer
           format: int64
 
+    KnowledgeBasePermissionCreate:
+      type: object
+      additionalProperties: false
+      description: Response returned when permissions are granted on a knowledge base
+      properties:
+        kbId:
+          type: string
+          description: Knowledge base ID
+        permissionResult:
+          type: object
+          additionalProperties: false
+          description: Connector result from permission creation
+          properties:
+            success:
+              type: boolean
+              description: Success status
+            grantedCount:
+              type: integer
+              description: Number of new permissions granted (users and teams)
+            grantedUsers:
+              type: array
+              items:
+                type: string
+              description: User IDs that received new permissions
+            grantedTeams:
+              type: array
+              items:
+                type: string
+              description: Team IDs that received new permissions
+            role:
+              type: string
+              enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+              description: Granted role (defaults to READER for team-only grants)
+            kbId:
+              type: string
+              description: Knowledge base ID
+            details:
+              type: object
+              additionalProperties: false
+              description: Additional details of the permissions created (currently always empty)
+          required:
+            - success
+            - grantedCount
+            - grantedUsers
+            - grantedTeams
+            - role
+            - kbId
+            - details
+      required:
+        - kbId
+        - permissionResult
+
+    KnowledgeBasePermissionList:
+      type: object
+      additionalProperties: false
+      description: Response returned when listing permissions on a knowledge base
+      properties:
+        kbId:
+          type: string
+          description: Knowledge base ID
+        permissions:
+          type: array
+          description: All user and team permissions granted on the knowledge base
+          items:
+            type: object
+            additionalProperties: false
+            description: A single user or team permission entry
+            properties:
+              id:
+                type: string
+                description: Permission entry ID (user or team document key)
+              userId:
+                type: string
+                nullable: true
+                description: User ID (null for team permissions)
+              email:
+                type: string
+                nullable: true
+                description: User email (null for team permissions)
+              name:
+                type: string
+                nullable: true
+                description: Display name (user full name or team name)
+              role:
+                type: string
+                nullable: true
+                enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+                description: Permission role (null for team permissions; teams are not assigned roles)
+              type:
+                type: string
+                enum: [USER, TEAM]
+                description: Whether permission is for a user or team
+              createdAtTimestamp:
+                type: integer
+                format: int64
+                description: Permission creation timestamp (epoch milliseconds)
+              updatedAtTimestamp:
+                type: integer
+                format: int64
+                description: Permission last update timestamp (epoch milliseconds)
+            required:
+              - id
+              - type
+              - createdAtTimestamp
+              - updatedAtTimestamp
+        totalCount:
+          type: integer
+          description: Total number of permissions in the list
+      required:
+        - kbId
+        - permissions
+        - totalCount
+
     # ==================== ENTERPRISE SEARCH SCHEMAS ====================
     AppType:
       type: string
@@ -21006,18 +21119,21 @@ paths:
         - Permissions
       summary: Grant permissions
       description: |
-        Grant access permissions to users or teams for a knowledge base.<br><br>
-        <b>Required Permission:</b> OWNER or ORGANIZER<br><br>
-        <b>Permission Roles (highest to lowest):</b><br>
-        <ol>
-        <li><b>OWNER:</b> Full control, can delete KB, manage all permissions</li>
-        <li><b>ORGANIZER:</b> Can manage permissions (except OWNER), edit KB settings</li>
-        <li><b>FILEORGANIZER:</b> Can create/delete folders, organize content</li>
-        <li><b>WRITER:</b> Can upload, edit, delete records</li>
-        <li><b>COMMENTER:</b> Can add comments (if supported)</li>
-        <li><b>READER:</b> View-only access</li>
-        </ol>
-        <b>Grant to Multiple:</b><br>
+        Grant access permissions to users or teams for a knowledge base.
+
+        **Required Permission:** OWNER or ORGANIZER
+
+        **Permission Roles (highest to lowest):**
+
+        1. **OWNER:** Full control, can delete KB, manage all permissions
+        2. **ORGANIZER:** Can manage permissions (except OWNER), edit KB settings
+        3. **FILEORGANIZER:** Can create/delete folders, organize content
+        4. **WRITER:** Can upload, edit, delete records
+        5. **COMMENTER:** Can add comments (if supported)
+        6. **READER:** View-only access
+
+        **Grant to Multiple:**
+
         Provide arrays of userIds and/or teamIds to grant the same role to multiple entities.
       operationId: createKBPermission
       security:
@@ -21049,40 +21165,76 @@ paths:
                 role:
                   type: string
                   enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
-                  description: Permission role to grant
-              required:
-                - role
+                  description: Permission role to grant. Required when userIds is provided; omit for team-only grants.
       responses:
-        '200':
+        '201':
           description: Permissions granted successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  kbId:
-                    type: string
-                  permissionResult:
-                    type: object
-                    properties:
-                      grantedCount:
-                        type: integer
-                      updatedCount:
-                        type: integer
+                $ref: '#/components/schemas/KnowledgeBasePermissionCreate'
         '400':
-          description: Invalid request
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing userIds and teamIds
+            - Role required when adding users
+            - Invalid role value
+            - Invalid kbId (must be UUID)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Only OWNER/ORGANIZER can grant permissions
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:write` scope
+            - Caller is not KB OWNER (only owners can grant permissions)
+            - Caller has no access to the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Not found. Possible reasons:
+
+            - Knowledge base does not exist
+            - Authenticated user not found in graph database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Permission creation failed in connector or database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable - Connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
         - Permissions
       summary: List permissions
       description: |
-        Retrieve all permissions granted on a knowledge base.<br><br>
-        <b>Required Permission:</b> ORGANIZER or higher to see all permissions, others see only their own.
+        Retrieve all permissions granted on a knowledge base.
+
+        **Required access:** Caller must hold any role on the knowledge base (OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, or READER) and the `kb:read` OAuth scope when using an OAuth token.
+
+        Returns every user and team permission on the KB. Team entries have `type: TEAM` and `role: null` (teams are not assigned roles).
       operationId: listKBPermissions
       security:
         - bearerAuth: []
@@ -21093,28 +21245,62 @@ paths:
           required: true
           schema:
             type: string
+            minLength: 1
+          description: Knowledge base ID
       responses:
         '200':
-          description: Permissions list retrieved
+          description: Permissions list retrieved successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  kbId:
-                    type: string
-                  permissions:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/KBPermission'
-                  totalCount:
-                    type: integer
+                $ref: '#/components/schemas/KnowledgeBasePermissionList'
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - Empty `kbId` path parameter (Zod `getPermissionsSchema` requires `params.kbId` min length 1)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: No access to this knowledge base
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:read` scope
+            - Caller has no access to the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Knowledge base not found
+          description: |
+            Not found. Possible reasons:
+
+            - Knowledge base does not exist
+            - Authenticated user not found in graph database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error — permission listing failed in connector or database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable — connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
