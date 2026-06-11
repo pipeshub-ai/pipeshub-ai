@@ -89,7 +89,22 @@ class TestParagraphs:
         block = container.blocks[0]
         assert block.type == BlockType.TEXT
         assert block.sub_type == BlockSubType.PARAGRAPH
-        assert block.data == "Hello bold world"
+        assert block.data == "Hello **bold** world"
+        assert block.format == DataFormat.MARKDOWN
+
+    def test_paragraph_preserves_inline_formatting_as_raw_markdown(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        markdown = "**bold** *italic* _italic_ __bold__ ~~strikethrough~~\n"
+        container = converter.convert(markdown)
+        block = container.blocks[0]
+        assert block.format == DataFormat.MARKDOWN
+        assert block.data == "**bold** *italic* _italic_ __bold__ ~~strikethrough~~"
+
+    def test_plain_paragraph_stays_txt_format(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("Plain paragraph.\n")
+        block = container.blocks[0]
+        assert block.data == "Plain paragraph."
         assert block.format == DataFormat.TXT
 
     def test_multiple_paragraphs_are_separate_blocks(self, converter: MarkdownToBlocksConverter):
@@ -198,23 +213,25 @@ class TestLists:
         assert list_group.type == GroupType.ORDERED_LIST
         assert _child_block_indices(list_group) == [0, 1]
 
-    def test_nested_list_creates_nested_block_groups(self, converter: MarkdownToBlocksConverter):
+    def test_nested_list_captures_nested_content_in_raw_markdown(
+        self, converter: MarkdownToBlocksConverter
+    ):
         container = converter.convert("- outer\n  - inner\n")
-        assert len(container.block_groups) == 2
+        assert len(container.block_groups) == 1
 
-        outer_group = container.block_groups[0]
-        inner_group = container.block_groups[1]
-        assert outer_group.type == GroupType.LIST
-        assert inner_group.type == GroupType.LIST
-        assert inner_group.parent_index == outer_group.index
-        assert _child_group_indices(outer_group) == [inner_group.index]
+        list_group = container.block_groups[0]
+        assert list_group.type == GroupType.LIST
+        assert _child_group_indices(list_group) == []
 
-        outer_item = container.blocks[0]
-        inner_item = container.blocks[1]
-        assert outer_item.data == "outer"
-        assert outer_item.parent_index == outer_group.index
-        assert inner_item.data == "inner"
-        assert inner_item.parent_index == inner_group.index
+        list_items = [
+            block for block in container.blocks
+            if block.sub_type == BlockSubType.LIST_ITEM
+        ]
+        assert len(list_items) == 1
+        assert list_items[0].data == "- outer\n  - inner"
+        assert list_items[0].format == DataFormat.MARKDOWN
+        assert list_items[0].parent_index == list_group.index
+        assert _child_block_indices(list_group) == [list_items[0].index]
 
 
 class TestImages:
@@ -345,29 +362,38 @@ class TestImages:
     # parent_index inside groups
     # ------------------------------------------------------------------
 
-    def test_image_inside_blockquote_has_correct_parent(
+    def test_image_inside_blockquote_is_preserved_in_raw_markdown(
         self, converter: MarkdownToBlocksConverter
     ):
-        """Image inside a blockquote should have parent_index pointing at the quote group."""
+        """Image inside a blockquote stays in the quote block's raw markdown slice."""
         container = converter.convert("> ![Image_1](https://example.com/img.png)\n")
         assert len(container.block_groups) == 1
         quote_group = container.block_groups[0]
         assert quote_group.type == GroupType.TEXT_SECTION
-        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
-        assert len(image_blocks) == 1
-        assert image_blocks[0].parent_index == quote_group.index
+        assert quote_group.sub_type == GroupSubType.QUOTE
+        assert _blocks_by_type(container, BlockType.IMAGE) == []
 
-    def test_image_inside_list_has_correct_parent(
+        quote_block = container.blocks[0]
+        assert quote_block.sub_type == BlockSubType.QUOTE
+        assert quote_block.data == "> ![Image_1](https://example.com/img.png)"
+        assert quote_block.format == DataFormat.MARKDOWN
+        assert quote_block.parent_index == quote_group.index
+
+    def test_image_inside_list_is_preserved_in_raw_markdown(
         self, converter: MarkdownToBlocksConverter
     ):
-        """Image inside a list item should have parent_index pointing at the list group."""
+        """Image inside a list item stays in the list item's raw markdown slice."""
         container = converter.convert("- ![Image_1](https://example.com/img.png)\n")
         assert len(container.block_groups) == 1
         list_group = container.block_groups[0]
         assert list_group.type == GroupType.LIST
-        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
-        assert len(image_blocks) == 1
-        assert image_blocks[0].parent_index == list_group.index
+        assert _blocks_by_type(container, BlockType.IMAGE) == []
+
+        list_item = container.blocks[0]
+        assert list_item.sub_type == BlockSubType.LIST_ITEM
+        assert list_item.data == "- ![Image_1](https://example.com/img.png)"
+        assert list_item.format == DataFormat.MARKDOWN
+        assert list_item.parent_index == list_group.index
 
     # ------------------------------------------------------------------
     # Full pipeline: extract_and_replace_images → parse_to_blocks
@@ -465,27 +491,39 @@ class TestBlockquotes:
         quote_group = container.block_groups[0]
         assert quote_group.type == GroupType.TEXT_SECTION
         assert quote_group.sub_type == GroupSubType.QUOTE
-        assert container.blocks[0].data == "quoted text"
-        assert _child_block_indices(quote_group) == [0]
+        quote_block = container.blocks[0]
+        assert quote_block.sub_type == BlockSubType.QUOTE
+        assert quote_block.data == "> quoted text"
+        assert quote_block.format == DataFormat.MARKDOWN
+        assert quote_block.parent_index == quote_group.index
+        assert _child_block_indices(quote_group) == [quote_block.index]
 
     def test_multiline_blockquote_is_single_block(self, converter: MarkdownToBlocksConverter):
         container = converter.convert("> line one\n> line two\n")
         assert len(container.blocks) == 1
-        assert container.blocks[0].data == "line one\nline two"
-        assert container.blocks[0].parent_index == container.block_groups[0].index
+        quote_block = container.blocks[0]
+        assert quote_block.sub_type == BlockSubType.QUOTE
+        assert quote_block.data == "> line one\n> line two"
+        assert quote_block.format == DataFormat.MARKDOWN
+        assert quote_block.parent_index == container.block_groups[0].index
 
-    def test_nested_blockquote_creates_nested_groups(self, converter: MarkdownToBlocksConverter):
+    def test_nested_blockquote_captures_nested_content_in_raw_markdown(
+        self, converter: MarkdownToBlocksConverter
+    ):
         container = converter.convert("> outer\n> > inner\n")
-        assert len(container.block_groups) == 2
+        assert len(container.block_groups) == 1
 
-        outer_group = container.block_groups[0]
-        inner_group = container.block_groups[1]
-        assert outer_group.sub_type == GroupSubType.QUOTE
-        assert inner_group.sub_type == GroupSubType.QUOTE
-        assert inner_group.parent_index == outer_group.index
-        assert _child_group_indices(outer_group) == [inner_group.index]
-        assert container.blocks[0].parent_index == outer_group.index
-        assert container.blocks[1].parent_index == inner_group.index
+        quote_group = container.block_groups[0]
+        assert quote_group.type == GroupType.TEXT_SECTION
+        assert quote_group.sub_type == GroupSubType.QUOTE
+        assert _child_group_indices(quote_group) == []
+
+        quote_block = container.blocks[0]
+        assert quote_block.sub_type == BlockSubType.QUOTE
+        assert quote_block.data == "> outer\n> > inner"
+        assert quote_block.format == DataFormat.MARKDOWN
+        assert quote_block.parent_index == quote_group.index
+        assert _child_block_indices(quote_group) == [quote_block.index]
 
 
 class TestHtmlBlocks:
