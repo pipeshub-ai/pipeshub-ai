@@ -66,6 +66,7 @@ export function NotificationFilterMenu({ value, onChange }: NotificationFilterMe
         side="bottom"
         align="end"
         sideOffset={4}
+        onCloseAutoFocus={(e) => e.preventDefault()}
         onClick={(e) => e.stopPropagation()}
         onPointerDown={(e) => e.stopPropagation()}
         style={{

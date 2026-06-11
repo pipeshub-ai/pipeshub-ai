@@ -92,4 +92,18 @@ describe('useNotificationSocket', () => {
       expect(getStatsMock).toHaveBeenCalled();
     });
   });
+
+  it('reconnects with a new token when accessToken changes', () => {
+    const { rerender } = renderHook(() => {
+      useNotificationSocket();
+    });
+
+    expect(connectMock).toHaveBeenCalledWith('jwt-test');
+
+    authState.accessToken = 'jwt-rotated';
+    rerender();
+
+    expect(connectMock).toHaveBeenCalledWith('jwt-rotated');
+    expect(disconnectMock).toHaveBeenCalled();
+  });
 });

@@ -1350,6 +1350,9 @@ class JiraConnector(BaseConnector):
                         title=f"Failed to fetch audit records",
                         message=f"You do not have the Jira Administrator permission required to get audit records.",
                         recipient_user_ids=[self.created_by],
+                        payload={
+                            "redirect_link": None,
+                        }
                     )
                     break
 
