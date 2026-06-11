@@ -19,10 +19,19 @@ _NONEXISTENT_KB_ID = "00000000-0000-4000-8000-000000000001"
 
 
 def _user_id(user: dict[str, object]) -> str:
-    """Mongo _id / Arango _key — used in permission create/delete userIds body."""
+    """Mongo _id from createUser — used in negative validation cases."""
     uid = user.get("_id") or user.get("id")
     assert uid, f"User object has no id: {user}"
     return str(uid)
+
+
+def _permission_user_id(user: dict[str, object]) -> str:
+    """Graph user document id for KB permission create/delete userIds body."""
+    graph_id = user.get("graphId")
+    assert graph_id, (
+        f"User missing graphId (fixture should wait for graph sync): {user}"
+    )
+    return str(graph_id)
 
 
 def _team_id(team: dict[str, object]) -> str:
@@ -86,7 +95,7 @@ class TestKBPermissionCreate:
     ) -> None:
         kb_id = str(six_kb_records["kb_id"])
         grantee = four_new_users[0]
-        grantee_id = _user_id(grantee)
+        grantee_id = _permission_user_id(grantee)
 
         resp = requests.post(
             _permissions_url(self.base_url, kb_id),
@@ -102,8 +111,8 @@ class TestKBPermissionCreate:
         assert body["kbId"] == kb_id
         assert body.get("permissionResult") is not None
         assert _granted_count(body) >= 1, (
-            "Permission create returned grantedCount=0 — grantee Mongo _id likely "
-            "not synced to graph yet (Arango skips unknown users)"
+            "Permission create returned grantedCount=0 — grantee graph id not found "
+            "in graph (Arango skips unknown users)"
         )
 
         _remove_permission(
