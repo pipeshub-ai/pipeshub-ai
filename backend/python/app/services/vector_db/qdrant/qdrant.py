@@ -534,7 +534,7 @@ class QdrantService(IVectorDBService):
     async def delete_points(
         self,
         collection_name: str,
-        filter: Filter,
+        delete_filter: Filter,
     ) -> None:
         """Delete points"""
         if self.client is None:

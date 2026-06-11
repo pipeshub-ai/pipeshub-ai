@@ -672,7 +672,7 @@ class IndexingPipeline:
                 # instead of scrolling point IDs into memory and sending them back.
                 await self.vector_db_service.delete_points(
                     collection_name=self.collection_name,
-                    filter=filter_dict,
+                    delete_filter=filter_dict,
                 )
 
                 self.logger.info(
@@ -821,7 +821,7 @@ class IndexingPipeline:
 
                     await self.vector_db_service.delete_points(
                         collection_name=self.collection_name,
-                        filter=filter_dict,
+                        delete_filter=filter_dict,
                     )
 
                     total_deleted += batch_deleted

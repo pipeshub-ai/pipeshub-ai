@@ -97,7 +97,7 @@ class IVectorDBService(ABC):
     async def delete_points(
         self,
         collection_name: str,
-        filter: Filter,
+        delete_filter: Filter,
     ) -> None:
         """Delete all points matching a filter directly in the vector store."""
         raise NotImplementedError("delete_points() is not implemented")
