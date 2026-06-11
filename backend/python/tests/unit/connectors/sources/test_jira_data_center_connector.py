@@ -17,8 +17,6 @@ from app.connectors.sources.atlassian.core.apps import JiraDataCenterApp
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
     _normalize_jira_dc_group_row,
-    adf_to_text,
-    extract_media_from_adf,
 )
 
 
@@ -513,22 +511,6 @@ class TestJiraDataCenterModuleHelpers:
             "name": "g",
             "groupId": "2",
         }
-
-    def test_extract_media_from_adf_empty(self) -> None:
-        assert extract_media_from_adf({}) == []
-        # id must be non-empty to be collected
-        assert extract_media_from_adf({"type": "media", "attrs": {"id": ""}}) == []
-
-    def test_extract_media_from_adf_with_id(self) -> None:
-        nodes = extract_media_from_adf(
-            {"content": [{"type": "media", "attrs": {"id": "f1", "alt": "a.png"}}]}
-        )
-        assert len(nodes) == 1
-        assert nodes[0]["id"] == "f1"
-
-    def test_adf_to_text_minimal(self) -> None:
-        body = {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Hi"}]}]}
-        assert "Hi" in adf_to_text(body)
 
 
 # -----------------------------------------------------------------------------

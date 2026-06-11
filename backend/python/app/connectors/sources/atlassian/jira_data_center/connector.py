@@ -126,548 +126,6 @@ def _application_role_groups_from_dc_role(role: dict[str, Any]) -> list[dict[str
     return normalized
 
 
-def extract_media_from_adf(adf_content: dict[str, Any]) -> list[dict[str, Any]]:
-    """
-    Extract all media nodes from ADF content.
-
-    Returns list of media info dicts with:
-        - id: Media ID/token
-        - alt: Alt text (usually filename)
-        - type: Media type (file, image, etc.)
-        - width: Image width (if available)
-        - height: Image height (if available)
-        - collection: Media collection (if available)
-    """
-    if not adf_content or not isinstance(adf_content, dict):
-        return []
-
-    media_nodes: list[dict[str, Any]] = []
-
-    def traverse(node: dict[str, Any]) -> None:
-        """Recursively traverse ADF nodes to find media."""
-        if not isinstance(node, dict):
-            return
-
-        node_type = node.get("type", "")
-
-        # Check if this is a media node
-        if node_type == "media":
-            attrs = node.get("attrs", {})
-            # Get filename from multiple sources:
-            # - __fileName: Used for PDFs and other files
-            # - alt: Used for images (usually contains filename)
-            alt_text = attrs.get("alt", "")
-            internal_filename = attrs.get("__fileName", "")
-            # Best filename: prefer __fileName (more reliable for files), fallback to alt
-            filename = internal_filename or alt_text
-
-            media_info = {
-                "id": attrs.get("id", ""),
-                "alt": alt_text,
-                "filename": filename,  # Best filename for matching
-                "type": attrs.get("type", "file"),
-                "width": attrs.get("width"),
-                "height": attrs.get("height"),
-                "collection": attrs.get("collection", ""),
-            }
-            if media_info["id"]:  # Only add if we have an ID
-                media_nodes.append(media_info)
-
-        # Recurse into content
-        if "content" in node:
-            for child in node.get("content", []):
-                traverse(child)
-
-    # Start traversal from root
-    if "content" in adf_content:
-        for node in adf_content.get("content", []):
-            traverse(node)
-    else:
-        traverse(adf_content)
-
-    return media_nodes
-
-def adf_to_text(
-    adf_content: dict[str, Any],
-    media_cache: Optional[dict[str, str]] = None
-) -> str:
-    """
-    Convert Atlassian Document Format (ADF) to Markdown.
-    Returns markdown-formatted text with headers, lists, code blocks, tables, etc.
-
-    Args:
-        adf_content: The ADF document to convert
-        media_cache: Optional dict mapping media_id -> base64 data URI for embedding images
-    """
-    if not adf_content or not isinstance(adf_content, dict):
-        return ""
-
-    text_parts: list[str] = []
-    _media_cache = media_cache or {}
-
-    def apply_text_marks(text: str, marks: list[dict[str, Any]]) -> str:
-        """Apply markdown formatting based on text marks (bold, italic, link, etc.)."""
-        if not marks:
-            return text
-
-        # Process marks in reverse order (innermost first)
-        for mark in reversed(marks):
-            mark_type = mark.get("type", "")
-            attrs = mark.get("attrs", {})
-
-            if mark_type == "strong":
-                text = f"**{text}**"
-            elif mark_type == "em":
-                text = f"*{text}*"
-            elif mark_type == "code":
-                text = f"`{text}`"
-            elif mark_type == "strike":
-                text = f"~~{text}~~"
-            elif mark_type == "link":
-                href = attrs.get("href", "")
-                if href:
-                    text = f"[{text}]({href})"
-            elif mark_type == "underline":
-                # Markdown doesn't have underline, use emphasis
-                text = f"*{text}*"
-
-        return text
-
-    def extract_list_item_content(list_item: dict[str, Any], depth: int) -> dict[str, str]:
-        """Extract text content and nested lists from a list item.
-
-        Returns dict with:
-            - text: The main text content of the list item
-            - nested: Any nested lists formatted with proper indentation
-        """
-        content = list_item.get("content", [])
-        text_parts: list[str] = []
-        nested_parts: list[str] = []
-
-        for child in content:
-            child_type = child.get("type", "")
-            if child_type in ["bulletList", "orderedList", "taskList"]:
-                # Nested list - extract with current depth
-                nested_text = extract_text(child, depth)
-                if nested_text:
-                    nested_parts.append(nested_text)
-            else:
-                # Regular content (paragraph, text, etc.)
-                child_text = extract_text(child, depth)
-                if child_text:
-                    text_parts.append(child_text)
-
-        # Join text parts, clean up excessive whitespace
-        main_text = " ".join(text_parts).strip()
-        main_text = re.sub(r'\s+', ' ', main_text)  # Normalize whitespace
-
-        # Join nested lists
-        nested_text = "\n".join(nested_parts) if nested_parts else ""
-
-        return {"text": main_text, "nested": nested_text}
-
-    def extract_text(node: dict[str, Any], list_depth: int = 0, strip_marks: bool = False) -> str:
-        """Recursively extract text from ADF nodes and convert to markdown.
-
-        Args:
-            node: The ADF node to process
-            list_depth: Current nesting level for lists (0 = not in list, 1+ = nested depth)
-            strip_marks: If True, ignore text formatting marks (for table cells)
-        """
-        if not isinstance(node, dict):
-            return ""
-
-        node_type = node.get("type", "")
-        text = ""
-        indent = "  " * list_depth  # 2 spaces per nesting level
-
-        if node_type == "text":
-            text = node.get("text", "")
-            # Skip formatting marks for table cells (they don't render well in markdown tables)
-            if not strip_marks:
-                marks = node.get("marks", [])
-                text = apply_text_marks(text, marks)
-
-        elif node_type == "paragraph":
-            content = node.get("content", [])
-            para_text = "".join(extract_text(child, list_depth, strip_marks) for child in content).strip()
-            if para_text:
-                # In lists or tables, paragraphs should contribute text without adding newlines
-                if list_depth > 0 or strip_marks:
-                    # Just return the text, no newlines - let list item/table cell handle spacing
-                    text = para_text
-                else:
-                    # Check if paragraph contains only a list - if so, don't add extra spacing
-                    has_list = any(child.get("type") in ["bulletList", "orderedList", "taskList"] for child in content)
-                    if has_list:
-                        # Lists already have their own spacing, don't add extra
-                        text = para_text
-                    else:
-                        text = f"{para_text}\n\n"
-
-        elif node_type == "heading":
-            level = node.get("attrs", {}).get("level", 1)
-            content = node.get("content", [])
-            heading_text = "".join(extract_text(child, list_depth, strip_marks) for child in content).strip()
-            if heading_text:
-                if strip_marks:
-                    # In tables, just return heading text without # markers
-                    text = heading_text
-                else:
-                    text = f"{'#' * level} {heading_text}\n\n"
-
-        elif node_type == "blockquote":
-            content = node.get("content", [])
-            quote_text = "".join(extract_text(child, list_depth, strip_marks) for child in content).strip()
-            if quote_text:
-                if strip_marks:
-                    # In tables, just return the quote text
-                    text = quote_text
-                else:
-                    # Add > to each line for proper markdown blockquote
-                    quoted_lines = quote_text.split("\n")
-                    quoted_lines = [f"> {line}" if line.strip() else ">" for line in quoted_lines]
-                    text = "\n".join(quoted_lines) + "\n\n"
-
-        # Handle both "bulletList" and "unorderedList" (some Jira versions use different names)
-        elif node_type in ["bulletList", "unorderedList"]:
-            content = node.get("content", [])
-            bullet_lines: list[str] = []
-
-            for child in content:
-                child_type = child.get("type", "")
-
-                # Extract the text content from the list item
-                if child_type == "listItem":
-                    # Standard structure: listItem > paragraph > text
-                    item_content = extract_list_item_content(child, list_depth + 1)
-                    item_text = item_content.get("text", "").strip()
-                    nested_content = item_content.get("nested", "")
-                else:
-                    # Fallback: directly extract text from whatever node this is
-                    item_text = extract_text(child, list_depth + 1, strip_marks).strip()
-                    nested_content = ""
-
-                # Add bullet marker if we have text
-                if item_text:
-                    bullet_line = f"{indent}- {item_text}"
-                    bullet_lines.append(bullet_line)
-                    if nested_content:
-                        bullet_lines.append(nested_content)
-
-            # Join all bullet items with newlines
-            if bullet_lines:
-                text = "\n".join(bullet_lines)
-                if list_depth == 0:
-                    text += "\n\n"
-
-        # Handle both "orderedList" and "numberedList" (some variations exist)
-        elif node_type in ["orderedList", "numberedList"]:
-            content = node.get("content", [])
-            numbered_lines: list[str] = []
-
-            for i, child in enumerate(content, start=1):
-                child_type = child.get("type", "")
-
-                # Extract the text content from the list item
-                if child_type == "listItem":
-                    # Standard structure: listItem > paragraph > text
-                    item_content = extract_list_item_content(child, list_depth + 1)
-                    item_text = item_content.get("text", "").strip()
-                    nested_content = item_content.get("nested", "")
-                else:
-                    # Fallback: directly extract text from whatever node this is
-                    item_text = extract_text(child, list_depth + 1, strip_marks).strip()
-                    nested_content = ""
-
-                # Add number marker if we have text
-                if item_text:
-                    numbered_line = f"{indent}{i}. {item_text}"
-                    numbered_lines.append(numbered_line)
-                    if nested_content:
-                        numbered_lines.append(nested_content)
-
-            # Join all numbered items with newlines
-            if numbered_lines:
-                text = "\n".join(numbered_lines)
-                if list_depth == 0:
-                    text += "\n\n"
-
-        elif node_type == "listItem":
-            # This is handled by extract_list_item_content, but provide fallback
-            content = node.get("content", [])
-            text = "".join(extract_text(child, list_depth) for child in content).strip()
-
-        elif node_type == "codeBlock":
-            content = node.get("content", [])
-            code_text = "".join(extract_text(child, list_depth) for child in content)
-            language = node.get("attrs", {}).get("language", "")
-            # Preserve code formatting - don't strip, but ensure proper code block
-            text = f"```{language}\n{code_text}\n```\n\n"
-
-        elif node_type == "inlineCode":
-            text = f"`{node.get('text', '')}`"
-
-        elif node_type == "hardBreak":
-            text = "\n"
-
-        elif node_type == "rule":
-            text = "---\n\n"
-
-        elif node_type == "media":
-            attrs = node.get("attrs", {})
-            media_id = attrs.get("id", "")
-            alt = attrs.get("alt", "")
-            title = attrs.get("title", "")
-
-            display_text = alt or title or "attachment"
-
-            # Check if we have base64 data for this media in cache
-            if media_id and media_id in _media_cache:
-                data_uri = _media_cache[media_id]
-                if list_depth > 0:
-                    text = f"\n![{display_text}]({data_uri})\n"
-                else:
-                    text = f"\n![{display_text}]({data_uri})\n\n"
-            else:
-                # Fallback: just show the image name/alt text
-                if list_depth > 0:
-                    text = f"\n![{display_text}]\n"
-                else:
-                    text = f"\n![{display_text}]\n\n"
-
-        elif node_type == "mention":
-            attrs = node.get("attrs", {})
-            mention_text = attrs.get("text", attrs.get("id", "mention"))
-            text = f"@{mention_text}"
-
-        elif node_type == "emoji":
-            attrs = node.get("attrs", {})
-            short_name = attrs.get("shortName", "")
-            text = f":{short_name}:" if short_name else attrs.get("text", "")
-
-        elif node_type == "table":
-            content = node.get("content", [])
-            rows: list[str] = []
-            is_first_row = True
-
-            for row in content:
-                if row.get("type") == "tableRow":
-                    cells: list[str] = []
-                    for cell in row.get("content", []):
-                        cell_type = cell.get("type", "")
-                        if cell_type in ["tableCell", "tableHeader"]:
-                            # Strip marks (bold, italic, etc.) - they don't render in markdown tables
-                            cell_text = extract_text(cell, list_depth, strip_marks=True).strip()
-                            # Escape pipe characters in cell content
-                            cell_text = cell_text.replace("|", "\\|")
-                            # Replace newlines with space for markdown table compatibility
-                            cell_text = cell_text.replace("\n", " ")
-                            cells.append(cell_text)
-
-                    if cells:
-                        rows.append("| " + " | ".join(cells) + " |")
-
-                        # Add header separator after first row
-                        if is_first_row:
-                            separator = "| " + " | ".join(["---"] * len(cells)) + " |"
-                            rows.append(separator)
-                            is_first_row = False
-
-            if rows:
-                text = "\n".join(rows) + "\n\n"
-
-        elif node_type in ["tableCell", "tableHeader"]:
-            content = node.get("content", [])
-            # Pass strip_marks through to children
-            text = "".join(extract_text(child, list_depth, strip_marks) for child in content)
-
-        elif node_type == "panel":
-            attrs = node.get("attrs", {})
-            panel_type = attrs.get("panelType", "info")
-            content = node.get("content", [])
-            panel_text = "".join(extract_text(child, list_depth) for child in content).strip()
-            if panel_text:
-                # Use blockquote style for panels
-                panel_lines = panel_text.split("\n")
-                panel_lines = [f"> **{panel_type.upper()}**: {line}" if line.strip() else ">" for line in panel_lines]
-                text = "\n".join(panel_lines) + "\n\n"
-
-        # Media wrappers - just extract the media content
-        elif node_type in ["mediaSingle", "mediaGroup"]:
-            content = node.get("content", [])
-            text = "".join(extract_text(child, list_depth) for child in content)
-
-        # Smart links / inline cards
-        elif node_type == "inlineCard":
-            attrs = node.get("attrs", {})
-            url = attrs.get("url", "")
-            if url:
-                text = f"[{url}]({url})"
-
-        # Task lists (checkboxes)
-        elif node_type == "taskList":
-            content = node.get("content", [])
-            task_items: list[str] = []
-            for child in content:
-                if child.get("type") == "taskItem":
-                    item_text = extract_text(child, list_depth + 1).strip()
-                    if item_text:
-                        task_items.append(item_text)
-            if task_items:
-                text = "\n".join(task_items) + "\n\n"
-
-        elif node_type == "taskItem":
-            attrs = node.get("attrs", {})
-            state = attrs.get("state", "TODO")
-            content = node.get("content", [])
-            item_text = "".join(extract_text(child, list_depth) for child in content).strip()
-            checkbox = "[x]" if state == "DONE" else "[ ]"
-            task_indent = "  " * (list_depth - 1) if list_depth > 0 else ""
-            text = f"{task_indent}- {checkbox} {item_text}"
-
-        # Decision lists
-        elif node_type == "decisionList":
-            content = node.get("content", [])
-            decision_items: list[str] = []
-            for child in content:
-                if child.get("type") == "decisionItem":
-                    item_text = extract_text(child, list_depth + 1).strip()
-                    if item_text:
-                        decision_items.append(item_text)
-            if decision_items:
-                text = "\n".join(decision_items) + "\n\n"
-
-        elif node_type == "decisionItem":
-            attrs = node.get("attrs", {})
-            state = attrs.get("state", "DECIDED")
-            content = node.get("content", [])
-            item_text = "".join(extract_text(child, list_depth) for child in content).strip()
-            marker = "✓" if state == "DECIDED" else "◇"
-            decision_indent = "  " * (list_depth - 1) if list_depth > 0 else ""
-            text = f"{decision_indent}{marker} {item_text}"
-
-        # Status badges
-        elif node_type == "status":
-            attrs = node.get("attrs", {})
-            status_text = attrs.get("text", "")
-            if status_text:
-                text = f"[{status_text}]"
-
-        # Date nodes
-        elif node_type == "date":
-            attrs = node.get("attrs", {})
-            timestamp = attrs.get("timestamp", "")
-            if timestamp:
-                try:
-                    # Convert timestamp to readable date
-                    dt = datetime.fromtimestamp(int(timestamp) / 1000, tz=timezone.utc)
-                    text = dt.strftime("%Y-%m-%d")
-                except (ValueError, TypeError):
-                    text = timestamp
-
-        # Expand/collapsible sections
-        elif node_type in ["expand", "nestedExpand"]:
-            attrs = node.get("attrs", {})
-            title = attrs.get("title", "Details")
-            content = node.get("content", [])
-            expand_text = "".join(extract_text(child, list_depth) for child in content).strip()
-            if expand_text:
-                text = f"**{title}**\n{expand_text}\n\n"
-
-        # Layout containers - just extract content
-        elif node_type == "layoutSection":
-            content = node.get("content", [])
-            column_texts: list[str] = []
-            for child in content:
-                child_text = extract_text(child, list_depth).strip()
-                if child_text:
-                    column_texts.append(child_text)
-            if column_texts:
-                text = "\n\n".join(column_texts) + "\n\n"
-
-        elif node_type == "layoutColumn":
-            content = node.get("content", [])
-            text = "".join(extract_text(child, list_depth) for child in content)
-
-        # Placeholder nodes - just show placeholder text
-        elif node_type == "placeholder":
-            attrs = node.get("attrs", {})
-            text = attrs.get("text", "")
-
-        # Generic fallback for any node with content
-        elif "content" in node:
-            content = node.get("content", [])
-            text = "".join(extract_text(child, list_depth, strip_marks) for child in content)
-
-        return text
-
-    if "content" in adf_content:
-        for node in adf_content.get("content", []):
-            text = extract_text(node)
-            if text:
-                text_parts.append(text)
-    else:
-        text = extract_text(adf_content)
-        if text:
-            text_parts.append(text)
-
-    result = "".join(text_parts)
-    # Clean up excessive newlines (more than 2 consecutive)
-    result = re.sub(r'\n{3,}', '\n\n', result)
-    # Remove trailing whitespace from lines
-    result = "\n".join(line.rstrip() for line in result.split("\n"))
-    # Clean up spacing around lists - remove blank lines before lists
-    # This helps when paragraphs contain lists - ensure lists start without extra spacing
-    result = re.sub(r'\n\n+(\d+\. )', r'\n\1', result)  # Remove extra newlines before numbered list items
-    result = re.sub(r'\n\n+(- )', r'\n\1', result)  # Remove extra newlines before bullet list items
-    # Clean up spacing between list items (should be single newline)
-    result = re.sub(r'(\n\d+\. .+)\n\n+(\d+\. )', r'\1\n\2', result)  # Between numbered items
-    result = re.sub(r'(\n- .+)\n\n+(- )', r'\1\n\2', result)  # Between bullet items
-
-    return result.strip()
-
-async def adf_to_text_with_images(
-    adf_content: dict[str, Any],
-    media_fetcher: Callable[[str, str], Awaitable[Optional[str]]]
-) -> str:
-    """
-    Convert Atlassian Document Format (ADF) to Markdown with embedded images.
-
-    This async version fetches media content and embeds it as base64 data URIs.
-    Used for streaming content that needs to be indexed by multimodal models.
-
-    Args:
-        adf_content: The ADF document to convert
-        media_fetcher: Async callback that takes (media_id, alt_text) and returns
-                      base64 data URI string or None if fetch fails
-
-    Returns:
-        Markdown text with images embedded as base64 data URIs
-    """
-    if not adf_content or not isinstance(adf_content, dict):
-        return ""
-
-    # Extract all media nodes and fetch their content
-    media_nodes = extract_media_from_adf(adf_content)
-    media_cache: dict[str, str] = {}
-
-    # Fetch all media (sequentially to avoid rate limits)
-    for media_info in media_nodes:
-        media_id = media_info.get("id", "")
-        alt_text = media_info.get("alt", "")
-        if media_id:
-            try:
-                data_uri = await media_fetcher(media_id, alt_text)
-                if data_uri:
-                    media_cache[media_id] = data_uri
-            except Exception:
-                # If fetch fails, we'll just use the alt text
-                pass
-
-    # Reuse the main adf_to_text function with the media cache
-    return adf_to_text(adf_content, media_cache)
-
 
 # Jira wiki attachments: !filename.png|width=100! or [^filename.pdf]
 _JIRA_WIKI_ATTACHMENT_RE = re.compile(r"!([^!]+)!|\[\^([^\]]+)\]")
@@ -2835,9 +2293,7 @@ class JiraDataCenterConnector(BaseConnector):
             project_key = project.get("key")
 
             description = project.get("description")
-            if description and isinstance(description, dict):
-                description = adf_to_text(description)
-            elif not description:
+            if not description or not isinstance(description, str):
                 description = None
 
             record_group = RecordGroup(
@@ -3319,14 +2775,12 @@ class JiraDataCenterConnector(BaseConnector):
         fields = issue.get("fields", {})
         issue_summary = fields.get("summary") or f"Issue {issue_key}"
 
-        # Extract description (ADF on Cloud/modern DC; plain/wiki string on legacy DC)
+        # DC returns description as wiki/plain string (not ADF).
         description_raw = fields.get("description")
-        if description_raw and isinstance(description_raw, dict):
-            description_text = adf_to_text(description_raw)
-        elif not description_raw:
-            description_text = None
-        else:
+        if isinstance(description_raw, str) and description_raw.strip():
             description_text = description_raw
+        else:
+            description_text = None
 
         # Extract issue type and hierarchy information
         issue_type_obj = fields.get("issuetype", {}) or {}
@@ -3780,11 +3234,10 @@ class JiraDataCenterConnector(BaseConnector):
         Attachment assignment logic:
         - Attachments used in comments → assigned to that comment's children
         - Embedded images in description → excluded from children (already in content as base64)
-        - Embedded files in description → included in description children
         - Standalone attachments → included in description children
 
-        IMPORTANT: In Jira ADF, media.attrs.id is a UUID token, NOT the numeric attachment ID!
-        We use FILENAME matching to map ADF media nodes to attachments from fields.attachment[].
+        DC issue text is wiki/plain string; attachments are matched by filename markers
+        (``!file.png!`` / ``[^file.pdf]``) in description and comment bodies.
         """
         issue_id = issue_data.get("id", "")
         fields = issue_data.get("fields", {})
@@ -3793,7 +3246,7 @@ class JiraDataCenterConnector(BaseConnector):
         issue_name = (
             f"[{resolved_issue_key}] {issue_summary}" if resolved_issue_key else issue_summary
         )
-        issue_description_adf = fields.get("description")
+        issue_description = fields.get("description")
 
         if not weburl:
             raise ValueError("weburl is required when creating BlockGroup for issues")
@@ -3802,10 +3255,6 @@ class JiraDataCenterConnector(BaseConnector):
         blocks: list[Block] = []
         block_group_index = 0
 
-        # Prepare maps for resolving ADF media nodes to attachment IDs
-        # IMPORTANT: In Jira ADF, media.attrs.id is a UUID token, NOT the attachment ID!
-        # The attachment ID is numeric (e.g., "12345"). We must use FILENAME matching
-        # to map ADF media nodes to actual attachments.
         _attachment_mime_types = dict(attachment_mime_types or {})
         raw_attachments = fields.get("attachment") or []
         if not isinstance(raw_attachments, list):
@@ -3817,13 +3266,6 @@ class JiraDataCenterConnector(BaseConnector):
             raw_attachments,
         )
         media_fetcher = self._create_media_fetcher(issue_id)
-
-        def resolve_attachment_id(media_info: dict[str, Any]) -> Optional[str]:
-            """Resolve ADF media node to attachment ID via filename matching."""
-            media_filename = media_info.get("filename", "") or media_info.get("alt", "")
-            return resolve_jira_attachment_id_by_filename(
-                media_filename, filename_to_attachment_id
-            )
 
         def is_image_attachment(attachment_id: str) -> bool:
             """Check if attachment is an image based on MIME type."""
@@ -3837,17 +3279,11 @@ class JiraDataCenterConnector(BaseConnector):
 
         # Pre-scan comments to identify which attachments are used in comments
         comments_data = issue_data.get("comments", [])
-        # Handle both formats: direct list or nested structure
         if isinstance(comments_data, dict):
             comments_data = comments_data.get("comments", [])
         for comment in comments_data:
             comment_body_raw = comment.get("body")
-            if comment_body_raw and isinstance(comment_body_raw, dict):
-                for media_info in extract_media_from_adf(comment_body_raw):
-                    attachment_id = resolve_attachment_id(media_info)
-                    if attachment_id:
-                        comment_attachment_ids.add(attachment_id)
-            elif isinstance(comment_body_raw, str) and comment_body_raw.strip():
+            if isinstance(comment_body_raw, str) and comment_body_raw.strip():
                 for wiki_filename in extract_jira_wiki_attachment_filenames(comment_body_raw):
                     attachment_id = resolve_jira_attachment_id_by_filename(
                         wiki_filename, filename_to_attachment_id
@@ -3855,23 +3291,10 @@ class JiraDataCenterConnector(BaseConnector):
                     if attachment_id:
                         comment_attachment_ids.add(attachment_id)
 
-        # Extract media from description ADF - identify embedded images (to exclude from children)
-        if issue_description_adf and isinstance(issue_description_adf, dict):
-            for media_info in extract_media_from_adf(issue_description_adf):
-                attachment_id = resolve_attachment_id(media_info)
-                if attachment_id and is_image_attachment(attachment_id):
-                    description_image_ids.add(attachment_id)
-
-        # 1. Description BlockGroup (index=0)
-        # ADF on modern DC/Cloud; plain/wiki string on legacy Server/DC
-        if issue_description_adf and isinstance(issue_description_adf, dict):
-            description_content = await adf_to_text_with_images(
-                issue_description_adf,
-                media_fetcher,
-            )
-        elif isinstance(issue_description_adf, str) and issue_description_adf.strip():
+        # 1. Description BlockGroup (index=0) — wiki/plain string on DC
+        if isinstance(issue_description, str) and issue_description.strip():
             description_content, wiki_desc_images = await jira_storage_text_to_markdown_with_images(
-                issue_description_adf,
+                issue_description,
                 media_fetcher,
                 filename_to_attachment_id,
                 _attachment_mime_types,
@@ -3942,30 +3365,20 @@ class JiraDataCenterConnector(BaseConnector):
                 # Create BlockGroup objects for each comment in the thread
                 for comment in thread_comments:
                     comment_id = comment.get("id", "")
-                    comment_body_adf = comment.get("body")
+                    comment_body_raw = comment.get("body")
 
-                    # Skip comments without body
-                    if not comment_body_adf:
+                    if not comment_body_raw or not isinstance(comment_body_raw, str):
                         continue
 
-                    # Convert ADF comment body to markdown with base64 images
-                    if isinstance(comment_body_adf, dict):
-                        comment_body = await adf_to_text_with_images(
-                            comment_body_adf,
+                    comment_body, wiki_comment_images = (
+                        await jira_storage_text_to_markdown_with_images(
+                            comment_body_raw,
                             media_fetcher,
+                            filename_to_attachment_id,
+                            _attachment_mime_types,
                         )
-                    elif isinstance(comment_body_adf, str):
-                        comment_body, wiki_comment_images = (
-                            await jira_storage_text_to_markdown_with_images(
-                                comment_body_adf,
-                                media_fetcher,
-                                filename_to_attachment_id,
-                                _attachment_mime_types,
-                            )
-                        )
-                        comment_attachment_ids.update(wiki_comment_images)
-                    else:
-                        comment_body = str(comment_body_adf) if comment_body_adf else ""
+                    )
+                    comment_attachment_ids.update(wiki_comment_images)
 
                     if not comment_body:
                         continue
@@ -3980,34 +3393,23 @@ class JiraDataCenterConnector(BaseConnector):
                     author = comment.get("author", {})
                     author_name = author.get("displayName", "Unknown")
 
-                    # Get file attachments used in this comment (images excluded - already as base64)
                     comment_children: list[ChildRecord] = []
                     if attachment_children_map:
-                        if isinstance(comment_body_adf, dict):
-                            for media_info in extract_media_from_adf(comment_body_adf):
-                                attachment_id = resolve_attachment_id(media_info)
-                                if attachment_id and attachment_id in attachment_children_map:
-                                    comment_attachment_ids.add(attachment_id)
-                                    if not is_image_attachment(attachment_id):
-                                        comment_children.append(
-                                            attachment_children_map[attachment_id]
-                                        )
-                        elif isinstance(comment_body_adf, str):
-                            for wiki_filename in extract_jira_wiki_attachment_filenames(
-                                comment_body_adf
+                        for wiki_filename in extract_jira_wiki_attachment_filenames(
+                            comment_body_raw
+                        ):
+                            attachment_id = resolve_jira_attachment_id_by_filename(
+                                wiki_filename, filename_to_attachment_id
+                            )
+                            if (
+                                attachment_id
+                                and attachment_id in attachment_children_map
+                                and not is_image_attachment(attachment_id)
                             ):
-                                attachment_id = resolve_jira_attachment_id_by_filename(
-                                    wiki_filename, filename_to_attachment_id
+                                comment_attachment_ids.add(attachment_id)
+                                comment_children.append(
+                                    attachment_children_map[attachment_id]
                                 )
-                                if (
-                                    attachment_id
-                                    and attachment_id in attachment_children_map
-                                    and not is_image_attachment(attachment_id)
-                                ):
-                                    comment_attachment_ids.add(attachment_id)
-                                    comment_children.append(
-                                        attachment_children_map[attachment_id]
-                                    )
 
                     # Create BlockGroup with sub_type=COMMENT
                     comment_block_group = BlockGroup(
@@ -4354,8 +3756,7 @@ class JiraDataCenterConnector(BaseConnector):
             project = fields.get("project") or {}
             project_id = project.get("id") or ""
 
-        # Build attachment_id -> mimeType map for determining image vs file
-        # This is needed because Jira ADF media nodes always have type="file"
+        # Build attachment_id -> mimeType map (wiki inline images vs file attachments).
         attachment_mime_types: dict[str, str] = {}
         for attachment in attachments_data:
             att_id = attachment.get("id", "")
@@ -4458,17 +3859,8 @@ class JiraDataCenterConnector(BaseConnector):
         """
         Fetch attachment content and return as base64 data URI.
 
-        Jira inline media (images in description/comments) reference attachments
-        on the issue. Per Jira API, media.attrs.id in ADF IS the attachment ID,
-        so we first try direct lookup by media_id, then fall back to filename matching.
-
-        Args:
-            issue_id: The issue ID containing the attachment
-            media_id: The media ID from ADF (should match attachment ID)
-            media_alt: The alt text/filename for fallback matching
-
-        Returns:
-            Base64 data URI string like "data:image/png;base64,..." or None
+        Used for wiki inline images (``!filename.png!``) in description/comments.
+        Tries attachment id match first, then filename from the wiki marker.
         """
         try:
             # Get issue attachments (cached per issue to avoid repeated calls)

@@ -1,5 +1,5 @@
 """
-Broad unit tests for jira_data_center.connector: ADF helpers, parsing utilities,
+Broad unit tests for jira_data_center.connector: wiki parsing utilities,
 issue extraction, filter option error paths, and smaller public/async paths that
 were previously uncovered without standing up Jira DC.
 """
@@ -19,11 +19,8 @@ from app.models.blocks import ChildRecord, ChildType, GroupSubType
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
     _normalize_jira_dc_group_row,
-    adf_to_text,
-    adf_to_text_with_images,
     build_jira_attachment_filename_lookup,
     extract_jira_wiki_attachment_filenames,
-    extract_media_from_adf,
     jira_storage_text_to_markdown_with_images,
 )
 from app.models.entities import (
@@ -136,240 +133,6 @@ def _record_group_proj() -> RecordGroup:
         connector_id="conn-dc-cov",
         group_type=RecordGroupType.PROJECT,
     )
-
-
-# -----------------------------------------------------------------------------
-# ADF + media helpers
-# -----------------------------------------------------------------------------
-
-
-def _adf_doc(*nodes: object) -> dict[str, object]:
-    """ADF body shape processed by ``adf_to_text`` (top-level ``content`` list)."""
-    return {"content": list(nodes)}
-
-
-@pytest.mark.parametrize(
-    "adf, expected_substr",
-    [
-        pytest.param(None, "", id="adf_none"),
-        pytest.param([], "", id="adf_not_dict"),
-        (
-            _adf_doc(
-                {"type": "paragraph", "content": [{"type": "text", "text": "X", "marks": [{"type": "strong"}]}]}
-            ),
-            "**X**",
-        ),
-        (
-            _adf_doc(
-                {
-                    "type": "bulletList",
-                    "content": [
-                        {
-                            "type": "listItem",
-                            "content": [
-                                {
-                                    "type": "bulletList",
-                                    "content": [{"type": "listItem", "content": [{"type": "text", "text": "nested"}]}],
-                                },
-                                {"type": "paragraph", "content": [{"type": "text", "text": "root"}]},
-                            ],
-                        }
-                    ],
-                }
-            ),
-            "- nested",
-        ),
-        (
-            _adf_doc(
-                {
-                    "type": "numberedList",
-                    "content": [
-                        {
-                            "type": "listItem",
-                            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "One"}]}],
-                        }
-                    ],
-                }
-            ),
-            "1. One",
-        ),
-        (
-            _adf_doc(
-                {
-                    "type": "blockquote",
-                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "quoted"}]}],
-                }
-            ),
-            "> quoted",
-        ),
-        (
-            _adf_doc({"type": "paragraph", "content": [{"type": "bulletList", "content": []}]}),
-            "",
-        ),
-        (
-            _adf_doc({"type": "paragraph", "content": [{"type": "text", "text": "a"}]}),
-            "a",
-        ),
-        (
-            _adf_doc({"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "Hi"}]}),
-            "## Hi",
-        ),
-        (
-            _adf_doc(
-                {"type": "paragraph", "content": [{"type": "text", "text": "c", "marks": [{"type": "code"}]}]}
-            ),
-            "`c`",
-        ),
-        (
-            _adf_doc({"type": "paragraph", "content": [{"type": "text", "text": "x", "marks": [{"type": "em"}]}]}),
-            "*x*",
-        ),
-        (
-            _adf_doc(
-                {"type": "paragraph", "content": [{"type": "text", "text": "del", "marks": [{"type": "strike"}]}]}
-            ),
-            "~~del~~",
-        ),
-        (
-            _adf_doc(
-                {
-                    "type": "paragraph",
-                    "content": [
-                        {"type": "text", "text": "lnk", "marks": [{"type": "link", "attrs": {"href": "https://x"}}]}
-                    ],
-                }
-            ),
-            "[lnk](https://x)",
-        ),
-        (_adf_doc({"type": "codeBlock", "attrs": {"language": "py"}, "content": [{"type": "text", "text": "a=1"}]}), "```py"),
-        (_adf_doc({"type": "paragraph", "content": [{"type": "hardBreak"}, {"type": "text", "text": "after"}]}), "after"),
-        (
-            _adf_doc({"type": "paragraph", "content": [{"type": "rule"}, {"type": "text", "text": ""}]}),
-            "---",
-        ),
-        (_adf_doc({"type": "mention", "attrs": {"text": "bob"}}), "@bob"),
-        (_adf_doc({"type": "emoji", "attrs": {"shortName": "rocket"}}), ":rocket:"),
-        (
-            _adf_doc(
-                {"type": "paragraph", "content": [{"type": "inlineCard", "attrs": {"url": "https://u"}}]},
-            ),
-            "[https://u](https://u)",
-        ),
-        (
-            _adf_doc({"type": "paragraph", "content": [{"type": "status", "attrs": {"text": "DONE"}}]}),
-            "[DONE]",
-        ),
-        (
-            _adf_doc(
-                {"type": "paragraph", "content": [{"type": "date", "attrs": {"timestamp": "1700000000000"}}]},
-            ),
-            "2023-11-14",
-        ),
-        (
-            _adf_doc(
-                {"type": "paragraph", "content": [{"type": "date", "attrs": {"timestamp": "not-int"}}]},
-            ),
-            "not-int",
-        ),
-        (
-            _adf_doc({"type": "paragraph", "content": [{"type": "placeholder", "attrs": {"text": "PH"}}]}),
-            "PH",
-        ),
-        (
-            _adf_doc(
-                {
-                    "type": "paragraph",
-                    "content": [{"type": "unknownWithContent", "content": [{"type": "text", "text": "v"}]}],
-                },
-            ),
-            "v",
-        ),
-        (
-            _adf_doc(
-                {
-                    "type": "table",
-                    "content": [
-                        {
-                            "type": "tableRow",
-                            "content": [
-                                {
-                                    "type": "tableHeader",
-                                    "content": [{"type": "text", "text": "h", "marks": [{"type": "strong"}]}],
-                                },
-                                {
-                                    "type": "tableCell",
-                                    "content": [{"type": "text", "text": "cell|broken"}],
-                                },
-                            ],
-                        },
-                        {
-                            "type": "tableRow",
-                            "content": [{"type": "tableCell", "content": [{"type": "text", "text": "r"}]}],
-                        },
-                    ],
-                },
-            ),
-            "| h",
-        ),
-        pytest.param(
-            _adf_doc({"type": "paragraph", "content": [{"type": "media", "attrs": {"id": "m1", "alt": ""}}]}),
-            "![attachment]",
-            id="media_fallback_no_cache",
-        ),
-    ],
-)
-def test_adf_to_text_variants(adf, expected_substr: str):
-    md = adf_to_text(adf)
-    assert expected_substr in md if expected_substr else md == ""
-
-
-def test_adf_to_text_media_with_cache():
-    md = adf_to_text(
-        {"type": "paragraph", "content": [{"type": "media", "attrs": {"id": "mid", "alt": "pic"}}]},
-        {"mid": "data:image/png;base64,abcd"},
-    )
-    assert "data:image/png;base64,abcd" in md
-
-
-@pytest.mark.parametrize(
-    "root",
-    [
-        {"type": "mediaSingle", "content": [{"type": "media", "attrs": {"id": "", "alt": "", "__fileName": "a.pdf"}}]},
-        {"type": "paragraph", "content": [{"type": "media", "attrs": {"id": "", "alt": "", "__fileName": "ignored"}}]},
-    ],
-)
-def test_extract_media_prefers_filename_and_skips_blank_id(root: dict):
-    assert extract_media_from_adf({"content": [root]}) == []
-
-
-def test_extract_media_root_without_content_wrap():
-    adf = {"type": "paragraph", "content": [{"type": "text", "text": "n"}]}
-    assert extract_media_from_adf(adf) == []
-    nested = extract_media_from_adf(
-        {
-            "type": "doc",
-            "content": [
-                {"type": "paragraph", "content": [{"type": "media", "attrs": {"id": "zz", "__fileName": "f"}}]}
-            ],
-        }
-    )
-    assert nested[0]["filename"] == "f"
-
-
-@pytest.mark.asyncio
-async def test_adf_to_text_with_images_success_and_fetch_error():
-    adf = {
-        "content": [{"type": "paragraph", "content": [{"type": "media", "attrs": {"id": "mid", "alt": "alt"}}]}]
-    }
-    fetch_ok = AsyncMock(return_value="data:image/png;base64,xx")
-    ok_md = await adf_to_text_with_images(adf, fetch_ok)
-    assert "data:image/png;base64,xx" in ok_md
-
-    async def boom(_mid, _alt):
-        raise RuntimeError("x")
-
-    err_md = await adf_to_text_with_images(adf, boom)
-    assert "attachment" in err_md or "[" in err_md
 
 
 # -----------------------------------------------------------------------------
@@ -1346,30 +1109,6 @@ class TestExtractIssueDataBranches:
 # -----------------------------------------------------------------------------
 
 
-def test_extract_media_skips_non_dict_nodes_in_content():
-    adf = {"content": [{"type": "paragraph", "content": ["bad", {"type": "media", "attrs": {"id": "z", "alt": "a"}}]}]}
-    out = extract_media_from_adf(adf)
-    assert len(out) == 1 and out[0]["id"] == "z"
-
-
-def test_adf_to_text_underline_and_link_without_href():
-    ul = adf_to_text(
-        _adf_doc(
-            {"type": "paragraph", "content": [{"type": "text", "text": "u", "marks": [{"type": "underline"}]}]},
-        )
-    )
-    assert "*u*" in ul
-    plain = adf_to_text(
-        _adf_doc(
-            {
-                "type": "paragraph",
-                "content": [{"type": "text", "text": "x", "marks": [{"type": "link", "attrs": {}}]}],
-            },
-        )
-    )
-    assert plain.strip() == "x"
-
-
 @pytest.mark.asyncio
 async def test_sync_user_groups_batches_groups_and_maps_members():
     conn = _make_connector()
@@ -2206,173 +1945,8 @@ async def test_check_and_fetch_updated_attachment_missing_parent_and_unchanged()
 
 
 # -----------------------------------------------------------------------------
-# Coverage push: ADF branches, sync filters, groups/members list payloads, streaming
+# Coverage push: sync filters, groups/members list payloads, streaming
 # -----------------------------------------------------------------------------
-
-
-def test_extract_media_from_adf_rejects_non_dict_doc():
-    assert extract_media_from_adf(None) == []  # type: ignore[arg-type]
-    assert extract_media_from_adf([]) == []  # type: ignore[arg-type]
-
-
-def test_adf_to_text_single_root_node_without_top_level_content():
-    md = adf_to_text({"type": "text", "text": "solo"})
-    assert md == "solo"
-
-
-@pytest.mark.parametrize(
-    "fragment, needle",
-    [
-        (
-            {
-                "type": "bulletList",
-                "content": [{"type": "paragraph", "content": [{"type": "text", "text": "x"}]}],
-            },
-            "- x",
-        ),
-        (
-            {
-                "type": "unorderedList",
-                "content": [
-                    {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "u"}]}]},
-                ],
-            },
-            "- u",
-        ),
-        (
-            {
-                "type": "orderedList",
-                "content": [{"type": "paragraph", "content": [{"type": "text", "text": "orphan"}]}],
-            },
-            "1. orphan",
-        ),
-        (
-            {
-                "type": "taskList",
-                "content": [
-                    {"type": "taskItem", "attrs": {"state": "DONE"}, "content": [{"type": "text", "text": "done"}]},
-                ],
-            },
-            "[x]",
-        ),
-        (
-            {
-                "type": "taskList",
-                "content": [
-                    {"type": "taskItem", "attrs": {"state": "TODO"}, "content": [{"type": "text", "text": "todo"}]},
-                ],
-            },
-            "[ ]",
-        ),
-        (
-            {
-                "type": "decisionList",
-                "content": [{"type": "decisionItem", "attrs": {"state": "DECIDED"}, "content": [{"type": "text", "text": "d"}]}],
-            },
-            "✓",
-        ),
-        (
-            {
-                "type": "decisionList",
-                "content": [{"type": "decisionItem", "attrs": {"state": "OPEN"}, "content": [{"type": "text", "text": "d"}]}],
-            },
-            "◇",
-        ),
-        (
-            {"type": "panel", "attrs": {"panelType": "note"}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "p"}]}]},
-            "NOTE",
-        ),
-        (
-            {"type": "inlineCard", "attrs": {"url": "https://card.example"}},
-            "https://card.example",
-        ),
-        (
-            {"type": "inlineCode", "text": "ic"},
-            "`ic`",
-        ),
-        (
-            {"type": "listItem", "content": [{"type": "text", "text": "li"}]},
-            "li",
-        ),
-        (
-            {
-                "type": "blockquote",
-                "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}, {"type": "hardBreak"}, {"type": "text", "text": "b"}]}],
-            },
-            "> a",
-        ),
-        (
-            {"type": "heading", "attrs": {"level": 3}, "content": [{"type": "text", "text": "h"}]},
-            "### h",
-        ),
-        (
-            {"type": "expand", "attrs": {"title": "More"}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "in"}]}]},
-            "**More**",
-        ),
-        (
-            {
-                "type": "layoutSection",
-                "content": [
-                    {"type": "layoutColumn", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "L"}]}]},
-                    {"type": "layoutColumn", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "R"}]}]},
-                ],
-            },
-            "L",
-        ),
-        (
-            {"type": "mediaSingle", "content": [{"type": "media", "attrs": {"id": "m1", "alt": "pic"}}]},
-            "![pic]",
-        ),
-        (
-            {"type": "unknownWithContent", "content": [{"type": "text", "text": "fall"}]},
-            "fall",
-        ),
-        (
-            {"type": "paragraph", "content": [{"type": "date", "attrs": {"timestamp": "not-int"}}]},
-            "not-int",
-        ),
-        (
-            {"type": "paragraph", "content": [{"type": "emoji", "attrs": {"shortName": "", "text": "E"}}]},
-            "E",
-        ),
-        (
-            {"type": "paragraph", "content": [{"type": "mention", "attrs": {"id": "mid"}}]},
-            "@mid",
-        ),
-    ],
-)
-def test_adf_to_text_more_node_types(fragment: dict, needle: str):
-    assert needle in adf_to_text(_adf_doc(fragment))
-
-
-def test_adf_to_text_media_in_list_depth_uses_cache_shape():
-    adf = {
-        "content": [
-            {
-                "type": "bulletList",
-                "content": [
-                    {
-                        "type": "listItem",
-                        "content": [{"type": "media", "attrs": {"id": "z9", "alt": "a"}}],
-                    },
-                ],
-            },
-        ]
-    }
-    md = adf_to_text(adf, {"z9": "data:image/png;base64,xx"})
-    assert "data:image/png;base64,xx" in md
-
-
-@pytest.mark.asyncio
-async def test_adf_to_text_with_images_non_dict_and_fetch_exception():
-    assert await adf_to_text_with_images(None, AsyncMock()) == ""  # type: ignore[arg-type]
-
-    async def boom(_a, _b):
-        raise RuntimeError("fetch")
-
-    adf = {"content": [{"type": "paragraph", "content": [{"type": "media", "attrs": {"id": "x", "alt": ""}}]}]}
-    md = await adf_to_text_with_images(adf, boom)
-    assert "attachment" in md or "!" in md
 
 
 @pytest.mark.asyncio
@@ -2650,7 +2224,7 @@ async def test_sync_project_lead_roles_warns_when_lead_has_no_account_id():
 
 
 @pytest.mark.asyncio
-async def test_fetch_projects_adf_description_converted():
+async def test_fetch_projects_non_string_description_ignored():
     conn = _make_connector()
     conn.data_source = MagicMock()
     row = _sample_project_row(
@@ -2666,7 +2240,8 @@ async def test_fetch_projects_adf_description_converted():
                 return_value=[Permission(entity_type=EntityType.GROUP, external_id="g", type=PermissionType.READ)],
             ) as fp:
                 groups, raw = await conn._fetch_projects()
-    assert raw[0]["description"] == "adf" or "adf" in str(raw[0]["description"])
+    assert groups[0][0].description is None
+    assert isinstance(raw[0]["description"], dict)
     fp.assert_awaited()
     assert groups and groups[0][1]
 
@@ -3185,56 +2760,6 @@ async def test_get_filter_options_project_keys_delegates():
     assert out is expected
 
 
-def test_adf_to_text_table_heading_strip_marks_and_list_in_paragraph():
-    md = adf_to_text(
-        _adf_doc(
-            {
-                "type": "table",
-                "content": [
-                    {
-                        "type": "tableRow",
-                        "content": [
-                            {
-                                "type": "tableHeader",
-                                "content": [{"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "H"}]}],
-                            },
-                        ],
-                    },
-                ],
-            },
-        )
-    )
-    assert "| H" in md
-    md2 = adf_to_text(
-        _adf_doc(
-            {
-                "type": "paragraph",
-                "content": [
-                    {"type": "bulletList", "content": [{"type": "listItem", "content": [{"type": "text", "text": "x"}]}]},
-                ],
-            },
-        )
-    )
-    assert "- x" in md2
-
-
-def test_adf_to_text_media_in_nested_list_without_cache():
-    adf = {
-        "content": [
-            {
-                "type": "bulletList",
-                "content": [
-                    {
-                        "type": "listItem",
-                        "content": [{"type": "media", "attrs": {"id": "m", "alt": "pic"}}],
-                    },
-                ],
-            },
-        ]
-    }
-    assert "![pic]" in adf_to_text(adf)
-
-
 @pytest.mark.asyncio
 async def test_fetch_users_paginates_two_pages():
     conn = _make_connector()
@@ -3722,15 +3247,7 @@ async def test_parse_issue_to_blocks_rich_comments_and_attachments():
         "key": "KF",
         "fields": {
             "summary": "Title",
-            "description": {
-                "type": "doc",
-                "content": [
-                    {
-                        "type": "paragraph",
-                        "content": [{"type": "media", "attrs": {"id": "tok", "alt": "shot.png", "__fileName": "shot.png"}}],
-                    },
-                ],
-            },
+            "description": "Screenshot: !shot.png!",
         },
         "comments": {
             "comments": [
@@ -3739,35 +3256,20 @@ async def test_parse_issue_to_blocks_rich_comments_and_attachments():
                     "id": "c1",
                     "author": {"displayName": "Ann"},
                     "created": "2024-01-01T00:00:00.000+0000",
-                    "body": {
-                        "type": "doc",
-                        "content": [
-                            {
-                                "type": "paragraph",
-                                "content": [{"type": "media", "attrs": {"id": "tok2", "alt": "doc.pdf", "__fileName": "doc.pdf"}}],
-                            },
-                        ],
-                    },
+                    "body": "[^doc.pdf]See attached.",
                 },
             ],
         },
     }
 
-    async def fake_adf(adf, fetcher):
-        return "comment-md"
-
-    with patch(
-        "app.connectors.sources.atlassian.jira_data_center.connector.adf_to_text_with_images",
-        new=fake_adf,
-    ):
-        with patch.object(conn, "_create_media_fetcher", return_value=AsyncMock(return_value=None)):
-            box = await conn._parse_issue_to_blocks(
-                issue_data,
-                issue_key="KF",
-                weburl="https://jira.example/browse/KF",
-                attachment_children_map=att_map,
-                attachment_mime_types=att_mimes,
-            )
+    with patch.object(conn, "_create_media_fetcher", return_value=AsyncMock(return_value=None)):
+        box = await conn._parse_issue_to_blocks(
+            issue_data,
+            issue_key="KF",
+            weburl="https://jira.example/browse/KF",
+            attachment_children_map=att_map,
+            attachment_mime_types=att_mimes,
+        )
     subtypes = {bg.sub_type for bg in box.block_groups}
     assert GroupSubType.COMMENT_THREAD in subtypes
     comment_bgs = [bg for bg in box.block_groups if bg.sub_type == GroupSubType.COMMENT]
@@ -3847,6 +3349,90 @@ async def test_parse_issue_to_blocks_bracket_attachment_in_comment():
 
 
 @pytest.mark.asyncio
+async def test_parse_issue_to_blocks_mixed_wiki_images_and_file_children():
+    """Description image, comment image, comment PDF, and standalone PDF route correctly."""
+    conn = _make_connector()
+    conn.site_url = "https://jira.example"
+    child_desc_img = ChildRecord(
+        child_type=ChildType.RECORD, child_id="did", child_name="desc-screenshot.png"
+    )
+    child_comment_img = ChildRecord(
+        child_type=ChildType.RECORD, child_id="cid", child_name="comment-shot.png"
+    )
+    child_comment_pdf = ChildRecord(
+        child_type=ChildType.RECORD, child_id="cpid", child_name="report.pdf"
+    )
+    child_standalone_pdf = ChildRecord(
+        child_type=ChildType.RECORD, child_id="spid", child_name="spec.pdf"
+    )
+    att_map = {
+        "1": child_desc_img,
+        "2": child_comment_img,
+        "3": child_comment_pdf,
+        "4": child_standalone_pdf,
+    }
+    att_mimes = {
+        "1": "image/png",
+        "2": "image/png",
+        "3": "application/pdf",
+        "4": "application/pdf",
+    }
+    issue_data = {
+        "id": "100",
+        "key": "MIX-1",
+        "fields": {
+            "summary": "Mixed attachments",
+            "description": "Overview\n!desc-screenshot.png!",
+            "attachment": [
+                {"id": "1", "filename": "desc-screenshot.png", "mimeType": "image/png"},
+                {"id": "2", "filename": "comment-shot.png", "mimeType": "image/png"},
+                {"id": "3", "filename": "report.pdf", "mimeType": "application/pdf"},
+                {"id": "4", "filename": "spec.pdf", "mimeType": "application/pdf"},
+            ],
+        },
+        "comments": {
+            "comments": [
+                {
+                    "id": "c1",
+                    "author": {"displayName": "Dev"},
+                    "created": "2024-01-01T00:00:00.000+0000",
+                    "body": "See !comment-shot.png! and [^report.pdf]",
+                },
+            ],
+        },
+    }
+
+    async def fetcher(att_id: str, filename: str) -> str:
+        return f"data:image/png;base64,IMG_{att_id}"
+
+    with patch.object(conn, "_create_media_fetcher", return_value=fetcher):
+        box = await conn._parse_issue_to_blocks(
+            issue_data,
+            issue_key="MIX-1",
+            weburl="https://jira.example/browse/MIX-1",
+            attachment_children_map=att_map,
+            attachment_mime_types=att_mimes,
+        )
+
+    desc_bg = box.block_groups[0]
+    assert "data:image/png;base64,IMG_1" in desc_bg.data
+    assert "!desc-screenshot.png!" not in desc_bg.data
+    assert desc_bg.children_records
+    assert len(desc_bg.children_records) == 1
+    assert desc_bg.children_records[0].child_name == "spec.pdf"
+
+    comment_bgs = [bg for bg in box.block_groups if bg.sub_type == GroupSubType.COMMENT]
+    assert len(comment_bgs) == 1
+    comment_bg = comment_bgs[0]
+    assert "data:image/png;base64,IMG_2" in comment_bg.data
+    assert "!comment-shot.png!" not in comment_bg.data
+    assert "[^report.pdf]" in comment_bg.data
+    assert comment_bg.children_records
+    assert len(comment_bg.children_records) == 1
+    assert comment_bg.children_records[0].child_name == "report.pdf"
+
+
+@pytest.mark.asyncio
 async def test_parse_issue_to_blocks_description_child_for_standalone_pdf():
     conn = _make_connector()
     conn.site_url = "https://jira.example"
@@ -3858,10 +3444,7 @@ async def test_parse_issue_to_blocks_description_child_for_standalone_pdf():
         "key": "K",
         "fields": {
             "summary": "T",
-            "description": {
-                "type": "doc",
-                "content": [{"type": "paragraph", "content": [{"type": "text", "text": "see file"}]}],
-            },
+            "description": "see file",
         },
         "comments": [],
     }
