@@ -7,6 +7,7 @@ Authentication: API token (personal access token or HTTP basic with API token).
 """
 
 import uuid
+import re
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from logging import Logger
@@ -135,7 +136,7 @@ CONTENT_V1_SINGLE_EXPAND = (
 # ------------------------------------------------------------------------------
 USE_DATA_CENTER_APIS = True
 CONTENT_V1_COMMENT_EXPAND = (
-    "body.storage,version,history.lastUpdated,extensions.inlineProperties"
+    "body.storage,body.export_view,version,history.lastUpdated,extensions.inlineProperties"
 )
 CONTENT_V1_ATTACHMENT_EXPAND = "version,history,metadata,extensions"
 
@@ -1090,6 +1091,9 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 response_data = response.json()
                 items_data = response_data.get("results", [])
 
+                # Extract api_base_url from response root for URL construction
+                api_base_url = (response_data.get("_links") or {}).get("base")
+
                 if not items_data:
                     break
 
@@ -1125,7 +1129,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
                         # Transform to WebpageRecord with update tracking
                         webpage_record_update = await self._process_webpage_with_update(
-                            item_data, record_type, existing_record, permissions
+                            item_data, record_type, existing_record, permissions, api_base_url
                         )
 
                         if not webpage_record_update.record:
@@ -1155,33 +1159,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         # Get parent_node_id for dependent nodes (comments and attachments)
                         parent_node_id = webpage_record.id
 
-                        # Process comments
-                        child_types = item_data.get("childTypes", {})
-                        comment_info = child_types.get("comment", {})
-                        has_comments = comment_info.get("value", False)
-
-                        if has_comments:
-                            self.logger.debug(f"{content_type.capitalize()} {item_title} has comments, fetching...")
-
-                            # Fetch comments (footer and inline)
-                            for comment_type in ["footer", "inline"]:
-                                comments = await self._fetch_comments_recursive(
-                                    item_id,
-                                    item_title,
-                                    comment_type,
-                                    permissions,
-                                    space_id,
-                                    content_type,
-                                    parent_node_id=parent_node_id
-                                )
-                                # Set indexing status for comments if disabled
-                                for comment_record, comment_permissions in comments:
-                                    if not content_comments_indexing_enabled:
-                                        comment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                                records_with_permissions.extend(comments)
-                                total_comments_synced += len(comments)
-
-                        # Process attachments
+                        # Process attachments first (keep list in memory for comment embedded attachment resolution)
                         children = item_data.get("children", {})
                         attachment_data = children.get("attachment", {})
                         inline_attachments = attachment_data.get("results", [])
@@ -1195,15 +1173,18 @@ class ConfluenceDataCenterConnector(BaseConnector):
                                 f"({len(inline_attachments)}/{attachment_size}), fetching separately"
                             )
                             # Fetch all attachments via separate pagination
-                            attachments = await self._fetch_all_attachments(item_id)
+                            page_attachments, fetched_api_base_url = await self._fetch_all_attachments(item_id)
+                            # Use fetched base URL if we don't already have one
+                            if not api_base_url and fetched_api_base_url:
+                                api_base_url = fetched_api_base_url
                         else:
                             # Use inline results if complete
-                            attachments = inline_attachments
+                            page_attachments = inline_attachments
 
-                        if attachments:
-                            self.logger.debug(f"Found {len(attachments)} attachments for {content_type} {item_title}")
+                        if page_attachments:
+                            self.logger.debug(f"Found {len(page_attachments)} attachments for {content_type} {item_title}")
 
-                            for attachment in attachments:
+                            for attachment in page_attachments:
                                 try:
                                     attachment_id = attachment.get("id")
                                     if not attachment_id:
@@ -1220,7 +1201,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
                                         item_id,
                                         space_id,
                                         existing_record=existing_attachment,
-                                        parent_node_id=parent_node_id
+                                        parent_node_id=parent_node_id,
+                                        api_base_url=api_base_url
                                     )
 
                                     if attachment_record:
@@ -1235,6 +1217,29 @@ class ConfluenceDataCenterConnector(BaseConnector):
                                 except Exception as att_error:
                                     self.logger.error(f"❌ Failed to process attachment: {att_error}")
                                     continue
+
+                        # Process comments (always fetch; DC /content/search omits childTypes.comment even when present)
+                        self.logger.debug(f"Fetching comments for {content_type} {item_title}...")
+
+                        # Fetch comments (footer and inline) with page attachments for embedded resolution
+                        for comment_type in ["footer", "inline"]:
+                            comments = await self._fetch_comments_recursive(
+                                item_id,
+                                item_title,
+                                comment_type,
+                                permissions,
+                                space_id,
+                                content_type,
+                                parent_node_id=parent_node_id,
+                                page_attachments=page_attachments,
+                                attachments_indexing_enabled=content_attachments_indexing_enabled
+                            )
+                            # Comments already have indexing status set; just count them
+                            # (Note: comments now includes attachment records too)
+                            comment_count = sum(1 for rec, _ in comments if hasattr(rec, 'record_type') and 
+                                              rec.record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT])
+                            records_with_permissions.extend(comments)
+                            total_comments_synced += comment_count
 
                     except Exception as item_error:
                         self.logger.error(f"❌ Failed to process {content_type} {item_data.get('title')}: {item_error}")
@@ -1607,6 +1612,9 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 response_data = response.json()
                 content_items = response_data.get("results", [])
 
+                # Extract api_base_url from response root for URL construction
+                api_base_url = (response_data.get("_links") or {}).get("base")
+
                 if not content_items:
                     self.logger.debug(f"No content found for titles batch {i // batch_size + 1}")
                     continue
@@ -1649,7 +1657,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         self.logger.debug(f"Updating permissions for {item_type}: {item_title} ({item_id})")
 
                         # Transform to WebpageRecord
-                        webpage_record = self._transform_to_webpage_record(item_data, record_type)
+                        webpage_record = self._transform_to_webpage_record(item_data, record_type, api_base_url=api_base_url)
                         if not webpage_record:
                             continue
 
@@ -1855,7 +1863,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
             )
             return []
 
-    async def _fetch_all_attachments(self, content_id: str) -> list[dict[str, Any]]:
+    async def _fetch_all_attachments(self, content_id: str) -> tuple[list[dict[str, Any]], Optional[str]]:
         """
         Fetch all attachments for a content item using separate pagination.
 
@@ -1866,9 +1874,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
             content_id: The page or blogpost ID
 
         Returns:
-            List of attachment data dictionaries
+            Tuple of (list of attachment data dictionaries, api_base_url from response)
         """
         all_attachments = []
+        api_base_url = None
         batch_size = 100
         start = 0
 
@@ -1890,6 +1899,11 @@ class ConfluenceDataCenterConnector(BaseConnector):
                     break
 
                 response_data = response.json()
+                
+                # Capture api_base_url from first response
+                if api_base_url is None:
+                    api_base_url = (response_data.get("_links") or {}).get("base")
+                
                 attachments = response_data.get("results", [])
 
                 if not attachments:
@@ -1903,10 +1917,61 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
                 start += batch_size
 
-            return all_attachments
+            return all_attachments, api_base_url
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch attachments for content {content_id}: {e}")
+            return [], None
+
+    async def _fetch_attachment_file_records(
+        self,
+        comment_id: str,
+        comment_record_type: RecordType,
+        comment_node_id: str,
+        parent_space_id: Optional[str],
+        attachments_indexing_enabled: bool,
+        permissions: list[Permission]
+    ) -> list[tuple[FileRecord, list[Permission]]]:
+        """
+        Fetch and transform attachment file records for a comment.
+
+        Args:
+            comment_id: External record ID of the comment
+            comment_record_type: RecordType.COMMENT or RecordType.INLINE_COMMENT
+            comment_node_id: Internal record ID of the comment
+            parent_space_id: Space ID from parent page
+            attachments_indexing_enabled: Whether attachments should be indexed
+            permissions: Permissions inherited from parent page
+
+        Returns:
+            List of (FileRecord, permissions) tuples
+        """
+        try:
+            attachments, attachment_api_base_url = await self._fetch_all_attachments(comment_id)
+            if not attachments:
+                return []
+
+            records_with_permissions = []
+            for attachment_data in attachments:
+                file_record = self._transform_to_attachment_file_record(
+                    attachment_data=attachment_data,
+                    parent_external_record_id=comment_id,
+                    parent_external_record_group_id=parent_space_id,
+                    parent_node_id=comment_node_id,
+                    parent_record_type=comment_record_type,
+                    api_base_url=attachment_api_base_url
+                )
+                if file_record:
+                    # Apply indexing filter
+                    if not attachments_indexing_enabled:
+                        file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+                    # Inherit page permissions
+                    records_with_permissions.append((file_record, permissions))
+
+            return records_with_permissions
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch attachment file records for comment {comment_id}: {e}")
             return []
 
     async def _fetch_comments_recursive(
@@ -1917,12 +1982,14 @@ class ConfluenceDataCenterConnector(BaseConnector):
         page_permissions: list[Permission],
         parent_space_id: Optional[str],
         parent_type: str = "page",
-        parent_node_id: Optional[str] = None
-    ) -> list[tuple[CommentRecord, list[Permission]]]:
+        parent_node_id: Optional[str] = None,
+        page_attachments: Optional[list[dict[str, Any]]] = None,
+        attachments_indexing_enabled: bool = True
+    ) -> list[tuple[Record, list[Permission]]]:
         """
         Recursively fetch all comments (footer or inline) for a page or blogpost.
 
-        Fetches top-level comments and all nested replies in a flat list.
+        Fetches top-level comments and all nested replies in a flat list, plus their attachments.
         Each comment inherits permissions from the parent.
 
         Args:
@@ -1933,9 +2000,11 @@ class ConfluenceDataCenterConnector(BaseConnector):
             parent_space_id: Space ID for external_record_group_id
             parent_type: "page" or "blogpost" (determines which API to call)
             parent_node_id: Internal record ID of parent page
+            page_attachments: List of page attachment data for resolving embedded filenames
+            attachments_indexing_enabled: Whether comment attachments should be indexed
 
         Returns:
-            List of tuples (CommentRecord, permissions list)
+            List of tuples (Record, permissions list) for comments and their attachments
         """
         try:
             all_comments = []
@@ -2003,6 +2072,74 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         if comment_record:
                             all_comments.append((comment_record, page_permissions))
 
+                            # Sync comment attachments (explicit child attachments)
+                            comment_record_type = RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT
+                            comment_file_records = await self._fetch_attachment_file_records(
+                                comment_id=comment_id_str,
+                                comment_record_type=comment_record_type,
+                                comment_node_id=comment_record.id,
+                                parent_space_id=parent_space_id,
+                                attachments_indexing_enabled=attachments_indexing_enabled,
+                                permissions=page_permissions
+                            )
+                            all_comments.extend(comment_file_records)
+
+                            # Extract and resolve embedded attachments from comment body.storage
+                            body = comment_data.get("body", {})
+                            storage = body.get("storage", {})
+                            body_storage_html = storage.get("value", "")
+                            
+                            if body_storage_html:
+                                embedded_filenames = self._extract_storage_attachment_filenames(body_storage_html)
+                                
+                                if embedded_filenames:
+                                    # Build combined attachment list for resolution (comment attachments + page attachments)
+                                    comment_attachments_data, comment_api_base_url = await self._fetch_all_attachments(comment_id_str)
+                                    # Use base_url from parent comment list response if comment attachments don't have one
+                                    effective_base_url = comment_api_base_url or base_url
+                                    combined_attachments = comment_attachments_data + (page_attachments or [])
+                                    
+                                    # Track already-synced attachment IDs to avoid duplicates
+                                    synced_attachment_ids = {
+                                        rec[0].external_record_id 
+                                        for rec in comment_file_records
+                                    }
+                                    
+                                    # Resolve each embedded filename and create FileRecord if not already synced
+                                    for filename in embedded_filenames:
+                                        attachment_id = self._resolve_attachment_by_filename(filename, combined_attachments)
+                                        
+                                        if attachment_id and attachment_id not in synced_attachment_ids:
+                                            # Find the attachment data
+                                            attachment_data = next(
+                                                (att for att in combined_attachments if att.get("id") == attachment_id),
+                                                None
+                                            )
+                                            
+                                            if attachment_data:
+                                                # Check if attachment already exists in DB (e.g., page attachment)
+                                                existing_attachment = await self.data_entities_processor.get_record_by_external_id(
+                                                    connector_id=self.connector_id,
+                                                    external_record_id=attachment_id
+                                                )
+                                                
+                                                if not existing_attachment:
+                                                    # Create FileRecord for embedded attachment
+                                                    file_record = self._transform_to_attachment_file_record(
+                                                        attachment_data=attachment_data,
+                                                        parent_external_record_id=comment_id_str,
+                                                        parent_external_record_group_id=parent_space_id,
+                                                        parent_node_id=comment_record.id,
+                                                        parent_record_type=comment_record_type,
+                                                        api_base_url=effective_base_url
+                                                    )
+                                                    
+                                                    if file_record:
+                                                        if not attachments_indexing_enabled:
+                                                            file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+                                                        all_comments.append((file_record, page_permissions))
+                                                        synced_attachment_ids.add(attachment_id)
+
                         children = await self._fetch_comment_children_recursive(
                             comment_id_str,
                             comment_type,
@@ -2010,6 +2147,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
                             parent_space_id,
                             page_permissions,
                             parent_node_id=parent_node_id,
+                            page_attachments=page_attachments,
+                            attachments_indexing_enabled=attachments_indexing_enabled
                         )
                         all_comments.extend(children)
 
@@ -2043,8 +2182,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
         page_id: str,
         parent_space_id: Optional[str],
         page_permissions: list[Permission],
-        parent_node_id: Optional[str] = None
-    ) -> list[tuple[CommentRecord, list[Permission]]]:
+        parent_node_id: Optional[str] = None,
+        page_attachments: Optional[list[dict[str, Any]]] = None,
+        attachments_indexing_enabled: bool = True
+    ) -> list[tuple[Record, list[Permission]]]:
         """
         Recursively fetch all children (replies) of a comment.
 
@@ -2055,9 +2196,11 @@ class ConfluenceDataCenterConnector(BaseConnector):
             parent_space_id: Space ID for external_record_group_id
             page_permissions: Permissions inherited from parent page
             parent_node_id: Internal record ID of parent page
+            page_attachments: List of page attachment data for resolving embedded filenames
+            attachments_indexing_enabled: Whether comment attachments should be indexed
 
         Returns:
-            List of tuples (CommentRecord, permissions list)
+            List of tuples (Record, permissions list) for comments and their attachments
         """
         try:
             all_children = []
@@ -2112,6 +2255,74 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         if child_record:
                             all_children.append((child_record, page_permissions))
 
+                            # Sync comment attachments (explicit child attachments)
+                            child_record_type = RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT
+                            child_file_records = await self._fetch_attachment_file_records(
+                                comment_id=child_id_str,
+                                comment_record_type=child_record_type,
+                                comment_node_id=child_record.id,
+                                parent_space_id=parent_space_id,
+                                attachments_indexing_enabled=attachments_indexing_enabled,
+                                permissions=page_permissions
+                            )
+                            all_children.extend(child_file_records)
+
+                            # Extract and resolve embedded attachments from comment body.storage
+                            body = child_data.get("body", {})
+                            storage = body.get("storage", {})
+                            body_storage_html = storage.get("value", "")
+                            
+                            if body_storage_html:
+                                embedded_filenames = self._extract_storage_attachment_filenames(body_storage_html)
+                                
+                                if embedded_filenames:
+                                    # Build combined attachment list for resolution
+                                    child_attachments_data, child_api_base_url = await self._fetch_all_attachments(child_id_str)
+                                    # Use base_url from parent comment list response if child attachments don't have one
+                                    effective_base_url = child_api_base_url or base_url
+                                    combined_attachments = child_attachments_data + (page_attachments or [])
+                                    
+                                    # Track already-synced attachment IDs
+                                    synced_attachment_ids = {
+                                        rec[0].external_record_id 
+                                        for rec in child_file_records
+                                    }
+                                    
+                                    # Resolve each embedded filename and create FileRecord if not already synced
+                                    for filename in embedded_filenames:
+                                        attachment_id = self._resolve_attachment_by_filename(filename, combined_attachments)
+                                        
+                                        if attachment_id and attachment_id not in synced_attachment_ids:
+                                            # Find the attachment data
+                                            attachment_data = next(
+                                                (att for att in combined_attachments if att.get("id") == attachment_id),
+                                                None
+                                            )
+                                            
+                                            if attachment_data:
+                                                # Check if attachment already exists in DB
+                                                existing_attachment = await self.data_entities_processor.get_record_by_external_id(
+                                                    connector_id=self.connector_id,
+                                                    external_record_id=attachment_id
+                                                )
+                                                
+                                                if not existing_attachment:
+                                                    # Create FileRecord for embedded attachment
+                                                    file_record = self._transform_to_attachment_file_record(
+                                                        attachment_data=attachment_data,
+                                                        parent_external_record_id=child_id_str,
+                                                        parent_external_record_group_id=parent_space_id,
+                                                        parent_node_id=child_record.id,
+                                                        parent_record_type=child_record_type,
+                                                        api_base_url=effective_base_url
+                                                    )
+                                                    
+                                                    if file_record:
+                                                        if not attachments_indexing_enabled:
+                                                            file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+                                                        all_children.append((file_record, page_permissions))
+                                                        synced_attachment_ids.add(attachment_id)
+
                         grandchildren = await self._fetch_comment_children_recursive(
                             child_id_str,
                             comment_type,
@@ -2119,6 +2330,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
                             parent_space_id,
                             page_permissions,
                             parent_node_id=parent_node_id,
+                            page_attachments=page_attachments,
+                            attachments_indexing_enabled=attachments_indexing_enabled
                         )
                         all_children.extend(grandchildren)
 
@@ -2282,9 +2495,15 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
         # Fall back to v1 format (extract from _links.self)
         self_link = links.get("self")
-        if self_link and "://" in self_link and "/wiki/" in self_link:
-            extracted_base_url = self_link.split("/wiki/")[0] + "/wiki"
-            return f"{extracted_base_url}{web_path}"
+        if self_link and "://" in self_link:
+            # Cloud pattern: /wiki/
+            if "/wiki/" in self_link:
+                extracted_base_url = self_link.split("/wiki/")[0] + "/wiki"
+                return f"{extracted_base_url}{web_path}"
+            # DC pattern: /rest/api/
+            if "/rest/api/" in self_link:
+                extracted_base_url = self_link.split("/rest/api/")[0]
+                return f"{extracted_base_url}{web_path}"
 
         return None
 
@@ -2299,7 +2518,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
         by = version.get("by") or {}
         if by and not version.get("authorId"):
             version["authorId"] = (
-                by.get("accountId") or by.get("username") or by.get("key") or ""
+                by.get("accountId") or by.get("username") or by.get("userKey") or by.get("key") or ""
             )
         if version.get("when") and not version.get("createdAt"):
             version["createdAt"] = version["when"]
@@ -2378,6 +2597,177 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 return tuple(parts)
 
         return ()
+
+    @staticmethod
+    def _extract_storage_attachment_filenames(body_storage_html: str) -> list[str]:
+        """
+        Extract attachment filenames from Confluence storage HTML.
+        
+        Parses ri:attachment tags with ri:filename attributes from comment/page body.
+        Example: <ri:attachment ri:filename="Screenshot 2025-10-09 104312.PNG" />
+        
+        Args:
+            body_storage_html: HTML content from body.storage.value
+            
+        Returns:
+            Deduplicated list of filenames found in the HTML
+        """
+        if not body_storage_html:
+            return []
+        
+        # Match ri:filename="..." in ri:attachment tags
+        # Handles both self-closing tags and nested within ac:image
+        pattern = r'ri:filename="([^"]+)"'
+        matches = re.findall(pattern, body_storage_html)
+        
+        # Dedupe while preserving order
+        seen = set()
+        filenames = []
+        for filename in matches:
+            if filename not in seen:
+                seen.add(filename)
+                filenames.append(filename)
+        
+        return filenames
+
+    @staticmethod
+    def _resolve_attachment_by_filename(
+        filename: str,
+        attachments: list[dict[str, Any]]
+    ) -> Optional[str]:
+        """
+        Resolve attachment ID by filename from an attachment list.
+        
+        Matches attachment["title"] case-insensitively (same logic as Cloud connector).
+        
+        Args:
+            filename: Filename to search for (from ri:filename)
+            attachments: List of attachment data dictionaries with "id" and "title" keys
+            
+        Returns:
+            Attachment external_record_id (e.g., "att123") if found, None otherwise
+        """
+        if not filename or not attachments:
+            return None
+        
+        filename_lower = filename.lower()
+        for attachment in attachments:
+            attachment_title = attachment.get("title", "")
+            if attachment_title.lower() == filename_lower:
+                return attachment.get("id")
+        
+        return None
+
+    @staticmethod
+    def _resolve_page_id_from_comment_json(
+        comment_data: dict[str, Any],
+        fallback_parent_id: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Extract parent page/blogpost ID from comment JSON.
+        
+        Args:
+            comment_data: Comment JSON from Confluence API
+            fallback_parent_id: Optional fallback ID (from record.parent_external_record_id)
+            
+        Returns:
+            Page ID if found, None otherwise
+        """
+        container = comment_data.get("container") or {}
+        if container.get("type") in ("page", "blogpost"):
+            page_id = container.get("id")
+            if page_id:
+                return str(page_id)
+        
+        return fallback_parent_id
+
+    async def _resolve_attachment_parent_context(
+        self,
+        record: Record,
+        attachment_data: Optional[dict[str, Any]] = None
+    ) -> Optional[tuple[str, RecordType, Optional[str], str]]:
+        """
+        Resolve attachment parent context for reindex.
+        
+        Args:
+            record: FileRecord being reindexed
+            attachment_data: Optional attachment metadata from API (may contain container info)
+            
+        Returns:
+            Tuple of (immediate_parent_external_id, parent_record_type, parent_node_id, page_id_for_permissions)
+            or None if resolution fails
+        """
+        try:
+            immediate_parent_id = record.parent_external_record_id
+            if not immediate_parent_id:
+                self.logger.warning(f"Attachment {record.external_record_id} has no parent_external_record_id")
+                return None
+            
+            # Determine parent_record_type (default to WEBPAGE for legacy records)
+            parent_record_type = getattr(record, 'parent_record_type', RecordType.WEBPAGE) or RecordType.WEBPAGE
+            
+            # Page parent case
+            if parent_record_type == RecordType.WEBPAGE:
+                parent_record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_record_id=immediate_parent_id
+                )
+                parent_node_id = parent_record.id if parent_record else None
+                return (immediate_parent_id, parent_record_type, parent_node_id, immediate_parent_id)
+            
+            # Comment parent case
+            if parent_record_type in (RecordType.COMMENT, RecordType.INLINE_COMMENT):
+                # Get comment's internal node ID
+                comment_record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_record_id=immediate_parent_id
+                )
+                parent_node_id = comment_record.id if comment_record else None
+                
+                # Resolve page ID for permissions
+                page_id = None
+                
+                # Try to extract from attachment_data container if available
+                if attachment_data:
+                    container = attachment_data.get("container") or {}
+                    if container.get("type") in ("page", "blogpost"):
+                        page_id = str(container.get("id")) if container.get("id") else None
+                
+                # If not found, fetch comment to get container
+                if not page_id:
+                    datasource = await self._get_fresh_datasource()
+                    response = await datasource.get_content_v1(
+                        content_id=str(immediate_parent_id),
+                        expand="container"
+                    )
+                    if response and response.status == HttpStatusCode.SUCCESS.value:
+                        comment_data = response.json()
+                        page_id = self._resolve_page_id_from_comment_json(comment_data)
+                
+                # Final fallback: check record's parent if it's a WEBPAGE
+                if not page_id and comment_record:
+                    if getattr(comment_record, 'parent_record_type', None) == RecordType.WEBPAGE:
+                        page_id = comment_record.parent_external_record_id
+                
+                if not page_id:
+                    self.logger.warning(
+                        f"Attachment {record.external_record_id}: could not resolve page ID from comment {immediate_parent_id}"
+                    )
+                    return None
+                
+                return (immediate_parent_id, parent_record_type, parent_node_id, page_id)
+            
+            self.logger.warning(
+                f"Attachment {record.external_record_id}: unsupported parent_record_type {parent_record_type}"
+            )
+            return None
+            
+        except Exception as e:
+            self.logger.error(
+                f"Error resolving attachment parent context for {record.external_record_id}: {e}",
+                exc_info=True
+            )
+            return None
 
     async def _get_server_version(self) -> tuple[int, ...]:
         """
@@ -3104,7 +3494,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
         self,
         data: dict[str, Any],
         record_type: RecordType,
-        existing_record: Optional[Record] = None
+        existing_record: Optional[Record] = None,
+        api_base_url: Optional[str] = None
     ) -> Optional[WebpageRecord]:
         """
         Unified transform for page/blogpost data to WebpageRecord.
@@ -3113,6 +3504,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
             data: Raw data from Confluence API
             record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
             existing_record: Optional existing record to check for updates
+            api_base_url: Optional base URL from response level (_links.base)
 
         Returns:
             WebpageRecord object or None if transformation fails
@@ -3197,22 +3589,12 @@ class ConfluenceDataCenterConnector(BaseConnector):
                     parent_external_record_id = direct_parent.get("id")
                     parent_type_str = direct_parent.get("type")
 
-            # Construct web URL - v1 vs v2 have different link structures
-            web_url = None
+            # Construct web URL using unified helper
             links = data.get("_links", {})
-            webui = links.get("webui")
-
-            if webui:
-                # Try v2 format first (_links.base)
-                base_url = links.get("base")
-                if base_url:
-                    web_url = f"{base_url}{webui}"
-                else:
-                    # Fall back to v1 format (extract from _links.self)
-                    self_link = links.get("self")
-                    if self_link and "/wiki/" in self_link:
-                        base_url = self_link.split("/wiki/")[0] + "/wiki"
-                        web_url = f"{base_url}{webui}"
+            web_url = self._construct_web_url(
+                links,
+                api_base_url or links.get("base")
+            )
 
             # Cloud v2 / DC v1: parent may be folder, page, or blogpost — map to RecordType for graph edges.
             # When ancestor ``type`` is missing (older expands), fall back to same type as this record.
@@ -3273,7 +3655,9 @@ class ConfluenceDataCenterConnector(BaseConnector):
         parent_external_record_id: str,
         parent_external_record_group_id: Optional[str],
         existing_record: Optional[Record] = None,
-        parent_node_id: Optional[str] = None
+        parent_node_id: Optional[str] = None,
+        parent_record_type: RecordType = RecordType.WEBPAGE,
+        api_base_url: Optional[str] = None
     ) -> Optional[FileRecord]:
         """
         Transform Confluence attachment to FileRecord entity.
@@ -3281,10 +3665,12 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
         Args:
             attachment_data: Raw attachment data from v1 (children.attachment.results) or v2 API
-            parent_external_record_id: Parent page external_record_id
+            parent_external_record_id: Parent page/comment external_record_id
             parent_external_record_group_id: Space ID from parent page
             existing_record: Optional existing record to check for updates
-            parent_node_id: Internal record ID of parent page
+            parent_node_id: Internal record ID of parent page/comment
+            parent_record_type: RecordType of parent (WEBPAGE, COMMENT, or INLINE_COMMENT)
+            api_base_url: Optional base URL from response level (_links.base)
 
         Returns:
             FileRecord object or None if transformation fails
@@ -3373,9 +3759,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
             # Construct web URL using helper method
             links = attachment_data.get("_links", {})
-            # For attachments, base_url might be in _links itself (v2 format)
-            base_url_from_links = links.get("base")
-            web_url = self._construct_web_url(links, base_url_from_links)
+            web_url = self._construct_web_url(links, api_base_url or links.get("base"))
 
             # Determine record ID and version
             is_new = existing_record is None
@@ -3403,7 +3787,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 connector_id=self.connector_id,
                 mime_type=mime_type,
                 parent_external_record_id=parent_external_record_id,
-                parent_record_type=RecordType.WEBPAGE,
+                parent_record_type=parent_record_type,
                 external_record_group_id=parent_external_record_group_id,
                 record_group_type=RecordGroupType.CONFLUENCE_SPACES,
                 weburl=web_url,
@@ -3413,7 +3797,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
                 is_dependent_node=True,  # Attachments are dependent nodes
-                parent_node_id=parent_node_id,  # Internal record ID of parent page
+                parent_node_id=parent_node_id,  # Internal record ID of parent page/comment
             )
 
         except Exception as e:
@@ -3425,7 +3809,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
         data: dict[str, Any],
         record_type: RecordType,
         existing_record: Optional[Record],
-        permissions: list[Permission]
+        permissions: list[Permission],
+        api_base_url: Optional[str] = None
     ) -> RecordUpdate:
         """Process webpage with change detection.
 
@@ -3434,13 +3819,14 @@ class ConfluenceDataCenterConnector(BaseConnector):
             record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
             existing_record: Existing record from database (if any)
             permissions: Permissions for the record
+            api_base_url: Optional base URL from response level (_links.base)
 
         Returns:
             RecordUpdate object with change tracking
         """
         # Transform with existing record context
         webpage_record = self._transform_to_webpage_record(
-            data, record_type, existing_record
+            data, record_type, existing_record, api_base_url
         )
 
         if not webpage_record:
@@ -3954,10 +4340,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
             response_data = response.json()
 
             body = response_data.get("body", {}) or {}
-            storage = body.get("storage", {}) or {}
-            html_content = storage.get("value") or ""
-            if not html_content:
-                html_content = self._html_export_from_content_v1(body)
+            html_content = self._html_export_from_content_v1(body)
 
             if not html_content:
                 self.logger.warning(f"Comment {comment_id} has no content")
@@ -3990,7 +4373,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
         """
         try:
             attachment_id = record.external_record_id
-            parent_page_id = record.parent_external_record_id
+            parent_content_id = record.parent_external_record_id
 
             if not attachment_id:
                 raise HTTPException(
@@ -3998,10 +4381,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
                     detail=f"No attachment ID available for record {record.id}"
                 )
 
-            if not parent_page_id:
+            if not parent_content_id:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"No parent page ID available for attachment {attachment_id}"
+                    detail=f"No parent content ID available for attachment {attachment_id}"
                 )
 
             datasource = await self._get_fresh_datasource()
@@ -4338,20 +4721,11 @@ class ConfluenceDataCenterConnector(BaseConnector):
         """Fetch attachment from source for reindexing."""
         try:
             attachment_id = record.external_record_id
-            parent_page_id = record.parent_external_record_id
+            parent_content_id = record.parent_external_record_id
 
-            if not parent_page_id:
-                self.logger.warning(f"Attachment {attachment_id} has no parent page ID")
+            if not parent_content_id:
+                self.logger.warning(f"Attachment {attachment_id} has no parent content ID")
                 return None
-
-            # Get parent page's internal record ID
-            parent_node_id = None
-            parent_record = await self.data_entities_processor.get_record_by_external_id(
-                connector_id=self.connector_id,
-                external_record_id=parent_page_id
-            )
-            if parent_record:
-                parent_node_id = parent_record.id
 
             # Fetch attachment metadata from source using v1 unified content API
             datasource = await self._get_fresh_datasource()
@@ -4379,23 +4753,31 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
             self.logger.info(f"Attachment {attachment_id} has changed at source (version {record.external_revision_id} -> {current_version})")
 
-            # Get space_id from parent page or use existing
+            # Resolve parent context (handles both page and comment parents)
+            parent_context = await self._resolve_attachment_parent_context(record, attachment_data)
+            if not parent_context:
+                return None
+            
+            immediate_parent_id, parent_record_type, parent_node_id, page_id_for_permissions = parent_context
+
+            # Get space_id from existing record
             parent_space_id = record.external_record_group_id
 
             # Transform attachment to FileRecord with existing record context
             attachment_record = self._transform_to_attachment_file_record(
                 attachment_data,
-                parent_page_id,
+                immediate_parent_id,
                 parent_space_id,
                 existing_record=record,
-                parent_node_id=parent_node_id
+                parent_node_id=parent_node_id,
+                parent_record_type=parent_record_type
             )
 
             if not attachment_record:
                 return None
 
             # Attachments inherit permissions from parent page - fetch page permissions
-            permissions = await self._fetch_page_permissions(parent_page_id)
+            permissions = await self._fetch_page_permissions(page_id_for_permissions)
 
             return (attachment_record, permissions)
 

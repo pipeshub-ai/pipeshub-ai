@@ -1663,10 +1663,31 @@ class TestConstructWebUrl:
         assert url is None
 
     def test_self_link_without_wiki(self):
+        """DC-style self link with /rest/api/ should extract base URL"""
         c = _conn()
-        links = {"webui": "/path", "self": "https://other.com/api/content/1"}
+        links = {"webui": "/path", "self": "https://other.com/rest/api/content/1"}
         url = c._construct_web_url(links, None)
-        assert url is None
+        assert url == "https://other.com/path"
+
+    def test_dc_list_item_with_explicit_base(self):
+        """DC list item with explicit api_base_url (from response root)"""
+        c = _conn()
+        links = {
+            "webui": "/spaces/SD/pages/131165/Page+with+table+nested+table",
+            "self": "http://localhost:8090/rest/api/content/131165",
+        }
+        url = c._construct_web_url(links, "http://localhost:8090")
+        assert url == "http://localhost:8090/spaces/SD/pages/131165/Page+with+table+nested+table"
+
+    def test_dc_list_item_with_fallback(self):
+        """DC list item without explicit base, fallback via /rest/api/ in self"""
+        c = _conn()
+        links = {
+            "webui": "/spaces/SD/pages/131165/Page+with+table+nested+table",
+            "self": "http://localhost:8090/rest/api/content/131165",
+        }
+        url = c._construct_web_url(links, None)
+        assert url == "http://localhost:8090/spaces/SD/pages/131165/Page+with+table+nested+table"
 
 
 # ===========================================================================
@@ -1768,6 +1789,49 @@ class TestTransformToWebpageRecord:
         result = c._transform_to_webpage_record(data, RecordType.CONFLUENCE_PAGE)
         assert result is not None
         assert result.parent_external_record_id is None
+
+    def test_dc_list_item_with_api_base_url(self):
+        """DC list item without item base but with api_base_url from response root"""
+        c = _conn()
+        data = {
+            "id": "131165",
+            "title": "Page with table nested table",
+            "space": {"id": "SD"},
+            "history": {
+                "createdDate": "2025-01-01T00:00:00.000Z",
+                "lastUpdated": {"when": "2025-02-01T00:00:00.000Z", "number": 1},
+            },
+            "_links": {
+                "webui": "/spaces/SD/pages/131165/Page+with+table+nested+table",
+                "self": "http://localhost:8090/rest/api/content/131165",
+                # No "base" on the item itself
+            },
+        }
+        result = c._transform_to_webpage_record(
+            data, RecordType.CONFLUENCE_PAGE, api_base_url="http://localhost:8090"
+        )
+        assert result is not None
+        assert result.weburl == "http://localhost:8090/spaces/SD/pages/131165/Page+with+table+nested+table"
+
+    def test_dc_list_item_with_fallback(self):
+        """DC list item without api_base_url, should use /rest/api/ fallback"""
+        c = _conn()
+        data = {
+            "id": "131165",
+            "title": "Page with table",
+            "space": {"id": "SD"},
+            "history": {
+                "createdDate": "2025-01-01T00:00:00.000Z",
+                "lastUpdated": {"when": "2025-02-01T00:00:00.000Z", "number": 1},
+            },
+            "_links": {
+                "webui": "/spaces/SD/pages/131165/Page+with+table",
+                "self": "http://localhost:8090/rest/api/content/131165",
+            },
+        }
+        result = c._transform_to_webpage_record(data, RecordType.CONFLUENCE_PAGE)
+        assert result is not None
+        assert result.weburl == "http://localhost:8090/spaces/SD/pages/131165/Page+with+table"
 
 
 # ===========================================================================
@@ -1874,6 +1938,48 @@ class TestTransformToAttachmentFileRecord:
         }
         result = c._transform_to_attachment_file_record(data, "p", "s")
         assert result is not None
+
+    def test_dc_attachment_with_api_base_url(self):
+        """DC attachment with api_base_url from response root"""
+        c = _conn()
+        data = {
+            "id": "att131171",
+            "title": "attachment.pdf",
+            "history": {
+                "createdDate": "2025-01-01T00:00:00.000Z",
+                "lastUpdated": {"when": "2025-02-01T00:00:00.000Z", "number": 1},
+            },
+            "extensions": {"fileSize": 5000, "mediaType": "application/pdf"},
+            "_links": {
+                "webui": "/spaces/SD/pages/131165/attachments/131171",
+                "self": "http://localhost:8090/rest/api/content/att131171",
+            },
+        }
+        result = c._transform_to_attachment_file_record(
+            data, "131165", "SD", api_base_url="http://localhost:8090"
+        )
+        assert result is not None
+        assert result.weburl == "http://localhost:8090/spaces/SD/pages/131165/attachments/131171"
+
+    def test_dc_attachment_with_fallback(self):
+        """DC attachment without api_base_url, should use /rest/api/ fallback"""
+        c = _conn()
+        data = {
+            "id": "att131171",
+            "title": "doc.pdf",
+            "history": {
+                "createdDate": "2025-01-01T00:00:00.000Z",
+                "lastUpdated": {"when": "2025-02-01T00:00:00.000Z", "number": 1},
+            },
+            "extensions": {"fileSize": 3000},
+            "_links": {
+                "webui": "/spaces/SD/pages/131165/attachments/131171",
+                "self": "http://localhost:8090/rest/api/content/att131171",
+            },
+        }
+        result = c._transform_to_attachment_file_record(data, "131165", "SD")
+        assert result is not None
+        assert result.weburl == "http://localhost:8090/spaces/SD/pages/131165/attachments/131171"
 
 
 # ===========================================================================
@@ -2750,6 +2856,48 @@ class TestFetchCommentContent:
             await c._fetch_comment_content(record)
         assert exc_info.value.status_code == 400
 
+    @pytest.mark.asyncio
+    async def test_fetch_comment_content_uses_export_view(self):
+        """Test that _fetch_comment_content prefers export_view over storage"""
+        c = _conn()
+        mock_ds = MagicMock()
+        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
+            "body": {
+                "export_view": {"value": "<p>Rendered HTML with images</p>"},
+                "storage": {"value": "<p>Raw storage with ri:attachment</p>"}
+            }
+        }))
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        record = MagicMock()
+        record.record_type = RecordType.COMMENT
+        record.external_record_id = "comment123"
+        
+        result = await c._fetch_comment_content(record)
+        
+        # Should prefer export_view over storage
+        assert result == "<p>Rendered HTML with images</p>"
+        assert "ri:attachment" not in result
+
+    @pytest.mark.asyncio
+    async def test_fetch_comment_content_fallback_to_storage(self):
+        """Test that _fetch_comment_content falls back to storage when export_view is missing"""
+        c = _conn()
+        mock_ds = MagicMock()
+        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
+            "body": {
+                "storage": {"value": "<p>Storage content</p>"}
+            }
+        }))
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        record = MagicMock()
+        record.record_type = RecordType.COMMENT
+        record.external_record_id = "comment456"
+        
+        result = await c._fetch_comment_content(record)
+        
+        # Should fall back to storage
+        assert result == "<p>Storage content</p>"
+
 
 # ===========================================================================
 # reindex_records
@@ -2918,7 +3066,7 @@ class TestCheckAndFetchUpdatedPage:
 
 class TestCheckAndFetchUpdatedAttachment:
     @pytest.mark.asyncio
-    async def test_no_parent_page_id(self):
+    async def test_no_parent_content_id(self):
         c = _conn()
         record = MagicMock()
         record.external_record_id = "att-1"
@@ -2930,9 +3078,9 @@ class TestCheckAndFetchUpdatedAttachment:
     async def test_not_found(self):
         c = _conn()
         mock_ds = MagicMock()
-        mock_ds.get_attachment_by_id = AsyncMock(return_value=_resp(404))
+        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(404))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        c._resolve_attachment_parent_context = AsyncMock(return_value=None)
         record = MagicMock()
         record.external_record_id = "att-1"
         record.parent_external_record_id = "p1"
@@ -2943,16 +3091,150 @@ class TestCheckAndFetchUpdatedAttachment:
     async def test_version_unchanged(self):
         c = _conn()
         mock_ds = MagicMock()
-        mock_ds.get_attachment_by_id = AsyncMock(return_value=_resp(200, {
+        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
             "version": {"number": 2},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        c._resolve_attachment_parent_context = AsyncMock(return_value=None)
         record = MagicMock()
         record.external_record_id = "att-1"
         record.parent_external_record_id = "p1"
         record.external_revision_id = "2"
         result = await c._check_and_fetch_updated_attachment("org1", record)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_attachment_reindex_page_parent_unchanged(self):
+        """Test page-parented attachment reindex with WEBPAGE parent_record_type"""
+        c = _conn()
+        mock_ds = MagicMock()
+        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
+            "id": "att123",
+            "version": {"number": 3},
+            "title": "file.pdf",
+            "extensions": {"fileSize": 1024, "mediaType": "application/pdf"}
+        }))
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        
+        # Mock page record
+        page_record = MagicMock()
+        page_record.id = "page-node-1"
+        
+        # Mock parent context resolution
+        c._resolve_attachment_parent_context = AsyncMock(return_value=(
+            "page123",  # immediate_parent_id
+            RecordType.WEBPAGE,  # parent_record_type
+            "page-node-1",  # parent_node_id
+            "page123"  # page_id_for_permissions
+        ))
+        
+        # Mock transform
+        mock_file_record = MagicMock()
+        c._transform_to_attachment_file_record = MagicMock(return_value=mock_file_record)
+        
+        # Mock permissions
+        c._fetch_page_permissions = AsyncMock(return_value=[])
+        
+        record = MagicMock()
+        record.external_record_id = "att123"
+        record.parent_external_record_id = "page123"
+        record.external_revision_id = "2"
+        record.external_record_group_id = "space1"
+        record.parent_record_type = RecordType.WEBPAGE
+        
+        result = await c._check_and_fetch_updated_attachment("org1", record)
+        
+        assert result is not None
+        assert result[0] == mock_file_record
+        
+        # Verify transform was called with correct parent_record_type
+        c._transform_to_attachment_file_record.assert_called_once()
+        call_kwargs = c._transform_to_attachment_file_record.call_args[1]
+        assert call_kwargs["parent_record_type"] == RecordType.WEBPAGE
+        
+        # Verify permissions fetched with page ID
+        c._fetch_page_permissions.assert_awaited_once_with("page123")
+
+    @pytest.mark.asyncio
+    async def test_attachment_reindex_comment_parent(self):
+        """Test comment-parented attachment reindex with COMMENT parent_record_type"""
+        c = _conn()
+        mock_ds = MagicMock()
+        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
+            "id": "att456",
+            "version": {"number": 1},
+            "title": "screenshot.png",
+            "extensions": {"fileSize": 2048, "mediaType": "image/png"},
+            "container": {"type": "page", "id": "page789"}
+        }))
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        
+        # Mock comment record
+        comment_record = MagicMock()
+        comment_record.id = "comment-node-1"
+        comment_record.parent_external_record_id = "page789"
+        comment_record.parent_record_type = RecordType.WEBPAGE
+        
+        # Mock parent context resolution
+        c._resolve_attachment_parent_context = AsyncMock(return_value=(
+            "comment123",  # immediate_parent_id (comment)
+            RecordType.COMMENT,  # parent_record_type
+            "comment-node-1",  # parent_node_id
+            "page789"  # page_id_for_permissions
+        ))
+        
+        # Mock transform
+        mock_file_record = MagicMock()
+        c._transform_to_attachment_file_record = MagicMock(return_value=mock_file_record)
+        
+        # Mock permissions
+        c._fetch_page_permissions = AsyncMock(return_value=[])
+        
+        record = MagicMock()
+        record.external_record_id = "att456"
+        record.parent_external_record_id = "comment123"
+        record.external_revision_id = "0"
+        record.external_record_group_id = "space1"
+        record.parent_record_type = RecordType.COMMENT
+        
+        result = await c._check_and_fetch_updated_attachment("org1", record)
+        
+        assert result is not None
+        assert result[0] == mock_file_record
+        
+        # Verify transform was called with COMMENT parent_record_type
+        c._transform_to_attachment_file_record.assert_called_once()
+        call_kwargs = c._transform_to_attachment_file_record.call_args[1]
+        assert call_kwargs["parent_record_type"] == RecordType.COMMENT
+        assert call_kwargs["parent_node_id"] == "comment-node-1"
+        
+        # Verify permissions fetched with resolved page ID, not comment ID
+        c._fetch_page_permissions.assert_awaited_once_with("page789")
+
+    @pytest.mark.asyncio
+    async def test_attachment_reindex_comment_parent_no_page(self):
+        """Test comment-parented attachment reindex when page cannot be resolved"""
+        c = _conn()
+        mock_ds = MagicMock()
+        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
+            "id": "att789",
+            "version": {"number": 1},
+            "title": "file.txt"
+        }))
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        
+        # Mock parent context resolution failure
+        c._resolve_attachment_parent_context = AsyncMock(return_value=None)
+        
+        record = MagicMock()
+        record.external_record_id = "att789"
+        record.parent_external_record_id = "comment456"
+        record.external_revision_id = "0"
+        record.parent_record_type = RecordType.COMMENT
+        
+        result = await c._check_and_fetch_updated_attachment("org1", record)
+        
+        # Should return None when parent context cannot be resolved
         assert result is None
 
 
