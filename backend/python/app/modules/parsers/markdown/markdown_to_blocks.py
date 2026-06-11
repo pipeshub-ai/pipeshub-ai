@@ -265,7 +265,7 @@ class _TokenWalker:
             if index + 1 < len(tokens) and tokens[index + 1].type == "inline":
                 inline_tok = tokens[index + 1]
                 plain = self._render_inline(inline_tok).strip()
-                md_text = self._render_cell_markdown(inline_tok).strip()
+                md_text = inline_tok.content.strip()
                 if self.table_state is not None:
                     self.table_state.current_row.append(_TableCell(plain=plain, markdown=md_text))
                 return index + 2
@@ -530,15 +530,6 @@ class _TokenWalker:
             index += 1
 
         return "".join(parts)
-
-    def _render_cell_markdown(self, inline_token: Token) -> str:
-        """Render an inline token back to markdown for table cell storage."""
-        children = inline_token.children
-        if not children:
-            return inline_token.content
-        if self._has_inline_formatting(children):
-            return self._render_inline_markdown_from_children(children)
-        return self._render_inline(inline_token)
 
     # ------------------------------------------------------- table management
 

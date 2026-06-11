@@ -14,7 +14,14 @@ from app.models.blocks import (
     GroupSubType,
     GroupType,
 )
-from app.modules.parsers.markdown.markdown_to_blocks import MarkdownToBlocksConverter
+from markdown_it.token import Token
+
+from app.modules.parsers.markdown.markdown_to_blocks import (
+    MarkdownToBlocksConverter,
+    _TableCell,
+    _TableState,
+    _TokenWalker,
+)
 
 
 @pytest.fixture
@@ -627,3 +634,348 @@ class TestMarkdownItParserIntegration:
             "# Hello",
             caption_map={"Image_1": "uri"},
         )
+
+
+class TestSuppressedStructuralEmission:
+    """Content inside list items and blockquotes must not emit inner blocks."""
+
+    def test_heading_inside_list_is_not_emitted(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("- # Not a heading\n")
+        headings = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
+        assert headings == []
+        list_items = [b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM]
+        assert len(list_items) == 1
+        assert "# Not a heading" in list_items[0].data
+
+    def test_paragraph_inside_blockquote_is_not_emitted(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("> inner paragraph\n")
+        paragraphs = [b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH]
+        assert paragraphs == []
+        assert container.blocks[0].sub_type == BlockSubType.QUOTE
+
+    def test_code_inside_list_is_not_emitted(self, converter: MarkdownToBlocksConverter):
+        md = "- item\n\n  ```python\n  x = 1\n  ```\n"
+        container = converter.convert(md)
+        code_blocks = [b for b in container.blocks if b.sub_type == BlockSubType.CODE]
+        assert code_blocks == []
+
+    def test_hr_inside_list_is_not_emitted(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("- item\n\n  ---\n")
+        dividers = [b for b in container.blocks if b.sub_type == BlockSubType.DIVIDER]
+        assert dividers == []
+
+    def test_html_inside_list_is_not_emitted(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("- item\n\n  <div>html</div>\n")
+        html_blocks = [b for b in container.blocks if b.format == DataFormat.HTML]
+        assert html_blocks == []
+
+    def test_table_inside_blockquote_is_not_emitted(self, converter: MarkdownToBlocksConverter):
+        md = "> | A | B |\n> | --- | --- |\n> | 1 | 2 |\n"
+        container = converter.convert(md)
+        assert _groups_by_type(container, GroupType.TABLE) == []
+        assert container.blocks[0].sub_type == BlockSubType.QUOTE
+
+    def test_blockquote_inside_list_is_ignored(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("- outer\n  > inner quote\n")
+        quote_groups = _groups_by_type(container, GroupType.TEXT_SECTION)
+        assert quote_groups == []
+        list_items = [b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM]
+        assert len(list_items) == 1
+        assert "> inner quote" in list_items[0].data
+
+
+class TestNestedGroups:
+    def test_open_group_records_child_on_parent_stack(self):
+        """Nested groups append child_group_indices on the parent _OpenGroup."""
+        walker = _TokenWalker("")
+        walker._open_group(GroupType.TEXT_SECTION, GroupSubType.QUOTE)
+        walker._open_group(GroupType.LIST)
+        parent_open = walker.group_stack[0]
+        assert parent_open.child_group_indices == [1]
+        list_group = walker.block_groups[1]
+        assert list_group.parent_index == 0
+
+    def test_start_table_records_child_when_parent_group_open(self):
+        walker = _TokenWalker("")
+        walker._open_group(GroupType.LIST)
+        walker._start_table()
+        parent_open = walker.group_stack[0]
+        assert parent_open.child_group_indices == [1]
+        table_group = walker.block_groups[1]
+        assert table_group.parent_index == 0
+        assert table_group.type == GroupType.TABLE
+
+
+class TestInlineRendering:
+    def test_link_in_paragraph_preserves_markdown(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("Visit [example](https://example.com) today.\n")
+        block = container.blocks[0]
+        assert block.format == DataFormat.MARKDOWN
+        assert block.data == "Visit [example](https://example.com) today."
+
+    def test_inline_code_in_paragraph(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("Use `print()` here.\n")
+        block = container.blocks[0]
+        assert block.format == DataFormat.MARKDOWN
+        assert "`print()`" in block.data
+
+    def test_formatted_text_with_image_uses_markdown(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("**Bold** ![img](https://example.com/a.png)\n")
+        text_block = container.blocks[0]
+        assert text_block.format == DataFormat.MARKDOWN
+        assert text_block.data == "**Bold**"
+        assert container.blocks[1].type == BlockType.IMAGE
+
+    def test_hard_line_break_renders_as_newline(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("Line one  \nLine two\n")
+        block = container.blocks[0]
+        assert block.format == DataFormat.TXT
+        assert "Line one\nLine two" in block.data
+
+
+class TestTableEdgeCases:
+    def test_table_with_empty_cell(self, converter: MarkdownToBlocksConverter):
+        md = "| A | B |\n| --- | --- |\n| | val |\n"
+        container = converter.convert(md)
+        row_block = _blocks_by_type(container, BlockType.TABLE_ROW)[0]
+        assert row_block.data["cells"] == ["", "val"]
+
+    def test_finish_table_flushes_trailing_current_row_as_header(self):
+        walker = _TokenWalker("")
+        walker.block_groups.append(
+            BlockGroup(index=0, type=GroupType.TABLE, parent_index=None)
+        )
+        walker.table_state = _TableState(group_index=0)
+        walker.table_state.current_row = [
+            _TableCell(plain="h1", markdown="h1"),
+            _TableCell(plain="h2", markdown="h2"),
+        ]
+        walker._finish_table()
+        table_group = walker.block_groups[0]
+        assert table_group.table_metadata is not None
+        assert table_group.table_metadata.has_header is True
+        assert table_group.data["column_headers"] == ["h1", "h2"]
+        assert walker.blocks == []
+
+    def test_finish_table_flushes_trailing_current_row_as_data_row(self):
+        walker = _TokenWalker("")
+        walker.block_groups.append(
+            BlockGroup(index=0, type=GroupType.TABLE, parent_index=None)
+        )
+        walker.table_state = _TableState(
+            group_index=0,
+            headers=[_TableCell(plain="A", markdown="A")],
+        )
+        walker.table_state.current_row = [_TableCell(plain="1", markdown="1")]
+        walker._finish_table()
+        assert len(walker.blocks) == 1
+        assert walker.blocks[0].data["cells"] == ["1"]
+
+
+class TestTokenWalkerUtilities:
+    def test_slice_token_map_returns_empty_when_map_missing(self):
+        walker = _TokenWalker("line1\nline2")
+        token = Token("list_item_open", "li", 1)
+        token.map = None
+        assert walker._slice_token_map(token) == ""
+
+    def test_slice_token_map_returns_empty_when_map_out_of_bounds(self):
+        walker = _TokenWalker("line1\nline2")
+        token = Token("list_item_open", "li", 1)
+        token.map = [10, 11]
+        assert walker._slice_token_map(token) == ""
+
+    def test_close_group_on_empty_stack_is_noop(self):
+        walker = _TokenWalker("")
+        walker._close_group()
+        assert walker.group_stack == []
+
+    def test_finish_table_without_state_is_noop(self):
+        walker = _TokenWalker("")
+        walker._finish_table()
+        assert walker.table_state is None
+
+    def test_format_table_row_without_headers(self):
+        result = _TokenWalker._format_table_row([], ["a", "b", "c"])
+        assert result == "a, b, c"
+
+    def test_format_table_row_column_fallback(self):
+        result = _TokenWalker._format_table_row(["H1"], ["c1", "c2"])
+        assert result == "H1: c1, Column 2: c2"
+
+    def test_render_inline_softbreak_and_hardbreak(self):
+        walker = _TokenWalker("")
+        soft = Token("softbreak", "br", 0)
+        hard = Token("hardbreak", "br", 0)
+        assert walker._render_inline(soft) == "\n"
+        assert walker._render_inline(hard) == "\n"
+
+    def test_render_inline_nested_children(self):
+        walker = _TokenWalker("")
+        parent = Token("strong_open", "strong", 1)
+        child = Token("text", "", 0)
+        child.content = "bold"
+        parent.children = [child]
+        assert walker._render_inline(parent) == "bold"
+
+    def test_render_inline_markdown_code_and_html(self):
+        walker = _TokenWalker("")
+        code = Token("code_inline", "code", 0)
+        code.content = "x"
+        html = Token("html_inline", "", 0)
+        html.content = "<b>hi</b>"
+        assert walker._render_inline_markdown(code) == "`x`"
+        assert walker._render_inline_markdown(html) == "<b>hi</b>"
+
+    def test_render_inline_markdown_from_children_link(self):
+        walker = _TokenWalker("")
+        link_open = Token("link_open", "a", 1)
+        link_open.attrs = {"href": "https://example.com"}
+        text = Token("text", "", 0)
+        text.content = "click"
+        link_close = Token("link_close", "a", -1)
+        result = walker._render_inline_markdown_from_children(
+            [link_open, text, link_close]
+        )
+        assert result == "[click](https://example.com)"
+
+    def test_render_inline_markdown_from_children_bold_markup(self):
+        walker = _TokenWalker("")
+        bold_open = Token("strong_open", "strong", 1)
+        bold_open.markup = "**"
+        text = Token("text", "", 0)
+        text.content = "bold"
+        bold_close = Token("strong_close", "strong", -1)
+        result = walker._render_inline_markdown_from_children(
+            [bold_open, text, bold_close]
+        )
+        assert result == "**bold**"
+
+    def test_render_inline_markdown_from_children_skips_orphan_close(self):
+        walker = _TokenWalker("")
+        orphan_close = Token("strong_close", "strong", -1)
+        text = Token("text", "", 0)
+        text.content = "plain"
+        result = walker._render_inline_markdown_from_children(
+            [orphan_close, text]
+        )
+        assert result == "plain"
+
+    def test_split_inline_content_no_children(self):
+        walker = _TokenWalker("")
+        inline = Token("inline", "", 0)
+        inline.content = "  plain  "
+        inline.children = None
+        text, images, fmt = walker._split_inline_content(inline)
+        assert text == "plain"
+        assert images == []
+        assert fmt == DataFormat.TXT
+
+    def test_render_inline_markdown_softbreak_and_hardbreak(self):
+        walker = _TokenWalker("")
+        soft = Token("softbreak", "br", 0)
+        hard = Token("hardbreak", "br", 0)
+        assert walker._render_inline_markdown(soft) == "\n"
+        assert walker._render_inline_markdown(hard) == "\n"
+
+    def test_render_inline_markdown_from_children_open_without_markup(self):
+        walker = _TokenWalker("")
+        em_open = Token("em_open", "em", 1)
+        em_open.markup = ""
+        text = Token("text", "", 0)
+        text.content = "italic"
+        em_close = Token("em_close", "em", -1)
+        result = walker._render_inline_markdown_from_children(
+            [em_open, text, em_close]
+        )
+        assert result == "italic"
+
+    def test_render_inline_markdown_from_children_consumes_close_token(self):
+        walker = _TokenWalker("")
+        bold_open = Token("strong_open", "strong", 1)
+        bold_open.markup = "**"
+        text = Token("text", "", 0)
+        text.content = "x"
+        bold_close = Token("strong_close", "strong", -1)
+        trailing = Token("text", "", 0)
+        trailing.content = "!"
+        result = walker._render_inline_markdown_from_children(
+            [bold_open, text, bold_close, trailing]
+        )
+        assert result == "**x**!"
+
+    def test_process_heading_open_without_inline(self):
+        walker = _TokenWalker("")
+        tokens = [Token("heading_open", "h1", 1), Token("heading_close", "h1", -1)]
+        index = walker._process_token(tokens, 0)
+        assert index == 1
+        assert walker.blocks == []
+
+    def test_process_paragraph_open_without_inline(self):
+        walker = _TokenWalker("")
+        tokens = [Token("paragraph_open", "p", 1), Token("paragraph_close", "p", -1)]
+        index = walker._process_token(tokens, 0)
+        assert index == 1
+        assert walker.blocks == []
+
+    def test_ordered_list_open_inside_blockquote_is_suppressed(self):
+        walker = _TokenWalker("> 1. item\n")
+        walker.blockquote_depth = 1
+        tokens = [Token("ordered_list_open", "ol", 1)]
+        index = walker._process_token(tokens, 0)
+        assert index == 0
+        assert walker.block_groups == []
+
+    def test_list_item_open_with_empty_slice_skips_block(self):
+        walker = _TokenWalker("")
+        token = Token("list_item_open", "li", 1)
+        token.map = [0, 0]
+        index = walker._process_token([token], 0)
+        assert index == 0
+        assert walker.blocks == []
+        assert walker.list_item_depth == 1
+
+    def test_blockquote_open_adds_raw_markdown_block(self):
+        walker = _TokenWalker("> quoted\n")
+        token = Token("blockquote_open", "blockquote", 1)
+        token.map = [0, 1]
+        walker._process_token([token], 0)
+        assert len(walker.blocks) == 1
+        assert walker.blocks[0].sub_type == BlockSubType.QUOTE
+        assert walker.blocks[0].data == "> quoted"
+
+    def test_skip_inline_block_without_following_inline(self):
+        walker = _TokenWalker("")
+        tokens = [Token("heading_open", "h1", 1)]
+        assert walker._skip_inline_block(tokens, 0) == 1
+
+    def test_blockquote_open_with_empty_slice_opens_group_only(self):
+        walker = _TokenWalker("")
+        token = Token("blockquote_open", "blockquote", 1)
+        token.map = [0, 0]
+        walker._process_token([token], 0)
+        assert len(walker.block_groups) == 1
+        assert walker.block_groups[0].sub_type == GroupSubType.QUOTE
+        assert walker.blocks == []
+
+    def test_render_inline_markdown_unknown_token_returns_empty(self):
+        walker = _TokenWalker("")
+        unknown = Token("image", "img", 0)
+        assert walker._render_inline_markdown(unknown) == ""
+
+    def test_render_inline_markdown_from_children_missing_close(self):
+        walker = _TokenWalker("")
+        em_open = Token("em_open", "em", 1)
+        em_open.markup = "*"
+        text = Token("text", "", 0)
+        text.content = "x"
+        result = walker._render_inline_markdown_from_children([em_open, text])
+        assert result == "*x*"
+
+    def test_process_token_table_cell_without_inline(self):
+        walker = _TokenWalker("")
+        walker.table_state = _TableState(group_index=0)
+        tokens = [Token("td_open", "td", 1), Token("td_close", "td", -1)]
+        index = walker._process_token(tokens, 0)
+        assert index == 1
+        assert walker.table_state.current_row == []
