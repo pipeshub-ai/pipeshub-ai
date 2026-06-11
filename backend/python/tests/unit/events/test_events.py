@@ -565,7 +565,8 @@ class TestOnEventEdgeCases:
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_pdf_with_docling = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False), \
+             patch.dict("os.environ", {"ENABLE_PYMUPDF_PROCESSOR": "false"}):
             with patch("app.events.events.fitz") as mock_fitz:
                 mock_fitz.open.side_effect = Exception("corrupted pdf")
                 event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
