@@ -28,6 +28,7 @@ Bienvenue dans notre projet open source ! Nous sommes ravis que vous souhaitiez 
 sudo apt update
 sudo apt install python3.12-venv
 sudo apt-get install libreoffice
+sudo apt install libmariadb-dev
 ```
 
 #### Mac
@@ -39,6 +40,7 @@ sudo apt-get install libreoffice
 # Install required packages
 brew install python@3.12
 brew install libreoffice
+brew install mariadb-connector-c # Add to path
 ```
 
 #### Windows

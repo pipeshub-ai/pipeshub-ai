@@ -284,19 +284,19 @@ class TestGetAgent:
     async def test_returns_agent_with_toolsets_knowledge_and_share_flag(
         self, neo4j_provider: Neo4jProvider
     ):
+        # New batched projection order: agent → toolsets → knowledge → batched
+        # app/KB doc lookup (via client.execute_query) → org-share.
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
                 [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
-                [{"toolset": {"_key": "ts1", "name": "Toolset1", "tools": []}}],  # toolsets query
-                [{"_key": "k1", "connectorId": "conn-1", "filters": "{}"}],  # knowledge query
+                [{"agent_id": "agent-1", "toolset": {"_key": "ts1", "name": "Toolset1", "tools": []}}],  # toolsets
+                [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{}"}],  # knowledge
+                [{"n": {"id": "conn-1", "name": "Jira", "type": "APP"}}],  # batched app-doc lookup
                 [{"share_with_org": True}],  # org share query
             ]
         )
         neo4j_provider._neo4j_to_arango_node = MagicMock(  # type: ignore[method-assign]
-            return_value={"_key": "agent-1", "name": "Agent One"}
-        )
-        neo4j_provider.get_document = AsyncMock(  # type: ignore[method-assign]
-            return_value={"name": "Jira", "type": "APP"}
+            side_effect=lambda node, _collection: {**node, "_key": node.get("id")}
         )
 
         result = await neo4j_provider.get_agent("agent-1", org_id="org-1", transaction="txn-1")
@@ -339,15 +339,13 @@ class TestGetAgent:
             side_effect=[
                 [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
                 [],  # toolsets query
-                [{"_key": "k1", "connectorId": "conn-1", "filters": "{not-json"}],  # knowledge query
+                [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{not-json"}],  # knowledge
+                [{"n": {"id": "conn-1", "name": "Connector One", "type": "APP"}}],  # batched app-doc lookup
                 [],  # org share query
             ]
         )
         neo4j_provider._neo4j_to_arango_node = MagicMock(  # type: ignore[method-assign]
-            return_value={"_key": "agent-1", "name": "Agent One"}
-        )
-        neo4j_provider.get_document = AsyncMock(  # type: ignore[method-assign]
-            return_value={"name": "Connector One", "type": "APP"}
+            side_effect=lambda node, _collection: {**node, "_key": node.get("id")}
         )
 
         result = await neo4j_provider.get_agent("agent-1")

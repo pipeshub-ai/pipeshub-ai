@@ -77,6 +77,7 @@ export function SearchableCheckboxDropdown({
   const chipsContainerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadMoreLockRef = useRef(false);
   const isServerSearch = !!onSearch;
 
   // Close on click outside
@@ -127,12 +128,27 @@ export function SearchableCheckboxDropdown({
     [isServerSearch, onSearch]
   );
 
+  // Release scroll lock when parent finishes loading (covers one-frame gap before isLoadingMore updates)
+  useEffect(() => {
+    if (!isLoadingMore) {
+      loadMoreLockRef.current = false;
+    }
+  }, [isLoadingMore]);
+
   // Infinite scroll
   const handleScroll = useCallback(() => {
-    if (!onLoadMore || !hasMore || isLoadingMore) return;
+    if (
+      !onLoadMore ||
+      !hasMore ||
+      isLoadingMore ||
+      loadMoreLockRef.current
+    ) {
+      return;
+    }
     const el = listRef.current;
     if (!el) return;
     if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
+      loadMoreLockRef.current = true;
       onLoadMore();
     }
   }, [onLoadMore, hasMore, isLoadingMore]);
@@ -144,6 +160,19 @@ export function SearchableCheckboxDropdown({
       if (isServerSearch) onSearch!('');
     }
   }, [isOpen, isServerSearch, onSearch]);
+
+  // When client-side filtering removed every loaded row, pull the next page.
+  useEffect(() => {
+    if (
+      isOpen &&
+      filteredOptions.length === 0 &&
+      hasMore &&
+      onLoadMore &&
+      !isLoadingMore
+    ) {
+      onLoadMore();
+    }
+  }, [isOpen, filteredOptions.length, hasMore, onLoadMore, isLoadingMore]);
 
   const toggleOption = useCallback(
     (id: string) => {
@@ -357,11 +386,21 @@ export function SearchableCheckboxDropdown({
             <Flex
               align="center"
               justify="center"
+              gap="2"
               style={{ padding: 'var(--space-4)' }}
             >
-              <Text size="2" style={{ color: 'var(--slate-9)' }}>
-                {emptyText}
-              </Text>
+              {hasMore ? (
+                <>
+                  <Spinner size={14} />
+                  <Text size="2" style={{ color: 'var(--slate-9)' }}>
+                    Loading...
+                  </Text>
+                </>
+              ) : (
+                <Text size="2" style={{ color: 'var(--slate-9)' }}>
+                  {emptyText}
+                </Text>
+              )}
             </Flex>
           ) : (
             filteredOptions.map((option) => {

@@ -3294,11 +3294,11 @@ class JiraDataCenterConnector(BaseConnector):
             page_count += 1
 
             try:
-                datasource = await self._get_fresh_datasource()
-                response = await datasource.search_issues_post_v2(
+                response = await self._search_issues_with_retry(
+                    project_key=project_key,
                     jql=jql,
-                    startAt=start_at,
-                    maxResults=DEFAULT_MAX_RESULTS,
+                    start_at=start_at,
+                    max_results=DEFAULT_MAX_RESULTS,
                     fields=ISSUE_SEARCH_FIELDS,
                 )
 
@@ -4336,6 +4336,57 @@ class JiraDataCenterConnector(BaseConnector):
 
         return attachment_children_map
 
+    async def _search_issues_with_retry(
+        self,
+        *,
+        project_key: str,
+        jql: str,
+        start_at: int,
+        max_results: int,
+        fields: list[str],
+        max_attempts: int = 3,
+    ) -> Any:
+        """Search Jira issues, retrying on transient httpx transport errors.
+
+        Targeted at stale keep-alive sockets that raise ``RemoteProtocolError``
+        before any HTTP response is received during paginated sync. Replaying the
+        same JQL and ``startAt`` is safe when no response was received — search is
+        read-only and httpx evicts the broken connection on failure.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(max_attempts):
+            try:
+                datasource = await self._get_fresh_datasource()
+                return await datasource.search_issues_post_v2(
+                    jql=jql,
+                    startAt=start_at,
+                    maxResults=max_results,
+                    fields=fields,
+                )
+            except (
+                httpx.RemoteProtocolError,
+                httpx.ReadError,
+                httpx.WriteError,
+                httpx.ConnectError,
+                httpx.PoolTimeout,
+                httpx.ReadTimeout,
+            ) as e:
+                last_exc = e
+                if attempt == max_attempts - 1:
+                    break
+                backoff = 0.5 * (2 ** attempt)  # 0.5s, 1.0s, ...
+                self.logger.warning(
+                    "Transient transport error searching issues for project %s "
+                    "(startAt=%s, attempt %s/%s): %s — retrying in %.1fs",
+                    project_key, start_at, attempt + 1, max_attempts, e, backoff,
+                )
+                await asyncio.sleep(backoff)
+
+        raise Exception(
+            f"Failed to fetch issues for {project_key} (startAt={start_at}) "
+            f"after {max_attempts} attempts: {last_exc}"
+        ) from last_exc
+
     async def _get_issue_with_retry(
         self,
         issue_id: str,
@@ -4422,7 +4473,7 @@ class JiraDataCenterConnector(BaseConnector):
         # 500 to the user.
         response = await self._get_issue_with_retry(
             issue_id=issue_id,
-            fields=["summary", "description", "attachment", "comment"],
+            fields=["summary", "description", "attachment", "comment", "project"],
         )
         if response.status != HttpStatusCode.OK.value:
             raise Exception(f"Failed to fetch issue content: {response.text()}")
@@ -4466,8 +4517,13 @@ class JiraDataCenterConnector(BaseConnector):
         else:
             comments_data = []
 
-        # Get project ID from record group
+        # Resolve project for new attachment FileRecords. Prefer the stored ticket
+        # group id; fall back to Jira ``fields.project`` when legacy rows have an
+        # empty ``external_record_group_id``.
         project_id = record.external_record_group_id or ""
+        if not project_id:
+            project = fields.get("project") or {}
+            project_id = project.get("id") or ""
 
         # Build attachment_id -> mimeType map for determining image vs file
         # This is needed because Jira ADF media nodes always have type="file"
@@ -4624,18 +4680,33 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.debug(f"No attachment found matching media_id='{media_id}' or filename='{media_alt}' in issue {issue_id}")
                 return None
 
-            # Fetch attachment content
+            # Fetch attachment content via secure URL (client base_url)
             attachment_id = target_attachment.get("id")
             mime_type = target_attachment.get("mimeType", "application/octet-stream")
+            filename = target_attachment.get("filename")
+            if not attachment_id or not filename:
+                self.logger.debug(
+                    f"Missing attachment id or filename for media_id='{media_id}' "
+                    f"filename='{media_alt}' in issue {issue_id}"
+                )
+                return None
 
             datasource = await self._get_fresh_datasource()
-            content_response = await datasource.get_attachment_content_v2(
-                id=attachment_id,
-                redirect=False
+            content_response = await datasource.get_secure_attachment_v2(
+                id=str(attachment_id),
+                filename=str(filename),
             )
 
             if content_response.status != HttpStatusCode.OK.value:
-                self.logger.warning(f"⚠️ Failed to fetch attachment content {attachment_id}: {content_response.status}")
+                self.logger.warning(
+                    "Failed to fetch attachment content for inline media: "
+                    "attachment_id=%s issue_id=%s filename=%s status=%s response=%s",
+                    attachment_id,
+                    issue_id,
+                    filename,
+                    content_response.status,
+                    content_response.text()[:500],
+                )
                 return None
 
             # Convert to base64
@@ -4923,29 +4994,38 @@ class JiraDataCenterConnector(BaseConnector):
                 )
 
             elif record.record_type == RecordType.FILE:
-                # Stream attachment content
+                # Stream attachment content via secure URL (client base_url)
                 attachment_id = record.external_record_id.replace("attachment_", "")
+                filename = record.record_name if hasattr(record, 'record_name') else None
+                if not filename:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.BAD_REQUEST.value,
+                        detail=f"Attachment {attachment_id} is missing filename for download",
+                    )
 
-                # Get attachment content using DataSource
                 datasource = await self._get_fresh_datasource()
-                response = await datasource.get_attachment_content_v2(
+                response = await datasource.get_secure_attachment_v2(
                     id=attachment_id,
-                    redirect=False
+                    filename=filename,
                 )
 
                 if response.status != HttpStatusCode.OK.value:
-                    # Propagate the upstream status so the API returns the
-                    # right code (e.g. 404 when an attachment was deleted at
-                    # the source) instead of being swallowed into a generic
-                    # 500. Without this, the indexing consumer treats every
-                    # gone-at-source attachment as a transient server error,
-                    # burns 3 tenacity retries, and emits a misleading
-                    # traceback for an expected condition.
-                    detail = f"Failed to fetch attachment content: {response.text()}"
+                    error_body = response.text()
+                    detail = f"Failed to fetch attachment content: {error_body}"
                     if response.status == HttpStatusCode.NOT_FOUND.value:
                         self.logger.warning(
                             f"Attachment {attachment_id} not found at source "
                             f"(record {record.external_record_id}) — likely deleted in Jira"
+                        )
+                    else:
+                        self.logger.error(
+                            "Failed to fetch Jira attachment content for stream_record: "
+                            "attachment_id=%s record_id=%s filename=%s status=%s response=%s",
+                            attachment_id,
+                            record.id,
+                            filename,
+                            response.status,
+                            error_body[:500],
                         )
                     raise HTTPException(status_code=response.status, detail=detail)
 
@@ -5139,7 +5219,9 @@ class JiraDataCenterConnector(BaseConnector):
             # ``accountId or key or name`` (~1326), so use the same fallback here.
             user_by_account_id = {}
             for user_field in ["creator", "reporter", "assignee"]:
-                user_obj = fields.get(user_field, {})
+                # Jira returns JSON ``null`` for unassigned users; ``get(k, {})`` keeps
+                # ``None`` when the key exists — normalize to an empty dict.
+                user_obj = fields.get(user_field) or {}
                 identifier = (
                     user_obj.get("accountId")
                     or user_obj.get("key")
@@ -5160,7 +5242,7 @@ class JiraDataCenterConnector(BaseConnector):
             issue_data = self._extract_issue_data(issue, user_by_account_id)
 
             # Get project info
-            project = fields.get("project", {})
+            project = fields.get("project") or {}
             project_id = project.get("id", "")
 
             # Increment version

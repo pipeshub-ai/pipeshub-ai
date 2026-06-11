@@ -53,6 +53,20 @@ def service(mock_logger, mock_graph_provider, mock_kafka_service):
     return KnowledgeBaseService(mock_logger, mock_graph_provider, mock_kafka_service)
 
 
+def _mock_mongo_to_graph(user_ids, org_id=None, chunk_size=500):
+    return {uid: f"gk_{uid}" for uid in user_ids}
+
+
+def _setup_kb_owner_resolve(service):
+    service.graph_provider.get_user_by_user_id = AsyncMock(
+        return_value={"id": "rk1", "_key": "rk1", "orgId": "org-1"}
+    )
+    service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+    service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
+        side_effect=_mock_mongo_to_graph
+    )
+
+
 # ===========================================================================
 # create_knowledge_base
 # ===========================================================================
@@ -635,10 +649,7 @@ class TestDeleteRecordsInFolder:
 class TestCreateKbPermissions:
     @pytest.mark.asyncio
     async def test_success(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(
-            return_value={"id": "rk1", "_key": "rk1"}
-        )
-        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        _setup_kb_owner_resolve(service)
         service.graph_provider.create_kb_permissions = AsyncMock(return_value={
             "success": True, "grantedCount": 2
         })
@@ -707,10 +718,9 @@ class TestUpdateKbPermission:
 
     @pytest.mark.asyncio
     async def test_success(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "rk1"})
-        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        _setup_kb_owner_resolve(service)
         service.graph_provider.get_kb_permissions = AsyncMock(return_value={
-            "users": {"u1": "READER"}, "teams": {}
+            "users": {"gk_u1": "READER"}, "teams": {}
         })
         service.graph_provider.count_kb_owners = AsyncMock(return_value=2)
         service.graph_provider.update_kb_permission = AsyncMock(return_value=True)
@@ -759,10 +769,9 @@ class TestRemoveKbPermission:
 
     @pytest.mark.asyncio
     async def test_success(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "rk1"})
-        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        _setup_kb_owner_resolve(service)
         service.graph_provider.get_kb_permissions = AsyncMock(return_value={
-            "users": {"u1": "READER"}, "teams": {}
+            "users": {"gk_u1": "READER"}, "teams": {}
         })
         service.graph_provider.count_kb_owners = AsyncMock(return_value=2)
         service.graph_provider.remove_kb_permission = AsyncMock(return_value=True)
@@ -860,10 +869,7 @@ class TestDeleteRecordsInFolderException:
 class TestCreateKbPermissionsException:
     @pytest.mark.asyncio
     async def test_exception(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(
-            return_value={"id": "rk1", "_key": "rk1"}
-        )
-        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        _setup_kb_owner_resolve(service)
         service.graph_provider.create_kb_permissions = AsyncMock(side_effect=Exception("db error"))
         result = await service.create_kb_permissions("kb1", "req1", ["u1"], [], "READER")
         assert result["success"] is False

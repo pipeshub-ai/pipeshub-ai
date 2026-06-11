@@ -17,6 +17,8 @@ write_collections = [
     collection.value for collection in CollectionNames
 ]
 
+MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE = 500
+
 class KnowledgeBaseService:
     """Data handler for knowledge base operations."""
 
@@ -106,6 +108,39 @@ class KnowledgeBaseService:
             return None, None, {"success": False, "code": 403, "reason": reason}
 
         return user_key, user_role, None
+
+    async def _resolve_user_ids_to_graph_keys(
+        self,
+        user_ids: List[str],
+        requester_id: str,
+    ) -> tuple[Optional[List[str]], Optional[Dict]]:
+        """Resolve Mongo userIds to graph user _keys for KB permission graph ops."""
+        if not user_ids:
+            return [], None
+        requester = await self.graph_provider.get_user_by_user_id(user_id=requester_id)
+        org_id = requester.get("orgId") if requester else None
+        try:
+            mapping = await self.graph_provider.get_graph_user_keys_by_mongo_user_ids(
+                user_ids,
+                org_id,
+                chunk_size=MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE,
+            )
+            if not mapping:
+                return None, {
+                    "success": False,
+                    "reason": f"Users not found in graph: {user_ids}",
+                    "code": 400,
+                }
+            missing = [uid for uid in user_ids if uid not in mapping]
+            if missing:
+                return None, {
+                    "success": False,
+                    "reason": f"Users not found in graph: {missing}",
+                    "code": 400,
+                }
+            return [mapping[uid] for uid in user_ids], None
+        except ValueError as e:
+            return None, {"success": False, "reason": str(e), "code": 400}
 
     async def create_knowledge_base(
         self,
@@ -919,8 +954,8 @@ class KnowledgeBaseService:
             self.logger.info(f"🚀 Creating {role} permissions for {len(user_ids)} users and {len(team_ids)} teams on KB {kb_id}")
 
             # Step 1: Validate inputs early
-            unique_users = list(set(user_ids)) if user_ids else []
-            unique_teams = list(set(team_ids)) if team_ids else []
+            unique_users = list(dict.fromkeys(user_ids)) if user_ids else []
+            unique_teams = list(dict.fromkeys(team_ids)) if team_ids else []
 
             if not unique_users and not unique_teams:
                 return {"success": False, "reason": "No users or teams provided", "code": 400}
@@ -939,12 +974,18 @@ class KnowledgeBaseService:
             if err:
                 return err
 
+            graph_user_ids, resolve_err = await self._resolve_user_ids_to_graph_keys(
+                unique_users, requester_id
+            )
+            if resolve_err:
+                return resolve_err
+
             # Step 2: Single AQL query to do everything at once
             # Pass role even if only teams (it will be ignored for teams)
             result = await self.graph_provider.create_kb_permissions(
                 kb_id=kb_id,
                 requester_id=requester_id,
-                user_ids=unique_users,
+                user_ids=graph_user_ids,
                 team_ids=unique_teams,
                 role=role if role else "READER"  # Default for teams (won't be used)
             )
@@ -997,6 +1038,12 @@ class KnowledgeBaseService:
             if err:
                 return err
 
+            graph_user_ids, resolve_err = await self._resolve_user_ids_to_graph_keys(
+                user_ids, requester_id
+            )
+            if resolve_err:
+                return resolve_err
+
             # Validate new role
             valid_roles = ["OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER", "COMMENTER", "READER"]
             if new_role not in valid_roles:
@@ -1009,7 +1056,7 @@ class KnowledgeBaseService:
             # Get current permissions for all users and teams in a single batch query
             current_permissions = await self.graph_provider.get_kb_permissions(
                 kb_id=kb_id,
-                user_ids=user_ids,
+                user_ids=graph_user_ids,
                 team_ids=team_ids
             )
 
@@ -1019,13 +1066,15 @@ class KnowledgeBaseService:
             # Filter out users/teams that don't have permissions (skip them instead of erroring)
             valid_user_ids = []
             skipped_users = []
-            if user_ids:
-                for user_id in user_ids:
-                    if user_id in current_permissions["users"]:
-                        valid_user_ids.append(user_id)
+            if graph_user_ids:
+                for graph_user_id in graph_user_ids:
+                    if graph_user_id in current_permissions["users"]:
+                        valid_user_ids.append(graph_user_id)
                     else:
-                        skipped_users.append(user_id)
-                        self.logger.warning(f"⚠️ Skipping user {user_id} - no permission found on KB {kb_id}")
+                        skipped_users.append(graph_user_id)
+                        self.logger.warning(
+                            f"⚠️ Skipping user {graph_user_id} - no permission found on KB {kb_id}"
+                        )
 
             valid_team_ids = []
             skipped_teams = []
@@ -1146,10 +1195,16 @@ class KnowledgeBaseService:
             if err:
                 return err
 
+            graph_user_ids, resolve_err = await self._resolve_user_ids_to_graph_keys(
+                user_ids, requester_id
+            )
+            if resolve_err:
+                return resolve_err
+
             # Get current permissions for all users and teams in a single batch query
             current_permissions = await self.graph_provider.get_kb_permissions(
                 kb_id=kb_id,
-                user_ids=user_ids,
+                user_ids=graph_user_ids,
                 team_ids=team_ids
             )
 
@@ -1158,16 +1213,18 @@ class KnowledgeBaseService:
             skipped_users = []
             owner_users_to_remove = []
 
-            if user_ids:
-                for user_id in user_ids:
-                    if user_id in current_permissions["users"]:
-                        current_role = current_permissions["users"][user_id]
+            if graph_user_ids:
+                for graph_user_id in graph_user_ids:
+                    if graph_user_id in current_permissions["users"]:
+                        current_role = current_permissions["users"][graph_user_id]
                         if current_role == "OWNER":
-                            owner_users_to_remove.append(user_id)
-                        valid_user_ids.append(user_id)
+                            owner_users_to_remove.append(graph_user_id)
+                        valid_user_ids.append(graph_user_id)
                     else:
-                        skipped_users.append(user_id)
-                        self.logger.warning(f"⚠️ Skipping user {user_id} - no permission found on KB {kb_id}")
+                        skipped_users.append(graph_user_id)
+                        self.logger.warning(
+                            f"⚠️ Skipping user {graph_user_id} - no permission found on KB {kb_id}"
+                        )
 
             valid_team_ids = []
             skipped_teams = []

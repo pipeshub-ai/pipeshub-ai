@@ -126,7 +126,7 @@ async def get_rows_text(
     table = table_data.get("grid")
     if table:
         try:
-            # Prepare rows data
+            # Skip first row if column_headers provided (first row is header)
             if column_headers:
                 table_rows = table[1:]
             else:

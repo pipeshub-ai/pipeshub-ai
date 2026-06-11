@@ -240,12 +240,11 @@ export const useTeamsStore = create<TeamsStore>()(
 
       enterEditMode: () =>
         set((state) => {
-          if (state.detailTeam) {
-            state.isEditMode = true;
-            state.editTeamName = state.detailTeam.name;
-            state.editTeamDescription = state.detailTeam.description ?? '';
-            state.editAddUserIds = [];
-          }
+          if (!state.detailTeam?.canEdit) return;
+          state.isEditMode = true;
+          state.editTeamName = state.detailTeam.name;
+          state.editTeamDescription = state.detailTeam.description ?? '';
+          state.editAddUserIds = [];
         }),
 
       exitEditMode: () =>

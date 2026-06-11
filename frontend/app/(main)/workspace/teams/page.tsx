@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useCallback, useRef, Suspense, useState } from 'react';
+import React, { useEffect, useMemo, useCallback, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Text, Badge } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -45,6 +45,7 @@ const TEAMS_FILTER_CHIPS: FilterChipConfig[] = [
 function TeamsPageContent() {
   const { t } = useTranslation();
   const currentUser = useAuthStore((s) => s.user);
+  const profile = useUserStore((s) => s.profile);
   const addToast = useToastStore((s) => s.addToast);
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -79,16 +80,15 @@ function TeamsPageContent() {
     isEditMode,
     detailTeam,
   } = useTeamsStore();
-  const [creatorsById, setCreatorsById] = useState<Record<string, { id: string; name?: string; email?: string; profilePicture?: string } | null>>({});
 
   // ── Paginated user filter (for "Created By" filter) ──
   const userFilter = usePaginatedFilterOptions({
     fetcher: async (search, page, limit) => {
-      const { users, totalCount } = await UsersApi.listGraphUsers({ page, limit, search });
+      const { users, totalCount } = await UsersApi.fetchMergedUsers({ page, limit, search });
       return { items: users, totalCount };
     },
     mapOption: (u) => ({
-      value: u.id,
+      value: u.userId,
       label: u.name || u.email || 'Unknown User',
       icon: 'person',
     }),
@@ -104,9 +104,8 @@ function TeamsPageContent() {
         limit,
         search: searchQuery || undefined,
       };
-      // Created By filter
-      if (filters.createdBy?.length === 1) {
-        params.created_by = filters.createdBy[0];
+      if (filters.createdBy) {
+        params.created_by = filters.createdBy;
       }
       // Created On date filter
       if (filters.createdAfter) {
@@ -133,41 +132,6 @@ function TeamsPageContent() {
       fetchTeams();
     }
   }, [fetchTeams, isProfileInitialized]);
-
-  // Resolve "Created By" users by graph UUIDs from users API, caching misses too.
-  useEffect(() => {
-    const creatorIds = Array.from(
-      new Set(
-        teams
-          .map((team) => team.createdBy)
-          .filter((id): id is string => Boolean(id))
-      )
-    );
-    const missingCreatorIds = creatorIds.filter(
-      (id) => !Object.prototype.hasOwnProperty.call(creatorsById, id)
-    );
-
-    if (missingCreatorIds.length === 0) return;
-
-    let cancelled = false;
-    UsersApi.getGraphUsersByIds(missingCreatorIds).then((resolved) => {
-      if (cancelled) return;
-      setCreatorsById((prev) => {
-        const next = { ...prev };
-        for (const id of missingCreatorIds) {
-          const user = resolved[id];
-          next[id] = user
-            ? { id: user.id, name: user.name, email: user.email, profilePicture: user.profilePicture }
-            : null;
-        }
-        return next;
-      });
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [teams, creatorsById]);
 
   // ── URL ↔ Store panel sync (see docs/url-driven-panel-state.md) ──
   const pendingUrlRef = useRef<string | null>(null);
@@ -205,7 +169,7 @@ function TeamsPageContent() {
         store.isDetailPanelOpen && store.detailTeam?.id === teamId;
 
       if (alreadyShowing) {
-        if (mode === 'edit' && !store.isEditMode) enterEditMode();
+        if (mode === 'edit' && store.detailTeam?.canEdit && !store.isEditMode) enterEditMode();
         else if (mode !== 'edit' && store.isEditMode) exitEditMode();
         initialUrlProcessed.current = true;
       } else {
@@ -258,13 +222,13 @@ function TeamsPageContent() {
     const existing = teams.find((t) => t.id === teamId);
     if (existing) {
       openDetailPanel(existing);
-      if (mode === 'edit') setTimeout(() => enterEditMode(), 0);
+      if (mode === 'edit' && existing.canEdit) setTimeout(() => enterEditMode(), 0);
       initialUrlProcessed.current = true;
     } else {
       TeamsApi.getTeam(teamId)
         .then((team) => {
           openDetailPanel(team);
-          if (mode === 'edit') setTimeout(() => enterEditMode(), 0);
+          if (mode === 'edit' && team.canEdit) setTimeout(() => enterEditMode(), 0);
           initialUrlProcessed.current = true;
         })
         .catch(() => {
@@ -344,8 +308,11 @@ function TeamsPageContent() {
               label={filter.label}
               icon={filter.icon}
               options={userFilter.options}
-              selectedValues={filters.createdBy || []}
-              onSelectionChange={(values) => setFilters({ createdBy: values })}
+              selectedValues={filters.createdBy ? [filters.createdBy] : []}
+              onSelectionChange={(values) =>
+                setFilters({ createdBy: values[0] ?? undefined })
+              }
+              selectionMode="single"
               searchable
               onSearch={userFilter.onSearch}
               onLoadMore={userFilter.onLoadMore}
@@ -438,21 +405,17 @@ function TeamsPageContent() {
         width: '20%',
         minWidth: '180px',
         render: (team) => {
-          const creator = creatorsById[team.createdBy];
+          const creator = team.createdByUser;
           if (!creator) {
             return <Text size="2" style={{ color: 'var(--slate-9)' }}>-</Text>;
           }
-          const creatorEmail = (creator.email ?? '').trim().toLowerCase();
-          const currentEmail = (currentUser?.email ?? '').trim().toLowerCase();
+          const currentUserId = (profile?.userId ?? currentUser?.id ?? '').trim();
           return (
             <AvatarCell
               name={creator.name || creator.email || 'Unknown User'}
               email={creator.email}
-              isSelf={
-                creator.id === currentUser?.id ||
-                Boolean(currentEmail && creatorEmail === currentEmail)
-              }
-              profilePicture={creator.profilePicture}
+              isSelf={Boolean(currentUserId && creator.userId === currentUserId)}
+              profilePicture={creator.profilePicture ?? undefined}
             />
           );
         },
@@ -468,7 +431,7 @@ function TeamsPageContent() {
         ),
       },
     ],
-    [t, currentUser, creatorsById]
+    [t, currentUser, profile]
   );
 
   // ── Row actions ────────────
@@ -482,7 +445,7 @@ function TeamsPageContent() {
             navigateToDetailPanel(team);
           },
         },
-        team.canDelete && {
+        team.canDelete && team.id !== `all_${team.orgId}` && {
           icon: 'delete',
           label: t('workspace.teams.actions.delete'),
           variant: 'danger' as const,
@@ -514,7 +477,7 @@ function TeamsPageContent() {
   // ── Empty state ──
   const hasActiveFilters = !!(
     searchQuery.trim() ||
-    filters.createdBy?.length ||
+    filters.createdBy ||
     filters.createdAfter ||
     filters.createdBefore
   );

@@ -248,7 +248,7 @@ interface ChatState {
   agentKnowledgeScope: { apps: string[]; kb: string[] } | null;
   /** Resolved agent name for the top chat header when `agentId` is in the URL */
   agentContextDisplayName: string | null;
-  /** Graph DB user ID stored in agent.createdBy — used to resolve the creator's display name */
+  /** MongoDB user ID of the agent creator from GET agent `createdBy` */
   agentContextCreatedBy: string | null;
   /** Access flags (canEdit / showViewAgent / …) for the agent in context — drives the chat header menu */
   agentContextAccess: AgentSidebarRowMenuAccess | null;
@@ -390,7 +390,7 @@ interface ChatState {
   } | null) => void;
   setAgentKnowledgeScope: (scope: { apps: string[]; kb: string[] } | null) => void;
   setAgentContextDisplayName: (name: string | null) => void;
-  setAgentContextCreatedBy: (graphId: string | null) => void;
+  setAgentContextCreatedBy: (mongoUserId: string | null) => void;
   setAgentContextAccess: (access: AgentSidebarRowMenuAccess | null) => void;
 
   // ── Universal agent actions ──
@@ -872,7 +872,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setAgentContextDisplayName: (name) => set({ agentContextDisplayName: name }),
 
-  setAgentContextCreatedBy: (graphId) => set({ agentContextCreatedBy: graphId }),
+  setAgentContextCreatedBy: (mongoUserId) => set({ agentContextCreatedBy: mongoUserId }),
 
   setAgentContextAccess: (access) => set({ agentContextAccess: access }),
 

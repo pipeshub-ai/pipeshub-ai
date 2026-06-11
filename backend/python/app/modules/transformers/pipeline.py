@@ -3,6 +3,7 @@ from typing import Optional
 from app.config.constants.arangodb import CollectionNames, EventTypes, ProgressStatus
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.modules.reconciliation.service import ReconciliationMetadata, ReconciliationService
+from app.modules.transformers.block_container_validator import BlockContainerValidator
 from app.modules.transformers.document_extraction import DocumentExtraction
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import ReconciliationContext, TransformContext
@@ -85,8 +86,19 @@ class IndexingPipeline:
         try:
             record = ctx.record
             block_containers = record.block_containers
-            blocks = block_containers.blocks
-            block_groups = block_containers.block_groups
+
+            if block_containers is not None:
+                BlockContainerValidator(
+                    logger=self.logger,
+                    record_id=record.id,
+                    virtual_record_id=record.virtual_record_id,
+                    record_name=getattr(record, 'record_name', None),
+                ).validate(block_containers)
+                blocks = block_containers.blocks
+                block_groups = block_containers.block_groups
+            else:
+                blocks = None
+                block_groups = None
 
             if blocks is not None and len(blocks) == 0 and block_groups is not None and len(block_groups) == 0:
                 record_id = record.id

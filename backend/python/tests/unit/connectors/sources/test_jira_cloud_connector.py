@@ -3797,7 +3797,164 @@ class TestFetchProjectPermissionScheme401403Cloud:
 
 
 # ===========================================================================
-# Patch fix 3 (Cloud): _get_issue_with_retry
+# Patch fix 3 (Cloud): _search_issues_with_retry
+# ===========================================================================
+
+
+class TestSearchIssuesWithRetryCloud:
+
+    @pytest.mark.asyncio
+    async def test_happy_path_first_attempt(self):
+        conn = _make_connector()
+        ok = _make_mock_response(200, {"issues": [], "total": 0})
+        ds = MagicMock()
+        ds.search_and_reconsile_issues_using_jql_post = AsyncMock(return_value=ok)
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            resp = await conn._search_issues_with_retry(
+                project_key="PROJ",
+                jql='project = "PROJ"',
+                next_page_token=None,
+                max_results=50,
+                fields=["summary"],
+                expand="renderedFields,changelog",
+            )
+        assert resp.status == HttpStatusCode.OK.value
+        ds.search_and_reconsile_issues_using_jql_post.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_retries_on_remote_protocol_error_then_succeeds(self):
+        conn = _make_connector()
+        ok = _make_mock_response(200, {"issues": [], "total": 0})
+        ds = MagicMock()
+        ds.search_and_reconsile_issues_using_jql_post = AsyncMock(
+            side_effect=[httpx.RemoteProtocolError("Server disconnected without sending a response."), ok]
+        )
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                resp = await conn._search_issues_with_retry(
+                    project_key="PROJ",
+                    jql='project = "PROJ"',
+                    next_page_token="token-1",
+                    max_results=50,
+                    fields=["summary"],
+                    expand="renderedFields,changelog",
+                )
+        assert resp.status == HttpStatusCode.OK.value
+        assert ds.search_and_reconsile_issues_using_jql_post.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retries_on_read_timeout(self):
+        conn = _make_connector()
+        ok = _make_mock_response(200, {"issues": [], "total": 0})
+        ds = MagicMock()
+        ds.search_and_reconsile_issues_using_jql_post = AsyncMock(
+            side_effect=[httpx.ReadTimeout("timed out"), ok]
+        )
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                resp = await conn._search_issues_with_retry(
+                    project_key="PROJ",
+                    jql='project = "PROJ"',
+                    next_page_token=None,
+                    max_results=50,
+                    fields=["summary"],
+                    expand="renderedFields,changelog",
+                )
+        assert resp.status == HttpStatusCode.OK.value
+
+    @pytest.mark.asyncio
+    async def test_exhausts_retries_and_raises(self):
+        conn = _make_connector()
+        ds = MagicMock()
+        ds.search_and_reconsile_issues_using_jql_post = AsyncMock(
+            side_effect=httpx.RemoteProtocolError("disconnected")
+        )
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                with pytest.raises(Exception, match="after 3 attempts"):
+                    await conn._search_issues_with_retry(
+                        project_key="PROJ",
+                        jql='project = "PROJ"',
+                        next_page_token=None,
+                        max_results=50,
+                        fields=["summary"],
+                        expand="renderedFields,changelog",
+                        max_attempts=3,
+                    )
+        assert ds.search_and_reconsile_issues_using_jql_post.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_non_transport_error_not_retried(self):
+        conn = _make_connector()
+        ds = MagicMock()
+        ds.search_and_reconsile_issues_using_jql_post = AsyncMock(side_effect=ValueError("unexpected"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with pytest.raises(ValueError, match="unexpected"):
+                await conn._search_issues_with_retry(
+                    project_key="PROJ",
+                    jql='project = "PROJ"',
+                    next_page_token=None,
+                    max_results=50,
+                    fields=["summary"],
+                    expand="renderedFields,changelog",
+                )
+        ds.search_and_reconsile_issues_using_jql_post.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_backoff_sleep_called_between_retries(self):
+        conn = _make_connector()
+        ok = _make_mock_response(200, {"issues": [], "total": 0})
+        ds = MagicMock()
+        ds.search_and_reconsile_issues_using_jql_post = AsyncMock(
+            side_effect=[httpx.ConnectError("refused"), ok]
+        )
+        sleep_calls: list[float] = []
+
+        async def capture(delay: float) -> None:
+            sleep_calls.append(delay)
+
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch("asyncio.sleep", side_effect=capture):
+                await conn._search_issues_with_retry(
+                    project_key="PROJ",
+                    jql='project = "PROJ"',
+                    next_page_token=None,
+                    max_results=50,
+                    fields=["summary"],
+                    expand="renderedFields,changelog",
+                )
+        assert len(sleep_calls) == 1
+        assert sleep_calls[0] == pytest.approx(0.5)
+
+    @pytest.mark.asyncio
+    async def test_fetch_issues_batched_retries_on_transport_error(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.sync_filters = None
+        issue = _make_issue()
+        page1 = _make_mock_response(200, {"issues": [issue], "nextPageToken": None})
+        ds = MagicMock()
+        ds.search_and_reconsile_issues_using_jql_post = AsyncMock(
+            side_effect=[
+                httpx.RemoteProtocolError("Server disconnected without sending a response."),
+                page1,
+            ]
+        )
+        mock_tx, mock_tx_store = _make_tx_store(None)
+        conn.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        conn._handle_attachment_deletions_from_changelog = AsyncMock()
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, return_value=[]):
+                with patch("asyncio.sleep", new_callable=AsyncMock):
+                    batches = []
+                    async for batch in conn._fetch_issues_batched("PROJ", "p1", []):
+                        batches.append(batch)
+        assert len(batches) == 1 and batches[0][0]
+        assert ds.search_and_reconsile_issues_using_jql_post.await_count == 2
+
+
+# ===========================================================================
+# Patch fix 4 (Cloud): _get_issue_with_retry
 # ===========================================================================
 
 

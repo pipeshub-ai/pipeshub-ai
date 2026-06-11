@@ -175,8 +175,12 @@ class TestTransformToUserGroup:
         assert result.source_user_group_id == "g1"
 
     def test_missing_id(self):
+        """When ID is missing, name is used as source_user_group_id."""
         c = _conn()
-        assert c._transform_to_user_group({"name": "devs"}) is None
+        result = c._transform_to_user_group({"name": "devs"})
+        assert result is not None
+        assert result.name == "devs"
+        assert result.source_user_group_id == "devs"  # Falls back to name when id missing
 
     def test_missing_name(self):
         c = _conn()
@@ -1751,14 +1755,12 @@ class TestRunSync:
         space.short_name = "TEST"
         space.name = "Test Space"
         c._sync_spaces = AsyncMock(return_value=[space])
-        c._sync_folders = AsyncMock()
         c._sync_content = AsyncMock()
         c._sync_permission_changes_from_audit_log = AsyncMock()
 
         await c.run_sync()
         c._sync_users.assert_awaited_once()
         c._sync_user_groups.assert_awaited_once()
-        c._sync_folders.assert_awaited_once()
         assert c._sync_content.await_count == 2  # pages + blogposts
 
 

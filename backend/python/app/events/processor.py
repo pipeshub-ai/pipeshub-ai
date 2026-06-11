@@ -786,7 +786,15 @@ class Processor:
 
                     if non_header_row_dicts:
                         try:
-                            table_data = {"grid": [[row] for row in non_header_row_dicts]}
+                            # get_rows_text skips row 0 when column_headers is provided
+                            cols = column_headers or []
+                            grid = []
+                            if cols:
+                                grid.append([{"text": col} for col in cols])
+                            for row_dict in non_header_row_dicts:
+                                grid_row = [{"text": row_dict.get(col, "")} for col in cols]
+                                grid.append(grid_row)
+                            table_data = {"grid": grid}
                             row_descriptions, _ = await get_rows_text(
                                 self.config_service, table_data, table_summary, column_headers
                             )
