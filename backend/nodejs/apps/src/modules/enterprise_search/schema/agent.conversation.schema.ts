@@ -117,14 +117,22 @@ const referenceDataItemSchema = new Schema(
   { _id: false },
 );
 
+const toolCallItemSchema = new Schema(
+  {
+    toolName: { type: String, required: true },
+    toolResult: { type: Schema.Types.Mixed },
+  },
+  { _id: false },
+);
+
 const messageSchema = new Schema<IMessage>(
   {
     messageType: {
       type: String,
-      enum: ['user_query', 'bot_response', 'error', 'feedback', 'system'],
+      enum: ['user_query', 'bot_response', 'error', 'feedback', 'system', 'tool_call'],
       required: true,
     },
-    content: { type: String, required: true },
+    content: { type: String, default: '' },
     contentFormat: {
       type: String,
       enum: ['MARKDOWN', 'JSON', 'HTML'],
@@ -153,6 +161,8 @@ const messageSchema = new Schema<IMessage>(
     attachments: [attachmentRefSchema],
     // Reference data for follow-up queries (stores IDs from tool responses)
     referenceData: [referenceDataItemSchema],
+    // Tool call data for tool_call messageType
+    tools: [toolCallItemSchema],
   },
   { timestamps: true },
 );

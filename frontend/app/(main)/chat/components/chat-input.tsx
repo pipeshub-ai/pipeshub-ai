@@ -532,6 +532,7 @@ export function ChatInput({
         : undefined;
       setActiveMessageAction(null);
       setRegenModelOverride(null);
+      setMessage('');
       if (activeSlotId) {
         streamRegenerateForSlot(activeSlotId, activeMessageAction.messageId, modelOverride, originalFilters);
       }
@@ -544,6 +545,7 @@ export function ChatInput({
       });
       setActiveMessageAction(null);
       setRegenModelOverride(null);
+      setMessage('');
       return;
     }
   }, [activeMessageAction, regenModelOverride, activeSlotId, t]);

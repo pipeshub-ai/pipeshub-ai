@@ -5917,6 +5917,38 @@ export const unshareAgent =
                 }
                 filteredChunk += event + '\n\n';
               }
+            } else if (eventType === 'ask_user_question' && dataLine && savedConversation) {
+              try {
+                const eventData = JSON.parse(dataLine);
+                if (eventData.status === 'success') {
+                  const toolCallMessage = {
+                    messageType: 'tool_call' as const,
+                    content: '',
+                    tools: [{
+                      toolName: 'ask_user_question',
+                      toolResult: eventData.toolData ?? eventData,
+                    }],
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                  };
+                  void AgentConversation.findByIdAndUpdate(
+                    savedConversation._id,
+                    { $push: { messages: toolCallMessage } },
+                  ).catch((saveErr: any) => {
+                    logger.error('Failed to persist ask_user_question tool_call message', {
+                      requestId,
+                      conversationId: savedConversation?._id,
+                      error: saveErr?.message,
+                    });
+                  });
+                }
+              } catch (parseErr: any) {
+                logger.warn('Failed to parse ask_user_question event data', {
+                  requestId,
+                  error: parseErr?.message,
+                });
+              }
+              filteredChunk += event + '\n\n';
             } else {
               // Forward all other non-complete events
               filteredChunk += event + '\n\n';
@@ -6915,6 +6947,38 @@ export const addMessageStreamToAgentConversation =
                 }
                 filteredChunk += event + '\n\n';
               }
+            } else if (eventType === 'ask_user_question' && dataLine && existingConversation) {
+              try {
+                const eventData = JSON.parse(dataLine);
+                if (eventData.status === 'success') {
+                  const toolCallMessage = {
+                    messageType: 'tool_call' as const,
+                    content: '',
+                    tools: [{
+                      toolName: 'ask_user_question',
+                      toolResult: eventData.toolData ?? eventData,
+                    }],
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                  };
+                  void AgentConversation.findByIdAndUpdate(
+                    existingConversation._id,
+                    { $push: { messages: toolCallMessage } },
+                  ).catch((saveErr: any) => {
+                    logger.error('Failed to persist ask_user_question tool_call message', {
+                      requestId,
+                      conversationId: existingConversation?._id,
+                      error: saveErr?.message,
+                    });
+                  });
+                }
+              } catch (parseErr: any) {
+                logger.warn('Failed to parse ask_user_question event data', {
+                  requestId,
+                  error: parseErr?.message,
+                });
+              }
+              filteredChunk += event + '\n\n';
             } else {
               // Forward all non-complete events
               filteredChunk += event + '\n\n';

@@ -523,6 +523,7 @@ def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
             'coding_sandbox',
             'database_sandbox',
             'image_generator',
+            'internaltools',  # ToolsetBuilder @Toolset(...).as_internal() — must match tool app_name
         ]:
             return True
 
@@ -532,6 +533,7 @@ def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
         "fetch_url",
         "get_current_datetime",
         "image_generator.",
+        "internaltools.",
         "web_search",
     ]
 

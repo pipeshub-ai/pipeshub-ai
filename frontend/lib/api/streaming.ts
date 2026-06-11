@@ -285,6 +285,7 @@ export async function streamSSERequest<T = unknown>(
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'text/event-stream',
+        'client-name': 'pipeshub-ai',
         ...(token && { Authorization: `Bearer ${token}` }),
       },
       body: JSON.stringify(body),

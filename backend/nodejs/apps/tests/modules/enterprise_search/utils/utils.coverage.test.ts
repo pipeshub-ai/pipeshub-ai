@@ -206,6 +206,21 @@ describe('Enterprise Search Utils - coverage', () => {
       expect(result).to.have.lengthOf(2)
     })
 
+    it('should filter out tool_call messages', () => {
+      const messages = [
+        { messageType: 'user_query', content: 'Hello' },
+        {
+          messageType: 'tool_call',
+          content: '',
+          tools: [{ toolName: 'ask_user_question', toolResult: { question: 'Pick one' } }],
+        },
+        { messageType: 'bot_response', content: 'Hi' },
+      ]
+      const result = formatPreviousConversations(messages as any)
+      expect(result).to.have.lengthOf(2)
+      expect(result.map((m: any) => m.role)).to.not.include('tool_call')
+    })
+
     it('should include referenceData when present', () => {
       const messages = [
         { messageType: 'bot_response', content: 'Answer', referenceData: [{ name: 'doc1' }] },
@@ -745,7 +760,7 @@ describe('Enterprise Search Utils - coverage', () => {
     })
 
     it('should accept all valid message types', () => {
-      const validTypes = ['user_query', 'bot_response', 'error', 'feedback', 'system']
+      const validTypes = ['user_query', 'bot_response', 'error', 'feedback', 'system', 'tool_call']
       for (const type of validTypes) {
         const req = createMockRequest({ query: { messageType: type } })
         const result = buildMessageFilter(req)
@@ -1504,6 +1519,100 @@ describe('Enterprise Search Utils - coverage', () => {
         chunk, '', mockConv, 0, null, 'req-1', res, onComplete,
       )
       expect(res.write.called).to.be.true
+    })
+
+    it('should persist ask_user_question tool_call for agent conversations', () => {
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      const mockConv: any = { _id: 'c1', agentKey: 'agent-1' }
+      const findByIdAndUpdateStub = sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({})
+      const toolData = { question: 'Pick a channel', options: ['#general', '#random'] }
+      const chunk = Buffer.from(
+        `event: ask_user_question\ndata: ${JSON.stringify({ status: 'success', toolData })}\n\n`,
+      )
+
+      handleRegenerationStreamData(chunk, '', mockConv, 0, null, 'req-1', res, sinon.stub())
+
+      expect(res.write.calledOnce).to.be.true
+      expect(findByIdAndUpdateStub.calledOnce).to.be.true
+      const updatePayload = findByIdAndUpdateStub.firstCall.args[1]
+      expect(updatePayload.$push.messages.messageType).to.equal('tool_call')
+      expect(updatePayload.$push.messages.tools[0].toolName).to.equal('ask_user_question')
+      expect(updatePayload.$push.messages.tools[0].toolResult).to.deep.equal(toolData)
+    })
+
+    it('should use event payload as toolResult when toolData is absent', () => {
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      const mockConv: any = { _id: 'c1', agentKey: 'agent-1' }
+      const findByIdAndUpdateStub = sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({})
+      const eventPayload = { status: 'success', question: 'Which team?' }
+      const chunk = Buffer.from(
+        `event: ask_user_question\ndata: ${JSON.stringify(eventPayload)}\n\n`,
+      )
+
+      handleRegenerationStreamData(chunk, '', mockConv, 0, null, 'req-1', res, sinon.stub())
+
+      const toolResult = findByIdAndUpdateStub.firstCall.args[1].$push.messages.tools[0].toolResult
+      expect(toolResult).to.deep.equal(eventPayload)
+    })
+
+    it('should forward ask_user_question without persisting when status is not success', () => {
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      const mockConv: any = { _id: 'c1', agentKey: 'agent-1' }
+      const findByIdAndUpdateStub = sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({})
+      const chunk = Buffer.from('event: ask_user_question\ndata: {"status":"pending"}\n\n')
+
+      handleRegenerationStreamData(chunk, '', mockConv, 0, null, 'req-1', res, sinon.stub())
+
+      expect(res.write.calledOnce).to.be.true
+      expect(findByIdAndUpdateStub.called).to.be.false
+    })
+
+    it('should forward ask_user_question when event data cannot be parsed', () => {
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      const mockConv: any = { _id: 'c1', agentKey: 'agent-1' }
+      const findByIdAndUpdateStub = sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({})
+      const chunk = Buffer.from('event: ask_user_question\ndata: {invalid json}\n\n')
+
+      handleRegenerationStreamData(chunk, '', mockConv, 0, null, 'req-1', res, sinon.stub())
+
+      expect(res.write.calledOnce).to.be.true
+      expect(findByIdAndUpdateStub.called).to.be.false
+    })
+
+    it('should not persist ask_user_question for non-agent conversations', () => {
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      const mockConv: any = { _id: 'c1' }
+      const findByIdAndUpdateStub = sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({})
+      const chunk = Buffer.from(
+        'event: ask_user_question\ndata: {"status":"success","toolData":{"question":"Pick one"}}\n\n',
+      )
+
+      handleRegenerationStreamData(chunk, '', mockConv, 0, null, 'req-1', res, sinon.stub())
+
+      expect(res.write.calledOnce).to.be.true
+      expect(findByIdAndUpdateStub.called).to.be.false
+    })
+
+    it('should still forward ask_user_question when DB persistence fails', async () => {
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      const mockConv: any = { _id: 'c1', agentKey: 'agent-1' }
+      sinon.stub(AgentConversation, 'findByIdAndUpdate').rejects(new Error('DB write failed'))
+      const chunk = Buffer.from(
+        'event: ask_user_question\ndata: {"status":"success","toolData":{"question":"Pick one"}}\n\n',
+      )
+
+      handleRegenerationStreamData(chunk, '', mockConv, 0, null, 'req-1', res, sinon.stub())
+      await new Promise((resolve) => setTimeout(resolve, 10))
+
+      expect(res.write.calledOnce).to.be.true
+      const forwarded = res.write.firstCall.args[0]
+      expect(forwarded).to.include('ask_user_question')
     })
   })
 

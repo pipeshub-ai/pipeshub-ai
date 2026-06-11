@@ -18,8 +18,10 @@ import logging
 import os
 import re
 import time
-from typing import Any, Literal, Union
+from typing import Any, Dict, Literal, Union
 from uuid import UUID
+
+from pydantic import ValidationError
 
 from app.config.constants.service import config_node_constants
 from app.config.configuration_service import ConfigurationService
@@ -61,6 +63,9 @@ TOOL_RESULT_TUPLE_LENGTH = 2
 MAX_PARALLEL_TOOLS = 10
 TOOL_TIMEOUT_SECONDS = 60.0
 RETRIEVAL_TIMEOUT_SECONDS = 45.0  # Faster timeout for retrieval
+# Max chars of Pydantic validation detail embedded in tool results for the LLM planner
+_MAX_VALIDATION_ERROR_LLM_CHARS = 2000
+_MAX_TOOL_VALIDATION_RESULT_CHARS = 12000
 
 # Response formatting constants
 # NOTE: Truncation limits are set high to preserve context. Only truncate if absolutely necessary.
@@ -642,7 +647,7 @@ class PlaceholderResolver:
 
         This allows tool calls to proceed when only *optional* fields have
         unresolved placeholders.  Required fields that are None will be caught
-        by Pydantic validation in _validate_and_normalize_args.
+        by Pydantic validation in _validate_and_normalize_args (returns ``(None, detail)``).
 
         Returns:
             (cleaned_args, list_of_placeholder_names_that_were_stripped)
@@ -1151,6 +1156,26 @@ class ToolExecutor:
 
             tool_results.append(result_dict)
 
+            # Emit ask_user_question event immediately when the tool result is
+            # ready so the frontend receives it before any answer_chunk tokens
+            # and can decide whether to suppress the LLM text response.
+            if actual_tool_name in _ASK_USER_QUESTION_TOOL_NAMES:
+                client_name = (config.get("configurable") or {}).get("client_name")
+                if client_name:
+                    raw_result = result_dict.get("result", "")
+                    try:
+                        payload = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+                    except (json.JSONDecodeError, TypeError):
+                        payload = raw_result
+                    safe_stream_write(writer, {
+                        "event": "ask_user_question",
+                        "data": {
+                            "status": result_dict.get("status"),
+                            "toolData": payload,
+                        },
+                    }, config)
+                    state["ask_user_question_emitted"] = True
+
             log.info(
                 "📌 Tool status [%d/%d]: %s | status=%s | duration_ms=%.0f",
                 i + 1,
@@ -1339,16 +1364,22 @@ class ToolExecutor:
             log.debug(f"⚙️ Executing {tool_name} with args: {json.dumps(tool_args, default=str)[:150]}...")
 
             # Validate args using Pydantic schema
-            validated_args = await ToolExecutor._validate_and_normalize_args(
+            validated_args, validation_error_detail = await ToolExecutor._validate_and_normalize_args(
                 tool, tool_name, tool_args, log
             )
 
             if validated_args is None:
-                # Validation failed - error already logged
+                # Validation failed - error already logged; surface detail for LLM self-correction
                 duration_ms = (time.perf_counter() - start_time) * 1000
+                detail = (validation_error_detail or "Argument validation failed").strip()
+                result_msg = f"Error: Invalid tool arguments for {tool_name}. {detail}"
+                if len(result_msg) > _MAX_TOOL_VALIDATION_RESULT_CHARS:
+                    result_msg = (
+                        result_msg[:_MAX_TOOL_VALIDATION_RESULT_CHARS] + "...(truncated)"
+                    )
                 return {
                     "tool_name": tool_name,
-                    "result": "Error: Argument validation failed",
+                    "result": result_msg,
                     "status": "error",
                     "tool_id": tool_id,
                     "args": tool_args,
@@ -1423,29 +1454,53 @@ class ToolExecutor:
             }
 
     @staticmethod
+    def _format_validation_errors_for_llm(exc: ValidationError) -> str:
+        """Serialize Pydantic errors for inclusion in tool results (truncated)."""
+        try:
+            raw = json.dumps(exc.errors(), default=str)
+        except Exception:
+            raw = str(exc)
+        if len(raw) > _MAX_VALIDATION_ERROR_LLM_CHARS:
+            return raw[:_MAX_VALIDATION_ERROR_LLM_CHARS] + "...(truncated)"
+        return raw
+
+    @staticmethod
     async def _validate_and_normalize_args(
         tool: object,
         tool_name: str,
         tool_args: dict[str, Any],
         log: logging.Logger
-    ) -> dict[str, Any] | None:
-        """Validate and normalize tool args using Pydantic schema"""
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Validate and normalize tool args using Pydantic schema.
+
+        Returns:
+            ``(normalized_args, None)`` on success, or when the tool has no ``args_schema``
+            (first element is the dict to pass to the tool).
+            ``(None, detail)`` on failure; ``detail`` is safe to show to the LLM in a tool result.
+        """
         try:
             # Get schema
             args_schema = getattr(tool, 'args_schema', None)
             if not args_schema:
-                return tool_args  # No validation available
+                return tool_args, None  # No validation available
 
             # Validate
             validated_model = args_schema.model_validate(tool_args)
             validated_args = validated_model.model_dump(exclude_unset=True)
 
             log.debug(f"✅ Validated args for {tool_name}")
-            return validated_args
+            return validated_args, None
+
+        except ValidationError as e:
+            log.error(f"❌ Validation failed for {tool_name}: {e}")
+            return None, ToolExecutor._format_validation_errors_for_llm(e)
 
         except Exception as e:
             log.error(f"❌ Validation failed for {tool_name}: {e}")
-            return None
+            detail = f"{type(e).__name__}: {str(e)}"
+            if len(detail) > _MAX_VALIDATION_ERROR_LLM_CHARS:
+                detail = detail[:_MAX_VALIDATION_ERROR_LLM_CHARS] + "...(truncated)"
+            return None, detail
 
     @staticmethod
     async def _run_tool(tool: object, args: dict[str, Any]) -> dict[str, Any] | str | tuple[bool, str] | list[Any] | None:
@@ -2864,7 +2919,7 @@ Generate:
 
 **Error handling:**
 - First fail: Fix and retry
-- Second fail: Ask user
+- Second fail: If you need user input to proceed, plan `internaltools.ask_user_question` (exact name from Available Tools) — do not rely on plain-text questions
 - Permission error: Inform immediately
 
 **Clarification (ONLY for Actions):**
@@ -2880,9 +2935,27 @@ Set `needs_clarification: true` ONLY if:
 - User asks "tell me about X" or "what is X" → Use retrieval
 - Optional parameters are missing → Use tool defaults or omit them
 
+## ⚠️ Skipped / No-Preference Answers (ABSOLUTE PRIORITY)
+
+If a `User selections:` response contains `[No preference]`, the user **deliberately skipped** that question.
+
+**ABSOLUTE RULES — override all other clarification rules:**
+- **NEVER** call `internaltools.ask_user_question` for a question already answered with `[No preference]`.
+- **NEVER** re-ask it in any form — tool or plain text.
+- If the skipped detail was required and you cannot proceed, respond **once**: *"I don't have sufficient information to complete this request — you chose not to provide [the missing detail]. Please let me know if you'd like to try again."* Then stop.
+- Do **not** loop, retry, or ask follow-ups.
+
 ## ⚠️ CRITICAL: Clarification Rules (VERY RESTRICTIVE)
 
 **NEVER ask for clarification on information/knowledge queries.**
+
+**MANDATORY — `internaltools.ask_user_question` for all clarification:**
+Whenever clarification IS needed and `internaltools.ask_user_question` is listed in your Available Tools, you MUST use it. Plan the tool call (not plain text) whenever:
+- The user's **intent** is ambiguous between incompatible goals (e.g. "help me with the project" — search? create task? generate report? — user must choose).
+- The query is **too incomplete to act on** — no interpretable topic or action, bare fragments like "do it", "handle this", "that one" with no antecedent in conversation history.
+- A **write action** has missing required parameters that only the user can provide.
+- The **scope or target** cannot be resolved from conversation context (retrieval vs a specific service vs a write action).
+Do NOT over-ask: if the query has a clear searchable keyword/topic (even if vague), use retrieval first. Only ask when the **intent or next action** itself is unclear, not merely which facts to look up.
 
 Set `needs_clarification: true` ONLY if ALL of these are true:
 1. User wants to PERFORM a WRITE action (create/update/delete)
@@ -2893,7 +2966,7 @@ Set `needs_clarification: true` ONLY if ALL of these are true:
 - Query is about information/knowledge (even if vague)
 - Query mentions any topic, name, concept, or keyword
 - Query could potentially be answered from internal knowledge
-- You're unsure what the user means → SEARCH FIRST, clarify later
+- You're unsure **which document or facts** apply → SEARCH FIRST; if results still do not resolve **what the user wants you to do**, then use `internaltools.ask_user_question`
 
 **Examples - NEVER clarify these (use retrieval):**
 - "tell me about X" → retrieval(query="X")
@@ -2901,10 +2974,26 @@ Set `needs_clarification: true` ONLY if ALL of these are true:
 - "missing info" → retrieval(query="missing info")
 - Any query that could be a document name or topic → retrieval
 
-**The ONLY time to clarify:**
+**When you MUST use `internaltools.ask_user_question` (exact name from Available Tools — may appear with underscores for some models):**
+- **Any** time you would ask the user a question: clarification, disambiguation, preferences, or missing details — **always** via this tool, never only in free-form assistant text or `clarifying_question`.
+- **Write actions** with missing required parameters (same examples as below).
+- **Incomplete or non-actionable input:** no interpretable topic or task (e.g. bare "help", "do it", "that one" with no antecedent in history), or the message is **ambiguous between incompatible goals** so you cannot choose tools responsibly without a user choice.
+- **Unclear scope or target** after using conversation context — when you cannot map the request to retrieval vs a specific service vs a write action without the user picking an option.
+
+**Retrieval still comes first** when the only issue is a vague **topic/keyword** that could match indexed knowledge ("tell me about X", "what is the process") — plan retrieval; use `internaltools.ask_user_question` only if **intent or next step** remains unresolved after that is unreasonable (prefer asking when the query cannot be tied to any searchable topic at all).
+
+**Examples that warrant the tool (not plain text):**
 - "Create a Jira ticket" (missing: project, summary, description)
 - "Update the page" (missing: which page, what content)
 - "Send an email" (missing: recipient, subject, body)
+- "Run the report" (which report, which system, which time range — user must choose)
+
+**⛔ ABSOLUTE RULE — How to clarify — use the tool, NEVER plain text:**
+- You MUST NEVER set `needs_clarification: true` when `internaltools.ask_user_question` is available.
+- You MUST NEVER write a question in your response text when you need an answer from the user — use the tool, then the user responds.
+- You MUST ALWAYS plan `internaltools.ask_user_question` as a tool call with structured questions and tappable options for every missing field or disambiguation.
+- Only fall back to `needs_clarification: true` if `internaltools.ask_user_question` is literally NOT listed in your available tools.
+- **Before planning options for `ask_user_question`, analyze what is needed:** if options are enumerable live resources (channels, users, projects, spaces) and a READ tool exists — plan that READ tool FIRST; its results become the options (never hardcode resource names). If options are fixed capability values (issue types, priorities) — use the tool schema only. No read tool? Use `isUserInput: true`. Every option MUST map to something the available tools can execute.
 
 ## Reference Data & User Context (CRITICAL)
 
@@ -6574,10 +6663,12 @@ async def respond_node(
             "confidence": "Low",
             "answerMatchType": "Error"
         }
+        error_response.update(_tool_names_and_results_from_state(state))
         safe_stream_write(writer, {
             "event": "answer_chunk",
             "data": {"chunk": error_msg, "accumulated": error_msg, "citations": []}
         }, config)
+        _emit_ask_user_question_tool_event(writer, state, config)
         safe_stream_write(writer, {"event": "complete", "data": error_response}, config)
         state["response"] = error_msg
         state["completion_data"] = error_response
@@ -6603,6 +6694,8 @@ async def respond_node(
             "confidence": "Medium",
             "answerMatchType": "Clarification Needed"
         }
+        clarify_response.update(_tool_names_and_results_from_state(state))
+        _emit_ask_user_question_tool_event(writer, state, config)
         safe_stream_write(writer, {
             "event": "answer_chunk",
             "data": {"chunk": clarifying_question, "accumulated": clarifying_question, "citations": []}
@@ -6910,6 +7003,32 @@ async def respond_node(
         confidence = None
         reference_data = []
         _captured_web_records: list[dict] = list(_prior_web_records)
+                # Log every tool name + result payload from state (planner / prior execution)
+        _tw = _tool_names_and_results_from_state(state)
+        _tool_rows = _tw.get("tool_results") or []
+        log.debug(
+            "respond_node tools before stream | succeeded=%s failed=%s n=%d",
+            _tw.get("succeeded_tool_names"),
+            _tw.get("failed_tool_names"),
+            len(_tool_rows),
+        )
+        _TOOL_LOG_DATA_MAX = 12000
+        for _r in _tool_rows:
+            _tname = _r.get("tool_name", "unknown")
+            _tdata = _r.get("result", _r)
+            try:
+                _data_str = json.dumps(_tdata, default=str, ensure_ascii=False)
+            except (TypeError, ValueError):
+                _data_str = str(_tdata)
+            if len(_data_str) > _TOOL_LOG_DATA_MAX:
+                _full_len = len(_data_str)
+                _data_str = _data_str[:_TOOL_LOG_DATA_MAX] + f"... [truncated, total_len={_full_len}]"
+            log.debug(
+                "respond_node tool | name=%s status=%s toolData=%s",
+                _tname,
+                _r.get("status"),
+                _data_str,
+            )
 
         async for stream_event in stream_llm_response_with_tools(
             llm=llm,
@@ -6978,6 +7097,8 @@ async def respond_node(
                     "referenceData": normalize_reference_data_items(event_data["referenceData"]),
                 }
 
+            # if event_type == "complete":
+            _emit_ask_user_question_tool_event(writer, state, config)
             safe_stream_write(writer, {"event": event_type, "data": event_data}, config)
 
             if event_type == "complete":
@@ -6997,11 +7118,12 @@ async def respond_node(
                 "confidence": "Low",
                 "answerMatchType": "Fallback Response"
             }
-
+            fallback_response.update(_tool_names_and_results_from_state(state))
             safe_stream_write(writer, {
                 "event": "answer_chunk",
                 "data": {"chunk": answer_text, "accumulated": answer_text, "citations": []}
             }, config)
+            _emit_ask_user_question_tool_event(writer, state, config)
             safe_stream_write(writer, {"event": "complete", "data": fallback_response}, config)
 
             state["response"] = answer_text
@@ -7016,7 +7138,7 @@ async def respond_node(
             if reference_data:
                 completion_data["referenceData"] = reference_data
                 log.debug(f"📎 Stored {len(reference_data)} reference items")
-
+            completion_data.update(_tool_names_and_results_from_state(state))
             state["response"] = answer_text
             state["completion_data"] = completion_data
 
@@ -7031,6 +7153,8 @@ async def respond_node(
             "confidence": "Low",
             "answerMatchType": "Error"
         }
+        error_response.update(_tool_names_and_results_from_state(state))
+        _emit_ask_user_question_tool_event(writer, state, config)
         safe_stream_write(writer, {
             "event": "answer_chunk",
             "data": {"chunk": error_msg, "accumulated": error_msg, "citations": []}
@@ -7240,6 +7364,8 @@ async def _generate_direct_response(
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
 
+            if event_type == "complete":
+                _emit_ask_user_question_tool_event(writer, state, config)
             safe_stream_write(writer, {"event": event_type, "data": event_data}, config)
 
             if event_type == "complete":
@@ -7253,6 +7379,7 @@ async def _generate_direct_response(
             "event": "answer_chunk",
             "data": {"chunk": answer_text, "accumulated": answer_text, "citations": []},
         }, config)
+        _emit_ask_user_question_tool_event(writer, state, config)
         safe_stream_write(writer, {
             "event": "complete",
             "data": {"answer": answer_text, "citations": [], "confidence": "Low"},
@@ -7266,6 +7393,7 @@ async def _generate_direct_response(
         "confidence": "High",
         "answerMatchType": "Direct Response",
     }
+    state["completion_data"].update(_tool_names_and_results_from_state(state))
 
 
 async def _generate_fast_api_response(
@@ -7429,7 +7557,8 @@ async def _generate_fast_api_response(
     }
     if reference_data:
         completion_data["referenceData"] = reference_data
-
+    completion_data.update(_tool_names_and_results_from_state(state))
+    _emit_ask_user_question_tool_event(writer, state, config)
     safe_stream_write(writer, {"event": "complete", "data": completion_data}, config)
     state["response"] = answer_text
     state["completion_data"] = completion_data
@@ -7489,6 +7618,69 @@ def _extract_urls_for_reference_data(content: object, reference_data: list[dict]
         for item in content[:20]:  # Safety limit
             _extract_urls_for_reference_data(item, reference_data)
 
+def _tool_names_and_results_from_state(state: ChatState) -> Dict[str, Any]:
+    """Derive succeeded/failed tool names and full tool results from state (no separate state fields)."""
+    results = state.get("all_tool_results") or state.get("tool_results") or []
+    succeeded = [r.get("tool_name") for r in results if r.get("tool_name") and r.get("status") == "success"]
+    failed = [r.get("tool_name") for r in results if r.get("tool_name") and r.get("status") == "error"]
+    return {
+        "succeeded_tool_names": succeeded,
+        "failed_tool_names": failed,
+        "tool_results": results,
+    }
+
+_ASK_USER_QUESTION_TOOL_NAMES = frozenset({
+    "internaltools_ask_user_question",
+    "internaltools.ask_user_question",
+    # Legacy typo in older prompts / logs
+    
+})
+
+def _emit_ask_user_question_tool_event(
+    writer: StreamWriter,
+    state: ChatState,
+    config: RunnableConfig,
+) -> None:
+    """
+    Emit a dedicated ``ask_user_question`` SSE event carrying the full structured
+    payload (questions with UUIDs and option IDs) so the frontend can render
+    interactive option cards. Called immediately before the final ``complete`` event.
+
+    Only emitted when the request was made by a recognised client (i.e. the
+    ``client-name`` header was present and forwarded via ``config["configurable"]``).
+    This prevents the event from being emitted in programmatic / API-only callers
+    that have no UI to render interactive cards.
+    """
+    client_name = (config.get("configurable") or {}).get("client_name")
+    if not client_name:
+        return
+
+    # Already emitted eagerly from _execute_sequential — skip to avoid
+    # sending the same event twice before the complete event.
+    if state.get("ask_user_question_emitted"):
+        return
+
+    for row in _tool_names_and_results_from_state(state).get("tool_results") or []:
+        tname = row.get("tool_name") or ""
+        if tname not in _ASK_USER_QUESTION_TOOL_NAMES:
+            continue
+        raw_result = row.get("result", "")
+        try:
+            payload = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+        except (json.JSONDecodeError, TypeError):
+            payload = raw_result
+        safe_stream_write(
+            writer,
+            {
+                "event": "ask_user_question",
+                "data": {
+                    "status": row.get("status"),
+                    "toolData": payload,
+                },
+            },
+            config,
+        )
+        state["ask_user_question_emitted"] = True
 
 async def _build_tool_results_context(
     tool_results: list[dict],
@@ -8379,6 +8571,26 @@ def _build_react_system_prompt(state: ChatState, log: logging.Logger) -> str:
 
     base_prompt = instructions_prefix + role_prefix + """You are an intelligent AI assistant that uses tools to help users accomplish tasks. You follow a structured reasoning process for every action to ensure correctness and reliability.
 
+## Skipped / No-Preference Answers (ABSOLUTE PRIORITY — read this first)
+
+When a user's response contains `User selections:` and any answer shows `[No preference]`, the user **deliberately chose to skip** that question.
+
+**ABSOLUTE RULES — these override every other clarification rule:**
+- **NEVER** call `internaltools.ask_user_question` again for a question the user already answered with `[No preference]`.
+- **NEVER** re-ask the same question in any form — not via the tool, not as plain text.
+- If the skipped information was required to complete the action and you cannot reasonably proceed without it, respond **once** with a clear message such as: *"I don't have sufficient information to complete this request — you chose not to provide [the missing detail], which I need to proceed. Please let me know if you'd like to try again."*
+- Do **not** loop, retry, or ask a follow-up question. One clear message and stop.
+
+## User questions (MANDATORY)
+
+Whenever you need **any** answer, clarification, or disambiguation from the user — including missing write parameters, unclear intent, incomplete requests, or ambiguity between different actions — you MUST call **`internaltools.ask_user_question`** using the **exact tool name shown in Available Tools** below (some models use underscores, e.g. `internaltools_ask_user_question`).
+
+- Do **not** ask questions only in your assistant message text; the structured tool drives tappable options in the UI.
+- If the user message is too incomplete or ambiguous to run read/search tools safely (no topic, no referent, incompatible goals), call this tool before other tools.
+- If the only issue is a vague **topic** for an information request, prefer `retrieval_search_internal_knowledge` first; use `internaltools.ask_user_question` when you still cannot determine **what to do** or **which path** to take.
+- **MANDATORY:** Whenever clarification is needed and `internaltools.ask_user_question` is available in your tool list, you MUST use this tool — never fall back to plain-text questions or `needs_clarification: true`.
+- **Before calling `ask_user_question`, analyze the query and pick options dynamically:** enumerable live data (channels, users, projects) + a READ tool exists → call that READ tool first, use the real results as options. Fixed values (issue types, priorities) → tool schema only. No read tool → `isUserInput: true`. Never present options you cannot execute.
+
 ## Reasoning Protocol (MANDATORY)
 
 You MUST follow this protocol for EVERY tool interaction. Think step-by-step.
@@ -8400,8 +8612,8 @@ You MUST follow this protocol for EVERY tool interaction. Think step-by-step.
      • **DEFAULT**: Has a system default (reminder=15min, sensitivity=normal) → use silently.
      • **MISSING**: Only the user can decide (meeting time, recipients, content) → must ask.
    - If ANY user-provided field is MISSING:
-     → Do NOT call the tool yet.
-     → Ask the user for ALL missing fields in ONE message.
+     → Do NOT call the write tool yet.
+     → Call **`internaltools.ask_user_question`** (see Available Tools for the exact name) once with structured questions covering ALL missing fields (combined in one tool call when possible).
      → After they respond, execute immediately without further confirmation.
    - If ALL fields are available/inferrable/defaulted:
      → Execute immediately. Do NOT ask "shall I proceed?"
@@ -8409,7 +8621,7 @@ You MUST follow this protocol for EVERY tool interaction. Think step-by-step.
 
 4. **FINAL CHECK**: Every required field must have a concrete value — not a placeholder,
    not a description, not "TBD". If you're about to pass a guessed value for something
-   the user should decide (like meeting time), STOP and ask instead.
+   the user should decide (like meeting time), STOP and call **`internaltools.ask_user_question`** instead of writing a plain-text question.
 5. **EXECUTE**: Call the tool with validated parameters.
 
 ### After receiving a tool result:
@@ -8429,7 +8641,7 @@ You MUST follow this protocol for EVERY tool interaction. Think step-by-step.
 
 ## Write-Action Field Quick Reference
 
-When a WRITE tool is needed, use this table to quickly check what's required from the user vs. what you can default. If a "Must have" field is missing, ask for it.
+When a WRITE tool is needed, use this table to quickly check what's required from the user vs. what you can default. If a "Must have" field is missing, gather it via **`internaltools.ask_user_question`** (not a free-form chat question).
 
 | Action              | Must have from user (ask if missing)                        | Use defaults (don't ask)                    |
 |---------------------|-------------------------------------------------------------|---------------------------------------------|
@@ -8448,9 +8660,9 @@ When a WRITE tool is needed, use this table to quickly check what's required fro
 - Description → only if user provides detail to include
 
 **Examples:**
-- "Create a meeting on April 7" → Date ✓, Start time ✗, Duration ✗ → ASK: "What time and how long?"
+- "Create a meeting on April 7" → Date ✓, Start time ✗, Duration ✗ → CALL **`internaltools.ask_user_question`** with options for time and duration (see tool schema).
 - "Schedule a 30-min standup tomorrow at 9 AM" → All present → EXECUTE immediately.
-- "Create a recurring daily standup" → Recurrence ✓, time ✗, duration ✗ → ASK: "What time, how long, until when?"
+- "Create a recurring daily standup" → Recurrence ✓, time ✗, duration ✗ → CALL **`internaltools.ask_user_question`** covering time, duration, and end date.
 
 ## Error Recovery Protocol
 
@@ -8528,13 +8740,13 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
 ### For WRITE operations (create, update, delete, send, reply, assign, post):
 - **BEFORE calling any write tool**, validate required fields using the Available Tools
   section AND the Write-Action Field Quick Reference above.
-- If ANY user-provided field is MISSING → ask for ALL missing fields in ONE message.
+- If ANY user-provided field is MISSING → call **`internaltools.ask_user_question`** (exact name from Available Tools) to collect ALL missing fields — not a plain-text question.
 - If ALL fields are present/inferrable/defaulted → execute immediately. No confirmation.
 - See the Reasoning Protocol above for the full validation process.
 
 ### Other execution rules:
 - **Use conversation context**: Resolve parameters from previous turns and reference data
-  before asking questions. For follow-ups like "yes", "go ahead", "do it", continue with
+  before calling **`internaltools.ask_user_question`**. For follow-ups like "yes", "go ahead", "do it", continue with
   previously discussed parameters.
 - **Never claim tools are unavailable** when they are listed in your tool set. Only report
   unavailable if execution returns an explicit auth/connection error.

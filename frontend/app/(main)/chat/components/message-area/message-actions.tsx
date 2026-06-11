@@ -63,6 +63,8 @@ interface MessageActionsProps {
   isLastMessage?: boolean;
   /** Filters that were active when this message was originally sent */
   appliedFilters?: AppliedFilters;
+  /** Persisted feedback value — initialises the like/dislike button state on load */
+  feedbackInfo?: { value?: 'like' | 'dislike' };
 }
 
 /**
@@ -114,8 +116,9 @@ export function MessageActions({
   question,
   isLastMessage = false,
   appliedFilters,
+  feedbackInfo,
 }: MessageActionsProps) {
-  const [feedbackGiven, setFeedbackGiven] = useState<FeedbackValue | null>(null);
+  const [feedbackGiven, setFeedbackGiven] = useState<FeedbackValue | null>(feedbackInfo?.value ?? null);
   const [copyPopoverOpen, setCopyPopoverOpen] = useState(false);
   const [copiedTooltipOpen, setCopiedTooltipOpen] = useState(false);
   const [copiedMessage, setCopiedMessage] = useState('');

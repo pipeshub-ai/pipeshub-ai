@@ -35,8 +35,17 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   reporter: [...defaultReporter, ...ciReporter, ...(COVERAGE_ENABLED ? coverageReporter : [])],
 
+  // Dev server (Turbopack) compiles routes on-demand — the first navigation
+  // per route can take 30–60 s. Production build+start is instant.
+  // Both cases are covered by these generous budgets.
+  timeout: 90_000,
+
   use: {
     baseURL: process.env.BASE_URL || 'http://localhost:3001',
+    // 60 s covers cold Turbopack compilation on first page.goto per route.
+    navigationTimeout: 60_000,
+    // Individual actions (click, fill, waitForSelector …) get 15 s each.
+    actionTimeout: 15_000,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
@@ -82,9 +91,19 @@ export default defineConfig({
   ],
 
   webServer: process.env.PLAYWRIGHT_NO_SERVER ? undefined : {
-    command: 'npm run dev',
+    // Build once then serve the pre-compiled bundle.
+    // - `next build` compiles everything upfront (no on-demand compilation).
+    // - `next start` serves the bundle instantly — page.goto is never slow.
+    // - `reuseExistingServer` skips the build when a server is already up,
+    //   so repeated local runs are fast (only the first run builds).
+    command: 'npm run build && npm run start',
     url: 'http://localhost:3001',
     reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
+    // Allow up to 5 minutes for the production build to complete on first run.
+    timeout: 300_000,
+    // Forward NEXT_PUBLIC_* vars so the build bakes the correct API base URL.
+    env: {
+      NEXT_PUBLIC_API_BASE_URL: process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3000',
+    },
   },
 });
