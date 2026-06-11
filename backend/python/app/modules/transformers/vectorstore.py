@@ -101,9 +101,6 @@ class VectorStore(Transformer):
                     "Failed to initialize sparse embeddings: " + str(e),
                     details={"error": str(e)},
                 )
-
-
-
         except (IndexingError, VectorStoreError):
             raise
         except Exception as e:
@@ -160,7 +157,6 @@ class VectorStore(Transformer):
         virtual_record_id = record.virtual_record_id
         block_containers = record.block_containers
         org_id = record.org_id
-
         block_ids_to_delete = None
         is_reconciliation = False
 
@@ -590,7 +586,6 @@ class VectorStore(Transformer):
                 points.append(result)
             elif isinstance(result, Exception):
                 self.logger.warning(f"Failed to embed image: {str(result)}")
-
         return points
 
     async def _process_image_embeddings_voyage(
