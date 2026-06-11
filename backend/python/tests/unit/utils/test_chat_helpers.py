@@ -16,6 +16,7 @@ from app.models.entities import (
     LinkPublicStatus,
     LinkRecord,
     MailRecord,
+    MessageRecord,
     ProjectRecord,
     Record,
     RecordType,
@@ -5360,3 +5361,97 @@ class TestCreateRecordFromVectorMetadataConnectorId:
             )
 
         assert record["connector_id"] == "conn-pg-99"
+
+
+# ============================================================================
+# MessageRecord support in chat_helpers (slack diff additions)
+# ============================================================================
+
+import json as _json_ch
+from app.config.constants.arangodb import OriginTypes as _CH_OriginTypes
+
+
+def _ch_record_dict(**overrides):
+    defaults = {
+        "id": "msg-record-1",
+        "org_id": "org-1",
+        "record_name": "general_2021-05-03_00-00-00",
+        "record_type": RecordType.MESSAGE.value,
+        "external_record_id": "1620000000.000100",
+        "version": 1,
+        "origin": "CONNECTOR",
+        "connector_name": "SLACK WORKSPACE",
+        "connector_id": "conn-123",
+        "mime_type": "blocks",
+        "source_created_at": 1620000000000,
+        "source_updated_at": 1620000000000,
+        "weburl": "https://myws.slack.com/archives/C123/p1620000000000100",
+        "semantic_metadata": {},
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def _ch_graph_doc(**overrides):
+    defaults = {
+        "content": "Hello world",
+        "threadId": None,
+        "hasReplies": False,
+        "authorId": "U123",
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+class TestCollectionMapMessage:
+    def test_message_maps_to_messages(self):
+        from app.utils.chat_helpers import collection_map
+        assert collection_map[RecordType.MESSAGE.value] == "messages"
+
+    def test_existing_mappings_unchanged(self):
+        from app.utils.chat_helpers import collection_map
+        assert collection_map[RecordType.FILE.value] == "files"
+        assert collection_map[RecordType.MAIL.value] == "mails"
+
+
+class TestValidGroupLabelsConversation:
+    def test_conversation_in_valid_labels(self):
+        from app.utils.chat_helpers import valid_group_labels
+        from app.models.blocks import GroupType
+        assert GroupType.CONVERSATION.value in valid_group_labels
+
+
+class TestCreateRecordInstanceFromDictMessage:
+    def test_basic_message_creation(self):
+        from app.utils.chat_helpers import create_record_instance_from_dict
+        record = create_record_instance_from_dict(_ch_record_dict(), _ch_graph_doc())
+        assert record is not None
+        assert isinstance(record, MessageRecord)
+
+    def test_content_not_hydrated_from_graph(self):
+        from app.utils.chat_helpers import create_record_instance_from_dict
+        record = create_record_instance_from_dict(
+            _ch_record_dict(), _ch_graph_doc(content="Test message")
+        )
+        assert record.content is None
+
+    def test_author_id_populated(self):
+        from app.utils.chat_helpers import create_record_instance_from_dict
+        assert create_record_instance_from_dict(
+            _ch_record_dict(), _ch_graph_doc(authorId="U999")
+        ).author_id == "U999"
+
+    def test_record_type_is_message(self):
+        from app.utils.chat_helpers import create_record_instance_from_dict
+        assert create_record_instance_from_dict(_ch_record_dict(), _ch_graph_doc()).record_type == RecordType.MESSAGE
+
+    def test_message_without_graph_doc_returns_base_record(self):
+        """Without graph_doc the MESSAGE branch is not entered → returns base Record."""
+        from app.utils.chat_helpers import create_record_instance_from_dict
+        result = create_record_instance_from_dict(_ch_record_dict(), graph_doc=None)
+        assert result is not None
+        assert not isinstance(result, MessageRecord)
+
+    def test_org_id_propagated(self):
+        from app.utils.chat_helpers import create_record_instance_from_dict
+        assert create_record_instance_from_dict(_ch_record_dict(org_id="org-99"), _ch_graph_doc()).org_id == "org-99"

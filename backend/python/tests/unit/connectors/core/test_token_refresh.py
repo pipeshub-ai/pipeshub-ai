@@ -950,3 +950,155 @@ class TestExtractScopesEdgeCases:
         config = {"scopes": {"team_sync": ["default_scope"]}}
         result = svc._extract_scopes(config, "unknown_scope")
         assert result == ["default_scope"]
+
+
+# ============================================================================
+# Additions from the Slack connector diff
+# ============================================================================
+
+class TestIsOAuthConnectorSlack:
+    """_is_oauth_connector — covers the dict[str, any] type hint change."""
+
+    def setup_method(self):
+        self.svc = _make_service()
+
+    def test_oauth_returns_true(self):
+        assert self.svc._is_oauth_connector({"authType": "OAUTH"}) is True
+
+    def test_oauth_admin_consent_returns_true(self):
+        assert self.svc._is_oauth_connector({"authType": "OAUTH_ADMIN_CONSENT"}) is True
+
+    def test_api_token_returns_false(self):
+        assert self.svc._is_oauth_connector({"authType": "API_TOKEN"}) is False
+
+    def test_missing_auth_type_returns_false(self):
+        assert self.svc._is_oauth_connector({}) is False
+
+    def test_unknown_type_returns_false(self):
+        assert self.svc._is_oauth_connector({"authType": "SAML"}) is False
+
+
+class TestEnrichFromRegistrySlack:
+    """_enrich_from_registry — new SCOPE_PARAMETER_NAME / TOKEN_RESPONSE_PATH logic."""
+
+    def setup_method(self):
+        self.svc = _make_service()
+
+    def _mock_registry(self, token_access_type=None, additional_params=None,
+                       scope_parameter_name=None, token_response_path=None):
+        from unittest.mock import patch
+        registry_config = MagicMock()
+        registry_config.token_access_type = token_access_type
+        registry_config.additional_params = additional_params
+        registry_config.scope_parameter_name = scope_parameter_name
+        registry_config.token_response_path = token_response_path
+        registry = MagicMock()
+        registry.get_config = MagicMock(return_value=registry_config)
+        return patch(
+            "app.connectors.core.registry.oauth_config_registry.get_oauth_config_registry",
+            return_value=registry,
+        )
+
+    def test_no_enrichment_needed_when_all_keys_present(self):
+        from app.connectors.core.constants import OAuthConfigKeys
+        cfg = {
+            OAuthConfigKeys.TOKEN_ACCESS_TYPE: "offline",
+            OAuthConfigKeys.ADDITIONAL_PARAMS: {},
+            OAuthConfigKeys.SCOPE_PARAMETER_NAME: "scope",
+            OAuthConfigKeys.TOKEN_RESPONSE_PATH: "access_token",
+        }
+        with self._mock_registry() as mock_reg:
+            self.svc._enrich_from_registry(cfg, "SLACK")
+            mock_reg.assert_not_called()
+
+    def test_enriches_scope_parameter_name_when_non_default(self):
+        from app.connectors.core.constants import OAuthConfigKeys
+        cfg = {
+            OAuthConfigKeys.TOKEN_ACCESS_TYPE: "offline",
+            OAuthConfigKeys.ADDITIONAL_PARAMS: {},
+            OAuthConfigKeys.TOKEN_RESPONSE_PATH: "access_token",
+        }
+        with self._mock_registry(scope_parameter_name="user_scope"):
+            self.svc._enrich_from_registry(cfg, "SLACK_WORKSPACE")
+        assert cfg[OAuthConfigKeys.SCOPE_PARAMETER_NAME] == "user_scope"
+
+    def test_scope_parameter_name_default_not_set(self):
+        from app.connectors.core.constants import OAuthConfigKeys
+        cfg = {
+            OAuthConfigKeys.TOKEN_ACCESS_TYPE: "offline",
+            OAuthConfigKeys.ADDITIONAL_PARAMS: {},
+            OAuthConfigKeys.TOKEN_RESPONSE_PATH: "access_token",
+        }
+        with self._mock_registry(scope_parameter_name="scope"):
+            self.svc._enrich_from_registry(cfg, "SLACK_WORKSPACE")
+        assert OAuthConfigKeys.SCOPE_PARAMETER_NAME not in cfg
+
+    def test_enriches_token_response_path_when_missing(self):
+        from app.connectors.core.constants import OAuthConfigKeys
+        cfg = {
+            OAuthConfigKeys.TOKEN_ACCESS_TYPE: "offline",
+            OAuthConfigKeys.ADDITIONAL_PARAMS: {},
+            OAuthConfigKeys.SCOPE_PARAMETER_NAME: "scope",
+        }
+        with self._mock_registry(token_response_path="authed_user"):
+            self.svc._enrich_from_registry(cfg, "SLACK")
+        assert cfg[OAuthConfigKeys.TOKEN_RESPONSE_PATH] == "authed_user"
+
+    def test_does_not_overwrite_existing_keys(self):
+        from app.connectors.core.constants import OAuthConfigKeys
+        cfg = {
+            OAuthConfigKeys.TOKEN_ACCESS_TYPE: "existing_value",
+            OAuthConfigKeys.ADDITIONAL_PARAMS: {},
+            OAuthConfigKeys.SCOPE_PARAMETER_NAME: "scope",
+        }
+        with self._mock_registry(token_response_path="authed_user", token_access_type="new_value"):
+            self.svc._enrich_from_registry(cfg, "SLACK")
+        assert cfg[OAuthConfigKeys.TOKEN_ACCESS_TYPE] == "existing_value"
+
+    def test_handles_missing_registry_config(self):
+        from unittest.mock import patch
+        cfg = {}
+        registry = MagicMock()
+        registry.get_config = MagicMock(return_value=None)
+        with patch(
+            "app.connectors.core.registry.oauth_config_registry.get_oauth_config_registry",
+            return_value=registry,
+        ):
+            self.svc._enrich_from_registry(cfg, "UNKNOWN_CONNECTOR")
+
+    def test_handles_registry_exception_gracefully(self):
+        from unittest.mock import patch
+        with patch(
+            "app.connectors.core.registry.oauth_config_registry.get_oauth_config_registry",
+            side_effect=RuntimeError("registry down"),
+        ):
+            self.svc._enrich_from_registry({}, "SLACK")
+
+    def test_no_scope_param_name_when_none(self):
+        from app.connectors.core.constants import OAuthConfigKeys
+        cfg = {
+            OAuthConfigKeys.TOKEN_ACCESS_TYPE: "offline",
+            OAuthConfigKeys.ADDITIONAL_PARAMS: {},
+            OAuthConfigKeys.TOKEN_RESPONSE_PATH: "access_token",
+        }
+        with self._mock_registry(scope_parameter_name=None):
+            self.svc._enrich_from_registry(cfg, "SLACK_WORKSPACE")
+        assert OAuthConfigKeys.SCOPE_PARAMETER_NAME not in cfg
+
+
+class TestOAuthConfigKeysNewConstants:
+    def test_scope_parameter_name_constant_exists(self):
+        from app.connectors.core.constants import OAuthConfigKeys
+        assert hasattr(OAuthConfigKeys, "SCOPE_PARAMETER_NAME")
+        assert OAuthConfigKeys.SCOPE_PARAMETER_NAME == "scopeParameterName"
+
+    def test_token_response_path_constant_exists(self):
+        from app.connectors.core.constants import OAuthConfigKeys
+        assert hasattr(OAuthConfigKeys, "TOKEN_RESPONSE_PATH")
+        assert OAuthConfigKeys.TOKEN_RESPONSE_PATH == "tokenResponsePath"
+
+    def test_existing_constants_intact(self):
+        from app.connectors.core.constants import OAuthConfigKeys
+        assert OAuthConfigKeys.SCOPES == "scopes"
+        assert OAuthConfigKeys.TOKEN_ACCESS_TYPE == "tokenAccessType"
+        assert OAuthConfigKeys.ADDITIONAL_PARAMS == "additionalParams"

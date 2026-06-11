@@ -217,7 +217,7 @@ class TestBuildFromServices:
     async def test_api_token(self, _, logger, mock_config_service):
         mock_config_service.get_config = AsyncMock(
             return_value={
-                "auth": {"authType": "API_TOKEN", "userOAuthAccessToken": "xoxb-tok"},
+                "auth": {"authType": "API_TOKEN", "apiToken": "xoxb-tok"},
             }
         )
         sc = await SlackClient.build_from_services(logger, mock_config_service, "inst-1")
@@ -228,7 +228,8 @@ class TestBuildFromServices:
     async def test_user_oauth_default(self, _, logger, mock_config_service):
         mock_config_service.get_config = AsyncMock(
             return_value={
-                "auth": {"authType": "userOAuthAccessToken", "userOAuthAccessToken": "xoxp-tok"},
+                "auth": {"authType": "OAUTH"},
+                "credentials": {"access_token": "xoxp-tok"},
             }
         )
         sc = await SlackClient.build_from_services(logger, mock_config_service, "inst-1")
@@ -339,4 +340,105 @@ class TestBuildFromToolset:
         with pytest.raises(ValueError, match="Invalid auth type"):
             await SlackClient.build_from_toolset(
                 {"authType": "UNSUPPORTED", "credentials": {}}, logger
+            )
+
+
+# ============================================================================
+# SlackRESTClientViaToken — get_token, set_token and token validation
+# (additions from Slack connector diff)
+# ============================================================================
+
+class TestSlackRESTClientViaTokenNewMethods:
+    def test_empty_token_raises(self):
+        from app.sources.client.slack.slack import SlackRESTClientViaToken
+        with pytest.raises(ValueError, match="cannot be empty"):
+            SlackRESTClientViaToken("")
+
+    def test_invalid_format_raises(self):
+        from app.sources.client.slack.slack import SlackRESTClientViaToken
+        with pytest.raises(ValueError, match="Invalid Slack token format"):
+            SlackRESTClientViaToken("invalid-token-format")
+
+    def test_get_token_returns_token(self):
+        from unittest.mock import patch, MagicMock
+        from app.sources.client.slack.slack import SlackRESTClientViaToken
+        mock_wc = MagicMock()
+        mock_wc.token = "xoxb-test-token"
+        with patch("app.sources.client.slack.slack.WebClient", return_value=mock_wc):
+            client = SlackRESTClientViaToken("xoxb-test-token")
+            assert client.get_token() == "xoxb-test-token"
+
+    def test_set_token_replaces_client(self):
+        from unittest.mock import patch, MagicMock
+        from app.sources.client.slack.slack import SlackRESTClientViaToken
+        mock_wc1 = MagicMock()
+        mock_wc1.token = "xoxb-old"
+        mock_wc2 = MagicMock()
+        mock_wc2.token = "xoxb-new"
+        call_count = [0]
+
+        def make_wc(token):
+            call_count[0] += 1
+            return mock_wc1 if call_count[0] == 1 else mock_wc2
+
+        with patch("app.sources.client.slack.slack.WebClient", side_effect=make_wc):
+            client = SlackRESTClientViaToken("xoxb-old")
+            client.set_token("xoxb-new")
+            assert client.client is mock_wc2
+
+
+class TestSlackClientBuildFromConfigSlack:
+    """SlackClient.build_from_services — OAUTH and API_TOKEN branches."""
+
+    def _logger(self):
+        import logging
+        return logging.getLogger("test")
+
+    def _mock_config_service(self, config_payload):
+        from unittest.mock import AsyncMock, MagicMock
+        cs = MagicMock()
+        cs.get_config = AsyncMock(return_value=config_payload)
+        return cs
+
+    @pytest.mark.asyncio
+    async def test_oauth_auth_type_uses_access_token(self):
+        from unittest.mock import patch
+        from app.sources.client.slack.slack import SlackClient
+        config_payload = {
+            "auth": {"authType": "OAUTH"},
+            "credentials": {"access_token": "xoxb-oauth-token-from-creds"},
+        }
+        with patch("app.sources.client.slack.slack.WebClient"):
+            sc = await SlackClient.build_from_services(
+                self._logger(), self._mock_config_service(config_payload), "conn-123"
+            )
+            assert isinstance(sc, SlackClient)
+
+    @pytest.mark.asyncio
+    async def test_api_token_auth_type(self):
+        from unittest.mock import patch
+        from app.sources.client.slack.slack import SlackClient
+        config_payload = {"auth": {"authType": "API_TOKEN", "apiToken": "xoxb-bot-token"}}
+        with patch("app.sources.client.slack.slack.WebClient"):
+            sc = await SlackClient.build_from_services(
+                self._logger(), self._mock_config_service(config_payload), "conn-123"
+            )
+            assert isinstance(sc, SlackClient)
+
+    @pytest.mark.asyncio
+    async def test_oauth_missing_token_raises(self):
+        from app.sources.client.slack.slack import SlackClient
+        config_payload = {"auth": {"authType": "OAUTH"}, "credentials": {}}
+        with pytest.raises((ValueError, Exception)):
+            await SlackClient.build_from_services(
+                self._logger(), self._mock_config_service(config_payload), "conn-123"
+            )
+
+    @pytest.mark.asyncio
+    async def test_invalid_auth_type_raises(self):
+        from app.sources.client.slack.slack import SlackClient
+        config_payload = {"auth": {"authType": "UNKNOWN_TYPE"}}
+        with pytest.raises((ValueError, Exception)):
+            await SlackClient.build_from_services(
+                self._logger(), self._mock_config_service(config_payload), "conn-123"
             )

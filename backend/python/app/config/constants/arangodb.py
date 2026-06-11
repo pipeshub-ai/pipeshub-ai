@@ -44,6 +44,7 @@ class Connectors(Enum):
 
     NOTION = "NOTION"
     SLACK = "SLACK"
+    SLACK_WORKSPACE = "SLACK WORKSPACE"
 
     KNOWLEDGE_BASE = "KB"
 
@@ -106,6 +107,7 @@ class AppGroups(Enum):
     GOOGLE_CLOUD = "Google Cloud"
     AZURE = "Azure"
     LINEAR = "Linear"
+    SLACK = "Slack"
     ZAMMAD = "Zammad"
     ZOOM = "Zoom"
     LOCAL_STORAGE = "Local Storage"
@@ -158,7 +160,7 @@ class CollectionNames(Enum):
     FILES = "files"
     LINKS = "links"
     MAILS = "mails"
-    # MESSAGES = "messages"
+    MESSAGES = "messages"
     WEBPAGES = "webpages"
     COMMENTS = "comments"
     TICKETS = "tickets"
@@ -402,6 +404,8 @@ class EntityRelations(Enum):
     CREATED_BY = "CREATED_BY"
     LEAD_BY = "LEAD_BY"
     RELATED_TO_PERSON = "RELATED_TO_PERSON"
+    MENTIONED_IN = "MENTIONED_IN"  # User mentioned in a message/record
+    INVOLVED_IN = "INVOLVED_IN"
 
 
 class EventTypes(Enum):
@@ -435,6 +439,7 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "FILE": CollectionNames.FILES.value,
     "MAIL": CollectionNames.MAILS.value,
     "GROUP_MAIL": CollectionNames.MAILS.value,
+    "MESSAGE": CollectionNames.MESSAGES.value,
     "WEBPAGE": CollectionNames.WEBPAGES.value,
     "SHAREPOINT_PAGE": CollectionNames.WEBPAGES.value,
     "CONFLUENCE_PAGE": CollectionNames.WEBPAGES.value,

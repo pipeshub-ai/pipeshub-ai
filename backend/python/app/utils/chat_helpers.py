@@ -21,6 +21,7 @@ from app.models.entities import (
     LinkRecord,
     MailRecord,
     MeetingRecord,
+    MessageRecord,
     OriginTypes,
     ProjectRecord,
     Record,
@@ -49,6 +50,7 @@ valid_group_labels = [
         GroupType.INLINE.value,
         GroupType.KEY_VALUE_AREA.value,
         GroupType.TEXT_SECTION.value,
+        GroupType.CONVERSATION.value,
     ]
 
 def _safe_stringify_content(value: Any) -> str:
@@ -264,6 +266,7 @@ collection_map = {
                     RecordType.LINK.value: "links",
                     RecordType.MEETING.value: "meetings",
                     RecordType.DEAL.value: "deals",
+                    RecordType.MESSAGE.value: "messages",
                 }
 
 def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dict[str, Any] | None = None) -> Record | None:
@@ -402,6 +405,16 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
             }
             return DealRecord(**base_args, **specific_args)
 
+        elif record_type == RecordType.MESSAGE.value and graph_doc:
+            specific_args = {
+                "record_type": RecordType.MESSAGE,
+                "thread_id": graph_doc.get("threadId"),
+                "has_replies": graph_doc.get("hasReplies"),
+                "is_reply": graph_doc.get("isReply", False),
+                "author_id": graph_doc.get("authorId"),
+                "record_group_type": graph_doc.get("recordGroupType"),
+            }
+            return MessageRecord(**base_args, **specific_args)
         else:
             return None
     except Exception as e:
@@ -1890,7 +1903,7 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
         raise Exception(f"Error in record_to_message_content: {e}") from e
 
 
-def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, has_sql_connector: bool=False, image_blocks: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, has_sql_connector: bool=False, image_blocks: list[dict[str, Any]] | None = None, has_slack_connector: bool=False) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
     content = []
@@ -1970,6 +1983,7 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
                     query=query,
                     mode=mode,
                     has_sql_connector=has_sql_connector,
+                    has_slack_connector=has_slack_connector,
                     )
 
         content.append({

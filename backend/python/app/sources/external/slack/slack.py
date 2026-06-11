@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from app.sources.client.slack.slack import SlackClient, SlackResponse
 
@@ -53,7 +53,12 @@ class SlackDataSource:
             return SlackResponse(success=False, error=str(e))
 
     async def _handle_slack_error(self, error: Exception) -> SlackResponse:
-        """Handle Slack API errors and convert to standardized format"""
+        """Handle Slack API errors and convert to standardized format.
+
+        ``error`` is always set to the raw Slack API error code so callers
+        can do reliable equality checks (e.g. ``resp.error == "not_in_channel"``).
+        ``message`` carries the human-readable explanation.
+        """
         error_msg = str(error)
         logger.error(f"Slack API error: {error_msg}")
 
@@ -61,40 +66,47 @@ class SlackDataSource:
         if "not_allowed_token_type" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Slack token type not allowed for this operation. Please ensure you're using a bot token (xoxb-) with the required scopes. For search operations, you need the 'search:read' scope."
+                error="not_allowed_token_type",
+                message="Slack token type not allowed for this operation. Please ensure you're using a bot token (xoxb-) with the required scopes. For search operations, you need the 'search:read' scope."
             )
         elif "invalid_auth" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Invalid Slack token. Please check your token configuration."
+                error="invalid_auth",
+                message="Invalid Slack token. Please check your token configuration."
             )
         elif "missing_scope" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Missing required Slack scope. Please add the necessary scopes to your bot token."
+                error="missing_scope",
+                message="Missing required Slack scope. Please add the necessary scopes to your bot token."
             )
         elif "account_inactive" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Slack account is inactive. Please check your workspace status."
+                error="account_inactive",
+                message="Slack account is inactive. Please check your workspace status."
             )
         elif "token_revoked" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Slack token has been revoked. Please generate a new token."
+                error="token_revoked",
+                message="Slack token has been revoked. Please generate a new token."
             )
         elif "channel_not_found" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Channel not found. The channel may not exist, be private, or the bot may not have access to it."
+                error="channel_not_found",
+                message="Channel not found. The channel may not exist, be private, or the bot may not have access to it."
             )
         elif "not_in_channel" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Bot is not a member of this channel. Please invite the bot to the channel first."
+                error="not_in_channel",
+                message="Bot is not a member of this channel. Please invite the bot to the channel first."
             )
 
-        return SlackResponse(success=False, error=error_msg)
+        return SlackResponse(success=False,error="unknown_error", message=error_msg)
 
     async def check_token_scopes(self) -> SlackResponse:
         """Check what scopes the current token has access to"""
@@ -129,7 +141,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_apps_approve`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if app_id is not None:
             kwargs_api['app_id'] = app_id
         if request_id is not None:
@@ -174,7 +186,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_apps_approved_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if limit is not None:
             kwargs_api['limit'] = limit
         if cursor is not None:
@@ -220,7 +232,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_apps_requests_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if limit is not None:
             kwargs_api['limit'] = limit
         if cursor is not None:
@@ -265,7 +277,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_apps_restrict`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if app_id is not None:
             kwargs_api['app_id'] = app_id
         if request_id is not None:
@@ -312,7 +324,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_apps_restricted_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if limit is not None:
             kwargs_api['limit'] = limit
         if cursor is not None:
@@ -355,7 +367,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_archive`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if kwargs:
@@ -392,7 +404,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_convertToPrivate`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if kwargs:
@@ -438,7 +450,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_create`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if name is not None:
             kwargs_api['name'] = name
         if description is not None:
@@ -484,7 +496,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_delete`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if kwargs:
@@ -505,7 +517,7 @@ class SlackDataSource:
     async def admin_conversations_disconnect_shared(self,
         *,
         channel_id: str,
-        leaving_team_ids: Optional[List[str]] = None,
+        leaving_team_ids: Optional[list[str]] = None,
         **kwargs
     ) -> SlackResponse:
         """admin_conversations_disconnectShared
@@ -524,7 +536,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_disconnectShared`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if leaving_team_ids is not None:
@@ -546,8 +558,8 @@ class SlackDataSource:
 
     async def admin_conversations_ekm_list_original_connected_channel_info(self,
         *,
-        channel_ids: Optional[List[str]] = None,
-        team_ids: Optional[List[str]] = None,
+        channel_ids: Optional[list[str]] = None,
+        team_ids: Optional[list[str]] = None,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
         **kwargs
@@ -569,7 +581,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_ekm_listOriginalConnectedChannelInfo`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel_ids is not None:
             kwargs_api['channel_ids'] = channel_ids
@@ -614,7 +626,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_getConversationPrefs`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if kwargs:
@@ -655,7 +667,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_getTeams`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if cursor is not None:
@@ -679,7 +691,7 @@ class SlackDataSource:
 
     async def admin_conversations_invite(self,
         *,
-        user_ids: List[str],
+        user_ids: list[str],
         channel_id: str,
         **kwargs
     ) -> SlackResponse:
@@ -698,7 +710,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_invite`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if user_ids is not None:
             kwargs_api['user_ids'] = user_ids
         if channel_id is not None:
@@ -739,7 +751,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_rename`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if name is not None:
@@ -783,7 +795,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_restrictAccess_addGroup`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if group_id is not None:
@@ -827,7 +839,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_restrictAccess_listGroups`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if team_id is not None:
@@ -871,7 +883,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_restrictAccess_removeGroup`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -896,7 +908,7 @@ class SlackDataSource:
 
     async def admin_conversations_search(self,
         *,
-        team_ids: Optional[List[str]] = None,
+        team_ids: Optional[list[str]] = None,
         query: Optional[str] = None,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
@@ -926,7 +938,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_search`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_ids is not None:
             kwargs_api['team_ids'] = team_ids
@@ -960,7 +972,7 @@ class SlackDataSource:
     async def admin_conversations_set_conversation_prefs(self,
         *,
         channel_id: str,
-        prefs: Dict[str, Any],
+        prefs: dict[str, Any],
         **kwargs
     ) -> SlackResponse:
         """admin_conversations_setConversationPrefs
@@ -979,7 +991,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_setConversationPrefs`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
@@ -1004,7 +1016,7 @@ class SlackDataSource:
         *,
         channel_id: str,
         team_id: Optional[str] = None,
-        target_team_ids: Optional[List[str]] = None,
+        target_team_ids: Optional[list[str]] = None,
         org_channel: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
@@ -1026,7 +1038,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_setTeams`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
@@ -1071,7 +1083,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_conversations_unarchive`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
@@ -1112,7 +1124,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_emoji_add`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if name is not None:
             kwargs_api['name'] = name
@@ -1154,7 +1166,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_emoji_addAlias`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if name is not None:
             kwargs_api['name'] = name
@@ -1197,7 +1209,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_emoji_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if cursor is not None:
             kwargs_api['cursor'] = cursor
@@ -1238,7 +1250,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_emoji_remove`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if name is not None:
             kwargs_api['name'] = name
@@ -1279,7 +1291,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_emoji_rename`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if name is not None:
             kwargs_api['name'] = name
@@ -1321,7 +1333,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_inviteRequests_approve`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -1366,7 +1378,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_inviteRequests_approved_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -1413,7 +1425,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_inviteRequests_denied_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -1458,7 +1470,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_inviteRequests_deny`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -1503,7 +1515,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_inviteRequests_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -1549,7 +1561,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_admins_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if limit is not None:
             kwargs_api['limit'] = limit
@@ -1598,7 +1610,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_create`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_domain is not None:
             kwargs_api['team_domain'] = team_domain
@@ -1645,7 +1657,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if limit is not None:
             kwargs_api['limit'] = limit
@@ -1690,7 +1702,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_owners_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -1732,7 +1744,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_settings_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -1754,7 +1766,7 @@ class SlackDataSource:
     async def admin_teams_settings_set_default_channels(self,
         *,
         team_id: str,
-        channel_ids: List[str],
+        channel_ids: list[str],
         **kwargs
     ) -> SlackResponse:
         """admin_teams_settings_setDefaultChannels
@@ -1773,7 +1785,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_settings_setDefaultChannels`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -1816,7 +1828,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_settings_setDescription`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -1859,7 +1871,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_settings_setDiscoverability`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -1902,7 +1914,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_settings_setIcon`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if image_url is not None:
             kwargs_api['image_url'] = image_url
@@ -1945,7 +1957,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_teams_settings_setName`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -1969,7 +1981,7 @@ class SlackDataSource:
     async def admin_usergroups_add_channels(self,
         *,
         usergroup_id: str,
-        channel_ids: List[str],
+        channel_ids: list[str],
         team_id: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
@@ -1990,7 +2002,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_usergroups_addChannels`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if usergroup_id is not None:
             kwargs_api['usergroup_id'] = usergroup_id
@@ -2016,7 +2028,7 @@ class SlackDataSource:
     async def admin_usergroups_add_teams(self,
         *,
         usergroup_id: str,
-        team_ids: List[str],
+        team_ids: list[str],
         auto_provision: Optional[bool] = None,
         **kwargs
     ) -> SlackResponse:
@@ -2037,7 +2049,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_usergroups_addTeams`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if usergroup_id is not None:
             kwargs_api['usergroup_id'] = usergroup_id
@@ -2084,7 +2096,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_usergroups_listChannels`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if usergroup_id is not None:
             kwargs_api['usergroup_id'] = usergroup_id
@@ -2110,7 +2122,7 @@ class SlackDataSource:
     async def admin_usergroups_remove_channels(self,
         *,
         usergroup_id: str,
-        channel_ids: List[str],
+        channel_ids: list[str],
         **kwargs
     ) -> SlackResponse:
         """admin_usergroups_removeChannels
@@ -2129,7 +2141,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_usergroups_removeChannels`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if usergroup_id is not None:
             kwargs_api['usergroup_id'] = usergroup_id
@@ -2156,7 +2168,7 @@ class SlackDataSource:
         user_id: str,
         is_restricted: Optional[bool] = None,
         is_ultra_restricted: Optional[bool] = None,
-        channel_ids: Optional[List[str]] = None,
+        channel_ids: Optional[list[str]] = None,
         **kwargs
     ) -> SlackResponse:
         """admin_users_assign
@@ -2177,7 +2189,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_assign`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -2208,7 +2220,7 @@ class SlackDataSource:
         *,
         team_id: str,
         email: str,
-        channel_ids: List[str],
+        channel_ids: list[str],
         custom_message: Optional[str] = None,
         real_name: Optional[str] = None,
         resend: Optional[bool] = None,
@@ -2240,7 +2252,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_invite`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -2298,7 +2310,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -2342,7 +2354,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_remove`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -2383,7 +2395,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_session_invalidate`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -2428,7 +2440,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_session_reset`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if user_id is not None:
             kwargs_api['user_id'] = user_id
@@ -2473,7 +2485,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_setAdmin`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -2518,7 +2530,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_setExpiration`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -2563,7 +2575,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_setOwner`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -2605,7 +2617,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.admin_users_setRegular`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if team_id is not None:
             kwargs_api['team_id'] = team_id
@@ -2647,7 +2659,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.api_test`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if error is not None:
             kwargs_api['error'] = error
         if foo is not None:
@@ -2690,7 +2702,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.apps_event_authorizations_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if event_context is not None:
             kwargs_api['event_context'] = event_context
@@ -2728,7 +2740,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.apps_permissions_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if kwargs:
             kwargs_api.update(kwargs)
@@ -2767,7 +2779,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.apps_permissions_request`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if scopes is not None:
             kwargs_api['scopes'] = scopes
@@ -2810,7 +2822,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.apps_permissions_resources_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if cursor is not None:
             kwargs_api['cursor'] = cursor
@@ -2846,7 +2858,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.apps_permissions_scopes_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if kwargs:
             kwargs_api.update(kwargs)
@@ -2885,7 +2897,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.apps_permissions_users_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if cursor is not None:
             kwargs_api['cursor'] = cursor
@@ -2930,7 +2942,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.apps_permissions_users_request`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if scopes is not None:
             kwargs_api['scopes'] = scopes
@@ -2975,7 +2987,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.apps_uninstall`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if client_id is not None:
             kwargs_api['client_id'] = client_id
@@ -3016,7 +3028,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.auth_revoke`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if test is not None:
             kwargs_api['test'] = test
@@ -3048,7 +3060,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.auth_test`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if kwargs:
             kwargs_api.update(kwargs)
@@ -3084,7 +3096,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.bots_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if bot is not None:
             kwargs_api['bot'] = bot
@@ -3112,7 +3124,7 @@ class SlackDataSource:
         date_start: Optional[str] = None,
         title: Optional[str] = None,
         created_by: Optional[str] = None,
-        users: Optional[List[str]] = None,
+        users: Optional[list[str]] = None,
         **kwargs
     ) -> SlackResponse:
         """calls_add
@@ -3136,7 +3148,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.calls_add`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if external_unique_id is not None:
             kwargs_api['external_unique_id'] = external_unique_id
@@ -3190,7 +3202,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.calls_end`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if id is not None:
             kwargs_api['id'] = id
@@ -3230,7 +3242,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.calls_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if id is not None:
             kwargs_api['id'] = id
@@ -3252,7 +3264,7 @@ class SlackDataSource:
     async def calls_participants_add(self,
         *,
         id: str,
-        users: List[str],
+        users: list[str],
         **kwargs
     ) -> SlackResponse:
         """calls_participants_add
@@ -3270,7 +3282,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.calls_participants_add`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if id is not None:
             kwargs_api['id'] = id
@@ -3294,7 +3306,7 @@ class SlackDataSource:
     async def calls_participants_remove(self,
         *,
         id: str,
-        users: List[str],
+        users: list[str],
         **kwargs
     ) -> SlackResponse:
         """calls_participants_remove
@@ -3312,7 +3324,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.calls_participants_remove`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if id is not None:
             kwargs_api['id'] = id
@@ -3358,7 +3370,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.calls_update`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if id is not None:
             kwargs_api['id'] = id
         if title is not None:
@@ -3405,7 +3417,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_delete`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if ts is not None:
             kwargs_api['ts'] = ts
         if channel is not None:
@@ -3450,7 +3462,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_deleteScheduledMessage`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if as_user is not None:
             kwargs_api['as_user'] = as_user
@@ -3495,7 +3507,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_getPermalink`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -3537,7 +3549,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_meMessage`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -3563,8 +3575,8 @@ class SlackDataSource:
         channel: str,
         user: str,
         as_user: Optional[str] = None,
-        attachments: Optional[List[Dict[str, Any]]] = None,
-        blocks: Optional[List[Dict[str, Any]]] = None,
+        attachments: Optional[list[dict[str, Any]]] = None,
+        blocks: Optional[list[dict[str, Any]]] = None,
         icon_emoji: Optional[str] = None,
         icon_url: Optional[str] = None,
         link_names: Optional[bool] = None,
@@ -3599,7 +3611,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_postEphemeral`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if as_user is not None:
             kwargs_api['as_user'] = as_user
@@ -3644,8 +3656,8 @@ class SlackDataSource:
         *,
         channel: str,
         as_user: Optional[str] = None,
-        attachments: Optional[List[Dict[str, Any]]] = None,
-        blocks: Optional[List[Dict[str, Any]]] = None,
+        attachments: Optional[list[dict[str, Any]]] = None,
+        blocks: Optional[list[dict[str, Any]]] = None,
         icon_emoji: Optional[str] = None,
         icon_url: Optional[str] = None,
         link_names: Optional[bool] = None,
@@ -3687,7 +3699,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_postMessage`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if as_user is not None:
             kwargs_api['as_user'] = as_user
@@ -3742,8 +3754,8 @@ class SlackDataSource:
         parse: Optional[str] = None,
         as_user: Optional[str] = None,
         link_names: Optional[bool] = None,
-        attachments: Optional[List[Dict[str, Any]]] = None,
-        blocks: Optional[List[Dict[str, Any]]] = None,
+        attachments: Optional[list[dict[str, Any]]] = None,
+        blocks: Optional[list[dict[str, Any]]] = None,
         unfurl_links: Optional[bool] = None,
         unfurl_media: Optional[bool] = None,
         thread_ts: Optional[str] = None,
@@ -3775,7 +3787,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_scheduleMessage`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -3843,7 +3855,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_scheduledMessages_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -3874,7 +3886,7 @@ class SlackDataSource:
         *,
         channel: str,
         ts: str,
-        unfurls: Optional[Dict[str, Any]] = None,
+        unfurls: Optional[dict[str, Any]] = None,
         user_auth_message: Optional[str] = None,
         user_auth_required: Optional[bool] = None,
         user_auth_url: Optional[str] = None,
@@ -3899,7 +3911,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_unfurl`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -3933,8 +3945,8 @@ class SlackDataSource:
         channel: str,
         ts: str,
         as_user: Optional[str] = None,
-        attachments: Optional[List[Dict[str, Any]]] = None,
-        blocks: Optional[List[Dict[str, Any]]] = None,
+        attachments: Optional[list[dict[str, Any]]] = None,
+        blocks: Optional[list[dict[str, Any]]] = None,
         link_names: Optional[bool] = None,
         parse: Optional[str] = None,
         text: Optional[str] = None,
@@ -3961,7 +3973,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.chat_update`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if as_user is not None:
             kwargs_api['as_user'] = as_user
@@ -4013,7 +4025,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_archive`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -4051,7 +4063,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_close`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -4092,7 +4104,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_create`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if name is not None:
             kwargs_api['name'] = name
@@ -4142,7 +4154,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_history`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -4194,7 +4206,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -4220,7 +4232,7 @@ class SlackDataSource:
     async def conversations_invite(self,
         *,
         channel: Optional[str] = None,
-        users: Optional[List[str]] = None,
+        users: Optional[list[str]] = None,
         **kwargs
     ) -> SlackResponse:
         """conversations_invite
@@ -4238,7 +4250,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_invite`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -4278,7 +4290,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_join`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -4318,7 +4330,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_kick`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
             kwargs_api['channel'] = channel
         if user is not None:
@@ -4357,7 +4369,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_leave`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -4401,7 +4413,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if exclude_archived is not None:
             kwargs_api['exclude_archived'] = exclude_archived
@@ -4447,7 +4459,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_mark`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
             kwargs_api['channel'] = channel
         if ts is not None:
@@ -4491,7 +4503,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_members`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -4517,7 +4529,7 @@ class SlackDataSource:
     async def conversations_open(self,
         *,
         channel: Optional[str] = None,
-        users: Optional[List[str]] = None,
+        users: Optional[list[str]] = None,
         return_im: Optional[bool] = None,
         **kwargs
     ) -> SlackResponse:
@@ -4537,7 +4549,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_open`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -4582,7 +4594,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_rename`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -4634,7 +4646,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_replies`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -4686,7 +4698,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_setPurpose`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -4729,7 +4741,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_setTopic`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -4770,7 +4782,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.conversations_unarchive`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if channel is not None:
             kwargs_api['channel'] = channel
@@ -4792,7 +4804,7 @@ class SlackDataSource:
     async def dialog_open(self,
         *,
 
-        dialog: Dict[str, Any],
+        dialog: dict[str, Any],
         trigger_id: str,
         **kwargs
     ) -> SlackResponse:
@@ -4811,7 +4823,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.dialog_open`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
 
         if dialog is not None:
             kwargs_api['dialog'] = dialog
@@ -4845,7 +4857,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.dnd_endDnd`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -4874,7 +4886,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.dnd_endSnooze`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -4909,7 +4921,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.dnd_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if user is not None:
             kwargs_api['user'] = user
         if kwargs:
@@ -4946,7 +4958,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.dnd_setSnooze`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if num_minutes is not None:
             kwargs_api['num_minutes'] = num_minutes
         if kwargs:
@@ -4966,7 +4978,7 @@ class SlackDataSource:
 
     async def dnd_team_info(self,
         *,
-        users: Optional[List[str]] = None,
+        users: Optional[list[str]] = None,
         **kwargs
     ) -> SlackResponse:
         """dnd_teamInfo
@@ -4983,7 +4995,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.dnd_teamInfo`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if users is not None:
             kwargs_api['users'] = users
         if kwargs:
@@ -5014,7 +5026,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.emoji_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -5051,7 +5063,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_comments_delete`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
             kwargs_api['file'] = file
         if id is not None:
@@ -5090,7 +5102,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_delete`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
             kwargs_api['file'] = file
         if kwargs:
@@ -5135,7 +5147,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
             kwargs_api['file'] = file
         if count is not None:
@@ -5194,7 +5206,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if user is not None:
             kwargs_api['user'] = user
         if channel is not None:
@@ -5255,7 +5267,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_remote_add`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if external_id is not None:
             kwargs_api['external_id'] = external_id
         if title is not None:
@@ -5304,7 +5316,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_remote_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
             kwargs_api['file'] = file
         if external_id is not None:
@@ -5351,7 +5363,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_remote_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
             kwargs_api['channel'] = channel
         if ts_from is not None:
@@ -5398,7 +5410,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_remote_remove`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
             kwargs_api['file'] = file
         if external_id is not None:
@@ -5422,7 +5434,7 @@ class SlackDataSource:
         *,
         file: Optional[str] = None,
         external_id: Optional[str] = None,
-        channels: Optional[List[str]] = None,
+        channels: Optional[list[str]] = None,
         **kwargs
     ) -> SlackResponse:
         """files_remote_share
@@ -5441,7 +5453,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_remote_share`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
             kwargs_api['file'] = file
         if external_id is not None:
@@ -5494,7 +5506,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_remote_update`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
             kwargs_api['file'] = file
         if external_id is not None:
@@ -5543,7 +5555,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_revokePublicURL`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
             kwargs_api['file'] = file
         if kwargs:
@@ -5580,7 +5592,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_sharedPublicURL`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
             kwargs_api['file'] = file
         if kwargs:
@@ -5606,7 +5618,7 @@ class SlackDataSource:
         filename: Optional[str] = None,
         title: Optional[str] = None,
         initial_comment: Optional[str] = None,
-        channels: Optional[List[str]] = None,
+        channels: Optional[list[str]] = None,
         thread_ts: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
@@ -5631,7 +5643,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.files_upload`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if file is not None:
             kwargs_api['file'] = file
         if content is not None:
@@ -5703,7 +5715,7 @@ class SlackDataSource:
             Auto-generated style matching existing SlackDataSource methods.
             Requires slack_sdk >= 3.19.0 for files_upload_v2 support.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if filename is not None:
             kwargs_api['filename'] = filename
         if content is not None:
@@ -5736,7 +5748,7 @@ class SlackDataSource:
 
     async def migration_exchange(self,
         *,
-        users: List[str],
+        users: list[str],
         team_id: Optional[str] = None,
         to_old: Optional[bool] = None,
         **kwargs
@@ -5757,7 +5769,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.migration_exchange`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if users is not None:
             kwargs_api['users'] = users
         if team_id is not None:
@@ -5806,7 +5818,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.oauth_access`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if client_id is not None:
             kwargs_api['client_id'] = client_id
         if client_secret is not None:
@@ -5859,7 +5871,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.oauth_token`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if client_id is not None:
             kwargs_api['client_id'] = client_id
         if client_secret is not None:
@@ -5910,7 +5922,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.oauth_v2_access`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if client_id is not None:
             kwargs_api['client_id'] = client_id
         if client_secret is not None:
@@ -5955,7 +5967,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.pins_add`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
             kwargs_api['channel'] = channel
         if timestamp is not None:
@@ -5994,7 +6006,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.pins_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
             kwargs_api['channel'] = channel
         if kwargs:
@@ -6033,7 +6045,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.pins_remove`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
             kwargs_api['channel'] = channel
         if timestamp is not None:
@@ -6077,7 +6089,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reactions_add`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
             kwargs_api['channel'] = channel
         if name is not None:
@@ -6127,7 +6139,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reactions_get`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
             kwargs_api['channel'] = channel
         if file is not None:
@@ -6182,7 +6194,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reactions_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if user is not None:
             kwargs_api['user'] = user
         if full is not None:
@@ -6237,7 +6249,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reactions_remove`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if name is not None:
             kwargs_api['name'] = name
         if file is not None:
@@ -6286,7 +6298,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reminders_add`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if text is not None:
             kwargs_api['text'] = text
         if time is not None:
@@ -6327,7 +6339,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reminders_complete`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if reminder is not None:
             kwargs_api['reminder'] = reminder
         if kwargs:
@@ -6364,7 +6376,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reminders_delete`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if reminder is not None:
             kwargs_api['reminder'] = reminder
         if kwargs:
@@ -6401,7 +6413,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reminders_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if reminder is not None:
             kwargs_api['reminder'] = reminder
         if kwargs:
@@ -6433,7 +6445,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.reminders_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -6470,7 +6482,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.rtm_connect`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if batch_presence_aware is not None:
             kwargs_api['batch_presence_aware'] = batch_presence_aware
         if presence_sub is not None:
@@ -6518,7 +6530,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.search_messages`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if count is not None:
             kwargs_api['count'] = count
         if highlight is not None:
@@ -6572,7 +6584,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.stars_add`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
             kwargs_api['channel'] = channel
         if file is not None:
@@ -6621,7 +6633,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.stars_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if count is not None:
             kwargs_api['count'] = count
         if page is not None:
@@ -6670,7 +6682,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.stars_remove`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channel is not None:
             kwargs_api['channel'] = channel
         if file is not None:
@@ -6717,7 +6729,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.team_accessLogs`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if before is not None:
             kwargs_api['before'] = before
         if count is not None:
@@ -6759,7 +6771,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.team_billableInfo`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if user is not None:
             kwargs_api['user'] = user
         if kwargs:
@@ -6797,7 +6809,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.team_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if team is not None:
             kwargs_api['team'] = team
         if kwargs:
@@ -6845,7 +6857,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.team_integrationLogs`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if app_id is not None:
             kwargs_api['app_id'] = app_id
         if change_type is not None:
@@ -6893,7 +6905,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.team_profile_get`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if visibility is not None:
             kwargs_api['visibility'] = visibility
         if kwargs:
@@ -6915,7 +6927,7 @@ class SlackDataSource:
         *,
 
         name: str,
-        channels: Optional[List[str]] = None,
+        channels: Optional[list[str]] = None,
         description: Optional[str] = None,
         handle: Optional[str] = None,
         include_count: Optional[int] = None,
@@ -6939,7 +6951,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.usergroups_create`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if channels is not None:
             kwargs_api['channels'] = channels
         if description is not None:
@@ -6986,7 +6998,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.usergroups_disable`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if include_count is not None:
             kwargs_api['include_count'] = include_count
         if usergroup is not None:
@@ -7028,7 +7040,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.usergroups_enable`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if include_count is not None:
             kwargs_api['include_count'] = include_count
         if usergroup is not None:
@@ -7072,7 +7084,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.usergroups_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if include_users is not None:
             kwargs_api['include_users'] = include_users
         if include_count is not None:
@@ -7100,7 +7112,7 @@ class SlackDataSource:
         usergroup: str,
         handle: Optional[str] = None,
         description: Optional[str] = None,
-        channels: Optional[List[str]] = None,
+        channels: Optional[list[str]] = None,
         include_count: Optional[int] = None,
         name: Optional[str] = None,
         **kwargs
@@ -7124,7 +7136,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.usergroups_update`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if handle is not None:
             kwargs_api['handle'] = handle
         if description is not None:
@@ -7174,7 +7186,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.usergroups_users_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if include_disabled is not None:
             kwargs_api['include_disabled'] = include_disabled
         if usergroup is not None:
@@ -7198,7 +7210,7 @@ class SlackDataSource:
         *,
 
         usergroup: str,
-        users: List[str],
+        users: list[str],
         include_count: Optional[int] = None,
         **kwargs
     ) -> SlackResponse:
@@ -7218,7 +7230,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.usergroups_users_update`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if include_count is not None:
             kwargs_api['include_count'] = include_count
         if usergroup is not None:
@@ -7267,7 +7279,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_conversations`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if user is not None:
             kwargs_api['user'] = user
         if types is not None:
@@ -7306,7 +7318,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_deletePhoto`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -7342,7 +7354,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_getPresence`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if user is not None:
             kwargs_api['user'] = user
         if kwargs:
@@ -7374,7 +7386,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_identity`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -7411,7 +7423,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_info`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if include_locale is not None:
             kwargs_api['include_locale'] = include_locale
         if user is not None:
@@ -7454,7 +7466,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_list`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if limit is not None:
             kwargs_api['limit'] = limit
         if cursor is not None:
@@ -7495,7 +7507,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_lookupByEmail`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if email is not None:
             kwargs_api['email'] = email
         if kwargs:
@@ -7534,7 +7546,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_profile_get`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if include_labels is not None:
             kwargs_api['include_labels'] = include_labels
         if user is not None:
@@ -7579,7 +7591,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_profile_set`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if name is not None:
             kwargs_api['name'] = name
         if profile is not None:
@@ -7615,7 +7627,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_setActive`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -7656,7 +7668,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_setPhoto`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if crop_w is not None:
             kwargs_api['crop_w'] = crop_w
         if crop_x is not None:
@@ -7699,7 +7711,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.users_setPresence`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if presence is not None:
             kwargs_api['presence'] = presence
         if kwargs:
@@ -7720,7 +7732,7 @@ class SlackDataSource:
     async def views_open(self,
         *,
         trigger_id: str,
-        view: Dict[str, Any],
+        view: dict[str, Any],
         **kwargs
     ) -> SlackResponse:
         """views_open
@@ -7738,7 +7750,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.views_open`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if trigger_id is not None:
             kwargs_api['trigger_id'] = trigger_id
         if view is not None:
@@ -7761,7 +7773,7 @@ class SlackDataSource:
     async def views_publish(self,
         *,
         user_id: str,
-        view: Dict[str, Any],
+        view: dict[str, Any],
         hash: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
@@ -7781,7 +7793,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.views_publish`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if user_id is not None:
             kwargs_api['user_id'] = user_id
         if view is not None:
@@ -7806,7 +7818,7 @@ class SlackDataSource:
     async def views_push(self,
         *,
         trigger_id: str,
-        view: Dict[str, Any],
+        view: dict[str, Any],
         **kwargs
     ) -> SlackResponse:
         """views_push
@@ -7824,7 +7836,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.views_push`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if trigger_id is not None:
             kwargs_api['trigger_id'] = trigger_id
         if view is not None:
@@ -7848,7 +7860,7 @@ class SlackDataSource:
         *,
         view_id: Optional[str] = None,
         external_id: Optional[str] = None,
-        view: Optional[Dict[str, Any]] = None,
+        view: Optional[dict[str, Any]] = None,
         hash: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
@@ -7869,7 +7881,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.views_update`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if view_id is not None:
             kwargs_api['view_id'] = view_id
         if external_id is not None:
@@ -7896,7 +7908,7 @@ class SlackDataSource:
     async def workflows_step_completed(self,
         *,
         workflow_step_execute_id: str,
-        outputs: Optional[Dict[str, Any]] = None,
+        outputs: Optional[dict[str, Any]] = None,
         **kwargs
     ) -> SlackResponse:
         """workflows_stepCompleted
@@ -7914,7 +7926,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.workflows_stepCompleted`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if workflow_step_execute_id is not None:
             kwargs_api['workflow_step_execute_id'] = workflow_step_execute_id
         if outputs is not None:
@@ -7937,7 +7949,7 @@ class SlackDataSource:
     async def workflows_step_failed(self,
         *,
         workflow_step_execute_id: str,
-        error: Dict[str, Any],
+        error: dict[str, Any],
         **kwargs
     ) -> SlackResponse:
         """workflows_stepFailed
@@ -7955,7 +7967,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.workflows_stepFailed`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if workflow_step_execute_id is not None:
             kwargs_api['workflow_step_execute_id'] = workflow_step_execute_id
         if error is not None:
@@ -7978,8 +7990,8 @@ class SlackDataSource:
     async def workflows_update_step(self,
         *,
         workflow_step_edit_id: str,
-        inputs: Optional[Dict[str, Any]] = None,
-        outputs: Optional[List[Dict[str, Any]]] = None,
+        inputs: Optional[dict[str, Any]] = None,
+        outputs: Optional[list[dict[str, Any]]] = None,
         step_name: Optional[str] = None,
         step_image_url: Optional[str] = None,
         **kwargs
@@ -8002,7 +8014,7 @@ class SlackDataSource:
             Auto-generated from Slack's OpenAPI. Calls `SlackClient.workflows_updateStep`.
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
-        kwargs_api: Dict[str, Any] = {}
+        kwargs_api: dict[str, Any] = {}
         if workflow_step_edit_id is not None:
             kwargs_api['workflow_step_edit_id'] = workflow_step_edit_id
         if inputs is not None:

@@ -27,6 +27,7 @@ from app.models.entities import (
     LinkPublicStatus,
     LinkRecord,
     MailRecord,
+    MessageRecord,
     Person,
     ProjectRecord,
     PullRequestRecord,
@@ -86,7 +87,8 @@ class DataSourceEntitiesProcessor:
         RecordType.TICKET,
         RecordType.DEAL,
         RecordType.CASE,
-        RecordType.TASK
+        RecordType.TASK,
+        RecordType.MESSAGE,
     ]
 
     # Record relation types that connectors create for related external records
@@ -598,6 +600,98 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.warning(f"Failed to create LEAD_BY edge for project {project.id}: {str(e)}")
 
+    async def _handle_message_entity_edges(self, message: MessageRecord, tx_store: TransactionStore) -> None:
+        """
+        Create MENTIONED_IN and INVOLVED_IN entity relation edges for message records.
+
+        - MENTIONED_IN: User → Record (for mentioned users) and RecordGroup → Record (for mentioned channels/groups)
+        - INVOLVED_IN: User → Record (for authors who participated in the message/burst)
+
+        Uses source IDs stored on the MessageRecord to resolve internal user/record-group IDs.
+        """
+        try:
+            await tx_store.delete_edges_to(
+                to_id=message.id,
+                to_collection=CollectionNames.RECORDS.value,
+                collection=CollectionNames.ENTITY_RELATIONS.value,
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to delete existing entity relation edges for message {message.id}: {str(e)}")
+
+        now = get_epoch_timestamp_in_ms()
+        edges_to_create: list[dict[str, Any]] = []
+
+        base_edge = {
+            "_to": f"{CollectionNames.RECORDS.value}/{message.id}",
+            "createdAtTimestamp": now,
+            "updatedAtTimestamp": now,
+        }
+        if message.source_created_at is not None:
+            base_edge["sourceTimestamp"] = message.source_created_at
+
+        # MENTIONED_IN edges for mentioned users
+        for source_uid in (message.mentioned_user_ids or []):
+            if not source_uid:
+                continue
+            try:
+                user = await tx_store.get_user_by_source_id(
+                    source_user_id=source_uid, connector_id=message.connector_id,
+                )
+                if user and user.id:
+                    edges_to_create.append({
+                        **base_edge,
+                        "_from": f"{CollectionNames.USERS.value}/{user.id}",
+                        "edgeType": EntityRelations.MENTIONED_IN.value,
+                    })
+            except Exception as e:
+                self.logger.warning(f"Failed to resolve mentioned user {source_uid}: {e}")
+
+        # MENTIONED_IN edges for mentioned channels/groups
+        for source_gid in (message.mentioned_group_ids or []):
+            if not source_gid:
+                continue
+            try:
+                rg = await tx_store.get_record_group_by_external_id(
+                    external_id=source_gid, connector_id=message.connector_id,
+                )
+                if rg and rg.id:
+                    edges_to_create.append({
+                        **base_edge,
+                        "_from": f"{CollectionNames.RECORD_GROUPS.value}/{rg.id}",
+                        "edgeType": EntityRelations.MENTIONED_IN.value,
+                    })
+            except Exception as e:
+                self.logger.warning(f"Failed to resolve mentioned group {source_gid}: {e}")
+
+        # INVOLVED_IN edges for participating authors
+        involved_ids = message.involved_user_source_ids or []
+        if not involved_ids and message.author_id:
+            involved_ids = [message.author_id]
+
+        seen_involved: set = set()
+        for source_uid in involved_ids:
+            if not source_uid or source_uid in seen_involved:
+                continue
+            seen_involved.add(source_uid)
+            try:
+                user = await tx_store.get_user_by_source_id(
+                    source_user_id=source_uid, connector_id=message.connector_id,
+                )
+                if user and user.id:
+                    edges_to_create.append({
+                        **base_edge,
+                        "_from": f"{CollectionNames.USERS.value}/{user.id}",
+                        "edgeType": EntityRelations.INVOLVED_IN.value,
+                    })
+            except Exception as e:
+                self.logger.warning(f"Failed to resolve involved user {source_uid}: {e}")
+
+        if edges_to_create:
+            await tx_store.batch_create_entity_relations(edges_to_create)
+            self.logger.info(
+                f"Created {len(edges_to_create)} entity relation edges for message {message.id}"
+            )
+
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         self.logger.debug("Upserting new record: %s", record.record_name)
         await tx_store.batch_upsert_records([record])
@@ -824,6 +918,10 @@ class DataSourceEntitiesProcessor:
         if isinstance(record, ProjectRecord):
             await self._handle_project_lead_edge(record, tx_store)
 
+        # Create message entity relation edges (MENTIONED_IN, INVOLVED_IN) if record is a MessageRecord
+        if isinstance(record, MessageRecord):
+            await self._handle_message_entity_edges(record, tx_store)
+
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
 
         await self._handle_record_permissions(record, permissions, tx_store)
@@ -963,9 +1061,20 @@ class DataSourceEntitiesProcessor:
 
             skipped_records = 0
 
-            # Reset status to QUEUED for all records before reindexing
+            # Verify records exist in database before reindexing
+            existing_records: list[Record] = []
             async with self.data_store_provider.transaction() as tx_store:
                 for record in records:
+                    # Check if record exists in database
+                    existing = await tx_store.get_record_by_key(record.id)
+                    if not existing:
+                        self.logger.warning(
+                            f"Skipping reindex for record {record.id} ({record.record_name}): "
+                            f"record not found in database"
+                        )
+                        continue
+
+                    existing_records.append(record)
                     current_status = record.indexing_status if hasattr(record, 'indexing_status') else None
                     if current_status != ProgressStatus.QUEUED.value and not record.is_internal:
                         await self._reset_indexing_status_to_queued(record.id, tx_store)

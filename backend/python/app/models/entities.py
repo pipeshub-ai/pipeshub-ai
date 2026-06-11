@@ -35,10 +35,25 @@ class LlmTextContent(BaseModel):
 
     type: Literal["text"]
     text: str
+def _parse_json_field(value: Any, default: Any) -> Any:
+    """
+    Parse JSON string field to Python object, with fallback to default.
+    Handles both JSON strings and already-parsed objects for backward compatibility.
+    """
+    if value is None:
+        return default
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return default
+    # Already parsed (backward compatibility)
+    return value
 
 
 class RecordGroupType(str, Enum):
     SLACK_CHANNEL = "SLACK_CHANNEL"
+    SLACK_THREAD = "SLACK_THREAD"   # Thread under a Slack message
     CONFLUENCE_SPACES = "CONFLUENCE_SPACES"
     KB = "KB"
     NOTION_WORKSPACE = "NOTION_WORKSPACE"
@@ -223,6 +238,7 @@ class Record(BaseModel):
     # Source information
     weburl: str | None = None
     signed_url: str | None = None
+    fetch_signed_url: str | None = None
     preview_renderable: bool | None = True
     is_shared: bool | None = False
     is_shared_with_me: bool | None = False
@@ -610,6 +626,7 @@ class FileRecord(Record):
             "extension": self.extension,
             "sizeInBytes": self.size_in_bytes,
             "signedUrl": self.signed_url,
+            "signedUrlRoute": self.fetch_signed_url,
             "externalRevisionId": self.external_revision_id,
             "externalGroupId": self.external_record_group_id,
             "parentExternalRecordId": self.parent_external_record_id,
@@ -617,21 +634,148 @@ class FileRecord(Record):
         }
 
 class MessageRecord(Record):
-    content: str | None = None
+    """
+    Generic message record for all messaging platforms (Slack, Teams, Discord, WhatsApp, etc.)
 
-    def to_kafka_record(self) -> dict:
+    Generic fields that apply across platforms:
+    - thread_id: Thread/conversation identifier (platform-agnostic)
+    - has_replies: True if this message is a thread parent with one or more replies
+    - is_reply: True if this message record belongs to a thread (reply context)
+    - mentioned_user_ids: list of mentioned user IDs
+    - mentioned_group_ids: list of mentioned channel/group/room IDs (platform-agnostic)
+    - is_edited: True if message was edited
+    - author_id: User ID who sent the message (platform-agnostic)
+    - author_email: Email of the user who sent the message
+    """
+    content: str | None = None  # In-memory only during sync; not persisted (streamed as blocks)
+    thread_id: str | None = None
+    has_replies: bool = False
+    is_reply: bool = False
+    mentioned_user_ids: list[str] = Field(default_factory=list)
+    mentioned_group_ids: list[str] = Field(default_factory=list)
+    is_edited: bool = False
+    author_id: str | None = None
+    author_email: str | None = None
+    # Burst tracking timestamps (string Slack ts values, e.g. "1620000000.000100")
+    start_ts: str | None = None  # ts of the first message in the burst / thread
+    end_ts: str | None = None    # ts of the last message in the burst / thread
+    # Source user IDs of all users who authored messages in a burst/single record
+    # Used by the processor to create INVOLVED_IN entity relations
+    involved_user_source_ids: list[str] = Field(default_factory=list)
+
+    def to_llm_context(self, frontend_url: str | None = None) -> str:
+        """Returns formatted message-specific metadata for LLM context"""
+        base = super().to_llm_context(frontend_url=frontend_url)
+        lines = [base]
+
+        specific_lines = []
+        if self.author_email:
+            specific_lines.append(f"* Author Email: {self.author_email}")
+        if self.author_id:
+            specific_lines.append(f"* Author ID: {self.author_id}")
+        if self.thread_id:
+            specific_lines.append(f"* Thread ID: {self.thread_id}")
+        if self.start_ts:
+            dt = datetime.fromtimestamp(float(self.start_ts), tz=timezone.utc)
+            start_iso = dt.isoformat().replace("+00:00", "Z")
+            specific_lines.append(f"* Start Message ID: {start_iso}")
+        if self.end_ts:
+            dt = datetime.fromtimestamp(float(self.end_ts), tz=timezone.utc)
+            end_iso = dt.isoformat().replace("+00:00", "Z")
+            specific_lines.append(f"* End Message ID: {end_iso}")
+        specific_lines.append(f"* Has Replies: {self.has_replies}")
+        if self.is_reply:
+            specific_lines.append("* Is Reply: True")
+        if self.is_edited:
+            specific_lines.append(f"* Edited: True")
+        if specific_lines:
+            lines.append("Message Details:")
+            lines.extend(specific_lines)
+        return "\n".join(lines)
+
+    def to_arango_record(self) -> dict[str, Any]:
         return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "threadId": self.thread_id,
+            "hasReplies": self.has_replies,
+            "isReply": self.is_reply,
+            "isEdited": self.is_edited,
+            "authorId": self.author_id,
+            "authorEmail": self.author_email,
+            # Burst / thread range timestamps
+            "startTs": self.start_ts,
+            "endTs": self.end_ts,
+            # "involvedUserSourceIds": self.involved_user_source_ids,
+        }
+
+    @staticmethod
+    def from_arango_record(message_doc: dict[str, Any], record_doc: dict[str, Any]) -> "MessageRecord":
+        """Create MessageRecord from ArangoDB documents (records + messages collections)"""
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = (
+                Connectors(conn_name_value)
+                if conn_name_value is not None
+                else Connectors.KNOWLEDGE_BASE
+            )
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
+        return MessageRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            # Legacy message docs may still carry recordGroupType; base records do not.
+            record_group_type=message_doc.get("recordGroupType"),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            virtual_record_id=record_doc.get("virtualRecordId"),
+            is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId", None),
+            thread_id=message_doc.get("threadId"),
+            has_replies=message_doc.get(
+                "hasReplies", message_doc.get("isThreadParent", False)
+            ),
+            is_reply=message_doc.get("isReply", False),
+            is_edited=message_doc.get("isEdited", False),
+            author_id=message_doc.get("authorId"),
+            author_email=message_doc.get("authorEmail"),
+            # Burst / thread range timestamps
+            start_ts=message_doc.get("startTs"),
+            end_ts=message_doc.get("endTs"),
+            involved_user_source_ids=message_doc.get("involvedUserSourceIds", []),
+        )
+
+    def to_kafka_record(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "recordId": self.id,
             "orgId": self.org_id,
             "recordName": self.record_name,
             "recordType": self.record_type.value,
             "connectorName": self.connector_name.value,
             "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
         }
+        return payload
 
 class MailRecord(Record):
     subject: str | None = None
@@ -758,6 +902,7 @@ class WebpageRecord(Record):
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
             "signedUrl": self.signed_url,
+            "signedUrlRoute": self.fetch_signed_url,
         }
 
     def to_arango_record(self) -> dict:
@@ -852,6 +997,7 @@ class LinkRecord(Record):
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
             "signedUrl": self.signed_url,
+            "signedUrlRoute": self.fetch_signed_url,
             "webUrl": self.weburl,
         }
 
@@ -1155,6 +1301,7 @@ class TicketRecord(Record):
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "signedUrl": self.signed_url,
+            "signedUrlRoute": self.fetch_signed_url,
             "origin": self.origin.value,
             "webUrl": self.weburl,
             "sourceCreatedAtTimestamp": self.source_created_at,
@@ -1252,6 +1399,7 @@ class ProjectRecord(Record):
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "signedUrl": self.signed_url,
+            "signedUrlRoute": self.fetch_signed_url,
             "origin": self.origin.value,
             "webUrl": self.weburl,
             "sourceCreatedAtTimestamp": self.source_created_at,
@@ -2167,6 +2315,10 @@ class RecordGroup(BaseModel):
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record group update in the source system")
     inherit_permissions: bool | None = Field(default=False, description="Permissions for the record group")
     is_internal: bool | None = Field(default=False, description="Flag indicating if the record group is for internal use")
+    hide_children: bool | None = Field(
+        default=False,
+        description="When true, child records are hidden in the knowledge-base tree UI",
+    )
 
     def to_arango_base_record_group(self) -> dict:
         return {
@@ -2181,6 +2333,7 @@ class RecordGroup(BaseModel):
             "connectorId": self.connector_id,
             "groupType": self.group_type.value,
             "isInternal": self.is_internal,
+            "hideChildren": self.hide_children,
             "webUrl": self.web_url,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -2201,6 +2354,7 @@ class RecordGroup(BaseModel):
             connector_name=arango_base_record_group.get("connectorName", Connectors.KNOWLEDGE_BASE),
             connector_id=arango_base_record_group.get("connectorId"),
             is_internal=arango_base_record_group.get("isInternal", False),
+            hide_children=arango_base_record_group.get("hideChildren", False),
             group_type=arango_base_record_group.get("groupType", RecordGroupType.KB),
             web_url=arango_base_record_group.get("webUrl"),
             created_at=arango_base_record_group.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),
