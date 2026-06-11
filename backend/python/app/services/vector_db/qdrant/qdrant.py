@@ -508,6 +508,29 @@ class QdrantService(IVectorDBService):
                         logger.error(f"❌ Failed to upload batch {batch_info[0]}: {str(e)}")
                         raise
 
+    async def count_points(
+        self,
+        collection_name: str,
+        count_filter: Optional[Filter] = None,
+    ) -> int:
+        """Count points matching an optional filter (server-side, no payload transfer)."""
+        if self.client is None:
+            raise RuntimeError("Client not connected. Call connect() first.")
+        if isinstance(self.client, AsyncQdrantClient):
+            result = await self.client.count(
+                collection_name=collection_name,
+                count_filter=count_filter,
+                exact=True,
+            )
+        else:
+            result = await asyncio.to_thread(
+                self.client.count,
+                collection_name=collection_name,
+                count_filter=count_filter,
+                exact=True,
+            )
+        return result.count
+
     async def delete_points(
         self,
         collection_name: str,

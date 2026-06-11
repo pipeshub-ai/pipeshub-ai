@@ -2061,6 +2061,89 @@ class Neo4jProvider(IGraphDBProvider):
             )
             return []
 
+    async def get_records_by_virtual_record_ids(
+        self,
+        virtual_record_ids: list[str],
+        accessible_record_ids: list[str] | None = None,
+        transaction: str | None = None
+    ) -> dict[str, list[str]]:
+        """
+        Bulk variant of get_records_by_virtual_record_id.
+
+        Resolves all virtual record IDs in a single query (one round trip) instead of
+        one query per ID, avoiding the N+1 pattern.
+
+        Args:
+            virtual_record_ids (List[str]): Virtual record IDs to look up
+            accessible_record_ids (Optional[List[str]]): Optional list of record IDs to filter by
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Dict[str, List[str]]: Mapping of virtualRecordId -> referencing record keys.
+            IDs with no referencing records are omitted; callers should treat a missing
+            key as "no remaining records".
+
+        Raises:
+            Exception: Propagates query errors instead of returning an empty mapping, so
+            callers can fail safe rather than mistake a failed lookup for "no remaining
+            records" (which would risk deleting still-referenced data).
+        """
+        if not virtual_record_ids:
+            return {}
+
+        try:
+            self.logger.debug(
+                "Resolving %d virtualRecordIds to referencing records", len(virtual_record_ids)
+            )
+
+            # Base query
+            query = """
+            MATCH (r:Record)
+            WHERE r.virtualRecordId IN $virtual_record_ids
+            """
+
+            # Add optional filter for record IDs
+            if accessible_record_ids:
+                query += """
+            AND r.id IN $accessible_record_ids
+            """
+
+            query += """
+            RETURN r.virtualRecordId AS virtual_record_id, r.id AS record_key
+            """
+
+            parameters = {"virtual_record_ids": virtual_record_ids}
+            if accessible_record_ids:
+                parameters["accessible_record_ids"] = accessible_record_ids
+
+            results = await self.client.execute_query(
+                query,
+                parameters=parameters,
+                txn_id=transaction
+            )
+
+            mapping: dict[str, list[str]] = {}
+            for result in results:
+                vid = result.get("virtual_record_id")
+                key = result.get("record_key")
+                if vid and key:
+                    mapping.setdefault(vid, []).append(key)
+
+            self.logger.debug(
+                "Resolved %d of %d virtualRecordIds to referencing records",
+                len(mapping),
+                len(virtual_record_ids),
+            )
+            return mapping
+
+        except Exception as e:
+            self.logger.error(
+                "Error resolving %d virtualRecordIds: %s",
+                len(virtual_record_ids),
+                str(e),
+            )
+            raise
+
     async def get_record_by_path(
         self,
         connector_id: str,

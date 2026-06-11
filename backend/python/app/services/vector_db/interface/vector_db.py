@@ -85,6 +85,24 @@ class IVectorDBService(ABC):
         raise NotImplementedError("scroll() is not implemented")
 
     @abstractmethod
+    async def count_points(
+        self,
+        collection_name: str,
+        count_filter: Optional[Filter] = None,
+    ) -> int:
+        """Count points matching an optional filter (server-side, no payload transfer)."""
+        raise NotImplementedError("count_points() is not implemented")
+
+    @abstractmethod
+    async def delete_points(
+        self,
+        collection_name: str,
+        filter: Filter,
+    ) -> None:
+        """Delete all points matching a filter directly in the vector store."""
+        raise NotImplementedError("delete_points() is not implemented")
+
+    @abstractmethod
     async def query_nearest_points(
         self,
         collection_name: str,

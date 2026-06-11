@@ -844,6 +844,34 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def get_records_by_virtual_record_ids(
+        self,
+        virtual_record_ids: list[str],
+        accessible_record_ids: list[str] | None = None,
+        transaction: str | None = None
+    ) -> dict[str, list[str]]:
+        """
+        Resolve virtualRecordIds to the record _keys that reference them, in a single
+        query (bulk variant of get_records_by_virtual_record_id, avoids N+1).
+
+        Args:
+            virtual_record_ids (List[str]): Virtual record IDs to look up
+            accessible_record_ids (Optional[List[str]]): Optional list of record IDs to filter by
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Dict[str, List[str]]: Mapping virtual_record_id -> referencing record _keys.
+            IDs with no referencing records are omitted; callers should treat a missing
+            key as "no remaining records".
+
+        Raises:
+            Exception: Implementations must propagate query errors rather than returning
+            an empty mapping, so callers can fail safe instead of mistaking a failed
+            lookup for "no remaining records".
+        """
+        pass
+
     # ==================== Record Operations ====================
     @abstractmethod
     async def get_record_by_path(

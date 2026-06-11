@@ -18417,6 +18417,88 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             return []
 
+    async def get_records_by_virtual_record_ids(
+        self,
+        virtual_record_ids: list[str],
+        accessible_record_ids: list[str] | None = None,
+        transaction: str | None = None
+    ) -> dict[str, list[str]]:
+        """
+        Bulk variant of get_records_by_virtual_record_id.
+
+        Resolves all virtual record IDs in a single query (one round trip) instead of
+        one query per ID, avoiding the N+1 pattern. Backed by the composite
+        (virtualRecordId, orgId) persistent index.
+
+        Args:
+            virtual_record_ids (List[str]): Virtual record IDs to look up
+            accessible_record_ids (Optional[List[str]]): Optional list of record IDs to filter by
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Dict[str, List[str]]: Mapping of virtualRecordId -> referencing record keys.
+            IDs with no referencing records are omitted; callers should treat a missing
+            key as "no remaining records".
+
+        Raises:
+            Exception: Propagates query errors instead of returning an empty mapping, so
+            callers can fail safe rather than mistake a failed lookup for "no remaining
+            records" (which would risk deleting still-referenced data).
+        """
+        if not virtual_record_ids:
+            return {}
+
+        try:
+            self.logger.debug(
+                "Resolving %d virtualRecordIds to referencing records", len(virtual_record_ids)
+            )
+
+            # Base query
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.virtualRecordId IN @virtual_record_ids
+            """
+
+            # Add optional filter for record IDs
+            if accessible_record_ids:
+                query += """
+                AND record._key IN @accessible_record_ids
+                """
+
+            query += """
+                RETURN {virtualRecordId: record.virtualRecordId, recordKey: record._key}
+            """
+
+            bind_vars = {"virtual_record_ids": virtual_record_ids}
+            if accessible_record_ids:
+                bind_vars["accessible_record_ids"] = accessible_record_ids
+
+            results = await self.http_client.execute_aql(query, bind_vars, transaction)
+
+            mapping: dict[str, list[str]] = {}
+            for result in results:
+                if not result:
+                    continue
+                vid = result.get("virtualRecordId")
+                key = result.get("recordKey")
+                if vid and key:
+                    mapping.setdefault(vid, []).append(key)
+
+            self.logger.debug(
+                "Resolved %d of %d virtualRecordIds to referencing records",
+                len(mapping),
+                len(virtual_record_ids),
+            )
+            return mapping
+
+        except Exception as e:
+            self.logger.error(
+                "Error resolving %d virtualRecordIds: %s",
+                len(virtual_record_ids),
+                str(e),
+            )
+            raise
+
     # ==================== Team Operations ====================
 
     async def _enrich_created_by_user(
