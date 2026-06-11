@@ -3,7 +3,7 @@
 Covers:
 - ``DoclingMarkdownParser``: parse_string, parse_file, extract_and_replace_images
 - ``MarkdownItParser``:      parse_to_blocks, extract_and_replace_images
-- ``markdown_parser`` shim:  MarkdownParser is DoclingMarkdownParser (current default)
+- ``markdown_parser`` shim:  MarkdownParser defaults to MarkdownItParser
 """
 
 from unittest.mock import MagicMock, patch
@@ -302,22 +302,42 @@ class TestMarkdownItParserImageExtraction:
 # ===========================================================================
 
 class TestMarkdownParserShim:
-    def test_markdown_parser_is_docling_parser(self):
-        with patch.dict("sys.modules", _DOCLING_MOCKS):
-            from app.modules.parsers.markdown.markdown_parser import (
-                MarkdownParser,
-            )
+    def test_markdown_parser_defaults_to_markdownit(self):
+        with patch.dict("os.environ", {"MARKDOWN_PARSER_BACKEND": "markdownit"}, clear=False):
+            import importlib
+
+            import app.modules.parsers.markdown.markdown_parser as markdown_parser_module
+
+            importlib.reload(markdown_parser_module)
+            MarkdownParser = markdown_parser_module.MarkdownParser
+
+        assert MarkdownParser.__name__ == "MarkdownItParser"
+        assert MarkdownParser.__module__ == (
+            "app.modules.parsers.markdown.markdown_it_parser"
+        )
+
+    def test_markdown_parser_can_select_docling_backend(self):
+        with patch.dict("os.environ", {"MARKDOWN_PARSER_BACKEND": "docling"}, clear=False):
+            with patch.dict("sys.modules", _DOCLING_MOCKS):
+                import importlib
+
+                import app.modules.parsers.markdown.markdown_parser as markdown_parser_module
+
+                importlib.reload(markdown_parser_module)
+                MarkdownParser = markdown_parser_module.MarkdownParser
 
         assert MarkdownParser.__name__ == "DoclingMarkdownParser"
         assert MarkdownParser.__module__ == (
             "app.modules.parsers.markdown.docling_markdown_parser"
         )
 
-    def test_markdown_parser_has_parse_string(self):
-        with patch.dict("sys.modules", _DOCLING_MOCKS):
-            from app.modules.parsers.markdown.markdown_parser import MarkdownParser
-
-        parser = MarkdownParser()
-        result = parser.parse_string("# Hello\n")
-        assert isinstance(result, bytes)
-        assert len(result) > 0
+    @pytest.mark.asyncio
+    async def test_markdown_parser_has_parse(self):
+        parser = MarkdownItParser()
+        with patch.object(
+            parser,
+            "parse_to_blocks",
+            return_value=MagicMock(),
+        ) as mock_parse:
+            await parser.parse("# Hello\n")
+            mock_parse.assert_called_once_with("# Hello\n", None)
