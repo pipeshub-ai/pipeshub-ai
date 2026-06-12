@@ -18,6 +18,8 @@ Tests cover:
 - overwrite_payload: success, client not connected
 """
 
+import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -224,6 +226,92 @@ class TestDisconnect:
         connected_service.client.close.side_effect = Exception("close failed")
         await connected_service.disconnect()
         assert connected_service.client is None
+
+
+# ---------------------------------------------------------------------------
+# Per-event-loop clients
+# ---------------------------------------------------------------------------
+
+
+class TestPerLoopClients:
+    """The grpc.aio transport binds to the loop that first uses it, so the
+    service must hand out a separate AsyncQdrantClient per event loop (e.g.
+    the main loop vs the indexing consumer's worker-thread loop)."""
+
+    @pytest.mark.asyncio
+    @patch("app.services.vector_db.qdrant.qdrant.AsyncQdrantClient")
+    async def test_distinct_client_per_event_loop(self, mock_client_cls, qdrant_config):
+        mock_client_cls.side_effect = lambda **kwargs: MagicMock()
+
+        svc = QdrantService(qdrant_config)
+        await svc.connect()
+        main_client = svc.client
+        assert main_client is not None
+
+        result = {}
+
+        async def get_client():
+            return svc.client
+
+        def run_in_worker_loop():
+            loop = asyncio.new_event_loop()
+            try:
+                result["client"] = loop.run_until_complete(get_client())
+            finally:
+                loop.close()
+
+        thread = threading.Thread(target=run_in_worker_loop)
+        thread.start()
+        thread.join()
+
+        assert result["client"] is not None
+        assert result["client"] is not main_client
+
+    @pytest.mark.asyncio
+    @patch("app.services.vector_db.qdrant.qdrant.AsyncQdrantClient")
+    async def test_same_loop_reuses_cached_client(self, mock_client_cls, qdrant_config):
+        mock_client_cls.side_effect = lambda **kwargs: MagicMock()
+
+        svc = QdrantService(qdrant_config)
+        await svc.connect()
+        assert svc.client is svc.client
+        assert mock_client_cls.call_count == 1
+
+    @pytest.mark.asyncio
+    @patch("app.services.vector_db.qdrant.qdrant.AsyncQdrantClient")
+    async def test_disconnect_closes_all_loop_clients(self, mock_client_cls, qdrant_config):
+        clients = []
+
+        def make_client(**kwargs):
+            client = MagicMock()
+            client.close = AsyncMock()
+            clients.append(client)
+            return client
+
+        mock_client_cls.side_effect = make_client
+
+        svc = QdrantService(qdrant_config)
+        await svc.connect()
+
+        async def touch_client():
+            return svc.client
+
+        def worker():
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(touch_client())
+            finally:
+                loop.close()
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join()
+
+        assert len(clients) == 2
+        await svc.disconnect()
+        assert svc.client is None
+        for client in clients:
+            client.close.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

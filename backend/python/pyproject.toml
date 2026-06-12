@@ -268,7 +268,6 @@ dependencies = [
     "fpdf2>=2.7.0,<3.0.0",
     "python-jose==3.4.0",
     "python-multipart==0.0.27",
-    "opensearch-py[async]>=2.7.0",
     "qdrant-client==1.13.1",
     "redis==5.2.1",
     "requests-toolbelt==1.0.0",
@@ -283,7 +282,8 @@ dependencies = [
     "uvicorn==0.35",
     "zstandard==0.25.0",
     "mariadb>=1.1.0",
-    "psycopg2-binary==2.9.11",
+    "asyncpg>=0.31.0",
+    "opensearch-py[async]==3.2.0"
 ]
 
 [tool.setuptools.packages.find]

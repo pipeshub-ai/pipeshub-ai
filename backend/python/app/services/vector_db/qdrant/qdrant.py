@@ -5,6 +5,7 @@ Supports: sparse + dense named vectors, RRF prefetch/fusion.
 """
 
 import asyncio
+import threading
 import time
 from typing import Dict, List, Optional, Union
 
@@ -96,7 +97,52 @@ class QdrantService(IVectorDBService):
         config_service: ConfigurationService | QdrantConfig,
     ) -> None:
         self.config_service = config_service
-        self.client: Optional[AsyncQdrantClient] = None
+        # The grpc.aio (and httpx) transports inside AsyncQdrantClient are
+        # permanently bound to the event loop running when they are first
+        # used. This service is shared across loops (the main loop for health
+        # checks / API and the indexing consumer's worker-thread loop), so a
+        # single client instance would raise "attached to a different loop".
+        # Instead we keep one client per event loop, created lazily from the
+        # kwargs resolved in connect().
+        self._client_kwargs: Optional[dict] = None
+        self._clients: Dict[Optional[asyncio.AbstractEventLoop], AsyncQdrantClient] = {}
+        self._clients_lock = threading.Lock()
+        # Explicitly assigned client (tests / legacy callers); served to every
+        # loop as-is when set.
+        self._client_override: Optional[AsyncQdrantClient] = None
+
+    @property
+    def client(self) -> Optional[AsyncQdrantClient]:
+        """Return the AsyncQdrantClient bound to the current event loop."""
+        if self._client_override is not None:
+            return self._client_override
+        if self._client_kwargs is None:
+            return None
+        return self._get_client_for_current_loop()
+
+    @client.setter
+    def client(self, value: Optional[AsyncQdrantClient]) -> None:
+        self._client_override = value
+
+    def _get_client_for_current_loop(self) -> AsyncQdrantClient:
+        try:
+            loop: Optional[asyncio.AbstractEventLoop] = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        with self._clients_lock:
+            client = self._clients.get(loop)
+            if client is None:
+                client = AsyncQdrantClient(**self._client_kwargs)  # type: ignore[arg-type]
+                self._clients[loop] = client
+                if len(self._clients) > 1:
+                    logger.info(
+                        "Created additional Qdrant client for event loop %r "
+                        "(%d clients total)",
+                        loop,
+                        len(self._clients),
+                    )
+            return client
 
     # ------------------------------------------------------------------
     # Factory
@@ -157,24 +203,39 @@ class QdrantService(IVectorDBService):
                     "grpc.keepalive_permit_without_calls": 1,
                 }
 
-            self.client = AsyncQdrantClient(**client_kwargs)
+            self._client_kwargs = client_kwargs
+            # Eagerly create the client for the current loop so connect()
+            # fails fast on bad kwargs; clients for other loops are created
+            # lazily on first use.
+            self._get_client_for_current_loop()
             logger.info(
                 f"Connected to Qdrant at {cfg.host}:{cfg.port} "
                 f"(grpc={cfg.prefer_grpc}, https={cfg.https})"
             )
         except Exception as e:
+            self._client_kwargs = None
             logger.error(f"Failed to connect to Qdrant: {e}")
             raise
 
     async def disconnect(self) -> None:
-        if self.client is not None:
+        with self._clients_lock:
+            clients = list(self._clients.values())
+            self._clients.clear()
+        if self._client_override is not None:
+            clients.append(self._client_override)
+            self._client_override = None
+        self._client_kwargs = None
+
+        if not clients:
+            return
+        for client in clients:
             try:
-                await self.client.close()
-                logger.info("Disconnected from Qdrant")
+                # Clients bound to other (possibly already-stopped) event
+                # loops cannot be closed from here; log and move on.
+                await client.close()
             except Exception as e:
                 logger.warning(f"Error during Qdrant disconnect: {e}")
-            finally:
-                self.client = None
+        logger.info("Disconnected from Qdrant")
 
     # ------------------------------------------------------------------
     # Identity
