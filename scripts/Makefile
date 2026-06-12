@@ -10,6 +10,7 @@
 	setup-nodejs implode-setup-nodejs nodejs setup-python setup-python-deps \
 	implode-setup-python connectors indexing query embedding docling check-python-version \
 	setup-frontend implode-setup-frontend frontend clean-env setup-all clean-all \
+	doctor install check-env check-docker check-services docker-support services services-neo4j services-stop start \
 	dev-docker-menu prod-docker-menu dev-docker-up dev-docker-down dev-docker-stop dev-docker-clean dev-docker-hard-clean \
 	prod-docker-up prod-docker-down prod-docker-stop prod-docker-clean prod-docker-hard-clean \
 	check-and-kill-ports \
@@ -21,6 +22,15 @@
 # ==============================================================================
 # Configuration
 # ==============================================================================
+
+# Use bash for all recipes. Several targets rely on bash features such as
+# `source` (venv activation) and `/dev/tcp` (service reachability checks), which
+# the default /bin/sh (dash on Ubuntu) does not provide. bash is present on
+# Linux, macOS, and Windows (Git Bash/WSL).
+# `-O xpg_echo` makes bash's `echo` expand backslash escapes (e.g. the \033 color
+# codes below) the way dash's echo does, so colored output keeps working.
+SHELL := /bin/bash
+.SHELLFLAGS := -O xpg_echo -c
 
 # Color codes for output
 BLUE := \033[0;34m
@@ -45,6 +55,15 @@ LOAD_ENV = if [ -f $(PYTHON_ENV_FILE) ]; then set -a; . $(PYTHON_ENV_FILE); set 
 
 help: ## Show this help message
 	@echo "$(BLUE)PipesHub AI Setup Makefile$(NC)"
+	@echo ""
+	@echo "$(GREEN)Quick Start (recommended):$(NC)"
+	@echo "  make doctor               - Check system dependencies & Docker"
+	@echo "  make install              - Install all project dependencies"
+	@echo "  make services             - Start supporting Docker services only (use with Neo4j Desktop)"
+	@echo "  make services-neo4j       - Start supporting services AND Neo4j in Docker (all-in-one)"
+	@echo "  make start                - Start all PipesHub services (5 Python + Node + frontend)"
+	@echo "      (or run them individually, each in its own terminal:)"
+	@echo "      make embedding | make connectors | make indexing | make query | make docling | make nodejs | make frontend"
 	@echo ""
 	@echo "$(GREEN)System Dependencies:$(NC)"
 	@echo "  make install-deps-linux   - Install dependencies on Linux"
@@ -140,13 +159,189 @@ help: ## Show this help message
 	@echo "  KAFKA_SASL_USERNAME, KAFKA_SASL_PASSWORD"
 
 # ==============================================================================
+# Quick Start Targets (cross-platform: Linux, macOS, Windows via Git Bash/WSL)
+# ==============================================================================
+
+install: setup-all ## Install all project dependencies (Node.js, Python via uv, frontend)
+
+check-env: ## Fail if backend/python/.env is missing (services read config from it)
+	@if [ ! -f $(PYTHON_ENV_FILE) ]; then \
+		echo "$(RED)Error: $(PYTHON_ENV_FILE) not found.$(NC)"; \
+		echo "$(YELLOW)Docker services read their config (passwords, API keys) from this file.$(NC)"; \
+		echo "$(YELLOW)Run 'make install' first, or copy backend/env.template to backend/python/.env.$(NC)"; \
+		exit 1; \
+	fi
+
+check-docker: ## Fail if the Docker daemon is not running
+	@if ! docker info >/dev/null 2>&1; then \
+		echo "$(RED)Error: Docker daemon is not running or not reachable.$(NC)"; \
+		case "$$(uname -s)" in \
+			Darwin|MINGW*|CYGWIN*|MSYS*) echo "$(YELLOW)Start Docker Desktop, wait until it is ready, then retry.$(NC)";; \
+			*) echo "$(YELLOW)Start Docker: 'sudo systemctl start docker' (or launch Docker Desktop), then retry.$(NC)";; \
+		esac; \
+		exit 1; \
+	fi
+
+check-services: check-env ## Verify backing services (Redis, Qdrant, Mongo, Neo4j) are reachable using .env creds
+	@$(LOAD_ENV); \
+	FAILS=0; \
+	tcp_check() { (exec 3<>/dev/tcp/$$1/$$2) 2>/dev/null; }; \
+	ok()  { printf "  $(GREEN)[OK]$(NC)   %s\n" "$$1"; }; \
+	bad() { printf "  $(RED)[DOWN]$(NC) %s\n" "$$1"; FAILS=$$((FAILS+1)); }; \
+	echo "$(BLUE)Checking backing services (config from backend/python/.env)...$(NC)"; \
+	REDIS_HOST=$${REDIS_HOST:-localhost}; REDIS_PORT=$${REDIS_PORT:-6379}; \
+	if tcp_check $$REDIS_HOST $$REDIS_PORT; then \
+		if command -v redis-cli >/dev/null 2>&1; then \
+			if [ -n "$$REDIS_PASSWORD" ]; then PONG=$$(redis-cli -h $$REDIS_HOST -p $$REDIS_PORT -a "$$REDIS_PASSWORD" ping 2>/dev/null); \
+			else PONG=$$(redis-cli -h $$REDIS_HOST -p $$REDIS_PORT ping 2>/dev/null); fi; \
+			if [ "$$PONG" = "PONG" ]; then ok "Redis $$REDIS_HOST:$$REDIS_PORT (auth OK)"; \
+			else bad "Redis $$REDIS_HOST:$$REDIS_PORT reachable but ping/AUTH failed (check REDIS_PASSWORD)"; fi; \
+		else ok "Redis $$REDIS_HOST:$$REDIS_PORT (port open)"; fi; \
+	else bad "Redis $$REDIS_HOST:$$REDIS_PORT not reachable"; fi; \
+	QDRANT_HOST=$${QDRANT_HOST:-localhost}; QDRANT_PORT=$${QDRANT_PORT:-6333}; \
+	if tcp_check $$QDRANT_HOST $$QDRANT_PORT; then \
+		if command -v curl >/dev/null 2>&1; then \
+			CODE=$$(curl -s -o /dev/null -w '%{http_code}' -H "api-key: $$QDRANT_API_KEY" "http://$$QDRANT_HOST:$$QDRANT_PORT/collections" 2>/dev/null); \
+			if [ "$$CODE" = "200" ]; then ok "Qdrant $$QDRANT_HOST:$$QDRANT_PORT (api-key OK)"; \
+			elif [ "$$CODE" = "401" ] || [ "$$CODE" = "403" ]; then bad "Qdrant $$QDRANT_HOST:$$QDRANT_PORT rejected api-key (check QDRANT_API_KEY)"; \
+			else ok "Qdrant $$QDRANT_HOST:$$QDRANT_PORT (port open)"; fi; \
+		else ok "Qdrant $$QDRANT_HOST:$$QDRANT_PORT (port open)"; fi; \
+	else bad "Qdrant $$QDRANT_HOST:$$QDRANT_PORT not reachable"; fi; \
+	MONGO_URI=$${MONGO_URI:-mongodb://localhost:27017/}; \
+	MHOST=$$(echo "$$MONGO_URI" | sed -nE 's|mongodb(\+srv)?://([^@]*@)?([^:/]+).*|\3|p'); \
+	MPORT=$$(echo "$$MONGO_URI" | sed -nE 's|mongodb(\+srv)?://([^@]*@)?[^:/]+:([0-9]+).*|\3|p'); \
+	MHOST=$${MHOST:-localhost}; MPORT=$${MPORT:-27017}; \
+	if tcp_check $$MHOST $$MPORT; then ok "MongoDB $$MHOST:$$MPORT (port open)"; else bad "MongoDB $$MHOST:$$MPORT not reachable"; fi; \
+	if [ "$$(echo $${DATA_STORE:-neo4j} | tr 'A-Z' 'a-z')" = "neo4j" ]; then \
+		NURI=$${NEO4J_URI:-bolt://localhost:7687}; \
+		NHOST=$$(echo "$$NURI" | sed -nE 's|[a-zA-Z+]+://([^@]*@)?([^:/]+).*|\2|p'); \
+		NPORT=$$(echo "$$NURI" | sed -nE 's|[a-zA-Z+]+://([^@]*@)?[^:/]+:([0-9]+).*|\2|p'); \
+		NHOST=$${NHOST:-localhost}; NPORT=$${NPORT:-7687}; \
+		if tcp_check $$NHOST $$NPORT; then ok "Neo4j $$NHOST:$$NPORT (Bolt port open)"; \
+		else bad "Neo4j $$NHOST:$$NPORT not reachable — start Neo4j Desktop or run 'make services-neo4j'"; fi; \
+	fi; \
+	if [ "$$FAILS" -gt 0 ]; then \
+		echo "$(RED)$$FAILS backing service(s) unavailable.$(NC)"; \
+		echo "$(YELLOW)Start them with 'make services' (+ Neo4j Desktop) or 'make services-neo4j' (Neo4j in Docker), then retry.$(NC)"; \
+		exit 1; \
+	fi; \
+	echo "$(GREEN)All backing services reachable.$(NC)"
+
+# Supporting infrastructure only (no graph DB) — pairs with Neo4j Desktop running locally
+# Uses Redis for both the KV store and messaging (Redis Streams), so no etcd/Kafka/Zookeeper.
+docker-support: check-env check-docker docker-redis docker-qdrant docker-mongo ## Start supporting containers only (no graph DB)
+	@echo "$(GREEN)Supporting Docker services started (redis, qdrant, mongo)$(NC)"
+
+services: docker-support ## Start supporting Docker services (use alongside Neo4j Desktop)
+	@echo "$(YELLOW)No graph DB container started — make sure Neo4j Desktop is running (or use 'make services-neo4j' for Docker Neo4j).$(NC)"
+	@echo "$(BLUE)Next: run 'make start' to start the PipesHub platform.$(NC)"
+
+services-neo4j: docker-support docker-neo4j ## Start supporting services AND Neo4j in Docker (all-in-one)
+	@echo "$(GREEN)Started supporting services AND Neo4j: redis, qdrant, mongo, neo4j$(NC)"
+	@echo "$(YELLOW)This already includes everything 'make services' starts — no need to run both.$(NC)"
+	@echo "$(BLUE)Next: run 'make start' to start the PipesHub platform.$(NC)"
+
+services-stop: ## Stop supporting + Neo4j containers
+	@echo "$(YELLOW)Stopping services...$(NC)"
+	@docker stop redis qdrant mongodb neo4j 2>/dev/null || true
+	@echo "$(GREEN)Services stopped!$(NC)"
+
+start: check-services ## Start all PipesHub services concurrently (5 Python + Node.js + frontend)
+	@echo "$(BLUE)Starting all PipesHub services via concurrently...$(NC)"
+	@echo "$(YELLOW)Embedding starts with the rest; indexing/query retry until it is up.$(NC)"
+	@echo "$(YELLOW)Press Ctrl-C once to stop all services.$(NC)"
+	@trap 'trap - INT TERM; kill 0' INT TERM; \
+	npx -y concurrently -k --kill-signal SIGTERM --kill-timeout 5000 \
+		-n EMBED,CONN,INDEX,QUERY,DOCLING,NODE,FRONT \
+		-c green,cyan,blue,magenta,yellow,white,gray \
+		"cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m app.embedding_main" \
+		"cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m app.connectors_main" \
+		"cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m app.indexing_main" \
+		"cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m app.query_main" \
+		"cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m app.docling_main" \
+		"cd $(ROOT_DIR)/backend/nodejs/apps && npm run dev" \
+		"cd $(ROOT_DIR)/frontend && npm run dev" & \
+	wait
+
+doctor: ## Check all system-level dependencies, Docker, and environment
+	@printf "$(BLUE)Running PipesHub environment doctor...$(NC)\n\n"
+	@OS_TYPE=$$(uname -s 2>/dev/null || echo Unknown); \
+	FAILS=0; WARNS=0; \
+	pass() { printf "  $(GREEN)[PASS]$(NC) %s\n" "$$1"; }; \
+	warn() { printf "  $(YELLOW)[WARN]$(NC) %s\n" "$$1"; WARNS=$$((WARNS+1)); }; \
+	fail() { printf "  $(RED)[FAIL]$(NC) %s\n" "$$1"; FAILS=$$((FAILS+1)); }; \
+	hint() { printf "         $(YELLOW)-> %s$(NC)\n" "$$1"; }; \
+	printf "$(BLUE)System:$(NC) %s\n" "$$OS_TYPE"; \
+	printf "$(BLUE)Tools:$(NC)\n"; \
+	if command -v node >/dev/null 2>&1; then \
+		NODE_MAJOR=$$(node -v 2>/dev/null | sed 's/v\([0-9]*\).*/\1/'); \
+		if [ "$$NODE_MAJOR" -ge 22 ] 2>/dev/null; then pass "Node.js $$(node -v)"; \
+		else warn "Node.js $$(node -v) found; project pins v22.15.0 (>= 22 recommended)"; fi; \
+	else fail "Node.js not found"; hint "Install Node.js v22.15.0 from https://nodejs.org/"; fi; \
+	if command -v npm >/dev/null 2>&1; then pass "npm $$(npm -v)"; else fail "npm not found (ships with Node.js)"; fi; \
+	if command -v uv >/dev/null 2>&1; then pass "uv ($$(uv --version 2>/dev/null))"; \
+	else fail "uv not found"; hint "Install uv from https://docs.astral.sh/uv/getting-started/installation/"; fi; \
+	if command -v uv >/dev/null 2>&1; then \
+		if uv python find 3.12 >/dev/null 2>&1; then pass "Python 3.12 available (via uv)"; \
+		else warn "Python 3.12 not found; uv can install it: uv python install 3.12"; fi; \
+	elif command -v python3 >/dev/null 2>&1; then pass "python3 $$(python3 --version 2>&1 | awk '{print $$2}') (uv preferred)"; \
+	else warn "Python 3.12 not detected (uv will manage it once installed)"; fi; \
+	if command -v libreoffice >/dev/null 2>&1 || command -v soffice >/dev/null 2>&1; then pass "LibreOffice present"; \
+	else warn "LibreOffice not found (used by docling for office documents)"; fi; \
+	if command -v mariadb_config >/dev/null 2>&1 || command -v mysql_config >/dev/null 2>&1; then pass "MariaDB Connector/C present"; \
+	else warn "MariaDB Connector/C not found (needed to build some Python deps: libmariadb-dev / mariadb-connector-c)"; fi; \
+	printf "$(BLUE)Docker:$(NC)\n"; \
+	if command -v docker >/dev/null 2>&1; then \
+		pass "docker CLI ($$(docker --version 2>/dev/null | sed 's/,.*//'))"; \
+		DOCKER_ERR=$$(docker info 2>&1 >/dev/null); \
+		if [ -z "$$DOCKER_ERR" ]; then pass "Docker daemon is running"; \
+		else \
+			if echo "$$DOCKER_ERR" | grep -qi "permission denied"; then \
+				fail "Docker daemon: permission denied"; \
+				if id -nG 2>/dev/null | grep -qw docker; then hint "You are in the 'docker' group but still denied; log out/in or run: newgrp docker"; \
+				else hint "Add your user to the docker group: sudo usermod -aG docker \$$USER && newgrp docker"; fi; \
+			elif echo "$$DOCKER_ERR" | grep -qiE "cannot connect|docker_engine|daemon running|connection refused|pipe"; then \
+				fail "Cannot connect to the Docker daemon"; \
+				case "$$OS_TYPE" in \
+					Darwin|MINGW*|CYGWIN*|MSYS*) hint "Start Docker Desktop, wait until it is ready, then re-run 'make doctor'";; \
+					*) hint "Start Docker: sudo systemctl start docker (or launch Docker Desktop)";; \
+				esac; \
+			else fail "Docker daemon error: $$(echo "$$DOCKER_ERR" | head -1)"; fi; \
+		fi; \
+	else fail "docker not found"; hint "Install Docker from https://docs.docker.com/get-docker/"; fi; \
+	printf "$(BLUE)Graph database (Neo4j):$(NC)\n"; \
+	$(LOAD_ENV); \
+	NURI=$${NEO4J_URI:-bolt://localhost:7687}; \
+	NHOST=$$(echo "$$NURI" | sed -nE 's|[a-zA-Z+]+://([^@]*@)?([^:/]+).*|\2|p'); \
+	NPORT=$$(echo "$$NURI" | sed -nE 's|[a-zA-Z+]+://([^@]*@)?[^:/]+:([0-9]+).*|\2|p'); \
+	NHOST=$${NHOST:-localhost}; NPORT=$${NPORT:-7687}; \
+	if (exec 3<>/dev/tcp/$$NHOST/$$NPORT) 2>/dev/null; then pass "Neo4j Bolt reachable on $$NHOST:$$NPORT"; \
+	else warn "Neo4j Bolt not reachable on $$NHOST:$$NPORT — start Neo4j Desktop, or run 'make services-neo4j' for Docker Neo4j"; fi; \
+	printf "$(BLUE)Port conflicts:$(NC)\n"; \
+	PORTS="8000 8002 8091 8081 8088 3000 3001"; CONFLICT=0; \
+	for port in $$PORTS; do \
+		INUSE=""; \
+		if [ "$$OS_TYPE" = "Darwin" ] || [ "$$OS_TYPE" = "Linux" ]; then \
+			INUSE=$$(lsof -ti:$$port 2>/dev/null | head -1); \
+		elif echo "$$OS_TYPE" | grep -q "MINGW\|CYGWIN\|MSYS"; then \
+			INUSE=$$(netstat -ano 2>/dev/null | grep ":$$port " | awk '{print $$5}' | head -1); \
+		fi; \
+		if [ -n "$$INUSE" ] && [ "$$INUSE" != "0" ]; then warn "Port $$port in use (PID $$INUSE)"; CONFLICT=1; fi; \
+	done; \
+	if [ "$$CONFLICT" = "0" ]; then pass "All service ports free ($$PORTS)"; else hint "Free them with: make check-and-kill-ports"; fi; \
+	printf "\n"; \
+	if [ "$$FAILS" -gt 0 ]; then printf "$(RED)Doctor finished: %s failure(s), %s warning(s). Fix failures before continuing.$(NC)\n" "$$FAILS" "$$WARNS"; exit 1; \
+	elif [ "$$WARNS" -gt 0 ]; then printf "$(YELLOW)Doctor finished: 0 failures, %s warning(s). You can proceed; review warnings above.$(NC)\n" "$$WARNS"; \
+	else printf "$(GREEN)Doctor finished: all checks passed!$(NC)\n"; fi
+
+# ==============================================================================
 # System Dependencies Installation
 # ==============================================================================
 
 install-deps-linux: ## Install system dependencies on Linux
 	@echo "$(BLUE)Installing Linux dependencies...$(NC)"
 	sudo apt update
-	sudo apt-get install -y libreoffice
+	sudo apt-get install -y libreoffice libmariadb-dev libgl1 libglib2.0-0
 	@echo "$(BLUE)Installing uv package manager...$(NC)"
 	curl -LsSf https://astral.sh/uv/install.sh | sh
 	@echo "$(GREEN)Linux dependencies installed successfully!$(NC)"
@@ -157,6 +352,7 @@ install-deps-mac: ## Install system dependencies on macOS
 	@bash -c "$$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || echo "Homebrew already installed"
 	brew install python@3.12 || true
 	brew install libreoffice || true
+	brew install mariadb-connector-c || true
 	@echo "$(BLUE)Installing uv package manager...$(NC)"
 	curl -LsSf https://astral.sh/uv/install.sh | sh
 	@echo "$(GREEN)macOS dependencies installed successfully!$(NC)"
@@ -439,10 +635,11 @@ clean-docker-neo4j: ## Remove containers, prune volumes and images (Neo4j setup,
 setup-nodejs: ## Setup Node.js backend
 	@echo "$(BLUE)Setting up Node.js backend...$(NC)"
 	@if [ ! -f $(ROOT_DIR)/backend/nodejs/apps/.env ]; then \
-		echo "$(YELLOW)Creating .env file from template...$(NC)"; \
+		echo "$(YELLOW)Creating backend/nodejs/apps/.env from template...$(NC)"; \
 		cp $(ROOT_DIR)/backend/env.template $(ROOT_DIR)/backend/nodejs/apps/.env; \
+		echo "$(GREEN)Created backend/nodejs/apps/.env$(NC)"; \
 	else \
-		echo "$(BLUE).env file already exists. Do you want to replace it with template? (y/N)$(NC)"; \
+		echo "$(BLUE).env file already exists. Replace it with template? (y/N)$(NC)"; \
 		read -p "> " answer && if [ "$$answer" = "y" ] || [ "$$answer" = "Y" ]; then \
 			cp $(ROOT_DIR)/backend/env.template $(ROOT_DIR)/backend/nodejs/apps/.env; \
 			echo "$(GREEN).env file replaced!$(NC)"; \
@@ -472,10 +669,11 @@ nodejs: ## Run Node.js backend
 setup-python: ## Setup Python backend (create venv and install dependencies)
 	@echo "$(BLUE)Setting up Python backend...$(NC)"
 	@if [ ! -f $(ROOT_DIR)/backend/python/.env ]; then \
-		echo "$(YELLOW)Creating .env file from template...$(NC)"; \
+		echo "$(YELLOW)Creating backend/python/.env from template...$(NC)"; \
 		cp $(ROOT_DIR)/backend/env.template $(ROOT_DIR)/backend/python/.env; \
+		echo "$(GREEN)Created backend/python/.env$(NC)"; \
 	else \
-		echo "$(BLUE).env file already exists. Do you want to replace it with template? (y/N)$(NC)"; \
+		echo "$(BLUE).env file already exists. Replace it with template? (y/N)$(NC)"; \
 		read -p "> " answer && if [ "$$answer" = "y" ] || [ "$$answer" = "Y" ]; then \
 			cp $(ROOT_DIR)/backend/env.template $(ROOT_DIR)/backend/python/.env; \
 			echo "$(GREEN).env file replaced!$(NC)"; \
@@ -484,32 +682,14 @@ setup-python: ## Setup Python backend (create venv and install dependencies)
 		fi; \
 	fi
 	@if [ ! -d $(ROOT_DIR)/backend/python/venv ]; then \
-		echo "$(BLUE)Select Python version for virtual environment:$(NC)"; \
-		echo "  1) Python 3.10"; \
-		echo "  2) Python 3.11"; \
-		echo "  3) Python 3.12"; \
-		read -p "Enter choice [1-3] (default: 3): " pychoice; \
-		case "$$pychoice" in \
-			1) PYTHON_VERSION="3.10" ;; \
-			2) PYTHON_VERSION="3.11" ;; \
-			3|"") PYTHON_VERSION="3.12" ;; \
-			*) echo "$(RED)Invalid choice. Using Python 3.12$(NC)"; PYTHON_VERSION="3.12" ;; \
-		esac; \
-		echo "$(BLUE)Creating Python virtual environment with Python $$PYTHON_VERSION...$(NC)"; \
-		cd $(ROOT_DIR)/backend/python && uv venv venv --python $$PYTHON_VERSION; \
+		echo "$(BLUE)Creating Python 3.12 virtual environment...$(NC)"; \
+		cd $(ROOT_DIR)/backend/python && uv venv venv --python 3.12; \
 	fi
 	@echo "$(BLUE)Installing Python dependencies...$(NC)"
 	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install "setuptools<75" && uv pip install -e . --no-build-isolation-package grpcio-tools
 	@echo "$(BLUE)Installing additional language models...$(NC)"
 	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install pip && python -m spacy download en_core_web_sm && python -c "import nltk; nltk.download('punkt')"
 	@echo "$(GREEN)Python backend setup complete!$(NC)"
-	@echo "$(YELLOW)To activate venv: cd backend/python && source venv/bin/activate$(NC)"
-	@echo "$(YELLOW)To run services (in separate terminals):$(NC)"
-	@echo "$(YELLOW)  - make connectors$(NC)"
-	@echo "$(YELLOW)  - make indexing$(NC)"
-	@echo "$(YELLOW)  - make query$(NC)"
-	@echo "$(YELLOW)  - make embedding$(NC)"
-	@echo "$(YELLOW)  - make docling$(NC)"
 
 setup-python-deps: ## Install Python dependencies (requires existing venv)
 	@echo "$(BLUE)Installing Python dependencies...$(NC)"
@@ -568,10 +748,11 @@ check-python-version: ## Check Python version used by the venv
 setup-frontend: ## Setup frontend
 	@echo "$(BLUE)Setting up frontend...$(NC)"
 	@if [ ! -f $(ROOT_DIR)/frontend/.env ]; then \
-		echo "$(YELLOW)Creating .env file from template...$(NC)"; \
+		echo "$(YELLOW)Creating frontend/.env from template...$(NC)"; \
 		cp $(ROOT_DIR)/frontend/env.template $(ROOT_DIR)/frontend/.env; \
+		echo "$(GREEN)Created frontend/.env$(NC)"; \
 	else \
-		echo "$(BLUE).env file already exists. Do you want to replace it with template? (y/N)$(NC)"; \
+		echo "$(BLUE).env file already exists. Replace it with template? (y/N)$(NC)"; \
 		read -p "> " answer && if [ "$$answer" = "y" ] || [ "$$answer" = "Y" ]; then \
 			cp $(ROOT_DIR)/frontend/env.template $(ROOT_DIR)/frontend/.env; \
 			echo "$(GREEN).env file replaced!$(NC)"; \
@@ -611,19 +792,12 @@ setup-all: setup-nodejs setup-python setup-frontend ## Setup all services
 	@echo "$(GREEN)================================================$(NC)"
 	@echo ""
 	@echo "$(BLUE)Next steps:$(NC)"
-	@echo "1. Start Docker containers:"
-	@echo "   - With etcd:    make docker-all"
-	@echo "   - Without etcd: make docker-all-no-etcd"
-	@echo "2. Start Node.js backend: cd backend/nodejs/apps && npm run dev"
-	@echo "3. Start Python services (in separate terminals):"
-	@echo "   - make connectors"
-	@echo "   - make indexing"
-	@echo "   - make query"
-	@echo "   - make embedding"
-	@echo "   - make docling"
-	@echo "4. Start frontend: cd frontend && npm run dev"
+	@echo "1. Start your graph database (choose one):"
+	@echo "   - Neo4j Desktop (preferred): start it, then run 'make services'"
+	@echo "   - Neo4j in Docker:           run 'make services-neo4j' (starts Redis, Qdrant, Mongo AND Neo4j)"
+	@echo "2. Start all PipesHub services:  make start"
 	@echo ""
-	@echo "$(YELLOW)Or use tmux/screen for managing multiple services!$(NC)"
+	@echo "$(YELLOW)Run 'make doctor' anytime to verify your environment.$(NC)"
 
 clean-all: ## Clean all setups with hard Docker cleanup
 	@echo "$(RED)WARNING: This will perform a HARD CLEAN removing all venv, node_modules, volumes and images!$(NC)"
