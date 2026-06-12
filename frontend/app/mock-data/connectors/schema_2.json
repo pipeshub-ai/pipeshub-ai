@@ -8,7 +8,7 @@
         "documentationLinks": [
             {
                 "title": "RSS Connector Guide",
-                "url": "https://docs.pipeshub.ai/connectors/rss",
+                "url": "https://docs.pipeshub.com/connectors/rss",
                 "type": "setup"
             }
         ],
