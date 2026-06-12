@@ -12,6 +12,7 @@ without ML overhead, use :class:`MarkdownItParser` instead.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Dict, List, Tuple
 
@@ -19,6 +20,8 @@ import markdown as markdown_lib
 from bs4 import BeautifulSoup
 from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
+
+from app.models.blocks import BlockType, BlocksContainer
 
 
 class DoclingMarkdownParser:
@@ -36,8 +39,14 @@ class DoclingMarkdownParser:
       whichever parser they have in hand.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        logger: logging.Logger | None = None,
+        config_service: object | None = None,
+    ) -> None:
         self.converter = DocumentConverter()
+        self._logger = logger or logging.getLogger(__name__)
+        self._config_service = config_service
 
     # ------------------------------------------------------------------
     # Public API
@@ -100,6 +109,31 @@ class DoclingMarkdownParser:
                 }
         """
         return _extract_and_replace_images(md_content)
+
+    async def parse(
+        self,
+        md_content: str,
+        caption_map: Dict[str, str] | None = None,
+    ) -> BlocksContainer:
+        """Parse Markdown to ``BlocksContainer`` via the Docling pipeline.
+
+        Args:
+            md_content: Markdown source string.
+            caption_map: Optional mapping of image alt-text to base-64 data URIs.
+
+        Returns:
+            Populated ``BlocksContainer``.
+        """
+        from app.modules.parsers.pdf.docling import DoclingProcessor
+
+        html_bytes = self.parse_string(md_content)
+        processor = DoclingProcessor(logger=self._logger, config=self._config_service)
+        doc = await processor.parse_document("document.md", html_bytes)
+        container = await processor.create_blocks(doc)
+
+        if caption_map:
+            _apply_caption_map(container, caption_map, self._logger)
+        return container
 
 
 # ---------------------------------------------------------------------------
@@ -181,3 +215,29 @@ def _extract_and_replace_images(
     modified = re.sub(markdown_img_pattern, replace_markdown_image, modified)
     modified = process_html_images(modified)
     return modified, images
+
+
+def _apply_caption_map(
+    container: BlocksContainer,
+    caption_map: Dict[str, str],
+    logger: logging.Logger,
+) -> None:
+    """Attach base-64 URIs to image blocks using normalised caption keys."""
+    for block in container.blocks:
+        if block.type == BlockType.IMAGE and block.image_metadata:
+            captions = block.image_metadata.captions
+            if captions:
+                caption = captions[0]
+                uri = caption_map.get(caption)
+                if uri:
+                    if block.data is None:
+                        block.data = {}
+                    if isinstance(block.data, dict):
+                        block.data["uri"] = uri
+                    else:
+                        block.data = {"uri": uri}
+                else:
+                    logger.warning(
+                        "Skipping image with caption '%s' - no valid base64 data available",
+                        caption,
+                    )

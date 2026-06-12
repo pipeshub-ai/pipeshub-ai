@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 from uuid import uuid4
 
 from markdown_it import MarkdownIt
@@ -26,19 +25,26 @@ from app.models.blocks import (
 @dataclass
 class _OpenGroup:
     index: int
-    group_type: GroupType
-    sub_type: GroupSubType | None = None
     child_block_indices: list[int] = field(default_factory=list)
     child_group_indices: list[int] = field(default_factory=list)
 
 
 @dataclass
+class _TableCell:
+    plain: str
+    markdown: str
+
+
+@dataclass
 class _TableState:
     group_index: int
-    headers: list[str] = field(default_factory=list)
-    rows: list[list[str]] = field(default_factory=list)
-    current_row: list[str] = field(default_factory=list)
+    headers: list[_TableCell] = field(default_factory=list)
+    rows: list[list[_TableCell]] = field(default_factory=list)
+    current_row: list[_TableCell] = field(default_factory=list)
     in_header: bool = False
+
+
+_PLAIN_INLINE_CHILD_TYPES = frozenset({"text", "softbreak", "hardbreak"})
 
 
 class MarkdownToBlocksConverter:
@@ -52,18 +58,41 @@ class MarkdownToBlocksConverter:
         markdown_content: str,
         caption_map: dict[str, str] | None = None,
     ) -> BlocksContainer:
+        """Convert Markdown to a BlocksContainer.
+
+        Args:
+            markdown_content: Markdown source string.
+            caption_map: Optional mapping of image alt-text to base-64 data URIs.
+                Keys must be unique per image. The intended usage is to first call
+                ``extract_and_replace_images()`` (which normalises alt-text to
+                unique ``Image_N`` labels), build the caption_map from those labels,
+                then call this method with the modified markdown. If duplicate
+                alt-text keys exist in the map, later entries silently win.
+
+        Returns:
+            Populated BlocksContainer with blocks and block_groups.
+        """
         tokens = self._md.parse(markdown_content)
-        walker = _TokenWalker(caption_map=caption_map)
+        walker = _TokenWalker(
+            markdown_content=markdown_content,
+            caption_map=caption_map,
+        )
         return walker.walk(tokens)
 
 
 class _TokenWalker:
-    def __init__(self, caption_map: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        markdown_content: str,
+        caption_map: dict[str, str] | None = None,
+    ) -> None:
         self.caption_map = caption_map or {}
+        self._source_lines = markdown_content.splitlines()
         self.blocks: list[Block] = []
         self.block_groups: list[BlockGroup] = []
         self.group_stack: list[_OpenGroup] = []
         self.list_item_depth = 0
+        self.blockquote_depth = 0
         self.table_state: _TableState | None = None
 
     def walk(self, tokens: list[Token]) -> BlocksContainer:
@@ -73,43 +102,105 @@ class _TokenWalker:
             index += 1
         return BlocksContainer(blocks=self.blocks, block_groups=self.block_groups)
 
-    def _process_token(self, tokens: list[Token], index: int) -> int:
+    # ------------------------------------------------------------------ guards
+
+    def _inside_list_item(self) -> bool:
+        return self.list_item_depth > 0
+
+    def _inside_blockquote(self) -> bool:
+        return self.blockquote_depth > 0
+
+    def _skip_structural_emission(self) -> bool:
+        """True when we are inside a list item or blockquote.
+
+        Content inside those structures is already captured as raw markdown on
+        the container token itself, so all inner tokens must be suppressed.
+        """
+        return self._inside_list_item() or self._inside_blockquote()
+
+    # --------------------------------------------------------------- utilities
+
+    def _slice_token_map(self, token: Token) -> str:
+        """Return the raw source lines covered by *token*.map."""
+        if not token.map:
+            return ""
+        start, end = token.map
+        if start >= end or start >= len(self._source_lines):
+            return ""
+        return "\n".join(self._source_lines[start:end])
+
+    def _skip_inline_block(self, tokens: list[Token], index: int) -> int:
+        """Advance past an optional following inline token (used when skipping
+        heading_open / paragraph_open inside suppressed contexts)."""
+        if index + 1 < len(tokens) and tokens[index + 1].type == "inline":
+            return index + 2
+        return index + 1
+
+    # ---------------------------------------------------------- token dispatch
+
+    def _process_token(self, tokens: list[Token], index: int) -> int:  # noqa: C901
         token = tokens[index]
 
+        # ---- inline text blocks (headings, paragraphs) --------------------
         if token.type == "heading_open":
+            if self._skip_structural_emission():
+                return self._skip_inline_block(tokens, index)
             if index + 1 < len(tokens) and tokens[index + 1].type == "inline":
                 self._add_text_blocks_from_inline(tokens[index + 1], BlockSubType.HEADING)
                 return index + 2
             return index + 1
 
         if token.type == "paragraph_open":
+            if self._skip_structural_emission():
+                return self._skip_inline_block(tokens, index)
             if index + 1 < len(tokens) and tokens[index + 1].type == "inline":
-                sub_type = BlockSubType.LIST_ITEM if self.list_item_depth > 0 else BlockSubType.PARAGRAPH
-                self._add_text_blocks_from_inline(tokens[index + 1], sub_type)
+                self._add_text_blocks_from_inline(tokens[index + 1], BlockSubType.PARAGRAPH)
                 return index + 2
             return index + 1
 
-        if token.type == "fence":
-            self._add_code_block(token.content.rstrip("\n"), token.info.strip() or None)
+        # ---- code blocks (fenced and indented) ----------------------------
+        # Both produce a GroupType.CODE group containing a single code block.
+        # fence carries language info; code_block does not.
+        if token.type in {"fence", "code_block"}:
+            if not self._skip_structural_emission():
+                language = (token.info.strip() or None) if token.type == "fence" else None
+                self._add_code_block(token.content.rstrip("\n"), language)
             return index
 
-        if token.type == "code_block":
-            self._add_code_block(token.content.rstrip("\n"), None)
-            return index
-
+        # ---- lists --------------------------------------------------------
         if token.type == "bullet_list_open":
-            self._open_group(GroupType.LIST)
+            if not self._skip_structural_emission():
+                self._open_group(GroupType.LIST)
             return index
 
         if token.type == "ordered_list_open":
-            self._open_group(GroupType.ORDERED_LIST)
+            if not self._skip_structural_emission():
+                self._open_group(GroupType.ORDERED_LIST)
             return index
 
         if token.type in {"bullet_list_close", "ordered_list_close"}:
-            self._close_group()
+            if not self._skip_structural_emission():
+                self._close_group()
             return index
 
         if token.type == "list_item_open":
+            # Only emit a block for the outermost list item (depth == 0).
+            # Nested list items are fully represented by their ancestor's raw
+            # markdown slice, so they must be suppressed here.
+            if not self._skip_structural_emission():
+                raw_markdown = self._slice_token_map(token)
+                if raw_markdown:
+                    self._add_block(
+                        Block(
+                            id=str(uuid4()),
+                            index=0,
+                            type=BlockType.TEXT,
+                            sub_type=BlockSubType.LIST_ITEM,
+                            format=DataFormat.MARKDOWN,
+                            data=raw_markdown,
+                            parent_index=self._current_parent_index(),
+                        )
+                    )
             self.list_item_depth += 1
             return index
 
@@ -117,16 +208,42 @@ class _TokenWalker:
             self.list_item_depth = max(0, self.list_item_depth - 1)
             return index
 
+        # ---- blockquotes --------------------------------------------------
         if token.type == "blockquote_open":
-            self._open_group(GroupType.TEXT_SECTION, GroupSubType.QUOTE)
+            # Blockquotes inside list items are already captured by the list
+            # item's raw markdown slice — ignore them here.
+            if self._inside_list_item():
+                return index
+            if self.blockquote_depth == 0:
+                self._open_group(GroupType.TEXT_SECTION, GroupSubType.QUOTE)
+                raw_markdown = self._slice_token_map(token)
+                if raw_markdown:
+                    self._add_block(
+                        Block(
+                            id=str(uuid4()),
+                            index=0,
+                            type=BlockType.TEXT,
+                            sub_type=BlockSubType.QUOTE,
+                            format=DataFormat.MARKDOWN,
+                            data=raw_markdown,
+                            parent_index=self._current_parent_index(),
+                        )
+                    )
+            self.blockquote_depth += 1
             return index
 
         if token.type == "blockquote_close":
-            self._close_group()
+            if self._inside_list_item():
+                return index
+            if self.blockquote_depth == 1:
+                self._close_group()
+            self.blockquote_depth = max(0, self.blockquote_depth - 1)
             return index
 
+        # ---- tables -------------------------------------------------------
         if token.type == "table_open":
-            self._start_table()
+            if not self._skip_structural_emission():
+                self._start_table()
             return index
 
         if token.type == "thead_open":
@@ -146,11 +263,14 @@ class _TokenWalker:
 
         if token.type in {"th_open", "td_open"}:
             if index + 1 < len(tokens) and tokens[index + 1].type == "inline":
-                inline_token = tokens[index + 1]
-                cell_text = self._render_inline(inline_token).strip()
+                inline_tok = tokens[index + 1]
+                plain = self._render_inline(inline_tok).strip()
+                md_text = inline_tok.content.strip()
                 if self.table_state is not None:
-                    self.table_state.current_row.append(cell_text)
+                    self.table_state.current_row.append(_TableCell(plain=plain, markdown=md_text))
                 return index + 2
+            if self.table_state is not None:
+                self.table_state.current_row.append(_TableCell(plain="", markdown=""))
             return index + 1
 
         if token.type == "tr_close":
@@ -164,62 +284,63 @@ class _TokenWalker:
             return index
 
         if token.type == "table_close":
-            self._finish_table()
+            if not self._skip_structural_emission():
+                self._finish_table()
             return index
 
+        # ---- misc top-level tokens ----------------------------------------
         if token.type == "hr":
-            self._add_block(
-                Block(
-                    id=str(uuid4()),
-                    index=0,
-                    type=BlockType.TEXT,
-                    sub_type=BlockSubType.DIVIDER,
-                    format=DataFormat.TXT,
-                    data="---",
-                    parent_index=self._current_parent_index(),
+            if not self._skip_structural_emission():
+                self._add_block(
+                    Block(
+                        id=str(uuid4()),
+                        index=0,
+                        type=BlockType.TEXT,
+                        sub_type=BlockSubType.DIVIDER,
+                        format=DataFormat.TXT,
+                        data="---",
+                        parent_index=self._current_parent_index(),
+                    )
                 )
-            )
             return index
 
         if token.type == "html_block" and token.content.strip():
-            self._add_block(
-                Block(
-                    id=str(uuid4()),
-                    index=0,
-                    type=BlockType.TEXT,
-                    sub_type=BlockSubType.PARAGRAPH,
-                    format=DataFormat.HTML,
-                    data=token.content.strip(),
-                    parent_index=self._current_parent_index(),
+            if not self._skip_structural_emission():
+                self._add_block(
+                    Block(
+                        id=str(uuid4()),
+                        index=0,
+                        type=BlockType.TEXT,
+                        sub_type=BlockSubType.PARAGRAPH,
+                        format=DataFormat.HTML,
+                        data=token.content.strip(),
+                        parent_index=self._current_parent_index(),
+                    )
                 )
-            )
             return index
 
         return index
 
+    # ------------------------------------------------------- group management
+
     def _current_parent_index(self) -> int | None:
-        if self.group_stack:
-            return self.group_stack[-1].index
-        return None
+        return self.group_stack[-1].index if self.group_stack else None
 
     def _open_group(
         self,
         group_type: GroupType,
         sub_type: GroupSubType | None = None,
     ) -> None:
-        parent_index = self._current_parent_index()
         group = BlockGroup(
             index=len(self.block_groups),
             type=group_type,
             sub_type=sub_type,
-            parent_index=parent_index,
+            parent_index=self._current_parent_index(),
         )
         self.block_groups.append(group)
         if self.group_stack:
             self.group_stack[-1].child_group_indices.append(group.index)
-        self.group_stack.append(
-            _OpenGroup(index=group.index, group_type=group_type, sub_type=sub_type)
-        )
+        self.group_stack.append(_OpenGroup(index=group.index))
 
     def _close_group(self) -> None:
         if not self.group_stack:
@@ -231,16 +352,29 @@ class _TokenWalker:
             block_group_indices=open_group.child_group_indices,
         )
 
-    def _add_block(self, block: Block) -> Block:
+    def _append_block(self, block: Block) -> Block:
         block.index = len(self.blocks)
         self.blocks.append(block)
+        return block
+
+    def _add_block(self, block: Block) -> Block:
+        block = self._append_block(block)
         if self.group_stack:
             self.group_stack[-1].child_block_indices.append(block.index)
         return block
 
+    # ------------------------------------------------------- block factories
+
     def _add_code_block(self, content: str, language: str | None) -> None:
+        """Emit a GroupType.CODE group containing a single code block.
+
+        The group exists so that code is treated consistently with other
+        structured block types (list, quote, table) and can carry group-level
+        metadata if needed in the future.
+        """
         if not content:
             return
+        self._open_group(GroupType.CODE)
         self._add_block(
             Block(
                 id=str(uuid4()),
@@ -253,24 +387,24 @@ class _TokenWalker:
                 code_metadata=CodeMetadata(language=language),
             )
         )
+        self._close_group()
 
     def _add_text_blocks_from_inline(
         self,
         inline_token: Token,
         sub_type: BlockSubType,
     ) -> None:
-        text, image_tokens = self._split_inline_content(inline_token)
+        text, image_tokens, data_format = self._split_inline_content(inline_token)
 
         if text:
-            data: Any = text
             self._add_block(
                 Block(
                     id=str(uuid4()),
                     index=0,
                     type=BlockType.TEXT,
                     sub_type=sub_type,
-                    format=DataFormat.TXT,
-                    data=data,
+                    format=data_format,
+                    data=text,
                     parent_index=self._current_parent_index(),
                 )
             )
@@ -278,36 +412,14 @@ class _TokenWalker:
         for image_token in image_tokens:
             self._add_image_block(image_token)
 
-    def _split_inline_content(self, inline_token: Token) -> tuple[str, list[Token]]:
-        if not inline_token.children:
-            return inline_token.content.strip(), []
-
-        text_parts: list[str] = []
-        image_tokens: list[Token] = []
-        for child in inline_token.children:
-            if child.type == "image":
-                image_tokens.append(child)
-            else:
-                rendered = self._render_inline(child)
-                if rendered:
-                    text_parts.append(rendered)
-        return "".join(text_parts).strip(), image_tokens
-
-    def _render_inline(self, token: Token) -> str:
-        if token.type in {"text", "code_inline", "html_inline"}:
-            return token.content
-        if token.type in {"softbreak", "hardbreak"}:
-            return "\n"
-        if token.children:
-            return "".join(self._render_inline(child) for child in token.children)
-        return ""
-
     def _add_image_block(self, image_token: Token) -> None:
         alt_text = image_token.content
-        attrs = dict(image_token.attrs) if image_token.attrs else {}
-        src = attrs.get("src", "")
+        attrs = image_token.attrs or {}
+        src = str(attrs.get("src", ""))
 
         data: dict[str, str] | None = None
+        # Lookup by alt_text assumes unique keys (see convert() docstring).
+        # The intended flow is: extract_and_replace_images() → unique Image_N alts.
         if alt_text and alt_text in self.caption_map:
             data = {"uri": self.caption_map[alt_text]}
         elif src:
@@ -325,6 +437,104 @@ class _TokenWalker:
             )
         )
 
+    # ---------------------------------------------------------- inline render
+
+    def _has_inline_formatting(self, children: list[Token]) -> bool:
+        return any(
+            child.type not in _PLAIN_INLINE_CHILD_TYPES and child.type != "image"
+            for child in children
+        )
+
+    def _split_inline_content(
+        self, inline_token: Token
+    ) -> tuple[str, list[Token], DataFormat]:
+        if not inline_token.children:
+            return inline_token.content.strip(), [], DataFormat.TXT
+
+        image_tokens = [c for c in inline_token.children if c.type == "image"]
+        non_image_children = [c for c in inline_token.children if c.type != "image"]
+
+        if not image_tokens:
+            if self._has_inline_formatting(inline_token.children):
+                return inline_token.content.strip(), [], DataFormat.MARKDOWN
+            return self._render_inline(inline_token).strip(), [], DataFormat.TXT
+
+        if self._has_inline_formatting(non_image_children):
+            return (
+                self._render_inline_markdown_from_children(non_image_children).strip(),
+                image_tokens,
+                DataFormat.MARKDOWN,
+            )
+
+        text_parts = [rendered for c in non_image_children if (rendered := self._render_inline(c))]
+        return "".join(text_parts).strip(), image_tokens, DataFormat.TXT
+
+    def _render_inline(self, token: Token) -> str:
+        """Render a token to plain text (no markup decorators)."""
+        if token.type in {"text", "code_inline", "html_inline"}:
+            return token.content
+        if token.type in {"softbreak", "hardbreak"}:
+            return "\n"
+        if token.children:
+            return "".join(self._render_inline(c) for c in token.children)
+        return ""
+
+    def _render_inline_markdown(self, token: Token) -> str:
+        """Render a single inline token back to markdown syntax."""
+        if token.type == "text":
+            return token.content
+        if token.type == "code_inline":
+            return f"`{token.content}`"
+        if token.type == "html_inline":
+            return token.content
+        if token.type in {"softbreak", "hardbreak"}:
+            return "\n"
+        return token.content
+
+    def _render_inline_markdown_from_children(self, children: list[Token]) -> str:
+        """Reconstruct markdown from a flat list of inline child tokens.
+
+        Paired _open/_close tokens are consumed together so the rendered
+        output preserves bold, italic, link, and other inline markup.
+
+        Note: Expects children with images already filtered out.
+        """
+        parts: list[str] = []
+        index = 0
+        while index < len(children):
+            child = children[index]
+
+            if child.type.endswith("_close"):
+                index += 1
+                continue
+
+            if child.type.endswith("_open"):
+                close_type = child.type.replace("_open", "_close")
+                inner_tokens: list[Token] = []
+                index += 1
+                while index < len(children) and children[index].type != close_type:
+                    inner_tokens.append(children[index])
+                    index += 1
+                inner = self._render_inline_markdown_from_children(inner_tokens)
+                if child.type == "link_open":
+                    href = dict(child.attrs or {}).get("href", "")
+                    parts.append(f"[{inner}]({href})")
+                elif child.markup:
+                    parts.append(f"{child.markup}{inner}{child.markup}")
+                else:
+                    parts.append(inner)
+                # consume the closing token
+                if index < len(children) and children[index].type == close_type:
+                    index += 1
+                continue
+
+            parts.append(self._render_inline_markdown(child))
+            index += 1
+
+        return "".join(parts)
+
+    # ------------------------------------------------------- table management
+
     def _start_table(self) -> None:
         group = BlockGroup(
             index=len(self.block_groups),
@@ -337,7 +547,7 @@ class _TokenWalker:
         self.block_groups.append(group)
         if self.group_stack:
             self.group_stack[-1].child_group_indices.append(group.index)
-        self.group_stack.append(_OpenGroup(index=group.index, group_type=GroupType.TABLE))
+        self.group_stack.append(_OpenGroup(index=group.index))
         self.table_state = _TableState(group_index=group.index)
 
     def _finish_table(self) -> None:
@@ -354,22 +564,25 @@ class _TokenWalker:
             else:
                 rows.append(self.table_state.current_row)
 
+        header_md = [h.markdown for h in headers]
+
         row_block_indices: list[int] = []
         for row_number, row_cells in enumerate(rows, start=1):
-            row_text = self._format_table_row(headers, row_cells)
-            block = Block(
-                id=str(uuid4()),
-                index=len(self.blocks),
-                type=BlockType.TABLE_ROW,
-                format=DataFormat.JSON,
-                parent_index=group.index,
-                data={
-                    "row_natural_language_text": row_text,
-                    "row_number": row_number,
-                    "cells": row_cells,
-                },
+            row_text = self._format_table_row(header_md, [c.markdown for c in row_cells])
+            block = self._append_block(
+                Block(
+                    id=str(uuid4()),
+                    index=0,
+                    type=BlockType.TABLE_ROW,
+                    format=DataFormat.JSON,
+                    parent_index=group.index,
+                    data={
+                        "row_natural_language_text": row_text,
+                        "row_number": row_number,
+                        "cells": [c.markdown for c in row_cells],
+                    },
+                )
             )
-            self.blocks.append(block)
             row_block_indices.append(block.index)
 
         group.table_metadata = TableMetadata(
@@ -381,28 +594,25 @@ class _TokenWalker:
                 else sum(len(row) for row in rows)
             ),
             has_header=bool(headers),
-            column_names=headers or None,
+            column_names=header_md or None,
         )
-        group.data = {
-            "table_summary": "",
-            "column_headers": headers,
-        }
+        group.data = {"table_summary": "", "column_headers": header_md}
         group.children = BlockGroupChildren.from_indices(block_indices=row_block_indices)
 
+        # Pop the table group off the stack. Rows use _append_block (not
+        # _add_block) so the _OpenGroup carries no child indices to propagate
+        # upward — the pop is all that's needed.
         if self.group_stack and self.group_stack[-1].index == group.index:
-            open_group = self.group_stack.pop()
-            if self.group_stack:
-                self.group_stack[-1].child_block_indices.extend(open_group.child_block_indices)
-                self.group_stack[-1].child_group_indices.extend(open_group.child_group_indices)
+            self.group_stack.pop()
 
         self.table_state = None
 
     @staticmethod
     def _format_table_row(headers: list[str], cells: list[str]) -> str:
         if headers:
-            parts = []
-            for index, cell in enumerate(cells):
-                header = headers[index] if index < len(headers) else f"Column {index + 1}"
-                parts.append(f"{header}: {cell}")
+            parts = [
+                f"{headers[i] if i < len(headers) else f'Column {i + 1}'}: {cell}"
+                for i, cell in enumerate(cells)
+            ]
             return ", ".join(parts)
         return ", ".join(cells)

@@ -30,6 +30,7 @@ from app.models.blocks import (
     Point,
 )
 from app.models.entities import Record, RecordType
+from app.modules.parsers.markdown.docling_markdown_parser import DoclingMarkdownParser
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
@@ -1027,9 +1028,11 @@ class Processor:
             markdown_data, block_group.index
         )
 
-        # Parse the modified markdown to bytes
+        # Block-group Docling ingestion always needs MD→HTML bytes via Docling parser.
         if md_parser:
-            md_bytes = md_parser.parse_string(modified_markdown)
+            md_bytes = DoclingMarkdownParser(
+                logger=self.logger, config_service=self.config_service
+            ).parse_string(modified_markdown)
         else:
             md_bytes = modified_markdown.encode('utf-8')
 
@@ -1725,19 +1728,11 @@ class Processor:
                     if base64_urls[i]:
                         caption_map[image["new_alt_text"]] = base64_urls[i]
 
-            md_bytes = parser.parse_string(modified_markdown)
+            block_containers = await parser.parse(
+                modified_markdown, caption_map=caption_map or None
+            )
 
-            processor = DoclingProcessor(logger=self.logger,config=self.config_service)
-            filename_without_ext = Path(recordName).stem
-
-            # Phase 1: Parse document with Docling (no LLM calls)
-            conv_res = await processor.parse_document(f"{filename_without_ext}.md", md_bytes)
-
-            # Signal parsing complete after Docling parsing
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
-
-            # Phase 2: Create blocks (involves LLM calls for tables)
-            block_containers = await processor.create_blocks(conv_res)
 
             record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
@@ -1749,25 +1744,6 @@ class Processor:
                 return
             record = convert_record_dict_to_record(record)
 
-            blocks = block_containers.blocks
-            for block in blocks:
-                if block.type == BlockType.IMAGE.value and block.image_metadata:
-                    caption = block.image_metadata.captions
-                    if caption:
-                        caption = caption[0]
-                        if caption_map.get(caption):
-                            if block.data is None:
-                                block.data = {}
-                            if isinstance(block.data, dict):
-                                block.data["uri"] = caption_map[caption]
-                            else:
-                                # If data is not a dict, create a new dict with the uri
-                                block.data = {"uri": caption_map[caption]}
-                        else:
-                            self.logger.warning(f"⚠️ Skipping image with caption '{caption}' - no valid base64 data available")
-
-            block_containers.blocks = blocks
-
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
@@ -1778,7 +1754,7 @@ class Processor:
             # Signal indexing complete
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-            self.logger.info("✅ MD processing completed successfully using docling")
+            self.logger.info("✅ MD processing completed successfully")
             return
         except Exception as e:
             self.logger.error(f"❌ Error processing Markdown document: {str(e)}")
