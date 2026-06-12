@@ -4401,7 +4401,7 @@ class TestCreateRecordFromVectorMetadata:
         # Mock ContainerUtils and vector_db_service
         mock_vector_service = AsyncMock()
         mock_vector_service.filter_collection = AsyncMock(return_value="mock_filter")
-        mock_vector_service.scroll = AsyncMock(return_value=([mock_point], None))
+        mock_vector_service.scroll = AsyncMock(return_value=__import__("app.services.vector_db.models", fromlist=["ScrollResult"]).ScrollResult(points=[mock_point], next_offset=None))
 
         real_utils_mod = sys.modules.pop("app.containers.utils.utils", None)
         fake_utils = ModuleType("app.containers.utils.utils")
@@ -4471,7 +4471,7 @@ class TestCreateRecordFromVectorMetadata:
 
         mock_vector_service = AsyncMock()
         mock_vector_service.filter_collection = AsyncMock(return_value="mock_filter")
-        mock_vector_service.scroll = AsyncMock(return_value=([mock_point], None))
+        mock_vector_service.scroll = AsyncMock(return_value=__import__("app.services.vector_db.models", fromlist=["ScrollResult"]).ScrollResult(points=[mock_point], next_offset=None))
 
         real_utils_mod = sys.modules.pop("app.containers.utils.utils", None)
         fake_utils = ModuleType("app.containers.utils.utils")
@@ -5349,7 +5349,7 @@ class TestCreateRecordFromVectorMetadataConnectorId:
 
         mock_vector_service = AsyncMock()
         mock_vector_service.filter_collection = AsyncMock(return_value="f")
-        mock_vector_service.scroll = AsyncMock(return_value=([mock_point], None))
+        mock_vector_service.scroll = AsyncMock(return_value=__import__("app.services.vector_db.models", fromlist=["ScrollResult"]).ScrollResult(points=[mock_point], next_offset=None))
 
         mock_container = MagicMock()
         mock_container.get_vector_db_service = AsyncMock(return_value=mock_vector_service)

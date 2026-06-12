@@ -1,3 +1,18 @@
+"""VectorStore transformer — provider-agnostic indexing pipeline.
+
+Indexing strategy
+-----------------
+1. Obtain dense embeddings from the configured embedding model.
+2. Compute BM25 sparse vectors via SparseEmbedder *only* when the provider declares
+   ``capabilities.supports_sparse_vectors == True`` (currently only Qdrant).
+3. Always store ``page_content`` as plain text in each VectorPoint payload so
+   that server-side text-search providers (Redis, OpenSearch) can use it for
+   their lexical leg.
+4. Upsert all points in batches via ``await vector_db_service.upsert_points()``.
+
+No LangChain QdrantVectorStore is imported or used.
+"""
+
 import asyncio
 import re
 import time
@@ -9,8 +24,6 @@ import spacy
 from langchain_core.documents import Document
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
-from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
-from qdrant_client.http.models import PointStruct
 from spacy.language import Language
 from spacy.tokens import Doc
 
@@ -27,21 +40,28 @@ from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import Record
 from app.modules.extraction.prompt_template import prompt_for_image_description
 from app.modules.transformers.transformer import TransformContext, Transformer
-from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-
+from app.services.vector_db.interface.vector_db import IVectorDBService
+from app.services.vector_db.models import (
+    CollectionConfig,
+    SparseVector,
+    VectorPoint,
+)
+from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.utils.aimodels import (
     EmbeddingProvider,
     get_default_embedding_model,
     get_embedding_model,
 )
-from app.utils.llm import get_llm_for_role
+from app.utils.llm import get_llm
 
 # Module-level shared spaCy pipeline to avoid repeated heavy loads
 _SHARED_NLP: Optional[Language] = None
 
+RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
+
+
 def _get_shared_nlp() -> Language:
-    # Avoid global mutation; attach cache to function attribute
     cached = getattr(_get_shared_nlp, "_cached_nlp", None)
     if cached is None:
         nlp = spacy.load("en_core_web_sm")
@@ -56,14 +76,12 @@ def _get_shared_nlp() -> Language:
         return nlp
     return cached
 
+
 LENGTH_THRESHOLD = 2
-OUTPUT_DIMENSION = 1536
-HTTP_OK = 200
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50
 _DEFAULT_CONCURRENCY_LIMIT = 5
-# Small batch size for local/CPU embedding models to avoid memory/CPU thrashing
-_LOCAL_CPU_DOCUMENT_BATCH_SIZE = 10
-RECORD_SUMMARY_BLOCK_ID_SUFFIX = ":record_summary"
+_LOCAL_CPU_DOCUMENT_BATCH_SIZE = 3
+
 
 class VectorStore(Transformer):
 
@@ -79,11 +97,10 @@ class VectorStore(Transformer):
         self.logger = logger
         self.config_service = config_service
         self.graph_provider = graph_provider
-        # Reuse a single spaCy pipeline across instances to avoid memory bloat
         self.nlp = _get_shared_nlp()
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
-        self.vector_store = None
+
         self.dense_embeddings = None
         self.api_key = None
         self.model_name = None
@@ -93,66 +110,78 @@ class VectorStore(Transformer):
         self.aws_access_key_id = None
         self.aws_secret_access_key = None
 
-        try:
-            # Initialize sparse embeddings
-            try:
-                self.sparse_embeddings = FastEmbedSparse(model_name="Qdrant/BM25")
-            except Exception as e:
-                raise IndexingError(
-                    "Failed to initialize sparse embeddings: " + str(e),
-                    details={"error": str(e)},
-                )
-        except (IndexingError, VectorStoreError):
-            raise
-        except Exception as e:
-            raise IndexingError(
-                "Failed to initialize indexing pipeline: " + str(e),
-                details={"error": str(e)},
-            )
+        self._capabilities = self.vector_db_service.get_capabilities()
 
-    async def _normalize_image_to_base64(self, image_uri: str) -> str | None:
-        """
-        Normalize an image reference into a raw base64-encoded string (no data: prefix).
-        - data URLs (data:image/...;base64,xxxxx) -> returns the part after the comma
-        - http/https URLs -> downloads bytes then base64-encodes
-        - raw base64 strings -> returns as-is (after trimming/padding)
+        # Sparse embeddings — only for providers that store client-side sparse vectors.
+        # SparseEmbedder lazy-initialises in a worker thread on first use.
+        self._sparse_embedder: Optional[SparseEmbedder] = None
+        self._sparse_embedder_lock: Optional[asyncio.Lock] = None
 
-        Returns None if normalization fails.
-        """
-        try:
-            if not image_uri or not isinstance(image_uri, str):
-                return None
+    # ------------------------------------------------------------------
+    # Sparse embedding lazy initialisation
+    # ------------------------------------------------------------------
 
-            uri = image_uri.strip()
-
-            # data URL
-            if uri.startswith("data:"):
-                comma_index = uri.find(",")
-                if comma_index == -1:
-                    return None
-                b64_part = uri[comma_index + 1 :].strip()
-                # fix padding
-                missing = (-len(b64_part)) % 4
-                if missing:
-                    b64_part += "=" * missing
-                return b64_part
-
-
-
-            # Assume raw base64
-
-            candidate = uri
-            candidate = candidate.replace("\n", "").replace("\r", "").replace(" ", "")
-            if not re.fullmatch(r"[A-Za-z0-9+/=_-]+", candidate):
-                return None
-            missing = (-len(candidate)) % 4
-            if missing:
-                candidate += "=" * missing
-            return candidate
-        except Exception:
+    async def _ensure_sparse_embeddings(self) -> Optional[SparseEmbedder]:
+        """Return the SparseEmbedder if this provider uses client-side sparse vectors."""
+        if not self._capabilities.supports_sparse_vectors:
             return None
+        if self._sparse_embedder is not None:
+            return self._sparse_embedder
+        if self._sparse_embedder_lock is None:
+            self._sparse_embedder_lock = asyncio.Lock()
+        async with self._sparse_embedder_lock:
+            if self._sparse_embedder is None:
+                try:
+                    embedder = SparseEmbedder()
+                    # Trigger init now (in thread) so first index call isn't slow
+                    await embedder._ensure_initialized()
+                except Exception as e:
+                    raise IndexingError(
+                        "Failed to initialise sparse embeddings: " + str(e),
+                        details={"error": str(e)},
+                    )
+                self._sparse_embedder = embedder
+        return self._sparse_embedder
 
-    async def apply(self, ctx: TransformContext) -> bool|None:
+    # ------------------------------------------------------------------
+    # Transformer protocol
+    # ------------------------------------------------------------------
+
+    @Language.component("custom_sentence_boundary")
+    def custom_sentence_boundary(doc) -> Doc:  # noqa: N805
+        for token in doc[:-1]:
+            next_token = doc[token.i + 1]
+            if token.like_num and next_token.text == ".":
+                next_token.is_sent_start = False
+            elif (
+                token.text.lower()
+                in [
+                    "mr", "mrs", "dr", "ms", "prof", "sr", "jr", "inc",
+                    "ltd", "co", "etc", "vs", "fig", "et", "al", "e.g",
+                    "i.e", "vol", "pg", "pp", "pvt", "llc", "llp", "lp",
+                    "ll", "corp",
+                ]
+                and next_token.text == "."
+            ):
+                next_token.is_sent_start = False
+            elif (
+                (token.like_num and next_token.text == "." and len(token.text) <= LENGTH_THRESHOLD)
+                or (len(token.text) == 1 and token.text.isalpha() and next_token.text == ".")
+                or token.text in ["•", "∙", "·", "○", "●", "-", "–", "—"]
+            ):
+                next_token.is_sent_start = False
+            elif (
+                token.text.isupper()
+                and len(token.text) > 1
+                and not any(c.isdigit() for c in token.text)
+            ):
+                if next_token.i < len(doc) - 1:
+                    next_token.is_sent_start = False
+            elif token.text == "." and next_token.text == ".":
+                next_token.is_sent_start = False
+        return doc
+
+    async def apply(self, ctx: TransformContext) -> bool | None:
         record = ctx.record
         record_id = record.id
         virtual_record_id = record.virtual_record_id
@@ -171,14 +200,17 @@ class VectorStore(Transformer):
 
             if not blocks_to_index_ids and not block_ids_to_delete:
                 self.logger.info(
-                    f"📊 Reconciliation: No changes detected for record {record_id}"
+                    f"Reconciliation: No changes detected for record {record_id}"
                 )
                 return True
 
             # Shallow copy with only blocks/block_groups that need indexing
             block_containers = BlocksContainer(
                 blocks=[b for b in block_containers.blocks if b.id in blocks_to_index_ids],
-                block_groups=[bg for bg in block_containers.block_groups if bg.id in blocks_to_index_ids],
+                block_groups=[
+                    bg for bg in block_containers.block_groups
+                    if bg.id in blocks_to_index_ids
+                ],
             )
 
         return await self.index_documents(
@@ -191,21 +223,24 @@ class VectorStore(Transformer):
             record=record,
         )
 
+    # ------------------------------------------------------------------
+    # Record summary helpers
+    # ------------------------------------------------------------------
+
     @staticmethod
-    def record_summary_block_id(record_id: str) -> str:
-        return f"{record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"
+    def record_summary_block_id(virtual_record_id: str) -> str:
+        return f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"
 
     @staticmethod
     def _build_record_summary_document(
         record_id: str,
         virtual_record_id: str,
         org_id: str,
-        semantic_metadata: SemanticMetadata,
+        semantic_metadata: "SemanticMetadata",
     ) -> Document | None:
         summary = (semantic_metadata.summary or "").strip()
         if not summary:
             return None
-
         metadata: dict = {
             "virtualRecordId": virtual_record_id,
             "blockId": VectorStore.record_summary_block_id(virtual_record_id),
@@ -214,13 +249,12 @@ class VectorStore(Transformer):
             "isBlock": False,
             "isRecordSummary": True,
         }
-
         return Document(page_content=summary, metadata=metadata)
 
     async def _refresh_record_summary_documents(
         self,
-        documents_to_embed: list[Document | dict[str, Any]],
-        record: Record,
+        documents_to_embed: list,
+        record: "Record",
         org_id: str,
         record_id: str,
         virtual_record_id: str,
@@ -228,281 +262,202 @@ class VectorStore(Transformer):
         semantic_metadata = getattr(record, "semantic_metadata", None)
         if semantic_metadata is None:
             return
-
         summary_doc = self._build_record_summary_document(
             record_id, virtual_record_id, org_id, semantic_metadata
         )
-        if summary_doc is None:
-            return
+        if summary_doc:
+            documents_to_embed.append(summary_doc)
 
-        documents_to_embed.append(summary_doc)
-        self.logger.info("✅ Added record summary document for embedding")
+    # ------------------------------------------------------------------
+    # Image helpers
+    # ------------------------------------------------------------------
 
-    @Language.component("custom_sentence_boundary")
-    def custom_sentence_boundary(doc) -> Doc:
-        for token in doc[:-1]:  # Avoid out-of-bounds errors
-            next_token = doc[token.i + 1]
+    async def _normalize_image_to_base64(self, image_uri: str) -> str | None:
+        try:
+            if not image_uri or not isinstance(image_uri, str):
+                return None
+            uri = image_uri.strip()
+            if uri.startswith("data:"):
+                comma_index = uri.find(",")
+                if comma_index == -1:
+                    return None
+                b64_part = uri[comma_index + 1:].strip()
+                missing = (-len(b64_part)) % 4
+                if missing:
+                    b64_part += "=" * missing
+                return b64_part
+            candidate = uri.replace("\n", "").replace("\r", "").replace(" ", "")
+            if not re.fullmatch(r"[A-Za-z0-9+/=_-]+", candidate):
+                return None
+            missing = (-len(candidate)) % 4
+            if missing:
+                candidate += "=" * missing
+            return candidate
+        except Exception:
+            return None
 
-            # If token is a number and followed by a period, don't treat it as a sentence boundary
-            if token.like_num and next_token.text == ".":
-                next_token.is_sent_start = False
-            # Handle common abbreviations
-            elif (
-                token.text.lower()
-                in [
-                    "mr",
-                    "mrs",
-                    "dr",
-                    "ms",
-                    "prof",
-                    "sr",
-                    "jr",
-                    "inc",
-                    "ltd",
-                    "co",
-                    "etc",
-                    "vs",
-                    "fig",
-                    "et",
-                    "al",
-                    "e.g",
-                    "i.e",
-                    "vol",
-                    "pg",
-                    "pp",
-                    "pvt",
-                    "llc",
-                    "llp",
-                    "lp",
-                    "ll",
-                    "ltd",
-                    "inc",
-                    "corp",
-                ]
-                and next_token.text == "."
-            ):
-                next_token.is_sent_start = False
-            # Handle bullet points and list markers
-            elif (
-                # Numeric bullets with period (1., 2., etc)
-                (
-                    token.like_num and next_token.text == "." and len(token.text) <= LENGTH_THRESHOLD
-                )  # Limit to 2 digits
-                or
-                # Letter bullets with period (a., b., etc)
-                (
-                    len(token.text) == 1
-                    and token.text.isalpha()
-                    and next_token.text == "."
-                )
-                or
-                # Common bullet point markers
-                token.text in ["•", "∙", "·", "○", "●", "-", "–", "—"]
-            ):
-                next_token.is_sent_start = False
+    async def describe_image_async(self, base64_string: str, vlm: BaseChatModel) -> str:
+        message = HumanMessage(
+            content=[
+                {"type": "text", "text": prompt_for_image_description},
+                {"type": "image_url", "image_url": {"url": base64_string}},
+            ]
+        )
+        response = await vlm.ainvoke([message])
+        return response.content
 
-            # Check for potential headings (all caps or title case without period)
-            elif (
-                # All caps text likely a heading
-                token.text.isupper()
-                and len(token.text) > 1  # Avoid single letters
-                and not any(c.isdigit() for c in token.text)  # Avoid serial numbers
-            ):
-                if next_token.i < len(doc) - 1:
-                    next_token.is_sent_start = False
+    async def describe_images(
+        self, base64_images: List[str], vlm: BaseChatModel
+    ) -> List[dict]:
+        concurrency_limit = 10
+        semaphore = asyncio.Semaphore(concurrency_limit)
 
-            # Handle ellipsis (...) - don't split
-            elif token.text == "." and next_token.text == ".":
-                next_token.is_sent_start = False
-        return doc
+        async def describe(i: int, b64: str) -> dict:
+            async with semaphore:
+                try:
+                    desc = await self.describe_image_async(b64, vlm)
+                    return {"index": i, "success": True, "description": desc.strip()}
+                except Exception as e:
+                    return {"index": i, "success": False, "error": str(e)}
 
-    def _create_custom_tokenizer(self, nlp) -> Language:
-        """
-        Creates a custom tokenizer that handles special cases for sentence boundaries.
-        """
-        # Add the custom rule to the pipeline
-        if "sentencizer" not in nlp.pipe_names:
-            nlp.add_pipe("sentencizer", before="parser")
+        tasks = [describe(i, img) for i, img in enumerate(base64_images)]
+        return await asyncio.gather(*tasks)
 
-        # Add custom sentence boundary detection
-        if "custom_sentence_boundary" not in nlp.pipe_names:
-            nlp.add_pipe("custom_sentence_boundary", after="sentencizer")
+    # ------------------------------------------------------------------
+    # Collection initialisation
+    # ------------------------------------------------------------------
 
-        # Configure the tokenizer to handle special cases
-        special_cases = {
-            "e.g.": [{"ORTH": "e.g."}],
-            "i.e.": [{"ORTH": "i.e."}],
-            "etc.": [{"ORTH": "etc."}],
-            "...": [{"ORTH": "..."}],
-        }
-
-        for case, mapping in special_cases.items():
-            nlp.tokenizer.add_special_case(case, mapping)
-        return nlp
+    async def _get_existing_vector_dimension(self, collection_name: str) -> Optional[int]:
+        info = await self.vector_db_service.get_collection_info(collection_name)
+        if info.exists:
+            return info.dense_dimension
+        return None
 
     async def _initialize_collection(
         self, embedding_size: int = 1024, sparse_idf: bool = False
     ) -> None:
-        """Initialize Qdrant collection with proper configuration."""
-        try:
-            collection_info = await self.vector_db_service.get_collection(self.collection_name)
-            current_vector_size = collection_info.config.params.vectors["dense"].size
-            # current_vector_size_2 = collection_info.config.params.vectors["dense-1536"].size
-
-            if current_vector_size != embedding_size:
-                self.logger.warning(
-                    f"Collection {self.collection_name} has size {current_vector_size}, but {embedding_size} is required."
-                    " Recreating collection."
-                )
-                await self.vector_db_service.delete_collection(self.collection_name)
-                raise Exception(
-                    "Recreating collection due to vector dimension mismatch."
-                )
-        except Exception:
-            self.logger.info(
-                f"Collection {self.collection_name} not found, creating new collection"
-            )
-            try:
-                await self.vector_db_service.create_collection(
-                    embedding_size=embedding_size,
-                    collection_name=self.collection_name,
-                    sparse_idf=sparse_idf,
-                )
-                self.logger.info(
-                    f"✅ Successfully created collection {self.collection_name}"
-                )
-                await self.vector_db_service.create_index(
-                    collection_name=self.collection_name,
-                    field_name="metadata.virtualRecordId",
-                    field_schema={
-                        "type": "keyword",
-                    },
-                )
-                await self.vector_db_service.create_index(
-                    collection_name=self.collection_name,
-                    field_name="metadata.orgId",
-                    field_schema={
-                        "type": "keyword",
-                    },
-                )
-            except Exception as e:
-                self.logger.error(
-                    f"❌ Error creating collection {self.collection_name}: {str(e)}"
-                )
+        existing_dim = await self._get_existing_vector_dimension(self.collection_name)
+        if existing_dim is not None:
+            if existing_dim != embedding_size:
                 raise VectorStoreError(
-                    "Failed to create collection",
-                    details={"collection": self.collection_name, "error": str(e)},
+                    f"Embedding model dimension mismatch: collection "
+                    f"'{self.collection_name}' was created with dimension {existing_dim} "
+                    f"but the current model produces dimension {embedding_size}. "
+                    f"Re-index by deleting the collection and re-running indexing, "
+                    f"or switch back to the original embedding model.",
+                    details={
+                        "collection": self.collection_name,
+                        "existing_dim": existing_dim,
+                        "required_dim": embedding_size,
+                    },
                 )
+            else:
+                self.logger.debug(
+                    f"Collection '{self.collection_name}' exists with correct dimension {embedding_size}."
+                )
+                return
 
+        try:
+            await self.vector_db_service.create_collection(
+                collection_name=self.collection_name,
+                config=CollectionConfig(
+                    embedding_size=embedding_size,
+                    sparse_idf=sparse_idf,
+                    enable_sparse=self._capabilities.supports_sparse_vectors,
+                ),
+            )
+            self.logger.info(f"✅ Created collection '{self.collection_name}'")
+            for field_name, schema in [
+                ("metadata.virtualRecordId", {"type": "keyword"}),
+                ("metadata.orgId", {"type": "keyword"}),
+            ]:
+                await self.vector_db_service.create_index(
+                    collection_name=self.collection_name,
+                    field_name=field_name,
+                    field_schema=schema,
+                )
+        except Exception as e:
+            self.logger.error(f"❌ Error creating collection '{self.collection_name}': {e}")
+            raise VectorStoreError(
+                "Failed to create collection",
+                details={"collection": self.collection_name, "error": str(e)},
+            )
 
+    # ------------------------------------------------------------------
+    # Embedding model initialisation
+    # ------------------------------------------------------------------
 
     async def get_embedding_model_instance(self) -> bool:
+        """Initialise dense embeddings and ensure collection exists.
+
+        Returns True if multimodal embedding is active.
+        """
+        self.logger.info("Getting embedding model")
+
+        ai_models = await self.config_service.get_config(
+            config_node_constants.AI_MODELS.value, use_cache=False
+        )
+        embedding_configs = ai_models["embedding"]
+        is_multimodal = False
+        provider = None
+        configuration = None
+
+        if not embedding_configs:
+            dense_embeddings = get_default_embedding_model()
+            self.logger.info("Using default embedding model")
+        else:
+            config = next(
+                (c for c in embedding_configs if c.get("isDefault")), embedding_configs[0]
+            )
+            provider = config["provider"]
+            configuration = config["configuration"]
+            dense_embeddings = get_embedding_model(provider, config)
+            is_multimodal = config.get("isMultimodal")
+
         try:
-            self.logger.info("Getting embedding model")
-            # Return cached configuration if already initialized
-            # if getattr(self, "vector_store", None) is not None and getattr(self, "dense_embeddings", None) is not None:
-                # return bool(getattr(self, "is_multimodal_embedding", False))
-
-            dense_embeddings = None
-            ai_models = await self.config_service.get_config(
-                config_node_constants.AI_MODELS.value,use_cache=False
-            )
-            embedding_configs = ai_models["embedding"]
-            is_multimodal = False
-            provider = None
-            model_name = None
-            configuration = None
-            if not embedding_configs:
-                dense_embeddings = get_default_embedding_model()
-                self.logger.info("Using default embedding model")
-            else:
-                # Find the default config, or fall back to the first one.
-                config = next((c for c in embedding_configs if c.get("isDefault")), embedding_configs[0])
-
-                provider = config["provider"]
-                configuration = config["configuration"]
-                model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
-                model_name = model_names[0]
-                dense_embeddings = get_embedding_model(provider, config)
-                is_multimodal = config.get("isMultimodal")
-            # Get the embedding dimensions from the model
-            try:
-                sample_embedding = dense_embeddings.embed_query("test")
-                embedding_size = len(sample_embedding)
-            except Exception as e:
-                self.logger.warning(
-                    f"Error with configured embedding model, falling back to default: {str(e)}"
-                )
-                raise IndexingError(
-                    "Failed to get embedding model: " + str(e),
-                    details={"error": str(e)},
-                )
-
-            # Get model name safely
-            model_name = None
-            if hasattr(dense_embeddings, "model_name"):
-                model_name = dense_embeddings.model_name
-            elif hasattr(dense_embeddings, "model"):
-                model_name = dense_embeddings.model
-            elif hasattr(dense_embeddings, "model_id"):
-                model_name = dense_embeddings.model_id
-            else:
-                model_name = "unknown"
-
-            self.logger.info(
-                f"Using embedding model: {model_name}, embedding_size: {embedding_size}"
-            )
-
-            # Initialize collection with correct embedding size
-            await self._initialize_collection(embedding_size=embedding_size)
-
-            # Initialize vector store with same configuration
-
-            self.vector_store: QdrantVectorStore = QdrantVectorStore(
-                client=self.vector_db_service.get_service_client(),
-                collection_name=self.collection_name,
-                vector_name="dense",
-                sparse_vector_name="sparse",
-                embedding=dense_embeddings,
-                sparse_embedding=self.sparse_embeddings,
-                retrieval_mode=RetrievalMode.HYBRID,
-            )
-
-            self.dense_embeddings = dense_embeddings
-            self.embedding_provider = provider
-            self.api_key = configuration["apiKey"] if configuration and "apiKey" in configuration else None
-            self.model_name = model_name
-            self.region_name = configuration["region"] if configuration and "region" in configuration else None
-            # Persist AWS credentials when using Bedrock so we can call image embedding runtime directly
-            if provider == EmbeddingProvider.AWS_BEDROCK.value and configuration:
-                self.aws_access_key_id = configuration.get("awsAccessKeyId")
-                self.aws_secret_access_key = configuration.get("awsAccessSecretKey")
-            self.is_multimodal_embedding = bool(is_multimodal)
-            return self.is_multimodal_embedding
-        except IndexingError as e:
-            self.logger.error(f"Error getting embedding model: {str(e)}")
-            raise IndexingError(
-                "Failed to get embedding model: " + str(e), details={"error": str(e)}
-            )
-
-    async def delete_embeddings(self, virtual_record_id: str) -> None:
-        try:
-            filter_dict = await self.vector_db_service.filter_collection(
-                must={"virtualRecordId": virtual_record_id}
-            )
-
-            await self.vector_db_service.delete_points(self.collection_name, filter_dict)
-
-            self.logger.info(f"✅ Successfully deleted embeddings for record {virtual_record_id}")
+            sample = dense_embeddings.embed_query("test")
+            embedding_size = len(sample)
         except Exception as e:
-            self.logger.error(f"Error deleting embeddings: {str(e)}")
-            raise EmbeddingError(f"Failed to delete embeddings: {str(e)}")
+            raise IndexingError(
+                "Failed to get embedding model: " + str(e),
+                details={"error": str(e)},
+            )
+
+        model_name = (
+            getattr(dense_embeddings, "model_name", None)
+            or getattr(dense_embeddings, "model", None)
+            or getattr(dense_embeddings, "model_id", None)
+            or "unknown"
+        )
+        self.logger.info(f"Using embedding model: {model_name}, size: {embedding_size}")
+
+        await self._ensure_sparse_embeddings()
+        await self._initialize_collection(embedding_size=embedding_size)
+
+        self.dense_embeddings = dense_embeddings
+        self.embedding_provider = provider
+        self.api_key = (
+            configuration.get("apiKey") if configuration and "apiKey" in configuration else None
+        )
+        self.model_name = model_name
+        self.region_name = (
+            configuration.get("region") if configuration else None
+        )
+        if provider == EmbeddingProvider.AWS_BEDROCK.value and configuration:
+            self.aws_access_key_id = configuration.get("awsAccessKeyId")
+            self.aws_secret_access_key = configuration.get("awsAccessSecretKey")
+        self.is_multimodal_embedding = bool(is_multimodal)
+        return self.is_multimodal_embedding
+
+    # ------------------------------------------------------------------
+    # Orphan / block-level cleanup
+    # ------------------------------------------------------------------
 
     async def _cleanup_orphaned_embeddings_if_needed(
         self,
         record_id: str,
         virtual_record_id: str,
-        record: Optional[Record] = None,
+        record: Optional["Record"] = None,
     ) -> None:
         """Remove embeddings when the record was deleted and no MD5 duplicate remains."""
         record_doc = await self.graph_provider.get_document(
@@ -547,14 +502,9 @@ class VectorStore(Transformer):
     async def delete_blocks_by_ids(
         self, block_ids: set, virtual_record_id: str
     ) -> None:
-        """
-        Args:
-            block_ids: Set of block IDs to delete
-            virtual_record_id: Virtual record ID for scoping the deletion
-        """
+        """Delete embeddings for specific block IDs scoped to a virtual record."""
         if not block_ids:
             return
-
         try:
             filter_dict = await self.vector_db_service.filter_collection(
                 must={"blockId": list(block_ids), "virtualRecordId": virtual_record_id}
@@ -565,29 +515,43 @@ class VectorStore(Transformer):
                 f"for virtual_record_id {virtual_record_id}"
             )
         except Exception as e:
-            self.logger.error(f"Error deleting blocks by IDs: {str(e)}")
-            raise EmbeddingError(f"Failed to delete blocks by IDs: {str(e)}")
+            self.logger.error(f"Error deleting blocks by IDs: {e}")
+            raise EmbeddingError(f"Failed to delete blocks by IDs: {e}")
+
+    # ------------------------------------------------------------------
+    # Embeddings deletion (full record)
+    # ------------------------------------------------------------------
+
+    async def delete_embeddings(self, virtual_record_id: str) -> None:
+        try:
+            filter_dict = await self.vector_db_service.filter_collection(
+                must={"virtualRecordId": virtual_record_id}
+            )
+            await self.vector_db_service.delete_points(self.collection_name, filter_dict)
+            self.logger.info(
+                f"✅ Deleted embeddings for virtual record '{virtual_record_id}'"
+            )
+        except Exception as e:
+            self.logger.error(f"Error deleting embeddings: {e}")
+            raise EmbeddingError(f"Failed to delete embeddings: {e}")
+
+    # ------------------------------------------------------------------
+    # Image embedding helpers (provider-specific)
+    # ------------------------------------------------------------------
 
     async def _process_image_embeddings_cohere(
         self, image_chunks: List[dict], image_base64s: List[str]
-    ) -> List[PointStruct]:
-        """Process image embeddings using Cohere API."""
+    ) -> List[VectorPoint]:
         import cohere
 
         co = cohere.ClientV2(api_key=self.api_key)
-        points = []
+        concurrency_limit = 10
+        semaphore = asyncio.Semaphore(concurrency_limit)
 
-        async def embed_single_image(i: int, image_base64: str) -> Optional[PointStruct]:
-            """Embed a single image with Cohere API."""
+        async def embed_single(i: int, image_base64: str) -> Optional[VectorPoint]:
             image_input = {
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": image_base64}
-                    }
-                ]
+                "content": [{"type": "image_url", "image_url": {"url": image_base64}}]
             }
-
             try:
                 loop = asyncio.get_running_loop()
                 response = await loop.run_in_executor(
@@ -597,294 +561,203 @@ class VectorStore(Transformer):
                         input_type="image",
                         embedding_types=["float"],
                         inputs=[image_input],
-                    )
+                    ),
                 )
                 chunk = image_chunks[i]
                 embedding = response.embeddings.float[0]
-                return PointStruct(
+                return VectorPoint(
                     id=str(uuid.uuid4()),
-                    vector={"dense": embedding},
+                    dense_vector=embedding,
                     payload={
                         "metadata": chunk.get("metadata", {}),
                         "page_content": chunk.get("image_uri", ""),
                     },
                 )
-            except Exception as cohere_error:
-                error_text = str(cohere_error)
-                if "image size must be at most" in error_text:
-                    self.logger.warning(
-                        f"Skipping image {i} embedding due to size limit: {error_text}"
-                    )
+            except Exception as e:
+                if "image size must be at most" in str(e):
+                    self.logger.warning(f"Skipping image {i}: {e}")
                     return None
                 raise
 
-        concurrency_limit = 10
-        semaphore = asyncio.Semaphore(concurrency_limit)
-
-        async def limited_embed(i: int, image_base64: str) -> Optional[PointStruct]:
+        async def limited(i, b64):
             async with semaphore:
-                return await embed_single_image(i, image_base64)
+                return await embed_single(i, b64)
 
-        tasks = [limited_embed(i, img) for i, img in enumerate(image_base64s)]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for result in results:
-            if isinstance(result, PointStruct):
-                points.append(result)
-            elif isinstance(result, Exception):
-                self.logger.warning(f"Failed to embed image: {str(result)}")
-        return points
+        results = await asyncio.gather(
+            *[limited(i, b64) for i, b64 in enumerate(image_base64s)],
+            return_exceptions=True,
+        )
+        return [r for r in results if isinstance(r, VectorPoint)]
 
     async def _process_image_embeddings_voyage(
         self, image_chunks: List[dict], image_base64s: List[str]
-    ) -> List[PointStruct]:
-        """Process image embeddings using Voyage AI."""
-        batch_size = getattr(self.dense_embeddings, 'batch_size', 7)
-        points = []
-
-        async def process_voyage_batch(batch_start: int, batch_images: List[str]) -> List[PointStruct]:
-            """Process a single batch of images with Voyage AI."""
-            try:
-                embeddings = await self.dense_embeddings.aembed_documents(batch_images)
-                batch_points = []
-                for i, embedding in enumerate(embeddings):
-                    chunk_idx = batch_start + i
-                    image_chunk = image_chunks[chunk_idx]
-                    point = PointStruct(
-                        id=str(uuid.uuid4()),
-                        vector={"dense": embedding},
-                        payload={
-                            "metadata": image_chunk.get("metadata", {}),
-                            "page_content": image_chunk.get("image_uri", ""),
-                        },
-                    )
-                    batch_points.append(point)
-                self.logger.info(
-                    f"✅ Processed Voyage batch starting at {batch_start}: {len(embeddings)} image embeddings"
-                )
-                return batch_points
-            except Exception as voyage_error:
-                self.logger.warning(
-                    f"Failed to process Voyage batch starting at {batch_start}: {str(voyage_error)}"
-                )
-                return []
-
-        batches = []
-        for batch_start in range(0, len(image_base64s), batch_size):
-            batch_end = min(batch_start + batch_size, len(image_base64s))
-            batch_images = image_base64s[batch_start:batch_end]
-            batches.append((batch_start, batch_images))
-
+    ) -> List[VectorPoint]:
+        batch_size = getattr(self.dense_embeddings, "batch_size", 7)
         concurrency_limit = 5
         semaphore = asyncio.Semaphore(concurrency_limit)
 
-        async def limited_voyage_batch(batch_start: int, batch_images: List[str]) -> List[PointStruct]:
+        async def process_batch(batch_start: int, batch_imgs: List[str]) -> List[VectorPoint]:
             async with semaphore:
-                return await process_voyage_batch(batch_start, batch_images)
+                try:
+                    embeddings = await self.dense_embeddings.aembed_documents(batch_imgs)
+                    return [
+                        VectorPoint(
+                            id=str(uuid.uuid4()),
+                            dense_vector=embedding,
+                            payload={
+                                "metadata": image_chunks[batch_start + i].get("metadata", {}),
+                                "page_content": image_chunks[batch_start + i].get("image_uri", ""),
+                            },
+                        )
+                        for i, embedding in enumerate(embeddings)
+                    ]
+                except Exception as e:
+                    self.logger.warning(f"Voyage batch {batch_start} failed: {e}")
+                    return []
 
-        tasks = [limited_voyage_batch(start, imgs) for start, imgs in batches]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for result in results:
-            if isinstance(result, list):
-                points.extend(result)
-            elif isinstance(result, Exception):
-                self.logger.warning(f"Voyage batch processing exception: {str(result)}")
-
+        batches = [
+            (start, image_base64s[start:start + batch_size])
+            for start in range(0, len(image_base64s), batch_size)
+        ]
+        results = await asyncio.gather(*[process_batch(s, imgs) for s, imgs in batches])
+        points: List[VectorPoint] = []
+        for r in results:
+            if isinstance(r, list):
+                points.extend(r)
         return points
 
     async def _process_image_embeddings_bedrock(
         self, image_chunks: List[dict], image_base64s: List[str]
-    ) -> List[PointStruct]:
-        """Process image embeddings using AWS Bedrock."""
+    ) -> List[VectorPoint]:
         import json
 
         import boto3
         from botocore.exceptions import ClientError, NoCredentialsError
 
-        try:
-            client_kwargs = {
-                "service_name": "bedrock-runtime",
-            }
-            if self.aws_access_key_id and self.aws_secret_access_key and self.region_name:
-                client_kwargs.update({
+        client_kwargs: dict = {"service_name": "bedrock-runtime"}
+        if self.aws_access_key_id and self.aws_secret_access_key and self.region_name:
+            client_kwargs.update(
+                {
                     "aws_access_key_id": self.aws_access_key_id,
                     "aws_secret_access_key": self.aws_secret_access_key,
                     "region_name": self.region_name,
-                })
-            bedrock = boto3.client(**client_kwargs)
-        except NoCredentialsError as cred_err:
-            raise EmbeddingError(
-                "AWS credentials not found for Bedrock image embeddings. Provide awsAccessKeyId/awsAccessSecretKey or configure a credential source."
-            ) from cred_err
-
-        points = []
-
-        async def embed_single_bedrock_image(i: int, image_ref: str) -> Optional[PointStruct]:
-            """Embed a single image with AWS Bedrock."""
-            normalized_b64 = await self._normalize_image_to_base64(image_ref)
-            if not normalized_b64:
-                self.logger.warning("Skipping image: unable to normalize to base64 (index=%s)", i)
-                return None
-
-            request_body = {
-                "inputImage": normalized_b64,
-                "embeddingConfig": {
-                    "outputEmbeddingLength": 1024
                 }
-            }
+            )
+        try:
+            bedrock = boto3.client(**client_kwargs)
+        except NoCredentialsError as e:
+            raise EmbeddingError("AWS credentials not found for Bedrock image embeddings.") from e
 
+        concurrency_limit = 10
+        semaphore = asyncio.Semaphore(concurrency_limit)
+
+        async def embed_single(i: int, image_ref: str) -> Optional[VectorPoint]:
+            normalized = await self._normalize_image_to_base64(image_ref)
+            if not normalized:
+                return None
             try:
                 loop = asyncio.get_running_loop()
                 response = await loop.run_in_executor(
                     None,
                     lambda: bedrock.invoke_model(
                         modelId=self.model_name,
-                        body=json.dumps(request_body),
-                        contentType='application/json',
-                        accept='application/json'
-                    )
+                        body=json.dumps({
+                            "inputImage": normalized,
+                            "embeddingConfig": {"outputEmbeddingLength": 1024},
+                        }),
+                        contentType="application/json",
+                        accept="application/json",
+                    ),
                 )
-                response_body = json.loads(response['body'].read())
-                image_embedding = response_body['embedding']
-
-                image_chunk = image_chunks[i]
-                return PointStruct(
+                body = json.loads(response["body"].read())
+                return VectorPoint(
                     id=str(uuid.uuid4()),
-                    vector={"dense": image_embedding},
+                    dense_vector=body["embedding"],
                     payload={
-                        "metadata": image_chunk.get("metadata", {}),
-                        "page_content": image_chunk.get("image_uri", ""),
+                        "metadata": image_chunks[i].get("metadata", {}),
+                        "page_content": image_chunks[i].get("image_uri", ""),
                     },
                 )
-            except NoCredentialsError as cred_err:
-                raise EmbeddingError(
-                    "AWS credentials not found while invoking Bedrock model."
-                ) from cred_err
-            except ClientError as client_err:
-                self.logger.warning("Bedrock image embedding failed for index=%s: %s", i, str(client_err))
-                return None
-            except Exception as bedrock_err:
-                self.logger.warning("Unexpected Bedrock error for image index=%s: %s", i, str(bedrock_err))
+            except (NoCredentialsError, ClientError) as e:
+                self.logger.warning(f"Bedrock embed failed for index {i}: {e}")
                 return None
 
-        concurrency_limit = 10
-        semaphore = asyncio.Semaphore(concurrency_limit)
-
-        async def limited_bedrock_embed(i: int, image_ref: str) -> Optional[PointStruct]:
+        async def limited(i, ref):
             async with semaphore:
-                return await embed_single_bedrock_image(i, image_ref)
+                return await embed_single(i, ref)
 
-        tasks = [limited_bedrock_embed(i, img) for i, img in enumerate(image_base64s)]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for result in results:
-            if isinstance(result, PointStruct):
-                points.append(result)
-            elif isinstance(result, Exception):
-                self.logger.warning(f"Failed to embed image with Bedrock: {str(result)}")
-
-        return points
+        results = await asyncio.gather(
+            *[limited(i, ref) for i, ref in enumerate(image_base64s)],
+            return_exceptions=True,
+        )
+        return [r for r in results if isinstance(r, VectorPoint)]
 
     async def _process_image_embeddings_jina(
         self, image_chunks: List[dict], image_base64s: List[str]
-    ) -> List[PointStruct]:
-        """Process image embeddings using Jina AI."""
-
+    ) -> List[VectorPoint]:
         batch_size = 32
-        points = []
+        concurrency_limit = 5
+        semaphore = asyncio.Semaphore(concurrency_limit)
 
-        async def process_jina_batch(client: httpx.AsyncClient, batch_start: int, batch_images: List[str]) -> List[PointStruct]:
-            """Process a single batch of images with Jina AI."""
-            try:
-                url = 'https://api.jina.ai/v1/embeddings'
-                headers = {
-                    'Content-Type': 'application/json',
-                    'Authorization': 'Bearer ' + self.api_key
-                }
-                normalized_images = await asyncio.gather(*[
-                    self._normalize_image_to_base64(image_base64)
-                    for image_base64 in batch_images
-                ])
-                # Track which original indices correspond to successfully normalized images
-                valid_indices = []
-                valid_normalized_images = []
-                for idx, normalized_b64 in enumerate(normalized_images):
-                    if normalized_b64 is not None:
-                        valid_indices.append(batch_start + idx)
-                        valid_normalized_images.append(normalized_b64)
-
-                if not valid_normalized_images:
-                    self.logger.warning(
-                        f"No valid images in Jina AI batch starting at {batch_start} after normalization"
+        async def process_batch(
+            client: httpx.AsyncClient, batch_start: int, batch_imgs: List[str]
+        ) -> List[VectorPoint]:
+            async with semaphore:
+                try:
+                    normalized = await asyncio.gather(
+                        *[self._normalize_image_to_base64(img) for img in batch_imgs]
                     )
-                    return []
-
-                data = {
-                    "model": self.model_name,
-                    "input": [
-                        {"image": normalized_b64}
-                        for normalized_b64 in valid_normalized_images
-                    ]
-                }
-
-                response = await client.post(url, headers=headers, json=data)
-                response_body = response.json()
-                embeddings = [r["embedding"] for r in response_body["data"]]
-
-                batch_points = []
-                for i, embedding in enumerate(embeddings):
-                    # Use the tracked valid index instead of simple increment
-                    chunk_idx = valid_indices[i]
-                    image_chunk = image_chunks[chunk_idx]
-                    point = PointStruct(
-                        id=str(uuid.uuid4()),
-                        vector={"dense": embedding},
-                        payload={
-                            "metadata": image_chunk.get("metadata", {}),
-                            "page_content": image_chunk.get("image_uri", ""),
+                    valid = [(batch_start + j, n) for j, n in enumerate(normalized) if n]
+                    if not valid:
+                        return []
+                    resp = await client.post(
+                        "https://api.jina.ai/v1/embeddings",
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {self.api_key}",
+                        },
+                        json={
+                            "model": self.model_name,
+                            "input": [{"image": n} for _, n in valid],
                         },
                     )
-                    batch_points.append(point)
-                self.logger.info(
-                    f"✅ Processed Jina AI batch starting at {batch_start}: {len(embeddings)} image embeddings"
-                )
-                return batch_points
-            except Exception as jina_error:
-                self.logger.warning(
-                    f"Failed to process Jina AI batch starting at {batch_start}: {str(jina_error)}"
-                )
-                return []
+                    data = resp.json().get("data", [])
+                    return [
+                        VectorPoint(
+                            id=str(uuid.uuid4()),
+                            dense_vector=item["embedding"],
+                            payload={
+                                "metadata": image_chunks[valid[i][0]].get("metadata", {}),
+                                "page_content": image_chunks[valid[i][0]].get("image_uri", ""),
+                            },
+                        )
+                        for i, item in enumerate(data)
+                    ]
+                except Exception as e:
+                    self.logger.warning(f"Jina batch {batch_start} failed: {e}")
+                    return []
 
         async with httpx.AsyncClient(timeout=60.0) as client:
-            batches = []
-            for batch_start in range(0, len(image_base64s), batch_size):
-                batch_end = min(batch_start + batch_size, len(image_base64s))
-                batch_images = image_base64s[batch_start:batch_end]
-                batches.append((batch_start, batch_images))
-
-            concurrency_limit = 5
-            semaphore = asyncio.Semaphore(concurrency_limit)
-
-            async def limited_process_batch(batch_start: int, batch_images: List[str]) -> List[PointStruct]:
-                async with semaphore:
-                    return await process_jina_batch(client, batch_start, batch_images)
-
-            tasks = [limited_process_batch(start, imgs) for start, imgs in batches]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for result in results:
-                if isinstance(result, list):
-                    points.extend(result)
-                elif isinstance(result, Exception):
-                    self.logger.warning(f"Jina AI batch processing exception: {str(result)}")
-
+            batches = [
+                (start, image_base64s[start:start + batch_size])
+                for start in range(0, len(image_base64s), batch_size)
+            ]
+            results = await asyncio.gather(
+                *[process_batch(client, s, imgs) for s, imgs in batches]
+            )
+        points: List[VectorPoint] = []
+        for r in results:
+            if isinstance(r, list):
+                points.extend(r)
         return points
 
     async def _process_image_embeddings(
-        self, image_chunks: List[dict], image_base64s: List[str], record_id: str
-    ) -> List[PointStruct]:
-        """Process image embeddings based on the configured provider."""
+        self, image_chunks: List[dict], image_base64s: List[str], record_id: str = ""
+    ) -> List[VectorPoint]:
+        """Process image embeddings based on the configured provider.
+
+        Guard: skip entirely if the record was deleted mid-flight.
+        """
         record_doc = await self.graph_provider.get_document(
             record_id, CollectionNames.RECORDS.value
         )
@@ -903,211 +776,189 @@ class VectorStore(Transformer):
         elif self.embedding_provider == EmbeddingProvider.JINA_AI.value:
             return await self._process_image_embeddings_jina(image_chunks, image_base64s)
         else:
-            self.logger.warning(f"Unsupported embedding provider for images: {self.embedding_provider}")
+            self.logger.warning(
+                f"Unsupported embedding provider for images: {self.embedding_provider}"
+            )
             return []
 
-    async def _store_image_points(self, points: List[PointStruct]) -> None:
-        """Store image embedding points in the vector database."""
-        if points:
-            start_time = time.perf_counter()
-            self.logger.info(f"⏱️ Starting image embeddings insertion for {len(points)} points")
-
+    async def _store_image_points(self, points: List[VectorPoint]) -> None:
+        if not points:
+            self.logger.info("No image embeddings to upsert.")
+            return
+        start = time.perf_counter()
+        # Batch image upserts to avoid holding all VectorPoints in one call
+        batch_size = 500
+        for i in range(0, len(points), batch_size):
             await self.vector_db_service.upsert_points(
-                collection_name=self.collection_name, points=points
+                collection_name=self.collection_name, points=points[i:i + batch_size]
             )
+        self.logger.info(
+            f"✅ Stored {len(points)} image points in {time.perf_counter() - start:.2f}s"
+        )
 
-            elapsed_time = time.perf_counter() - start_time
-            self.logger.info(
-                f"✅ Successfully added {len(points)} image embeddings to vector store in {elapsed_time:.2f}s"
-            )
-        else:
-            self.logger.info(
-                "No image embeddings to upsert; all images were skipped or failed to embed"
-            )
+    # ------------------------------------------------------------------
+    # Core document upsert (unified, all providers)
+    # ------------------------------------------------------------------
 
     def _is_local_cpu_embedding(self) -> bool:
-        """True when embedding model runs locally on CPU (default or sentence transformers)."""
         return (
             self.embedding_provider is None
             or self.embedding_provider == EmbeddingProvider.DEFAULT.value
             or self.embedding_provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value
         )
 
-    async def _process_document_chunks(
-        self, langchain_document_chunks: List[Document], record_id: str
+    async def _compute_sparse_embeddings(
+        self, texts: List[str]
+    ) -> List[Optional[SparseVector]]:
+        """Compute BM25 sparse vectors; returns list of None when not supported."""
+        embedder = await self._ensure_sparse_embeddings()
+        if embedder is None:
+            return [None] * len(texts)
+        return await embedder.embed_documents(texts)
+
+    async def _embed_and_upsert_documents(
+        self, documents: List[Document], record_id: str
     ) -> None:
-        """Process and store document chunks in the vector store."""
-        time.perf_counter()
-        self.logger.info(f"⏱️ Starting langchain document embeddings insertion for {len(langchain_document_chunks)} documents")
+        """Embed a batch of LangChain Documents and upsert to the vector DB.
 
-        use_local_sequential = self._is_local_cpu_embedding()
-        batch_size = (
-            _LOCAL_CPU_DOCUMENT_BATCH_SIZE if use_local_sequential else _DEFAULT_DOCUMENT_BATCH_SIZE
-        )
-
-        async def process_document_batch(batch_start: int, batch_documents: List[Document]) -> int:
-            """Process a single batch of documents."""
-            try:
-                await self.vector_store.aadd_documents(batch_documents)
-                self.logger.debug(
-                    f"✅ Processed document batch starting at {batch_start}: {len(batch_documents)} documents"
-                )
-                return len(batch_documents)
-            except Exception as batch_error:
-                self.logger.warning(
-                    f"Failed to process document batch starting at {batch_start}: {str(batch_error)}"
-                )
-                raise
-
-        batches = []
-        for batch_start in range(0, len(langchain_document_chunks), batch_size):
-            batch_end = min(batch_start + batch_size, len(langchain_document_chunks))
-            batch_documents = langchain_document_chunks[batch_start:batch_end]
-            batches.append((batch_start, batch_documents))
-
+        Guard: aborts if the record was deleted mid-flight (race condition fix
+        restored from commit 839a29499).
+        """
+        # Record-existence guard before upsert
         record_doc = await self.graph_provider.get_document(
             record_id, CollectionNames.RECORDS.value
         )
         if record_doc is None:
             self.logger.warning(
-                f"Record {record_id} not found in database, skipping document embedding"
+                f"Record {record_id} not found before upsert — skipping batch"
             )
             return
 
+        texts = [doc.page_content for doc in documents]
+        loop = asyncio.get_running_loop()
+
+        # Dense embeddings (sync call in thread)
+        dense_embeddings = await loop.run_in_executor(
+            None, self.dense_embeddings.embed_documents, texts
+        )
+
+        # Sparse embeddings (provider-dependent)
+        sparse_embeddings = await self._compute_sparse_embeddings(texts)
+
+        points: List[VectorPoint] = [
+            VectorPoint(
+                id=str(uuid.uuid4()),
+                dense_vector=dense,
+                sparse_vector=sparse,
+                payload={
+                    "page_content": doc.page_content,
+                    "metadata": doc.metadata,
+                },
+            )
+            for doc, dense, sparse in zip(documents, dense_embeddings, sparse_embeddings)
+        ]
+        await self.vector_db_service.upsert_points(
+            collection_name=self.collection_name, points=points
+        )
+
+    async def _process_document_chunks(
+        self, langchain_document_chunks: List[Document], record_id: str = ""
+    ) -> None:
+        self.logger.info(
+            f"⏱️ Embedding {len(langchain_document_chunks)} document chunks"
+        )
+        use_local_sequential = self._is_local_cpu_embedding()
+        batch_size = (
+            _LOCAL_CPU_DOCUMENT_BATCH_SIZE if use_local_sequential else _DEFAULT_DOCUMENT_BATCH_SIZE
+        )
+
+        async def process_batch(batch_start: int, batch: List[Document]) -> int:
+            try:
+                await self._embed_and_upsert_documents(batch, record_id)
+                return len(batch)
+            except Exception as e:
+                self.logger.warning(f"Batch at {batch_start} failed: {e}")
+                raise
+
+        batches = [
+            (i, langchain_document_chunks[i:i + batch_size])
+            for i in range(0, len(langchain_document_chunks), batch_size)
+        ]
+
         if use_local_sequential:
-            # Process one batch at a time, no concurrent tasks - avoids CPU/memory thrashing
-            for i, (batch_start, batch_documents) in enumerate(batches):
+            for idx, (start, batch) in enumerate(batches):
                 try:
-                    await process_document_batch(batch_start, batch_documents)
+                    await process_batch(start, batch)
                 except Exception as e:
-                    self.logger.error(f"Document batch {i} failed: {str(e)}")
                     raise VectorStoreError(
-                        f"Failed to store document batch {i} in vector store: {str(e)}",
-                        details={"error": str(e), "batch_index": i},
+                        f"Failed to store batch {idx}: {e}",
+                        details={"error": str(e), "batch_index": idx},
                     )
         else:
-            concurrency_limit = _DEFAULT_CONCURRENCY_LIMIT
-            semaphore = asyncio.Semaphore(concurrency_limit)
+            semaphore = asyncio.Semaphore(_DEFAULT_CONCURRENCY_LIMIT)
 
-            async def limited_process_batch(batch_start: int, batch_documents: List[Document]) -> int:
+            async def limited(start, batch):
                 async with semaphore:
-                    return await process_document_batch(batch_start, batch_documents)
+                    return await process_batch(start, batch)
 
-            tasks = [limited_process_batch(start, docs) for start, docs in batches]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for i, result in enumerate(results):
+            results = await asyncio.gather(
+                *[limited(s, b) for s, b in batches], return_exceptions=True
+            )
+            for idx, result in enumerate(results):
                 if isinstance(result, Exception):
-                    self.logger.error(f"Document batch {i} failed: {str(result)}")
                     raise VectorStoreError(
-                        f"Failed to store document batch {i} in vector store: {str(result)}",
-                        details={"error": str(result), "batch_index": i},
+                        f"Failed to store batch {idx}: {result}",
+                        details={"error": str(result), "batch_index": idx},
                     )
 
-
+    # ------------------------------------------------------------------
+    # Embedding creation entry point
+    # ------------------------------------------------------------------
 
     async def _create_embeddings(
-        self, chunks: List[Document], record_id: str, virtual_record_id: str
+        self,
+        chunks: List,
+        record_id: str,
+        virtual_record_id: str,
     ) -> None:
-        """
-        Create both sparse and dense embeddings for document chunks and store them in vector store.
-        Handles both text and image embeddings
+        if not chunks:
+            raise EmbeddingError("No chunks provided for embedding creation")
 
-        Args:
-            chunks: List of document chunks to embed
-            record_id: Record ID for status updates
-            virtual_record_id: Virtual record ID for filtering embeddings
+        langchain_docs: List[Document] = []
+        image_chunks: List[dict] = []
 
-        Raises:
-            EmbeddingError: If there's an error creating embeddings
-            VectorStoreError: If there's an error storing embeddings
-            MetadataProcessingError: If there's an error processing metadata
-            DocumentProcessingError: If there's an error updating document status
-        """
-        try:
-            if not chunks:
-                raise EmbeddingError("No chunks provided for embedding creation")
+        for chunk in chunks:
+            if isinstance(chunk, Document):
+                langchain_docs.append(chunk)
+            else:
+                image_chunks.append(chunk)
 
-            # Separate chunks by type
-            langchain_document_chunks = []
-            image_chunks = []
-            for chunk in chunks:
-                if isinstance(chunk, Document):
-                    langchain_document_chunks.append(chunk)
-                else:
-                    image_chunks.append(chunk)
+        # Delete existing embeddings first (full replace, non-reconciliation path)
+        await self.delete_embeddings(virtual_record_id)
 
-            await self.delete_embeddings(virtual_record_id)
-
-            self.logger.info(
-                f"📊 Processing {len(langchain_document_chunks)} langchain document chunks and {len(image_chunks)} image chunks"
-            )
-
-            # Process image chunks if any
-            if image_chunks:
-                image_base64s = [chunk.get("image_uri") for chunk in image_chunks]
-                points = await self._process_image_embeddings(
-                    image_chunks, image_base64s, record_id
-                )
-                await self._store_image_points(points)
-
-            # Process document chunks if any
-            if langchain_document_chunks:
-                try:
-                    await self._process_document_chunks(
-                        langchain_document_chunks, record_id
-                    )
-                except Exception as e:
-                    raise VectorStoreError(
-                        "Failed to store langchain documents in vector store: " + str(e),
-                        details={"error": str(e)},
-                    )
-
-            self.logger.info(f"✅ Embeddings created and stored for record: {record_id}")
-
-        except (
-            EmbeddingError,
-            VectorStoreError,
-            MetadataProcessingError,
-            DocumentProcessingError,
-        ):
-            raise
-        except Exception as e:
-            raise IndexingError(
-                "Unexpected error during embedding creation: " + str(e),
-                details={"error": str(e)},
-            )
-
-    async def describe_image_async(self, base64_string: str, vlm: BaseChatModel) -> str:
-        message = HumanMessage(
-            content=[
-                {"type": "text", "text": prompt_for_image_description},
-                {"type": "image_url", "image_url": {"url": base64_string}},
-            ]
+        self.logger.info(
+            f"📊 Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
         )
-        response = await vlm.ainvoke([message])
-        return response.content
 
-    async def describe_images(self, base64_images: List[str],vlm:BaseChatModel) -> List[dict]:
+        if image_chunks:
+            image_base64s = [c.get("image_uri") for c in image_chunks]
+            points = await self._process_image_embeddings(image_chunks, image_base64s, record_id)
+            await self._store_image_points(points)
 
-        async def describe(i: int, base64_string: str) -> dict:
+        if langchain_docs:
             try:
-                description = await self.describe_image_async(base64_string, vlm)
-                return {"index": i, "success": True, "description": description.strip()}
+                await self._process_document_chunks(langchain_docs, record_id)
             except Exception as e:
-                return {"index": i, "success": False, "error": str(e)}
+                raise VectorStoreError(
+                    "Failed to store documents in vector store: " + str(e),
+                    details={"error": str(e)},
+                )
 
-        # Limit concurrency to avoid memory growth when many images
-        concurrency_limit = 10
-        semaphore = asyncio.Semaphore(concurrency_limit)
+        self.logger.info(f"✅ Embeddings created and stored for record '{record_id}'")
 
-        async def limited_describe(i: int, base64_string: str) -> dict:
-            async with semaphore:
-                return await describe(i, base64_string)
-
-        tasks = [limited_describe(i, img) for i, img in enumerate(base64_images)]
-        results = await asyncio.gather(*tasks)
-        return results
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
 
     async def index_documents(
         self,
@@ -1117,7 +968,7 @@ class VectorStore(Transformer):
         virtual_record_id: str,
         block_ids_to_delete: Optional[set] = None,
         is_reconciliation: bool = False,
-        record: Optional[Record] = None,
+        record: Optional["Record"] = None,
     ) -> bool | None:
         try:
             is_multimodal_embedding = await self.get_embedding_model_instance()
@@ -1128,20 +979,20 @@ class VectorStore(Transformer):
             )
 
         try:
-            llm, config = await get_llm_for_role(self.config_service, "indexing")
+            llm, config = await get_llm(self.config_service)
             is_multimodal_llm = config.get("isMultimodal")
         except Exception as e:
-            raise IndexingError(
-                "Failed to get LLM: " + str(e),
-                details={"error": str(e)},
-            )
+            raise IndexingError("Failed to get LLM: " + str(e), details={"error": str(e)})
 
         blocks = block_containers.blocks
         block_groups = block_containers.block_groups
 
         try:
+            # On reconciliation: always refresh the record summary first
             if block_ids_to_delete or is_reconciliation:
-                summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
+                summary_block_id_set = {
+                    f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"
+                }
                 await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id)
 
                 if record is not None:
@@ -1151,15 +1002,13 @@ class VectorStore(Transformer):
                             record_id, virtual_record_id, org_id, semantic_metadata
                         )
                         if summary_doc:
-                            await self._process_document_chunks(
-                                [summary_doc], record_id
-                            )
+                            await self._process_document_chunks([summary_doc], record_id)
 
             if not blocks and not block_groups:
                 if block_ids_to_delete:
                     await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id)
                 await self._cleanup_orphaned_embeddings_if_needed(
-                record_id, virtual_record_id, record
+                    record_id, virtual_record_id, record
                 )
                 return None
 
@@ -1169,11 +1018,11 @@ class VectorStore(Transformer):
             sql_row_blocks = []
 
             for block in blocks:
-                if hasattr(block.type, 'value'):
-                    block_type = str(block.type.value).lower()
-                else:
-                    block_type = str(block.type).lower()
-
+                block_type = (
+                    str(block.type.value).lower()
+                    if hasattr(block.type, "value")
+                    else str(block.type).lower()
+                )
                 if block_type in ["text", "paragraph", "textsection", "heading", "quote"]:
                     text_blocks.append(block)
                 elif (
@@ -1184,11 +1033,12 @@ class VectorStore(Transformer):
                     image_blocks.append(block)
                 elif block_type == "table_row":
                     sub_type = ""
-                    if hasattr(block, 'sub_type') and block.sub_type:
-                        if hasattr(block.sub_type, 'value'):
-                            sub_type = str(block.sub_type.value).lower()
-                        else:
-                            sub_type = str(block.sub_type).lower()
+                    if hasattr(block, "sub_type") and block.sub_type:
+                        sub_type = (
+                            str(block.sub_type.value).lower()
+                            if hasattr(block.sub_type, "value")
+                            else str(block.sub_type).lower()
+                        )
                     if sub_type in ["sql_table", "sql_view"]:
                         sql_row_blocks.append(block)
                     else:
@@ -1196,13 +1046,16 @@ class VectorStore(Transformer):
                 elif block_type in ["table", "table_cell"]:
                     table_blocks.append(block)
 
-            self.logger.info(f"📊 Processing {len(blocks)} blocks and {len(block_groups)} block_groups")
+            self.logger.info(
+                f"📊 Processing {len(blocks)} blocks and {len(block_groups)} block_groups"
+            )
             self.logger.debug(
-                f"📊 Block classification: text={len(text_blocks)}, image={len(image_blocks)},"
-                f" table={len(table_blocks)}, sql_row={len(sql_row_blocks)}"
+                f"Block classification: text={len(text_blocks)}, image={len(image_blocks)}, "
+                f"table={len(table_blocks)}, sql_row={len(sql_row_blocks)}"
             )
 
-            documents_to_embed = []
+            documents_to_embed: List = []
+
             # ── Text blocks ──
             if text_blocks:
                 try:
@@ -1211,11 +1064,12 @@ class VectorStore(Transformer):
                         metadata = {
                             "virtualRecordId": virtual_record_id,
                             "blockId": block.id,
+                            "blockIndex": block.index,
                             "orgId": org_id,
                             "isBlockGroup": False,
                         }
                         doc = self.nlp(block_text)
-                        sentences = [sent.text for sent in doc.sents]
+                        sentences = [s.text for s in doc.sents]
                         if len(sentences) > 1:
                             for sentence in sentences:
                                 documents_to_embed.append(
@@ -1240,41 +1094,42 @@ class VectorStore(Transformer):
             # ── Image blocks ──
             if image_blocks:
                 try:
-                    images_uris = []
-                    for block in image_blocks:
-                        image_data = block.data
-                        if image_data:
-                            images_uris.append(image_data.get("uri"))
-
+                    images_uris = [
+                        b.data.get("uri")
+                        for b in image_blocks
+                        if isinstance(b.data, dict) and b.data.get("uri")
+                    ]
                     if images_uris:
                         if is_multimodal_embedding:
                             for block in image_blocks:
-                                metadata = {
-                                    "virtualRecordId": virtual_record_id,
-                                    "blockId": block.id,
-                                    "orgId": org_id,
-                                    "isBlock": True,
-                                    "isBlockGroup": False,
-                                }
-                                image_data = block.data
                                 documents_to_embed.append(
-                                    {"image_uri": image_data.get("uri"), "metadata": metadata}
+                                    {
+                                        "image_uri": block.data.get("uri"),
+                                        "metadata": {
+                                            "virtualRecordId": virtual_record_id,
+                                            "blockId": block.id,
+                                            "blockIndex": block.index,
+                                            "orgId": org_id,
+                                            "isBlock": True,
+                                            "isBlockGroup": False,
+                                        },
+                                    }
                                 )
                         elif is_multimodal_llm:
                             description_results = await self.describe_images(images_uris, llm)
                             for result, block in zip(description_results, image_blocks):
                                 if result["success"]:
-                                    metadata = {
-                                        "virtualRecordId": virtual_record_id,
-                                        "blockId": block.id,
-                                        "orgId": org_id,
-                                        "isBlock": True,
-                                        "isBlockGroup": False,
-                                    }
                                     documents_to_embed.append(
                                         Document(
                                             page_content=result["description"],
-                                            metadata=metadata,
+                                            metadata={
+                                                "virtualRecordId": virtual_record_id,
+                                                "blockId": block.id,
+                                                "blockIndex": block.index,
+                                                "orgId": org_id,
+                                                "isBlock": True,
+                                                "isBlockGroup": False,
+                                            },
                                         )
                                     )
                 except Exception as e:
@@ -1285,19 +1140,22 @@ class VectorStore(Transformer):
 
             # ── Block groups (SQL tables/views and regular tables) ──
             for block_group in block_groups:
-                if hasattr(block_group.type, 'value'):
-                    block_group_type = str(block_group.type.value).lower()
-                else:
-                    block_group_type = str(block_group.type).lower()
-
+                block_group_type = (
+                    str(block_group.type.value).lower()
+                    if hasattr(block_group.type, "value")
+                    else str(block_group.type).lower()
+                )
                 sub_type = ""
-                if hasattr(block_group, 'sub_type') and block_group.sub_type:
-                    if hasattr(block_group.sub_type, 'value'):
-                        sub_type = str(block_group.sub_type.value).lower()
-                    else:
-                        sub_type = str(block_group.sub_type).lower()
+                if hasattr(block_group, "sub_type") and block_group.sub_type:
+                    sub_type = (
+                        str(block_group.sub_type.value).lower()
+                        if hasattr(block_group.sub_type, "value")
+                        else str(block_group.sub_type).lower()
+                    )
 
-                if block_group_type in ["table", "view"] and sub_type in ["sql_table", "sql_view"]:
+                if block_group_type in ["table", "view"] and sub_type in [
+                    "sql_table", "sql_view"
+                ]:
                     block_data = block_group.data or {}
                     fqn = block_data.get("fqn", "")
                     sql_base_metadata = {
@@ -1311,21 +1169,20 @@ class VectorStore(Transformer):
                     if sub_type == "sql_table":
                         ddl = block_data.get("ddl", "")
                         table_summary = block_data.get("table_summary", "")
-
                         if ddl:
-                            combined_content_parts = []
+                            parts = []
                             if table_summary:
-                                combined_content_parts.append(f"/* Table Description:\n{table_summary}\n*/")
-                            combined_content_parts.append(ddl)
-                            combined_content = "\n\n".join(combined_content_parts)
-
-                            documents_to_embed.append(Document(
-                                page_content=combined_content,
-                                metadata={
-                                    **sql_base_metadata,
-                                },
-                            ))
-                            self.logger.info(f"📊 Added SQL TABLE DDL+Summary for embedding: {fqn}")
+                                parts.append(f"/* Table Description:\n{table_summary}\n*/")
+                            parts.append(ddl)
+                            documents_to_embed.append(
+                                Document(
+                                    page_content="\n\n".join(parts),
+                                    metadata=sql_base_metadata,
+                                )
+                            )
+                            self.logger.info(
+                                f"📊 Added SQL TABLE DDL+Summary for embedding: {fqn}"
+                            )
 
                     elif sub_type == "sql_view":
                         definition = block_data.get("definition", "") or ""
@@ -1339,108 +1196,121 @@ class VectorStore(Transformer):
                         if is_secure:
                             view_context_parts.append("-- Note: This is a secure view")
                         if source_tables:
-                            view_context_parts.append(f"-- Source Tables: {', '.join(source_tables)}")
+                            view_context_parts.append(
+                                f"-- Source Tables: {', '.join(source_tables)}"
+                            )
                         if comment:
                             view_context_parts.append(f"-- Comment: {comment}")
                         if source_tables_summary:
-                            view_context_parts.append(f"-- Source Table Schemas:\n{source_tables_summary}")
+                            view_context_parts.append(
+                                f"-- Source Table Schemas:\n{source_tables_summary}"
+                            )
                         if source_table_ddls:
                             view_context_parts.append("-- Source Table DDLs:")
-                            for table_fqn, ddl_text in source_table_ddls.items():
-                                view_context_parts.append(f"-- {table_fqn}:\n{ddl_text}")
+                            for t_fqn, ddl_text in source_table_ddls.items():
+                                view_context_parts.append(f"-- {t_fqn}:\n{ddl_text}")
                         if definition:
                             view_context_parts.append(f"\n{definition}")
 
                         view_context = "\n".join(view_context_parts)
                         if len(view_context.strip()) > len(f"-- View: {fqn}"):
-                            documents_to_embed.append(Document(
-                                page_content=view_context,
-                                metadata={
-                                    **sql_base_metadata,
-                                },
-                            ))
+                            documents_to_embed.append(
+                                Document(
+                                    page_content=view_context,
+                                    metadata=sql_base_metadata,
+                                )
+                            )
                             self.logger.info(
-                                f"📊 Added SQL VIEW {'definition' if definition else 'metadata'} for embedding: {fqn}"
+                                f"📊 Added SQL VIEW for embedding: {fqn}"
                             )
                         else:
                             self.logger.warning(
-                                f"⚠️ SQL VIEW {fqn} has no embeddable content, skipping embedding"
+                                f"⚠️ SQL VIEW {fqn} has no embeddable content, skipping"
                             )
 
-                elif block_group_type in ["table"]:
+                elif block_group_type == "table":
                     table_data = block_group.data
                     if table_data:
                         table_summary = table_data.get("table_summary", "")
                         if table_summary:
-                            documents_to_embed.append(Document(
-                                page_content=table_summary,
-                                metadata={
-                                    "virtualRecordId": virtual_record_id,
-                                    "blockId": block_group.id,
-                                    "orgId": org_id,
-                                    "isBlock": False,
-                                    "isBlockGroup": True,
-                                },
-                            ))
+                            documents_to_embed.append(
+                                Document(
+                                    page_content=table_summary,
+                                    metadata={
+                                        "virtualRecordId": virtual_record_id,
+                                        "blockId": block_group.id,
+                                        "orgId": org_id,
+                                        "isBlock": False,
+                                        "isBlockGroup": True,
+                                    },
+                                )
+                            )
 
+            # ── SQL row blocks ──
             sql_rows_embedded = 0
             for block in sql_row_blocks:
                 block_data = block.data or {}
                 row_text = block_data.get("row_natural_language_text", "")
                 if row_text:
-                    documents_to_embed.append(Document(
-                        page_content=row_text,
-                        metadata={
-                            "virtualRecordId": virtual_record_id,
-                            "blockId": block.id,
-                            "orgId": org_id,
-                            "isBlock": True,
-                            "isBlockGroup": False,
-                        },
-                    ))
+                    documents_to_embed.append(
+                        Document(
+                            page_content=row_text,
+                            metadata={
+                                "virtualRecordId": virtual_record_id,
+                                "blockId": block.id,
+                                "orgId": org_id,
+                                "isBlock": True,
+                                "isBlockGroup": False,
+                            },
+                        )
+                    )
                     sql_rows_embedded += 1
-
             if sql_rows_embedded > 0:
                 self.logger.debug(f"📊 Added {sql_rows_embedded} SQL row(s) for embedding")
 
             # ── Regular table blocks ──
             for block in table_blocks:
-                if hasattr(block.type, 'value'):
-                    block_type = str(block.type.value).lower()
-                else:
-                    block_type = str(block.type).lower()
-
-                if block_type in ["table"]:
+                block_type = (
+                    str(block.type.value).lower()
+                    if hasattr(block.type, "value")
+                    else str(block.type).lower()
+                )
+                if block_type == "table":
                     table_data = block.data
                     if table_data:
                         table_summary = table_data.get("table_summary", "")
                         if table_summary:
-                            documents_to_embed.append(Document(
-                                page_content=table_summary,
-                                metadata={
-                                    "virtualRecordId": virtual_record_id,
-                                    "blockId": block.id,
-                                    "orgId": org_id,
-                                    "isBlock": False,
-                                    "isBlockGroup": True,
-                                },
-                            ))
+                            documents_to_embed.append(
+                                Document(
+                                    page_content=table_summary,
+                                    metadata={
+                                        "virtualRecordId": virtual_record_id,
+                                        "blockId": block.id,
+                                        "orgId": org_id,
+                                        "isBlock": False,
+                                        "isBlockGroup": True,
+                                    },
+                                )
+                            )
                 elif block_type == "table_row":
                     table_data = block.data
                     if table_data:
-                        table_row_text = table_data.get("row_natural_language_text")
-                        if table_row_text:
-                            documents_to_embed.append(Document(
-                                page_content=table_row_text,
-                                metadata={
-                                    "virtualRecordId": virtual_record_id,
-                                    "blockId": block.id,
-                                    "orgId": org_id,
-                                    "isBlock": True,
-                                    "isBlockGroup": False,
-                                },
-                            ))
+                        row_text = table_data.get("row_natural_language_text", "")
+                        if row_text:
+                            documents_to_embed.append(
+                                Document(
+                                    page_content=row_text,
+                                    metadata={
+                                        "virtualRecordId": virtual_record_id,
+                                        "blockId": block.id,
+                                        "orgId": org_id,
+                                        "isBlock": True,
+                                        "isBlockGroup": False,
+                                    },
+                                )
+                            )
 
+            # Record summary (only on fresh full index, not reconciliation/partial update)
             if record is not None and not (is_reconciliation or block_ids_to_delete):
                 await self._refresh_record_summary_documents(
                     documents_to_embed, record, org_id, record_id, virtual_record_id
@@ -1455,11 +1325,11 @@ class VectorStore(Transformer):
                 )
                 return True
 
-            # ── Create and store embeddings ──
+            # ── Embed and store ──
             if is_reconciliation:
+                # Partial update: no full delete; only changed blocks
                 langchain_docs = [d for d in documents_to_embed if isinstance(d, Document)]
                 image_chunks = [d for d in documents_to_embed if not isinstance(d, Document)]
-
                 if langchain_docs:
                     await self._process_document_chunks(langchain_docs, record_id)
                 if image_chunks:
@@ -1475,7 +1345,10 @@ class VectorStore(Transformer):
                 self.logger.debug(f"📊 Deleting {len(block_ids_to_delete)} removed blocks")
                 await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id)
 
-            self.logger.debug(f"✅ Indexing complete for record {record_id}: {len(documents_to_embed)} documents")
+            self.logger.debug(
+                f"✅ Indexing complete for record {record_id}: "
+                f"{len(documents_to_embed)} documents"
+            )
 
             await self._cleanup_orphaned_embeddings_if_needed(
                 record_id, virtual_record_id, record
@@ -1489,4 +1362,3 @@ class VectorStore(Transformer):
                 f"Unexpected error during indexing: {str(e)}",
                 details={"error_type": type(e).__name__},
             )
-

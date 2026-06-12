@@ -606,6 +606,75 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.services.vectorDb).to.equal('unhealthy')
     })
 
+    it('opensearch health uses https and basic auth when useSsl=true', async () => {
+      mockAppConfig.deployment.vectorDbType = 'opensearch'
+      mockAppConfig.vectorDbType = 'opensearch'
+      mockAppConfig.opensearch = {
+        host: 'os.example.com',
+        port: 9200,
+        username: 'admin',
+        password: 'secret',
+        useSsl: true,
+        verifyCerts: false,
+      }
+      router = createHealthRouter(container, cmContainer)
+
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      const axiosStub = sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, next)
+
+      const osCall = axiosStub.getCalls().find((c: any) =>
+        String(c.args[0]).includes('_cluster/health'),
+      )
+      expect(osCall).to.exist
+      expect(osCall!.args[0]).to.equal('https://os.example.com:9200/_cluster/health')
+      expect(osCall!.args[1].auth).to.deep.equal({ username: 'admin', password: 'secret' })
+    })
+
+    it('redis vector type marks vectorDb unhealthy when redis KV is unhealthy', async () => {
+      mockAppConfig.deployment.vectorDbType = 'redis'
+      mockAppConfig.vectorDbType = 'redis'
+      mockRedis.get.rejects(new Error('Redis down'))
+      router = createHealthRouter(container, cmContainer)
+
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.services.redis).to.equal('unhealthy')
+      expect(jsonArg.services.vectorDb).to.equal('unhealthy')
+    })
+
+    it('vectorDbType set but config block missing marks vectorDb unhealthy', async () => {
+      mockAppConfig.deployment.vectorDbType = 'opensearch'
+      mockAppConfig.vectorDbType = 'opensearch'
+      delete mockAppConfig.opensearch
+      router = createHealthRouter(container, cmContainer)
+
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.services.vectorDb).to.equal('unhealthy')
+    })
+
     it('should mark graphDb as unhealthy when arango returns non-200', async () => {
       const handler = findHandler('/', 'get')
       const res = mockRes()

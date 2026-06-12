@@ -92,13 +92,14 @@ class TestQdrantConfigFromDict:
         assert config.timeout == 60
 
     def test_from_dict_empty_uses_defaults(self):
+        # host defaults to "localhost" and port to 6333 for sensible connectivity
         config = QdrantConfig.from_dict({})
-        assert config.host == ""
-        assert config.port == 0
+        assert config.host == "localhost"
+        assert config.port == 6333
         assert config.api_key == ""
         assert config.prefer_grpc is True
         assert config.https is False
-        assert config.timeout == 180
+        assert config.timeout == 300
 
     def test_from_dict_partial(self):
         data = {"host": "partial-host", "port": 9999}
@@ -109,7 +110,7 @@ class TestQdrantConfigFromDict:
         assert config.api_key == ""
         assert config.prefer_grpc is True
         assert config.https is False
-        assert config.timeout == 180
+        assert config.timeout == 300
 
     def test_from_dict_extra_keys_ignored(self):
         data = {

@@ -45,6 +45,7 @@ export const configPaths = {
     mongodb: '/services/mongodb',
     arangodb: '/services/arangodb',
     qdrant: '/services/qdrant',
+    opensearch: '/services/opensearch',
   },
   keyValueStore: {
     redis: '/services/redis',

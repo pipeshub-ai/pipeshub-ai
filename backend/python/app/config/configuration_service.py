@@ -140,14 +140,38 @@ class ConfigurationService:
                     "port": int(os.getenv(RedisEnv.PORT, RedisDefaults.PORT)),
                     "password": redis_password if redis_password and redis_password.strip() else None
                 }
+        elif key == config_node_constants.REDIS_VECTOR.value:
+            # Dedicated Redis vector store config (falls back to REDIS_* env vars)
+            redis_vector_host = os.getenv("REDIS_VECTOR_HOST") or os.getenv(RedisEnv.HOST)
+            if redis_vector_host:
+                redis_password = os.getenv("REDIS_VECTOR_PASSWORD") or os.getenv(RedisEnv.PASSWORD, "")
+                return {
+                    "host": redis_vector_host,
+                    "port": int(os.getenv("REDIS_VECTOR_PORT", os.getenv(RedisEnv.PORT, RedisDefaults.PORT))),
+                    "password": redis_password if redis_password and redis_password.strip() else None,
+                    "db": 0,
+                }
         elif key == config_node_constants.QDRANT.value:
             # Qdrant configuration fallback
             qdrant_host = os.getenv("QDRANT_HOST")
             if qdrant_host:
                 return {
                     "host": qdrant_host,
-                    "grpcPort": int(os.getenv("QDRANT_GRPC_PORT", "6333")),
-                    "apiKey": os.getenv("QDRANT_API_KEY", "qdrant")
+                    "port": int(os.getenv("QDRANT_PORT", "6333")),
+                    "grpcPort": int(os.getenv("QDRANT_GRPC_PORT", "6334")),
+                    "apiKey": os.getenv("QDRANT_API_KEY", "qdrant"),
+                }
+        elif key == config_node_constants.OPENSEARCH.value:
+            # OpenSearch configuration fallback
+            opensearch_host = os.getenv("OPENSEARCH_HOST")
+            if opensearch_host:
+                return {
+                    "host": opensearch_host,
+                    "port": int(os.getenv("OPENSEARCH_PORT", "9200")),
+                    "username": os.getenv("OPENSEARCH_USERNAME", "admin"),
+                    "password": os.getenv("OPENSEARCH_PASSWORD", "admin"),
+                    "useSSL": os.getenv("OPENSEARCH_USE_SSL", "false").lower() == "true",
+                    "verifyCerts": os.getenv("OPENSEARCH_VERIFY_CERTS", "false").lower() == "true",
                 }
         return None
 
