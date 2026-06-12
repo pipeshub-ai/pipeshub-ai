@@ -2309,6 +2309,7 @@ async def create_agent(request: Request) -> JSONResponse:
         response_agent["webSearch"] = _format_web_search_for_response(
             response_agent.get("webSearch"),
         )
+        response_agent["createdBy"] = user_context["userId"]
 
         status = "partial_success" if failed_toolsets else "success"
         message = f"Agent created with warnings: {len(failed_toolsets)} toolset(s) failed" if failed_toolsets else "Agent created successfully"
@@ -2461,6 +2462,14 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         agent.pop("modelsEnriched", None)
         agent["webSearch"] = _format_web_search_for_response(agent.get("webSearch"))
 
+        creator_key = agent.get("createdBy")
+        if creator_key and creator_key != "system":
+            creator_doc = await services["graph_provider"].get_document(
+                str(creator_key), CollectionNames.USERS.value
+            )
+            if creator_doc and creator_doc.get("userId"):
+                agent["createdBy"] = creator_doc["userId"]
+
         return JSONResponse(
             status_code=200,
             content={
@@ -2515,9 +2524,34 @@ async def get_agents(
             agents = result.get("agents", [])
             total_items = int(result.get("totalItems", len(agents)))
 
+        creator_keys = {
+            str(agent["createdBy"])
+            for agent in agents
+            if isinstance(agent, dict)
+            and agent.get("createdBy")
+            and agent.get("createdBy") != "system"
+        }
+        creators_by_key: dict[str, dict] = {}
+        if creator_keys:
+            creator_docs = await services["graph_provider"].get_nodes_by_field_in(
+                CollectionNames.USERS.value,
+                "id",
+                list(creator_keys),
+                return_fields=["id", "userId"],
+            )
+            for doc in creator_docs or []:
+                if doc.get("id") and doc.get("userId"):
+                    creators_by_key[str(doc["id"])] = doc
+
         for agent in agents:
-            if isinstance(agent, dict):
-                agent["webSearch"] = _format_web_search_for_response(agent.get("webSearch"))
+            if not isinstance(agent, dict):
+                continue
+            agent["webSearch"] = _format_web_search_for_response(agent.get("webSearch"))
+            creator_key = agent.get("createdBy")
+            if creator_key and creator_key != "system":
+                creator_doc = creators_by_key.get(str(creator_key))
+                if creator_doc and creator_doc.get("userId"):
+                    agent["createdBy"] = creator_doc["userId"]
 
         # Build pagination envelope
         current_page = page

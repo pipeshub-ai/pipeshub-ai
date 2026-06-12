@@ -9,6 +9,7 @@ import pytest
 from app.config.constants.arangodb import (
     CollectionNames,
     EventTypes,
+    MimeTypes,
     OriginTypes,
     ProgressStatus,
     RecordTypes,
@@ -1579,6 +1580,329 @@ class TestFullHappyPath:
 
         assert len(events) == 2
         gp.update_queued_duplicates_status.assert_awaited_once()
+
+
+# ===================================================================
+# Folder record skip
+# ===================================================================
+
+class TestFolderRecordSkip:
+    """Folder / tree-node records are marked COMPLETED without indexing."""
+
+    @pytest.mark.asyncio
+    async def test_folder_mime_type_skips_indexing(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": MimeTypes.FOLDER.value,
+            "isFile": True,
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record, record])
+        gp.batch_upsert_nodes = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        payload = {
+            "recordId": "r1",
+            "mimeType": MimeTypes.FOLDER.value,
+            "extension": "unknown",
+        }
+        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 2
+        gp.batch_upsert_nodes.assert_awaited()
+        doc = gp.batch_upsert_nodes.call_args[0][0][0]
+        assert doc["indexingStatus"] == ProgressStatus.COMPLETED.value
+        assert doc["reason"] == "Folder record — no content to index"
+
+    @pytest.mark.asyncio
+    async def test_google_drive_folder_mime_skips_indexing(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record, record])
+        gp.batch_upsert_nodes = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        payload = {
+            "recordId": "r1",
+            "mimeType": MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+            "extension": "unknown",
+        }
+        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 2
+
+    @pytest.mark.asyncio
+    async def test_is_file_false_skips_indexing(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "application/pdf",
+            "isFile": False,
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record, record])
+        gp.batch_upsert_nodes = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        payload = {
+            "recordId": "r1",
+            "mimeType": "application/pdf",
+            "extension": "pdf",
+        }
+        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 2
+        gp.batch_upsert_nodes.assert_awaited()
+
+
+# ===================================================================
+# CODE_FILE handling
+# ===================================================================
+
+class TestCodeFileHandling:
+    """Tests for CODE_FILE record type extension gating."""
+
+    @pytest.mark.asyncio
+    async def test_unsupported_code_file_extension(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "recordType": RecordTypes.CODE_FILE.value,
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "text/plain",
+            "recordName": "legacy.cobol",
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.batch_upsert_nodes = AsyncMock()
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        payload = {
+            "recordId": "r1",
+            "mimeType": "text/plain",
+            "extension": "unknown",
+            "recordName": "legacy.cobol",
+        }
+        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 2
+        doc = gp.batch_upsert_nodes.call_args[0][0][0]
+        assert doc["indexingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+
+    @pytest.mark.asyncio
+    async def test_supported_code_file_proceeds_to_indexing(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "recordType": RecordTypes.CODE_FILE.value,
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "text/plain",
+            "recordName": "main.py",
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+            {"event": "indexing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "orgId": "org-1",
+            "mimeType": "text/plain",
+            "extension": "unknown",
+            "recordName": "main.py",
+            "signedUrl": "https://example.com/main.py",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"print('hello')"
+            events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 2
+        mock_dl.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_code_file_extension_from_db_record_name(self):
+        """Extension derived from record.recordName when payload omits recordName."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "recordType": RecordTypes.CODE_FILE.value,
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "text/plain",
+            "recordName": "index.ts",
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "orgId": "org-1",
+            "mimeType": "text/plain",
+            "extension": "unknown",
+            "signedUrl": "https://example.com/index.ts",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"export {}"
+            events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) >= 1
+
+
+# ===================================================================
+# Reconciliation-enabled update/reindex
+# ===================================================================
+
+class TestReconciliationPath:
+    """UPDATE/REINDEX events skip embedding deletion for reconciliation types."""
+
+    @pytest.mark.asyncio
+    async def test_reindex_reconciliation_mime_skips_delete(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        sql_mime = MimeTypes.SQL_TABLE.value
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": sql_mime,
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.delete_embeddings = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "orgId": "org-1",
+            "mimeType": sql_mime,
+            "extension": "sql_table",
+            "signedUrl": "https://example.com/table",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"data"
+            await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
+
+        pipeline.delete_embeddings.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reindex_non_reconciliation_deletes_embeddings(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        pptx_mime = MimeTypes.PPTX.value
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": pptx_mime,
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.delete_embeddings = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "virtualRecordId": "vr1",
+            "orgId": "org-1",
+            "mimeType": pptx_mime,
+            "extension": "pptx",
+            "signedUrl": "https://example.com/file.pptx",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"pptx"
+            await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
+
+        pipeline.delete_embeddings.assert_awaited_once_with("r1", "vr1")
+
+
+# ===================================================================
+# Signed URL exception fallback (not just None return)
+# ===================================================================
+
+class TestSignedUrlExceptionFallback:
+    """Signed URL download exception falls through to connector streaming."""
+
+    @pytest.mark.asyncio
+    async def test_signed_url_exception_falls_back_to_connector(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "application/pdf",
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+            {"event": "indexing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "virtualRecordId": "vr1",
+            "orgId": "org-1",
+            "mimeType": "application/pdf",
+            "extension": "pdf",
+            "signedUrl": "https://example.com/file.pdf",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.side_effect = RuntimeError("signed url timeout")
+            with patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock) as mock_jwt:
+                mock_jwt.return_value = "token"
+                with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as mock_api:
+                    mock_api.return_value = {"data": b"fallback bytes"}
+                    handler.config_service.get_config = AsyncMock(
+                        return_value={"connectors": {"endpoint": "http://localhost:8088"}}
+                    )
+                    events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 2
+        mock_api.assert_awaited_once()
 
 
 # ===================================================================

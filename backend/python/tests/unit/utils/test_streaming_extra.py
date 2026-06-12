@@ -1927,14 +1927,13 @@ class TestOpikConfigureImportFailure:
         monkeypatch.setenv("OPIK_WORKSPACE", "test-ws")
 
         opik_mod = types.ModuleType("opik")
-
-        def configure(**kwargs):
-            raise RuntimeError("opik unavailable")
-
-        opik_mod.configure = configure
         integrations = types.ModuleType("opik.integrations")
         langchain_int = types.ModuleType("opik.integrations.langchain")
-        langchain_int.OpikTracer = MagicMock()
+
+        def _failing_opik_tracer(*args, **kwargs):
+            raise RuntimeError("opik unavailable")
+
+        langchain_int.OpikTracer = _failing_opik_tracer
 
         sys.modules["opik"] = opik_mod
         sys.modules["opik.integrations"] = integrations

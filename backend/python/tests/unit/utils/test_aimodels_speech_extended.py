@@ -184,6 +184,9 @@ class TestGeminiSttMime:
     def test_octet_stream_without_filename_defaults_webm(self) -> None:
         assert _gemini_stt_mime("application/octet-stream") == "audio/webm"
 
+    def test_octet_stream_unknown_extension_defaults_to_webm(self):
+        assert _gemini_stt_mime("application/octet-stream", "clip.xyz") == "audio/webm"
+
 
 # ---------------------------------------------------------------------------
 # Adapter __init__ defaults
@@ -428,6 +431,131 @@ class TestGeminiTTSSynthesize:
                 await adapter.synthesize("x")
 
     @pytest.mark.asyncio
+    async def test_non_200_without_error_message(self) -> None:
+        response = _http_response(
+            status_code=503,
+            json_payload={"error": {"code": 503}},
+            text="service unavailable",
+        )
+        factory, _ = _fake_client_factory(response)
+        adapter = _GeminiTTSAdapter(model="m", api_key="k")
+        with patch("httpx.AsyncClient", side_effect=factory):
+            with pytest.raises(RuntimeError, match="upstream 503"):
+                await adapter.synthesize("x")
+
+    @pytest.mark.asyncio
+    async def test_non_200_json_parse_failure_in_error_handler(self) -> None:
+        response = _http_response(status_code=500, json_raises=True, text="raw error")
+        factory, _ = _fake_client_factory(response)
+        adapter = _GeminiTTSAdapter(model="m", api_key="k")
+        with patch("httpx.AsyncClient", side_effect=factory):
+            with pytest.raises(RuntimeError, match="upstream 500"):
+                await adapter.synthesize("x")
+
+    @pytest.mark.asyncio
+    async def test_non_200_non_dict_json_body(self) -> None:
+        response = _http_response(
+            status_code=400,
+            json_payload=["not", "a", "dict"],
+            text='["not","a","dict"]',
+        )
+        factory, _ = _fake_client_factory(response)
+        adapter = _GeminiTTSAdapter(model="m", api_key="k")
+        with patch("httpx.AsyncClient", side_effect=factory):
+            with pytest.raises(RuntimeError, match=r"upstream 400\)$"):
+                await adapter.synthesize("x")
+
+    @pytest.mark.asyncio
+    async def test_non_200_error_field_not_dict(self) -> None:
+        response = _http_response(
+            status_code=400,
+            json_payload={"error": "plain string"},
+            text='{"error":"plain string"}',
+        )
+        factory, _ = _fake_client_factory(response)
+        adapter = _GeminiTTSAdapter(model="m", api_key="k")
+        with patch("httpx.AsyncClient", side_effect=factory):
+            with pytest.raises(RuntimeError, match=r"upstream 400\)$"):
+                await adapter.synthesize("x")
+
+    @pytest.mark.asyncio
+    async def test_candidate_not_dict_raises_missing_inline(self) -> None:
+        response = _http_response(
+            status_code=200,
+            json_payload={"candidates": ["not-a-dict"]},
+        )
+        factory, _ = _fake_client_factory(response)
+        adapter = _GeminiTTSAdapter(model="m", api_key="k")
+        with patch("httpx.AsyncClient", side_effect=factory):
+            with pytest.raises(RuntimeError, match="inline audio data"):
+                await adapter.synthesize("x")
+
+    @pytest.mark.asyncio
+    async def test_missing_candidates_key_raises(self) -> None:
+        response = _http_response(status_code=200, json_payload={})
+        factory, _ = _fake_client_factory(response)
+        adapter = _GeminiTTSAdapter(model="m", api_key="k")
+        with patch("httpx.AsyncClient", side_effect=factory):
+            with pytest.raises(RuntimeError, match="inline audio data"):
+                await adapter.synthesize("x")
+
+    @pytest.mark.asyncio
+    async def test_empty_candidates_list_raises(self) -> None:
+        response = _http_response(status_code=200, json_payload={"candidates": []})
+        factory, _ = _fake_client_factory(response)
+        adapter = _GeminiTTSAdapter(model="m", api_key="k")
+        with patch("httpx.AsyncClient", side_effect=factory):
+            with pytest.raises(RuntimeError, match="inline audio data"):
+                await adapter.synthesize("x")
+
+    @pytest.mark.asyncio
+    async def test_inline_data_snake_case_key(self) -> None:
+        pcm = b"\x01\x00\x02\x00"
+        response = _http_response(
+            status_code=200,
+            json_payload={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"inline_data": {"data": base64.b64encode(pcm).decode("ascii")}},
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+        factory, _ = _fake_client_factory(response)
+        adapter = _GeminiTTSAdapter(model="m", api_key="k")
+        with patch("httpx.AsyncClient", side_effect=factory):
+            out = await adapter.synthesize("hi", response_format="pcm")
+        assert out == pcm
+
+    @pytest.mark.asyncio
+    async def test_non_dict_part_skipped(self) -> None:
+        pcm = b"\x01\x00"
+        response = _http_response(
+            status_code=200,
+            json_payload={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                "not-a-dict",
+                                {"inlineData": {"data": base64.b64encode(pcm).decode("ascii")}},
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+        factory, _ = _fake_client_factory(response)
+        adapter = _GeminiTTSAdapter(model="m", api_key="k")
+        with patch("httpx.AsyncClient", side_effect=factory):
+            out = await adapter.synthesize("hi", response_format="pcm")
+        assert out == pcm
+
+    @pytest.mark.asyncio
     async def test_missing_inline_data_raises(self) -> None:
         response = _http_response(
             status_code=200,
@@ -598,6 +726,76 @@ class TestGeminiSTTTranscribe:
             with pytest.raises(RuntimeError, match="non-JSON response"):
                 await adapter.transcribe(b"x")
 
+    @pytest.mark.asyncio
+    async def test_non_200_without_error_message(self) -> None:
+        response = _http_response(
+            status_code=502,
+            json_payload={"error": {"status": "UNAVAILABLE"}},
+            text="bad gateway",
+        )
+        factory, _ = _fake_client_factory(response)
+        adapter = _GeminiSTTAdapter(model="m", api_key="k")
+        with patch("httpx.AsyncClient", side_effect=factory):
+            with pytest.raises(RuntimeError, match="upstream 502"):
+                await adapter.transcribe(b"x")
+
+    @pytest.mark.asyncio
+    async def test_non_200_json_parse_failure_in_error_handler(self) -> None:
+        response = _http_response(status_code=500, json_raises=True, text="raw error")
+        factory, _ = _fake_client_factory(response)
+        adapter = _GeminiSTTAdapter(model="m", api_key="k")
+        with patch("httpx.AsyncClient", side_effect=factory):
+            with pytest.raises(RuntimeError, match="upstream 500"):
+                await adapter.transcribe(b"x")
+
+    @pytest.mark.asyncio
+    async def test_non_200_non_dict_json_body(self) -> None:
+        response = _http_response(
+            status_code=400,
+            json_payload=["not", "a", "dict"],
+            text='["not","a","dict"]',
+        )
+        factory, _ = _fake_client_factory(response)
+        adapter = _GeminiSTTAdapter(model="m", api_key="k")
+        with patch("httpx.AsyncClient", side_effect=factory):
+            with pytest.raises(RuntimeError, match=r"upstream 400\)$"):
+                await adapter.transcribe(b"x")
+
+    @pytest.mark.asyncio
+    async def test_non_200_error_field_not_dict(self) -> None:
+        response = _http_response(
+            status_code=400,
+            json_payload={"error": "plain string"},
+            text='{"error":"plain string"}',
+        )
+        factory, _ = _fake_client_factory(response)
+        adapter = _GeminiSTTAdapter(model="m", api_key="k")
+        with patch("httpx.AsyncClient", side_effect=factory):
+            with pytest.raises(RuntimeError, match=r"upstream 400\)$"):
+                await adapter.transcribe(b"x")
+
+    @pytest.mark.asyncio
+    async def test_non_dict_part_skipped(self) -> None:
+        response = _http_response(
+            status_code=200,
+            json_payload={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                "not-a-dict",
+                                {"text": "only text"},
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+        factory, _ = _fake_client_factory(response)
+        adapter = _GeminiSTTAdapter(model="m", api_key="k")
+        with patch("httpx.AsyncClient", side_effect=factory):
+            assert await adapter.transcribe(b"x") == "only text"
+
 
 # ---------------------------------------------------------------------------
 # _WisprFlowSTTAdapter.transcribe + _transcode_to_wispr_wav
@@ -651,6 +849,50 @@ class TestWisprFlowSTT:
             new=AsyncMock(return_value=b"RIFFxxxx"),
         ), patch("httpx.AsyncClient", side_effect=factory):
             with pytest.raises(RuntimeError, match="bad key"):
+                await adapter.transcribe(b"x")
+
+    @pytest.mark.asyncio
+    async def test_http_error_with_message_field(self) -> None:
+        response = _http_response(
+            status_code=403,
+            json_payload={"message": "forbidden"},
+            text="forbidden body",
+        )
+        factory, _ = _fake_client_factory(response)
+        adapter = _WisprFlowSTTAdapter(model="flow", api_key="wk")
+        with patch(
+            "app.utils.aimodels._transcode_to_wispr_wav",
+            new=AsyncMock(return_value=b"RIFFxxxx"),
+        ), patch("httpx.AsyncClient", side_effect=factory):
+            with pytest.raises(RuntimeError, match="forbidden"):
+                await adapter.transcribe(b"x")
+
+    @pytest.mark.asyncio
+    async def test_http_error_json_parse_failure_in_error_handler(self) -> None:
+        response = _http_response(status_code=500, json_raises=True, text="raw error")
+        factory, _ = _fake_client_factory(response)
+        adapter = _WisprFlowSTTAdapter(model="flow", api_key="wk")
+        with patch(
+            "app.utils.aimodels._transcode_to_wispr_wav",
+            new=AsyncMock(return_value=b"RIFFxxxx"),
+        ), patch("httpx.AsyncClient", side_effect=factory):
+            with pytest.raises(RuntimeError, match="upstream 500"):
+                await adapter.transcribe(b"x")
+
+    @pytest.mark.asyncio
+    async def test_http_error_non_dict_json_body(self) -> None:
+        response = _http_response(
+            status_code=400,
+            json_payload=["not", "a", "dict"],
+            text='["not","a","dict"]',
+        )
+        factory, _ = _fake_client_factory(response)
+        adapter = _WisprFlowSTTAdapter(model="flow", api_key="wk")
+        with patch(
+            "app.utils.aimodels._transcode_to_wispr_wav",
+            new=AsyncMock(return_value=b"RIFFxxxx"),
+        ), patch("httpx.AsyncClient", side_effect=factory):
+            with pytest.raises(RuntimeError, match=r"upstream 400\)$"):
                 await adapter.transcribe(b"x")
 
     @pytest.mark.asyncio
@@ -816,3 +1058,102 @@ class TestWhisperLocalSTT:
         with patch("builtins.__import__", side_effect=fake_import):
             with pytest.raises(RuntimeError, match="faster-whisper"):
                 await adapter.transcribe(b"audio")
+
+    @pytest.mark.asyncio
+    async def test_download_root_passed_to_whisper_model(
+        self, _clear_whisper_cache
+    ) -> None:
+        calls: list[dict] = []
+
+        def _ctor(model_name: str, **kwargs: Any) -> MagicMock:
+            calls.append(kwargs)
+            instance = MagicMock()
+            instance.transcribe = MagicMock(
+                return_value=(iter([SimpleNamespace(text="ok")]), SimpleNamespace())
+            )
+            return instance
+
+        fake_module = MagicMock()
+        fake_module.WhisperModel = _ctor
+        sys.modules["faster_whisper"] = fake_module
+        try:
+            adapter = _WhisperLocalSTTAdapter(
+                model="base",
+                device="cpu",
+                compute_type="int8",
+                download_root="/tmp/whisper-models",
+            )
+            out = await adapter.transcribe(b"audio")
+        finally:
+            sys.modules.pop("faster_whisper", None)
+
+        assert out == "ok"
+        assert calls[0]["download_root"] == "/tmp/whisper-models"
+
+    @pytest.mark.asyncio
+    async def test_empty_segment_text_skipped(
+        self, _clear_whisper_cache
+    ) -> None:
+        fake_segments = [
+            SimpleNamespace(text=""),
+            SimpleNamespace(text="   "),
+            SimpleNamespace(text="hello"),
+        ]
+        model_instance = MagicMock()
+        model_instance.transcribe = MagicMock(
+            return_value=(iter(fake_segments), SimpleNamespace())
+        )
+
+        def _ctor(*_args: Any, **_kwargs: Any) -> MagicMock:
+            return model_instance
+
+        fake_module = MagicMock()
+        fake_module.WhisperModel = _ctor
+        sys.modules["faster_whisper"] = fake_module
+        try:
+            adapter = _WhisperLocalSTTAdapter(
+                model="base", device="cpu", compute_type="int8"
+            )
+            out = await adapter.transcribe(b"audio")
+        finally:
+            sys.modules.pop("faster_whisper", None)
+
+        assert out == "hello"
+
+
+# ---------------------------------------------------------------------------
+# _OpenAISTTAdapter — dict response + no language kwarg
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAISTTExtended:
+    @pytest.mark.asyncio
+    async def test_dict_response_text_extracted(self) -> None:
+        adapter = _OpenAISTTAdapter(model="whisper-1", api_key="sk-test")
+        fake_client = SimpleNamespace(
+            audio=SimpleNamespace(
+                transcriptions=SimpleNamespace(
+                    create=AsyncMock(return_value={"text": "from dict"})
+                )
+            ),
+            close=AsyncMock(),
+        )
+        with patch("openai.AsyncOpenAI", return_value=fake_client):
+            out = await adapter.transcribe(b"audio", mime="audio/wav")
+        assert out == "from dict"
+
+    @pytest.mark.asyncio
+    async def test_no_language_omits_kwarg(self) -> None:
+        adapter = _OpenAISTTAdapter(model="whisper-1", api_key="sk-test")
+        fake_client = SimpleNamespace(
+            audio=SimpleNamespace(
+                transcriptions=SimpleNamespace(
+                    create=AsyncMock(return_value=SimpleNamespace(text="hi"))
+                )
+            ),
+            close=AsyncMock(),
+        )
+        with patch("openai.AsyncOpenAI", return_value=fake_client):
+            await adapter.transcribe(b"audio")
+        call_kwargs = fake_client.audio.transcriptions.create.await_args.kwargs
+        assert "language" not in call_kwargs

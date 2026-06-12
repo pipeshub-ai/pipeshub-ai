@@ -19,9 +19,13 @@ import { useTeamsStore } from '../store';
 import { TeamsApi } from '../api';
 import type { TeamMember, TeamMemberRole } from '../types';
 import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
-import { TEAM_ROLE_LABELS } from '../constants';
-import { UsersApi } from '../../users/api';
+import { TEAM_ROLE_LABELS, normalizeTeamMemberRole } from '../constants';
 import { RoleDropdownMenu } from '@/app/components/share';
+
+/** Min addable users to prefetch before stopping auto-pagination. */
+const MIN_ADDABLE_USER_BUFFER = 25;
+/** Cap auto-prefetch pages when client-side member filtering leaves sparse results. */
+const MAX_ADD_USER_PREFETCH_PAGES = 10;
 
 // ========================================
 // Component
@@ -57,7 +61,7 @@ export function TeamDetailSidebar({
 
   const [isDeleting, setIsDeleting] = useState(false);
   const [addMemberRole, setAddMemberRole] = useState<TeamMemberRole>('READER');
-  // Pending per-member role updates (applied on Save Edits as updateUserRoles)
+  // Pending per-member role updates (Mongo userId; applied on Save as updateUserRoles)
   const [pendingUpdateRoles, setPendingUpdateRoles] = useState<Map<string, TeamMemberRole>>(
     new Map()
   );
@@ -69,7 +73,6 @@ export function TeamDetailSidebar({
   const membersListRef = useRef<PaginatedMembersListHandle>(null);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [existingMemberIds, setExistingMemberIds] = useState<Set<string>>(new Set());
-  const [creatorUser, setCreatorUser] = useState<{ id: string; name?: string; email?: string; profilePicture?: string } | null>(null);
   // Prefer the profile store for identity; auth store user is not always
   // populated after refresh in some routes.
   const normalizedCurrentUserId = (profile?.userId ?? currentUser?.id ?? '').trim();
@@ -107,13 +110,13 @@ export function TeamDetailSidebar({
     }
 
     let cancelled = false;
-    const seed = new Set((detailTeam.members ?? []).map((m) => m.id));
+    const seed = new Set((detailTeam.members ?? []).map((m) => m.userId));
 
     const loadAllMemberIds = async () => {
       try {
         const pageSize = 100;
         const first = await TeamsApi.getTeamUsers(detailTeam.id, { page: 1, limit: pageSize });
-        first.members.forEach((m) => seed.add(m.id));
+        first.members.forEach((m) => seed.add(m.userId));
 
         const totalPages = Math.max(
           1,
@@ -128,7 +131,7 @@ export function TeamDetailSidebar({
             )
           );
           for (const res of rest) {
-            res.members.forEach((m) => seed.add(m.id));
+            res.members.forEach((m) => seed.add(m.userId));
           }
         }
       } catch {
@@ -143,34 +146,6 @@ export function TeamDetailSidebar({
       cancelled = true;
     };
   }, [isDetailPanelOpen, detailTeam, isEditMode]);
-
-  // Resolve "Created By" by graph UUID from users API.
-  useEffect(() => {
-    if (!isDetailPanelOpen || !detailTeam?.createdBy) {
-      setCreatorUser(null);
-      return;
-    }
-
-    let cancelled = false;
-    UsersApi.getGraphUsersByIds([detailTeam.createdBy]).then((resolved) => {
-      if (cancelled) return;
-      const user = resolved[detailTeam.createdBy];
-      if (!user) {
-        setCreatorUser(null);
-        return;
-      }
-      setCreatorUser({
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        profilePicture: user.profilePicture,
-      });
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isDetailPanelOpen, detailTeam?.createdBy]);
 
   // Track member UUIDs marked for removal (deferred until Save Edits)
   const [pendingRemoveUserIds, setPendingRemoveUserIds] = useState<Set<string>>(
@@ -193,27 +168,49 @@ export function TeamDetailSidebar({
     options: userOptions,
     isLoading: userFilterLoading,
     hasMore: userFilterHasMore,
+    loadedPage: userOptionsLoadedPage,
     onSearch: handleUserSearch,
     onLoadMore: handleUserLoadMore,
   } = usePaginatedUserOptions({
     enabled: isDetailPanelOpen && isEditMode,
-    idField: 'id',
-    source: 'graph',
+    idField: 'userId',
+    limit: 50,
   });
 
-  // Exclude already-added members from the options
+  // Exclude users who are already on the team (keep pending-add selections in the
+  // dropdown so row checkboxes can tick/untick like create-team-form).
   const availableUserOptions: CheckboxOption[] = useMemo(() => {
     if (!detailTeam) return [];
-    const memberUuids = new Set(existingMemberIds);
+    const memberMongoIds = new Set(existingMemberIds);
     // Keep local page data merged in too (helps before full fetch finishes).
-    teamMembers.forEach((m) => memberUuids.add(m.id));
-    // Do not show users already selected in "Add Members".
-    const pendingAddIds = new Set(editAddUserIds);
+    teamMembers.forEach((m) => memberMongoIds.add(m.userId));
 
-    return userOptions.filter(
-      (o) => !memberUuids.has(o.id) && !pendingAddIds.has(o.id)
-    );
-  }, [userOptions, teamMembers, existingMemberIds, editAddUserIds, detailTeam]);
+    return userOptions.filter((o) => !memberMongoIds.has(o.id));
+  }, [userOptions, teamMembers, existingMemberIds, detailTeam]);
+
+  // Client-side member filtering can leave sparse pages (e.g. "All" team). Keep
+  // prefetching org user pages until the addable buffer is full or pages run out.
+  useEffect(() => {
+    if (
+      !isEditMode ||
+      !isDetailPanelOpen ||
+      userFilterLoading ||
+      !userFilterHasMore ||
+      availableUserOptions.length >= MIN_ADDABLE_USER_BUFFER ||
+      userOptionsLoadedPage >= MAX_ADD_USER_PREFETCH_PAGES
+    ) {
+      return;
+    }
+    handleUserLoadMore();
+  }, [
+    isEditMode,
+    isDetailPanelOpen,
+    userFilterLoading,
+    userFilterHasMore,
+    availableUserOptions.length,
+    userOptionsLoadedPage,
+    handleUserLoadMore,
+  ]);
 
   // Prune pending-add role + cache entries when a user is deselected
   useEffect(() => {
@@ -317,7 +314,7 @@ export function TeamDetailSidebar({
     []
   );
 
-  // Stage a per-member role change (applied on Save Edits as updateUserRoles)
+  // Stage a per-member role change (Mongo userId; applied on Save as updateUserRoles)
   const handleMemberRoleChange = useCallback(
     (memberId: string, role: TeamMemberRole, originalRole: TeamMemberRole | string) => {
       setPendingUpdateRoles((prev) => {
@@ -459,14 +456,16 @@ export function TeamDetailSidebar({
     t,
   ]);
 
+  const canEditTeam = Boolean(detailTeam?.canEdit);
+
   // Handle footer action
   const handlePrimaryClick = useCallback(() => {
     if (isEditMode) {
       handleSaveEdits();
-    } else {
+    } else if (canEditTeam) {
       enterEditMode();
     }
-  }, [isEditMode, handleSaveEdits, enterEditMode]);
+  }, [isEditMode, canEditTeam, handleSaveEdits, enterEditMode]);
 
   const handleSecondaryClick = useCallback(() => {
     if (isEditMode) {
@@ -478,9 +477,10 @@ export function TeamDetailSidebar({
 
   const panelTitle = detailTeam?.name || 'Team';
 
+  const creatorUser = detailTeam?.createdByUser ?? null;
   const creatorEmail = (creatorUser?.email ?? '').trim().toLowerCase();
   const isCreatorSelf = Boolean(
-    (normalizedCurrentUserId && creatorUser?.id === normalizedCurrentUserId) ||
+    (normalizedCurrentUserId && creatorUser?.userId === normalizedCurrentUserId) ||
     (normalizedCurrentUserEmail && creatorEmail === normalizedCurrentUserEmail)
   );
 
@@ -502,6 +502,7 @@ export function TeamDetailSidebar({
       primaryLoading={isSavingEdit}
       onPrimaryClick={handlePrimaryClick}
       onSecondaryClick={handleSecondaryClick}
+      hideFooter={!canEditTeam && !isEditMode}
     >
       {/* Main card containing form + sections */}
       <Box
@@ -634,7 +635,7 @@ export function TeamDetailSidebar({
               email={creatorUser.email}
               avatarSize={32}
               isSelf={isCreatorSelf}
-              profilePicture={creatorUser.profilePicture}
+              profilePicture={creatorUser.profilePicture ?? undefined}
             />
           ) : (
             <Text size="2" style={{ color: 'var(--slate-11)' }}>
@@ -664,7 +665,7 @@ export function TeamDetailSidebar({
           </Text>
 
           <PaginatedMembersList<TeamMember>
-            key={detailTeam?.id}
+            key={`${detailTeam?.id}-${isEditMode ? 'edit' : 'view'}`}
             ref={membersListRef}
             fetcher={fetchTeamMembersFn}
             keyExtractor={(m) => m.id}
@@ -674,8 +675,11 @@ export function TeamDetailSidebar({
             listClassName="team-member-scroll-area"
             onFetched={(items) => setTeamMembers(items)}
             renderItem={(member) => {
-              const isPendingRemove = pendingRemoveUserIds.has(member.id);
-              const effectiveRole = (pendingUpdateRoles.get(member.id) ?? member.role) as TeamMemberRole | string;
+              const isPendingRemove = pendingRemoveUserIds.has(member.userId);
+              const effectiveRole = normalizeTeamMemberRole(
+                pendingUpdateRoles.get(member.userId) ?? member.role,
+                member.isOwner
+              );
               const isCurrentMemberUser = isSameAsCurrentUser(member);
               const canEditRole = isEditMode && !isCurrentMemberUser && !isPendingRemove;
               return (
@@ -690,7 +694,12 @@ export function TeamDetailSidebar({
                 >
                   <Box style={{ flex: 1, minWidth: 0 }}>
                     <AvatarCell
-                      name={member.userName || member.userEmail || 'Unknown'}
+                      name={
+                        member.userName?.trim() ||
+                        member.userEmail?.trim() ||
+                        member.userId ||
+                        'Unknown'
+                      }
                       email={member.userEmail}
                       avatarSize={28}
                       isSelf={isCurrentMemberUser}
@@ -703,9 +712,9 @@ export function TeamDetailSidebar({
                         role={effectiveRole as TeamMemberRole}
                         onRoleChange={(r) =>
                           handleMemberRoleChange(
-                            member.id,
+                            member.userId,
                             r as TeamMemberRole,
-                            member.role as TeamMemberRole
+                            normalizeTeamMemberRole(member.role, member.isOwner)
                           )
                         }
                         labels={TEAM_ROLE_LABELS}
@@ -718,7 +727,7 @@ export function TeamDetailSidebar({
                     {isEditMode && !isCurrentMemberUser && (
                       <Text
                         size="1"
-                        onClick={() => handleRemoveUser(member.id)}
+                        onClick={() => handleRemoveUser(member.userId)}
                         style={{
                           color: isPendingRemove
                             ? 'var(--accent-11)'
@@ -856,7 +865,7 @@ export function TeamDetailSidebar({
       </Box>
 
       {/* Delete Team section (edit mode only) — separate box */}
-      {isEditMode && detailTeam?.canDelete && (
+      {isEditMode && detailTeam?.canDelete && detailTeam.id !== `all_${detailTeam.orgId}` && (
         <Box
           style={{
             marginTop: 'var(--space-4)',

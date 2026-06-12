@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.models.blocks import BlocksContainer
-from app.modules.parsers.pdf.docling import DoclingProcessor
+from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.utils.logger import create_logger
 
 PDF_PROCESSING_TIMEOUT_SECONDS = 40 * 60

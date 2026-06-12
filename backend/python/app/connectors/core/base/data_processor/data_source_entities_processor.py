@@ -371,7 +371,7 @@ class DataSourceEntitiesProcessor:
             record_group_id if record group was found/created, None otherwise
         """
 
-        if record.external_record_group_id is None:
+        if not record.external_record_group_id:
             return None
 
         record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,

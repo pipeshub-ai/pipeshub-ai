@@ -24,3 +24,15 @@ export const TEAM_ROLE_LABELS: Record<
   WRITER: { label: 'Writer', description: 'Can view and edit team resources' },
   READER: { label: 'Reader', description: 'Can view team resources' },
 };
+
+/** Coerce API/pending role values to a known team role (avoids RoleDropdownMenu crashes). */
+export function normalizeTeamMemberRole(
+  role: unknown,
+  isOwner?: boolean
+): TeamMemberRole {
+  const upper = typeof role === 'string' ? role.trim().toUpperCase() : '';
+  if (upper === 'OWNER' || upper === 'WRITER' || upper === 'READER') {
+    return upper;
+  }
+  return isOwner ? 'OWNER' : 'READER';
+}

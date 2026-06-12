@@ -368,6 +368,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error shutting down PDF OCR detection pool: {e}")
 
+    try:
+        from app.modules.parsers.pdf.pdf_rasterizer import shutdown_pdf_raster_pool
+        if shutdown_pdf_raster_pool():
+            logger.info("✅ PDF rasterization process pool shut down")
+    except Exception as e:
+        logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
+
 
 app = FastAPI(
     lifespan=lifespan,

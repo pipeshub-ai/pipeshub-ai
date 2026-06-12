@@ -77,6 +77,40 @@ class ConfluenceDataSource:
     def get_data_source(self) -> 'ConfluenceDataSource':
         return self
 
+    def _resolve_attachment_download_url(self, download_path: str) -> str:
+        """Resolve an attachment ``_links.download`` path to a full URL.
+
+        Data Center returns paths like ``/download/attachments/{pageId}/{file}``
+        relative to the Confluence site origin (not ``/rest/api``).
+        """
+        if download_path.startswith("http://") or download_path.startswith("https://"):
+            return download_path
+        parsed = urlparse(self.base_url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        if download_path.startswith("/"):
+            return f"{origin}{download_path}"
+        return f"{self.base_url.rstrip('/')}/{download_path}"
+
+    async def _stream_download_url(
+        self,
+        download_url: str,
+        chunk_size: int = 8192,
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream bytes from a download URL using the configured client auth headers."""
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+        auth_headers = self._client.headers.copy()
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            async with client.stream(
+                "GET",
+                download_url,
+                headers=auth_headers,
+                timeout=300.0,
+            ) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+                    yield chunk
+
     async def download_attachment(
         self,
         parent_page_id: str,
@@ -100,25 +134,29 @@ class ConfluenceDataSource:
         Raises:
             Exception: If download fails or attachment not found
         """
-        # Construct download URL
-        # Format: /rest/api/content/{pageId}/child/attachment/{attachmentId}/download
-        download_url = f"{self._v1_rest_api_base()}/content/{parent_page_id}/child/attachment/{attachment_id}/download"
+        # Cloud: GET /rest/api/content/{pageId}/child/attachment/{attachmentId}/download
+        download_url = (
+            f"{self._v1_rest_api_base()}/content/{parent_page_id}"
+            f"/child/attachment/{attachment_id}/download"
+        )
+        async for chunk in self._stream_download_url(download_url, chunk_size=chunk_size):
+            yield chunk
 
-        # Get auth headers from client (use only Authorization, let server determine content type)
-        auth_headers = self._client.headers.copy()
+    async def download_attachment_from_link(
+        self,
+        download_path: str,
+        chunk_size: int = 8192,
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream attachment bytes from a Data Center ``_links.download`` path.
 
-        # Stream the file using httpx with redirect following enabled
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            async with client.stream(
-                'GET',
-                download_url,
-                headers=auth_headers,
-                timeout=300.0  # 5 minute timeout for large files
-            ) as response:
-                response.raise_for_status()
-
-                async for chunk in response.aiter_bytes(chunk_size=chunk_size):
-                    yield chunk
+        Args:
+            download_path: Relative or absolute URL from attachment metadata
+                (e.g. ``/download/attachments/131100/file.png?version=1&...``)
+            chunk_size: Size of chunks to yield (default 8KB)
+        """
+        download_url = self._resolve_attachment_download_url(download_path)
+        async for chunk in self._stream_download_url(download_url, chunk_size=chunk_size):
+            yield chunk
 
     # -------------------------------------------------------------------------
     # Confluence REST v1 helpers (Cloud + Data Center path; see TODO-DC in docstrings)
@@ -127,17 +165,34 @@ class ConfluenceDataSource:
     def _v1_rest_api_base(self) -> str:
         """Return base URL for Confluence v1 REST APIs.
         
-        Handles three URL shapes:
-        - Cloud with v2 suffix: https://x.atlassian.net/wiki/api/v2 → .../wiki/rest/api
-        - Cloud with /wiki: https://x.atlassian.net/wiki → .../wiki/rest/api
-        - DC plain host: https://confluence.company.com → .../rest/api
+        Appends /rest/api to the base context path, handling v2 fallbacks.
+        Preserves any context path (Cloud /wiki, DC /docs, /confluence, etc).
+        
+        Examples:
+        - https://x.atlassian.net/wiki/api/v2 → .../wiki/rest/api
+        - https://x.atlassian.net/wiki → .../wiki/rest/api
+        - https://confluence.company.com → .../rest/api
+        - https://wiki.company.com → .../rest/api
+        - https://company.com/docs → .../docs/rest/api
+        - https://company.com/confluence → .../confluence/rest/api
         """
-        if "/wiki/api/v2" in self.base_url:
-            return self.base_url.replace("/wiki/api/v2", "/wiki/rest/api")
-        if "/wiki" in self.base_url:
-            return self.base_url.split("/wiki")[0] + "/wiki/rest/api"
-        # DC plain host (no /wiki prefix)
-        return self.base_url.rstrip("/") + "/rest/api"
+        parsed = urlparse(self.base_url)
+        path = parsed.path.rstrip('/')
+        
+        # Case 1: User provided a v2 API base URL -> convert to v1
+        if path.endswith('/api/v2'):
+            # Strip the '/api/v2' (7 chars) and append v1 suffix
+            path = path[:-7] + '/rest/api'
+            
+        # Case 2: User provided a URL that already has the v1 suffix (Idempotency)
+        elif path.endswith('/rest/api'):
+            pass
+            
+        # Case 3: Standard base URL (Cloud /wiki, DC root, or DC custom context path)
+        else:
+            path = path + '/rest/api'
+            
+        return f"{parsed.scheme}://{parsed.netloc}{path}"
 
     async def get_spaces_v1(
         self,
@@ -156,26 +211,30 @@ class ConfluenceDataSource:
         base = self._v1_rest_api_base()
         url = f"{base}/space"
         _headers: Dict[str, Any] = dict(headers or {})
-        _query: Dict[str, Any] = {}
+        # DC/Server + Cloud v1: filter by key(s) with repeated ``spaceKey`` query
+        # params (e.g. ?spaceKey=ds&spaceKey=SD). A single comma-joined
+        # ``spaceKey=ds,SD`` value is not valid on either platform.
+        _query_params: list[tuple[str, str]] = []
         if keys:
-            _query["spaceKey"] = ",".join(keys)
+            for key in keys:
+                _query_params.append(("spaceKey", key))
         if space_type is not None:
-            _query["type"] = space_type
+            _query_params.append(("type", str(space_type)))
         if status is not None:
-            _query["status"] = status
+            _query_params.append(("status", str(status)))
         if limit is not None:
-            _query["limit"] = limit
+            _query_params.append(("limit", str(limit)))
         if expand:
-            _query["expand"] = expand
+            _query_params.append(("expand", expand))
         if start is not None:
-            _query["start"] = start
+            _query_params.append(("start", str(start)))
 
         req = HTTPRequest(
             method="GET",
             url=url,
             headers=_as_str_dict(_headers),
             path={},
-            query=_as_str_dict(_query),
+            query=_query_params,
             body=None,
         )
         return await self._client.execute(req)
@@ -434,16 +493,15 @@ class ConfluenceDataSource:
         before calling version-dependent endpoints (e.g. DC space permissions require 9.1+).
 
         Returns:
-            HTTPResponse with shape:
+            HTTPResponse with shape (fields vary by deployment/version):
               {
                 "baseUrl": "https://...",
-                "version": "9.1.0",
-                "versionNumbers": [9, 1, 0],
-                "deploymentType": "Server" | "Cloud",
+                "version": "10.2.13",
+                "versionNumbers": [9, 1, 0],  # optional; absent on some DC 10.x builds
+                "deploymentType": "Server" | "Cloud",  # optional on DC
                 "buildNumber": 12345,
                 "buildDate": "...",
-                "databaseDriver": "...",
-                "databaseJdbcUrl": "..."
+                ...
               }
         """
         if self._client is None:
@@ -2807,6 +2865,41 @@ class ConfluenceDataSource:
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
             query=_as_str_dict(_query),
+            body=None,
+        )
+
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_page_relevant_view_restrictions_v1(
+        self,
+        page_id: str,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """``GET /rest/api/content/{id}/restriction/relevantViewRestrictions``.
+
+        Data Center endpoint for effective view (read) restrictions on content.
+        Returns ``viewContentRestrictions.results`` — each entry has
+        ``operation``, ``restrictions.user``, and optionally ``restrictions.group``.
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {"id": page_id}
+
+        url = (
+            self._v1_rest_api_base()
+            + _safe_format_url(
+                "/content/{id}/restriction/relevantViewRestrictions", _path
+            )
+        )
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query={},
             body=None,
         )
 
@@ -8518,6 +8611,91 @@ class ConfluenceDataSource:
         # Use v1 REST audit base (Cloud + DC)
         base = self._v1_rest_api_base()
         url = f"{base}/audit"
+
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_auditing_events_v1(
+        self,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None,
+        limit: int = 100,
+        page_cursor: Optional[str] = None,
+        categories: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None
+    ) -> HTTPResponse:
+        """Fetch audit events from Confluence Data Center Auditing API.
+
+        Uses the /rest/auditing/1.0/events endpoint available on DC.
+        This is the replacement for the legacy /rest/api/audit endpoint on DC 10.x+.
+
+        HTTP GET /rest/auditing/1.0/events
+
+        Args:
+            from_date: Start of date range in ISO-8601 UTC format (YYYY-MM-DDTHH:MM:SS.000Z)
+            to_date: End of date range in ISO-8601 UTC format (YYYY-MM-DDTHH:MM:SS.000Z)
+            limit: Number of results per page (default: 100)
+            page_cursor: Pagination cursor from previous response's pagingInfo.nextPageCursor
+            categories: Server-side filter (e.g. "Pages and Blogs") to reduce noise
+            headers: Additional headers
+
+        Returns:
+            HTTPResponse with audit events in format:
+            {
+                "entities": [
+                    {
+                        "timestamp": "2026-06-09T14:04:28.902Z",
+                        "type": {
+                            "category": "Pages and Blogs",
+                            "action": "Content restriction added"
+                        },
+                        "affectedObjects": [
+                            {"name": "My Page", "type": "Page", "id": "131103"},
+                            {"name": "Soft dev", "type": "Space", "id": "65547"}
+                        ],
+                        "changedValues": [...],
+                        "author": {"displayName": "...", "accountId": "..."}
+                    }
+                ],
+                "pagingInfo": {
+                    "lastPage": true,
+                    "nextPageCursor": null,
+                    "size": 1
+                }
+            }
+
+        Note:
+            This endpoint is DC-specific. Cloud should continue using get_audit_logs().
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+
+        _headers: Dict[str, Any] = dict(headers or {})
+        _query: Dict[str, Any] = {
+            'limit': limit,
+        }
+
+        if from_date is not None:
+            _query['from'] = from_date
+        if to_date is not None:
+            _query['to'] = to_date
+        if page_cursor is not None:
+            _query['pageCursor'] = page_cursor
+        if categories is not None:
+            _query['categories'] = categories
+
+        # Convert /rest/api base to /rest/auditing/1.0 while preserving context path
+        base = self._v1_rest_api_base()
+        auditing_base = base.replace('/rest/api', '/rest/auditing/1.0')
+        url = f"{auditing_base}/events"
 
         req = HTTPRequest(
             method='GET',

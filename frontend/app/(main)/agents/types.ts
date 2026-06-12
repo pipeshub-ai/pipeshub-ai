@@ -49,6 +49,7 @@ export interface AgentListRecord {
   isDeleted: boolean;
   createdAtTimestamp: number;
   updatedAtTimestamp: number;
+  /** MongoDB user ID of the agent creator */
   createdBy: string;
   updatedBy?: string;
   /** Omitted on some agents */
@@ -141,6 +142,7 @@ export interface AgentDetail {
   systemPrompt: string;
   createdAtTimestamp: number;
   isDeleted: boolean;
+  /** MongoDB user ID of the agent creator */
   createdBy: string;
   name: string;
   id: string;

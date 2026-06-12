@@ -39,23 +39,13 @@ import {
   getAllAgentConversations,
   getAgentConversationById,
   deleteAgentConversationById,
-  createAgentTemplate,
-  getAgentTemplate,
-  deleteAgentTemplate,
-  listAgentTemplates,
   createAgent,
   getAgent,
   deleteAgent,
   updateAgent,
-  updateAgentTemplate,
   listAgents,
   getWebSearchProviderUsage,
   getModelUsage,
-  getAvailableTools,
-  shareAgent,
-  unshareAgent,
-  updateAgentPermissions,
-  getAgentPermissions,
   regenerateAgentAnswers,
   streamChatInternal,
   addMessageStreamInternal,
@@ -106,6 +96,8 @@ import {
   updateAgentSchema,
   deleteAgentSchema,
   getAgentParamsSchema,
+  getWebSearchProviderUsageRequestSchema,
+  getModelUsageRequestSchema,
   listAgentsQuerySchema,
   getAgentConversationByIdSchema,
 } from '../validators/es_validators';
@@ -803,47 +795,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(listAllArchivesAgentConversationQuerySchema),
     listAllArchivesAgentConversation(),
-  );
-
-  router.post(
-    '/template',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
-    createAgentTemplate(appConfig),
-  );
-
-  router.get(
-    '/template/:templateId',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
-    getAgentTemplate(appConfig),
-  );
-
-  router.put(
-    '/template/:templateId',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
-    updateAgentTemplate(appConfig),
-  );
-
-  router.delete(
-    '/template/:templateId',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
-    deleteAgentTemplate(appConfig),
-  );
-
-  router.get(
-    '/template',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
-    listAgentTemplates(appConfig),
-  );
+  ); 
 
   router.post(
     '/create',
@@ -895,6 +847,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(getWebSearchProviderUsageRequestSchema),
     getWebSearchProviderUsage(appConfig),
   );
 
@@ -903,47 +856,8 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(getModelUsageRequestSchema),
     getModelUsage(appConfig),
-  );
-
-  router.get(
-    '/tools/list',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
-    getAvailableTools(appConfig),
-  );
-
-  router.get(
-    '/:agentKey/permissions',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
-    getAgentPermissions(appConfig),
-  );
-
-  router.post(
-    '/:agentKey/share',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
-    shareAgent(appConfig),
-  );
-
-  router.post(
-    '/:agentKey/unshare',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
-    unshareAgent(appConfig),
-  );
-
-  router.put(
-    '/:agentKey/permissions',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
-    updateAgentPermissions(appConfig),
   );
 
   return router;

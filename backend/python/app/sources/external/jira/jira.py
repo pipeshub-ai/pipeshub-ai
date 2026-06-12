@@ -1,4 +1,5 @@
 from typing import Any, Dict, Optional, Union
+from urllib.parse import quote
 
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_response import HTTPResponse
@@ -20794,6 +20795,35 @@ class JiraDataSource:
             _query['expand'] = expand
         _body = None
         rel_path = '/rest/api/2/issue/{issueIdOrKey}/comment'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_secure_attachment_v2(
+        self,
+        id: str,
+        filename: str,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /secure/attachment/{id}/{filename} (Data Center / Server / Cloud site)."""
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {
+            'id': id,
+            'filename': quote(filename, safe=''),
+        }
+        _query: Dict[str, Any] = {}
+        _body = None
+        rel_path = '/secure/attachment/{id}/{filename}'
         url = self.base_url + _safe_format_url(rel_path, _path)
         req = HTTPRequest(
             method='GET',

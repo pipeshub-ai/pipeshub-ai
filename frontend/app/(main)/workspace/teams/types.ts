@@ -4,19 +4,24 @@
 
 export type TeamMemberRole = 'OWNER' | 'READER' | 'WRITER';
 
+export interface TeamCreatedByUser {
+  /** Graph user key of the team creator */
+  id: string;
+  userId: string;
+  name: string;
+  email: string;
+  profilePicture?: string | null;
+}
+
 export interface Team {
   /** UUID primary key */
   id: string;
   name: string;
   description: string | null;
-  /** UUID of the user who created the team */
-  createdBy: string;
+  createdByUser?: TeamCreatedByUser | null;
   orgId: string;
   createdAtTimestamp: number;
   updatedAtTimestamp: number;
-
-  /** Current user's permission on this team */
-  currentUserPermission?: TeamPermission;
 
   /** Array of team members */
   members: TeamMember[];
@@ -43,24 +48,12 @@ export interface TeamMember {
   profilePicture?: string;
 }
 
-export interface TeamPermission {
-  _key: string;
-  _id: string;
-  _from: string;
-  _to: string;
-  _rev: string;
-  type: string;
-  role: string;
-  createdAtTimestamp: number;
-  updatedAtTimestamp: number;
-}
-
 // ========================================
 // API request shapes
 // ========================================
 
 export interface CreateTeamUserRole {
-  /** User UUID (not MongoDB ObjectId) */
+  /** MongoDB ObjectId (not graph UUID) */
   userId: string;
   role: TeamMemberRole;
 }
@@ -71,12 +64,25 @@ export interface CreateTeamPayload {
   userRoles?: CreateTeamUserRole[];
 }
 
+/** MongoDB ObjectId — used in addUserRoles when updating a team */
+export interface TeamAddMemberRole {
+  userId: string;
+  role: TeamMemberRole;
+}
+
+/** MongoDB ObjectId — used in updateUserRoles when updating a team */
+export interface TeamMemberRoleUpdate {
+  userId: string;
+  role: TeamMemberRole;
+}
+
 export interface UpdateTeamPayload {
   name?: string;
   description?: string;
-  addUserRoles?: CreateTeamUserRole[];
+  addUserRoles?: TeamAddMemberRole[];
+  /** MongoDB ObjectId of members to remove */
   removeUserIds?: string[];
-  updateUserRoles?: CreateTeamUserRole[];
+  updateUserRoles?: TeamMemberRoleUpdate[];
 }
 
 // ========================================
@@ -107,7 +113,8 @@ export interface TeamsListResponse {
 import type { DateFilterType } from '@/app/components/ui/date-range-picker';
 
 export interface TeamsFilter {
-  createdBy?: string[];
+  /** Mongo userId of the team creator (single value; API accepts one `created_by`) */
+  createdBy?: string;
   createdAfter?: string;
   createdBefore?: string;
   createdDateType?: DateFilterType;

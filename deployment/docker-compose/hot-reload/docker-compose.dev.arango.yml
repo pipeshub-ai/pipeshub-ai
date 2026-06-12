@@ -140,7 +140,7 @@ services:
       - BOT_TOKEN=${BOT_TOKEN:-}
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
 
-      - ENABLE_PYMUPDF_PROCESSOR=${ENABLE_PYMUPDF_PROCESSOR:-false}
+      - ENABLE_PDFPLUMBER_PROCESSOR=${ENABLE_PDFPLUMBER_PROCESSOR:-false}
 
       # Next.js frontend dev (browser calls Node API on host port 3000)
       - DOCKER_DEV=true
