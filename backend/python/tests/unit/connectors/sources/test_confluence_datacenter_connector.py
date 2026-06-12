@@ -2791,44 +2791,50 @@ class TestFetchPageContent:
 # ===========================================================================
 
 
+def _mock_comment_record(record_type: RecordType, external_id: str, record_name: str = "") -> MagicMock:
+    record = MagicMock()
+    record.record_type = record_type
+    record.external_record_id = external_id
+    record.record_name = record_name
+    return record
+
+
+def _mock_comment_datasource(body: dict) -> MagicMock:
+    mock_ds = MagicMock()
+    mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, body))
+    mock_ds.fetch_authenticated_binary = AsyncMock(return_value=None)
+    return mock_ds
+
+
 class TestFetchCommentContent:
     @pytest.mark.asyncio
     async def test_footer_comment(self):
         c = _conn()
-        mock_ds = MagicMock()
-        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Footer</p>"}},
-        }))
+        mock_ds = _mock_comment_datasource({
+            "body": {"export_view": {"value": "<p>Footer</p>"}},
+        })
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.COMMENT
-        record.external_record_id = "123"
+        record = _mock_comment_record(RecordType.COMMENT, "123")
         result = await c._fetch_comment_content(record)
         assert result == "<p>Footer</p>"
 
     @pytest.mark.asyncio
     async def test_inline_comment(self):
         c = _conn()
-        mock_ds = MagicMock()
-        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Inline</p>"}},
-        }))
+        mock_ds = _mock_comment_datasource({
+            "body": {"export_view": {"value": "<p>Inline</p>"}},
+        })
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.INLINE_COMMENT
-        record.external_record_id = "456"
+        record = _mock_comment_record(RecordType.INLINE_COMMENT, "456")
         result = await c._fetch_comment_content(record)
         assert result == "<p>Inline</p>"
 
     @pytest.mark.asyncio
     async def test_empty_body(self):
         c = _conn()
-        mock_ds = MagicMock()
-        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {"body": {}}))
+        mock_ds = _mock_comment_datasource({"body": {}})
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.COMMENT
-        record.external_record_id = "789"
+        record = _mock_comment_record(RecordType.COMMENT, "789")
         result = await c._fetch_comment_content(record)
         assert "No content" in result
 
@@ -2858,45 +2864,55 @@ class TestFetchCommentContent:
 
     @pytest.mark.asyncio
     async def test_fetch_comment_content_uses_export_view(self):
-        """Test that _fetch_comment_content prefers export_view over storage"""
+        """Test that _fetch_comment_content uses export_view HTML"""
         c = _conn()
-        mock_ds = MagicMock()
-        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
+        mock_ds = _mock_comment_datasource({
             "body": {
                 "export_view": {"value": "<p>Rendered HTML with images</p>"},
                 "storage": {"value": "<p>Raw storage with ri:attachment</p>"}
             }
-        }))
+        })
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.COMMENT
-        record.external_record_id = "comment123"
+        record = _mock_comment_record(RecordType.COMMENT, "comment123")
         
         result = await c._fetch_comment_content(record)
         
-        # Should prefer export_view over storage
+        # Should use export_view
         assert result == "<p>Rendered HTML with images</p>"
         assert "ri:attachment" not in result
 
     @pytest.mark.asyncio
-    async def test_fetch_comment_content_fallback_to_storage(self):
-        """Test that _fetch_comment_content falls back to storage when export_view is missing"""
+    async def test_fetch_comment_content_prepends_title(self):
+        """Test that comment title is prepended for indexing."""
         c = _conn()
-        mock_ds = MagicMock()
-        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
+        mock_ds = _mock_comment_datasource({
+            "title": "API Title",
+            "body": {"export_view": {"value": "<p>Body</p>"}},
+        })
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        record = _mock_comment_record(RecordType.COMMENT, "comment123", record_name="Record Title")
+
+        result = await c._fetch_comment_content(record)
+
+        assert result.startswith("<h1>Record Title</h1>")
+        assert "<p>Body</p>" in result
+
+    @pytest.mark.asyncio
+    async def test_fetch_comment_content_missing_export_view(self):
+        """Test that _fetch_comment_content handles missing export_view gracefully"""
+        c = _conn()
+        mock_ds = _mock_comment_datasource({
             "body": {
                 "storage": {"value": "<p>Storage content</p>"}
             }
-        }))
+        })
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.COMMENT
-        record.external_record_id = "comment456"
+        record = _mock_comment_record(RecordType.COMMENT, "comment456")
         
         result = await c._fetch_comment_content(record)
         
-        # Should fall back to storage
-        assert result == "<p>Storage content</p>"
+        # Should return fallback message when export_view is missing
+        assert result == "<p>No content available</p>"
 
 
 # ===========================================================================
@@ -4188,7 +4204,7 @@ class TestFetchCommentContentFullCoverage:
         c = _c()
         mock_ds = MagicMock()
         mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Footer</p>"}},
+            "body": {"export_view": {"value": "<p>Footer</p>"}},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         record = MagicMock()
@@ -4202,7 +4218,7 @@ class TestFetchCommentContentFullCoverage:
         c = _c()
         mock_ds = MagicMock()
         mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Inline</p>"}},
+            "body": {"export_view": {"value": "<p>Inline</p>"}},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         record = MagicMock()
