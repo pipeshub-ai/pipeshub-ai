@@ -1,7 +1,7 @@
 """
-Confluence Data Center Connector
+Confluence Data Center Personal Connector
 
-Scaffold copied from Confluence Cloud; implementation will target Confluence Data Center.
+Single-user sync without permission APIs. Inherits from BaseConnector directly.
 
 Authentication: API token (personal access token or HTTP basic with API token).
 """
@@ -59,12 +59,10 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
-from app.connectors.sources.atlassian.core.apps import ConfluenceDataCenterApp
+from app.connectors.sources.atlassian.core.apps import ConfluenceDataCenterPersonalApp
 from app.connectors.sources.atlassian.core.confluence_html import prepare_streaming_html
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
-    AppUser,
-    AppUserGroup,
     CommentRecord,
     FileRecord,
     Record,
@@ -73,7 +71,7 @@ from app.models.entities import (
     RecordType,
     WebpageRecord,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission, PermissionType
 from app.sources.client.confluence.confluence import (
     ConfluenceClient as ExternalConfluenceClient,
 )
@@ -118,37 +116,16 @@ CONTENT_V1_SINGLE_EXPAND = (
     "body.export_view,version,history,space,ancestors"
 )
 
-# ------------------------------------------------------------------------------
-# API Compatibility Mode
-# ------------------------------------------------------------------------------
-# Set to True to use Data Center v1 APIs (name-based group members, v1 space permissions).
-# Set to False to use Cloud v2 APIs (ID-based group members, v2 space permissions).
-# This allows testing the connector with Cloud instances before deploying to DC.
-#
-# When USE_DATA_CENTER_APIS = False:
-#   - Space permissions: GET /wiki/api/v2/spaces/{id}/permissions (cursor-paginated)
-#   - Group members: GET /wiki/rest/api/group/{id}/membersByGroupId
-#   - User ID field: accountId (Cloud)
-#
-# When USE_DATA_CENTER_APIS = True:
-#   - Space permissions: GET /wiki/rest/api/space/{key}/permissions (no pagination)
-#   - Group members: GET /wiki/rest/api/group/{name}/member (offset-paginated)
-#   - User ID field: userKey (DC), with accountId fallback for Cloud compatibility
-# ------------------------------------------------------------------------------
-USE_DATA_CENTER_APIS = True
 CONTENT_V1_COMMENT_EXPAND = (
     "body.storage,body.export_view,version,history.lastUpdated,extensions.inlineProperties"
 )
 CONTENT_V1_ATTACHMENT_EXPAND = "version,history,metadata,extensions"
 
-# Constant for pseudo-user group prefix
-PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
-
-@ConnectorBuilder("Confluence Data Center")\
+@ConnectorBuilder("Confluence Data Center Personal")\
     .in_group("Atlassian")\
-    .with_description("Sync pages, spaces, and users from Confluence Data Center")\
+    .with_description("Sync pages, spaces visible to your account into your personal workspace")\
     .with_categories(["Knowledge Management", "Collaboration"])\
-    .with_scopes([ConnectorScope.TEAM.value])\
+    .with_scopes([ConnectorScope.PERSONAL.value])\
     .with_auth([
         AuthBuilder.type(AuthType.API_TOKEN).fields([
             AuthField(
@@ -206,12 +183,14 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
         ])
     ])\
     .with_info(
-        "Important: In order for users to get access to Confluence data, each user needs to make their email visible in their Confluence account settings. Users can do this by going to their Confluence profile settings and switching email visibility to Public."
+        "Syncs only spaces and pages visible to the credentials you provide. "
+        "Access is limited to you — the user who created this connector — without "
+        "reading Confluence permission schemes or other users."
         + "\n\n"
         + CONNECTOR_EMAIL_IDENTITY_INFO
     )\
     .configure(lambda builder: builder
-        .with_icon(IconPaths.connector_icon(Connectors.CONFLUENCE.value))
+        .with_icon(IconPaths.connector_icon(Connectors.CONFLUENCE_DATA_CENTER_PERSONAL.value))
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Personal access tokens (Confluence Server / Data Center)",
@@ -226,7 +205,7 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
         .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
-        .with_agent_support(True)
+        .with_agent_support(False)
         .add_filter_field(FilterField(
             name="space_keys",
             display_name="Space Name",
@@ -304,19 +283,10 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
             description="Enable indexing of blogpost comments",
             default_value=True
         ))
-        .with_admin_access_required(True, personal_connector_type="Confluence Data Center Personal")
     )\
     .build_decorator()
-class ConfluenceDataCenterConnector(BaseConnector):
-    """
-    Confluence Data Center Connector
-
-    Syncs spaces, users, pages, and blogposts using Confluence REST **v1** only.
-    Folders are not synced — DC CQL does not support ``type=folder`` (Cloud-only).
-
-    Authentication: Personal Access Token (Bearer) or HTTP Basic (username/password).
-    OAuth is not supported.
-    """
+class ConfluenceDataCenterPersonalConnector(BaseConnector):
+    """Personal Confluence DC: creator-only permissions, no user/group/permission API calls."""
 
     def __init__(
         self,
@@ -330,7 +300,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
     ) -> None:
         """Initialize the Confluence Data Center connector."""
         super().__init__(
-            ConfluenceDataCenterApp(connector_id),
+            ConfluenceDataCenterPersonalApp(connector_id),
             logger,
             data_entities_processor,
             data_store_provider,
@@ -355,7 +325,6 @@ class ConfluenceDataCenterConnector(BaseConnector):
             )
 
         self.pages_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
-        self.audit_log_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
 
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
@@ -379,8 +348,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
         All endpoint paths are resolved through
         ``ConfluenceDataSource._v1_rest_api_base()``, which handles all three URL
         shapes (DC plain host, Cloud ``/wiki``, Cloud ``/wiki/api/v2``) and produces
-        the correct ``/rest/api`` base. No v2 endpoints are called from this
-        connector when ``USE_DATA_CENTER_APIS`` is True.
+        the correct ``/rest/api`` base.
         """
         try:
             self.logger.info("🔧 Initializing Confluence Data Center connector...")
@@ -422,7 +390,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
             # Test by fetching spaces with a limit of 1 (v1 REST)
             datasource = await self._get_fresh_datasource()
-            response = await datasource.get_spaces_v1(limit=1)
+            response = await datasource.get_spaces_v1(limit=1, expand="history")
 
             if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.error(f"Connection test failed with status: {response.status if response else 'No response'}")
@@ -437,263 +405,126 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
     async def run_sync(self) -> None:
         """
-        Run full synchronization of Confluence Data Center data.
-
+        Run simplified sync for Confluence DC Personal connector.
+        
+        No user/group sync, no permission APIs. Uses ConnectorGroup pattern.
+        
         Sync order:
-        1. Users and Groups (global, includes group memberships)
-        2. Spaces
-            - Permissions
-        3. Pages (per space)
-            - Permissions
-            - Attachments
-            - Comments (inline, footer)
-        4. Blogposts (per space)
-            - Permissions
-            - Attachments
-            - Comments (inline, footer)
+        1. Ensure ConnectorGroup permission (creator-only access)
+        2. Spaces (with ConnectorGroup permission)
+        3. Pages per space (inherit from space)
+        4. Blogposts per space (inherit from space)
         """
         try:
             org_id = self.data_entities_processor.org_id
-            self.logger.info(f"🚀 Starting Confluence Data Center sync for org: {org_id}")
+            self.logger.info(
+                f"▶️ Confluence DC Personal connector {self.connector_id}: run_sync starting for org {org_id}"
+            )
 
             # Ensure client is initialized
             if not self.external_client or not self.data_source:
-                raise Exception("Confluence client not initialized. Call init() first.")
+                if not await self.init():
+                    raise RuntimeError(
+                        f"Confluence Data Center Personal connector {self.connector_id} init failed"
+                    )
+
+            # Force fresh ConnectorGroup permission on each run (Jira DC Personal pattern)
+            self._connector_group_permission = None
+
+            # Resolve creator email
+            if not self.creator_email and self.created_by:
+                try:
+                    creator = await self.data_entities_processor.get_user_by_user_id(
+                        self.created_by
+                    )
+                    if creator and getattr(creator, "email", None):
+                        self.creator_email = creator.email
+                except Exception as e:
+                    self.logger.warning(
+                        "Confluence DC Personal connector %s: could not resolve creator "
+                        "email for created_by %s: %s",
+                        self.connector_id,
+                        self.created_by,
+                        e,
+                    )
+
+            if not self.creator_email:
+                self.logger.warning(
+                    "Confluence DC Personal connector %s: no creator email — "
+                    "spaces will sync without user permissions",
+                    self.connector_id,
+                )
+            else:
+                self.logger.info(
+                    "Confluence DC Personal connector %s: creator_email=%s",
+                    self.connector_id,
+                    self.creator_email,
+                )
+
+            # Ensure ConnectorGroup permission
+            group_permission = await self.ensure_connector_group_permission()
+            self.logger.info(
+                "Confluence DC Personal connector %s: connector group permission ready (granted=%s)",
+                self.connector_id,
+                bool(group_permission),
+            )
 
             # Load sync and indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "confluencedatacenter", self.connector_id, self.logger
+                self.config_service,
+                "confluencedatacenter",
+                self.connector_id,
+                self.logger,
+            )
+            self.logger.info(
+                "Confluence DC Personal connector %s: filters loaded (sync_keys=%s, indexing_keys=%s)",
+                self.connector_id,
+                list((self.sync_filters or {}).keys()),
+                list((self.indexing_filters or {}).keys()),
             )
 
-            # Step 1: Sync users
-            await self._sync_users()
-
-            # Step 2: Sync groups and memberships
-            await self._sync_user_groups()
-
-            # Step 3: Sync spaces
+            # Sync spaces (simplified - no permission API calls)
             spaces = await self._sync_spaces()
+            self.logger.info(
+                "Confluence DC Personal connector %s: %s space record groups prepared for sync",
+                self.connector_id,
+                len(spaces),
+            )
 
-            # Step 4: Sync pages and blogposts per space
+            # Sync content per space
             for space in spaces:
                 space_key = space.short_name
 
-                # Sync pages (with attachments, comments, permissions)
+                # Pages
                 self.logger.info(f"Syncing pages for space: {space.name} ({space_key})")
                 await self._sync_content(space_key, RecordType.CONFLUENCE_PAGE)
 
-                # Sync blogposts (with attachments, comments, permissions)
+                # Blogposts
                 self.logger.info(f"Syncing blogposts for space: {space.name} ({space_key})")
                 await self._sync_content(space_key, RecordType.CONFLUENCE_BLOGPOST)
 
-            # Step 5: Sync permission changes from audit log
-            # This catches permission changes that don't update content's lastModified
-            await self._sync_permission_changes_from_audit_log()
-
-            self.logger.info("✅ Confluence sync completed successfully")
-
-        except Exception as e:
-            self.logger.error(f"❌ Error during Confluence sync: {e}", exc_info=True)
-            raise
-
-    async def _sync_users(self) -> None:
-        """
-        Sync users from Confluence using offset-based pagination.
-
-        DC (USE_DATA_CENTER_APIS = True):  GET /rest/api/user/list
-        Cloud (USE_DATA_CENTER_APIS = False): GET /rest/api/search/user?cql=type=user
-
-        Filters out users without email addresses.
-        """
-        try:
-            self.logger.info("Starting user synchronization...")
-
-            # Pagination variables
-            batch_size = 200 if USE_DATA_CENTER_APIS else 100
-            start = 0
-            total_synced = 0
-            total_skipped = 0
-
-            # Paginate through all users
-            while True:
-                datasource = await self._get_fresh_datasource()
-
-                if USE_DATA_CENTER_APIS:
-                    # DC: Use reliable /user/list endpoint (avoids truncation bug in /search/user)
-                    response = await datasource.get_user_list_v1(
-                        start=start,
-                        limit=batch_size
-                    )
-                else:
-                    # Cloud: Use CQL search
-                    response = await datasource.search_users(
-                        cql="type=user",
-                        start=start,
-                        limit=batch_size
-                    )
-
-                # Check response
-                if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    self.logger.error(f"❌ Failed to fetch users: {response.status if response else 'No response'}")
-                    break
-
-                response_data = response.json()
-                users_data = response_data.get("results", [])
-
-                if not users_data:
-                    break
-
-                # Transform users (skip users without email)
-                app_users = []
-                for user_result in users_data:
-                    # DC /user/list returns flat user objects; Cloud /search/user wraps in 'user' key
-                    if USE_DATA_CENTER_APIS:
-                        user_data = user_result
-                    else:
-                        # Flatten: merge nested 'user' dict with top-level fields
-                        user_data = {**user_result.get("user", {}), **{k: v for k, v in user_result.items() if k != "user"}}
-
-                    # Skip if no email
-                    email = user_data.get("email", "").strip()
-                    if not email:
-                        self.logger.warning(f"Skipping user creation with name : {user_data.get('displayName')}, Reason: No email found for the user")
-                        total_skipped += 1
-                        continue
-
-                    app_user = self._transform_to_app_user(user_data)
-                    if app_user:
-                        app_users.append(app_user)
-
-                # Save batch to database
-                if app_users:
-                    await self.data_entities_processor.on_new_app_users(app_users)
-                    total_synced += len(app_users)
-                    self.logger.info(f"Synced {len(app_users)} users (batch starting at {start})")
-
-                    # For each user with email, migrate pseudo-group permissions (Confluence-specific)
-                    for user in app_users:
-                        if user.email and "@" in user.email and user.source_user_id:
-                            try:
-                                await self.data_entities_processor.migrate_group_to_user_by_external_id(
-                                    group_external_id=user.source_user_id,
-                                    user_email=user.email,
-                                    connector_id=self.connector_id
-                                )
-                            except Exception as e:
-                                # Log error but continue with other users
-                                self.logger.warning(
-                                    f"Failed to migrate pseudo-group permissions for user {user.email}: {e}",
-                                    exc_info=True
-                                )
-                                continue
-
-                # Move to next page
-                start += batch_size
-
-                # Check if we've reached the end
-                if len(users_data) < batch_size:
-                    break
-
-            self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")
+            self.logger.info(
+                "✅ Confluence DC Personal connector %s sync completed",
+                self.connector_id,
+            )
 
         except Exception as e:
-            self.logger.error(f"❌ User sync failed: {e}", exc_info=True)
-            raise
-
-    async def _sync_user_groups(self) -> None:
-        """
-        Sync user groups and their memberships from Confluence.
-
-        Steps:
-        1. Fetch all groups with pagination
-        2. For each group, fetch all members with pagination
-        3. Create group and membership records
-        """
-        try:
-            self.logger.info("Starting user group synchronization...")
-
-            # Pagination variables for groups
-            batch_size = 50
-            start = 0
-            total_groups_synced = 0
-            total_memberships_synced = 0
-
-            # Paginate through all groups
-            while True:
-                datasource = await self._get_fresh_datasource()
-                response = await datasource.get_groups(
-                    start=start,
-                    limit=batch_size
-                )
-
-                # Check response
-                if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    self.logger.error(f"❌ Failed to fetch groups: {response.status if response else 'No response'}")
-                    break
-
-                response_data = response.json()
-                groups_data = response_data.get("results", [])
-
-                if not groups_data:
-                    break
-
-                # Process each group and its members
-                for group_data in groups_data:
-                    try:
-                        group_id = group_data.get("id")
-                        group_name = group_data.get("name")
-
-                        if not group_name:
-                            continue
-
-                        self.logger.debug(f"  Processing group: {group_name} ({group_id})")
-
-                        # Fetch members: name-based (DC) or ID-based (Cloud) based on flag
-                        member_emails = await self._fetch_group_members(
-                            group_name=group_name,
-                            group_id=group_id
-                        )
-
-                        # Create user group
-                        user_group = self._transform_to_user_group(group_data)
-                        if not user_group:
-                            continue
-
-                        # Get AppUser objects for members
-                        app_users = await self._get_app_users_by_emails(member_emails)
-
-                        # Save group with members
-                        await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
-                        total_groups_synced += 1
-                        total_memberships_synced += len(app_users)
-                        self.logger.debug(f"Group {group_name}: {len(app_users)} members")
-
-                    except Exception as group_error:
-                        self.logger.error(f"❌ Failed to process group {group_data.get('name')}: {group_error}")
-                        continue
-
-                # Move to next page
-                start += batch_size
-
-                # Check if we have more groups
-                if len(groups_data) < batch_size:
-                    break
-
-            self.logger.info(f"✅ Group sync complete. Groups: {total_groups_synced}, Memberships: {total_memberships_synced}")
-
-        except Exception as e:
-            self.logger.error(f"❌ Group sync failed: {e}", exc_info=True)
+            self.logger.error(
+                "Error during Confluence DC Personal sync: %s",
+                e,
+                exc_info=True
+            )
             raise
 
     async def _sync_spaces(self) -> list[RecordGroup]:
         """
-        Sync spaces from Confluence with permissions using cursor-based pagination.
-
+        Sync spaces from Confluence - personal connector uses ConnectorGroup permission.
+        
         Steps:
-        1. Fetch all spaces with cursor pagination
+        1. Fetch all spaces with pagination
         2. Apply exclusion filters if NOT_IN operator is used
-        3. For each space, fetch permissions
-        4. Create RecordGroup with Permission objects
+        3. Grant ConnectorGroup READ to all spaces (no permission API calls)
+        4. Create RecordGroup with ConnectorGroup Permission
         """
         try:
             self.logger.info("Starting space synchronization...")
@@ -713,11 +544,19 @@ class ConfluenceDataCenterConnector(BaseConnector):
                     excluded_space_keys = space_keys_filter.get_value()
                     self.logger.info(f"Filtering to exclude space keys: {excluded_space_keys}")
 
-            # Pagination: v1 REST uses start/limit; _links.next may include cursor or start.
+            # Get ConnectorGroup permission (Jira DC Personal pattern)
+            group_permission = self._connector_group_permission
+            if group_permission is None:
+                # Idempotent — returns the cached permission if already created upstream
+                group_permission = await self.ensure_connector_group_permission()
+            space_permissions: list[Permission] = (
+                [group_permission] if group_permission else []
+            )
+
+            # Pagination: v1 REST uses start/limit
             batch_size = 25
             start_offset = 0
             total_spaces_synced = 0
-            total_permissions_synced = 0
             base_url = None  # Extract from first response
             record_groups = []
 
@@ -727,7 +566,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                     limit=batch_size,
                     start=start_offset,
                     keys=included_space_keys,
-                    expand="permissions,history",
+                    expand="history",  # NO "permissions" expand - personal connector
                     status="current",
                 )
 
@@ -759,7 +598,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         self.logger.debug(f"Filtered out {filtered_count} excluded spaces from batch")
 
                 # Process each space
-                record_groups_with_permissions = []
+                batch_groups_with_permissions = []
                 for space_data in spaces_data:
                     try:
                         space_id = space_data.get("id")
@@ -771,33 +610,29 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
                         self.logger.debug(f"Processing space: {space_name} ({space_id})")
 
-                        # Space permissions: v1 (DC) or v2 (Cloud) based on USE_DATA_CENTER_APIS
-                        permissions = await self._fetch_space_permissions(
-                            space_key_or_id=str(space_key),
-                            space_name=str(space_name),
-                            space_id=str(space_id)
-                        )
-                        total_permissions_synced += len(permissions)
-
                         # Create RecordGroup for space
                         record_group = self._transform_to_space_record_group(space_data, base_url)
                         if not record_group:
                             continue
 
-                        # Add to batch
-                        record_groups_with_permissions.append((record_group, permissions))
+                        # Grant ConnectorGroup permission (Jira DC Personal pattern)
+                        batch_groups_with_permissions.append((record_group, list(space_permissions)))
                         record_groups.append(record_group)
                         total_spaces_synced += 1
-                        self.logger.debug(f"Space {space_name}: {len(permissions)} permissions")
+
+                        if space_permissions:
+                            self.logger.debug(
+                                f"Space {space_name}: granted access via ConnectorGroup"
+                            )
 
                     except Exception as space_error:
                         self.logger.error(f"❌ Failed to process space {space_data.get('name')}: {space_error}")
                         continue
 
                 # Save batch to database
-                if record_groups_with_permissions:
-                    await self.data_entities_processor.on_new_record_groups(record_groups_with_permissions)
-                    self.logger.info(f"Synced batch of {len(record_groups_with_permissions)} spaces")
+                if batch_groups_with_permissions:
+                    await self.data_entities_processor.on_new_record_groups(batch_groups_with_permissions)
+                    self.logger.info(f"Synced batch of {len(batch_groups_with_permissions)} spaces")
 
                 # Next page: prefer _links.next (cursor or start), else bump start by batch size
                 next_url = response_data.get("_links", {}).get("next")
@@ -816,7 +651,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         )
                         break
 
-            self.logger.info(f"✅ Space sync complete. Spaces: {total_spaces_synced}, Permissions: {total_permissions_synced}")
+            self.logger.info(f"✅ Space sync complete. Spaces: {total_spaces_synced}")
 
             return record_groups
 
@@ -891,7 +726,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 connector_id=self.connector_id,
                 external_record_id=item_id,
             )
-            permissions = await self._fetch_page_permissions(item_id)
+            # Personal connector: all records inherit permissions from space ConnectorGroup
+            permissions = []
             webpage_record_update = await self._process_webpage_with_update(
                 item_data, record_type, existing_record, permissions
             )
@@ -901,9 +737,6 @@ class ConfluenceDataCenterConnector(BaseConnector):
             webpage_record = webpage_record_update.record
             if not content_indexing_enabled:
                 webpage_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-            read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-            if read_permissions:
-                webpage_record.inherit_permissions = False
 
             await self.data_entities_processor.on_new_records(
                 [(webpage_record, permissions)]
@@ -1024,7 +857,6 @@ class ConfluenceDataCenterConnector(BaseConnector):
             total_synced = 0
             total_attachments_synced = 0
             total_comments_synced = 0
-            total_permissions_synced = 0
 
             if record_type == RecordType.CONFLUENCE_PAGE and space_homepage_id:
                 homepage_in_db = await self.data_entities_processor.get_record_by_external_id(
@@ -1125,9 +957,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
                             external_record_id=item_id
                         )
 
-                        # Fetch page permissions
-                        permissions = await self._fetch_page_permissions(item_id)
-                        total_permissions_synced += len(permissions)
+                        # Personal connector: all records inherit permissions from space ConnectorGroup
+                        permissions = []
 
                         # Transform to WebpageRecord with update tracking
                         webpage_record_update = await self._process_webpage_with_update(
@@ -1143,16 +974,9 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         if not content_indexing_enabled:
                             webpage_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-                        # Only set inherit_permissions to False if there are READ restrictions
-                        # EDIT-only restrictions should still inherit from space for READ access
-                        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-                        if len(read_permissions) > 0:
-                            webpage_record.inherit_permissions = False
-
                         # Add item to batch
                         records_with_permissions.append((webpage_record, permissions))
                         total_synced += 1
-                        self.logger.debug(f"{content_type.capitalize()} {item_title}: {len(permissions)} permissions")
 
                         # Extract space_id for children
                         space_data = item_data.get("space", {})
@@ -1290,579 +1114,11 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": current_sync_time})
                 self.logger.info(f"Updated {content_type}s sync checkpoint to {current_sync_time}")
 
-            self.logger.info(f"✅ {content_type.capitalize()} sync complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}, Permissions: {total_permissions_synced}")
+            self.logger.info(f"✅ {content_type.capitalize()} sync complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}")
 
         except Exception as e:
             self.logger.error(f"❌ {content_type.capitalize()} sync failed: {e}", exc_info=True)
             raise
-
-    async def _sync_permission_changes_from_audit_log(self) -> None:
-        """
-        Sync permission changes for pages/blogs using Confluence DC Auditing API.
-
-        This method tracks permission changes that don't update the content's
-        lastModified timestamp, ensuring we capture:
-        - Content restriction added (user/group gets access)
-        - Content restriction removed (user/group loses access)
-
-        Flow:
-        1. Get last audit sync time
-        2. If first run (no checkpoint): Initialize with current time and skip (permissions already synced)
-        3. If subsequent run: Fetch audit events since last sync
-        4. Extract unique content IDs from audit records
-        5. For each content ID: Check if exists in DB and update permissions
-        6. Update audit log sync point with current timestamp
-
-        Note: First run initializes checkpoint but skips permission sync because
-        the initial content sync (_sync_content) already synced all permissions.
-        """
-        try:
-            self.logger.info("🔍 Starting permission sync from audit log...")
-
-            # Sync point key for audit log
-            audit_sync_key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "permissions", "audit_log")
-
-            # Get last audit sync timestamp
-            last_audit_sync = await self.audit_log_sync_point.read_sync_point(audit_sync_key)
-            last_sync_time_ms = last_audit_sync.get("last_sync_time_ms") if last_audit_sync else None
-
-            # Current time as checkpoint
-            current_time_ms = int(datetime.now().timestamp() * 1000)
-
-            # First run: Initialize checkpoint and skip (permissions already synced during content sync)
-            if last_sync_time_ms is None:
-                self.logger.info(
-                    "🆕 First audit log sync - initializing checkpoint to current time and skipping. "
-                    "Permissions already synced during content sync."
-                )
-
-                # Save initial checkpoint
-                await self.audit_log_sync_point.update_sync_point(
-                    audit_sync_key,
-                    {"last_sync_time_ms": current_time_ms}
-                )
-                return
-
-            self.logger.info(f"🔄 Fetching audit events from {last_sync_time_ms} to {current_time_ms}")
-
-            # Fetch audit events and extract content IDs that had permission changes
-            content_ids = await self._fetch_permission_audit_content_ids(last_sync_time_ms, current_time_ms)
-
-            if not content_ids:
-                self.logger.info("✅ No permission changes found in audit log")
-                # Update sync point even if no changes
-                await self.audit_log_sync_point.update_sync_point(
-                    audit_sync_key,
-                    {"last_sync_time_ms": current_time_ms}
-                )
-                return
-
-            self.logger.info(f"📋 Found {len(content_ids)} content IDs with permission changes")
-
-            # Sync permissions by content IDs (only if exists in DB)
-            await self._sync_content_permissions_by_ids(content_ids)
-
-            # Update audit log sync point with current time
-            await self.audit_log_sync_point.update_sync_point(
-                audit_sync_key,
-                {"last_sync_time_ms": current_time_ms}
-            )
-
-            self.logger.info("✅ Permission sync from audit log completed")
-
-        except Exception as e:
-            self.logger.error(f"❌ Permission sync from audit log failed: {e}", exc_info=True)
-            raise
-
-    async def _fetch_permission_audit_content_ids(
-        self,
-        start_date_ms: int,
-        end_date_ms: int
-    ) -> list[str]:
-        """
-        Fetch audit events from DC Auditing API and extract content IDs with permission changes.
-
-        Uses /rest/auditing/1.0/events with pageCursor pagination.
-        Filters for:
-        - category = "Pages and Blogs" (DC End user activity)
-        - scope = content (pages/blogs, not global or space-level)
-
-        Args:
-            start_date_ms: Start timestamp in milliseconds (Unix epoch * 1000)
-            end_date_ms: End timestamp in milliseconds (Unix epoch * 1000)
-
-        Returns:
-            List of unique content IDs (pages/blogs) that had permission changes
-        """
-        content_ids_set: set[str] = set()
-        batch_size = 100
-        page_cursor: Optional[str] = None
-
-        # Convert millisecond timestamps to ISO-8601 UTC format
-        from_date = datetime.fromtimestamp(start_date_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
-        to_date = datetime.fromtimestamp(end_date_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
-
-        while True:
-            datasource = await self._get_fresh_datasource()
-            response = await datasource.get_auditing_events_v1(
-                from_date=from_date,
-                to_date=to_date,
-                limit=batch_size,
-                page_cursor=page_cursor,
-                categories="Pages and Blogs"  # Filter server-side to reduce noise
-            )
-
-            if not response or response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.warning(f"⚠️ Failed to fetch audit events: {response.status if response else 'No response'}")
-                break
-
-            response_data = response.json()
-            audit_records = response_data.get("entities", [])
-
-            if not audit_records:
-                break
-
-            # Process each audit record
-            for record in audit_records:
-                content_id = self._extract_content_id_from_audit_record(record)
-                if content_id:
-                    content_ids_set.add(content_id)
-
-            # Check for next page using pageCursor
-            paging_info = response_data.get("pagingInfo", {})
-            if paging_info.get("lastPage", True):
-                break
-            
-            page_cursor = paging_info.get("nextPageCursor")
-            if not page_cursor:
-                break
-
-        return list(content_ids_set)
-
-    # Data Center page/blog restriction events use category "Pages and Blogs"
-    # (End user activity — Advanced coverage), not "Permissions" (space/global only).
-    _AUDIT_CONTENT_OBJECT_TYPES = frozenset({"page", "blog", "blogpost"})
-    _AUDIT_SPACE_OBJECT_TYPES = frozenset({"space"})
-
-    def _extract_content_title_from_audit_record(self, record: dict[str, Any]) -> Optional[str]:
-        """
-        Extract content title from an audit record if it's a content permission change.
-
-        Filters for:
-        - category is "Pages and blogs" (case-insensitive — DC End user activity)
-        - Has a Page or Blog/BlogPost in associatedObjects (content-level permission)
-        - Has a Space in associatedObjects (confirms it's content, not global)
-
-        Args:
-            record: Raw audit log record
-
-        Returns:
-            Content title (page/blog) or None if not a content permission change
-        """
-        category = (record.get("category") or "").lower()
-        if category != "pages and blogs":
-            return None
-
-        associated_objects = record.get("associatedObjects") or []
-
-        has_space = any(
-            (obj.get("objectType") or "").lower() in self._AUDIT_SPACE_OBJECT_TYPES
-            for obj in associated_objects
-        )
-        content_obj = next(
-            (
-                obj for obj in associated_objects
-                if (obj.get("objectType") or "").lower() in self._AUDIT_CONTENT_OBJECT_TYPES
-            ),
-            None,
-        )
-
-        # Content restriction must have both page/blog AND space
-        if not has_space or not content_obj:
-            return None
-
-        return content_obj.get("name")
-
-    @staticmethod
-    def _normalize_audit_record(record: dict[str, Any]) -> dict[str, Any]:
-        """
-        Normalize audit record to unified internal shape for both Cloud and DC.
-
-        Handles:
-        - Cloud: category at top level, associatedObjects, objectType
-        - DC: category in type.category, affectedObjects, type (case-insensitive)
-
-        Args:
-            record: Raw audit record from either Cloud or DC API
-
-        Returns:
-            Normalized record with consistent keys:
-            {
-                "category": str,
-                "objects": [{"name": str, "type": str, "id": str|None}, ...]
-            }
-        """
-        # Extract category
-        if "type" in record and isinstance(record["type"], dict):
-            # DC Auditing API: category in type.category
-            category = (record["type"].get("category") or "").lower()
-        else:
-            # Cloud or legacy: category at top level
-            category = (record.get("category") or "").lower()
-
-        # Extract objects list
-        objects = record.get("affectedObjects") or record.get("associatedObjects") or []
-
-        # Normalize each object
-        normalized_objects = []
-        for obj in objects:
-            obj_type = (obj.get("type") or obj.get("objectType") or "").lower()
-            normalized_objects.append({
-                "name": obj.get("name"),
-                "type": obj_type,
-                "id": obj.get("id")
-            })
-
-        return {
-            "category": category,
-            "objects": normalized_objects
-        }
-
-    def _extract_content_id_from_audit_record(self, record: dict[str, Any]) -> Optional[str]:
-        """
-        Extract content ID from a DC audit record if it's a content permission change.
-
-        Filters for:
-        - category is "Pages and blogs" (case-insensitive — DC End user activity)
-        - Has a Page or Blog/BlogPost in affectedObjects (content-level permission)
-        - Has a Space in affectedObjects (confirms it's content, not global)
-        - Content object must have an ID field
-
-        Args:
-            record: Raw audit event record from DC Auditing API
-
-        Returns:
-            Content ID (page/blog) or None if not a content permission change or ID missing
-        """
-        normalized = self._normalize_audit_record(record)
-        
-        if normalized["category"] != "pages and blogs":
-            return None
-
-        objects = normalized["objects"]
-
-        has_space = any(
-            obj["type"] in self._AUDIT_SPACE_OBJECT_TYPES
-            for obj in objects
-        )
-        content_obj = next(
-            (
-                obj for obj in objects
-                if obj["type"] in self._AUDIT_CONTENT_OBJECT_TYPES
-            ),
-            None,
-        )
-
-        # Content restriction must have both page/blog AND space
-        if not has_space or not content_obj:
-            return None
-
-        # Return ID if present (DC provides IDs, Cloud does not)
-        return content_obj.get("id")
-
-
-    async def _sync_content_permissions_by_titles(self, titles: list[str]) -> None:
-        """
-        Search for content by titles and sync their current permissions.
-
-        IMPORTANT: This method ONLY updates permissions for records that already exist in the database.
-        It will NOT create new records, ensuring sync filters are respected.
-
-        For each found content item:
-        1. Check if record exists in DB (by external_record_id)
-        2. If exists: Fetch current permissions and update
-        3. If not exists: Skip (record was filtered out during initial sync)
-
-        Args:
-            titles: List of content titles to search for
-        """
-        if not titles:
-            return
-
-        # Batch titles to avoid CQL query size limits (process 50 at a time)
-        batch_size = 50
-        total_synced = 0
-        total_skipped = 0
-        total_permissions = 0
-        has_failures = False
-
-        for i in range(0, len(titles), batch_size):
-            batch_titles = titles[i:i + batch_size]
-
-            try:
-                datasource = await self._get_fresh_datasource()
-                response = await datasource.search_content_by_titles(
-                    titles=batch_titles,
-                    expand="version,space,history.lastUpdated,ancestors"
-                )
-
-                if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    self.logger.warning(f"⚠️ Failed to search content by titles: {response.status if response else 'No response'}")
-                    continue
-
-                response_data = response.json()
-                content_items = response_data.get("results", [])
-
-                # Extract api_base_url from response root for URL construction
-                api_base_url = (response_data.get("_links") or {}).get("base")
-
-                if not content_items:
-                    self.logger.debug(f"No content found for titles batch {i // batch_size + 1}")
-                    continue
-
-                # Process each content item
-                records_with_permissions = []
-                for item_data in content_items:
-                    try:
-                        item_id = item_data.get("id")
-                        item_title = item_data.get("title")
-                        item_type = item_data.get("type", "").lower()
-
-                        if not item_id or not item_title:
-                            continue
-
-                        # Determine record type
-                        if item_type == "page":
-                            record_type = RecordType.CONFLUENCE_PAGE
-                        elif item_type == "blogpost":
-                            record_type = RecordType.CONFLUENCE_BLOGPOST
-                        else:
-                            self.logger.debug(f"Skipping unknown content type: {item_type}")
-                            continue
-
-                        # Check if record exists in database (respects sync filters)
-                        existing_record = await self.data_entities_processor.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_record_id=item_id
-                        )
-
-                        if not existing_record:
-                            # Record doesn't exist - it was filtered out during initial sync
-                            self.logger.debug(
-                                f"Skipping {item_type} '{item_title}' ({item_id}) - "
-                                f"not in database (filtered out during sync)"
-                            )
-                            total_skipped += 1
-                            continue
-
-                        self.logger.debug(f"Updating permissions for {item_type}: {item_title} ({item_id})")
-
-                        # Transform to WebpageRecord
-                        webpage_record = self._transform_to_webpage_record(item_data, record_type, api_base_url=api_base_url)
-                        if not webpage_record:
-                            continue
-
-                        # Fetch current permissions
-                        permissions = await self._fetch_page_permissions(item_id)
-                        total_permissions += len(permissions)
-
-                        # Only set inherit_permissions to False if there are READ restrictions
-                        # EDIT-only restrictions should still inherit from space for READ access
-                        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-                        if len(read_permissions) > 0:
-                            webpage_record.inherit_permissions = False
-
-                        # Add to batch for update
-                        records_with_permissions.append((webpage_record, permissions))
-                        total_synced += 1
-
-                    except Exception as item_error:
-                        self.logger.error(f"❌ Failed to sync permissions for {item_data.get('title')}: {item_error}")
-                        has_failures = True
-                        continue
-
-                # Update batch in database
-                if records_with_permissions:
-                    await self.data_entities_processor.on_new_records(records_with_permissions)
-                    self.logger.info(f"Updated permissions for {len(records_with_permissions)} content items")
-
-            except Exception as batch_error:
-                self.logger.error(f"❌ Failed to process titles batch: {batch_error}")
-                has_failures = True
-                continue
-
-        if has_failures:
-            raise ValueError("Failed to sync permissions for some content items")
-
-        if total_skipped > 0:
-            self.logger.info(f"🔍 Skipped {total_skipped} items not in database (filtered during sync)")
-
-        self.logger.info(f"✅ Permission sync complete. Items updated: {total_synced}, Permissions: {total_permissions}")
-
-    async def _sync_content_permissions_by_ids(self, content_ids: list[str]) -> None:
-        """
-        Fetch content by IDs and sync their current permissions.
-
-        IMPORTANT: This method ONLY updates permissions for records that already exist in the database.
-        It will NOT create new records, ensuring sync filters are respected.
-
-        For each content ID:
-        1. Check if record exists in DB (by external_record_id)
-        2. If exists: Fetch current content metadata and permissions, then update
-        3. If not exists: Skip (record was filtered out during initial sync)
-
-        Args:
-            content_ids: List of Confluence content IDs to sync
-        """
-        if not content_ids:
-            return
-
-        # Deduplicate IDs
-        unique_ids = list(set(content_ids))
-        
-        total_synced = 0
-        total_skipped = 0
-        total_permissions = 0
-        has_failures = False
-
-        self.logger.info(f"🔄 Syncing permissions for {len(unique_ids)} content items by ID")
-
-        for content_id in unique_ids:
-            try:
-                # Check if record exists in database first (respects sync filters)
-                existing_record = await self.data_entities_processor.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_record_id=content_id
-                )
-
-                if not existing_record:
-                    # Record doesn't exist - it was filtered out during initial sync
-                    self.logger.debug(
-                        f"Skipping content {content_id} - not in database (filtered out during sync)"
-                    )
-                    total_skipped += 1
-                    continue
-
-                # Fetch content metadata
-                datasource = await self._get_fresh_datasource()
-                response = await datasource.get_content_v1(
-                    content_id=content_id,
-                    expand="version,space,history.lastUpdated,ancestors"
-                )
-
-                if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    if response and response.status == HttpStatusCode.NOT_FOUND.value:
-                        self.logger.info(f"Content {content_id} not found (likely deleted), skipping permission sync")
-                        continue
-                    self.logger.warning(
-                        f"⚠️ Failed to fetch content {content_id}: "
-                        f"{response.status if response else 'No response'}"
-                    )
-                    has_failures = True
-                    continue
-
-                item_data = response.json()
-                item_title = item_data.get("title")
-                item_type = item_data.get("type", "").lower()
-
-                if not item_title:
-                    self.logger.warning(f"⚠️ Content {content_id} has no title, skipping")
-                    continue
-
-                # Determine record type
-                if item_type == "page":
-                    record_type = RecordType.CONFLUENCE_PAGE
-                elif item_type == "blogpost":
-                    record_type = RecordType.CONFLUENCE_BLOGPOST
-                else:
-                    self.logger.debug(f"Skipping unknown content type: {item_type}")
-                    continue
-
-                self.logger.debug(f"Updating permissions for {item_type}: {item_title} ({content_id})")
-
-                # Transform to WebpageRecord
-                webpage_record = self._transform_to_webpage_record(item_data, record_type)
-                if not webpage_record:
-                    continue
-
-                # Fetch current permissions
-                permissions = await self._fetch_page_permissions(content_id)
-                total_permissions += len(permissions)
-
-                # Only set inherit_permissions to False if there are READ restrictions
-                read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-                if len(read_permissions) > 0:
-                    webpage_record.inherit_permissions = False
-
-                # Update in database
-                await self.data_entities_processor.on_new_records([(webpage_record, permissions)])
-                total_synced += 1
-
-            except Exception as item_error:
-                self.logger.error(f"❌ Failed to sync permissions for content {content_id}: {item_error}")
-                has_failures = True
-                continue
-
-        if has_failures:
-            raise ValueError("Failed to sync permissions for some content items")
-
-        if total_skipped > 0:
-            self.logger.info(f"🔍 Skipped {total_skipped} items not in database (filtered during sync)")
-
-        self.logger.info(f"✅ Permission sync complete. Items updated: {total_synced}, Permissions: {total_permissions}")
-
-    async def _fetch_page_permissions(self, page_id: str) -> list[Permission]:
-        """
-        Fetch read (view) permissions for a Confluence page using DC v1 API.
-
-        Uses ``/restriction/relevantViewRestrictions`` which returns effective
-        view restrictions only (no edit/update restrictions).
-
-        Args:
-            page_id: The page ID
-
-        Returns:
-            List of Permission objects with READ type only
-        """
-        permissions = []
-
-        try:
-            self.logger.debug(f"Fetching view permissions for page: {page_id}")
-
-            datasource = await self._get_fresh_datasource()
-            response = await datasource.get_page_relevant_view_restrictions_v1(
-                page_id=page_id
-            )
-
-            if not response or response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.warning(
-                    f"⚠️ Failed to fetch view permissions for page {page_id}: "
-                    f"{response.status if response else 'No response'}"
-                )
-                return []
-
-            response_data = response.json()
-            view_restrictions = response_data.get("viewContentRestrictions", {})
-            restrictions = view_restrictions.get("results", [])
-
-            for restriction_data in restrictions:
-                if restriction_data.get("operation") != "read":
-                    continue
-                operation_permissions = await self._transform_page_restriction_to_permissions(
-                    restriction_data
-                )
-                permissions.extend(operation_permissions)
-
-            self.logger.debug(
-                f"Found {len(permissions)} view permissions for page {page_id}"
-            )
-            return permissions
-
-        except Exception as e:
-            self.logger.error(
-                f"❌ Failed to fetch view permissions for page {page_id}: {e}"
-            )
-            return []
 
     async def _fetch_all_attachments(self, content_id: str) -> tuple[list[dict[str, Any]], Optional[str]]:
         """
@@ -2805,139 +2061,6 @@ class ConfluenceDataCenterConnector(BaseConnector):
             self._server_version = (9, 1, 0)
             return self._server_version
 
-    async def _fetch_space_permissions(
-        self, space_key_or_id: str, space_name: str, space_id: Optional[str] = None
-    ) -> list[Permission]:
-        """Fetch space permissions using v1 (DC) or v2 (Cloud) API based on USE_DATA_CENTER_APIS.
-
-        When USE_DATA_CENTER_APIS = True (Data Center mode):
-          Uses ``GET /wiki/rest/api/space/{spaceKey}/permissions`` (v1).
-          Response is a flat JSON array — no pagination needed.
-          Each entry has subjects.user/group lists with "operation" field.
-
-          **DC version check:** This endpoint requires DC 9.1+ (CONFSERVER-78176).
-          On older DC instances, raises explicit error instead of silently dropping permissions.
-
-        When USE_DATA_CENTER_APIS = False (Cloud mode):
-          Uses ``GET /wiki/api/v2/spaces/{id}/permissions`` (v2).
-          Response has cursor-paginated {"results": [...]} structure.
-          Each entry has principal.id + operation.key fields.
-
-        Args:
-            space_key_or_id: Space key (for v1) or space ID (for v2)
-            space_name: Space name for logging
-            space_id: Optional numeric space ID (required for v2 Cloud mode)
-        """
-        try:
-            permissions: list[Permission] = []
-            datasource = await self._get_fresh_datasource()
-
-            if USE_DATA_CENTER_APIS:
-                # Check DC version first
-                server_version = await self._get_server_version()
-                if server_version < (9, 1):
-                    version_str = ".".join(map(str, server_version))
-                    self.logger.error(
-                        f"❌ Confluence Data Center version {version_str} does not support "
-                        f"REST space permissions (requires 9.1+, CONFSERVER-78176). "
-                        f"Space '{space_name}' will have no permissions. "
-                        f"Upgrade DC to 9.1+ or implement JSON-RPC fallback."
-                    )
-                    # Raise exception instead of silent empty return to make the issue visible
-                    raise Exception(
-                        f"DC version {version_str} < 9.1 does not support space permissions REST endpoint"
-                    )
-
-                # DC v1: GET /rest/api/space/{key}/permissions (no pagination)
-                response = await datasource.get_space_permissions_v1(space_key=space_key_or_id)
-
-                if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    self.logger.warning(
-                        "Failed to fetch space permissions for %s (HTTP %s)",
-                        space_name,
-                        response.status if response else "no response",
-                    )
-                    return []
-
-                perm_entries = response.json()
-                if not isinstance(perm_entries, list):
-                    self.logger.warning(
-                        "Unexpected space permissions response shape for %s: expected list, got %s",
-                        space_name,
-                        type(perm_entries).__name__,
-                    )
-                    return []
-
-                for entry in perm_entries:
-                    entry_permissions = await self._transform_v1_space_permission_entry(entry)
-                    permissions.extend(entry_permissions)
-
-            else:
-                # Cloud v2: GET /api/v2/spaces/{id}/permissions (cursor-paginated)
-                if not space_id:
-                    self.logger.warning(
-                        "Cannot fetch Cloud v2 space permissions: space_id missing for %s", space_name
-                    )
-                    return []
-
-                try:
-                    space_id_int = int(space_id)
-                except (TypeError, ValueError):
-                    self.logger.warning(
-                        "Cannot fetch Cloud v2 space permissions: non-numeric space_id %r for %s",
-                        space_id,
-                        space_name,
-                    )
-                    return []
-
-                batch_size = 100
-                cursor: Optional[str] = None
-
-                while True:
-                    response = await datasource.get_space_permissions_assignments(
-                        id=space_id_int,
-                        limit=batch_size,
-                        cursor=cursor,
-                    )
-
-                    if not response or response.status != HttpStatusCode.SUCCESS.value:
-                        self.logger.warning(
-                            "Failed to fetch Cloud v2 space permissions for %s (HTTP %s)",
-                            space_name,
-                            response.status if response else "no response",
-                        )
-                        break
-
-                    response_data = response.json()
-                    permissions_data = response_data.get("results", [])
-
-                    if not permissions_data:
-                        break
-
-                    for perm_data in permissions_data:
-                        permission = await self._transform_v2_space_permission(perm_data)
-                        if permission:
-                            permissions.append(permission)
-
-                    next_url = response_data.get("_links", {}).get("next")
-                    if not next_url:
-                        break
-
-                    cursor = self._extract_cursor_from_next_link(next_url)
-                    if not cursor:
-                        break
-
-            return permissions
-
-        except Exception as e:
-            self.logger.error(
-                "Failed to fetch permissions for space %s: %s",
-                space_name,
-                e,
-                exc_info=True,
-            )
-            return []
-
     def _extract_cursor_from_next_link(self, next_url: str) -> Optional[str]:
         """
         Extract cursor value from _links.next URL.
@@ -2966,460 +2089,6 @@ class ConfluenceDataCenterConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to extract cursor from URL '{next_url}': {e}")
             return None
-
-    async def _create_permission_from_principal(
-        self,
-        principal_type: str,
-        principal_id: str,
-        permission_type: PermissionType,
-        create_pseudo_group_if_missing: bool = False
-    ) -> Optional[Permission]:
-        """
-        Create Permission object from principal data (user or group).
-
-        This is a common function used by both space and page permission processing.
-
-        Args:
-            principal_type: "user" or "group"
-            principal_id: accountId for users, groupId for groups (or group name as fallback)
-            permission_type: Mapped PermissionType enum
-            create_pseudo_group_if_missing: If True and user not found, create a
-                pseudo-group to preserve the permission. Used for record-level
-
-        Returns:
-            Permission object or None if principal not found in DB
-        """
-        try:
-            if principal_type == "user":
-                entity_type = EntityType.USER
-                # Lookup user by source_user_id (accountId) using transaction store
-                async with self.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_source_id(
-                        source_user_id=principal_id,
-                        connector_id=self.connector_id,
-                    )
-                    if user:
-                        return Permission(
-                            email=user.email,
-                            type=permission_type,
-                            entity_type=entity_type
-                        )
-
-                    # User not found - check if pseudo-group exists or should be created
-                    if create_pseudo_group_if_missing:
-                        # Check for existing pseudo-group
-                        pseudo_group = await tx_store.get_user_group_by_external_id(
-                            connector_id=self.connector_id,
-                            external_id=principal_id,
-                        )
-
-                        if not pseudo_group:
-                            # Create pseudo-group on-the-fly
-                            pseudo_group = await self._create_pseudo_group(principal_id)
-
-                        if pseudo_group:
-                            self.logger.debug(
-                                f"Using pseudo-group for user {principal_id} (no email available)"
-                            )
-                            return Permission(
-                                external_id=pseudo_group.source_user_group_id,
-                                type=permission_type,
-                                entity_type=EntityType.GROUP
-                            )
-
-                    self.logger.debug(f"  ⚠️ User {principal_id} not found in DB, skipping permission")
-                    return None
-
-            elif principal_type == "group":
-                entity_type = EntityType.GROUP
-                # Lookup group by source_user_group_id using transaction store
-                async with self.data_store_provider.transaction() as tx_store:
-                    group = await tx_store.get_user_group_by_external_id(
-                        connector_id=self.connector_id,
-                        external_id=principal_id,
-                    )
-                    if group:
-                        return Permission(
-                            external_id=group.source_user_group_id,
-                            type=permission_type,
-                            entity_type=entity_type
-                        )
-
-                    # Group not found by ID - try fallback by name
-                    # (DC space permissions may return only 'name' without UUID 'id')
-                    self.logger.debug(
-                        f"  ⚠️ Group {principal_id} not found by ID, trying name fallback"
-                    )
-                    group = await tx_store.get_user_group_by_name(
-                        connector_id=self.connector_id,
-                        group_name=principal_id,
-                    )
-                    if group:
-                        self.logger.debug(
-                            f"  ✓ Found group by name: {principal_id} -> {group.source_user_group_id}"
-                        )
-                        return Permission(
-                            external_id=group.source_user_group_id,
-                            type=permission_type,
-                            entity_type=entity_type
-                        )
-
-                    self.logger.debug(f"  ⚠️ Group {principal_id} not found in DB (by ID or name), skipping permission")
-                    return None
-
-            return None
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to create permission from principal: {e}")
-            return None
-
-    async def _create_pseudo_group(self, account_id: str) -> Optional[AppUserGroup]:
-        """
-        Create a pseudo-group for a user without email.
-
-        This preserves permissions for users who don't have email addresses yet.
-        The pseudo-group uses the user's accountId as source_user_group_id.
-
-        Args:
-            account_id: Confluence user accountId
-
-        Returns:
-            Created AppUserGroup or None if creation fails
-        """
-        try:
-            pseudo_group = AppUserGroup(
-                app_name=Connectors.CONFLUENCE_DATA_CENTER,
-                connector_id=self.connector_id,
-                source_user_group_id=account_id,
-                name=f"{PSEUDO_USER_GROUP_PREFIX} {account_id}",
-                org_id=self.data_entities_processor.org_id,
-            )
-
-            # Save to database (empty members list)
-            await self.data_entities_processor.on_new_user_groups([(pseudo_group, [])])
-            self.logger.info(f"Created pseudo-group for user without email: {account_id}")
-
-            return pseudo_group
-
-        except Exception as e:
-            self.logger.error(f"Failed to create pseudo-group for {account_id}: {e}")
-            return None
-
-    async def _transform_v1_space_permission_entry(
-        self, entry: dict[str, Any]
-    ) -> list[Permission]:
-        """Transform a single v1 space-permission entry into Permission objects.
-
-        The v1 ``GET /wiki/rest/api/space/{key}/permissions`` response is a flat
-        array of entries.  Each entry covers one operation and lists all users and
-        groups that hold that operation — so one entry can produce many Permissions.
-
-        v1 entry shape:
-          {
-            "subjects": {
-              "user":  { "results": [{ "accountId": "...", ... }] },   # Cloud
-              # DC:     { "results": [{ "userKey": "...", "username": "...", ... }] }
-              "group": { "results": [{ "id": "...", "name": "...", "type": "group" }] }
-            },
-            "operation": {
-              "operation":  "read",   # key is "operation" (v1), NOT "key" (v2)
-              "targetType": "space"
-            },
-            "anonymousAccess": false
-          }
-
-        Differences from the old v2 ``_transform_space_permission``:
-          v2 had { "principal": { "type": "user"|"group", "id": "..." },
-                   "operation": { "key": "read", "targetType": "space" } }
-          — one Permission per entry.
-          v1 has subjects.user / subjects.group lists — one entry → many Permissions.
-
-        **anonymousAccess handling:**
-          When ``anonymousAccess: true`` for a read operation, the space is public
-          and accessible without authentication. We skip creating explicit permissions
-          since the space-level public flag means records inherit public access.
-        """
-        permissions: list[Permission] = []
-        try:
-            operation = entry.get("operation", {})
-            # Cloud v1: operation.operation; DC: operation.operationKey
-            operation_key = operation.get("operation") or operation.get("operationKey")
-            target_type = operation.get("targetType")
-
-            if not operation_key:
-                return permissions
-
-            # Check for anonymous access (public space) — Cloud bundled format
-            is_anonymous = entry.get("anonymousAccess", False)
-            if is_anonymous and operation_key == "read":
-                self.logger.debug(
-                    "Space has anonymous read access (public), skipping explicit permissions"
-                )
-                return permissions
-
-            permission_type = self._map_confluence_permission(operation_key, target_type)
-
-            # DC flat format: one subject per array item
-            subject = entry.get("subject")
-            if isinstance(subject, dict):
-                subject_type = subject.get("type")
-                if subject_type == "anonymous":
-                    return permissions
-                if subject_type == "user":
-                    user_id = (
-                        subject.get("userKey")
-                        or subject.get("accountId")
-                        or subject.get("key")
-                    )
-                    if user_id:
-                        perm = await self._create_permission_from_principal(
-                            "user", user_id, permission_type
-                        )
-                        if perm:
-                            permissions.append(perm)
-                elif subject_type == "group":
-                    group_id = subject.get("name") or subject.get("id")
-                    if group_id:
-                        perm = await self._create_permission_from_principal(
-                            "group", group_id, permission_type
-                        )
-                        if perm:
-                            permissions.append(perm)
-                return permissions
-
-            subjects = entry.get("subjects", {})
-
-            # Process users (Cloud bundled format)
-            for user_data in subjects.get("user", {}).get("results", []):
-                # Cloud:  accountId field
-                # DC v1:  userKey field (userKey is the stable identifier)
-                # Fallback to "key" which some DC versions also expose
-                user_id = (
-                    user_data.get("accountId")      # Cloud v1
-                    or user_data.get("userKey")     # DC v1
-                    or user_data.get("key")         # older DC fallback
-                )
-                if user_id:
-                    perm = await self._create_permission_from_principal("user", user_id, permission_type)
-                    if perm:
-                        permissions.append(perm)
-
-            # Process groups
-            for group_data in subjects.get("group", {}).get("results", []):
-                # Both Cloud and DC v1 include "id" for groups; DC may only have "name"
-                group_id = group_data.get("id") or group_data.get("name")
-                if group_id:
-                    perm = await self._create_permission_from_principal("group", group_id, permission_type)
-                    if perm:
-                        permissions.append(perm)
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to transform v1 space permission entry: {e}")
-
-        return permissions
-
-    async def _transform_v2_space_permission(self, perm_data: dict[str, Any]) -> Optional[Permission]:
-        """Transform Confluence Cloud v2 space permission to Permission object.
-
-        Used only when USE_DATA_CENTER_APIS = False (Cloud testing mode).
-
-        Cloud v2 shape:
-          {
-            "principal": {
-              "type": "user" | "group",
-              "id": "<accountId or groupId>"
-            },
-            "operation": {
-              "key": "read",           # v2 uses "key", not "operation"
-              "targetType": "space"
-            }
-          }
-
-        Maps Confluence operations to PermissionType:
-        - administer → OWNER
-        - read → READ
-        - create/delete (comment) → COMMENT
-        - create/delete/archive (page/blogpost/attachment) → WRITE
-        - restrict_content/export → OTHER
-        - delete (space) → OWNER
-        """
-        try:
-            principal = perm_data.get("principal", {})
-            operation = perm_data.get("operation", {})
-
-            principal_type = principal.get("type")  # "user" or "group"
-            principal_id = principal.get("id")  # accountId or groupId
-            operation_key = operation.get("key")  # e.g., "read", "administer"
-            target_type = operation.get("targetType")  # e.g., "space", "page"
-
-            if not principal_type or not principal_id or not operation_key:
-                return None
-
-            # Map Confluence permission to PermissionType
-            permission_type = self._map_confluence_permission(operation_key, target_type)
-
-            # Use common function to create permission
-            return await self._create_permission_from_principal(
-                principal_type,
-                principal_id,
-                permission_type
-            )
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to transform Cloud v2 space permission: {e}")
-            return None
-
-    def _map_confluence_permission(self, operation_key: str, target_type: str) -> PermissionType:
-        """
-        Map Confluence operation to PermissionType enum.
-
-        Mapping logic:
-        - administer → OWNER
-        - read → READ
-        - create/delete (comment) → COMMENT
-        - create/delete/archive (page/blogpost/attachment) → WRITE
-        - restrict_content/export → OTHER
-        - delete (space) → OWNER
-
-        Args:
-            operation_key: Operation key (e.g., "read", "create", "delete")
-            target_type: Target type (e.g., "space", "page", "comment")
-
-        Returns:
-            PermissionType enum value
-        """
-        # Administer = OWNER
-        if operation_key == "administer":
-            return PermissionType.OWNER
-
-        # Read = READ
-        if operation_key == "read":
-            return PermissionType.READ
-
-        # Delete space = OWNER
-        if operation_key == "delete" and target_type == "space":
-            return PermissionType.OWNER
-
-        # Comment operations = COMMENT
-        if target_type == "comment" and operation_key in ["create", "delete"]:
-            return PermissionType.COMMENT
-
-        # Page/blogpost/attachment operations = WRITE
-        if target_type in ["page", "blogpost", "attachment"]:
-            if operation_key in ["create", "delete", "archive"]:
-                return PermissionType.WRITE
-
-        # Everything else = READ
-        return PermissionType.READ
-
-    def _map_page_permission(self, operation: str) -> PermissionType:
-        """
-        Map page restriction operation to PermissionType enum.
-
-        Page restrictions only have two operations:
-        - read → READ
-        - update → WRITE
-
-        Args:
-            operation: Operation string ("read" or "update")
-
-        Returns:
-            PermissionType enum value
-        """
-        if operation == "read":
-            return PermissionType.READ
-        elif operation == "update":
-            return PermissionType.WRITE
-        else:
-            return PermissionType.READ
-
-    async def _transform_page_restriction_to_permissions(
-        self,
-        restriction_data: dict[str, Any]
-    ) -> list[Permission]:
-        """
-        Transform page restriction data (from v1 API) to Permission objects.
-        Creates pseudo-groups for users without email to preserve permissions.
-
-        The v1 API returns restrictions in this format:
-        {
-            "operation": "read" | "update",
-            "restrictions": {
-                "user": {
-                    # Cloud v1: accountId is the stable user identifier
-                    "results": [{"type": "known", "accountId": "...", "displayName": "..."}]
-                    # DC v1:    userKey is the stable user identifier; accountId absent
-                    # "results": [{"type": "known", "userKey": "...", "username": "...", "displayName": "..."}]
-                },
-                "group": {
-                    # Both Cloud and DC: id + name present
-                    "results": [{"type": "group", "name": "...", "id": "..."}]
-                }
-            }
-        }
-
-        Args:
-            restriction_data: Single restriction object with operation and restrictions
-
-        Returns:
-            List of Permission objects
-        """
-        permissions = []
-
-        try:
-            operation = restriction_data.get("operation")
-            if not operation:
-                return permissions
-
-            # Map operation to PermissionType
-            permission_type = self._map_page_permission(operation)
-
-            restrictions = restriction_data.get("restrictions", {})
-
-            # Process user restrictions - create pseudo-group if user not found
-            user_restrictions = restrictions.get("user", {})
-            user_results = user_restrictions.get("results", [])
-
-            for user_data in user_results:
-                # Cloud v1: accountId is the stable user identifier
-                # DC v1:    userKey is the stable identifier (accountId is absent)
-                # Fallback to generic "id" or "key" for edge cases
-                principal_id = (
-                    user_data.get("accountId")      # Cloud v1
-                    or user_data.get("userKey")     # DC v1
-                    or user_data.get("key")         # older DC fallback
-                    or user_data.get("id")          # generic fallback
-                )
-                if principal_id:
-                    permission = await self._create_permission_from_principal(
-                        "user",
-                        principal_id,
-                        permission_type,
-                        create_pseudo_group_if_missing=True  # Enable pseudo-group creation for record-level permissions
-                    )
-                    if permission:
-                        permissions.append(permission)
-
-            # Process group restrictions
-            group_restrictions = restrictions.get("group", {})
-            group_results = group_restrictions.get("results", [])
-
-            for group_data in group_results:
-                principal_id = group_data.get("id")
-                if principal_id:
-                    permission = await self._create_permission_from_principal(
-                        "group",
-                        principal_id,
-                        permission_type,
-                        create_pseudo_group_if_missing=False  # Groups don't need pseudo-groups
-                    )
-                    if permission:
-                        permissions.append(permission)
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to transform page restriction: {e}")
-
-        return permissions
 
     def _transform_to_space_record_group(
         self,
@@ -3873,274 +2542,6 @@ class ConfluenceDataCenterConnector(BaseConnector):
             external_record_id=webpage_record.external_record_id
         )
 
-    async def _fetch_group_members(
-        self, group_name: str, group_id: Optional[str] = None
-    ) -> list[str]:
-        """Fetch all members of a group and return their email addresses.
-
-        When USE_DATA_CENTER_APIS = True (Data Center mode):
-          Uses ``GET /rest/api/group/{groupName}/member`` (name-based).
-          Preferred for DC because DC groups may not have stable UUID-style IDs.
-
-        When USE_DATA_CENTER_APIS = False (Cloud mode):
-          Uses ``GET /rest/api/group/{id}/membersByGroupId`` (ID-based).
-          Cloud groups always have numeric/UUID IDs.
-
-        Email resolution for DC:
-          Cloud: ``email`` is always present in the member listing.
-          DC v1: ``email`` may be absent for some users (e.g. LDAP-synced accounts).
-          When email is missing we attempt a follow-up ``GET /rest/api/user?key={userKey}``
-          to resolve the full profile, which usually includes email.
-
-          Elastic's reference implementation identifies DC users by ``userKey``/
-          ``username`` and skips email entirely.  Our connector requires email, so
-          we fall back to the user-detail call and skip if still absent.
-
-        Args:
-            group_name: The group name (used for name-based endpoint in DC mode)
-            group_id: Optional group ID (required for ID-based endpoint in Cloud mode)
-
-        Returns:
-            List of resolved email addresses for group members
-        """
-        try:
-            member_emails = []
-            batch_size = 200
-            start = 0
-
-            while True:
-                datasource = await self._get_fresh_datasource()
-
-                if USE_DATA_CENTER_APIS:
-                    # DC: name-based endpoint
-                    response = await datasource.get_group_members_by_name(
-                        group_name=group_name,
-                        start=start,
-                        limit=batch_size
-                    )
-                else:
-                    # Cloud: ID-based endpoint
-                    if not group_id:
-                        self.logger.warning(
-                            "Cannot fetch Cloud group members: group_id missing for %s", group_name
-                        )
-                        return []
-                    response = await datasource.get_group_members(
-                        group_id=group_id,
-                        start=start,
-                        limit=batch_size
-                    )
-
-                if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    self.logger.warning(
-                        "⚠️ Failed to fetch members for group %s: HTTP %s",
-                        group_name,
-                        response.status if response else "no response",
-                    )
-                    break
-
-                response_data = response.json()
-                members_data = response_data.get("results", [])
-
-                if not members_data:
-                    break
-
-                for member_data in members_data:
-                    email = member_data.get("email", "").strip()
-
-                    if not email:
-                        # Resolve email via GET /user when the listing omits it.
-                        # Cloud: use ?accountId=... (passing accountId as ?key= returns 400).
-                        # DC:    use ?key=... with userKey (or legacy key).
-                        if USE_DATA_CENTER_APIS:
-                            user_identifier = (
-                                member_data.get("userKey")
-                                or member_data.get("key")
-                                or member_data.get("accountId")
-                            )
-                            lookup_as: Literal["key", "accountId"] = "key"
-                        else:
-                            account_id = member_data.get("accountId")
-                            if account_id:
-                                user_identifier = account_id
-                                lookup_as = "accountId"
-                            else:
-                                user_identifier = (
-                                    member_data.get("key")
-                                    or member_data.get("userKey")
-                                )
-                                lookup_as = "key"
-                        if user_identifier:
-                            email = await self._resolve_user_email(
-                                user_identifier, datasource, lookup_as=lookup_as
-                            )
-
-                    if email:
-                        member_emails.append(email)
-                    else:
-                        self.logger.debug(
-                            "Skipping group member '%s' in group '%s': no email found",
-                            member_data.get("displayName") or member_data.get("username", "unknown"),
-                            group_name,
-                        )
-
-                start += batch_size
-                if len(members_data) < batch_size:
-                    break
-
-            return member_emails
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to fetch members for group {group_name}: {e}")
-            return []
-
-    async def _resolve_user_email(
-        self,
-        user_identifier: str,
-        datasource: Any,
-        *,
-        lookup_as: Literal["key", "accountId"] = "key",
-    ) -> str:
-        """Resolve a user's email via ``GET /rest/api/user``.
-
-        ``lookup_as`` must match how Confluence identifies the user:
-        - ``key``: Data Center ``userKey`` / legacy username (``?key=``).
-        - ``accountId``: Confluence Cloud Atlassian account id (``?accountId=``).
-
-        When ``USE_DATA_CENTER_APIS`` is False (Cloud testing), callers should pass
-        ``lookup_as="accountId"`` whenever the identifier is a Cloud ``accountId``;
-        using ``?key=`` with an ``accountId`` value returns HTTP 400 on Cloud.
-
-        Returns empty string if the lookup fails or email is still absent.
-        """
-        try:
-            response = await datasource.get_user_by_key(
-                user_identifier, lookup_as=lookup_as
-            )
-            if response and response.status == HttpStatusCode.SUCCESS.value:
-                user_data = response.json()
-                return user_data.get("email", "").strip()
-        except Exception as e:
-            self.logger.debug(
-                "Email resolution failed (%s=%s): %s", lookup_as, user_identifier, e
-            )
-        return ""
-
-    async def _get_app_users_by_emails(self, emails: list[str]) -> list[AppUser]:
-        """
-        Get AppUser objects by their email addresses from database.
-
-        Args:
-            emails: List of user email addresses
-
-        Returns:
-            List of AppUser objects found in database
-        """
-        if not emails:
-            return []
-
-        try:
-            # Fetch all users from database
-            all_app_users = await self.data_entities_processor.get_all_app_users(
-                connector_id=self.connector_id
-            )
-
-            self.logger.debug(f"Fetched {len(all_app_users)} total users from database for email lookup")
-
-            # Create email lookup map
-            email_set = set(emails)
-
-            # Filter users by email
-            filtered_users = [user for user in all_app_users if user.email in email_set]
-
-            if len(filtered_users) < len(emails):
-                missing_count = len(emails) - len(filtered_users)
-                self.logger.debug(f"  ⚠️ {missing_count} user(s) not found in database")
-
-            return filtered_users
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get users by emails: {e}")
-            return []
-
-    def _transform_to_app_user(self, user_data: dict[str, Any]) -> Optional[AppUser]:
-        """
-        Transform Confluence user data to AppUser entity.
-
-        Args:
-            user_data: Raw user data from Confluence API
-
-        Returns:
-            AppUser object or None if transformation fails
-        """
-        try:
-            # User identity field differs between Cloud and Data Center:
-            # Cloud v1/v2: "accountId" — a UUID-style string, always present
-            # DC v1:       "userKey"   — a legacy key (e.g. "~admin"); "accountId" is absent
-            # Older DC:    "key"       — some versions expose the same value under "key"
-            source_user_id = (
-                user_data.get("accountId")  # Cloud
-                or user_data.get("userKey") # DC v1
-                or user_data.get("key")     # older DC fallback
-            )
-            email = user_data.get("email", "").strip()
-
-            if not source_user_id or not email:
-                return None
-
-            # Parse lastModified timestamp
-            source_updated_at = None
-            last_modified = user_data.get("lastModified")
-            if last_modified:
-                source_updated_at = self._parse_confluence_datetime(last_modified)
-
-            return AppUser(
-                app_name=Connectors.CONFLUENCE_DATA_CENTER,
-                connector_id=self.connector_id,
-                source_user_id=source_user_id,
-                org_id=self.data_entities_processor.org_id,
-                email=email,
-                full_name=user_data.get("displayName"),
-                is_active=False,
-                source_updated_at=source_updated_at,
-            )
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to transform user: {e}")
-            return None
-
-    def _transform_to_user_group(
-        self,
-        group_data: dict[str, Any]
-    ) -> Optional[AppUserGroup]:
-        """
-        Transform Confluence group data to AppUserGroup entity.
-
-        Args:
-            group_data: Raw group data from Confluence API
-
-        Returns:
-            AppUserGroup object or None if transformation fails
-        """
-        try:
-            group_name = group_data.get("name")
-            if not group_name:
-                return None
-            # DC often returns name only; use name as stable group identifier
-            group_id = group_data.get("id") or group_name
-
-            return AppUserGroup(
-                app_name=Connectors.CONFLUENCE_DATA_CENTER,
-                connector_id=self.connector_id,
-                source_user_group_id=group_id,
-                name=group_name,
-                org_id=self.data_entities_processor.org_id,
-            )
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to transform group: {e}")
-            return None
-
     def _parse_confluence_datetime(self, datetime_str: str) -> Optional[int]:
         """
         Parse Confluence datetime string to epoch timestamp in milliseconds.
@@ -4568,13 +2969,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
             if not webpage_record:
                 return None
 
-            # Fetch fresh permissions
-            permissions = await self._fetch_page_permissions(page_id)
-            # Only set inherit_permissions to False if there are READ restrictions
-            # EDIT-only restrictions should still inherit from space for READ access
-            read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-            if len(read_permissions) > 0:
-                webpage_record.inherit_permissions = False
+            # Personal connector: all records inherit permissions from space ConnectorGroup
+            permissions = []
 
             return (webpage_record, permissions)
 
@@ -4623,13 +3019,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
             if not webpage_record:
                 return None
 
-            # Fetch fresh permissions
-            permissions = await self._fetch_page_permissions(blogpost_id)
-            # Only set inherit_permissions to False if there are READ restrictions
-            # EDIT-only restrictions should still inherit from space for READ access
-            read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-            if len(read_permissions) > 0:
-                webpage_record.inherit_permissions = False
+            # Personal connector: all records inherit permissions from space ConnectorGroup
+            permissions = []
 
             return (webpage_record, permissions)
 
@@ -4722,7 +3113,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 return None
 
             # Comments inherit permissions from parent page - fetch page permissions
-            permissions = await self._fetch_page_permissions(page_id)
+            permissions = []  # Personal connector: inherit from space
 
             return (comment_record, permissions)
 
@@ -4792,7 +3183,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 return None
 
             # Attachments inherit permissions from parent page - fetch page permissions
-            permissions = await self._fetch_page_permissions(page_id_for_permissions)
+            permissions = []  # Personal connector: inherit from space
 
             return (attachment_record, permissions)
 
@@ -5140,8 +3531,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
-    ) -> "ConfluenceDataCenterConnector":
-        """Factory method to create a Confluence connector instance."""
+    ) -> "ConfluenceDataCenterPersonalConnector":
+        """Factory method to create a Confluence Data Center Personal connector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
             logger,
             data_store_provider,
