@@ -345,10 +345,9 @@ export const ConnectorsApi = {
       throw new Error('resyncConnector: connectorType is required');
     }
     const { data } = await apiClient.post(
-      '/api/v1/knowledgeBase/resync/connector',
+      `${BASE_URL}/${connectorId}/resync`,
       {
         connectorName: connectorType,
-        connectorId,
         ...(fullSync !== undefined ? { fullSync } : {}),
       }
     );
@@ -362,10 +361,9 @@ export const ConnectorsApi = {
     statusFilters?: string[]
   ) {
     const { data } = await apiClient.post(
-      '/api/v1/knowledgeBase/reindex-failed/connector',
+      `${BASE_URL}/${connectorId}/reindex-failed`,
       {
         app,
-        connectorId,
         ...(statusFilters?.length ? { statusFilters } : {}),
       }
     );
@@ -420,7 +418,7 @@ export const ConnectorsApi = {
     connectorId: string
   ): Promise<ConnectorStatsResponse> {
     const { data } = await apiClient.get<ConnectorStatsResponse>(
-      `/api/v1/knowledgeBase/stats/${connectorId}`
+      `${BASE_URL}/${connectorId}/stats`
     );
     return data;
   },
