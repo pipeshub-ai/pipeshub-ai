@@ -1796,7 +1796,7 @@ class TestReconciliationPath:
         gp.update_queued_duplicates_status = AsyncMock()
 
         pipeline = handler.event_processor.processor.indexing_pipeline
-        pipeline.delete_embeddings = AsyncMock()
+        pipeline.bulk_delete_embeddings = AsyncMock()
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -1815,7 +1815,7 @@ class TestReconciliationPath:
             mock_dl.return_value = b"data"
             await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
 
-        pipeline.delete_embeddings.assert_not_awaited()
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_reindex_non_reconciliation_deletes_embeddings(self):
@@ -1832,7 +1832,7 @@ class TestReconciliationPath:
         gp.update_queued_duplicates_status = AsyncMock()
 
         pipeline = handler.event_processor.processor.indexing_pipeline
-        pipeline.delete_embeddings = AsyncMock()
+        pipeline.bulk_delete_embeddings = AsyncMock()
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -1852,7 +1852,7 @@ class TestReconciliationPath:
             mock_dl.return_value = b"pptx"
             await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
 
-        pipeline.delete_embeddings.assert_awaited_once_with("r1", "vr1")
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"])
 
 
 # ===================================================================
