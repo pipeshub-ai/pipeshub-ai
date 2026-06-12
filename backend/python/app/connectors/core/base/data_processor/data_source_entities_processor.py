@@ -845,25 +845,19 @@ class DataSourceEntitiesProcessor:
         Only skips if status is already QUEUED.
         """
         try:
-            # Get the record
+            # Get the record — get_record_by_key delegates to get_document which returns a raw dict
             record = await tx_store.get_record_by_key(record_id)
             if not record:
                 self.logger.warning(f"Record {record_id} not found for status reset")
                 return
-
-            current_status = record.indexing_status
-
+            self.logger.debug(f"Record: {record}")
+            # The document uses camelCase keys (indexingStatus), not snake_case attributes
+            current_status = record.get("indexingStatus")
             if current_status == ProgressStatus.QUEUED.value:
                 self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
                 return
-
-            # Update indexing status to QUEUED
-            status_doc = {
-                "_key": record_id,
-                "indexingStatus": ProgressStatus.QUEUED.value,
-            }
-
-            await tx_store.batch_upsert_nodes([status_doc], CollectionNames.RECORDS.value)
+            record["indexingStatus"] = ProgressStatus.QUEUED.value
+            await tx_store.batch_upsert_nodes([record], CollectionNames.RECORDS.value)
             self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
         except Exception as e:
             # Log but don't fail the main operation if status update fails
@@ -942,8 +936,135 @@ class DataSourceEntitiesProcessor:
                 await self._handle_updated_record(processed_record, existing_record, tx_store)
 
     @retry_on_deadlock()
+    async def on_records_moved(
+        self,
+        moves: list[tuple[str, Record, list[Permission]]],
+    ) -> None:
+        """Apply in-place rename / move for a batch of records.
+
+        Each element of *moves* is ``(old_external_id, new_record, permissions)``
+        where *old_external_id* is the ``external_record_id`` that was previously
+        stored for this record and *new_record* carries the updated path, name,
+        weburl and external_revision_id.
+
+        For each move the existing DB vertex is reused (same ``id``), avoiding a
+        delete-and-recreate cycle.  The parent-child edge is re-pointed to the new
+        parent.  A ``updateRecord`` Kafka event (triggering re-indexing) is emitted
+        **only** when the blob SHA changed; a pure rename without content change
+        produces no re-index event, which avoids redundant embedding work.
+
+        Falls back to a plain ``_process_record`` add when the old record is not
+        found in the DB (e.g. dotfile that was never stored, or first sync after a
+        force-push that cleared history).
+        """
+        if not moves:
+            return
+
+        records_to_reindex: list[Record] = []
+        new_records_to_publish: list[Record] = []
+
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                for old_external_id, new_record, permissions in moves:
+                    new_record.org_id = self.org_id
+
+                    old_record = await tx_store.get_record_by_external_id(
+                        connector_id=new_record.connector_id,
+                        external_id=old_external_id,
+                    )
+
+                    if old_record is None:
+                        # Old record was never stored (dotfile, skipped, etc.) — treat as add.
+                        processed = await self._process_record(new_record, permissions, tx_store)
+                        if processed:
+                            new_records_to_publish.append(processed)
+                        continue
+
+                    content_changed = (
+                        new_record.external_revision_id != old_record.external_revision_id
+                    )
+
+                    # Drop the stale parent-child edge so _handle_parent_record can
+                    # create the correct one pointing at the new parent folder.
+                    await tx_store.delete_parent_child_edge_to_record(old_record.id)
+
+                    # Reuse the existing DB vertex id so all downstream edges
+                    # (permissions, belongs-to, etc.) survive the path change.
+                    new_record.id = old_record.id
+
+                    record_group_id = await self._handle_record_group(new_record, tx_store)
+                    await tx_store.batch_upsert_records([new_record])
+
+                    if record_group_id:
+                        await self._link_record_to_group(new_record, record_group_id, tx_store, old_record)
+
+                    # existing_record=None forces _handle_parent_record to build a
+                    # fresh parent edge (the stale one was deleted above).
+                    await self._handle_parent_record(new_record, tx_store, existing_record=None)
+                    await self._handle_record_permissions(new_record, permissions, tx_store)
+
+                    if content_changed:
+                        records_to_reindex.append(new_record)
+
+            # Publish events outside the transaction.
+            for record in new_records_to_publish:
+                if hasattr(record, "indexing_status") and record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
+                    continue
+                if record.is_internal:
+                    continue
+                await self.messaging_producer.send_message(
+                    "record-events",
+                    {
+                        "eventType": "newRecord",
+                        "timestamp": get_epoch_timestamp_in_ms(),
+                        "payload": record.to_kafka_record(),
+                    },
+                    key=record.id,
+                )
+
+            for record in records_to_reindex:
+                self.logger.info(
+                    "Firing updateRecord event for moved record %s (id=%s): content changed",
+                    record.record_name,
+                    record.id,
+                )
+                if hasattr(record, "indexing_status") and record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
+                    continue
+                if record.is_internal:
+                    continue
+                async with self.data_store_provider.transaction() as tx_store:
+                    await self._reset_indexing_status_to_queued(record.id, tx_store)
+                await self.messaging_producer.send_message(
+                    "record-events",
+                    {
+                        "eventType": "updateRecord",
+                        "timestamp": get_epoch_timestamp_in_ms(),
+                        "payload": record.to_kafka_record(),
+                    },
+                    key=record.id,
+                )
+
+        except Exception as e:
+            self.logger.error(f"on_records_moved failed: {e}", exc_info=True)
+            raise
+
+    @retry_on_deadlock()
     async def on_record_deleted(self, record_id: str) -> None:
         async with self.data_store_provider.transaction() as tx_store:
+            await tx_store.delete_record_by_key(record_id)
+
+    @retry_on_deadlock()
+    async def on_folder_deleted(self, record_id: str) -> None:
+        """Delete a folder record and its incoming PARENT_CHILD edge atomically.
+
+        Plain ``on_record_deleted`` only removes the vertex; it leaves any
+        ``PARENT_CHILD`` edge from the parent folder pointing at the now-absent
+        node.  For the folder cascade cleanup we need to remove both together so
+        the parent folder's child-list is correct when we evaluate it on the
+        next iteration of the cascade loop.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            await tx_store.delete_parent_child_edge_to_record(record_id)
             await tx_store.delete_record_by_key(record_id)
 
     @retry_on_deadlock()
@@ -1427,6 +1548,25 @@ class DataSourceEntitiesProcessor:
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
+
+    async def get_records_by_parent(
+        self,
+        connector_id: str,
+        parent_external_record_id: str,
+        record_type: str | None = None,
+    ) -> list[Record]:
+        """Return all child records whose parent_external_record_id matches.
+
+        Used to check whether a folder record is empty before deleting it.
+        Delegates to ``tx_store.get_records_by_parent`` which queries
+        ``PARENT_CHILD`` edges in ArangoDB.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_records_by_parent(
+                connector_id=connector_id,
+                parent_external_record_id=parent_external_record_id,
+                record_type=record_type,
+            )
 
     async def get_app_by_id(self, connector_id: str) -> AppMetadata | None:
         """

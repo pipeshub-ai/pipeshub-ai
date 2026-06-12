@@ -38,6 +38,27 @@ class GitLabDataSource:
             self.token = None
 
         self._base_url = base_url.rstrip("/")
+        # Shared async HTTP client — created lazily, reused across all GraphQL
+        # and direct HTTP calls to avoid per-request TCP+TLS setup overhead.
+        # Callers must not close this client directly; use aclose() to tear it
+        # down when the connector is done with this data source instance.
+        self._http_client: httpx.AsyncClient | None = None
+
+    @property
+    def http_client(self) -> httpx.AsyncClient:
+        """Lazily-initialised shared async HTTP client."""
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=30.0,
+            )
+        return self._http_client
+
+    async def aclose(self) -> None:
+        """Close the shared HTTP client. Call when this data source is no longer needed."""
+        if self._http_client is not None and not self._http_client.is_closed:
+            await self._http_client.aclose()
+            self._http_client = None
 
     def get_user(self, user_id: int | str | None = None) -> GitLabResponse:
         """Current user when ``user_id`` is omitted; otherwise ``GET /users/:id`` (full profile, ``public_email``)."""
@@ -602,6 +623,25 @@ class GitLabDataSource:
             params = self._params(ref_name=ref_name, since=since, until=until)
             items = p.commits.list(get_all=get_all, **params)
             return GitLabResponse(success=True, data=items)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
+    def compare_commits(
+        self,
+        project_id: int | str,
+        from_sha: str,
+        to_sha: str,
+        straight: bool = False,
+    ) -> GitLabResponse:
+        """Compare two refs and return changed file diffs.
+
+        Wraps ``GET /projects/:id/repository/compare``. Response includes
+        ``diffs``, ``commits``, and related fields.
+        """
+        try:
+            p = self._project(project_id)
+            result = p.repository_compare(from_sha, to_sha, straight=straight)
+            return GitLabResponse(success=True, data=result)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
 
@@ -1226,16 +1266,28 @@ class GitLabDataSource:
         self,
         project_id: int | str,
         ref: str | None = None,
+        path: str | None = None,
         recursive: bool | None = None,
         get_all: bool | None = None,
+        iterator: bool | None = None,
     ) -> GitLabResponse:
-        """List repository tree."""
+        """List repository tree.
+
+        Pass ``get_all=True`` to fetch every page in one call (materialises
+        the full list in memory).  Pass ``iterator=True`` to get a
+        ``GitlabList`` lazy iterator back in ``data`` — preferred for large
+        directories because pages are fetched on demand rather than all at
+        once.  ``get_all`` and ``iterator`` are mutually exclusive per the
+        python-gitlab SDK contract.
+        """
         try:
             p = self._sdk.projects.get(project_id)
             payload = self._params(
                 ref=ref,
+                path=path,
                 recursive=recursive,
                 get_all=get_all,
+                iterator=iterator,
             )
             items = p.repository_tree(**payload)
             return GitLabResponse(success=True, data=items)
@@ -1308,13 +1360,10 @@ class GitLabDataSource:
                 "variables": variables,
             }
             try:
-                async with httpx.AsyncClient(
-                    follow_redirects=True, timeout=30.0
-                ) as client:
-                    resp = await client.post(url, headers=headers, json=payload)
-                    resp.raise_for_status()
-                    tree_data = resp.content
-                    return GitLabResponse(success=True, data=(tree_data))
+                resp = await self.http_client.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                tree_data = resp.content
+                return GitLabResponse(success=True, data=(tree_data))
             except Exception as e:
                 return GitLabResponse(success=False, error=str(e))
         except Exception as e:
@@ -1371,13 +1420,10 @@ class GitLabDataSource:
                 "variables": variables,
             }
             try:
-                async with httpx.AsyncClient(
-                    follow_redirects=True, timeout=30.0
-                ) as client:
-                    resp = await client.post(url, headers=headers, json=payload)
-                    resp.raise_for_status()
-                    tree_data = resp.content
-                    return GitLabResponse(success=True, data=(tree_data))
+                resp = await self.http_client.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                tree_data = resp.content
+                return GitLabResponse(success=True, data=(tree_data))
             except Exception as e:
                 return GitLabResponse(success=False, error=str(e))
         except Exception as e:
@@ -1393,11 +1439,10 @@ class GitLabDataSource:
             "Accept": "*/*",
         }
         try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-                resp = await client.get(image_url, headers=headers)
-                resp.raise_for_status()
-                img_data = resp.content
-                return GitLabResponse(success=True, data=img_data)
+            resp = await self.http_client.get(image_url, headers=headers)
+            resp.raise_for_status()
+            img_data = resp.content
+            return GitLabResponse(success=True, data=img_data)
         except httpx.HTTPStatusError as e:
             return GitLabResponse(
                 success=False,
@@ -1416,12 +1461,11 @@ class GitLabDataSource:
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/octet-stream",
         }
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-            async with client.stream(
-                "GET",
-                weburl,
-                headers=headers,
-            ) as response:
-                response.raise_for_status()
-                async for chunk in response.aiter_bytes(chunk_size=65536):
-                    yield chunk
+        async with self.http_client.stream(
+            "GET",
+            weburl,
+            headers=headers,
+        ) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes(chunk_size=65536):
+                yield chunk

@@ -28,6 +28,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.connectors.sources.gitlab.connector import (
+    GITLAB_COMPARE_DIFF_LIMIT,
     FileAttachment,
     GitLabConnector,
     GitlabLiterals,
@@ -4524,6 +4525,7 @@ class TestGitlabConnectorSyncProjects:
         mock_project = MagicMock()
         mock_project.id = 101
         mock_project.path_with_namespace = "group/project-one"
+        mock_project.default_branch = "main"
 
         # Mock successful projects response
         mock_projects_res = MagicMock()
@@ -4556,7 +4558,7 @@ class TestGitlabConnectorSyncProjects:
         connector._sync_project_members_as_pseudo.assert_called_once_with(mock_project)
         connector._fetch_issues_batched.assert_called_once_with(101)
         connector._fetch_prs_batched.assert_called_once_with(101)
-        connector._sync_repo_main.assert_called_once_with(101, "group/project-one")
+        connector._sync_repo_main.assert_called_once_with(101, "group/project-one", "main")
 
     @pytest.mark.asyncio
     async def test_sync_projects_success_multiple_projects(self) -> None:
@@ -4567,14 +4569,17 @@ class TestGitlabConnectorSyncProjects:
         mock_project1 = MagicMock()
         mock_project1.id = 101
         mock_project1.path_with_namespace = "group/project-one"
+        mock_project1.default_branch = "main"
 
         mock_project2 = MagicMock()
         mock_project2.id = 202
         mock_project2.path_with_namespace = "group/project-two"
+        mock_project2.default_branch = "main"
 
         mock_project3 = MagicMock()
         mock_project3.id = 303
         mock_project3.path_with_namespace = "another-group/project-three"
+        mock_project3.default_branch = "main"
 
         mock_projects_res = MagicMock()
         mock_projects_res.success = True
@@ -4611,9 +4616,9 @@ class TestGitlabConnectorSyncProjects:
         connector._fetch_prs_batched.assert_any_call(202)
         connector._fetch_prs_batched.assert_any_call(303)
 
-        connector._sync_repo_main.assert_any_call(101, "group/project-one")
-        connector._sync_repo_main.assert_any_call(202, "group/project-two")
-        connector._sync_repo_main.assert_any_call(303, "another-group/project-three")
+        connector._sync_repo_main.assert_any_call(101, "group/project-one", "main")
+        connector._sync_repo_main.assert_any_call(202, "group/project-two", "main")
+        connector._sync_repo_main.assert_any_call(303, "another-group/project-three", "main")
 
     @pytest.mark.asyncio
     async def test_sync_projects_fetch_fails_raises_exception(self) -> None:
@@ -4705,6 +4710,7 @@ class TestGitlabConnectorSyncProjects:
         mock_project = MagicMock()
         mock_project.id = 101
         mock_project.path_with_namespace = "group/project"
+        mock_project.default_branch = "main"
 
         mock_projects_res = MagicMock()
         mock_projects_res.success = True
@@ -4725,7 +4731,7 @@ class TestGitlabConnectorSyncProjects:
         async def track_prs(project_id) -> None:
             call_order.append("fetch_prs")
 
-        async def track_repo(project_id, path) -> None:
+        async def track_repo(project_id, path, branch) -> None:
             call_order.append("sync_repo")
 
         connector._sync_project_members_as_pseudo = track_pseudo
@@ -4747,6 +4753,7 @@ class TestGitlabConnectorSyncProjects:
         mock_project = MagicMock()
         mock_project.id = 789
         mock_project.path_with_namespace = "org-name/deep/project-path"
+        mock_project.default_branch = "main"
 
         mock_projects_res = MagicMock()
         mock_projects_res.success = True
@@ -4768,7 +4775,7 @@ class TestGitlabConnectorSyncProjects:
         connector._fetch_issues_batched.assert_called_once_with(789)
         connector._fetch_prs_batched.assert_called_once_with(789)
         connector._sync_repo_main.assert_called_once_with(
-            789, "org-name/deep/project-path"
+            789, "org-name/deep/project-path", "main"
         )
 
     @pytest.mark.asyncio
@@ -4780,6 +4787,7 @@ class TestGitlabConnectorSyncProjects:
         mock_project = MagicMock()
         mock_project.id = 101
         mock_project.path_with_namespace = "group/project"
+        mock_project.default_branch = "main"
 
         mock_projects_res = MagicMock()
         mock_projects_res.success = True
@@ -4802,7 +4810,7 @@ class TestGitlabConnectorSyncProjects:
         # Remaining steps on the same project still ran.
         connector._fetch_issues_batched.assert_called_once_with(101)
         connector._fetch_prs_batched.assert_called_once_with(101)
-        connector._sync_repo_main.assert_called_once_with(101, "group/project")
+        connector._sync_repo_main.assert_called_once_with(101, "group/project", "main")
 
     @pytest.mark.asyncio
     async def test_sync_projects_fetch_issues_raises_is_isolated(self) -> None:
@@ -4812,6 +4820,7 @@ class TestGitlabConnectorSyncProjects:
         mock_project = MagicMock()
         mock_project.id = 101
         mock_project.path_with_namespace = "group/project"
+        mock_project.default_branch = "main"
 
         mock_projects_res = MagicMock()
         mock_projects_res.success = True
@@ -4832,7 +4841,7 @@ class TestGitlabConnectorSyncProjects:
 
         # MRs and code must still be attempted on the same project.
         connector._fetch_prs_batched.assert_called_once_with(101)
-        connector._sync_repo_main.assert_called_once_with(101, "group/project")
+        connector._sync_repo_main.assert_called_once_with(101, "group/project", "main")
 
     @pytest.mark.asyncio
     async def test_sync_projects_fetch_prs_raises_is_isolated(self) -> None:
@@ -4842,6 +4851,7 @@ class TestGitlabConnectorSyncProjects:
         mock_project = MagicMock()
         mock_project.id = 101
         mock_project.path_with_namespace = "group/project"
+        mock_project.default_branch = "main"
 
         mock_projects_res = MagicMock()
         mock_projects_res.success = True
@@ -4860,7 +4870,7 @@ class TestGitlabConnectorSyncProjects:
 
         await connector._sync_projects()
 
-        connector._sync_repo_main.assert_called_once_with(101, "group/project")
+        connector._sync_repo_main.assert_called_once_with(101, "group/project", "main")
 
     @pytest.mark.asyncio
     async def test_sync_projects_sync_repo_raises_is_isolated(self) -> None:
@@ -7368,13 +7378,13 @@ class TestRunIncrementalSync:
     """Unit tests for run_incremental_sync."""
 
     @pytest.mark.asyncio
-    async def test_returns_none(self) -> None:
-        """Method returns None (stub implementation)."""
+    async def test_delegates_to_run_sync(self) -> None:
         connector = _make_connector()
+        connector.run_sync = AsyncMock()
 
-        result = await connector.run_incremental_sync()
+        await connector.run_incremental_sync()
 
-        assert result is None
+        connector.run_sync.assert_awaited_once()
 
 
 class TestBuildCommentBlocks:
@@ -12037,10 +12047,23 @@ class TestSyncRepoMain:
         connector.data_source = MagicMock()
         connector._process_new_records = AsyncMock()
         connector.build_code_file_records = AsyncMock()
+        self._attach_repo_main_entry_mocks(connector)
         self._attach_tx_store(
             connector, existing_record=existing_record, parent_record=parent_record
         )
         return connector
+
+    def _attach_repo_main_entry_mocks(
+        self, connector: GitLabConnector, *, checkpoint_sha: str | None = None
+    ) -> None:
+        """Route _sync_repo_main through full sync (no checkpoint) by default."""
+        branch_res = MagicMock()
+        branch_res.success = True
+        branch_res.error = None
+        branch_res.data = MagicMock(commit={"id": "deadbeef00"})
+        connector.data_source.get_branch = MagicMock(return_value=branch_res)
+        connector._get_code_repo_checkpoint = AsyncMock(return_value=checkpoint_sha)
+        connector._update_code_repo_checkpoint = AsyncMock()
 
     # ── Phase 1: get_repo_tree_g early exits ──────────────────────────────────
 
@@ -12052,7 +12075,7 @@ class TestSyncRepoMain:
             side_effect=Exception("network")
         )
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         connector.logger.error.assert_called_once()
         connector._process_new_records.assert_not_called()
@@ -12066,7 +12089,7 @@ class TestSyncRepoMain:
         tree_res.data = None
         connector.data_source.get_repo_tree_g = AsyncMock(return_value=tree_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         connector.logger.info.assert_called()
         connector._process_new_records.assert_not_called()
@@ -12092,7 +12115,7 @@ class TestSyncRepoMain:
         )
         connector.data_source.get_repo_tree_g = AsyncMock(return_value=tree_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         connector._process_new_records.assert_not_called()
 
@@ -12112,7 +12135,7 @@ class TestSyncRepoMain:
         file_res = self._gql_file_response(blob_nodes=[], has_next_page=False)
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         connector._process_new_records.assert_called_once()
         records = connector._process_new_records.call_args[0][0]
@@ -12143,7 +12166,7 @@ class TestSyncRepoMain:
         file_res = self._gql_file_response(blob_nodes=[], has_next_page=False)
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         records = connector._process_new_records.call_args[0][0]
         assert records[0].record.parent_external_record_id is None
@@ -12166,7 +12189,7 @@ class TestSyncRepoMain:
         file_res = self._gql_file_response(blob_nodes=[], has_next_page=False)
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         records = connector._process_new_records.call_args[0][0]
         assert records[0].record.id != "existing-uuid"
@@ -12203,7 +12226,7 @@ class TestSyncRepoMain:
         file_res = self._gql_file_response(blob_nodes=[], has_next_page=False)
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         assert connector.data_source.get_repo_tree_g.call_count == 2
         second_call_kwargs = connector.data_source.get_repo_tree_g.call_args_list[1]
@@ -12227,7 +12250,7 @@ class TestSyncRepoMain:
         file_res = self._gql_file_response(blob_nodes=[], has_next_page=False)
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         assert connector.data_source.get_repo_tree_g.call_count == 1
 
@@ -12256,7 +12279,7 @@ class TestSyncRepoMain:
         file_res = self._gql_file_response(blob_nodes=[], has_next_page=False)
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         assert connector.data_source.get_repo_tree_g.call_count == 2
 
@@ -12281,7 +12304,7 @@ class TestSyncRepoMain:
         file_res = self._gql_file_response(blob_nodes=[], has_next_page=False)
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         all_calls = connector._process_new_records.call_args_list
         all_records = []
@@ -12323,7 +12346,7 @@ class TestSyncRepoMain:
         file_res = self._gql_file_response(blob_nodes=[], has_next_page=False)
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         records = connector._process_new_records.call_args[0][0]
         assert records[0].record.parent_external_record_id == "/p/src"
@@ -12348,7 +12371,7 @@ class TestSyncRepoMain:
         file_res = self._gql_file_response(blob_nodes=[], has_next_page=False)
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         records = connector._process_new_records.call_args[0][0]
         assert records[0].record.parent_external_record_id == (
@@ -12373,7 +12396,7 @@ class TestSyncRepoMain:
         file_res = self._gql_file_response(blob_nodes=[], has_next_page=False)
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         connector._process_new_records.assert_not_called()
 
@@ -12396,7 +12419,7 @@ class TestSyncRepoMain:
         file_res = self._gql_file_response(blob_nodes=[], has_next_page=False)
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         assert connector._process_new_records.call_count == 2
         first_batch = connector._process_new_records.call_args_list[0][0][0]
@@ -12445,7 +12468,7 @@ class TestSyncRepoMain:
             side_effect=Exception("file tree error")
         )
 
-        await connector3._sync_repo_main(10, "my/project")
+        await connector3._sync_repo_main(10, "my/project", "main")
 
         connector3.build_code_file_records.assert_not_called()
         # error logged for file tree
@@ -12466,7 +12489,7 @@ class TestSyncRepoMain:
         file_res.error = "quota exceeded"
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         connector.build_code_file_records.assert_not_called()
         connector.logger.error.assert_called()
@@ -12485,7 +12508,7 @@ class TestSyncRepoMain:
         file_res.data = None
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         connector.build_code_file_records.assert_not_called()
 
@@ -12503,7 +12526,7 @@ class TestSyncRepoMain:
         file_res.data = "NOT VALID JSON{{"
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         connector.build_code_file_records.assert_not_called()
         connector.logger.error.assert_called()
@@ -12535,7 +12558,7 @@ class TestSyncRepoMain:
         )
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         connector.build_code_file_records.assert_not_called()
 
@@ -12554,7 +12577,7 @@ class TestSyncRepoMain:
         file_res = self._gql_file_response(blob_nodes=blobs, has_next_page=False)
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         connector.build_code_file_records.assert_called_once_with(
             blobs, 10, "my/project"
@@ -12572,7 +12595,7 @@ class TestSyncRepoMain:
         file_res = self._gql_file_response(blob_nodes=[], has_next_page=False)
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         connector.build_code_file_records.assert_not_called()
 
@@ -12597,7 +12620,7 @@ class TestSyncRepoMain:
             side_effect=[file_res_1, file_res_2]
         )
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         assert connector.build_code_file_records.call_count == 2
 
@@ -12615,7 +12638,7 @@ class TestSyncRepoMain:
         )
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(10, "my/project")
+        await connector._sync_repo_main(10, "my/project", "main")
 
         assert connector.data_source.get_file_tree_g.call_count == 1
 
@@ -12629,7 +12652,7 @@ class TestSyncRepoMain:
         tree_res.data = None
         connector.data_source.get_repo_tree_g = AsyncMock(return_value=tree_res)
 
-        await connector._sync_repo_main(99, "owner/repo")
+        await connector._sync_repo_main(99, "owner/repo", "main")
 
         connector.data_source.get_repo_tree_g.assert_called_once_with(
             project_id="owner/repo", ref="HEAD", after_cursor=""
@@ -12649,10 +12672,183 @@ class TestSyncRepoMain:
         file_res = self._gql_file_response(blob_nodes=[], has_next_page=False)
         connector.data_source.get_file_tree_g = AsyncMock(return_value=file_res)
 
-        await connector._sync_repo_main(42, "my/project")
+        await connector._sync_repo_main(42, "my/project", "main")
 
         records = connector._process_new_records.call_args[0][0]
         assert records[0].record.external_record_group_id == "42-code-repository"
+
+
+class TestIncrementalCodeRepoSync:
+    """Incremental code repository sync via repository/compare."""
+
+    def _branch_res(self, sha: str = "current000") -> MagicMock:
+        res = MagicMock()
+        res.success = True
+        res.error = None
+        res.data = MagicMock(commit={"id": sha})
+        return res
+
+    @pytest.mark.asyncio
+    async def test_sync_repo_main_noop_when_head_unchanged(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.get_branch = MagicMock(
+            return_value=self._branch_res("same0001")
+        )
+        connector._get_code_repo_checkpoint = AsyncMock(return_value="same0001")
+        connector._sync_repo_full = AsyncMock()
+        connector._sync_repo_incremental = AsyncMock()
+
+        await connector._sync_repo_main(10, "group/proj", "main")
+
+        connector._sync_repo_full.assert_not_called()
+        connector._sync_repo_incremental.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sync_repo_main_full_sync_when_no_checkpoint(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.get_branch = MagicMock(
+            return_value=self._branch_res("newhead01")
+        )
+        connector._get_code_repo_checkpoint = AsyncMock(return_value=None)
+        connector._update_code_repo_checkpoint = AsyncMock()
+        connector._sync_repo_full = AsyncMock()
+        connector._sync_repo_incremental = AsyncMock()
+
+        await connector._sync_repo_main(10, "group/proj", "main")
+
+        connector._sync_repo_full.assert_awaited_once_with(10, "group/proj")
+        connector._sync_repo_incremental.assert_not_called()
+        connector._update_code_repo_checkpoint.assert_awaited_once_with(
+            10, "newhead01"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sync_repo_incremental_partitions_diffs(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        diffs = [
+            {
+                "old_path": "removed.py",
+                "new_path": "removed.py",
+                "deleted_file": True,
+                "renamed_file": False,
+                "new_file": False,
+            },
+            {
+                "old_path": "old_name.py",
+                "new_path": "new_name.py",
+                "deleted_file": False,
+                "renamed_file": True,
+                "new_file": False,
+            },
+            {
+                "old_path": "added.py",
+                "new_path": "added.py",
+                "deleted_file": False,
+                "renamed_file": False,
+                "new_file": True,
+            },
+            {
+                "old_path": "changed.py",
+                "new_path": "changed.py",
+                "deleted_file": False,
+                "renamed_file": False,
+                "new_file": False,
+            },
+        ]
+        compare_res = MagicMock(success=True, data={"diffs": diffs}, error=None)
+        connector._ds_call = AsyncMock(return_value=compare_res)
+        connector._reconcile_sha_moves = AsyncMock(
+            side_effect=lambda pid, pp, d, a, ref="HEAD": (d, a, [])
+        )
+        connector._delete_code_files_by_paths = AsyncMock()
+        connector._apply_code_renames = AsyncMock(return_value=True)
+        connector._upsert_code_files_by_paths = AsyncMock(return_value=True)
+
+        ok = await connector._sync_repo_incremental(
+            10, "group/proj", "fromsha", "tosha"
+        )
+
+        assert ok is True
+        connector._reconcile_sha_moves.assert_awaited_once_with(
+            10, "group/proj", ["removed.py"], ["added.py"], ref="tosha"
+        )
+        connector._apply_code_renames.assert_awaited_once_with(
+            10, "group/proj", [("old_name.py", "new_name.py")], ref="tosha"
+        )
+        connector._delete_code_files_by_paths.assert_awaited_once_with(
+            10, "group/proj", ["removed.py"]
+        )
+        connector._upsert_code_files_by_paths.assert_awaited_once_with(
+            10,
+            "group/proj",
+            ["added.py", "changed.py"],
+            ref="tosha",
+        )
+
+    @pytest.mark.asyncio
+    async def test_sync_repo_main_falls_back_on_compare_failure(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.get_branch = MagicMock(
+            return_value=self._branch_res("newhead02")
+        )
+        connector._get_code_repo_checkpoint = AsyncMock(return_value="oldhead02")
+        connector._update_code_repo_checkpoint = AsyncMock()
+        connector._sync_repo_full = AsyncMock()
+        connector._sync_repo_incremental = AsyncMock(return_value=False)
+
+        await connector._sync_repo_main(10, "group/proj", "main")
+
+        connector._sync_repo_incremental.assert_awaited_once()
+        connector._sync_repo_full.assert_awaited_once_with(10, "group/proj")
+        connector._update_code_repo_checkpoint.assert_awaited_once_with(
+            10, "newhead02"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sync_repo_incremental_returns_false_when_diff_limit_exceeded(
+        self,
+    ) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        diffs = [{"old_path": f"f{i}.py", "new_path": f"f{i}.py"} for i in range(
+            GITLAB_COMPARE_DIFF_LIMIT
+        )]
+        compare_res = MagicMock(success=True, data={"diffs": diffs}, error=None)
+        connector._ds_call = AsyncMock(return_value=compare_res)
+
+        ok = await connector._sync_repo_incremental(
+            10, "group/proj", "fromsha", "tosha"
+        )
+
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_delete_code_files_by_paths_uses_web_path_lookup(self) -> None:
+        connector = _make_connector()
+        record = MagicMock()
+        record.id = "rec-uuid-1"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=record
+        )
+        connector.data_entities_processor.on_record_deleted = AsyncMock()
+
+        await connector._delete_code_files_by_paths(
+            10, "group/proj", ["src/main.py"]
+        )
+
+        expected_id = GitLabConnector._code_blob_web_path(
+            "group/proj", "src/main.py"
+        )
+        connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(
+            connector.connector_id, expected_id
+        )
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(
+            "rec-uuid-1"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -13473,6 +13669,7 @@ class TestGitlabSyncProjectsIndexingFilters:
         project = MagicMock()
         project.id = 7
         project.path_with_namespace = "org/p"
+        project.default_branch = "main"
 
         connector._resolve_projects_with_filters = AsyncMock(return_value=[project])
         connector._sync_project_members_as_pseudo = AsyncMock()
@@ -13490,7 +13687,7 @@ class TestGitlabSyncProjectsIndexingFilters:
 
         connector._fetch_issues_batched.assert_awaited_once_with(7)
         connector._fetch_prs_batched.assert_awaited_once_with(7)
-        connector._sync_repo_main.assert_awaited_once_with(7, "org/p")
+        connector._sync_repo_main.assert_awaited_once_with(7, "org/p", "main")
 
     @pytest.mark.asyncio
     async def test_issues_disabled_still_syncs_issues(self) -> None:
@@ -13542,7 +13739,7 @@ class TestGitlabSyncProjectsIndexingFilters:
 
         connector._fetch_issues_batched.assert_awaited_once()
         connector._fetch_prs_batched.assert_awaited_once()
-        connector._sync_repo_main.assert_awaited_once_with(7, "org/p")
+        connector._sync_repo_main.assert_awaited_once_with(7, "org/p", "main")
 
     @pytest.mark.asyncio
     async def test_no_projects_returns_early(self) -> None:

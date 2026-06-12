@@ -3,6 +3,7 @@ import base64
 import inspect
 import json
 import re
+import time
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -116,6 +117,7 @@ from app.utils.time_conversion import (
 
 GITLAB_CLOUD_URL = "https://gitlab.com"
 GITLAB_SEARCH_MIN_PARTIAL_CHARS = 3
+GITLAB_COMPARE_DIFF_LIMIT = 1000
 
 # Per-logical-call wall-clock budget. ``GitLabClientViaToken`` already passes
 # a per-HTTP-request ``timeout=30`` to python-gitlab, but a single
@@ -285,6 +287,7 @@ class RecordUpdate(BaseModel):
 
 class GitlabLiterals(str, Enum):
     LAST_SYNC_TIME = "last_sync_time"
+    LAST_COMMIT_SHA = "last_commit_sha"
     RECORD_GROUP = "record_group"
     GLOBAL = "global"
     UPDATED_AT = "updated_at"
@@ -1599,6 +1602,48 @@ class GitLabConnector(BaseConnector):
         )
         sync_point_data = {GitlabLiterals.LAST_SYNC_TIME.value: last_sync_time}
         await self.record_sync_point.update_sync_point(sync_point_key, sync_point_data)
+
+    async def _get_code_repo_checkpoint(self, project_id: int) -> str | None:
+        """Return the last synced HEAD commit SHA for a project's code repository."""
+        try:
+            group_project_id = f"{project_id}-code-repository"
+            sync_point_key = generate_record_sync_point_key(
+                Connectors.GITLAB.value, group_project_id, ""
+            )
+            sync_point_data = await self.record_sync_point.read_sync_point(
+                sync_point_key
+            )
+            if not sync_point_data:
+                return None
+            sha = sync_point_data.get(GitlabLiterals.LAST_COMMIT_SHA.value)
+            return str(sha) if sha else None
+        except Exception:
+            return None
+
+    async def _update_code_repo_checkpoint(
+        self, project_id: int, commit_sha: str
+    ) -> None:
+        """Persist the HEAD commit SHA after a successful code repository sync."""
+        group_project_id = f"{project_id}-code-repository"
+        sync_point_key = generate_record_sync_point_key(
+            Connectors.GITLAB.value, group_project_id, ""
+        )
+        sync_point_data = {GitlabLiterals.LAST_COMMIT_SHA.value: commit_sha}
+        await self.record_sync_point.update_sync_point(sync_point_key, sync_point_data)
+
+    @staticmethod
+    def _branch_head_commit_sha(branch_data: Any) -> str | None:
+        """Extract commit id from a python-gitlab branch or REST dict."""
+        commit = getattr(branch_data, "commit", None)
+        if commit is None and isinstance(branch_data, dict):
+            commit = branch_data.get("commit")
+        if commit is None:
+            return None
+        if isinstance(commit, dict):
+            sha = commit.get("id")
+            return str(sha) if sha else None
+        sha = getattr(commit, "id", None)
+        return str(sha) if sha else None
 
     async def run_sync(self) -> None:
         """syncing various entities"""
@@ -3253,12 +3298,87 @@ class GitLabConnector(BaseConnector):
             {GitlabLiterals.LAST_SYNC_TIME.value: current_timestamp},
         )
 
-    async def _sync_repo_main(self, project_id: int, project_path: str) -> None:
-        """Sync default branch files code.
-        PROCESS: 1. Sync all folders level wise via paginated graphql api.
-                 2. Sync all code repo. files via paginated graphql api.
-        REASON:  both can be in same api call but pagination to be separate.
-                 level wise files ordering not needed
+    async def _sync_repo_main(
+        self, project_id: int, project_path: str, default_branch: str
+    ) -> None:
+        """Sync code repository using incremental compare when a checkpoint exists."""
+        branch_res = await self._ds_call(
+            self.data_source.get_branch,
+            project_id=project_id,
+            branch=default_branch,
+        )
+        if not branch_res.success or not branch_res.data:
+            self.logger.error(
+                "Failed to fetch branch %s for project %s (%s): %s",
+                default_branch,
+                project_id,
+                project_path,
+                branch_res.error,
+            )
+            return
+
+        current_sha = self._branch_head_commit_sha(branch_res.data)
+        if not current_sha:
+            self.logger.error(
+                "No commit SHA on branch %s for project %s (%s)",
+                default_branch,
+                project_id,
+                project_path,
+            )
+            return
+
+        last_sha = await self._get_code_repo_checkpoint(project_id)
+        if last_sha is None:
+            self.logger.info(
+                "No code-repo checkpoint for project %s; running full sync",
+                project_id,
+            )
+            full_ok = await self._sync_repo_full(project_id, project_path)
+            if full_ok:
+                await self._update_code_repo_checkpoint(project_id, current_sha)
+            else:
+                self.logger.warning(
+                    "Full sync for project %s completed with errors; "
+                    "checkpoint not advanced so the next run will retry",
+                    project_id,
+                )
+            return
+
+        if last_sha == current_sha:
+            self.logger.info(
+                "Code repo unchanged for project %s (HEAD %s); skipping",
+                project_id,
+                current_sha[:8],
+            )
+            return
+
+        incremental_ok = await self._sync_repo_incremental(
+            project_id, project_path, last_sha, current_sha
+        )
+        if incremental_ok:
+            await self._update_code_repo_checkpoint(project_id, current_sha)
+            return
+
+        self.logger.warning(
+            "Incremental code sync failed for project %s; falling back to full sync",
+            project_id,
+        )
+        full_ok = await self._sync_repo_full(project_id, project_path)
+        if full_ok:
+            await self._update_code_repo_checkpoint(project_id, current_sha)
+        else:
+            self.logger.warning(
+                "Full sync fallback for project %s completed with errors; "
+                "checkpoint not advanced so the next run will retry",
+                project_id,
+            )
+
+    async def _sync_repo_full(self, project_id: int, project_path: str) -> bool:
+        """Full sync of default-branch folders and blobs via paginated GraphQL.
+
+        Returns ``True`` when the sync completed without any API errors,
+        ``False`` when a recoverable error caused an early exit (in which case
+        the caller must *not* advance the checkpoint so the next run retries).
         """
         # fetching file tree
         tree_list = []
@@ -3275,7 +3395,7 @@ class GitLabConnector(BaseConnector):
                 self.logger.error(
                     f"Error in fetching tree skipping repo code files sync for {project_id}: {e}"
                 )
-                return
+                return False
             if not tree_res.data:
                 self.logger.info(f"No tree found for project {project_id}")
                 return
@@ -3414,89 +3534,975 @@ class GitLabConnector(BaseConnector):
 
         # fetching code files
         # processing as when recieved, as parent folders exist
+        #
+        # Depth-1 pipeline: GitLab's ``paginatedTree`` is cursor-based, so
+        # page N+1 can't be fetched until page N hands back its ``endCursor``.
+        # But the network fetch (read-only GraphQL) is independent of the DB
+        # write side (``build_code_file_records``). So as soon as page N
+        # returns we kick off the fetch for page N+1 as a task and process
+        # page N concurrently — the next GraphQL round-trip overlaps the
+        # current page's writes. We never run more than one fetch ahead, so
+        # the cursor dependency is respected and pages are still processed
+        # strictly in order (parent-folder ordering is preserved).
         after_cursor = ""
         blobs_processed = 0
-        while True:
-            try:
-                tree_res = await self._ds_call_async(
-                    self.data_source.get_file_tree_g,
-                    project_id=project_path,
-                    ref="HEAD",
-                    after_cursor=after_cursor,
-                )
-            except Exception as e:
-                self.logger.error(
-                    f"Error in fetching file tree skipping repo code files sync for {project_id}: {e}"
-                )
-                return
-            if not tree_res.success:
-                self.logger.error(
-                    f"❌❌ Error in fetching file tree skipping repo code files sync for {project_id}: {tree_res.error}"
-                )
-                return
-            if not tree_res.data:
-                self.logger.info(f"❌❌ No file tree found for project {project_id}")
-                return
-            try:
-                data: dict[str, Any] = json.loads(tree_res.data)
-            except json.JSONDecodeError as e:
-                self.logger.error(
-                    f"❌ Failed to parse file tree JSON for {project_id}: {e}"
-                )
-                return
-            
-            # Surface GraphQL errors so they don't get masked as "empty repo"
-            if "errors" in data:
-                self.logger.error(
-                    f"🚨 GraphQL errors for project {project_id}: "
-                    f"{json.dumps(data['errors'])}"
-                )
-                return
-            
-            # Same null-coalescing rationale as ``_sync_repo_main``: GitLab
-            # returns ``repository: null`` (and sometimes ``project: null``)
-            # for empty/wiki-only projects or when the token lacks
-            # ``read_repository`` scope; ``dict.get(k, {})`` doesn't handle
-            # explicit ``None`` values, so coalesce with ``or {}``.
-            project = (data.get("data") or {}).get("project") or {}
-            repository = project.get("repository") or {}
-            paginated_tree = repository.get("paginatedTree") or {}
-            if not paginated_tree:
-                self.logger.info(
-                    f"No repository tree for project {project_id} "
-                    f"(empty repo, missing scope, or archived); skipping code files sync"
-                )
-                return
-            project_nodes = paginated_tree.get("nodes") or []
-            page_info = paginated_tree.get("pageInfo") or {}
-            if not project_nodes:
-                if blobs_processed > 0:
+        pending: asyncio.Task[tuple[str, list[dict[str, Any]], dict[str, Any]]] | None = (
+            asyncio.create_task(
+                self._fetch_blob_page(project_path, project_id, after_cursor)
+            )
+        )
+        try:
+            while pending is not None:
+                kind, file_path_nodes, page_info = await pending
+                pending = None
+                if kind == "abort":
+                    return False
+                if kind == "no_nodes":
+                    if blobs_processed == 0:
+                        self.logger.info(
+                            f"No project nodes found for project {project_id}"
+                        )
                     break
-                self.logger.info(f"No project nodes found for project {project_id}")
-                return
-            t_nodes: dict[str, Any] = project_nodes[0]
-            file_path_nodes: list[dict[str, Any]] = (
-                (t_nodes.get("blobs") or {}).get("nodes") or []
-            )
-            if file_path_nodes:
-                self.logger.debug(
-                    f"❗❗ Files fetched via GQL: {len(file_path_nodes)} "
-                )
-                await self.build_code_file_records(
-                    file_path_nodes, project_id, project_path
-                )
-                blobs_processed += len(file_path_nodes)
-            continue_paging, after_cursor = self._should_continue_repo_tree_pagination(
-                len(file_path_nodes), blobs_processed, page_info
-            )
-            if not continue_paging:
-                if not page_info.get("hasNextPage"):
-                    self.logger.debug("✅✅ No more code file pages left, exiting")
-                else:
-                    self.logger.debug(
-                        "Stopping code file pagination early: empty page received after data was collected"
+                # Decide on (and launch) the next fetch BEFORE processing this
+                # page, so the network round-trip overlaps the DB writes below.
+                # Pass the running total *including* this page to match the
+                # original "increment then check" ordering.
+                continue_paging, after_cursor = (
+                    self._should_continue_repo_tree_pagination(
+                        len(file_path_nodes),
+                        blobs_processed + len(file_path_nodes),
+                        page_info,
                     )
-                break
+                )
+                if continue_paging:
+                    pending = asyncio.create_task(
+                        self._fetch_blob_page(
+                            project_path, project_id, after_cursor
+                        )
+                    )
+                if file_path_nodes:
+                    self.logger.debug(
+                        f"❗❗ Files fetched via GQL: {len(file_path_nodes)} "
+                    )
+                    await self.build_code_file_records(
+                        file_path_nodes, project_id, project_path
+                    )
+                    blobs_processed += len(file_path_nodes)
+                if not continue_paging:
+                    if not page_info.get("hasNextPage"):
+                        self.logger.debug(
+                            "✅✅ No more code file pages left, exiting"
+                        )
+                    else:
+                        self.logger.debug(
+                            "Stopping code file pagination early: empty page "
+                            "received after data was collected"
+                        )
+        finally:
+            # Defensive: if we bailed out (abort/break) with a prefetch still
+            # in flight, cancel it so it doesn't dangle as an orphan task.
+            if pending is not None and not pending.done():
+                pending.cancel()
+                try:
+                    await pending
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+        return True
+
+    async def _fetch_blob_page(
+        self, project_path: str, project_id: int, after_cursor: str
+    ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+        """Fetch and parse a single ``paginatedTree`` blob page.
+
+        Returns ``(kind, file_path_nodes, page_info)`` where ``kind`` is one of:
+
+        * ``"data"``     — a usable page; ``file_path_nodes`` may still be the
+          empty list for a trailing/empty page (the caller's pagination guard
+          decides whether to stop).
+        * ``"no_nodes"`` — ``paginatedTree.nodes`` was empty.
+        * ``"abort"``    — fatal (network/JSON/GraphQL error, missing repo,
+          missing scope, archived); the caller stops the whole code sync.
+
+        This method never raises — failures are logged and mapped to
+        ``"abort"`` — because it runs as a prefetch task whose result is
+        awaited one iteration later; an escaping exception would otherwise
+        surface detached from its context.
+        """
+        empty: list[dict[str, Any]] = []
+        try:
+            tree_res = await self._ds_call_async(
+                self.data_source.get_file_tree_g,
+                project_id=project_path,
+                ref="HEAD",
+                after_cursor=after_cursor,
+            )
+        except Exception as e:
+            self.logger.error(
+                f"Error in fetching file tree skipping repo code files sync "
+                f"for {project_id}: {e}"
+            )
+            return "abort", empty, {}
+        if not tree_res.success:
+            self.logger.error(
+                f"❌❌ Error in fetching file tree skipping repo code files "
+                f"sync for {project_id}: {tree_res.error}"
+            )
+            return "abort", empty, {}
+        if not tree_res.data:
+            self.logger.info(f"❌❌ No file tree found for project {project_id}")
+            return "abort", empty, {}
+        try:
+            data: dict[str, Any] = json.loads(tree_res.data)
+        except json.JSONDecodeError as e:
+            self.logger.error(
+                f"❌ Failed to parse file tree JSON for {project_id}: {e}"
+            )
+            return "abort", empty, {}
+
+        # Surface GraphQL errors so they don't get masked as "empty repo"
+        if "errors" in data:
+            self.logger.error(
+                f"🚨 GraphQL errors for project {project_id}: "
+                f"{json.dumps(data['errors'])}"
+            )
+            return "abort", empty, {}
+
+        # Same null-coalescing rationale as ``_sync_repo_main``: GitLab
+        # returns ``repository: null`` (and sometimes ``project: null``)
+        # for empty/wiki-only projects or when the token lacks
+        # ``read_repository`` scope; ``dict.get(k, {})`` doesn't handle
+        # explicit ``None`` values, so coalesce with ``or {}``.
+        project = (data.get("data") or {}).get("project") or {}
+        repository = project.get("repository") or {}
+        paginated_tree = repository.get("paginatedTree") or {}
+        if not paginated_tree:
+            self.logger.info(
+                f"No repository tree for project {project_id} "
+                f"(empty repo, missing scope, or archived); skipping code "
+                f"files sync"
+            )
+            return "abort", empty, {}
+        project_nodes = paginated_tree.get("nodes") or []
+        page_info = paginated_tree.get("pageInfo") or {}
+        if not project_nodes:
+            return "no_nodes", empty, page_info
+        t_nodes: dict[str, Any] = project_nodes[0]
+        file_path_nodes: list[dict[str, Any]] = (
+            (t_nodes.get("blobs") or {}).get("nodes") or []
+        )
+        return "data", file_path_nodes, page_info
+
+    @staticmethod
+    def _code_blob_web_path(
+        project_path: str, repo_path: str, ref: str = "HEAD"
+    ) -> str:
+        return f"/{project_path}/-/blob/{ref}/{repo_path}"
+
+    @staticmethod
+    def _code_tree_web_path(
+        project_path: str, repo_path: str, ref: str = "HEAD"
+    ) -> str:
+        return f"/{project_path}/-/tree/{ref}/{repo_path}"
+
+    @staticmethod
+    def _should_skip_dotfile_repo_path(repo_path: str) -> bool:
+        basename = repo_path.rsplit("/", 1)[-1]
+        return basename.startswith(".")
+
+    @staticmethod
+    def _compare_diff_entry(diff: Any, key: str) -> Any:
+        if isinstance(diff, dict):
+            return diff.get(key)
+        return getattr(diff, key, None)
+
+    def _classify_compare_diffs(
+        self, diffs: list[Any]
+    ) -> tuple[list[str], list[str], list[str], list[tuple[str, str]]]:
+        """Classify compare-API diffs into four operation lists.
+
+        Returns ``(deletes, adds, modifies, renames)`` where:
+
+        * ``deletes``  — repo-relative paths of blobs that were removed.
+        * ``adds``     — repo-relative paths of blobs that are new.
+        * ``modifies`` — repo-relative paths of blobs whose content changed
+                         in place (same path, no rename flag).
+        * ``renames``  — list of ``(old_path, new_path)`` pairs where GitLab
+                         reported ``renamed_file=true``.
+
+        Dotfile-normalisation rules (applied here before any callers need to
+        think about them):
+
+        * If the **new** path of a rename is a dotfile (skipped) the rename is
+          degraded to a plain delete of ``old_path``.
+        * If the **old** path of a rename is a dotfile we never stored the
+          source record, so the rename degrades to a plain add of ``new_path``.
+        * Plain add/modify/delete of a dotfile path is silently dropped.
+
+        All output lists are deduplicated in the order first seen.
+        """
+        deletes: list[str] = []
+        adds: list[str] = []
+        modifies: list[str] = []
+        renames: list[tuple[str, str]] = []
+
+        seen_delete: set[str] = set()
+        seen_add: set[str] = set()
+        seen_modify: set[str] = set()
+        seen_rename_old: set[str] = set()
+
+        def _add_delete(path: str) -> None:
+            if path and path not in seen_delete and not self._should_skip_dotfile_repo_path(path):
+                deletes.append(path)
+                seen_delete.add(path)
+
+        def _add_add(path: str) -> None:
+            if path and path not in seen_add and not self._should_skip_dotfile_repo_path(path):
+                adds.append(path)
+                seen_add.add(path)
+
+        def _add_modify(path: str) -> None:
+            if path and path not in seen_modify and not self._should_skip_dotfile_repo_path(path):
+                modifies.append(path)
+                seen_modify.add(path)
+        for diff in diffs:
+            old_path = self._compare_diff_entry(diff, "old_path") or ""
+            new_path = self._compare_diff_entry(diff, "new_path") or ""
+            is_deleted = bool(self._compare_diff_entry(diff, "deleted_file"))
+            is_renamed = bool(self._compare_diff_entry(diff, "renamed_file"))
+            is_new = bool(self._compare_diff_entry(diff, "new_file"))
+
+            if is_deleted:
+                _add_delete(old_path)
+                continue
+
+            if is_renamed:
+                effective_old = old_path
+                effective_new = new_path or old_path
+
+                # Rename to a dotfile target → only delete the old record.
+                if self._should_skip_dotfile_repo_path(effective_new):
+                    _add_delete(effective_old)
+                    continue
+
+                # Rename from a dotfile source → we never stored it, treat as add.
+                if self._should_skip_dotfile_repo_path(effective_old):
+                    _add_add(effective_new)
+                    continue
+
+                if effective_old and effective_old not in seen_rename_old:
+                    renames.append((effective_old, effective_new))
+                    seen_rename_old.add(effective_old)
+                continue
+
+            # Plain add or modify.
+            target = new_path or old_path
+            if is_new:
+                _add_add(target)
+            else:
+                _add_modify(target)
+
+        return deletes, adds, modifies, renames
+
+    async def _resolve_blob_sha_by_path(
+        self,
+        project_id: int,
+        repo_paths: list[str],
+        ref: str = "HEAD",
+    ) -> tuple[dict[str, str], bool]:
+        """Fetch blob SHAs for a list of repo-relative paths via list_repo_tree.
+
+        Returns ``(sha_map, all_ok)`` where ``sha_map`` maps
+        ``{repo_path: blob_sha}`` for every path that was found, and
+        ``all_ok`` is ``False`` when any tree lookup failed (so the caller
+        knows the map may be incomplete).
+        """
+        by_parent: dict[str | None, list[str]] = {}
+        for repo_path in repo_paths:
+            parent = repo_path.rpartition("/")[0] if "/" in repo_path else None
+            by_parent.setdefault(parent, []).append(repo_path)
+
+        sha_map: dict[str, str] = {}
+        all_ok = True
+        for parent, child_paths in by_parent.items():
+            tree_res = await self._paged_list(
+                self.data_source.list_repo_tree,
+                project_id=project_id,
+                ref=ref,
+                path=parent,
+                recursive=False,
+                progress_label=f"resolve-sha tree {parent or '/'} project {project_id}",
+            )
+            if not tree_res.success or not tree_res.data:
+                all_ok = False
+                continue
+            for entry in tree_res.data:
+                entry_path = (
+                    entry.get("path") if isinstance(entry, dict) else getattr(entry, "path", None)
+                )
+                entry_type = (
+                    entry.get("type") if isinstance(entry, dict) else getattr(entry, "type", None)
+                )
+                blob_sha = (
+                    entry.get("id") if isinstance(entry, dict) else getattr(entry, "id", None)
+                )
+                if entry_path and entry_type == "blob" and blob_sha and str(entry_path) in child_paths:
+                    sha_map[str(entry_path)] = str(blob_sha)
+        return sha_map, all_ok
+
+    async def _reconcile_sha_moves(
+        self,
+        project_id: int,
+        project_path: str,
+        deletes: list[str],
+        adds: list[str],
+        ref: str = "HEAD",
+    ) -> tuple[list[str], list[str], list[tuple[str, str]]]:
+        """Promote delete+add pairs sharing the same blob SHA into renames.
+
+        GitLab only sets ``renamed_file`` when content similarity exceeds its
+        threshold.  An identical-content move (copy then delete) shows up as a
+        plain ``deleted_file`` + ``new_file`` pair.  We detect this case by
+        comparing the SHA stored on the deleted record with the SHA of the new
+        blob from the tree API, and promote matching pairs to in-place renames.
+
+        Returns ``(remaining_deletes, remaining_adds, extra_renames)`` where
+        the promoted paths are removed from the delete/add lists.
+        """
+        if not deletes or not adds:
+            return deletes, adds, []
+
+        # Resolve SHAs of the added paths from the current tree.
+        # _reconcile_sha_moves is best-effort: a partial SHA map simply means
+        # some identical-content moves aren't promoted to renames and fall back
+        # to delete+add — that is safe and idempotent. We do not surface
+        # all_ok here; the caller (_sync_repo_incremental) tracks completeness
+        # through the downstream upsert/rename results.
+        added_sha_map, _ = await self._resolve_blob_sha_by_path(project_id, adds, ref=ref)
+
+        # Build a reverse map: SHA → new_path (first match wins for uniqueness).
+        sha_to_new_path: dict[str, str] = {}
+        for new_path, sha in added_sha_map.items():
+            if sha not in sha_to_new_path:
+                sha_to_new_path[sha] = new_path
+
+        # Look up the blob SHAs that the deleted records currently have stored.
+        extra_renames: list[tuple[str, str]] = []
+        promoted_deletes: set[str] = set()
+        promoted_adds: set[str] = set()
+
+        for old_path in deletes:
+            old_external_id = self._code_blob_web_path(project_path, old_path)
+            existing = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, old_external_id
+            )
+            if existing is None:
+                continue
+            stored_sha = getattr(existing, "external_revision_id", None) or ""
+            if not stored_sha:
+                continue
+            new_path = sha_to_new_path.get(stored_sha)
+            if new_path is None or new_path in promoted_adds:
+                continue
+            # Same blob SHA → treat as a move/rename.
+            extra_renames.append((old_path, new_path))
+            promoted_deletes.add(old_path)
+            promoted_adds.add(new_path)
+
+        remaining_deletes = [p for p in deletes if p not in promoted_deletes]
+        remaining_adds = [p for p in adds if p not in promoted_adds]
+        return remaining_deletes, remaining_adds, extra_renames
+
+    async def _apply_code_renames(
+        self,
+        project_id: int,
+        project_path: str,
+        renames: list[tuple[str, str]],
+        ref: str = "HEAD",
+    ) -> bool:
+        """Apply in-place rename / move for a list of ``(old_path, new_path)`` pairs.
+
+        For each pair:
+        1. Ensures destination folder records exist so the new parent edge resolves.
+        2. Fetches the current blob metadata from the tree API.
+        3. Builds a ``CodeFileRecord`` with the new path/name/SHA.
+        4. Delegates to ``on_records_moved`` which handles id reuse, edge swap,
+           and conditional re-indexing.
+
+        Returns ``True`` when every rename target was resolved successfully,
+        ``False`` when any tree lookup failed (the caller should not advance
+        the checkpoint).
+        """
+        if not renames:
+            return True
+
+        new_paths = [new_p for _, new_p in renames]
+        await self._ensure_folder_records_for_paths(project_id, project_path, new_paths, ref=ref)
+
+        # Single list_repo_tree pass per parent directory to collect both
+        # blob SHA and file name for all rename targets.
+        all_ok = True
+        by_parent: dict[str | None, list[str]] = {}
+        for repo_path in new_paths:
+            parent = repo_path.rpartition("/")[0] if "/" in repo_path else None
+            by_parent.setdefault(parent, []).append(repo_path)
+
+        new_sha_map: dict[str, str] = {}
+        name_map: dict[str, str] = {}
+        for parent, child_paths in by_parent.items():
+            tree_res = await self._paged_list(
+                self.data_source.list_repo_tree,
+                project_id=project_id,
+                ref=ref,
+                path=parent,
+                recursive=False,
+                progress_label=f"rename tree {parent or '/'} project {project_id}",
+            )
+            if not tree_res.success or not tree_res.data:
+                all_ok = False
+                continue
+            for entry in tree_res.data:
+                entry_path = (
+                    entry.get("path") if isinstance(entry, dict) else getattr(entry, "path", None)
+                )
+                entry_type = (
+                    entry.get("type") if isinstance(entry, dict) else getattr(entry, "type", None)
+                )
+                entry_name = (
+                    entry.get("name") if isinstance(entry, dict) else getattr(entry, "name", None)
+                )
+                blob_sha_e = (
+                    entry.get("id") if isinstance(entry, dict) else getattr(entry, "id", None)
+                )
+                if entry_path and entry_type == "blob" and str(entry_path) in child_paths:
+                    if blob_sha_e:
+                        new_sha_map[str(entry_path)] = str(blob_sha_e)
+                    if entry_name:
+                        name_map[str(entry_path)] = str(entry_name)
+
+        external_group_id = f"{project_id}-code-repository"
+        code_files_enabled = self._code_files_indexing_enabled()
+        current_timestamp = get_epoch_timestamp_in_ms()
+
+        moves: list[tuple[str, Any, list[Any]]] = []
+        for old_path, new_path in renames:
+            blob_sha = new_sha_map.get(new_path)
+            file_name = name_map.get(new_path)
+
+            if not file_name:
+                # Can't resolve new metadata → fall back: add the new path as a
+                # normal upsert and delete the old one.
+                self.logger.warning(
+                    "Could not resolve name for rename target %r in project %s; "
+                    "falling back to delete+add",
+                    new_path,
+                    project_id,
+                )
+                await self._delete_code_files_by_paths(project_id, project_path, [old_path])
+                await self._upsert_code_files_by_paths(project_id, project_path, [new_path], ref=ref)
+                continue
+
+            # Skip dotfile targets (classifier should have already handled this,
+            # but guard defensively for callers of _apply_code_renames directly).
+            if self._should_skip_dotfile_repo_path(new_path):
+                await self._delete_code_files_by_paths(project_id, project_path, [old_path])
+                continue
+
+            file_extension = file_name.split(".")[-1]
+            file_mime = getattr(MimeTypes, file_extension.upper(), MimeTypes.PLAIN_TEXT).value
+            preview_renderable = file_extension.lower() in PREVIEW_RENDERABLE_EXTENSIONS
+
+            web_path = self._code_blob_web_path(project_path, new_path)
+            weburl = f"{self._gitlab_base_url}{web_path}"
+
+            parent_external_record_id: str | None
+            if "/" in new_path:
+                parent_dir = new_path.rpartition("/")[0]
+                parent_external_record_id = self._code_tree_web_path(project_path, parent_dir)
+            else:
+                parent_external_record_id = None
+
+            new_record = CodeFileRecord(
+                id=str(uuid.uuid4()),
+                org_id=self.data_entities_processor.org_id,
+                record_name=file_name,
+                record_type=RecordType.CODE_FILE.value,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                external_record_id=web_path,
+                version=0,
+                origin=OriginTypes.CONNECTOR.value,
+                record_group_type=RecordGroupType.PROJECT.value,
+                external_record_group_id=external_group_id,
+                mime_type=file_mime,
+                external_revision_id=str(blob_sha) if blob_sha else "",
+                preview_renderable=preview_renderable,
+                file_path=new_path,
+                file_hash=blob_sha,
+                inherit_permissions=True,
+                parent_external_record_id=parent_external_record_id,
+                parent_record_type=(RecordType.FILE if parent_external_record_id else None),
+                weburl=weburl,
+                source_created_at=current_timestamp,
+                source_updated_at=current_timestamp,
+            )
+            if not code_files_enabled:
+                new_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+            old_external_id = self._code_blob_web_path(project_path, old_path)
+            moves.append((old_external_id, new_record, []))
+
+        if moves:
+            await self.data_entities_processor.on_records_moved(moves)
+
+        return all_ok
+
+    async def _sync_repo_incremental(
+        self,
+        project_id: int,
+        project_path: str,
+        from_sha: str,
+        to_sha: str,
+    ) -> bool:
+        """Apply repository/compare diffs between two commits. Returns False to fall back.
+
+        Uses ``straight=True`` on the compare API so diffs reflect the direct
+        two-commit tree change rather than a merge-base diff, which is correct
+        for normal pushes and also handles force-push / rebase correctly.
+
+        Operation ordering:
+        1. Deletes  — remove records that no longer exist.
+        2. Renames  — in-place update (id preserved, parent edge swapped).
+        3. Adds/modifies — upsert new / changed blobs.
+
+        This ordering prevents a rename from accidentally matching a freshly
+        upserted record with the same path.
+        """
+        compare_res = await self._ds_call(
+            self.data_source.compare_commits,
+            project_id=project_id,
+            from_sha=from_sha,
+            to_sha=to_sha,
+            straight=True,
+        )
+        if not compare_res.success or compare_res.data is None:
+            self.logger.warning(
+                "compare_commits failed for project %s: %s",
+                project_id,
+                compare_res.error,
+            )
+            return False
+
+        compare_data = compare_res.data
+        if isinstance(compare_data, dict):
+            diffs = compare_data.get("diffs") or []
+            overflow = compare_data.get("overflow")
+        else:
+            diffs = getattr(compare_data, "diffs", None) or []
+            overflow = getattr(compare_data, "overflow", None)
+
+        if overflow:
+            self.logger.warning(
+                "compare_commits returned overflow=true for project %s "
+                "(%s diffs visible); falling back to full sync",
+                project_id,
+                len(diffs),
+            )
+            return False
+
+        if len(diffs) >= GITLAB_COMPARE_DIFF_LIMIT:
+            self.logger.warning(
+                "Too many diffs (%s) for project %s; falling back to full sync",
+                len(diffs),
+                project_id,
+            )
+            return False
+
+        deletes, adds, modifies, renames = self._classify_compare_diffs(diffs)
+
+        self.logger.info(
+            "Incremental code sync for project %s: %s deletes, %s adds, "
+            "%s modifies, %s renames (before SHA reconcile)",
+            project_id,
+            len(deletes),
+            len(adds),
+            len(modifies),
+            len(renames),
+        )
+        self.logger.debug("deletes=%s adds=%s modifies=%s renames=%s", deletes, adds, modifies, renames)
+
+        # Content-SHA reconcile: promote identical-content delete+add pairs to
+        # in-place renames (catches moves GitLab didn't flag as renamed_file).
+        deletes, adds, extra_renames = await self._reconcile_sha_moves(
+            project_id, project_path, deletes, adds, ref=to_sha
+        )
+        renames = renames + extra_renames
+
+        if extra_renames:
+            self.logger.info(
+                "SHA reconcile promoted %s delete+add pair(s) to rename for project %s",
+                len(extra_renames),
+                project_id,
+            )
+
+        self.logger.info(
+            "Incremental code sync for project %s (final): %s deletes, %s adds, "
+            "%s modifies, %s renames",
+            project_id,
+            len(deletes),
+            len(adds),
+            len(modifies),
+            len(renames),
+        )
+
+        # Apply in order: deletes first, then renames, then adds/modifies.
+        # Track whether every operation completed without data loss; if any
+        # sub-operation reports a failure the checkpoint must not advance so
+        # the next run retries from the same base SHA.
+        all_ok = True
+
+        if deletes:
+            await self._delete_code_files_by_paths(project_id, project_path, deletes)
+
+        if renames:
+            rename_ok = await self._apply_code_renames(project_id, project_path, renames, ref=to_sha)
+            all_ok = all_ok and rename_ok
+
+        upsert_paths = list(dict.fromkeys(adds + modifies))
+        if upsert_paths:
+            upsert_ok = await self._upsert_code_files_by_paths(project_id, project_path, upsert_paths, ref=to_sha)
+            all_ok = all_ok and upsert_ok
+
+        # Folder cleanup: after all file operations are applied, delete folder
+        # records that are now empty (cascade up to emptied ancestors).
+        removed_paths = deletes + [old_p for old_p, _ in renames]
+        if removed_paths:
+            await self._cleanup_emptied_folders(project_id, project_path, removed_paths)
+
+        if not all_ok:
+            self.logger.warning(
+                "Incremental sync for project %s completed with partial failures; "
+                "checkpoint not advanced so the next run will retry",
+                project_id,
+            )
+
+        return all_ok
+
+    async def _cleanup_emptied_folders(
+        self, project_id: int, project_path: str, removed_paths: list[str]
+    ) -> None:
+        """Delete folder records that became empty after file deletes / renames.
+
+        Git emits no directory diffs, so directory delete / rename / move is
+        inferred from file-level diffs.  After all file operations are applied
+        we look at every ancestor directory of any removed/renamed file path
+        and delete the corresponding folder record if it now has no children in
+        the DB.  Processing deepest-first gives the cascade for free: deleting
+        ``a/sub`` lets ``a`` appear childless on the next iteration.
+
+        Args:
+            removed_paths: repo-relative file paths that were deleted or whose
+                           old path was vacated by a rename / move.
+        """
+        # Build the set of candidate directory prefixes.
+        candidate_dirs: set[str] = set()
+        for repo_path in removed_paths:
+            parts = repo_path.split("/")
+            for i in range(1, len(parts)):
+                candidate_dirs.add("/".join(parts[:i]))
+
+        if not candidate_dirs:
+            return
+
+        # Process deepest directories first so parent folders see their
+        # children already removed when it is their turn to be evaluated.
+        sorted_dirs = sorted(candidate_dirs, key=lambda p: p.count("/"), reverse=True)
+
+        deleted_count = 0
+        for dir_prefix in sorted_dirs:
+            tree_external_id = self._code_tree_web_path(project_path, dir_prefix)
+
+            folder = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, tree_external_id
+            )
+            if folder is None:
+                # Folder was never stored (dotfile dir, etc.) or already deleted.
+                continue
+
+            children = await self.data_entities_processor.get_records_by_parent(
+                self.connector_id, tree_external_id
+            )
+            if children:
+                # Partial move or untouched files still live here — keep the folder.
+                self.logger.debug(
+                    "Folder %r still has %d child(ren) in project %s; keeping",
+                    dir_prefix,
+                    len(children),
+                    project_id,
+                )
+                continue
+
+            self.logger.info(
+                "Deleting emptied folder record %r (id=%s) for project %s",
+                dir_prefix,
+                folder.id,
+                project_id,
+            )
+            await self.data_entities_processor.on_folder_deleted(folder.id)
+            deleted_count += 1
+
+        if deleted_count:
+            self.logger.info(
+                "Folder cleanup removed %d emptied folder record(s) for project %s",
+                deleted_count,
+                project_id,
+            )
+
+    async def _delete_code_files_by_paths(
+        self, project_id: int, project_path: str, paths: list[str]
+    ) -> None:
+        for repo_path in paths:
+            external_id = self._code_blob_web_path(project_path, repo_path)
+            record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, external_id
+            )
+            if record:
+                await self.data_entities_processor.on_record_deleted(record.id)
+
+    async def _upsert_code_files_by_paths(
+        self, project_id: int, project_path: str, paths: list[str], ref: str = "HEAD"
+    ) -> bool:
+        """Upsert code file records for the given repo-relative paths.
+
+        Returns ``True`` when every path was successfully resolved and
+        written, ``False`` when any tree lookup failed or any blob was not
+        found in the tree (the caller should not advance the checkpoint).
+        """
+        unique_paths = list(dict.fromkeys(paths))
+        if not unique_paths:
+            return True
+
+        await self._ensure_folder_records_for_paths(
+            project_id, project_path, unique_paths, ref=ref
+        )
+
+        all_ok = True
+        nodes: list[dict[str, Any]] = []
+        by_parent: dict[str | None, list[str]] = {}
+        for repo_path in unique_paths:
+            if "/" in repo_path:
+                parent = repo_path.rpartition("/")[0]
+            else:
+                parent = None
+            by_parent.setdefault(parent, []).append(repo_path)
+
+        for parent, child_paths in by_parent.items():
+            tree_res = await self._paged_list(
+                self.data_source.list_repo_tree,
+                project_id=project_id,
+                ref=ref,
+                path=parent,
+                recursive=False,
+                progress_label=f"upsert tree {parent or '/'} project {project_id}",
+            )
+            if not tree_res.success or not tree_res.data:
+                self.logger.warning(
+                    "list_repo_tree failed for project %s path %r: %s",
+                    project_id,
+                    parent,
+                    tree_res.error,
+                )
+                all_ok = False
+                continue
+
+            entries_by_path: dict[str, Any] = {}
+            for entry in tree_res.data:
+                entry_path = (
+                    entry.get("path")
+                    if isinstance(entry, dict)
+                    else getattr(entry, "path", None)
+                )
+                if entry_path:
+                    entries_by_path[str(entry_path)] = entry
+
+            for repo_path in child_paths:
+                entry = entries_by_path.get(repo_path)
+                if entry is None:
+                    self.logger.warning(
+                        "Blob %r not found under parent %r for project %s",
+                        repo_path,
+                        parent,
+                        project_id,
+                    )
+                    all_ok = False
+                    continue
+                entry_type = (
+                    entry.get("type")
+                    if isinstance(entry, dict)
+                    else getattr(entry, "type", None)
+                )
+                if entry_type != "blob":
+                    continue
+                blob_sha = (
+                    entry.get("id")
+                    if isinstance(entry, dict)
+                    else getattr(entry, "id", None)
+                )
+                name = (
+                    entry.get("name")
+                    if isinstance(entry, dict)
+                    else getattr(entry, "name", None)
+                )
+                if not blob_sha or not name:
+                    continue
+                web_path = self._code_blob_web_path(project_path, repo_path)
+                nodes.append(
+                    {
+                        "path": repo_path,
+                        "name": name,
+                        "sha": str(blob_sha),
+                        "type": "blob",
+                        "webPath": web_path,
+                        "webUrl": f"{self._gitlab_base_url}{web_path}",
+                    }
+                )
+
+        if nodes:
+            await self.build_code_file_records(nodes, project_id, project_path)
+
+        return all_ok
+
+    async def _ensure_folder_records_for_paths(
+        self, project_id: int, project_path: str, file_paths: list[str], ref: str = "HEAD"
+    ) -> None:
+        """Create missing folder records for parent directories of changed files."""
+        prefixes: set[str] = set()
+        for repo_path in file_paths:
+            parts = repo_path.split("/")
+            for i in range(1, len(parts)):
+                prefixes.add("/".join(parts[:i]))
+
+        if not prefixes:
+            return
+
+        external_group_id = f"{project_id}-code-repository"
+        sorted_prefixes = sorted(prefixes, key=lambda p: p.count("/"))
+
+        record_updates: list[RecordUpdate] = []
+
+        for prefix in sorted_prefixes:
+            tree_external_id = self._code_tree_web_path(project_path, prefix)
+            existing = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, tree_external_id
+            )
+            if existing:
+                continue
+
+            parent_prefix: str | None
+            if "/" in prefix:
+                parent_prefix = prefix.rpartition("/")[0]
+            else:
+                parent_prefix = None
+
+            tree_res = await self._paged_list(
+                self.data_source.list_repo_tree,
+                project_id=project_id,
+                ref=ref,
+                path=parent_prefix,
+                recursive=False,
+                progress_label=f"folder tree {parent_prefix or '/'} project {project_id}",
+            )
+            if not tree_res.success or not tree_res.data:
+                self.logger.warning(
+                    "Could not list repo tree for folder %r in project %s",
+                    prefix,
+                    project_id,
+                )
+                continue
+
+            folder_entry = None
+            for entry in tree_res.data:
+                entry_path = (
+                    entry.get("path")
+                    if isinstance(entry, dict)
+                    else getattr(entry, "path", None)
+                )
+                if entry_path != prefix:
+                    continue
+                entry_type = (
+                    entry.get("type")
+                    if isinstance(entry, dict)
+                    else getattr(entry, "type", None)
+                )
+                if entry_type == "tree":
+                    folder_entry = entry
+                    break
+
+            if folder_entry is None:
+                continue
+
+            folder_name = (
+                folder_entry.get("name")
+                if isinstance(folder_entry, dict)
+                else getattr(folder_entry, "name", None)
+            )
+            folder_hash = (
+                folder_entry.get("id")
+                if isinstance(folder_entry, dict)
+                else getattr(folder_entry, "id", None)
+            )
+            if not folder_name:
+                continue
+
+            web_path = self._code_tree_web_path(project_path, prefix)
+            weburl = f"{self._gitlab_base_url}{web_path}"
+            if parent_prefix:
+                parent_external_record_id = self._code_tree_web_path(
+                    project_path, parent_prefix
+                )
+            else:
+                parent_external_record_id = None
+
+            tree_record = FileRecord(
+                id=str(uuid.uuid4()),
+                org_id=self.data_entities_processor.org_id,
+                record_name=str(folder_name),
+                record_type=RecordType.FILE.value,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                external_record_id=web_path,
+                version=0,
+                origin=OriginTypes.CONNECTOR.value,
+                record_group_type=RecordGroupType.PROJECT.value,
+                external_record_group_id=external_group_id,
+                mime_type=MimeTypes.FOLDER.value,
+                external_revision_id=str(folder_hash) if folder_hash else "",
+                preview_renderable=False,
+                parent_external_record_id=parent_external_record_id,
+                parent_record_type=(
+                    RecordType.FILE if parent_external_record_id else None
+                ),
+                is_file=False,
+                inherit_permissions=True,
+                weburl=weburl,
+            )
+            record_updates.append(
+                RecordUpdate(
+                    record=tree_record,
+                    is_new=True,
+                    is_updated=False,
+                    is_deleted=False,
+                    metadata_changed=False,
+                    content_changed=False,
+                    permissions_changed=False,
+                    external_record_id=web_path,
+                    new_permissions=[],
+                    old_permissions=[],
+                )
+            )
+
+        if record_updates:
+            await self._process_new_records(record_updates)
 
     async def build_code_file_records(
         self, code_file_list: list[dict[str, Any]], project_id: int, project_path: str
@@ -3695,7 +4701,9 @@ class GitLabConnector(BaseConnector):
             if content_b64 is None:
                 yield b""
                 return
-            decoded_bytes = base64.b64decode(content_b64)
+            # Offload CPU-bound base64 decode so it doesn't stall the event
+            # loop while decoding potentially multi-MB source files.
+            decoded_bytes = await asyncio.to_thread(base64.b64decode, content_b64)
             yield decoded_bytes
         except Exception as e:
             raise Exception(
@@ -3735,7 +4743,14 @@ class GitLabConnector(BaseConnector):
                 ("members", lambda: self._sync_project_members_as_pseudo(project)),
                 ("issues", lambda: self._fetch_issues_batched(project_id)),
                 ("merge_requests", lambda: self._fetch_prs_batched(project_id)),
-                ("code", lambda: self._sync_repo_main(project_id, project_path)),
+                (
+                    "code",
+                    lambda: self._sync_repo_main(
+                        project_id,
+                        project_path,
+                        project.default_branch or "main",
+                    ),
+                ),
             ):
                 try:
                     await step()
@@ -4657,7 +5672,7 @@ class GitLabConnector(BaseConnector):
 
 
     async def run_incremental_sync(self) -> None:
-        return
+        await self.run_sync()
 
     # ---------------------------Comments sync-----------------------------------#
 
@@ -4919,10 +5934,11 @@ class GitLabConnector(BaseConnector):
                 new_file = new_file_content_res.data
                 new_file_content = getattr(new_file, "content", "")
             try:
-                # Decode base64 content from Gitlab API else add encoded content
-                file_content = base64.b64decode(new_file_content).decode(
-                    GitlabLiterals.UTF_8.value
-                )
+                # Offload CPU-bound base64 decode so large MR files don't
+                # stall the event loop.
+                file_content = (
+                    await asyncio.to_thread(base64.b64decode, new_file_content)
+                ).decode(GitlabLiterals.UTF_8.value)
             except Exception as e:
                 self.logger.error(
                     f"Failed to decode code file content for {file_path}: {e}"
@@ -5362,6 +6378,10 @@ class GitLabConnector(BaseConnector):
         ) = await self.parse_gitlab_uploads_clean_test(body_content)
         if not attachments:
             return markdown_content_clean
+        # Skip images larger than 4 MB: base64 encoding inflates size by ~33%,
+        # so a 4 MB image produces a ~5.3 MB string embedded in the record —
+        # beyond that the storage and indexing cost outweighs the value.
+        _MAX_IMAGE_BYTES = 4 * 1024 * 1024
         for attach in attachments:
             if attach.category != GitlabLiterals.IMAGE.value:
                 continue
@@ -5370,10 +6390,18 @@ class GitLabConnector(BaseConnector):
             try:
                 response = await self.data_source.get_img_bytes(full_attachment_url)
                 if response.success and response.data:
+                    if len(response.data) > _MAX_IMAGE_BYTES:
+                        self.logger.debug(
+                            "Skipping image %s: size %d bytes exceeds limit",
+                            attachment_url,
+                            len(response.data),
+                        )
+                        continue
                     fmt = self.EXTENSION_TO_MIME.get(attach.filetype, "png")
-                    base64_data = base64.b64encode(response.data).decode(
-                        GitlabLiterals.UTF_8.value
-                    )
+                    # Offload CPU-bound base64 encode to the thread pool so
+                    # large images don't stall the event loop.
+                    raw_b64 = await asyncio.to_thread(base64.b64encode, response.data)
+                    base64_data = raw_b64.decode(GitlabLiterals.UTF_8.value)
                     md_image_data = f"![Image](data:image/{fmt};base64,{base64_data})"
                     markdown_content_clean += f"{md_image_data}"
             except Exception as e:
@@ -6351,6 +7379,11 @@ class GitLabConnector(BaseConnector):
         """
         self.logger.info("Cleaning up GitLab connector resources.")
         await self._cancel_code_file_timestamp_backfill()
+        if self.data_source is not None:
+            try:
+                await self.data_source.aclose()
+            except Exception as e:
+                self.logger.warning("Failed to close GitLab HTTP client: %s", e)
         self.data_source = None
         try:
             self._gitlab_executor.shutdown(wait=False, cancel_futures=True)
