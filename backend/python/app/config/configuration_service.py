@@ -170,7 +170,7 @@ class ConfigurationService:
                     "port": int(os.getenv("OPENSEARCH_PORT", "9200")),
                     "username": os.getenv("OPENSEARCH_USERNAME", "admin"),
                     "password": os.getenv("OPENSEARCH_PASSWORD", "admin"),
-                    "useSSL": os.getenv("OPENSEARCH_USE_SSL", "false").lower() == "true",
+                    "useSsl": os.getenv("OPENSEARCH_USE_SSL", "false").lower() == "true",
                     "verifyCerts": os.getenv("OPENSEARCH_VERIFY_CERTS", "false").lower() == "true",
                 }
         return None

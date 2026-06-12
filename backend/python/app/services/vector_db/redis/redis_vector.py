@@ -277,15 +277,12 @@ class RedisVectorService(IVectorDBService):
                 )
                 self._collection_configs[collection_name] = config
                 return
-            # Dimension mismatch — drop and recreate
-            logger.warning(
-                f"Redis index '{idx}' has dim={existing_info.dense_dimension}, "
-                f"expected {config.embedding_size} — recreating."
+            raise ValueError(
+                f"Redis index '{idx}' dimension mismatch: "
+                f"existing dim={existing_info.dense_dimension}, "
+                f"expected {config.embedding_size}. "
+                f"Delete the collection explicitly before recreating."
             )
-            try:
-                await self.client.execute_command("FT.DROPINDEX", idx, "DD")  # type: ignore
-            except Exception:
-                pass
 
         self._collection_configs[collection_name] = config
 

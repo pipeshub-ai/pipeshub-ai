@@ -136,6 +136,27 @@ class TestRedisCollectionManagement:
         assert "384" in str(args)
 
     @pytest.mark.asyncio
+    async def test_create_collection_dimension_mismatch_raises(self, service, mock_redis_client):
+        """Dimension mismatch must not auto-drop the index and delete documents."""
+        from app.services.vector_db.models import VectorCollectionInfo
+
+        service.get_collection_info = AsyncMock(
+            return_value=VectorCollectionInfo(
+                name="my_index", exists=True, dense_dimension=768
+            )
+        )
+        config = CollectionConfig(embedding_size=384)
+
+        with pytest.raises(ValueError, match="dimension mismatch"):
+            await service.create_collection("my_index", config)
+
+        drop_calls = [
+            c for c in mock_redis_client.execute_command.call_args_list
+            if c.args and c.args[0] == "FT.DROPINDEX"
+        ]
+        assert drop_calls == []
+
+    @pytest.mark.asyncio
     async def test_delete_collection_calls_ft_dropindex(self, service, mock_redis_client):
         mock_redis_client.execute_command = AsyncMock(return_value="OK")
         await service.delete_collection("coll")

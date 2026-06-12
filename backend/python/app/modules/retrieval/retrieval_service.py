@@ -720,7 +720,7 @@ class RetrievalService:
                 if point.id in seen_points:
                     continue
                 seen_points.add(point.id)
-                metadata = point.payload.get("metadata", {})
+                metadata = point.payload.get("metadata") or {}
                 metadata["point_id"] = point.id
                 doc = Document(
                     page_content=point.payload.get("page_content", ""),

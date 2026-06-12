@@ -1094,14 +1094,14 @@ class VectorStore(Transformer):
             # ── Image blocks ──
             if image_blocks:
                 try:
-                    images_uris = [
-                        b.data.get("uri")
-                        for b in image_blocks
+                    valid_image_blocks = [
+                        b for b in image_blocks
                         if isinstance(b.data, dict) and b.data.get("uri")
                     ]
+                    images_uris = [b.data.get("uri") for b in valid_image_blocks]
                     if images_uris:
                         if is_multimodal_embedding:
-                            for block in image_blocks:
+                            for block in valid_image_blocks:
                                 documents_to_embed.append(
                                     {
                                         "image_uri": block.data.get("uri"),
@@ -1117,7 +1117,7 @@ class VectorStore(Transformer):
                                 )
                         elif is_multimodal_llm:
                             description_results = await self.describe_images(images_uris, llm)
-                            for result, block in zip(description_results, image_blocks):
+                            for result, block in zip(description_results, valid_image_blocks):
                                 if result["success"]:
                                     documents_to_embed.append(
                                         Document(
