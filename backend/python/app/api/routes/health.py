@@ -437,6 +437,7 @@ async def check_collection_info(
 @router.post("/embedding-health-check")
 async def embedding_health_check(request: Request, embedding_configs: list[dict] = Body(...)) -> JSONResponse:
     """Health check endpoint to validate embedding configurations."""
+    logger = None
     try:
         # Initialize components
         dense_embeddings, retrieval_service, logger = await initialize_embedding_model(request, embedding_configs)
@@ -462,14 +463,20 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
         )
 
     except HTTPException as he:
-        return JSONResponse(status_code=he.status_code, content=he.detail)
+        detail = he.detail
+        if isinstance(detail, dict) and "error" in detail and "message" not in detail:
+            detail = {**detail, "message": detail["error"]}
+        return JSONResponse(status_code=he.status_code, content=detail)
     except Exception as e:
-        logger.error(f"Embedding health check failed: {str(e)}", exc_info=True)
+        if logger:
+            logger.error(f"Embedding health check failed: {str(e)}", exc_info=True)
+        error_msg = f"Embedding model health check failed: {str(e)}"
         return JSONResponse(
             status_code=500,
             content={
                 "status": "not healthy",
-                "error": f"Embedding model health check failed: {str(e)}",
+                "error": error_msg,
+                "message": error_msg,
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )

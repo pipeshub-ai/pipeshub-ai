@@ -3600,7 +3600,9 @@ export const updateDefaultAIModel =
         if (!aiResponseData?.data || aiResponseData?.statusCode !== 200) {
           const errData: any = aiResponseData?.data ?? {};
           const reasonMessage =
-            (errData && (errData.message ?? errData.error?.message)) ??
+            errData.message ??
+            errData.error?.message ??
+            (typeof errData.error === 'string' ? errData.error : null) ??
             `Failed health check while setting default ${targetModelType} model. ` +
               `Refusing to change default to prevent breaking the system.`;
 
