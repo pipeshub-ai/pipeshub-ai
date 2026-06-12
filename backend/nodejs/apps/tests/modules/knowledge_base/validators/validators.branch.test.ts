@@ -8,8 +8,6 @@ import {
   updatePermissionsSchema,
   reindexRecordSchema,
   reindexRecordGroupSchema,
-  reindexFailedRecordSchema,
-  resyncConnectorSchema,
   moveRecordSchema,
 } from '../../../../src/modules/knowledge_base/validators/validators'
 

@@ -473,6 +473,7 @@ export class Application {
       createConnectorRouter(
         this.tokenManagerContainer,
         this.crawlingManagerContainer,
+        this.knowledgeBaseContainer,
       ),
     );
 

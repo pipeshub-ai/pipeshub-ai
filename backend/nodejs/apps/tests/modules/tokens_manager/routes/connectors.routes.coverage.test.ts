@@ -27,6 +27,7 @@ describe('Connector Routes - handler coverage', () => {
       scopedJwtSecret: 'test-secret',
       cmBackend: 'http://localhost:3004',
       connectorBackend: 'http://localhost:8088',
+      storage: { endpoint: 'http://localhost:3003' },
     }
 
     const mockEventService = {
@@ -46,6 +47,18 @@ describe('Connector Routes - handler coverage', () => {
       get: sinon.stub().returns(mockScheduler),
     }
 
+    const mockKnowledgeBaseContainer = {
+      get: sinon.stub().callsFake((token: string) => {
+        if (token === 'RecordsEventProducer') {
+          return { start: sinon.stub().resolves(), publishEvent: sinon.stub().resolves() }
+        }
+        if (token === 'SyncEventProducer') {
+          return { start: sinon.stub().resolves(), publishEvent: sinon.stub().resolves() }
+        }
+        throw new Error(`Unexpected knowledge base token: ${token}`)
+      }),
+    }
+
     const mockKeyValueStoreService = {
       get: sinon.stub().resolves(null),
       set: sinon.stub().resolves(),
@@ -57,7 +70,7 @@ describe('Connector Routes - handler coverage', () => {
     container.bind<any>(PrometheusService).toConstantValue({ recordActivity: sinon.stub() })
     container.bind<any>('KeyValueStoreService').toConstantValue(mockKeyValueStoreService)
 
-    router = createConnectorRouter(container, mockCrawlingContainer)
+    router = createConnectorRouter(container, mockCrawlingContainer, mockKnowledgeBaseContainer)
   })
 
   afterEach(() => {

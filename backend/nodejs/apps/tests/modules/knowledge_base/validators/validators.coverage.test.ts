@@ -6,9 +6,6 @@ import {
   deleteRecordSchema,
   reindexRecordSchema,
   reindexRecordGroupSchema,
-  reindexFailedRecordSchema,
-  resyncConnectorSchema,
-  getConnectorStatsSchema,
   uploadRecordsSchema,
   uploadRecordsToFolderSchema,
   createKBSchema,
@@ -279,20 +276,6 @@ describe('Knowledge Base Validators - coverage', () => {
       const result = reindexRecordGroupSchema.safeParse({
         params: { recordGroupId: 'grp-1' },
         body: { depth: -1 },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('reindexFailedRecordSchema should accept valid input', () => {
-      const result = reindexFailedRecordSchema.safeParse({
-        body: { app: 'google', connectorId: 'c-1', statusFilters: ['FAILED'] },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('resyncConnectorSchema should accept valid input', () => {
-      const result = resyncConnectorSchema.safeParse({
-        body: { connectorName: 'google', connectorId: 'c-1', fullSync: true },
       })
       expect(result.success).to.be.true
     })

@@ -3,10 +3,8 @@ import * as crypto from 'crypto';
 import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
 import { NextFunction, Response } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
-import { RecordRelationService } from '../services/kb.relation.service';
 import {
   BadRequestError,
-  ConflictError,
   ForbiddenError,
   InternalServerError,
   NotFoundError,
@@ -140,84 +138,6 @@ export const getKnowledgeHubNodes =
       next(handleError);
     }
   };
-
-// Types and helpers for active connector validation
-interface ConnectorInfo {
-  _key: string;
-}
-
-interface ActiveConnectorsResponse {
-  connectors: ConnectorInfo[];
-}
-
-const LOCK_MESSAGES: Record<string, string> = {
-  FULL_SYNCING: 'A full sync is in progress. Please wait and try again.',
-  SYNCING: 'A sync is already in progress. Please wait and try again.',
-};
-
-interface ConnectorInstanceLock {
-  connector?: { isLocked?: boolean; status?: string };
-}
-
-const validateConnectorNotLocked = async (
-  connectorId: string,
-  appConfig: AppConfig,
-  headers: Record<string, string>,
-): Promise<void> => {
-  const response = await executeConnectorCommand(
-    `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
-    HttpMethod.GET,
-    headers,
-  );
-
-  const data = response.data as ConnectorInstanceLock | undefined;
-  if (response.statusCode !== 200 || !data?.connector) {
-    return;
-  }
-
-  const connector = data.connector;
-  if (connector.isLocked) {
-    const status = connector.status ?? '';
-    const message =
-      LOCK_MESSAGES[status] ??
-      'Another operation is in progress. Please wait and try again.';
-    throw new ConflictError(message);
-  }
-};
-
-const normalizeAppName = (value: string): string =>
-  value.replace(' ', '').toLowerCase();
-
-const validateActiveConnector = async (
-  connectorId: string,
-  appConfig: AppConfig,
-  headers: Record<string, string>,
-): Promise<void> => {
-  const activeAppsResponse = await executeConnectorCommand(
-    `${appConfig.connectorBackend}/api/v1/connectors/active`,
-    HttpMethod.GET,
-    headers,
-  );
-
-  if (activeAppsResponse.statusCode !== 200) {
-    throw new InternalServerError('Failed to get active connectors');
-  }
-
-  const data = activeAppsResponse.data as ActiveConnectorsResponse;
-  const connectors = data?.connectors || [];
-
-  const isAllowed = connectors.some(
-    (connector) => connector._key === connectorId,
-  );
-
-  if (!isAllowed) {
-    throw new BadRequestError(`Connector ${connectorId} not allowed`);
-  }
-
-  logger.debug('Connector validation successful', {
-    connectorId,
-  });
-};
 
 export const createKnowledgeBase =
   (appConfig: AppConfig) =>
@@ -2121,90 +2041,6 @@ export const listKBPermissions =
     }
   };
 
-export const getConnectorStats =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const { userId, orgId } = req.user || {};
-
-      // Validate user authentication
-      if (!userId || !orgId) {
-        throw new UnauthorizedError(
-          'User not authenticated or missing organization ID',
-        );
-      }
-
-      if (!req.params.connectorId) {
-        throw new BadRequestError('Connector ID is required');
-      }
-
-      try {
-        // Call the Python service to get record
-
-        const queryParams = new URLSearchParams();
-
-        queryParams.append('org_id', orgId);
-        queryParams.append('connector_id', req.params.connectorId);
-        const response = await executeConnectorCommand(
-          `${appConfig.connectorBackend}/api/v1/stats?${queryParams.toString()}`,
-          HttpMethod.GET,
-          req.headers as Record<string, string>,
-        );
-
-        if (response.statusCode !== 200) {
-          throw new InternalServerError(
-            'Failed to get connector stats via Python service',
-          );
-        }
-
-        const result = response.data;
-
-        // Log successful retrieval
-        logger.info('Connector stats retrieved successfully', {
-          userId,
-          orgId,
-          requestId: req.context?.requestId,
-        });
-
-        // Send response
-        res.status(200).json(result);
-      } catch (pythonServiceError: any) {
-        logger.error('Error calling Python service for record', {
-          userId,
-          orgId,
-          error: pythonServiceError.message,
-          response: pythonServiceError.response?.data,
-          requestId: req.context?.requestId,
-        });
-
-        // Handle different error types from Python service
-        if (pythonServiceError.response?.status === 403) {
-          throw new ForbiddenError(
-            'You do not have permission to access connector stats',
-          );
-        } else if (pythonServiceError.response?.status === 404) {
-          throw new NotFoundError('No records found or user not found');
-        } else if (pythonServiceError.response?.status === 400) {
-          throw new BadRequestError(
-            pythonServiceError.response?.data?.reason ||
-              'Invalid request parameters',
-          );
-        } else {
-          throw new InternalServerError(
-            `Failed to get connector stats: ${pythonServiceError.message}`,
-          );
-        }
-      }
-    } catch (error: any) {
-      logger.error('Error getting connector stats', {
-        recordId: req.params.recordId,
-        error,
-      });
-      next(error);
-      return; // Added return statement
-    }
-  };
-
 export const getRecordBuffer =
   (connectorUrl: string) =>
   async (
@@ -2302,107 +2138,6 @@ export const getRecordBuffer =
         error: error.message,
       });
       next(handleError);
-    }
-  };
-
-export const reindexFailedRecords =
-  (recordRelationService: RecordRelationService, appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const userId = req.user?.userId;
-      const orgId = req.user?.orgId;
-      const app = req.body.app;
-      const connectorId = req.body.connectorId;
-      if (!userId || !orgId) {
-        throw new BadRequestError('User not authenticated');
-      }
-
-      await validateActiveConnector(
-        connectorId,
-        appConfig,
-        req.headers as Record<string, string>,
-      );
-
-      await validateConnectorNotLocked(
-        connectorId,
-        appConfig,
-        req.headers as Record<string, string>,
-      );
-
-      const reindexPayload = {
-        userId,
-        orgId,
-        app: normalizeAppName(app),
-        connectorId,
-        statusFilters: req.body.statusFilters,
-      };
-
-      const reindexResponse =
-        await recordRelationService.reindexFailedRecords(reindexPayload);
-
-      res.status(200).json({
-        reindexResponse,
-      });
-
-      return; // Added return statement
-    } catch (error: any) {
-      logger.error('Error re indexing failed records', {
-        error,
-      });
-      next(error);
-      return; // Added return statement
-    }
-  };
-
-export const resyncConnectorRecords =
-  (recordRelationService: RecordRelationService, appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const userId = req.user?.userId;
-      const orgId = req.user?.orgId;
-      const connectorName = req.body.connectorName;
-      const connectorId = req.body.connectorId;
-      const fullSync = req.body.fullSync || false;
-      if (!userId || !orgId) {
-        throw new BadRequestError('User not authenticated');
-      }
-
-      await validateActiveConnector(
-        connectorId,
-        appConfig,
-        req.headers as Record<string, string>,
-      );
-
-      await validateConnectorNotLocked(
-        connectorId,
-        appConfig,
-        req.headers as Record<string, string>,
-      );
-
-      const resyncConnectorPayload = {
-        userId,
-        orgId,
-        connectorName: normalizeAppName(connectorName),
-        connectorId,
-        fullSync,
-      };
-
-      const resyncConnectorResponse =
-        await recordRelationService.resyncConnectorRecords(
-          resyncConnectorPayload,
-        );
-
-      res.status(200).json({
-        resyncConnectorResponse,
-      });
-
-      return; // Added return statement
-    } catch (error: any) {
-      logger.error('Error resyncing connector records', {
-        error,
-      });
-      next(error);
-      return; // Added return statement
     }
   };
 

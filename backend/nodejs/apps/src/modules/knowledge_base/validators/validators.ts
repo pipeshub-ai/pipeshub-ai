@@ -41,26 +41,6 @@ export const reindexRecordGroupSchema = z.object({
     .optional(),
 });
 
-export const reindexFailedRecordSchema = z.object({
-  body: z.object({
-    app: z.string().min(1),
-    connectorId: z.string().min(1),
-    statusFilters: z.array(z.string()).optional(),
-  }),
-});
-
-export const resyncConnectorSchema = z.object({
-  body: z.object({
-    connectorName: z.string().min(1),
-    connectorId: z.string().min(1),
-    fullSync: z.boolean().optional(),
-  }),
-});
-
-export const getConnectorStatsSchema = z.object({
-  params: z.object({ connectorId: z.string().min(1) }),
-});
-
 /**
  * Schema for the processed file buffer with metadata attached.
  * This is set by the file processor middleware after parsing files_metadata.

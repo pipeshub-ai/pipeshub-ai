@@ -7,9 +7,6 @@ import {
   deleteRecordSchema,
   reindexRecordSchema,
   reindexRecordGroupSchema,
-  reindexFailedRecordSchema,
-  resyncConnectorSchema,
-  getConnectorStatsSchema,
   uploadRecordsSchema,
   uploadRecordsToFolderSchema,
   createKBSchema,
@@ -105,48 +102,6 @@ describe('knowledge_base/validators/validators', () => {
       const data = { params: { recordGroupId: 'rg-123' } }
       const result = reindexRecordGroupSchema.safeParse(data)
       expect(result.success).to.be.true
-    })
-  })
-
-  describe('reindexFailedRecordSchema', () => {
-    it('should accept valid failed reindex request', () => {
-      const data = { body: { app: 'drive', connectorId: 'conn-1' } }
-      const result = reindexFailedRecordSchema.safeParse(data)
-      expect(result.success).to.be.true
-    })
-
-    it('should reject missing app', () => {
-      const data = { body: { connectorId: 'conn-1' } }
-      const result = reindexFailedRecordSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-  })
-
-  describe('resyncConnectorSchema', () => {
-    it('should accept valid resync request', () => {
-      const data = { body: { connectorName: 'drive', connectorId: 'conn-1' } }
-      const result = resyncConnectorSchema.safeParse(data)
-      expect(result.success).to.be.true
-    })
-
-    it('should accept optional fullSync', () => {
-      const data = { body: { connectorName: 'drive', connectorId: 'conn-1', fullSync: true } }
-      const result = resyncConnectorSchema.safeParse(data)
-      expect(result.success).to.be.true
-    })
-  })
-
-  describe('getConnectorStatsSchema', () => {
-    it('should accept valid connectorId', () => {
-      const data = { params: { connectorId: 'conn-1' } }
-      const result = getConnectorStatsSchema.safeParse(data)
-      expect(result.success).to.be.true
-    })
-
-    it('should reject empty connectorId', () => {
-      const data = { params: { connectorId: '' } }
-      const result = getConnectorStatsSchema.safeParse(data)
-      expect(result.success).to.be.false
     })
   })
 
@@ -643,31 +598,4 @@ describe('knowledge_base/validators/validators', () => {
     })
   })
 
-  describe('reindexFailedRecordSchema (additional)', () => {
-    it('should reject missing connectorId', () => {
-      const data = { body: { app: 'drive' } }
-      const result = reindexFailedRecordSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-
-    it('should accept optional statusFilters', () => {
-      const data = { body: { app: 'drive', connectorId: 'conn-1', statusFilters: ['FAILED', 'ERROR'] } }
-      const result = reindexFailedRecordSchema.safeParse(data)
-      expect(result.success).to.be.true
-    })
-  })
-
-  describe('resyncConnectorSchema (additional)', () => {
-    it('should reject missing connectorName', () => {
-      const data = { body: { connectorId: 'conn-1' } }
-      const result = resyncConnectorSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-
-    it('should reject missing connectorId', () => {
-      const data = { body: { connectorName: 'drive' } }
-      const result = resyncConnectorSchema.safeParse(data)
-      expect(result.success).to.be.false
-    })
-  })
 })

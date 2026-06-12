@@ -25,12 +25,14 @@ import {
   updateKBPermission,
   removeKBPermission,
   listKBPermissions,
-  getConnectorStats,
   getRecordBuffer,
-  reindexFailedRecords,
-  resyncConnectorRecords,
   moveRecord,
 } from '../../../../src/modules/knowledge_base/controllers/kb_controllers'
+import {
+  getConnectorStats,
+  reindexFailedRecords,
+  resyncConnectorRecords,
+} from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1801,7 +1803,8 @@ describe('Knowledge Base Controller', () => {
 
       const handler = reindexFailedRecords(mockRecordRelation, createMockAppConfig())
       const req = createMockRequest({
-        body: { app: 'Google Drive', connectorId: 'c1', statusFilters: ['failed'] },
+        params: { connectorId: 'c1' },
+        body: { app: 'Google Drive', statusFilters: ['failed'] },
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -1830,7 +1833,8 @@ describe('Knowledge Base Controller', () => {
 
       const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
       const req = createMockRequest({
-        body: { connectorName: 'Google Drive', connectorId: 'c1', fullSync: false },
+        params: { connectorId: 'c1' },
+        body: { connectorName: 'Google Drive', fullSync: false },
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -1852,7 +1856,8 @@ describe('Knowledge Base Controller', () => {
 
       const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
       const req = createMockRequest({
-        body: { connectorName: 'Google Drive', connectorId: 'c1', fullSync: false },
+        params: { connectorId: 'c1' },
+        body: { connectorName: 'Google Drive', fullSync: false },
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -3120,7 +3125,8 @@ describe('Knowledge Base Controller', () => {
 
       const handler = reindexFailedRecords(mockRecordRelation, createMockAppConfig())
       const req = createMockRequest({
-        body: { app: 'Google Drive', connectorId: 'c1', statusFilters: ['failed'] },
+        params: { connectorId: 'c1' },
+        body: { app: 'Google Drive', statusFilters: ['failed'] },
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -3136,7 +3142,8 @@ describe('Knowledge Base Controller', () => {
 
       const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
       const req = createMockRequest({
-        body: { connectorName: 'Google Drive', connectorId: 'c1', fullSync: false },
+        params: { connectorId: 'c1' },
+        body: { connectorName: 'Google Drive', fullSync: false },
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -3272,7 +3279,8 @@ describe('Knowledge Base Controller', () => {
 
       const handler = reindexFailedRecords(mockRecordRelation, createMockAppConfig())
       const req = createMockRequest({
-        body: { app: 'Google Drive', connectorId: 'c1', statusFilters: ['failed'] },
+        params: { connectorId: 'c1' },
+        body: { app: 'Google Drive', statusFilters: ['failed'] },
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -3298,7 +3306,8 @@ describe('Knowledge Base Controller', () => {
 
       const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
       const req = createMockRequest({
-        body: { connectorName: 'Google Drive', connectorId: 'c1', fullSync: false },
+        params: { connectorId: 'c1' },
+        body: { connectorName: 'Google Drive', fullSync: false },
       })
       const res = createMockResponse()
       const next = createMockNext()
