@@ -19241,6 +19241,7 @@ paths:
 
         Only `page`, `limit`, `search`, `permissions`, `sortBy`, and `sortOrder` are allowed; unknown query keys are rejected.
       operationId: listKnowledgeBases
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -19369,6 +19370,7 @@ paths:
 
         User must have at least READER permission to view KB details.
       operationId: getKnowledgeBase
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -19445,6 +19447,7 @@ paths:
         - When provided, `kbName` must be 1–255 characters
         - XSS and format-specifier checks are applied to `kbName` in the gateway controller
       operationId: updateKnowledgeBase
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -19553,6 +19556,7 @@ paths:
 
         **Warning:** This action is irreversible. Consider exporting data before deletion.
       operationId: deleteKnowledgeBase
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:delete]
@@ -19620,12 +19624,17 @@ paths:
         - Records
       summary: Get record by ID
       description: |
-        Retrieve detailed information about a specific record.<br><br>
-        <b>Overview:</b><br>
-        Returns complete record metadata including name, type, indexing status, storage information, and version history.<br><br>
-        <b>File Conversion:</b><br>
-        Use the optional <code>convertTo</code> parameter to request file format conversion (e.g., PDF to text).
+        Retrieve detailed information about a specific record.
+
+        **Overview:**
+
+        Returns complete record metadata including name, type, indexing status, storage information, and version history.
+
+        **File conversion:**
+
+        Use the optional `convertTo` parameter to request file format conversion (e.g., PDF to text).
       operationId: getRecordById
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -19691,19 +19700,27 @@ paths:
         - Records
       summary: Update record
       description: |
-        Update a record's name and/or file content.<br><br>
-        <b>Overview:</b><br>
-        Allows updating the display name and optionally replacing the file content. Triggers re-indexing when content changes.<br><br>
-        <b>Required Permission:</b> WRITER or higher<br><br>
-        <b>Updating File Content:</b><br>
-        Include a new file in the request to replace the existing content. The file extension must match the original.<br><br>
-        <b>Side Effects:</b><br>
-        <ul>
-        <li>Updates <code>updatedAtTimestamp</code></li>
-        <li>Increments version if file content changed</li>
-        <li>Triggers re-indexing for content changes</li>
-        </ul>
+        Update a record's name and/or file content.
+
+        **Overview:**
+
+        Allows updating the display name and optionally replacing the file content. Triggers re-indexing when content changes.
+
+        **Required permission:**
+
+        WRITER or higher
+
+        **Updating file content:**
+
+        Include a new file in the request to replace the existing content. The file extension must match the original.
+
+        **Side effects:**
+
+        - Updates `updatedAtTimestamp`
+        - Increments version if file content changed
+        - Triggers re-indexing for content changes
       operationId: updateRecord
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -19772,6 +19789,7 @@ paths:
 
         **Warning:** This action is irreversible.
       operationId: deleteRecord
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:delete]
@@ -19942,6 +19960,7 @@ paths:
 
         **Response:** Returns `id`, `name`, and `webUrl` for the created folder.
       operationId: createFolder
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -20030,6 +20049,7 @@ paths:
         Rename a folder.<br><br>
         <b>Required Permission:</b> FILEORGANIZER or higher
       operationId: updateFolder
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -20116,6 +20136,7 @@ paths:
         All subfolders and records within will be permanently deleted.<br><br>
         <b>Warning:</b> This action is irreversible.
       operationId: deleteFolder
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:delete]
@@ -20315,6 +20336,7 @@ paths:
         **Use case:** Call this before uploads to validate file sizes on the client
         side and display appropriate limits to users.
       operationId: getUploadLimits
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -20407,6 +20429,7 @@ paths:
         Optional `statusFilters` array limits reindex to records in matching indexing states
         (e.g. `FAILED`, `AUTO_INDEX_OFF`).
       operationId: reindexRecord
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -20489,6 +20512,7 @@ paths:
 
         Optional `statusFilters` limit which child records are queued (e.g. failed-only or manual-indexing).
       operationId: reindexRecordGroup
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -20675,6 +20699,7 @@ paths:
 
         **Required Permission:** OWNER or WRITER
       operationId: moveRecord
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -20772,6 +20797,7 @@ paths:
 
         Provide arrays of userIds and/or teamIds to grant the same role to multiple entities.
       operationId: createKBPermission
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -20872,6 +20898,7 @@ paths:
 
         Returns every user and team permission on the KB. Team entries have `type: TEAM` and `role: null` (teams are not assigned roles).
       operationId: listKBPermissions
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -20953,6 +20980,7 @@ paths:
 
         Users without an existing permission on the KB are skipped. If none of the supplied users have a permission to update, the request returns **404**.
       operationId: updateKBPermissions
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -21068,6 +21096,7 @@ paths:
 
         **Owner restriction:** Cannot remove the last OWNER from the knowledge base — at least one owner must remain.
       operationId: deleteKBPermissions
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:delete]
