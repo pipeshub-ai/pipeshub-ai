@@ -148,8 +148,6 @@ def bytes_to_data_uri(
     content: bytes,
     content_type: str,
     url: str = "",
-    *,
-    image_parser: Any = None,
 ) -> str | None:
     """Convert image bytes to a data URI.
     
@@ -157,7 +155,6 @@ def bytes_to_data_uri(
         content: Raw image bytes
         content_type: MIME type from Content-Type header
         url: Original URL (used for extension fallback)
-        image_parser: Optional ImageParser instance (deprecated, no longer used)
         
     Returns:
         Data URI string (data:image/{ext};base64,...) or None if not an image
@@ -200,7 +197,6 @@ async def inline_authenticated_images_in_html(
     download: Callable[[str], Awaitable[tuple[bytes, str] | None]],
     *,
     logger: Logger | None = None,
-    image_parser: Any = None,
 ) -> str:
     """Inline same-origin images in HTML by downloading and converting to data URIs.
     
@@ -212,7 +208,6 @@ async def inline_authenticated_images_in_html(
         base_url: Confluence instance base URL (for origin checking)
         download: Async callable that takes a URL and returns (bytes, content_type) or None
         logger: Optional logger for warnings
-        image_parser: Optional (deprecated, no longer used)
         
     Returns:
         Modified HTML with inlined images (failures leave src unchanged)
@@ -254,7 +249,6 @@ async def inline_authenticated_images_in_html(
                 content,
                 content_type,
                 absolute_src,
-                image_parser=image_parser
             )
             
             if data_uri:
@@ -289,7 +283,6 @@ async def prepare_streaming_html(
     *,
     title: str | None = None,
     logger: Logger | None = None,
-    image_parser: Any = None,
 ) -> str:
     """Prepare HTML for streaming by resolving URLs, inlining images, and prepending title.
     
@@ -305,7 +298,6 @@ async def prepare_streaming_html(
         download: Async callable for authenticated image downloads
         title: Optional title override (e.g. record.record_name for comments)
         logger: Optional logger
-        image_parser: Optional (deprecated, no longer used)
         
     Returns:
         Processed HTML ready for indexing
@@ -319,7 +311,6 @@ async def prepare_streaming_html(
             base_url,
             download,
             logger=logger,
-            image_parser=image_parser,
         )
 
     effective_title = str(title or response_data.get("title") or "").strip()

@@ -99,17 +99,19 @@ class ConfluenceDataSource:
         """Stream bytes from a download URL using the configured client auth headers."""
         if self._client is None:
             raise ValueError("HTTP client is not initialized")
-        auth_headers = self._client.headers.copy()
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            async with client.stream(
-                "GET",
-                download_url,
-                headers=auth_headers,
-                timeout=300.0,
-            ) as response:
-                response.raise_for_status()
-                async for chunk in response.aiter_bytes(chunk_size=chunk_size):
-                    yield chunk
+        
+        # Reuse the existing httpx client to avoid creating new connections for each download
+        httpx_client = await self._client._ensure_client()
+        
+        async with httpx_client.stream(
+            "GET",
+            download_url,
+            follow_redirects=True,
+            timeout=300.0,
+        ) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+                yield chunk
 
     async def download_attachment(
         self,
@@ -168,7 +170,7 @@ class ConfluenceDataSource:
         """Fetch binary content from a URL using authenticated client headers.
 
         Used for inline image embedding in streamed HTML content.
-        Reuses the same authentication headers as attachment downloads.
+        Reuses the existing httpx client connection pool for efficiency.
 
         Args:
             url: Absolute URL to fetch (must be same-origin as Confluence instance)
@@ -185,37 +187,37 @@ class ConfluenceDataSource:
         """
         if self._client is None:
             return None
-
-        auth_headers = self._client.headers.copy()
+        
+        # Reuse the existing httpx client to avoid creating new connections for each image
+        httpx_client = await self._client._ensure_client()
         
         try:
-            async with httpx.AsyncClient(follow_redirects=True) as client:
-                async with client.stream(
-                    "GET",
-                    url,
-                    headers=auth_headers,
-                    timeout=timeout,
-                ) as response:
-                    response.raise_for_status()
-                    
-                    # Get content type before reading body
-                    content_type_header = response.headers.get('content-type', '')
-                    content_type = content_type_header.split(';')[0].strip()
-                    
-                    # Read with size cap
-                    chunks: list[bytes] = []
-                    total_bytes = 0
-                    
-                    async for chunk in response.aiter_bytes(chunk_size=8192):
-                        total_bytes += len(chunk)
-                        if total_bytes > max_bytes:
-                            # Exceeded limit, abort
-                            return None
-                        chunks.append(chunk)
-                    
-                    content = b''.join(chunks)
-                    return (content, content_type)
-                    
+            async with httpx_client.stream(
+                "GET",
+                url,
+                follow_redirects=True,
+                timeout=timeout,
+            ) as response:
+                response.raise_for_status()
+                
+                # Get content type before reading body
+                content_type_header = response.headers.get('content-type', '')
+                content_type = content_type_header.split(';')[0].strip()
+                
+                # Read with size cap
+                chunks: list[bytes] = []
+                total_bytes = 0
+                
+                async for chunk in response.aiter_bytes(chunk_size=8192):
+                    total_bytes += len(chunk)
+                    if total_bytes > max_bytes:
+                        # Exceeded limit, abort
+                        return None
+                    chunks.append(chunk)
+                
+                content = b''.join(chunks)
+                return (content, content_type)
+                
         except httpx.HTTPStatusError:
             # HTTP error (4xx, 5xx) - log handled by caller
             return None
