@@ -94,8 +94,8 @@ BATCH_PROCESSING_SIZE: int = 100
 USER_PAGE_SIZE: int = 50
 GROUP_MEMBER_PAGE_SIZE: int = 50
 GROUPS_PICKER_MAX: int = 1000  # maxResults for GET /rest/api/2/groups/picker
-AUDIT_PAGE_SIZE: int = 500  # page size for GET /rest/auditing/1.0/events
-DC_AUDIT_ISSUE_DELETED_ACTION: str = "Issue deleted"
+DC_AUDIT_ISSUE_DELETED_ACTIONS: str = "Issue deleted,Sub-task deleted"
+DC_AUDIT_ISSUE_CATEGORY: str = "issue"
 
 # JQL query constants
 ISSUE_SEARCH_FIELDS: list[str] = [
@@ -816,8 +816,20 @@ class JiraDataCenterConnector(BaseConnector):
     # Deletion Handling (DC audit log)
     # ============================================================================
 
+    @staticmethod
+    def _issue_key_from_auditing_event(entity: dict[str, Any]) -> str | None:
+        """Extract an issue key from a ``/rest/auditing/1.0/events`` row."""
+        for obj in entity.get("affectedObjects") or []:
+            if not isinstance(obj, dict):
+                continue
+            if (obj.get("type") or "").upper() == "ISSUE":
+                name = obj.get("name")
+                if name:
+                    return str(name)
+        return None
+
     async def _detect_and_handle_deletions(self, last_sync_time: int) -> int:
-        """Fetch deleted issue keys from the audit log and cascade-delete each one."""
+        """Fetch deleted issue keys from the audit log and delete each one flat."""
         self.logger.info("🔍 Checking for deleted issues via Jira DC audit log...")
 
         deleted_issue_keys = await self._fetch_deleted_issues_from_audit(last_sync_time)
@@ -844,18 +856,16 @@ class JiraDataCenterConnector(BaseConnector):
 
         deleted_issue_keys: list[str] = []
         offset = 0
-        limit = AUDIT_PAGE_SIZE
 
         while True:
             try:
                 datasource = await self._get_fresh_datasource()
                 response = await datasource.get_auditing_events_v1(
                     offset=offset,
-                    limit=limit,
                     from_=from_date,
                     to=to_date,
-                    actions=DC_AUDIT_ISSUE_DELETED_ACTION,
-                    categories="issues",
+                    actions=DC_AUDIT_ISSUE_DELETED_ACTIONS,
+                    categories=DC_AUDIT_ISSUE_CATEGORY,
                 )
 
                 if response.status in (
@@ -913,24 +923,12 @@ class JiraDataCenterConnector(BaseConnector):
                     "❌ Error fetching DC auditing events at offset %s: %s",
                     offset, e,
                 )
-                return deleted_issue_keys
+                return list(dict.fromkeys(deleted_issue_keys))
 
-        return deleted_issue_keys
-
-    @staticmethod
-    def _issue_key_from_auditing_event(entity: dict[str, Any]) -> str | None:
-        """Extract an issue key from a ``/rest/auditing/1.0/events`` row."""
-        for obj in entity.get("affectedObjects") or []:
-            if not isinstance(obj, dict):
-                continue
-            if (obj.get("type") or "").upper() == "ISSUE":
-                name = obj.get("name")
-                if name:
-                    return str(name)
-        return None
+        return list(dict.fromkeys(deleted_issue_keys))
 
     async def _handle_deleted_issue(self, issue_key: str) -> None:
-        """Delete local records for an issue confirmed gone in Jira (epic children kept)."""
+        """Delete local records for one issue confirmed gone in Jira (flat)."""
         try:
             self.logger.info(f"🗑️ Handling deletion of issue {issue_key}")
 
@@ -964,33 +962,13 @@ class JiraDataCenterConnector(BaseConnector):
                 issue_id = issue_record.external_record_id
                 record_internal_id = issue_record.id
 
-                issue_type = getattr(issue_record, "type", None)
-                if issue_type:
-                    type_value = (
-                        issue_type.value if hasattr(issue_type, "value") else str(issue_type)
-                    )
-                    is_epic = type_value.upper() == "EPIC"
-                else:
-                    is_epic = False
-
                 self.logger.info(
-                    "✅ Found issue %s (type: %s, is_epic: %s) internal=%s external=%s",
-                    issue_key, issue_type, is_epic, record_internal_id, issue_id,
+                    "✅ Found issue %s internal=%s external=%s",
+                    issue_key, record_internal_id, issue_id,
                 )
 
-                child_issue_count = 0
-                if not is_epic:
-                    child_issue_count = await self._delete_issue_children(
-                        issue_id, RecordType.TICKET, tx_store,
-                    )
-                else:
-                    self.logger.info(
-                        "📋 Epic %s deleted — child tasks/stories remain (Jira behavior)",
-                        issue_key,
-                    )
-
-                attachment_count = await self._delete_issue_children(
-                    issue_id, RecordType.FILE, tx_store,
+                attachment_count = await self._delete_direct_attachment_records(
+                    issue_id, tx_store,
                 )
 
                 await tx_store.delete_records_and_relations(
@@ -998,90 +976,46 @@ class JiraDataCenterConnector(BaseConnector):
                     hard_delete=True,
                 )
 
-                if is_epic:
-                    self.logger.info(
-                        "🗑️ Deleted Epic %s (%s direct attachments)",
-                        issue_key, attachment_count,
-                    )
-                else:
-                    self.logger.info(
-                        "🗑️ Deleted issue %s and its hierarchy "
-                        "(%s subtasks, %s direct attachments)",
-                        issue_key, child_issue_count, attachment_count,
-                    )
+                self.logger.info(
+                    "🗑️ Deleted issue %s (%s direct attachments)",
+                    issue_key, attachment_count,
+                )
 
         except Exception as e:
             self.logger.error(
                 "❌ Error handling deleted issue %s: %s", issue_key, e, exc_info=True,
             )
 
-    async def _delete_issue_children(
+    async def _delete_direct_attachment_records(
         self,
         parent_issue_id: str,
-        child_type: RecordType,
         tx_store,
     ) -> int:
-        """Recursively delete child records of ``child_type`` under
-        ``parent_issue_id``.
-
-        For ``TICKET`` children (subtasks): recurse into their own subtasks
-        and attachments first, then delete the subtask record itself. For
-        ``FILE`` children (attachments): just delete the attachment record.
-
-        Called only for non-Epic deletions — Epic cascade is gated by the
-        caller (Jira itself does not cascade-delete tasks when an Epic is
-        deleted). Returns the number of records actually deleted at this level
-        (excluding nested counts, which are logged at debug).
-        """
-        child_type_name = {
-            RecordType.TICKET: "child issue",
-            RecordType.FILE: "attachment",
-        }.get(child_type, str(child_type))
-
+        """Delete direct FILE children (attachments) of ``parent_issue_id``."""
         try:
             deleted_count = 0
             child_records = await tx_store.get_records_by_parent(
                 connector_id=self.connector_id,
                 parent_external_record_id=parent_issue_id,
-                record_type=child_type.value,
+                record_type=RecordType.FILE.value,
             )
 
             for record in child_records:
-                if child_type == RecordType.TICKET:
-                    child_issue_id = record.external_record_id
-                    nested_subtask_count = await self._delete_issue_children(
-                        child_issue_id, RecordType.TICKET, tx_store,
-                    )
-                    if nested_subtask_count > 0:
-                        self.logger.debug(
-                            "  Deleted %s nested subtasks for %s",
-                            nested_subtask_count, child_issue_id,
-                        )
-
-                    nested_attachment_count = await self._delete_issue_children(
-                        child_issue_id, RecordType.FILE, tx_store,
-                    )
-                    if nested_attachment_count > 0:
-                        self.logger.debug(
-                            "  Deleted %s attachments for %s",
-                            nested_attachment_count, child_issue_id,
-                        )
-
                 await tx_store.delete_records_and_relations(
                     record_key=record.id,
                     hard_delete=True,
                 )
                 deleted_count += 1
                 self.logger.debug(
-                    "  Deleted %s %s", child_type_name, record.external_record_id,
+                    "  Deleted attachment %s", record.external_record_id,
                 )
 
             return deleted_count
 
         except Exception as e:
             self.logger.error(
-                "❌ Error deleting %ss for issue %s: %s",
-                child_type_name, parent_issue_id, e,
+                "❌ Error deleting attachments for issue %s: %s",
+                parent_issue_id, e,
             )
             return 0
 
