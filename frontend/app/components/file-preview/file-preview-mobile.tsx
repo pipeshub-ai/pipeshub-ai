@@ -41,11 +41,8 @@ export function FilePreviewMobile({
   const [showCitationsSheet, setShowCitationsSheet] = useState(false);
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
-  const { pdfScale, setPdfScale, handlePdfZoomIn, handlePdfZoomOut } = usePdfZoom(
-    file.id,
-    file.url,
-    initialPage,
-  );
+  const { pdfScale, setPdfScale, handlePdfZoomIn, handlePdfZoomOut, isZoomLocked, toggleZoomLock } =
+    usePdfZoom(file.id, file.url, initialPage);
 
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -378,6 +375,23 @@ export function FilePreviewMobile({
                   aria-label="Zoom in"
                 >
                   <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
+                </IconButton>
+
+                <IconButton
+                  variant="ghost"
+                  color="gray"
+                  size="1"
+                  onClick={toggleZoomLock}
+                  style={{ width: '24px', height: '24px', padding: 0 }}
+                  title={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
+                  aria-label={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
+                  aria-pressed={isZoomLocked}
+                >
+                  <MaterialIcon
+                    name={isZoomLocked ? 'lock' : 'lock_open'}
+                    size={ICON_SIZES.SECONDARY}
+                    color={isZoomLocked ? 'var(--accent-9)' : undefined}
+                  />
                 </IconButton>
 
                 <Box
