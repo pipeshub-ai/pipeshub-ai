@@ -385,8 +385,6 @@ components:
 
   schemas:
     # ==================== COMMON SCHEMAS ====================
-
-
     # ==================== AUTH SCHEMAS ====================
     AuthMethod:
       type: object
@@ -1004,10 +1002,9 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Standard error envelope returned by all errors routed through `ErrorMiddleware`.
-        Applies to all `BaseError` subclasses including `HttpError`, `ValidationError`, and others.
-        The `code` field is a machine-readable string identifying the error type (e.g.
-        `HTTP_UNAUTHORIZED`, `HTTP_NOT_FOUND`, `VALIDATION_ERROR`, `INTERNAL_ERROR`).
+        Typical JSON body when an API call fails: an `error` object with a short `code`
+        your integration can branch on, plus a `message` suitable to surface or log.
+        Some responses include optional `metadata` (for example per-field validation hints).
       properties:
         error:
           type: object
@@ -1018,18 +1015,35 @@ components:
           properties:
             code:
               type: string
-              description: |
-                Machine-readable error code. For application errors it takes the form `HTTP_<VARIANT>`
-                For unhandled runtime errors (e.g. database unavailable) it is `INTERNAL_ERROR`.
+              description: Stable error identifier for programmatic handling.
               example: HTTP_BAD_REQUEST
             message:
               type: string
-              description: Human-readable description of the error
+              description: Plain-language explanation of what went wrong.
               example: Admin access required
             metadata:
               type: object
-              description: Additional context (only present in development environments)
+              description: Optional extra detail; contents vary by endpoint and error.
               additionalProperties: true
+      required:
+        - error
+    
+    RateLimitErrorResponse:
+      type: object
+      description: Rate-limit error payload (shape differs from standard error responses).
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Error code.
+            message:
+              type: string
+            retryAfter:
+              type: integer
+              nullable: true
+              description: Suggested seconds to wait before retrying.
       required:
         - error
 
@@ -11566,6 +11580,463 @@ components:
         totalPages:
           type: integer
           description: Total number of pages
+
+    # ==================== TOOLSET SCHEMAS ====================
+
+    ToolsetPaginationFull:
+      type: object
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+        totalPages:
+          type: integer
+        hasNext:
+          type: boolean
+        hasPrev:
+          type: boolean
+      required:
+        - page
+        - limit
+        - total
+        - totalPages
+        - hasNext
+        - hasPrev
+
+    ToolsetPaginationSimple:
+      type: object
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+        totalPages:
+          type: integer
+      required:
+        - page
+        - limit
+        - total
+        - totalPages
+
+    ToolsetFilterCounts:
+      type: object
+      properties:
+        all:
+          type: integer
+        authenticated:
+          type: integer
+        notAuthenticated:
+          type: integer
+      required:
+        - all
+        - authenticated
+        - notAuthenticated
+
+    ToolsetDocumentationLink:
+      type: object
+      properties:
+        title:
+          type: string
+        url:
+          type: string
+        type:
+          type: string
+      required:
+        - title
+        - url
+        - type
+
+    ToolsetToolParameter:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        description:
+          type: string
+        required:
+          type: boolean
+        default: {}
+      required:
+        - name
+        - type
+        - description
+
+    ToolsetRegistryTool:
+      type: object
+      properties:
+        name:
+          type: string
+        fullName:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        parameters:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolsetToolParameter'
+        returns:
+          oneOf:
+            - type: string
+            - type: 'null'
+        tags:
+          type: array
+          items:
+            type: string
+      required:
+        - name
+        - fullName
+        - displayName
+        - description
+        - parameters
+        - returns
+        - tags
+
+    ToolsetSchemaTool:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        parameters:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolsetToolParameter'
+        returns:
+          oneOf:
+            - type: string
+            - type: 'null'
+        examples:
+          type: array
+        tags:
+          type: array
+          items:
+            type: string
+      required:
+        - name
+        - description
+        - parameters
+        - returns
+        - tags
+
+    ToolsetMyToolsetTool:
+      type: object
+      properties:
+        name:
+          type: string
+        fullName:
+          type: string
+        description:
+          type: string
+      required:
+        - name
+        - fullName
+        - description
+
+    ToolsetInstanceFields:
+      type: object
+      properties:
+        _id:
+          type: string
+        instanceName:
+          type: string
+        toolsetType:
+          type: string
+        authType:
+          type: string
+        orgId:
+          type: string
+        createdBy:
+          type: string
+        createdAtTimestamp:
+          type: integer
+        updatedAtTimestamp:
+          type: integer
+        oauthConfigId:
+          type: string
+          nullable: true
+      required:
+        - _id
+        - instanceName
+        - toolsetType
+        - authType
+        - orgId
+        - createdBy
+        - createdAtTimestamp
+        - updatedAtTimestamp
+
+    CreateToolsetInstanceResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        instance:
+          allOf:
+            - $ref: '#/components/schemas/ToolsetInstanceFields'
+            - type: object
+              properties:
+                auth:
+                  type: object
+                  additionalProperties: true
+                  description: Non-OAuth credential payload stored on the instance (absent when `oauthConfigId` is set).
+        message:
+          type: string
+      required:
+        - status
+        - instance
+        - message
+
+    ToolsetInstanceDetail:
+      description: Toolset instance with registry metadata; admins may receive OAuth config and user counts.
+      allOf:
+        - $ref: '#/components/schemas/ToolsetInstanceFields'
+        - type: object
+          properties:
+            displayName:
+              type: string
+            description:
+              type: string
+            iconPath:
+              type: string
+            supportedAuthTypes:
+              type: array
+              items:
+                type: string
+            toolCount:
+              type: integer
+            auth:
+              type: object
+              additionalProperties: true
+              description: Non-OAuth credential payload when stored on the instance.
+            oauthConfig:
+              type: object
+              additionalProperties: true
+              description: OAuth app configuration (admins only, OAuth instances only).
+            authenticatedUserCount:
+              type: integer
+              description: Number of users authenticated against this instance (admins only, OAuth instances only).
+
+    GetToolsetInstanceResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        instance:
+          $ref: '#/components/schemas/ToolsetInstanceDetail'
+      required:
+        - status
+        - instance
+
+    UpdateToolsetInstanceResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        instance:
+          allOf:
+            - $ref: '#/components/schemas/ToolsetInstanceFields'
+            - type: object
+              properties:
+                auth:
+                  type: object
+                  additionalProperties: true
+        message:
+          type: string
+        deauthenticatedUserCount:
+          type: integer
+          description: Users deauthenticated after OAuth credential or config changes.
+      required:
+        - status
+        - instance
+        - message
+        - deauthenticatedUserCount
+
+    DeleteToolsetInstanceResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+        instanceId:
+          type: string
+        deletedCredentialsCount:
+          type: integer
+      required:
+        - status
+        - message
+        - instanceId
+        - deletedCredentialsCount
+
+    GetToolsetInstanceStatusResponse:
+      type: object
+      description: Authentication status for a toolset instance for the current user.
+      properties:
+        status:
+          type: string
+          enum: [success]
+        instanceId:
+          type: string
+          description: Toolset instance identifier.
+        instanceName:
+          oneOf:
+            - type: string
+            - type: 'null'
+          description: Display name of the instance.
+        toolsetType:
+          oneOf:
+            - type: string
+            - type: 'null'
+          description: Registry toolset type key.
+        authType:
+          oneOf:
+            - type: string
+            - type: 'null'
+          description: Authentication method configured on the instance (for example `API_TOKEN`, `OAUTH`).
+        isConfigured:
+          type: boolean
+          description: Whether the instance exists and is set up for the organization (always `true` when this endpoint returns 200).
+        isAuthenticated:
+          type: boolean
+          description: Whether the current user has valid credentials stored for this instance.
+      required:
+        - status
+        - instanceId
+        - instanceName
+        - toolsetType
+        - authType
+        - isConfigured
+        - isAuthenticated
+
+    ToolsetMyToolsetEntry:
+      type: object
+      properties:
+        instanceId:
+          type: string
+        instanceName:
+          type: string
+        toolsetType:
+          type: string
+        authType:
+          type: string
+        oauthConfigId:
+          type: string
+          nullable: true
+        displayName:
+          type: string
+        description:
+          type: string
+        iconPath:
+          type: string
+        category:
+          type: string
+        supportedAuthTypes:
+          type: array
+          items:
+            type: string
+        toolCount:
+          type: integer
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolsetMyToolsetTool'
+        isConfigured:
+          type: boolean
+        isAuthenticated:
+          type: boolean
+        isFromRegistry:
+          type: boolean
+        createdBy:
+          type: string
+        createdAtTimestamp:
+          type: integer
+        updatedAtTimestamp:
+          type: integer
+        auth: {}
+        documentationLinks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolsetDocumentationLink'
+      required:
+        - instanceId
+        - instanceName
+        - toolsetType
+        - authType
+        - displayName
+        - description
+        - iconPath
+        - category
+        - supportedAuthTypes
+        - toolCount
+        - tools
+        - isConfigured
+        - isAuthenticated
+        - isFromRegistry
+
+    ToolsetOAuthConfigItem:
+      type: object
+      properties:
+        _id:
+          type: string
+        oauthInstanceName:
+          type: string
+        toolsetType:
+          type: string
+        userId:
+          type: string
+        orgId:
+          type: string
+        createdAtTimestamp:
+          type: integer
+        updatedAtTimestamp:
+          type: integer
+        tenantId:
+          type: string
+        clientId:
+          type: string
+        clientSecret:
+          type: string
+        redirectUri:
+          type: string
+        authorizeUrl:
+          type: string
+        tokenUrl:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        additionalParams: {}
+        clientSecretSet:
+          type: boolean
+      required:
+        - _id
+        - oauthInstanceName
+        - toolsetType
+        - userId
+        - orgId
+        - createdAtTimestamp
+        - updatedAtTimestamp
+        - clientId
+        - clientSecret
+        - redirectUri
+        - authorizeUrl
+        - tokenUrl
+        - scopes
+        - clientSecretSet
 
 security:
   - bearerAuth: []
@@ -28103,13 +28574,14 @@ paths:
         - Toolset Registry
       summary: List available toolsets
       description: |
-        Get all available toolsets from the registry.<br><br>
-        <b>Overview:</b><br>
-        Returns toolsets that can be configured and used with agents.
+        Get all available toolsets from the registry.
+
+        **Overview:** Returns toolsets that can be configured and used with agents.
         Supports pagination and search.
       operationId: listToolsetRegistry
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       parameters:
         - name: page
           in: query
@@ -28140,18 +28612,82 @@ paths:
               schema:
                 type: object
                 properties:
+                  status:
+                    type: string
+                    enum: [success]
                   toolsets:
                     type: array
                     items:
                       type: object
-                  total:
-                    type: integer
-                  page:
-                    type: integer
-                  limit:
-                    type: integer
+                      properties:
+                        name:
+                          type: string
+                        displayName:
+                          type: string
+                        description:
+                          type: string
+                        category:
+                          type: string
+                        group:
+                          type: string
+                        iconPath:
+                          type: string
+                        supportedAuthTypes:
+                          type: array
+                          items:
+                            type: string
+                        toolCount:
+                          type: integer
+                        tools:
+                          type: array
+                          items:
+                            $ref: '#/components/schemas/ToolsetRegistryTool'
+                        documentationLinks:
+                          type: array
+                          items:
+                            $ref: '#/components/schemas/ToolsetDocumentationLink'
+                  categorizedToolsets:
+                    type: object
+                  pagination:
+                    $ref: '#/components/schemas/ToolsetPaginationSimple'
+        '400':
+          description: |
+            Invalid query parameters (for example `page` or `limit` out of allowed range), malformed input,
+            or disallowed HTML/script content in query strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Access denied — OAuth token must include the `connector:read` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while loading the registry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/registry/{toolsetType}/schema:
     get:
@@ -28162,6 +28698,7 @@ paths:
       operationId: getToolsetSchema
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       parameters:
         - name: toolsetType
           in: path
@@ -28171,358 +28708,195 @@ paths:
       responses:
         '200':
           description: Schema retrieved successfully
-        '401':
-          description: Unauthorized
-        '404':
-          description: Toolset type not found
-
-  # -------------------- Toolset Instances --------------------
-  /toolsets:
-    post:
-      tags:
-        - Toolset Instances
-      summary: Create toolset instance
-      description: |
-        Create a new toolset instance with authentication configuration
-      operationId: createToolset
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        description: Toolset instance payload including name, type, authentication configuration, and optional base URL.
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - name
-                - auth
-              properties:
-                name:
-                  type: string
-                displayName:
-                  type: string
-                type:
-                  type: string
-                auth:
-                  type: object
-                  required:
-                    - type
-                  properties:
-                    type:
-                      type: string
-                    clientId:
-                      type: string
-                    clientSecret:
-                      type: string
-                    apiToken:
-                      type: string
-                    oauthAppId:
-                      type: string
-                    scopes:
-                      type: array
-                      items:
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  toolset:
+                    type: object
+                    properties:
+                      name:
                         type: string
-                baseUrl:
-                  type: string
-      responses:
-        '201':
-          description: Toolset created successfully
+                      displayName:
+                        type: string
+                      description:
+                        type: string
+                      category:
+                        type: string
+                      supportedAuthTypes:
+                        type: array
+                        items:
+                          type: string
+                      config:
+                        type: object
+                      oauthConfig:
+                        oneOf:
+                          - type: object
+                          - type: 'null'
+                      tools:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ToolsetSchemaTool'
+                      documentationLinks:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ToolsetDocumentationLink'
         '400':
-          description: Invalid request
-        '401':
-          description: Unauthorized
-
-  /toolsets/configured:
-    get:
-      tags:
-        - Toolset Instances
-      summary: List configured toolsets
-      description: |
-        Get all configured toolsets for the authenticated user
-      operationId: listConfiguredToolsets
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: Configured toolsets retrieved successfully
+          description: |
+            Invalid toolset type in the URL, empty segment, or disallowed HTML/script content in parameters.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  toolsets:
-                    type: array
-                    items:
-                      type: object
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
-
-  /toolsets/{toolsetId}/status:
-    get:
-      tags:
-        - Toolset Instances
-      summary: Check toolset status
-      description: Check authentication status of a toolset instance
-      operationId: checkToolsetStatus
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: toolsetId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Status retrieved successfully
-        '401':
-          description: Unauthorized
-        '404':
-          description: Toolset not found
-
-  # -------------------- Toolset Configuration --------------------
-  /toolsets/{toolsetId}/config:
-    get:
-      tags:
-        - Toolset Configuration
-      summary: Get toolset configuration
-      description: Get configuration for a specific toolset instance
-      operationId: getToolsetConfig
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: toolsetId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Configuration retrieved successfully
-        '401':
-          description: Unauthorized
-        '404':
-          description: Toolset not found
-    # TODO: to remove from backend as well
-    post:
-      tags:
-        - Toolset Configuration
-      summary: Save toolset configuration
-      description: Save or update toolset configuration (deprecated - use PUT)
-      operationId: saveToolsetConfig
-      deprecated: true
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: toolsetId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: Toolset authentication configuration and optional base URL.
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - auth
-              properties:
-                auth:
-                  type: object
-                baseUrl:
-                  type: string
-      responses:
-        '200':
-          description: Configuration saved successfully
-        '400':
-          description: Invalid request
-        '401':
-          description: Unauthorized
-
-    put:
-      tags:
-        - Toolset Configuration
-      summary: Update toolset configuration
-      description: Update toolset configuration
-      operationId: updateToolsetConfig
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: toolsetId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: Updated toolset authentication configuration and optional base URL.
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - auth
-              properties:
-                auth:
-                  type: object
-                baseUrl:
-                  type: string
-      responses:
-        '200':
-          description: Configuration updated successfully
-        '400':
-          description: Invalid request
-        '401':
-          description: Unauthorized
-        '404':
-          description: Toolset not found
-
-    delete:
-      tags:
-        - Toolset Configuration
-      summary: Delete toolset configuration
-      description: Delete a toolset instance and its configuration
-      operationId: deleteToolsetConfig
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: toolsetId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Configuration deleted successfully
-        '401':
-          description: Unauthorized
-        '404':
-          description: Toolset not found
-
-  /toolsets/{toolsetId}/reauthenticate:
-    post:
-      tags:
-        - Toolset Instances
-      summary: Reauthenticate toolset
-      description: |
-        Clear toolset OAuth credentials and mark as unauthenticated, requiring re-authentication.<br><br>
-        Only applicable to OAuth-configured toolsets.
-      operationId: reauthenticateToolset
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: toolsetId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Reauthentication initiated successfully
+          description: Authentication failed — missing token, expired session, or invalid credentials.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
-        '404':
-          description: Toolset not found
-
-  # -------------------- Toolset OAuth --------------------
-  /toolsets/{toolsetId}/oauth/authorize:
-    get:
-      tags:
-        - Toolset OAuth
-      summary: Get OAuth authorization URL
-      description: |
-        Get OAuth authorization URL for a toolset.<br><br>
-        Returns a URL that the user should visit to authorize the toolset.
-      operationId: getToolsetOAuthUrl
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: toolsetId
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: base_url
-          in: query
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Authorization URL generated successfully
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Access denied — the OAuth token is missing the required `connector:read` scope.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  authorizationUrl:
-                    type: string
-        '401':
-          description: Unauthorized
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Toolset not found
-
+          description: Unknown toolset type, or schema not exposed for that type.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while loading the schema.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  
   /toolsets/oauth/callback:
     get:
       tags:
         - Toolset OAuth
       summary: Handle OAuth callback
       description: |
-        Handle OAuth callback from the authorization server.<br><br>
+        Handle the OAuth authorization server callback and complete the OAuth flow
+        for a toolset instance (user or agent).
+
         This endpoint processes the authorization code and completes the OAuth flow.
       operationId: handleToolsetOAuthCallback
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       parameters:
         - name: code
           in: query
+          required: false
+          description: Authorization code returned by the OAuth provider.
           schema:
             type: string
         - name: state
           in: query
+          required: false
+          description: OAuth state parameter (encodes instance ID, user/agent ID, and original state).
           schema:
             type: string
         - name: error
           in: query
+          required: false
+          description: Error code returned by the OAuth provider when authorization was denied.
           schema:
             type: string
         - name: base_url
           in: query
+          required: false
+          description: |
+            Base URL of the frontend used to construct the redirect URL on completion or error
+            (e.g. `https://app.example.com`). Defaults to `http://localhost:3001` when omitted.
           schema:
             type: string
       responses:
         '200':
-          description: OAuth callback handled successfully
+          description: |
+            OAuth callback processed. Check `success` to determine outcome — application-level
+            errors (missing parameters, token exchange failure, instance not found, config errors)
+            return `200` with `success: false` and an error `redirect_url`, never a 4xx/5xx.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  redirectUrl:
+                  success:
+                    type: boolean
+                    description: Whether the OAuth flow completed successfully.
+                  redirect_url:
                     type: string
+                    description: |
+                      Frontend URL to redirect the user to after the callback.
+                      On success: points to `/tools?oauth_success=true&instance_id=<id>`.
+                      On failure: points to `/tools?oauth_error=<error_code>`.
+                  error:
+                    type: string
+                    description: Error code or type name, present only when `success` is `false`.
+        '302':
+          description: |
+            Redirect to the frontend error page. Only returned for agent OAuth flows when
+            the authenticated user lacks edit access to the agent.
         '401':
-          description: Unauthorized
-        '400':
-          description: OAuth error or invalid request
+          description: Authentication failed — missing token, expired session, or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Access denied — the OAuth token is missing the required `connector:read` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '503':
+          description: Connectors service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/my-toolsets:
     get:
       tags:
         - Toolset Instances
       summary: List my toolsets with auth status
-      description: Returns organization toolset instances merged with current user's authentication status.
+      description: |
+        Returns organization toolset instances merged with the current user's authentication status.
+
+        Supports pagination, search, optional registry merge (`includeRegistry`), filtering by
+        `toolsetType` and `authStatus`. Proxies to the connectors service after Node.js auth and
+        query validation.
       operationId: getMyToolsets
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       parameters:
         - name: page
           in: query
@@ -28576,86 +28950,53 @@ paths:
                 properties:
                   status:
                     type: string
-                    example: success
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      total:
-                        type: integer
-                      totalPages:
-                        type: integer
-                      hasNext:
-                        type: boolean
-                      hasPrev:
-                        type: boolean
-                  filterCounts:
-                    type: object
-                    properties:
-                      all:
-                        type: integer
-                      authenticated:
-                        type: integer
-                      notAuthenticated:
-                        type: integer
+                    enum: [success]
                   toolsets:
                     type: array
                     items:
-                      type: object
-                      additionalProperties: false
-                      properties:
-                        instanceId:
-                          type: string
-                          description: Empty string for registry-only (synthetic) entries.
-                        instanceName:
-                          type: string
-                        toolsetType:
-                          type: string
-                        authType:
-                          type: string
-                          enum: [OAUTH, API_TOKEN, BEARER_TOKEN, USERNAME_PASSWORD, NONE]
-                        oauthConfigId:
-                          type: string
-                          nullable: true
-                        displayName:
-                          type: string
-                        description:
-                          type: string
-                        iconPath:
-                          type: string
-                        category:
-                          type: string
-                          example: app
-                        supportedAuthTypes:
-                          type: array
-                          items:
-                            type: string
-                        toolCount:
-                          type: integer
-                        tools:
-                          type: array
-                          items:
-                            type: object
-                            additionalProperties: false
-                            properties:
-                              name:
-                                type: string
-                              fullName:
-                                type: string
-                              description:
-                                type: string
-                        isConfigured:
-                          type: boolean
-                        isAuthenticated:
-                          type: boolean
-                        isFromRegistry:
-                          type: boolean
-                          description: true for registry-only (synthetic) entries.
+                      $ref: '#/components/schemas/ToolsetMyToolsetEntry'
+                  pagination:
+                    $ref: '#/components/schemas/ToolsetPaginationFull'
+                  filterCounts:
+                    $ref: '#/components/schemas/ToolsetFilterCounts'
+        '400':
+          description: |
+            Invalid query parameters (for example invalid `authStatus` enum value, or `page` / `limit` out of allowed range),
+            malformed input, or disallowed HTML/script content in query strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, invalid credentials, or user context unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Access denied — the OAuth token is missing the required `connector:read` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while loading my toolsets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable — try again shortly.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/agents/{agentKey}:
     get:
@@ -28664,14 +29005,17 @@ paths:
       summary: List toolsets for an agent with auth status
       description: |
         Returns organization toolset instances merged with the specified agent's authentication status.
-        Same response shape as GET /toolsets/my-toolsets (pagination, filterCounts, toolsets), except there is no `authStatus` query filter.
+        Same response shape as GET /toolsets/my-toolsets (pagination, filterCounts, toolsets), except
+        there is no `authStatus` query filter. The caller must have edit access to the specified agent.
       operationId: getAgentToolsets
       security:
         - bearerAuth: []
+        - oauth2: [agent:read]
       parameters:
         - name: agentKey
           in: path
           required: true
+          description: Unique key identifying the service-account agent.
           schema:
             type: string
         - name: includeRegistry
@@ -28680,6 +29024,7 @@ paths:
           description: When true, include toolsets from the registry that are not yet configured as synthetic, non-configured entries.
           schema:
             type: boolean
+            default: false
         - name: page
           in: query
           required: false
@@ -28711,7 +29056,7 @@ paths:
             type: string
       responses:
         '200':
-          description: Agent toolsets retrieved successfully
+          description: Agent toolsets retrieved successfully.
           content:
             application/json:
               schema:
@@ -28719,290 +29064,578 @@ paths:
                 properties:
                   status:
                     type: string
-                    example: success
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      total:
-                        type: integer
-                      totalPages:
-                        type: integer
-                      hasNext:
-                        type: boolean
-                      hasPrev:
-                        type: boolean
-                  filterCounts:
-                    type: object
-                    properties:
-                      all:
-                        type: integer
-                      authenticated:
-                        type: integer
-                      notAuthenticated:
-                        type: integer
+                    enum: [success]
                   toolsets:
                     type: array
                     items:
-                      type: object
-                      additionalProperties: false
-                      properties:
-                        instanceId:
-                          type: string
-                          description: Empty string for registry-only (synthetic) entries.
-                        instanceName:
-                          type: string
-                        toolsetType:
-                          type: string
-                        authType:
-                          type: string
-                          enum: [OAUTH, API_TOKEN, BEARER_TOKEN, USERNAME_PASSWORD, NONE]
-                        oauthConfigId:
-                          type: string
-                          nullable: true
-                        displayName:
-                          type: string
-                        description:
-                          type: string
-                        iconPath:
-                          type: string
-                        category:
-                          type: string
-                          example: app
-                        supportedAuthTypes:
-                          type: array
-                          items:
-                            type: string
-                        toolCount:
-                          type: integer
-                        tools:
-                          type: array
-                          items:
-                            type: object
-                            additionalProperties: false
-                            properties:
-                              name:
-                                type: string
-                              fullName:
-                                type: string
-                              description:
-                                type: string
-                        isConfigured:
-                          type: boolean
-                        isAuthenticated:
-                          type: boolean
-                        isFromRegistry:
-                          type: boolean
-                          description: true for registry-only (synthetic) entries.
+                      $ref: '#/components/schemas/ToolsetMyToolsetEntry'
+                  pagination:
+                    $ref: '#/components/schemas/ToolsetPaginationFull'
+                  filterCounts:
+                    $ref: '#/components/schemas/ToolsetFilterCounts'
+        '400':
+          description: |
+            Missing or invalid `agentKey`, empty path segment, or malformed query parameters
+            (e.g. `page`/`limit` out of range, disallowed content in `search`/`toolsetType`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden
+          description: Access denied — caller does not have edit access to the specified agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Agent not found
+          description: Agent not found or not accessible.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while loading agent toolsets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable — try again shortly.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/agents/{agentKey}/instances/{instanceId}/authenticate:
     post:
       tags:
         - Toolset Instances
       summary: Authenticate agent toolset instance
-      description: Authenticate an agent-bound toolset instance using the provided credentials.
+      description: |
+        Save non-OAuth credentials (API token, Basic auth) for a toolset instance on behalf
+        of a service-account agent. The caller must have edit access to the agent.
+        For OAuth-type toolsets use `GET /toolsets/agents/{agentKey}/instances/{instanceId}/oauth/authorize` instead.
       operationId: authenticateAgentToolset
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
           required: true
+          description: Unique key identifying the service-account agent.
           schema:
             type: string
         - name: instanceId
           in: path
           required: true
+          description: ID of the toolset instance to authenticate.
           schema:
             type: string
       requestBody:
         required: true
-        description: Authentication payload for the agent-bound toolset instance.
+        description: |
+          Credentials for the toolset instance. The fields required inside `auth` depend on
+          the instance's `authType`:
+          - `API_TOKEN` — requires `apiToken`
+          - `BASIC_AUTH` — requires `username` and `password`
+          - `BEARER_TOKEN` — requires `bearerToken`
         content:
           application/json:
             schema:
               type: object
-              additionalProperties: true
+              additionalProperties: false
+              required:
+                - auth
+              properties:
+                auth:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    apiToken:
+                      type: string
+                      description: Required for `API_TOKEN` auth type.
+                    username:
+                      type: string
+                      description: Required for `BASIC_AUTH` auth type.
+                    password:
+                      type: string
+                      description: Required for `BASIC_AUTH` auth type.
+                    bearerToken:
+                      type: string
+                      description: Required for `BEARER_TOKEN` auth type.
       responses:
         '200':
-          description: Agent toolset authenticated successfully
+          description: Agent toolset authenticated successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                  isAuthenticated:
+                    type: boolean
         '400':
-          description: Invalid auth payload
+          description: |
+            Invalid or missing request payload. Common causes:
+            - `auth` body is absent or empty.
+            - `apiToken` missing for `API_TOKEN` auth type.
+            - `username` or `password` missing for `BASIC_AUTH` auth type.
+            - Instance uses OAuth — use the `/oauth/authorize` endpoint instead.
+            - `agentKey` or `instanceId` is empty or fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden
+          description: Access denied — caller does not have edit access to the specified agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Agent or instance not found
+          description: Agent not found, or toolset instance not found for this organisation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while saving agent credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable — try again shortly.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/agents/{agentKey}/instances/{instanceId}/credentials:
     put:
       tags:
         - Toolset Instances
       summary: Update agent toolset credentials
-      description: Update the stored credentials for an agent-bound toolset instance.
+      description: |
+        Replace the stored credentials for an agent-bound toolset instance.
+        The instance must already have been authenticated via POST `.../authenticate` —
+        this endpoint updates credentials in-place and returns 404 if no prior auth record exists.
+        The caller must have edit access to the agent.
       operationId: updateAgentToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
           required: true
+          description: Unique key identifying the service-account agent.
           schema:
             type: string
         - name: instanceId
           in: path
           required: true
+          description: ID of the toolset instance whose credentials should be updated.
           schema:
             type: string
       requestBody:
         required: true
-        description: New credentials to apply to the agent-bound toolset instance.
+        description: |
+          New credential values. The `auth` object is stored as-is and replaces the
+          previous value entirely. Accepted fields depend on the instance's `authType`
+          (e.g. `apiToken`, `username`/`password`, `bearerToken`). Any string-keyed
+          map is accepted — pass only the fields relevant to the toolset's auth type.
         content:
           application/json:
             schema:
               type: object
+              additionalProperties: false
+              required:
+                - auth
               properties:
                 auth:
                   type: object
-                  properties:
-                    email:
-                      type: string
-                    apiToken:
-                      type: string
-                    username:
-                      type: string
-                    password:
-                      type: string
+                  description: |
+                    Credential map for the toolset instance. Accepted fields vary by `authType`.
+                    Common fields: `apiToken`, `username`, `password`, `bearerToken`.
+                  additionalProperties: true
       responses:
         '200':
-          description: Agent credentials updated successfully
+          description: Agent credentials updated successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
         '400':
-          description: Invalid credentials payload
+          description: |
+            `auth` body is absent or empty, or `agentKey`/`instanceId` fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden
+          description: Access denied — caller does not have edit access to the specified agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Agent or instance not found
+          description: No existing auth record found for this instance — call POST `.../authenticate` first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while updating agent credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable — try again shortly.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - Toolset Instances
       summary: Remove agent toolset credentials
-      description: Delete the stored credentials for an agent-bound toolset instance.
+      description: |
+        Delete the stored credentials for an agent-bound toolset instance.
+        This operation is idempotent — if no credentials exist the call still returns 200.
+        The caller must have edit access to the agent.
       operationId: removeAgentToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
           required: true
+          description: Unique key identifying the service-account agent.
           schema:
             type: string
         - name: instanceId
           in: path
           required: true
+          description: ID of the toolset instance whose credentials should be removed.
           schema:
             type: string
       responses:
         '200':
-          description: Agent credentials removed successfully
+          description: Agent credentials removed successfully (or were already absent).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+        '400':
+          description: |
+            `agentKey` or `instanceId` is empty or fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden
-        '404':
-          description: Agent or instance not found
+          description: Access denied — caller does not have edit access to the specified agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '503':
+          description: Connectors service unavailable — try again shortly.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/agents/{agentKey}/instances/{instanceId}/reauthenticate:
     post:
       tags:
         - Toolset Instances
-      summary: Mark agent instance for reauthentication
-      description: Flag an agent-bound toolset instance as requiring the user to re-authenticate.
+      summary: Clear agent OAuth tokens and force re-authentication
+      description: |
+        Clears the stored OAuth tokens for an agent-bound toolset instance, requiring a new
+        OAuth consent flow before the instance can be used again. Any in-progress token-refresh
+        task for the instance is cancelled first. The caller must have edit access to the agent.
       operationId: reauthenticateAgentToolset
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
           required: true
+          description: Unique key identifying the service-account agent.
           schema:
             type: string
         - name: instanceId
           in: path
           required: true
+          description: ID of the toolset instance whose OAuth tokens should be cleared.
           schema:
             type: string
       responses:
         '200':
-          description: Agent reauthentication required
+          description: Agent OAuth credentials cleared successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+        '400':
+          description: |
+            `agentKey` or `instanceId` is empty or fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden
+          description: Access denied — caller does not have edit access to the specified agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Agent or instance not found
+          description: Toolset instance not found for this organisation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while clearing agent OAuth credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable — try again shortly.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/agents/{agentKey}/instances/{instanceId}/oauth/authorize:
     get:
       tags:
         - Toolset OAuth
       summary: Get OAuth authorization URL for agent instance
-      description: Build the OAuth authorization URL to start the consent flow for an agent-bound toolset instance.
+      description: |
+        Build the OAuth authorization URL to start the consent flow for an agent-bound toolset
+        instance. The returned URL's `state` parameter encodes `agentKey` so the OAuth callback
+        stores tokens under the agent's credential path rather than the calling user's.
+        Only valid for instances whose `authType` is `OAUTH`. The caller must have edit access
+        to the agent.
       operationId: getAgentToolsetOAuthUrl
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
           required: true
+          description: Unique key identifying the service-account agent.
           schema:
             type: string
         - name: instanceId
           in: path
           required: true
+          description: ID of the OAuth-type toolset instance to authorize.
           schema:
             type: string
         - name: base_url
           in: query
+          required: false
+          description: Override the redirect base URL used in the OAuth callback. Defaults to the configured connector backend URL.
           schema:
             type: string
       responses:
         '200':
-          description: Authorization URL generated
+          description: OAuth authorization URL generated successfully.
           content:
             application/json:
               schema:
                 type: object
                 properties:
+                  success:
+                    type: boolean
+                    enum: [true]
                   authorizationUrl:
                     type: string
+                    description: The OAuth provider's authorization URL. Redirect the user here to start the consent flow.
+                  state:
+                    type: string
+                    description: Opaque state value encoding the instance and agent context; verified by the OAuth callback.
+        '400':
+          description: |
+            OAuth configuration error. Common causes:
+            - Instance `authType` is not `OAUTH` — use POST `.../authenticate` for non-OAuth types.
+            - Instance has no `oauthConfigId` linked.
+            - The referenced OAuth configuration was not found.
+            - OAuth provider returned an empty or invalid authorization URL.
+            - `agentKey` or `instanceId` is empty or fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden
+          description: Access denied — caller does not have edit access to the specified agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Agent or instance not found
+          description: Toolset instance not found for this organisation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while generating the OAuth authorization URL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
+  # -------------------- Toolset Instances --------------------
   /toolsets/instances:
     get:
       tags:
         - Toolset Instances
       summary: List toolset instances
-      description: List all toolset instances configured for the organization.
+      description: |
+        List all admin-created toolset instances configured for the organization.
+
+        Supports pagination and optional search on instance name and toolset type.
+        Proxies to the connectors service after Node.js authentication and query validation.
       operationId: getToolsetInstances
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: page
+          in: query
+          required: false
+          description: Page number (1-based).
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: Page size (max 200).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: search
+          in: query
+          required: false
+          description: Optional search filter applied to instance name and toolset type (case-insensitive).
+          schema:
+            type: string
       responses:
         '200':
           description: Instances retrieved successfully
@@ -29010,24 +29643,91 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  instances:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/ToolsetInstanceFields'
+                        - type: object
+                          properties:
+                            displayName:
+                              type: string
+                            description:
+                              type: string
+                            iconPath:
+                              type: string
+                            toolCount:
+                              type: integer
+                            auth:
+                              type: object
+                  pagination:
+                    $ref: '#/components/schemas/ToolsetPaginationFull'
+        '400':
+          description: |
+            Invalid query parameters (for example `page` or `limit` out of allowed range), malformed input,
+            or disallowed HTML/script content in query strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, invalid credentials, or user context unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Access denied — the OAuth token is missing the required `connector:read` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while listing toolset instances.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable — try again shortly.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     post:
       tags:
         - Toolset Instances
       summary: Create toolset instance
-      description: Create a new toolset instance (admin only).
+      description: |
+        Create a new admin toolset instance for the organization.
+
+        **Access:** Organization administrators only (non-admins receive 403 from the connectors service).
+        Validates `toolsetType` against the registry and `authType` against the toolset's supported auth types.
+        For `OAUTH`, use `oauthConfigId` to link an existing OAuth app or supply credentials to create one.
+
+        Proxies to the connectors service after Node.js authentication and body validation.
       operationId: createToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       requestBody:
         required: true
-        description: Toolset instance payload including name, type, auth type, auth configuration, and optional base URL.
+        description: Toolset instance payload — name, type, auth type, and optional auth configuration or OAuth linkage.
         content:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required:
                 - instanceName
                 - toolsetType
@@ -29035,370 +29735,1206 @@ paths:
               properties:
                 instanceName:
                   type: string
+                  minLength: 1
+                  description: Unique display name for this instance within the organization and toolset type.
                 toolsetType:
                   type: string
+                  minLength: 1
+                  description: Registry toolset type key (case-insensitive; stored lowercased).
                 authType:
                   type: string
+                  minLength: 1
+                  description: Authentication method (for example `API_TOKEN`, `OAUTH`, `NONE`). Must be supported by the toolset.
                 authConfig:
                   type: object
                   additionalProperties: true
+                  description: Non-OAuth credential fields keyed by schema field names. Omit when using `oauthConfigId` for OAuth.
                 baseUrl:
                   type: string
+                  description: Optional base URL for OAuth redirects or tool-specific endpoints.
                 oauthConfigId:
                   type: string
+                  description: Existing OAuth app configuration ID (OAuth toolsets only).
                 oauthInstanceName:
                   type: string
+                  description: Optional name for a newly created OAuth app when not reusing `oauthConfigId`.
       responses:
+        '200':
+          description: Instance created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateToolsetInstanceResponse'
         '201':
           description: Instance created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateToolsetInstanceResponse'
         '400':
-          description: Invalid request
+          description: |
+            Invalid request body or business rule violation (for example missing/empty required fields, unsupported `authType`,
+            invalid `authConfig` shape, or disallowed HTML/script content).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, invalid credentials, or user context unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden
+          description: |
+            Forbidden — caller is not an organization administrator, or OAuth tokens lack the `connector:write` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Not found — `toolsetType` is not in the registry, or `oauthConfigId` does not exist for the organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflict — an instance with the same `instanceName` already exists for this toolset type in the organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while creating the toolset instance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/instances/{instanceId}:
     get:
       tags:
         - Toolset Instances
       summary: Get toolset instance
-      description: Retrieve a single toolset instance by its identifier.
+      description: |
+        Retrieve a single admin-created toolset instance by ID, enriched with registry metadata.
+
+        Organization administrators receive additional OAuth configuration details and
+        `authenticatedUserCount` for OAuth instances. Proxies to the connectors service
+        after Node.js authentication and path validation.
       operationId: getToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       parameters:
         - name: instanceId
           in: path
           required: true
+          description: Toolset instance identifier.
           schema:
             type: string
+            minLength: 1
       responses:
         '200':
           description: Instance retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetToolsetInstanceResponse'
+        '400':
+          description: Invalid or missing `instanceId` path parameter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, invalid credentials, or user context unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Access denied — the OAuth token is missing the required `connector:read` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Instance not found
+          description: Toolset instance not found for this organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while loading the toolset instance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable — try again shortly.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     put:
       tags:
         - Toolset Instances
       summary: Update toolset instance
-      description: Update an existing toolset instance's configuration (admin only).
+      description: |
+        Update an existing toolset instance (organization administrators only).
+
+        Supports renaming (`instanceName`), updating non-OAuth `authConfig`, switching or
+        updating OAuth app linkage (`oauthConfigId`, `authConfig`, optional `baseUrl`).
+        Changing OAuth credentials or linked config deauthenticates all users for that instance.
+
+        Proxies to the connectors service after Node.js authentication and body validation.
       operationId: updateToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       parameters:
         - name: instanceId
           in: path
           required: true
+          description: Toolset instance identifier.
           schema:
             type: string
+            minLength: 1
       requestBody:
         required: true
-        description: Updated fields for the toolset instance.
+        description: Fields to update — all properties are optional; send only what you intend to change.
         content:
           application/json:
             schema:
               type: object
-              additionalProperties: true
+              additionalProperties: false
+              properties:
+                instanceName:
+                  type: string
+                  description: New display name (must be unique per org and toolset type).
+                baseUrl:
+                  type: string
+                  description: Base URL for OAuth redirects (OAuth instances).
+                oauthConfigId:
+                  type: string
+                  description: Link to an existing OAuth app configuration (OAuth instances).
+                authConfig:
+                  type: object
+                  additionalProperties: true
+                  description: Credential fields to create/update OAuth app or replace non-OAuth instance auth.
       responses:
         '200':
           description: Instance updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateToolsetInstanceResponse'
+        '400':
+          description: |
+            Invalid request body or path parameter (for example malformed JSON or disallowed HTML/script content).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, invalid credentials, or user context unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden
+          description: |
+            Forbidden — caller is not an organization administrator, or OAuth tokens lack the `connector:write` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Instance not found
+          description: |
+            Not found — toolset instance or referenced `oauthConfigId` does not exist for this organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflict — another instance already uses the requested `instanceName` for this toolset type.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while updating the toolset instance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable — try again shortly.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - Toolset Instances
       summary: Delete toolset instance
-      description: Delete a toolset instance and its associated configuration (admin only).
+      description: |
+        Delete a toolset instance and associated user credentials (organization administrators only).
+
+        Deletion is blocked with 409 if any agent still references the instance. Proxies to the
+        connectors service after Node.js authentication and path validation.
       operationId: deleteToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [connector:delete]
       parameters:
         - name: instanceId
           in: path
           required: true
+          description: Toolset instance identifier.
           schema:
             type: string
+            minLength: 1
       responses:
         '200':
           description: Instance deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteToolsetInstanceResponse'
+        '400':
+          description: Invalid or missing `instanceId` path parameter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, invalid credentials, or user context unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden
+          description: |
+            Forbidden — caller is not an organization administrator, or OAuth tokens lack the `connector:delete` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Instance not found
+          description: Toolset instance not found for this organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflict — instance is in use by one or more agents and cannot be deleted until removed from them.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while deleting the toolset instance (including agent usage check failures).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/instances/{instanceId}/authenticate:
     post:
       tags:
         - Toolset Instances
       summary: Authenticate toolset instance
-      description: Authenticate a toolset instance using the provided credentials.
+      description: |
+        Save non-OAuth credentials (API token, Basic auth, Bearer token) for a toolset instance
+        on behalf of the calling user. Credentials are stored per-user under the user's auth path.
+        For OAuth-type toolsets use `GET /toolsets/instances/{instanceId}/oauth/authorize` instead.
       operationId: authenticateToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       parameters:
         - name: instanceId
           in: path
           required: true
+          description: ID of the toolset instance to authenticate.
           schema:
             type: string
       requestBody:
         required: true
-        description: Authentication payload for the toolset instance.
+        description: |
+          Credentials for the toolset instance. The fields required inside `auth` depend on
+          the instance's `authType`:
+          - `API_TOKEN` — requires `apiToken`
+          - `BASIC_AUTH` — requires `username` and `password`
+          - `BEARER_TOKEN` — requires `bearerToken`
         content:
           application/json:
             schema:
               type: object
-              additionalProperties: true
+              additionalProperties: false
+              required:
+                - auth
+              properties:
+                auth:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    apiToken:
+                      type: string
+                      description: Required for `API_TOKEN` auth type.
+                    username:
+                      type: string
+                      description: Required for `BASIC_AUTH` auth type.
+                    password:
+                      type: string
+                      description: Required for `BASIC_AUTH` auth type.
+                    bearerToken:
+                      type: string
+                      description: Required for `BEARER_TOKEN` auth type.
       responses:
         '200':
-          description: Instance authenticated successfully
+          description: Instance authenticated successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                  isAuthenticated:
+                    type: boolean
         '400':
-          description: Invalid auth payload
+          description: |
+            Invalid or missing request payload. Common causes:
+            - `auth` body is absent or empty.
+            - `apiToken` missing for `API_TOKEN` auth type.
+            - `username` or `password` missing for `BASIC_AUTH` auth type.
+            - Instance uses OAuth — use the `/oauth/authorize` endpoint instead.
+            - `instanceId` is empty or fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Access denied — the OAuth token is missing the required `connector:write` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Instance not found
+          description: Toolset instance not found for this organisation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while saving credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/instances/{instanceId}/credentials:
     put:
       tags:
         - Toolset Instances
       summary: Update toolset credentials
-      description: Update the stored credentials for a toolset instance.
+      description: |
+        Replace the calling user's stored credentials for a toolset instance.
+        The instance must already have been authenticated via POST `.../authenticate` —
+        this endpoint updates credentials in-place and returns 404 if no prior auth record exists.
+        For OAuth types use POST `.../reauthenticate` to clear tokens and restart the OAuth flow.
       operationId: updateToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       parameters:
         - name: instanceId
           in: path
           required: true
+          description: ID of the toolset instance whose credentials should be updated.
           schema:
             type: string
       requestBody:
         required: true
-        description: New credentials to apply to the toolset instance.
+        description: |
+          New credential values. The `auth` object replaces the stored credentials in-place.
+          All `auth` fields are optional — supply only those relevant to the instance's `authType`.
         content:
           application/json:
             schema:
               type: object
+              additionalProperties: false
+              required:
+                - auth
               properties:
                 auth:
                   type: object
+                  additionalProperties: false
+                  description: |
+                    Updated credentials for the toolset instance. All fields are optional;
+                    supply only the fields relevant to the instance's `authType`.
                   properties:
                     email:
                       type: string
+                      description: Email address (used by certain API-token-based toolsets).
                     apiToken:
                       type: string
+                      description: API token credential.
                     username:
                       type: string
+                      description: Username for basic-auth toolsets.
                     password:
                       type: string
+                      description: Password for basic-auth toolsets.
       responses:
         '200':
-          description: Credentials updated successfully
+          description: Credentials updated successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
         '400':
-          description: Invalid credentials payload
+          description: |
+            `auth` body is absent or empty, or `instanceId` fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Access denied — the OAuth token is missing the required `connector:write` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Instance not found
+          description: No existing auth record found for this instance — call POST `.../authenticate` first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while updating credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
     delete:
       tags:
         - Toolset Instances
       summary: Remove toolset credentials
-      description: Delete the stored credentials for a toolset instance.
+      description: |
+        Delete the calling user's stored credentials for a toolset instance.
+        This operation is idempotent — if no credentials exist the call still returns 200.
       operationId: removeToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       parameters:
         - name: instanceId
           in: path
           required: true
+          description: ID of the toolset instance whose credentials should be removed.
           schema:
             type: string
       responses:
         '200':
-          description: Credentials removed successfully
+          description: Credentials removed successfully (or were already absent).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+        '400':
+          description: |
+            `instanceId` is empty or fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
-        '404':
-          description: Instance not found
+          description: Authentication failed — missing token, expired session, or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Access denied — the OAuth token is missing the required `connector:write` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '503':
+          description: Connectors service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/instances/{instanceId}/reauthenticate:
     post:
       tags:
         - Toolset Instances
-      summary: Mark instance for reauthentication
-      description: Flag the toolset instance as requiring the user to re-authenticate.
+      summary: Reauthenticate toolset instance
+      description: |
+        Clear the calling user's stored credentials (OAuth tokens or non-OAuth) for a toolset
+        instance, forcing a fresh authentication flow. For OAuth toolsets, follow up with
+        `GET /toolsets/instances/{instanceId}/oauth/authorize` to start a new OAuth flow.
+        For non-OAuth toolsets, follow up with `POST /toolsets/instances/{instanceId}/authenticate`.
       operationId: reauthenticateToolsetInstance
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       parameters:
         - name: instanceId
           in: path
           required: true
+          description: ID of the toolset instance to reauthenticate.
           schema:
             type: string
       responses:
         '200':
-          description: Reauthentication required
+          description: Credentials cleared. The user must now re-authenticate.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: Credentials cleared. Please re-authenticate.
+        '400':
+          description: |
+            `instanceId` is empty or fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Access denied — the OAuth token is missing the required `connector:write` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Instance not found
+          description: Toolset instance not found for this organisation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while clearing credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/instances/{instanceId}/oauth/authorize:
     get:
       tags:
         - Toolset OAuth
       summary: Get OAuth authorization URL for instance
-      description: Build the OAuth authorization URL to start the consent flow for a toolset instance.
+      description: |
+        Build the OAuth authorization URL to start the consent flow for a toolset instance.
+        The instance must have `authType: OAUTH` and an OAuth configuration linked by an admin.
+        Redirect the user to the returned `authorizationUrl` to begin the OAuth consent flow.
       operationId: getInstanceOAuthAuthorizationUrl
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       parameters:
         - name: instanceId
           in: path
           required: true
+          description: ID of the toolset instance to authorize via OAuth.
+          schema:
+            type: string
+        - name: base_url
+          in: query
+          required: false
+          description: |
+            Base URL used to construct the OAuth callback redirect URI
+            (e.g. `https://app.example.com`). Defaults to `http://localhost:3001` when omitted.
           schema:
             type: string
       responses:
         '200':
-          description: Authorization URL generated
+          description: OAuth authorization URL generated successfully.
           content:
             application/json:
               schema:
                 type: object
                 properties:
+                  success:
+                    type: boolean
+                    enum: [true]
                   authorizationUrl:
                     type: string
+                    description: The full OAuth authorization URL to redirect the user to.
+                  state:
+                    type: string
+                    description: Encoded OAuth state parameter (includes instance ID and user ID).
+        '400':
+          description: |
+            Request is invalid. Common causes:
+            - `instanceId` is empty or fails validation.
+            - The instance's `authType` is not `OAUTH`.
+            - The instance has no OAuth configuration linked (admin must configure it).
+            - The linked OAuth configuration was deleted or is misconfigured.
+            - The OAuth provider returned an empty authorization URL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Access denied — the OAuth token is missing the required `connector:write` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Instance not found
+          description: Toolset instance not found for this organisation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while generating the OAuth authorization URL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/instances/{instanceId}/status:
     get:
       tags:
         - Toolset Instances
       summary: Get instance authentication status
-      description: Report whether the toolset instance is configured and authenticated.
+      description: |
+        Report whether a toolset instance exists for the organization and whether the **current user**
+        has stored credentials for it (`isAuthenticated`).
+
+        Proxies to the connectors service after Node.js authentication and path validation.
+        Requires `connector:read` when using OAuth2 client credentials.
       operationId: getToolsetInstanceStatus
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       parameters:
         - name: instanceId
           in: path
           required: true
+          description: Toolset instance identifier.
           schema:
             type: string
+            minLength: 1
       responses:
         '200':
-          description: Status retrieved successfully
+          description: Instance status retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetToolsetInstanceStatusResponse'
+        '400':
+          description: Invalid or missing `instanceId` path parameter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, invalid credentials, or user context unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Access denied — the OAuth token is missing the required `connector:read` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Instance not found
+          description: Toolset instance not found for this organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while loading instance status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/oauth-configs/{toolsetType}:
     get:
       tags:
         - OAuth Configuration
       summary: List OAuth configs by toolset type
-      description: List OAuth client configurations registered for a specific toolset type.
+      description: |
+        List OAuth client configurations registered for a specific toolset type within the caller's
+        organisation. Results are filtered to the caller's org automatically.
+        **Admin users** receive all fields including `clientSecret` and a `clientSecretSet` flag.
+        **Non-admin users** receive only basic metadata (no secret fields).
+        Returns an empty list when no configs exist for the given toolset type — never 404.
       operationId: listToolsetOAuthConfigs
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       parameters:
         - name: toolsetType
           in: path
           required: true
+          description: The toolset type identifier (e.g. `github`, `jira`, `slack`).
           schema:
             type: string
       responses:
         '200':
-          description: OAuth configs retrieved successfully
+          description: OAuth configurations retrieved successfully (may be an empty list).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  oauthConfigs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ToolsetOAuthConfigItem'
+                  total:
+                    type: integer
+                    description: Total number of configurations returned.
+        '400':
+          description: |
+            `toolsetType` is empty or fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden
+          description: Access denied — the OAuth token is missing the required `connector:read` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while retrieving OAuth configurations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/oauth-configs/{toolsetType}/{oauthConfigId}:
     put:
       tags:
         - OAuth Configuration
       summary: Update OAuth config
-      description: Update an OAuth client configuration for a specific toolset type.
+      description: |
+        Admin-only. Update an OAuth client configuration for a specific toolset type.
+        All users authenticated via instances that reference this config will be
+        deauthenticated and must re-authenticate.
       operationId: updateToolsetOAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       parameters:
         - name: toolsetType
           in: path
           required: true
+          description: The toolset type identifier (e.g. `github`, `jira`, `slack`).
           schema:
             type: string
         - name: oauthConfigId
           in: path
           required: true
+          description: ID of the OAuth configuration to update.
           schema:
             type: string
       requestBody:
         required: true
-        description: Updated OAuth client configuration fields.
+        description: Updated OAuth client credentials and optional callback base URL.
         content:
           application/json:
             schema:
               type: object
-              additionalProperties: true
+              additionalProperties: false
+              required:
+                - authConfig
+                - baseUrl
+              properties:
+                authConfig:
+                  type: object
+                  additionalProperties: false
+                  required:
+                    - clientId
+                    - clientSecret
+                  properties:
+                    clientId:
+                      type: string
+                      description: OAuth application client ID.
+                    clientSecret:
+                      type: string
+                      description: OAuth application client secret.
+                    tenantId:
+                      type: string
+                      description: Tenant/directory ID (required for Microsoft-based OAuth providers).
+                    authorizeUrl:
+                      type: string
+                      description: Custom authorization endpoint URL (overrides registry default).
+                    tokenUrl:
+                      type: string
+                      description: Custom token endpoint URL (overrides registry default).
+                    scopes:
+                      type: array
+                      items:
+                        type: string
+                      description: OAuth scopes to request.
+                    redirectUri:
+                      type: string
+                      description: OAuth redirect URI override.
+                    additionalParams:
+                      type: object
+                      additionalProperties:
+                        type: string
+                      description: Extra query parameters appended to the authorization URL.
+                    tokenAccessType:
+                      type: string
+                      description: Token access type hint (e.g. `offline`).
+                    scopeParameterName:
+                      type: string
+                      description: Name of the scope query parameter (defaults to `scope`).
+                    tokenResponsePath:
+                      type: string
+                      description: JSON path into the token response where the access token lives.
+                baseUrl:
+                  type: string
+                  description: |
+                    Public base URL of the frontend (e.g. `https://app.example.com`),
+                    used to construct the OAuth callback redirect URI.
       responses:
         '200':
-          description: OAuth config updated successfully
+          description: OAuth configuration updated successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  oauthConfigId:
+                    type: string
+                    description: ID of the updated OAuth configuration.
+                  message:
+                    type: string
+                    description: Human-readable result, including deauthentication count when applicable.
+                  deauthenticatedUserCount:
+                    type: integer
+                    description: Number of users deauthenticated as a result of the config change.
+        '400':
+          description: |
+            Request payload is invalid. Common causes:
+            - `authConfig`, `clientId`, `clientSecret`, or `baseUrl` is absent or empty.
+            - `toolsetType` or `oauthConfigId` is empty or fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden
+          description: Access denied — caller is not an organisation administrator or the OAuth token is missing the required `connector:write` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: OAuth config not found
+          description: OAuth configuration not found for the given `toolsetType` and `oauthConfigId`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while updating the OAuth configuration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
     delete:
       tags:
         - OAuth Configuration
       summary: Delete OAuth config
-      description: Delete an OAuth client configuration for a specific toolset type.
+      description: |
+        Admin-only. Delete an OAuth client configuration for a specific toolset type.
+        This is a safe-delete: the request is rejected with `409` if any toolset instance
+        still references this configuration. Update or delete those instances first.
       operationId: deleteToolsetOAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [connector:delete]
       parameters:
         - name: toolsetType
           in: path
           required: true
+          description: The toolset type identifier (e.g. `github`, `jira`, `slack`).
           schema:
             type: string
         - name: oauthConfigId
           in: path
           required: true
+          description: ID of the OAuth configuration to delete.
           schema:
             type: string
       responses:
         '200':
-          description: OAuth config deleted successfully
+          description: OAuth configuration deleted successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+                    example: OAuth configuration deleted successfully.
+        '400':
+          description: |
+            `toolsetType` or `oauthConfigId` is empty or fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Authentication failed — missing token, expired session, or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden
+          description: Access denied — caller is not an organisation administrator or the OAuth token is missing the required `connector:delete` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: OAuth config not found
+          description: OAuth configuration not found for the given `toolsetType` and `oauthConfigId`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: OAuth config is in use by one or more toolset instances
+          description: |
+            OAuth configuration is still referenced by one or more toolset instances.
+            The error detail lists the affected instance names. Update or delete those
+            instances before retrying the delete.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — retry later (see `Retry-After` when returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Unexpected server error while deleting the OAuth configuration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connectors service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- OAuth Configuration (Admin) --------------------
   /oauth/registry:
