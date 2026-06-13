@@ -645,7 +645,7 @@ class TestJiraDataCenterDeletionAudit:
         call_kwargs = mock_ds.get_auditing_events_v1.await_args.kwargs
         assert call_kwargs["actions"] == "Issue deleted,Sub-task deleted"
         assert call_kwargs["categories"] == "issue"
-        assert "limit" not in call_kwargs
+        assert call_kwargs["limit"] == 500
         assert call_kwargs["from_"].endswith("Z")
         assert call_kwargs["to"].endswith("Z")
 

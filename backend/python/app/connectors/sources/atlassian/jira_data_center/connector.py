@@ -94,6 +94,7 @@ BATCH_PROCESSING_SIZE: int = 100
 USER_PAGE_SIZE: int = 50
 GROUP_MEMBER_PAGE_SIZE: int = 50
 GROUPS_PICKER_MAX: int = 1000  # maxResults for GET /rest/api/2/groups/picker
+AUDIT_PAGE_SIZE: int = 500  # page size for GET /rest/auditing/1.0/events
 DC_AUDIT_ISSUE_DELETED_ACTIONS: str = "Issue deleted,Sub-task deleted"
 DC_AUDIT_ISSUE_CATEGORY: str = "issue"
 
@@ -856,12 +857,14 @@ class JiraDataCenterConnector(BaseConnector):
 
         deleted_issue_keys: list[str] = []
         offset = 0
+        limit = AUDIT_PAGE_SIZE
 
         while True:
             try:
                 datasource = await self._get_fresh_datasource()
                 response = await datasource.get_auditing_events_v1(
                     offset=offset,
+                    limit=limit,
                     from_=from_date,
                     to=to_date,
                     actions=DC_AUDIT_ISSUE_DELETED_ACTIONS,
