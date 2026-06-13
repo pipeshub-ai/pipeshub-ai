@@ -466,10 +466,11 @@ app = FastAPI(
 # List of paths to exclude from authentication (public endpoints)
 # All other paths will require authentication by default
 EXCLUDE_PATHS = [
-    "/health",  # Health check endpoint
-    "/drive/webhook",  # Google Drive webhook (has its own WebhookAuthVerifier)
-    "/gmail/webhook",  # Gmail webhook (uses Google Pub/Sub authentication)
-    "/admin/webhook",  # Admin webhook (has its own WebhookAuthVerifier)
+    "/health",          # Basic health check endpoint
+    "/health/graph-db", # Graph DB connectivity probe (called by Node.js health route)
+    "/drive/webhook",   # Google Drive webhook (has its own WebhookAuthVerifier)
+    "/gmail/webhook",   # Gmail webhook (uses Google Pub/Sub authentication)
+    "/admin/webhook",   # Admin webhook (has its own WebhookAuthVerifier)
 ]
 
 @app.middleware("http")
