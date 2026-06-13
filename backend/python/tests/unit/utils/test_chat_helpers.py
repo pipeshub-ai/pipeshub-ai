@@ -239,6 +239,19 @@ class TestCreateRecordInstanceFromDict:
         assert result.record_type == RecordType.TICKET
         assert result.assignee == "Alice"
         assert result.reporter_name == "Bob"
+        assert result.labels is None
+
+    def test_ticket_record_maps_labels(self):
+        d = _base_record_dict(record_type="TICKET")
+        graph_doc = {
+            "status": "OPEN",
+            "priority": "HIGH",
+            "type": "BUG",
+            "labels": ["bug", "urgent"],
+        }
+        result = create_record_instance_from_dict(d, graph_doc)
+        assert isinstance(result, TicketRecord)
+        assert result.labels == ["bug", "urgent"]
 
     def test_project_record(self):
         d = _base_record_dict(record_type="PROJECT")
@@ -2277,6 +2290,103 @@ class TestGetRecord:
         # create_record_instance_from_dict should return None due to the invalid version,
         # so context_metadata should be ""
         assert vr_map["vr-1"]["context_metadata"] == ""
+
+    @pytest.mark.asyncio
+    async def test_jira_ticket_uses_live_fields(self):
+        record_blob = _make_record_blob(
+            record_type="TICKET",
+            connector_name=Connectors.JIRA.value,
+            external_record_id="10324",
+        )
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value=record_blob)
+        blob_store.config_service = AsyncMock()
+
+        graph_doc = {
+            "status": "OPEN",
+            "priority": "HIGH",
+            "type": "BUG",
+        }
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value=graph_doc)
+
+        virtual_to_record_map = {
+            "vr-jira": {
+                "_key": "rec-jira",
+                "recordType": "TICKET",
+                "recordName": "PROJ-1",
+                "version": 1,
+                "origin": "CONNECTOR",
+                "connectorName": Connectors.JIRA.value,
+                "connectorId": "conn-jira",
+                "webUrl": "https://jira.example.com/browse/PROJ-1",
+                "mimeType": "text/html",
+            },
+        }
+
+        vr_map = {}
+        with patch.object(
+            TicketRecord,
+            "to_llm_context_with_live_fields",
+            new=AsyncMock(return_value="enriched jira context"),
+        ) as mock_live:
+            await get_record(
+                "vr-jira",
+                vr_map,
+                blob_store,
+                "org-1",
+                virtual_to_record_map,
+                graph_provider,
+            )
+
+        assert vr_map["vr-jira"]["context_metadata"] == "enriched jira context"
+        mock_live.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_non_jira_ticket_still_calls_live_fields_method(self):
+        record_blob = _make_record_blob(
+            record_type="TICKET",
+            connector_name=Connectors.LINEAR.value,
+        )
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value=record_blob)
+        blob_store.config_service = AsyncMock()
+
+        graph_doc = {"status": "OPEN", "priority": "HIGH", "type": "BUG"}
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value=graph_doc)
+
+        virtual_to_record_map = {
+            "vr-linear": {
+                "_key": "rec-linear",
+                "recordType": "TICKET",
+                "recordName": "LIN-1",
+                "version": 1,
+                "origin": "CONNECTOR",
+                "connectorName": Connectors.LINEAR.value,
+                "connectorId": "conn-linear",
+                "webUrl": "https://linear.app/issue/LIN-1",
+                "mimeType": "text/html",
+            },
+        }
+
+        vr_map = {}
+        with patch.object(
+            TicketRecord,
+            "to_llm_context_with_live_fields",
+            new=AsyncMock(return_value="linear ticket context"),
+        ) as mock_live:
+            await get_record(
+                "vr-linear",
+                vr_map,
+                blob_store,
+                "org-1",
+                virtual_to_record_map,
+                graph_provider,
+            )
+
+        assert vr_map["vr-linear"]["context_metadata"] == "linear ticket context"
+        mock_live.assert_awaited_once()
 
 
 # ===================================================================
