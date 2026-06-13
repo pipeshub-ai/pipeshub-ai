@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlparse
 
 from app.connectors.sources.atlassian.jira.enrichment.field_registry import build_search_field_list
 from app.config.constants.arangodb import Connectors
@@ -13,8 +14,26 @@ logger = create_logger("jira_issue_fetcher")
 BATCH_ID_CHUNK_SIZE = 50
 
 
+def _hostname_from_url(url: str) -> str:
+    if not url:
+        return ""
+    normalized = url if "://" in url else f"https://{url}"
+    return (urlparse(normalized).hostname or "").lower()
+
+
 def is_jira_cloud_base_url(base_url: str) -> bool:
-    return "api.atlassian.com/ex/jira" in (base_url or "")
+    if not base_url:
+        return False
+    normalized = base_url if "://" in base_url else f"https://{base_url}"
+    parsed = urlparse(normalized)
+    if (parsed.hostname or "").lower() != "api.atlassian.com":
+        return False
+    return "/ex/jira" in (parsed.path or "")
+
+
+def _is_atlassian_cloud_site_url(base_url: str) -> bool:
+    hostname = _hostname_from_url(base_url)
+    return hostname.endswith(".atlassian.net")
 
 
 def resolve_is_cloud_api(
@@ -34,7 +53,7 @@ def resolve_is_cloud_api(
             return False
     if is_jira_cloud_base_url(base_url):
         return True
-    return ".atlassian.net" in (base_url or "")
+    return _is_atlassian_cloud_site_url(base_url)
 
 
 def _chunk_ids(issue_ids: list[str], chunk_size: int) -> list[list[str]]:

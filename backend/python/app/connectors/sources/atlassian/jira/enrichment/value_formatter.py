@@ -216,7 +216,7 @@ def _format_sprint_value(value: Any) -> str | None:
         state = value.get("state")
         start = value.get("startDate")
         end = value.get("endDate")
-        bits = [b for b in [name, state, start, end] if b]
+        bits = [str(b) for b in [name, state, start, end] if b]
         return " ".join(bits) if bits else None
     text = str(value)
     match = _SPRINT_NAME_RE.search(text)

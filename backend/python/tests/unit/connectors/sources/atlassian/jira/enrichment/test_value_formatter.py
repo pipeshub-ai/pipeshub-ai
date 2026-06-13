@@ -65,6 +65,16 @@ class TestValueFormatter:
         lines = format_live_lines(issue, {"sprint": "customfield_10110"})
         assert "Sprint 42" in lines["Sprint"]
 
+    def test_sprint_dict_with_numeric_dates(self):
+        from app.connectors.sources.atlassian.jira.enrichment.value_formatter import (
+            _format_sprint_value,
+        )
+
+        result = _format_sprint_value(
+            {"name": "Sprint 1", "state": "active", "startDate": 1710000000000, "endDate": 1712000000000},
+        )
+        assert result == "Sprint 1 active 1710000000000 1712000000000"
+
     def test_resolution_system_field_formatted(self):
         issue = _sample_issue(resolution={"name": "Fixed"})
         lines = format_live_lines(issue, {})

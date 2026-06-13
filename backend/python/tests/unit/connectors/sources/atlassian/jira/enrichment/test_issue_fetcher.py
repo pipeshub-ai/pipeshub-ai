@@ -4,8 +4,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.config.constants.arangodb import Connectors
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.sources.atlassian.jira.enrichment.issue_fetcher import batch_fetch_issues
+from app.connectors.sources.atlassian.jira.enrichment.issue_fetcher import (
+    _is_atlassian_cloud_site_url,
+    batch_fetch_issues,
+    is_jira_cloud_base_url,
+    resolve_is_cloud_api,
+)
 
 
 def _ok_response(issues: list[dict]) -> MagicMock:
@@ -53,3 +59,23 @@ class TestBatchFetchIssues:
 
         data_source.search_issues_post_v2.assert_awaited_once()
         assert "10024" in result
+
+
+class TestResolveIsCloudApi:
+    def test_atlassian_net_hostname_is_cloud(self):
+        assert _is_atlassian_cloud_site_url("https://mycompany.atlassian.net") is True
+        assert _is_atlassian_cloud_site_url("mycompany.atlassian.net") is True
+
+    def test_substring_in_path_does_not_match(self):
+        assert _is_atlassian_cloud_site_url("https://evil.com/.atlassian.net") is False
+
+    def test_api_atlassian_ex_jira_proxy_url(self):
+        assert is_jira_cloud_base_url(
+            "https://api.atlassian.com/ex/jira/abc123/rest/api/3",
+        ) is True
+
+    def test_dc_connector_name_overrides_atlassian_net_url(self):
+        assert resolve_is_cloud_api(Connectors.JIRA_DATA_CENTER, "https://x.atlassian.net") is False
+
+    def test_cloud_connector_name_without_url(self):
+        assert resolve_is_cloud_api(Connectors.JIRA, "") is True
