@@ -142,7 +142,9 @@ class TestDeleteRecordEvent:
         assert events[0].event == "parsing_complete"
         assert events[0].data.record_id == "r1"
         assert events[1].event == "indexing_complete"
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"])
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(
+            ["vr1"], exclude_record_ids=["r1"]
+        )
 
     @pytest.mark.asyncio
     async def test_delete_record_no_virtual_record_id(self):
@@ -158,7 +160,9 @@ class TestDeleteRecordEvent:
         events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, payload)
 
         assert len(events) == 2
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with([None])
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(
+            [None], exclude_record_ids=["r1"]
+        )
 
 
 # ===================================================================
