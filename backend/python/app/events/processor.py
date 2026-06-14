@@ -788,7 +788,7 @@ class Processor:
                         try:
                             table_data = {"grid": [[row] for row in non_header_row_dicts]}
                             row_descriptions, _ = await get_rows_text(
-                                self.config_service, table_data, table_summary, column_headers
+                                self.config_service, table_data, table_summary, []
                             )
 
                             # Update row blocks with LLM descriptions (only non-header rows)
