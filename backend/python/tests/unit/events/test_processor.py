@@ -2380,6 +2380,60 @@ class TestEnhanceTablesWithLlm:
         assert bg.data["table_summary"] == "This is a test table"
 
     @pytest.mark.asyncio
+    async def test_each_data_row_keeps_its_own_description(self):
+        """Each data row keeps its own description, and none is dropped.
+
+        Regression: the grid passed to get_rows_text already excludes header
+        rows, so passing column_headers made get_rows_text strip the first data
+        row (table[1:]), shifting every description by one and leaving the last
+        row unlabeled.
+        """
+        from app.models.blocks import (
+            Block, BlockGroup, BlockGroupChildren, BlocksContainer,
+            BlockType, GroupType, TableRowMetadata,
+        )
+        proc, _, _, config = _make_processor()
+
+        def _row(index, cells, is_header=False):
+            return Block(
+                index=index,
+                type=BlockType.TABLE_ROW,
+                data={"cells": cells},
+                table_row_metadata=TableRowMetadata(is_header=is_header),
+            )
+
+        header = _row(0, ["Name", "Role"], is_header=True)
+        r1 = _row(1, ["Alice", "Engineer"])
+        r2 = _row(2, ["Bob", "Designer"])
+        r3 = _row(3, ["Carol", "Manager"])
+
+        bg = BlockGroup(
+            index=0,
+            type=GroupType.TABLE,
+            data={"table_markdown": "| Name | Role |\n|---|---|"},
+        )
+        bg.children = BlockGroupChildren.from_indices(block_indices=[0, 1, 2, 3])
+        container = BlocksContainer(blocks=[header, r1, r2, r3], block_groups=[bg])
+
+        summary_resp = MagicMock(summary="people", headers=["Name", "Role"])
+
+        async def fake_get_rows_text(cfg, table_data, table_summary, column_headers):
+            rows = table_data["grid"]
+            return [f"desc-row-{i}" for i in range(len(rows))], rows
+
+        with patch("app.utils.indexing_helpers.get_table_summary_n_headers", new=AsyncMock(return_value=summary_resp)):
+            with patch("app.utils.indexing_helpers.get_rows_text", new=AsyncMock(side_effect=fake_get_rows_text)) as mock_rows:
+                await proc._enhance_tables_with_llm(container)
+
+        grid_sent = mock_rows.await_args.args[1]["grid"]
+        headers_sent = mock_rows.await_args.args[3]
+        assert len(grid_sent) == 3
+        assert headers_sent == []
+        assert r1.data["row_natural_language_text"] == "desc-row-0"
+        assert r2.data["row_natural_language_text"] == "desc-row-1"
+        assert r3.data["row_natural_language_text"] == "desc-row-2"
+
+    @pytest.mark.asyncio
     async def test_table_group_exception_continues(self):
         """Exception in one table group doesn't stop others."""
         from app.models.blocks import BlockGroup, BlocksContainer, GroupType

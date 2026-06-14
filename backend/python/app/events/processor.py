@@ -797,7 +797,7 @@ class Processor:
                                 grid.append(grid_row)
                             table_data = {"grid": grid}
                             row_descriptions, _ = await get_rows_text(
-                                self.config_service, table_data, table_summary, column_headers
+                                self.config_service, table_data, table_summary, []
                             )
 
                             # Update row blocks with LLM descriptions (only non-header rows)
