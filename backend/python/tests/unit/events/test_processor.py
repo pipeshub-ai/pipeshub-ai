@@ -2419,7 +2419,8 @@ class TestEnhanceTablesWithLlm:
 
         async def fake_get_rows_text(cfg, table_data, table_summary, column_headers):
             rows = table_data["grid"]
-            return [f"desc-row-{i}" for i in range(len(rows))], rows
+            data_rows = rows[1:] if column_headers else rows
+            return [f"desc-row-{i}" for i in range(len(data_rows))], data_rows
 
         with patch("app.utils.indexing_helpers.get_table_summary_n_headers", new=AsyncMock(return_value=summary_resp)):
             with patch("app.utils.indexing_helpers.get_rows_text", new=AsyncMock(side_effect=fake_get_rows_text)) as mock_rows:
@@ -2427,8 +2428,13 @@ class TestEnhanceTablesWithLlm:
 
         grid_sent = mock_rows.await_args.args[1]["grid"]
         headers_sent = mock_rows.await_args.args[3]
-        assert len(grid_sent) == 3
-        assert headers_sent == []
+        assert headers_sent == ["Name", "Role"]
+        assert grid_sent[0] == ["Name", "Role"]
+        assert grid_sent[1:] == [
+            ["Alice", "Engineer"],
+            ["Bob", "Designer"],
+            ["Carol", "Manager"],
+        ]
         assert r1.data["row_natural_language_text"] == "desc-row-0"
         assert r2.data["row_natural_language_text"] == "desc-row-1"
         assert r3.data["row_natural_language_text"] == "desc-row-2"

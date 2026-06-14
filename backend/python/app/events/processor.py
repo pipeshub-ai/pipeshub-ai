@@ -786,9 +786,17 @@ class Processor:
 
                     if non_header_row_dicts:
                         try:
-                            table_data = {"grid": [[row] for row in non_header_row_dicts]}
+                            data_rows = [
+                                row_blocks[idx].data.get("cells", [])
+                                for idx in non_header_row_indices
+                            ]
+                            if column_headers:
+                                grid = [column_headers] + data_rows
+                            else:
+                                grid = data_rows
+                            table_data = {"grid": grid}
                             row_descriptions, _ = await get_rows_text(
-                                self.config_service, table_data, table_summary, []
+                                self.config_service, table_data, table_summary, column_headers
                             )
 
                             # Update row blocks with LLM descriptions (only non-header rows)
