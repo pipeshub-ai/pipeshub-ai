@@ -44,6 +44,11 @@ from app.connectors.sources.s3.base_connector import (
 from app.connectors.sources.s3.common.apps import S3App
 from app.sources.client.s3.s3 import S3Client
 from app.sources.external.s3.s3 import S3DataSource
+from app.services.notification.types import (
+    NotificationSeverity,
+    NotificationType,
+    NotificationRecipientRole,
+)
 
 # Re-export the entities processor for backward compatibility
 S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
@@ -143,6 +148,18 @@ class S3Connector(S3CompatibleBaseConnector):
         )
         if not config:
             self.logger.error("S3 configuration not found.")
+            payload = {
+                "connectorId": self.connector_id,
+                "connectorName": self.connector_name.value,
+            }
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR, 
+                severity=NotificationSeverity.ERROR, 
+                title="Configuration not found", 
+                message="S3 configuration not found for this connector.", 
+                payload=payload,
+                recipient_roles=[NotificationRecipientRole.ADMIN],
+            )
             return False
 
         auth_config = config.get("auth", {})
@@ -152,6 +169,14 @@ class S3Connector(S3CompatibleBaseConnector):
 
         if not access_key or not secret_key:
             self.logger.error("S3 access key or secret key not found in configuration.")
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="Credentials missing",
+                message=(
+                    "S3 access key or secret key is missing in connector configuration."
+                ),
+            )
             return False
 
         try:
@@ -171,6 +196,12 @@ class S3Connector(S3CompatibleBaseConnector):
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize S3 client: {e}", exc_info=True)
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="Failed to initialize S3 client",
+                message=f"Failed to initialize S3 client: {e}",
+            )
             return False
 
     async def _build_data_source(self) -> S3DataSource:

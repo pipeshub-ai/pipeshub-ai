@@ -6,6 +6,9 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.services.notification.notification_service import (
+    NotificationService,
+)
 from app.connectors.services.kafka_service import KafkaService
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
@@ -37,6 +40,12 @@ class ConnectorAppContainer(BaseAppContainer):
     # Core Services
     kafka_service = providers.Singleton(
         KafkaService, logger=logger, config_service=config_service
+    )
+
+    connector_notification_service = providers.Singleton(
+        NotificationService,
+        kafka_service=kafka_service,
+        logger=logger,
     )
 
     # Graph Database Provider via Factory (HTTP mode - fully async)
