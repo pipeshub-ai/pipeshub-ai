@@ -919,7 +919,7 @@ class TestProcessImageEmbeddings:
     async def test_unsupported_provider(self):
         vs = _make_vectorstore()
         vs.embedding_provider = "unknown_provider"
-        result = await vs._process_image_embeddings([], [])
+        result = await vs._process_image_embeddings([], [], "test-record")
         assert result == []
 
     @pytest.mark.asyncio
@@ -927,7 +927,9 @@ class TestProcessImageEmbeddings:
         vs = _make_vectorstore()
         vs.embedding_provider = "cohere"
         vs._process_image_embeddings_cohere = AsyncMock(return_value=[MagicMock()])
-        result = await vs._process_image_embeddings([{"metadata": {}}], ["data:image/png;base64,abc"])
+        result = await vs._process_image_embeddings(
+            [{"metadata": {}}], ["data:image/png;base64,abc"], "test-record"
+        )
         vs._process_image_embeddings_cohere.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -935,7 +937,7 @@ class TestProcessImageEmbeddings:
         vs = _make_vectorstore()
         vs.embedding_provider = "voyage"
         vs._process_image_embeddings_voyage = AsyncMock(return_value=[])
-        await vs._process_image_embeddings([], [])
+        await vs._process_image_embeddings([], [], "test-record")
         vs._process_image_embeddings_voyage.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -943,7 +945,7 @@ class TestProcessImageEmbeddings:
         vs = _make_vectorstore()
         vs.embedding_provider = "jinaAI"
         vs._process_image_embeddings_jina = AsyncMock(return_value=[])
-        await vs._process_image_embeddings([], [])
+        await vs._process_image_embeddings([], [], "test-record")
         vs._process_image_embeddings_jina.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -951,7 +953,7 @@ class TestProcessImageEmbeddings:
         vs = _make_vectorstore()
         vs.embedding_provider = "bedrock"
         vs._process_image_embeddings_bedrock = AsyncMock(return_value=[])
-        await vs._process_image_embeddings([], [])
+        await vs._process_image_embeddings([], [], "test-record")
         vs._process_image_embeddings_bedrock.assert_awaited_once()
 
 
@@ -969,7 +971,7 @@ class TestProcessDocumentChunks:
         vs.vector_store.aadd_documents = AsyncMock()
 
         docs = [Document(page_content=f"doc {i}", metadata={}) for i in range(5)]
-        await vs._process_document_chunks(docs)
+        await vs._process_document_chunks(docs, "test-record")
         assert vs.vector_store.aadd_documents.await_count > 0
 
     @pytest.mark.asyncio
@@ -981,7 +983,7 @@ class TestProcessDocumentChunks:
         vs.vector_store.aadd_documents = AsyncMock()
 
         docs = [Document(page_content=f"doc {i}", metadata={}) for i in range(5)]
-        await vs._process_document_chunks(docs)
+        await vs._process_document_chunks(docs, "test-record")
         assert vs.vector_store.aadd_documents.await_count > 0
 
     @pytest.mark.asyncio
@@ -994,7 +996,7 @@ class TestProcessDocumentChunks:
 
         docs = [Document(page_content="test", metadata={})]
         with pytest.raises(VectorStoreError):
-            await vs._process_document_chunks(docs)
+            await vs._process_document_chunks(docs, "test-record")
 
 
 # ===================================================================

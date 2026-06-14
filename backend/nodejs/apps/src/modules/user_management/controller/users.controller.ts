@@ -402,19 +402,51 @@ export class UserController {
         );
       }
 
-      // Ensure that userIds are valid MongoDB ObjectIds
+      const invalidIds = userIds.filter((id) => !mongoose.isValidObjectId(id));
+      if (invalidIds.length > 0) {
+        throw new BadRequestError(
+          'userIds must contain valid MongoDB ObjectIds',
+        );
+      }
+
       const userObjectIds = userIds.map(
         (id) => new mongoose.mongo.ObjectId(id),
       );
 
-      // Fetch the users using the provided list of user IDs
+      const orgId = req.user?.orgId;
+
       const users = await Users.find({
-        orgId: req.user?.orgId, // Assuming orgId is in decodedToken
+        orgId,
         isDeleted: false,
         _id: { $in: userObjectIds },
-      });
+      })
+        .lean()
+        .exec();
 
-      res.status(200).json(users);
+      const userIdStrs = users.map((u) => u._id.toString());
+      const dpMap = new Map<string, string>();
+      if (orgId && userIdStrs.length > 0) {
+        const dpDocs = await UserDisplayPicture.find({
+          orgId,
+          userId: { $in: userIdStrs },
+          pic: { $ne: null },
+        })
+          .lean()
+          .exec();
+        for (const dp of dpDocs) {
+          if (dp.userId && dp.pic) {
+            const mime = dp.mimeType || 'image/jpeg';
+            dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
+          }
+        }
+      }
+
+      const enrichedUsers = users.map((u) => ({
+        ...u,
+        profilePicture: dpMap.get(u._id.toString()),
+      }));
+
+      res.status(200).json(enrichedUsers);
     } catch (error) {
       next(error);
     }

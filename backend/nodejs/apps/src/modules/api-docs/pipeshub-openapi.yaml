@@ -2270,56 +2270,408 @@ components:
         - updatedAt
         - __v
 
-    Team:
+    TeamCreatedByUser:
       type: object
+      additionalProperties: false
+      description: Creator profile on team responses.
       properties:
-        _id:
+        id:
           type: string
-          format: ObjectId
-          description: Unique team identifier
-        name:
-          type: string
-          description: Team name
-        description:
-          type: string
-          description: Team description
-        orgId:
-          type: string
-          format: ObjectId
-          description: Organization ID
-        userRoles:
-          type: array
-          items:
-            $ref: '#/components/schemas/UserRole'
-          description: Users and their roles in the team
-        createdAt:
-          type: string
-          format: date-time
-          description: Creation timestamp (ISO 8601)
-        updatedAt:
-          type: string
-          format: date-time
-          description: Last update timestamp (ISO 8601)
-      required:
-        - name
-
-    UserRole:
-      type: object
-      properties:
+          description: Graph user key of the team creator
         userId:
           type: string
-          description: User's database key
-        role:
+          pattern: '^[a-fA-F0-9]{24}$'
+          description: MongoDB user ID of the team creator
+        name:
           type: string
-          enum: [OWNER, READER]
-          description: User's role in the team
+          description: Creator display name
+        email:
+          type: string
+          description: Creator email
         profilePicture:
           type: string
           nullable: true
-          description: Base64-encoded data URI of the user's display picture, or null if not set
+          description: Base64-encoded data URI of the creator profile picture, if available
+
+    TeamMember:
+      type: object
+      additionalProperties: false
+      description: Team member as returned by list/detail/users endpoints.
+      properties:
+        id:
+          type: string
+          description: Graph user key (internal identifier)
+        userId:
+          type: string
+          pattern: '^[a-fA-F0-9]{24}$'
+          description: MongoDB user ID
+        userName:
+          type: string
+          description: Member display name
+        userEmail:
+          type: string
+          description: Member email
+        role:
+          type: string
+          enum: [OWNER, READER, WRITER]
+          description: Member role on the team
+        joinedAt:
+          type: integer
+          format: int64
+          description: Permission edge created timestamp (ms)
+        isOwner:
+          type: boolean
+          description: Whether the member has OWNER role
+        profilePicture:
+          type: string
+          nullable: true
+          description: Base64-encoded data URI of the member profile picture, if available
+
+    TeamGraphKey:
+      type: string
+      description: |
+        Team identifier in list/detail payloads: standard UUID team key, or the
+        system **All** team `all_{mongoOrgId}` created by `ensure_all_team_with_users`.
+      example: "550e8400-e29b-41d4-a716-446655440000"
+
+    TeamMemberRoleEntry:
+      type: object
+      additionalProperties: false
+      description: Mongo userId and role for create/update/member mutation bodies.
       required:
         - userId
         - role
+      properties:
+        userId:
+          type: string
+          pattern: '^[a-fA-F0-9]{24}$'
+          description: MongoDB user ID (resolved to graph key on the server)
+        role:
+          type: string
+          enum: [OWNER, READER, WRITER]
+          description: User role on the team
+
+    TeamListItem:
+      type: object
+      additionalProperties: false
+      description: Team row returned by `GET /teams/user/teams`.
+      properties:
+        id:
+          $ref: '#/components/schemas/TeamGraphKey'
+        name:
+          type: string
+          description: Team display name
+        description:
+          type: string
+          nullable: true
+          description: Team description
+        createdByUser:
+          $ref: '#/components/schemas/TeamCreatedByUser'
+        orgId:
+          type: string
+          description: Organization ID
+        memberCount:
+          type: integer
+          description: Number of team members
+        createdAtTimestamp:
+          type: integer
+          format: int64
+          description: Creation timestamp (ms)
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+          description: Last update timestamp (ms)
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamMember'
+          description: Members when included on list rows
+        canEdit:
+          type: boolean
+        canDelete:
+          type: boolean
+          description: Always false for the system All team (`all_{mongoOrgId}`); DELETE returns 403.
+        canManageMembers:
+          type: boolean
+      required:
+        - id
+        - name
+        - orgId
+        - memberCount
+        - createdAtTimestamp
+        - updatedAtTimestamp
+
+    TeamDetail:
+      type: object
+      additionalProperties: false
+      description: Full team projection including members when loaded.
+      properties:
+        id:
+          $ref: '#/components/schemas/TeamGraphKey'
+        name:
+          type: string
+          description: Team display name
+        description:
+          type: string
+          nullable: true
+          description: Team description
+        createdByUser:
+          $ref: '#/components/schemas/TeamCreatedByUser'
+        orgId:
+          type: string
+          description: Organization ID
+        memberCount:
+          type: integer
+          description: Number of team members
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamMember'
+          description: Team members when included in the response
+        createdAtTimestamp:
+          type: integer
+          format: int64
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+        canEdit:
+          type: boolean
+        canDelete:
+          type: boolean
+          description: Always false for the system All team (`all_{mongoOrgId}`); DELETE returns 403.
+        canManageMembers:
+          type: boolean
+      required:
+        - id
+        - name
+        - orgId
+        - memberCount
+        - createdAtTimestamp
+        - updatedAtTimestamp
+
+    Team:
+      description: Deprecated alias for TeamDetail. Prefer TeamDetail or TeamListItem in new integrations.
+      allOf:
+        - $ref: '#/components/schemas/TeamDetail'
+
+    TeamPagination:
+      type: object
+      additionalProperties: false
+      description: Pagination block for team list responses.
+      required:
+        - page
+        - limit
+        - total
+        - pages
+        - hasNext
+        - hasPrev
+      properties:
+        page:
+          type: integer
+          description: Current 1-based page number
+          example: 1
+        limit:
+          type: integer
+          description: Page size
+          example: 10
+        total:
+          type: integer
+          description: Total matching teams
+          example: 5
+        pages:
+          type: integer
+          description: Total pages
+          example: 1
+        hasNext:
+          type: boolean
+          example: false
+        hasPrev:
+          type: boolean
+          example: false
+
+    TeamUsersPagination:
+      type: object
+      additionalProperties: false
+      description: Pagination for `GET /teams/{teamId}/users`.
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        totalCount:
+          type: integer
+        totalPages:
+          type: integer
+        hasNextPage:
+          type: boolean
+        hasPrevPage:
+          type: boolean
+
+    TeamListResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        List envelope from Python entity service, forwarded by the Node gateway.
+        Used by `GET /teams/user/teams`.
+      required:
+        - teams
+        - pagination
+      properties:
+        status:
+          type: string
+          example: "success"
+        message:
+          type: string
+          example: "User teams fetched successfully"
+        teams:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamListItem'
+        pagination:
+          $ref: '#/components/schemas/TeamPagination'
+
+    GetTeamResponse:
+      type: object
+      additionalProperties: false
+      description: Success envelope from `GET /teams/{teamId}` (Python forwards through Node).
+      required:
+        - status
+        - message
+        - team
+      properties:
+        status:
+          type: string
+          example: "success"
+        message:
+          type: string
+          example: "Team fetched successfully"
+        team:
+          $ref: '#/components/schemas/TeamDetail'
+
+    TeamCreateRequest:
+      type: object
+      additionalProperties: false
+      description: Request body for `POST /teams`. Validated by `createTeamSchema` (Zod).
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Team display name
+          example: "Engineering Team"
+        description:
+          type: string
+          maxLength: 500
+          description: Optional team description
+        userRoles:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamMemberRoleEntry'
+          description: Members to add on create, each with Mongo userId and role
+
+    TeamCreateResponse:
+      type: object
+      additionalProperties: false
+      description: Response from `POST /teams` (Python create team).
+      required:
+        - status
+        - message
+        - data
+      properties:
+        status:
+          type: string
+          example: "success"
+        message:
+          type: string
+          example: "Team created successfully"
+        data:
+          $ref: '#/components/schemas/TeamDetail'
+
+    TeamUpdateRequest:
+      type: object
+      additionalProperties: false
+      description: Partial update for `PUT /teams/{teamId}`. Validated by `updateTeamSchema` (Zod).
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Team display name
+        description:
+          type: string
+          maxLength: 500
+          description: Team description
+        addUserRoles:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamMemberRoleEntry'
+          description: Members to add, each with Mongo userId and role
+        removeUserIds:
+          type: array
+          items:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: Mongo user IDs of members to remove
+        updateUserRoles:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamMemberRoleEntry'
+          description: Member role updates, each with Mongo userId and role
+
+    TeamMutationResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Success envelope with updated team (`status`, `message`, `team`).
+        Returned by update/add/remove/permissions mutations from Python.
+      required:
+        - status
+        - message
+        - team
+      properties:
+        status:
+          type: string
+          example: "success"
+        message:
+          type: string
+        team:
+          $ref: '#/components/schemas/TeamDetail'
+
+    TeamDeleteResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - message
+      properties:
+        status:
+          type: string
+          example: "success"
+        message:
+          type: string
+          example: "Team deleted successfully"
+
+    TeamUsersListResponse:
+      type: object
+      additionalProperties: false
+      description: Response from `GET /teams/{teamId}/users`.
+      properties:
+        status:
+          type: string
+          example: "success"
+        message:
+          type: string
+        team:
+          $ref: '#/components/schemas/TeamDetail'
+        pagination:
+          $ref: '#/components/schemas/TeamUsersPagination'
+
+    UserRole:
+      description: Deprecated alias for TeamMemberRoleEntry.
+      allOf:
+        - $ref: '#/components/schemas/TeamMemberRoleEntry'
 
     UserGroup:
       type: object
@@ -6380,6 +6732,106 @@ components:
             type: string
           description: Individual record ids in scope.
 
+    AgentToolset:
+      type: object
+      additionalProperties: false
+      description: |
+        Toolset instance linked to an agent, as projected by the graph store on
+        `GET /agents/{agentKey}` and `GET /agents`. Multiple instances of the
+        same integration type are distinguished by `instanceId` and optional
+        `instanceName`.
+      properties:
+        _key:
+          type: string
+          description: Toolset instance node key in the backing graph store.
+        name:
+          allOf:
+            - $ref: '#/components/schemas/AgentCreateToolsetName'
+          description: Integration / toolset type key.
+        displayName:
+          type: string
+          description: Human-readable toolset product label (for example `Jira` or `Slack`).
+        type:
+          type: string
+        instanceId:
+          type: string
+          description: Admin-created toolset instance id
+        instanceName:
+          type: string
+          description: Human-readable instance label (e.g. sidebar instance name)
+        selectedTools:
+          type: array
+          nullable: true
+          description: |
+            Tool names explicitly selected for this toolset instance, when the
+            instance was created with a subset selection. `null`/absent when the
+            instance exposes all of the toolset's tools.
+          items:
+            type: string
+        tools:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              _key:
+                type: string
+                description: Tool node key in the backing graph store.
+              name:
+                type: string
+              fullName:
+                type: string
+              toolsetName:
+                type: string
+                description: Toolset type key the tool belongs to.
+              description:
+                type: string
+              deprecated:
+                type: boolean
+                readOnly: true
+                description: |
+                  Server-stamped on `GET /agents/{agentKey}`: `true` when the
+                  tool's `fullName` is no longer in the runtime tool registry
+                  (its `@tool` was removed). Read-only; ignored on create/update
+                  bodies. Not stamped on the `GET /agents` list projection.
+
+    AgentKnowledge:
+      type: object
+      additionalProperties: false
+      description: |
+        Knowledge connector / indexed scope linked to an agent, as projected by
+        the graph store on `GET /agents/{agentKey}` and `GET /agents`.
+      properties:
+        _key:
+          type: string
+        connectorId:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        displayName:
+          type: string
+        filters:
+          description: |
+            Knowledge scope filter as stored on the graph edge. The Node `getAgent`
+            handler proxies this field unchanged from the AI service (only `agent.id`
+            is stripped). May be a JSON string (typical graph storage) or an object.
+            Prefer `filtersParsed` on GET for a guaranteed parsed object with the
+            same keys as the object branch below.
+          oneOf:
+            - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
+            - type: string
+              description: JSON-encoded filter object (graph storage format).
+        filtersParsed:
+          readOnly: true
+          description: |
+            Server-derived read-only object parsed from the stored
+            `filters` JSON by the graph provider on GET (Neo4j / Arango).
+            Empty object when `filters` is missing or invalid JSON.
+          allOf:
+            - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
+
     Agent:
       type: object
       additionalProperties: false
@@ -6411,7 +6863,7 @@ components:
           description: System instructions that define agent behavior
         createdBy:
           type: string
-          format: objectId
+          description: MongoDB user ID of the agent creator
         startMessage:
           type: string
           description: Initial greeting shown when a conversation with this agent starts
@@ -6465,82 +6917,12 @@ components:
             Multiple instances of the same integration type are distinguished by `instanceId`
             and optional `instanceName`.
           items:
-            type: object
-            additionalProperties: false
-            properties:
-              name:
-                allOf:
-                  - $ref: '#/components/schemas/AgentCreateToolsetName'
-                description: Integration / toolset type key.
-              displayName:
-                type: string
-                description: Human-readable toolset product label (for example `Jira` or `Slack`).
-              type:
-                type: string
-              instanceId:
-                type: string
-                description: Admin-created toolset instance id
-              instanceName:
-                type: string
-                description: Human-readable instance label (e.g. sidebar instance name)
-              iconPath:
-                type: string
-                description: Optional branded icon URL or path
-              tools:
-                type: array
-                items:
-                  type: object
-                  additionalProperties: false
-                  properties:
-                    name:
-                      type: string
-                    fullName:
-                      type: string
-                    description:
-                      type: string
-                    deprecated:
-                      type: boolean
-                      readOnly: true
-                      description: |
-                        Server-stamped: `true` when the tool's `fullName` is no
-                        longer in the runtime tool registry (its `@tool` was
-                        removed). Read-only; ignored on create/update bodies.
+            $ref: '#/components/schemas/AgentToolset'
         knowledge:
           type: array
           description: Knowledge connectors and indexed scopes linked to the agent
           items:
-            type: object
-            additionalProperties: false
-            properties:
-              _key:
-                type: string
-              connectorId:
-                type: string
-              name:
-                type: string
-              type:
-                type: string
-              displayName:
-                type: string
-              filters:
-                description: |
-                  Knowledge scope filter as stored on the graph edge. The Node `getAgent`
-                  handler proxies this field unchanged from the AI service (only `agent.id`
-                  is stripped). May be a JSON string (typical graph storage) or an object.
-                  Prefer `filtersParsed` on GET for a guaranteed parsed object with the
-                  same keys as the object branch below.
-                oneOf:
-                  - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
-                  - type: string
-                    description: JSON-encoded filter object (graph storage format).
-              filtersParsed:
-                readOnly: true
-                description: |
-                  Server-derived read-only object parsed from the stored
-                  `filters` JSON by the graph provider on GET (Neo4j / Arango).
-                  Empty object when `filters` is missing or invalid JSON.
-                allOf:
-                  - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
+            $ref: '#/components/schemas/AgentKnowledge'
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the whole organization
@@ -6657,7 +7039,7 @@ components:
           description: Unix epoch timestamp in milliseconds when the agent was created.
         createdBy:
           type: string
-          description: User id of the creator.
+          description: MongoDB user ID of the agent creator
         description:
           type: string
           nullable: true
@@ -6729,6 +7111,22 @@ components:
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the organization.
+        toolsets:
+          type: array
+          description: |
+            Toolset instances linked to the agent. Same projection as
+            `GET /agents/{agentKey}`; the backend builds it from the graph edges
+            for each agent on the returned page.
+          items:
+            $ref: '#/components/schemas/AgentToolset'
+        knowledge:
+          type: array
+          description: |
+            Knowledge connectors and indexed scopes linked to the agent. Same
+            projection as `GET /agents/{agentKey}`; the backend builds it from
+            the graph edges for each agent on the returned page.
+          items:
+            $ref: '#/components/schemas/AgentKnowledge'
         can_view:
           type: boolean
           description: Effective permission to view the agent.
@@ -6762,6 +7160,8 @@ components:
         - tags
         - updatedAtTimestamp
         - shareWithOrg
+        - toolsets
+        - knowledge
         - can_view
         - can_share
         - can_edit
@@ -15739,166 +16139,190 @@ paths:
         - Teams
       summary: Create a team
       description: |
-        Create a new team within the organization for project collaboration and resource sharing.<br><br>
-        <b>Overview:</b><br>
-        Teams are collaborative units that group users together for specific projects, departments, or initiatives. Teams have their own resources, permissions, and member hierarchies.<br><br>
-        <b>Team Structure:</b><br>
-        <ul>
-        <li><b>Owner:</b> Creator of the team, full administrative control</li>
-        <li><b>Admins:</b> Can manage members and settings</li>
-        <li><b>Members:</b> Standard access to team resources</li>
-        <li><b>Viewers:</b> Read-only access</li>
-        </ul>
-        <b>What Gets Created:</b><br>
-        <ul>
-        <li>Team entity with unique identifier</li>
-        <li>Owner role automatically assigned to creator</li>
-        <li>Team workspace for shared resources</li>
-        <li>Default permission settings</li>
-        </ul>
-        <b>Initial Members:</b><br>
-        You can optionally add initial members with their roles during creation using the <code>userRoles</code> array.<br><br>
-        <b>Validation:</b><br>
-        <ul>
-        <li>Team name is required and must be unique in the org</li>
-        <li>Name: 1-100 characters</li>
-        <li>Description: Optional, max 500 characters</li>
-        </ul>
+        Create a new team in the organization.
+
+        **Overview:**
+        The authenticated user becomes the team OWNER. Optional initial members via `userRoles`.
+
+        **Gateway contract:**
+        Request body validated by `createTeamSchema` (Zod): `name` (required, 1–100 chars), optional `description` (max 500), optional `userRoles`.
+
+        **Observed behavior:**
+        Returns `{ status, message, data }` where `data` is the created team. Node enriches `createdByUser` and member `profilePicture` when present.
       operationId: createTeam
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:write]
       requestBody:
         required: true
-        description: "Request payload"
+        description: Team create payload
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                  minLength: 1
-                  maxLength: 100
-                  description: Team display name (must be unique in org)
-                  example: "Engineering Team"
-                description:
-                  type: string
-                  maxLength: 500
-                  description: Team description and purpose
-                  example: "Core engineering team for product development"
-                userRoles:
-                  type: array
-                  description: Optional initial members with roles
-                  items:
-                    $ref: '#/components/schemas/UserRole'
-              required:
-                - name
+              $ref: '#/components/schemas/TeamCreateRequest'
       responses:
         '201':
-          description: Team created successfully
+          description: Team created
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
-                    type: string
-                    example: "Team created successfully"
-                  data:
-                    $ref: '#/components/schemas/Team'
+                $ref: '#/components/schemas/TeamCreateResponse'
+              examples:
+                success:
+                  summary: Created team
+                  value:
+                    status: success
+                    message: Team created successfully
+                    data:
+                      id: "550e8400-e29b-41d4-a716-446655440000"
+                      name: Engineering Team
+                      description: Core engineering
+                      createdByUser:
+                        id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+                        userId: "507f1f77bcf86cd799439011"
+                        name: Alice Example
+                        email: alice@example.com
+                      orgId: "507f1f77bcf86cd799439012"
+                      memberCount: 1
+                      members: []
+                      createdAtTimestamp: 1779792574728
+                      updatedAtTimestamp: 1779792574728
         '400':
-          description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Missing team name</li>
-            <li>Team name already exists</li>
-            <li>Invalid user IDs in userRoles</li>
-            </ul>
+          description: Gateway validation failed or invalid member IDs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid bearer token required
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
+  /teams/user/teams:
     get:
       tags:
         - Teams
-      summary: List teams
+      summary: List teams for current user
       description: |
-        Retrieve all teams in the organization with optional search and pagination.<br><br>
-        <b>Overview:</b><br>
-        This endpoint returns teams the authenticated user can access. Admins see all teams; regular users see teams they're members of.<br><br>
-        <b>Response Data per Team:</b><br>
-        <ul>
-        <li>Team metadata (name, description)</li>
-        <li>Member count</li>
-        <li>Owner information</li>
-        <li>Creation timestamp</li>
-        </ul>
-        <b>Search:</b><br>
-        The search parameter performs fuzzy matching on team names and descriptions.<br><br>
-        <b>Visibility Rules:</b><br>
-        <ul>
-        <li><b>Admins:</b> See all organization teams</li>
-        <li><b>Users:</b> See only teams they belong to</li>
-        </ul>
-        <b>Sorting:</b><br>
-        Results are sorted by name alphabetically by default.
-      operationId: listTeams
+        Paginated list of teams the authenticated user belongs to, with optional filters.
+
+        **Gateway contract:**
+        Query validated by `getUserTeamsQuerySchema`: `page`, `limit`, `search` (same rules as org list), optional `created_by` (Mongo userId of creator), `created_after` / `created_before` (positive epoch ms).
+
+        **Observed behavior:**
+        On non-200 from the Python service, the Node gateway may return HTTP 200 with `{ teams: [], pagination: { page: 1, limit: 10, total: 0, pages: 0 } }`. Successful responses include `status` and `message` from Python plus enriched `createdByUser` / member `profilePicture` when applicable.
+      operationId: getUserTeams
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:read]
       parameters:
-        - name: search
-          in: query
-          description: Search teams by name or description
+        - in: query
+          name: page
+          required: false
           schema:
-            type: string
-            example: "engineering"
-        - name: limit
-          in: query
-          description: Number of results per page
+            type: integer
+            minimum: 1
+            default: 1
+          description: 1-based page number
+        - in: query
+          name: limit
+          required: false
           schema:
             type: integer
             minimum: 1
             maximum: 100
             default: 10
-        - name: page
-          in: query
-          description: Page number (1-based)
+          description: Page size
+        - in: query
+          name: search
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 1000
+          description: Search team names (trimmed; blank-after-trim rejected)
+        - in: query
+          name: created_by
+          required: false
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: Filter by creator MongoDB user ID (resolved to graph key server-side)
+        - in: query
+          name: created_after
+          required: false
           schema:
             type: integer
             minimum: 1
-            default: 1
+          description: Filter teams created after this timestamp (ms)
+        - in: query
+          name: created_before
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+          description: Filter teams created before this timestamp (ms)
       responses:
         '200':
-          description: Teams retrieved successfully
+          description: User teams list
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Team'
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      total:
-                        type: integer
-                      totalPages:
-                        type: integer
+                $ref: '#/components/schemas/TeamListResponse'
+              examples:
+                success:
+                  summary: Paginated user teams
+                  value:
+                    status: success
+                    message: User teams fetched successfully
+                    teams:
+                      - id: "550e8400-e29b-41d4-a716-446655440000"
+                        name: Engineering Team
+                        description: Product engineering
+                        createdByUser:
+                          id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+                          userId: "507f1f77bcf86cd799439011"
+                          name: Alice Example
+                          email: alice@example.com
+                        orgId: "507f1f77bcf86cd799439012"
+                        memberCount: 3
+                        createdAtTimestamp: 1779792574728
+                        updatedAtTimestamp: 1779792574728
+                    pagination:
+                      page: 1
+                      limit: 10
+                      total: 1
+                      pages: 1
+                      hasNext: false
+                      hasPrev: false
+        '400':
+          description: Invalid query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid bearer token required
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /teams/{teamId}:
     get:
@@ -15906,23 +16330,15 @@ paths:
         - Teams
       summary: Get team by ID
       description: |
-        Retrieve detailed information about a specific team.<br><br>
-        <b>Overview:</b><br>
-        Returns complete team details including metadata, member list with roles, and resource information. Use this for team profile pages and detailed views.<br><br>
-        <b>Response Includes:</b><br>
-        <ul>
-        <li>Team metadata (name, description, slug)</li>
-        <li>Owner and creator information</li>
-        <li>Member count and list (with pagination)</li>
-        <li>Team settings and permissions</li>
-        <li>Creation and modification timestamps</li>
-        </ul>
-        <b>Authorization:</b><br>
-        <ul>
-        <li>Team members can view their team</li>
-        <li>Organization admins can view any team</li>
-        </ul>
+        Retrieve a team and its members by graph team key (`TeamGraphKey`).
+
+        **Gateway contract:**
+        Path `teamId` validated by `getTeamSchema` (`TeamGraphKey`).
+
+        **Observed behavior:**
+        Returns `{ status, message, team }`. Node enriches member and `createdByUser` `profilePicture` when present.
       operationId: getTeamById
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:read]
@@ -15930,57 +16346,89 @@ paths:
         - name: teamId
           in: path
           required: true
-          description: Team ID (24-character MongoDB ObjectId)
+          description: Team graph key (UUID or system `all_{mongoOrgId}` team)
           schema:
-            type: string
-            pattern: '^[a-fA-F0-9]{24}$'
-            example: "507f1f77bcf86cd799439011"
+            $ref: '#/components/schemas/TeamGraphKey'
+          example: "550e8400-e29b-41d4-a716-446655440000"
       responses:
         '200':
-          description: Team details retrieved successfully
+          description: Team details
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
-                    $ref: '#/components/schemas/Team'
+                $ref: '#/components/schemas/GetTeamResponse'
+              examples:
+                success:
+                  summary: Team with members
+                  value:
+                    status: success
+                    message: Team fetched successfully
+                    team:
+                      id: "550e8400-e29b-41d4-a716-446655440000"
+                      name: Engineering Team
+                      description: Product engineering
+                      createdByUser:
+                        id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+                        userId: "507f1f77bcf86cd799439011"
+                        name: Alice Example
+                        email: alice@example.com
+                        profilePicture: "data:image/png;base64,iVBORw0KGgo="
+                      orgId: "507f1f77bcf86cd799439012"
+                      memberCount: 2
+                      members:
+                        - userId: "507f1f77bcf86cd799439011"
+                          userName: Alice Example
+                          userEmail: alice@example.com
+                          role: OWNER
+                          joinedAt: 1779792574728
+                          isOwner: true
+                        - userId: "507f1f77bcf86cd799439013"
+                          userName: Bob Example
+                          userEmail: bob@example.com
+                          role: READER
+                          joinedAt: 1779792574800
+                          isOwner: false
+                      createdAtTimestamp: 1779792574728
+                      updatedAtTimestamp: 1779792574800
+        '400':
+          description: Invalid teamId or missing org/user context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid bearer token required
-        '403':
-          description: Forbidden - Not a team member
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Team not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
         - Teams
       summary: Update team
       description: |
-        Update team metadata and settings.<br><br>
-        <b>Overview:</b><br>
-        This endpoint allows updating team properties like name and description. Member management is handled through separate endpoints.<br><br>
-        <b>Updatable Fields:</b><br>
-        <ul>
-        <li><code>name</code>: Team display name (must remain unique)</li>
-        <li><code>description</code>: Team description</li>
-        </ul>
-        <b>Authorization:</b><br>
-        <ul>
-        <li><b>Team Owner:</b> Full update access</li>
-        <li><b>Team Admin:</b> Can update name and description</li>
-        <li><b>Org Admin:</b> Can update any team</li>
-        </ul>
-        <b>Side Effects:</b><br>
-        <ul>
-        <li>Team update event published</li>
-        <li>Team slug may be regenerated if name changes</li>
-        <li>Cached team data invalidated</li>
-        </ul>
+        Update team metadata and members in a single request (OWNER only).
+
+        **Gateway contract:**
+        Body validated by `updateTeamSchema`. Path `teamId` is `TeamGraphKey`.
+
+        **Observed behavior:**
+        Returns `{ status, message, team }`. Node enriches `createdByUser` and member `profilePicture` when present.
       operationId: updateTeam
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:write]
@@ -15988,78 +16436,98 @@ paths:
         - name: teamId
           in: path
           required: true
-          description: Team ID (24-character MongoDB ObjectId)
           schema:
-            type: string
-            pattern: '^[a-fA-F0-9]{24}$'
-            example: "507f1f77bcf86cd799439011"
+            $ref: '#/components/schemas/TeamGraphKey'
+          example: "550e8400-e29b-41d4-a716-446655440000"
       requestBody:
         required: true
-        description: "Request payload"
+        description: Partial team update
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                  minLength: 1
-                  maxLength: 100
-                  description: New team name
-                  example: "Core Engineering Team"
-                description:
-                  type: string
-                  maxLength: 500
-                  description: New team description
-                  example: "Primary engineering team for product development"
+              $ref: '#/components/schemas/TeamUpdateRequest'
       responses:
         '200':
-          description: Team updated successfully
+          description: Team updated
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
-                    type: string
-                    example: "Team updated successfully"
-                  data:
-                    $ref: '#/components/schemas/Team'
+                $ref: '#/components/schemas/TeamMutationResponse'
+              examples:
+                success:
+                  summary: Team after member update
+                  value:
+                    status: success
+                    message: Team updated successfully
+                    team:
+                      id: "550e8400-e29b-41d4-a716-446655440000"
+                      name: Engineering Team
+                      description: Updated description
+                      createdByUser:
+                        id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+                        userId: "507f1f77bcf86cd799439011"
+                        name: Alice Example
+                        email: alice@example.com
+                      orgId: "507f1f77bcf86cd799439012"
+                      memberCount: 2
+                      members:
+                        - userId: "507f1f77bcf86cd799439011"
+                          userName: Alice Example
+                          userEmail: alice@example.com
+                          role: OWNER
+                          isOwner: true
+                        - userId: "507f1f77bcf86cd799439013"
+                          userName: Bob Example
+                          userEmail: bob@example.com
+                          role: WRITER
+                          isOwner: false
+                      createdAtTimestamp: 1779792574728
+                      updatedAtTimestamp: 1779792600000
         '400':
-          description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Team name already exists</li>
-            <li>Invalid field values</li>
-            </ul>
+          description: Validation error or invalid user IDs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid bearer token required
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Insufficient permissions to update this team
+          description: Forbidden — requires OWNER on the team
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Team not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
         - Teams
       summary: Delete team
       description: |
-        Delete a team from the organization.<br><br>
-        <b>Behavior:</b><br>
-        <ul>
-        <li>Team is soft-deleted (isDeleted: true)</li>
-        <li>Team members lose access to team resources</li>
-        <li>Team can be restored by admin if needed</li>
-        </ul>
-        <b>Restrictions:</b><br>
-        <ul>
-        <li>Only team owner or organization admin can delete</li>
-        <li>Team must have no active resources (configurable)</li>
-        </ul>
+        Permanently delete a team and its permission edges (OWNER only).
+
+        **Gateway contract:**
+        Path validated by `deleteTeamSchema` (`TeamGraphKey` `teamId`).
+
+        **Observed behavior:**
+        Returns `{ status, message }` on success.
       operationId: deleteTeam
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:write]
@@ -16067,145 +16535,62 @@ paths:
         - name: teamId
           in: path
           required: true
-          description: Unique identifier of the team to delete
           schema:
-            type: string
-            pattern: '^[a-fA-F0-9]{24}$'
-            example: "507f1f77bcf86cd799439011"
+            $ref: '#/components/schemas/TeamGraphKey'
+          example: "550e8400-e29b-41d4-a716-446655440000"
       responses:
         '200':
-          description: Team deleted successfully
+          description: Team deleted
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
-                    type: string
-                    example: "Team deleted successfully"
+                $ref: '#/components/schemas/TeamDeleteResponse'
+        '400':
+          description: Invalid teamId path parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid authentication required
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Only team owner or admin can delete
+          description: Forbidden — requires OWNER
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Team not found
-
-  /teams/user/teams:
-    get:
-      tags:
-        - Teams
-      summary: Get current user's teams
-      description: |
-        Retrieve all teams that the authenticated user is a member of.<br><br>
-        <b>Response Details:</b><br>
-        <ul>
-        <li>Includes teams where user is owner, admin, member, or viewer</li>
-        <li>Returns user's role in each team</li>
-        <li>Sorted by most recently accessed</li>
-        </ul>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>Populating team switcher in UI</li>
-        <li>Dashboard team list</li>
-        <li>Access control checks</li>
-        </ul>
-      operationId: getUserTeams
-      security:
-        - bearerAuth: []
-        - oauth2: [team:read]
-      parameters:
-        - name: page
-          in: query
-          required: false
-          description: Page number for pagination (1-based)
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-        - name: limit
-          in: query
-          required: false
-          description: Number of teams per page
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 100
-        - name: search
-          in: query
-          required: false
-          description: Search teams by name
-          schema:
-            type: string
-        - name: created_by
-          in: query
-          required: false
-          description: Filter by creator user key
-          schema:
-            type: string
-        - name: created_after
-          in: query
-          required: false
-          description: Filter teams created after this timestamp (ms)
-          schema:
-            type: integer
-        - name: created_before
-          in: query
-          required: false
-          description: Filter teams created before this timestamp (ms)
-          schema:
-            type: integer
-      responses:
-        '200':
-          description: User's teams retrieved successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        team:
-                          $ref: '#/components/schemas/Team'
-                        role:
-                          type: string
-                          enum: [owner, admin, member, viewer]
-                        joinedAt:
-                          type: string
-                          format: date-time
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                        example: 1
-                      limit:
-                        type: integer
-                        example: 20
-                      total:
-                        type: integer
-                        example: 5
-        '401':
-          description: Unauthorized - Valid authentication required
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /teams/{teamId}/users:
     get:
       tags:
         - Teams
-      summary: Get users in team
+      summary: Get team members
       description: |
-        Retrieve all members of a specific team with their profile pictures.<br><br>
-        Members include profile picture data URIs when available.
+        Paginated team members with optional search.
+
+        **Gateway contract:**
+        Query validated by `getTeamUsersSchema` (`page`, `limit`, `search`). Path `teamId` is `TeamGraphKey`.
+
+        **Observed behavior:**
+        Returns `{ status, message, team, pagination }` where `pagination` includes `totalCount`, `hasNextPage`, and `hasPrevPage`. Node enriches member `profilePicture` on the nested `team` object.
       operationId: getTeamUsers
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:read]
@@ -16214,254 +16599,64 @@ paths:
           in: path
           required: true
           schema:
-            type: string
-        - name: search
-          in: query
+            $ref: '#/components/schemas/TeamGraphKey'
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        - in: query
+          name: page
           required: false
-          description: Search members by name or email
-          schema:
-            type: string
-        - name: page
-          in: query
-          required: false
-          description: Page number (1-based)
           schema:
             type: integer
             minimum: 1
             default: 1
-        - name: limit
-          in: query
+          description: 1-based page number
+        - in: query
+          name: limit
           required: false
-          description: Number of members per page
           schema:
             type: integer
             minimum: 1
             maximum: 100
-            default: 100
+            default: 10
+          description: Page size
+        - in: query
+          name: search
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 1000
+          description: Search members by name or email (trimmed; blank-after-trim rejected)
       responses:
         '200':
-          description: Team members with profile pictures retrieved successfully
+          description: Team members
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  members:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                          description: User UUID
-                        userId:
-                          type: string
-                          description: MongoDB user ID
-                        userName:
-                          type: string
-                        userEmail:
-                          type: string
-                        role:
-                          type: string
-                          enum: [OWNER, READER, WRITER]
-                        isOwner:
-                          type: boolean
-                        profilePicture:
-                          type: string
-                          nullable: true
-                          description: Base64 data URI or absent if no picture
+                $ref: '#/components/schemas/TeamUsersListResponse'
+        '400':
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Team not found
-
-    post:
-      tags:
-        - Teams
-      summary: Add users to team
-      description: |
-        Add one or more users to a team.
-      operationId: addUsersToTeam
-      security:
-        - bearerAuth: []
-        - oauth2: [team:write]
-      parameters:
-        - name: teamId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                userIds:
-                  type: array
-                  items:
-                    type: string
-      responses:
-        '200':
-          description: Users added to team successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
-        '404':
-          description: Team not found
-
-    delete:
-      tags:
-        - Teams
-      summary: Remove user from team
-      description: |
-        Remove a user from a team.
-      operationId: removeUserFromTeam
-      security:
-        - bearerAuth: []
-        - oauth2: [team:write]
-      parameters:
-        - name: teamId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                userId:
-                  type: string
-      responses:
-        '200':
-          description: User removed from team successfully
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
-        '404':
-          description: Team or user not found
-
-  /teams/{teamId}/users/permissions:
-    put:
-      tags:
-        - Teams
-      summary: Update team users permissions
-      description: |
-        Update permissions for users within a team.
-      operationId: updateTeamUsersPermissions
-      security:
-        - bearerAuth: []
-        - oauth2: [team:write]
-      parameters:
-        - name: teamId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-      responses:
-        '200':
-          description: Permissions updated successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
-        '404':
-          description: Team not found
-
-  /teams/user/teams/created:
-    get:
-      tags:
-        - Teams
-      summary: Get user created teams
-      description: |
-        Retrieve teams created by the authenticated user.
-      operationId: getUserCreatedTeams
-      security:
-        - bearerAuth: []
-        - oauth2: [team:read]
-      parameters:
-        - name: search
-          in: query
-          required: false
-          description: Search teams by name
-          schema:
-            type: string
-        - name: page
-          in: query
-          required: false
-          description: Page number (1-based)
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-        - name: limit
-          in: query
-          required: false
-          description: Number of teams per page
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 100
-      responses:
-        '200':
-          description: User created teams retrieved successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  teams:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Team'
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      total:
-                        type: integer
-                      pages:
-                        type: integer
-                      hasNext:
-                        type: boolean
-                      hasPrev:
-                        type: boolean
-        '401':
-          description: Unauthorized
+                $ref: '#/components/schemas/ErrorResponse'
 
   /org/exists:
     get:
@@ -25583,217 +25778,6 @@ paths:
           description: |
             Unexpected server error while unarchiving the search.
 
-  /agents/template:
-    get:
-      tags:
-        - Agent Templates
-      summary: List agent templates
-      description: |
-        Retrieve all available agent templates.<br><br>
-        <b>Overview:</b><br>
-        Agent templates provide pre-configured starting points for creating
-        custom AI agents. Templates include system prompts, recommended tools,
-        and configuration schemas.<br><br>
-        <b>Template Types:</b><br>
-        <ul>
-        <li>Public templates available to all organization users</li>
-        <li>Private templates created by individual users</li>
-        </ul>
-      operationId: listAgentTemplates
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      responses:
-        '200':
-          description: List of agent templates
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/AgentTemplate'
-        '401':
-          description: Unauthorized
-
-    post:
-      tags:
-        - Agent Templates
-      summary: Create agent template
-      description: |
-        Create a new reusable agent template.<br><br>
-        <b>Overview:</b><br>
-        Templates define the base configuration for agents including
-        system prompts, tool recommendations, and customization options.<br><br>
-        <b>Template Components:</b><br>
-        <ul>
-        <li><b>System prompt:</b> Default instructions for agents</li>
-        <li><b>Recommended tools:</b> Suggested tool integrations</li>
-        <li><b>Config schema:</b> JSON Schema for customization options</li>
-        </ul>
-      operationId: createAgentTemplate
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - name
-              properties:
-                name:
-                  type: string
-                  description: Template name
-                  example: "Customer Support Agent"
-                description:
-                  type: string
-                  description: What agents from this template do
-                category:
-                  type: string
-                  description: Template category
-                  example: "Support"
-                defaultSystemPrompt:
-                  type: string
-                  description: Default system instructions
-                recommendedTools:
-                  type: array
-                  items:
-                    type: string
-                  description: Suggested tool keys
-                configSchema:
-                  type: object
-                  description: JSON Schema for customization
-                isPublic:
-                  type: boolean
-                  default: false
-                  description: Make template available organization-wide
-      responses:
-        '201':
-          description: Template created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AgentTemplate'
-        '400':
-          description: Invalid template configuration
-        '401':
-          description: Unauthorized
-
-  /agents/template/{templateId}:
-    get:
-      tags:
-        - Agent Templates
-      summary: Get agent template
-      description: Retrieve a specific agent template by ID.
-      operationId: getAgentTemplate
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      parameters:
-        - name: templateId
-          in: path
-          required: true
-          description: Template identifier
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Template details
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AgentTemplate'
-        '401':
-          description: Unauthorized
-        '404':
-          description: Template not found
-
-    put:
-      tags:
-        - Agent Templates
-      summary: Update agent template
-      description: |
-        Update an existing agent template.<br><br>
-        <b>Permissions:</b><br>
-        Only the template creator can update it.
-      operationId: updateAgentTemplate
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: templateId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request body for Update agent template"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                description:
-                  type: string
-                category:
-                  type: string
-                defaultSystemPrompt:
-                  type: string
-                recommendedTools:
-                  type: array
-                  items:
-                    type: string
-                configSchema:
-                  type: object
-                isPublic:
-                  type: boolean
-      responses:
-        '200':
-          description: Template updated
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AgentTemplate'
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Only creator can update
-        '404':
-          description: Template not found
-
-    delete:
-      tags:
-        - Agent Templates
-      summary: Delete agent template
-      description: |
-        Delete an agent template.<br><br>
-        <b>Note:</b><br>
-        Existing agents created from this template are not affected.
-      operationId: deleteAgentTemplate
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: templateId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Template deleted
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Only creator can delete
-        '404':
-          description: Template not found
-
   # -------------------- Agents --------------------
   /agents:
     get:
@@ -25884,7 +25868,6 @@ paths:
                         createdAtTimestamp: 1779792574728
                         createdBy: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
                         description: "AI agent for customer support workflows"
-                        instructions: null
                         isActive: true
                         isDeleted: false
                         isServiceAccount: false
@@ -25895,9 +25878,9 @@ paths:
                         systemPrompt: "You are a helpful assistant."
                         tags: []
                         updatedAtTimestamp: 1779792574728
-                        updatedBy: null
-                        webSearch: null
                         shareWithOrg: false
+                        toolsets: []
+                        knowledge: []
                         can_view: true
                         can_share: true
                         can_edit: true
@@ -25970,122 +25953,6 @@ paths:
           description: Invalid agent configuration
         '401':
           description: Unauthorized
-
-  /agents/tools/list:
-    get:
-      tags:
-        - Agents
-      summary: List available tools
-      description: |
-        Get all tools that can be assigned to agents.<br><br>
-        <b>Overview:</b><br>
-        Tools extend agent capabilities beyond basic Q&A. Each tool
-        has specific inputs and outputs defined by its schema.<br><br>
-        <b>Common Tools:</b><br>
-        <ul>
-        <li><b>web-search:</b> Search the internet</li>
-        <li><b>code-interpreter:</b> Execute code snippets</li>
-        <li><b>file-reader:</b> Read uploaded files</li>
-        <li><b>api-caller:</b> Make external API requests</li>
-        </ul>
-      operationId: listAgentTools
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      responses:
-        '200':
-          description: List of available tools
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/AgentTool'
-        '401':
-          description: Unauthorized
-
-  /agents/web-search-usage/{provider}:
-    get:
-      tags:
-        - Agents
-      summary: Get web search provider usage
-      description: |
-        Retrieve usage statistics for a specific web search provider used by agents.<br><br>
-        <b>Overview:</b><br>
-        Returns information about how a particular web search provider is being used
-        across agents in the organization.
-      operationId: getWebSearchProviderUsage
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      parameters:
-        - name: provider
-          in: path
-          required: true
-          schema:
-            type: string
-          description: The web search provider identifier (e.g. "google", "bing", "brave")
-      responses:
-        '200':
-          description: Web search provider usage data
-          content:
-            application/json:
-              schema:
-                type: object
-        '400':
-          description: Bad request - provider or organization ID missing
-        '401':
-          description: Unauthorized
-
-  /agents/model-usage/{model_key}:
-    get:
-      tags:
-        - Agents
-      summary: Get AI model usage
-      description: |
-        Retrieve the list of agents in the organization that reference a specific AI model.<br><br>
-        <b>Overview:</b><br>
-        Used as a pre-deletion check when an admin attempts to delete an AI model
-        configuration. Returns the agents currently configured to use the model so
-        the caller can block deletion (HTTP 409 from the deleting service) when the
-        model is still in use.
-      operationId: getModelUsage
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      parameters:
-        - name: model_key
-          in: path
-          required: true
-          schema:
-            type: string
-          description: The model key (URL-encoded; typically the modelKey assigned at create time).
-      responses:
-        '200':
-          description: List of agents using the model. Empty array when the model is not in use or the key is blank.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  agents:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        name:
-                          type: string
-                        _key:
-                          type: string
-                        creatorName:
-                          type: string
-                          nullable: true
-        '401':
-          description: Unauthorized
-        '500':
-          description: Internal server error while checking model usage
 
   /agents/{agentKey}:
     get:
@@ -26306,130 +26173,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-
-  /agents/{agentKey}/permissions:
-    get:
-      tags:
-        - Agents
-      summary: Get agent permissions
-      description: Get the current permission configuration for an agent.
-      operationId: getAgentPermissions
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Permission configuration
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  isPublic:
-                    type: boolean
-                  sharedWith:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        userId:
-                          type: string
-                        accessLevel:
-                          type: string
-                          enum: [read, use, edit]
-        '401':
-          description: Unauthorized
-        '404':
-          description: Agent not found
-
-    put:
-      tags:
-        - Agents
-      summary: Update agent permissions
-      description: Update who can access and use the agent.
-      operationId: updateAgentPermissions
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request body for Update agent permissions"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                isPublic:
-                  type: boolean
-                sharedWith:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      userId:
-                        type: string
-                        format: objectId
-                      accessLevel:
-                        type: string
-                        enum: [read, use, edit]
-      responses:
-        '200':
-          description: Permissions updated
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Only owner can update permissions
-        '404':
-          description: Agent not found
-
-  /agents/{agentKey}/share:
-    post:
-      tags:
-        - Agents
-      summary: Share agent
-      description: Share an agent with specific users.
-      operationId: shareAgent
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request body for Share agent"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ShareRequest'
-      responses:
-        '200':
-          description: Agent shared
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Agent'
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Only owner can share
-        '404':
-          description: Agent not found
 
   /agents/conversations/show/archives:
     get:
@@ -27460,41 +27203,6 @@ paths:
           description: Invalid request
         '401':
           description: Unauthorized
-
-  /agents/{agentKey}/unshare:
-    post:
-      tags:
-        - Agents
-      summary: Unshare agent
-      description: Remove share grants for the given users (proxied to the AI backend).
-      operationId: unshareAgent
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: Users to remove from the agent share list.
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ShareRequest'
-      responses:
-        '200':
-          description: Updated agent document
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Agent'
-        '401':
-          description: Unauthorized
-        '404':
-          description: Agent not found
 
   # ==================== CONNECTOR MANAGER ENDPOINTS ====================
 

@@ -38,7 +38,7 @@ class TestDoclingAppContainerInstantiation:
         expected = [
             "app.docling_main",
             "app.services.docling.docling_service",
-            "app.modules.parsers.pdf.docling",
+            "app.modules.parsers.pdf.docling_processor",
             "app.utils.converters.docling_doc_to_blocks",
         ]
         for mod in expected:

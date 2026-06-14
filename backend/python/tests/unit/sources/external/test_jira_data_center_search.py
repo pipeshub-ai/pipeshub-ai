@@ -25,7 +25,7 @@ import pytest
 #   app.sources.external.jira.jira
 #     -> app.sources.client.jira.jira (JiraClient)
 #        -> app.api.routes.toolsets
-#           -> app.containers.connector / etcd3 / kafka / fitz / ...
+#           -> app.containers.connector / etcd3 / kafka / ...
 # pulls in the entire connector container subtree just to satisfy a type hint.
 # This unit test only needs ``JiraDataSource`` itself, so we short-circuit the
 # chain at ``app.api.routes.toolsets`` with a stub exposing ``get_toolset_by_id``

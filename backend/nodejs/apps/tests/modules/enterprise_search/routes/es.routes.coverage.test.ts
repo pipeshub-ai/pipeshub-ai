@@ -179,19 +179,6 @@ describe('Enterprise Search Routes - handler coverage', () => {
       expect(routes.find((r: any) => r.path === '/:agentKey/conversations/:conversationId' && r.methods.delete)).to.exist
     })
 
-    it('should register template routes', () => {
-      const router = createAgentConversationalRouter(container)
-      const routes = router.stack
-        .filter((layer: any) => layer.route)
-        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
-
-      expect(routes.find((r: any) => r.path === '/template' && r.methods.post)).to.exist
-      expect(routes.find((r: any) => r.path === '/template/:templateId' && r.methods.get)).to.exist
-      expect(routes.find((r: any) => r.path === '/template/:templateId' && r.methods.put)).to.exist
-      expect(routes.find((r: any) => r.path === '/template/:templateId' && r.methods.delete)).to.exist
-      expect(routes.find((r: any) => r.path === '/template' && r.methods.get)).to.exist
-    })
-
     it('should register agent CRUD routes', () => {
       const router = createAgentConversationalRouter(container)
       const routes = router.stack
@@ -203,27 +190,6 @@ describe('Enterprise Search Routes - handler coverage', () => {
       expect(routes.find((r: any) => r.path === '/:agentKey' && r.methods.put)).to.exist
       expect(routes.find((r: any) => r.path === '/:agentKey' && r.methods.delete)).to.exist
       expect(routes.find((r: any) => r.path === '/' && r.methods.get)).to.exist
-    })
-
-    it('should register agent sharing and permissions routes', () => {
-      const router = createAgentConversationalRouter(container)
-      const routes = router.stack
-        .filter((layer: any) => layer.route)
-        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
-
-      expect(routes.find((r: any) => r.path === '/:agentKey/share' && r.methods.post)).to.exist
-      expect(routes.find((r: any) => r.path === '/:agentKey/unshare' && r.methods.post)).to.exist
-      expect(routes.find((r: any) => r.path === '/:agentKey/permissions' && r.methods.get)).to.exist
-      expect(routes.find((r: any) => r.path === '/:agentKey/permissions' && r.methods.put)).to.exist
-    })
-
-    it('should register tools list route', () => {
-      const router = createAgentConversationalRouter(container)
-      const routes = router.stack
-        .filter((layer: any) => layer.route)
-        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
-
-      expect(routes.find((r: any) => r.path === '/tools/list' && r.methods.get)).to.exist
     })
 
     it('should register internal stream routes', () => {
@@ -265,6 +231,15 @@ describe('Enterprise Search Routes - handler coverage', () => {
         .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
 
       expect(routes.find((r: any) => r.path === '/model-usage/:model_key' && r.methods.get)).to.exist
+    })
+
+    it('should register web search usage route', () => {
+      const router = createAgentConversationalRouter(container)
+      const routes = router.stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
+
+      expect(routes.find((r: any) => r.path === '/web-search-usage/:provider' && r.methods.get)).to.exist
     })
   })
 

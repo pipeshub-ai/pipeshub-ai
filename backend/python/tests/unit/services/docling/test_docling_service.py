@@ -37,9 +37,9 @@ def _ensure_mock_modules():
         sys.modules["docling_core.types.doc"] = MagicMock()
         sys.modules["docling_core.types.doc.document"] = MagicMock()
 
-    # Mock app.modules.parsers.pdf.docling which may have heavy deps
-    if "app.modules.parsers.pdf.docling" not in sys.modules:
-        sys.modules["app.modules.parsers.pdf.docling"] = MagicMock()
+    # Mock app.modules.parsers.pdf.docling_processor which may have heavy deps
+    if "app.modules.parsers.pdf.docling_processor" not in sys.modules:
+        sys.modules["app.modules.parsers.pdf.docling_processor"] = MagicMock()
 
     # Mock app.models.blocks which may not exist in test env
     if "app.models.blocks" not in sys.modules:

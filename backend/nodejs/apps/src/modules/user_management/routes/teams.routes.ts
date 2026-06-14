@@ -45,18 +45,6 @@ const createTeamValidationSchema = z.object({
   ),
 });
 
-const listTeamsValidationSchema = z.object({
-  query: z.object({
-    search: z.string().optional(),
-    limit: z
-      .preprocess((arg) => Number(arg), z.number().min(1).max(100).default(10))
-      .optional(),
-    page: z
-      .preprocess((arg) => Number(arg), z.number().min(1).default(1))
-      .optional(),
-  }),
-});
-
 const getTeamValidationSchema = z.object({
   params: z.object({
     teamId: z.string().min(1, 'Team ID is required'),
@@ -87,45 +75,6 @@ const deleteTeamValidationSchema = z.object({
   }),
 });
 
-const addUsersToTeamValidationSchema = z.object({
-  params: z.object({
-    teamId: z.string().min(1, 'Team ID is required'),
-  }),
-  body: z.object({
-    userIds: z.array(z.string()).min(1, 'User IDs are required').optional(), // Legacy format
-    role: z.string().optional(), // Legacy format
-    userRoles: z.array(z.object({
-      userId: z.string().min(1),
-      role: z.string().min(1),
-    })).min(1, 'User roles are required').optional(), // New format
-  }),
-});
-
-
-const removeUsersFromTeamValidationSchema = z.object({
-  params: z.object({
-    teamId: z.string().min(1, 'Team ID is required'),
-  }),
-  body: z.object({
-    userIds: z.array(z.string()).min(1, 'User IDs are required'),
-  }).optional(),
-});
-
-
-const updateTeamUsersPermissionsValidationSchema = z.object({
-  params: z.object({
-    teamId: z.string().min(1, 'Team ID is required'),
-  }),
-  body: z.object({
-    userIds: z.array(z.string()).min(1, 'User IDs are required').optional(), // Legacy format
-    role: z.string().optional(), // Legacy format
-    userRoles: z.array(z.object({
-      userId: z.string().min(1),
-      role: z.string().min(1),
-    })).min(1, 'User roles are required').optional(), // New format
-  }),
-});
-
 const getTeamUsersValidationSchema = z.object({
   params: z.object({
     teamId: z.string().min(1, 'Team ID is required'),
@@ -147,23 +96,6 @@ export function createTeamsRouter(container: Container) {
         const teamsController =
           container.get<TeamsController>('TeamsController');
         await teamsController.createTeam(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
-  router.get(
-    '/',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.TEAM_READ),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(listTeamsValidationSchema),
-    async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const teamsController =
-          container.get<TeamsController>('TeamsController');
-        await teamsController.listTeams(req, res, next);
       } catch (error) {
         next(error);
       }
@@ -234,54 +166,6 @@ export function createTeamsRouter(container: Container) {
     },
   );
 
-  router.post(
-    '/:teamId/users',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.TEAM_WRITE),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(addUsersToTeamValidationSchema),
-    async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const teamsController = container.get<TeamsController>('TeamsController');
-        await teamsController.addUsersToTeam(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
-  router.delete(
-    '/:teamId/users',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.TEAM_WRITE),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(removeUsersFromTeamValidationSchema),
-    async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const teamsController = container.get<TeamsController>('TeamsController');
-        await teamsController.removeUserFromTeam(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
-  router.put(
-    '/:teamId/users/permissions',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.TEAM_WRITE),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(updateTeamUsersPermissionsValidationSchema),
-    async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const teamsController = container.get<TeamsController>('TeamsController');
-        await teamsController.updateTeamUsersPermissions(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
   router.get(
     '/user/teams',
     authMiddleware.authenticate,
@@ -291,22 +175,6 @@ export function createTeamsRouter(container: Container) {
       try {
         const teamsController = container.get<TeamsController>('TeamsController');
         await teamsController.getUserTeams(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
-  router.get(
-    '/user/teams/created',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.TEAM_READ),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(listTeamsValidationSchema),
-    async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const teamsController = container.get<TeamsController>('TeamsController');
-        await teamsController.getUserCreatedTeams(req, res, next);
       } catch (error) {
         next(error);
       }

@@ -25,6 +25,9 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
 from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     ConfluenceDataCenterConnector,
 )
+from app.connectors.sources.atlassian.confluence_datacenter_personal.connector import (
+    ConfluenceDataCenterPersonalConnector,
+)
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.connectors.sources.atlassian.jira_cloud_personal.connector import (
     JiraCloudPersonalConnector,
@@ -93,6 +96,7 @@ class ConnectorFactory:
         "outlookpersonal": OutlookIndividualConnector,
         "confluence": ConfluenceConnector,
         "confluencedatacenter": ConfluenceDataCenterConnector,
+        "confluencedatacenterpersonal": ConfluenceDataCenterPersonalConnector,
         "jira": JiraConnector,
         "jiracloudpersonal": JiraCloudPersonalConnector,
         "jiradatacenter": JiraDataCenterConnector,

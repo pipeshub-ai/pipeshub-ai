@@ -2,7 +2,7 @@
 Unit tests for app.agents.actions.util.parse_file
 
 Tests FileContentParser and its helpers. All heavy parser dependencies
-(DoclingProcessor, PyMuPDFOpenCVProcessor, ExcelParser, CSVParser, etc.)
+(DoclingProcessor, PDFPlumberOpenCVProcessor, ExcelParser, CSVParser, etc.)
 are mocked.
 """
 
@@ -480,7 +480,7 @@ class TestHandlePdf:
         expected = BlocksContainer(blocks=[], block_groups=[])
 
         with patch(
-            "app.agents.actions.util.parse_file.PyMuPDFOpenCVProcessor"
+            "app.agents.actions.util.parse_file.PDFPlumberOpenCVProcessor"
         ) as mock_cls:
             instance = mock_cls.return_value
             instance.load_document = AsyncMock(return_value=expected)
@@ -495,7 +495,7 @@ class TestHandlePdf:
     async def test_adds_pdf_extension_if_missing(self):
         parser = _make_parser()
         with patch(
-            "app.agents.actions.util.parse_file.PyMuPDFOpenCVProcessor"
+            "app.agents.actions.util.parse_file.PDFPlumberOpenCVProcessor"
         ) as mock_cls:
             instance = mock_cls.return_value
             instance.load_document = AsyncMock(

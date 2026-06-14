@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Avatar,
@@ -18,7 +18,7 @@ import {
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useTranslation } from 'react-i18next';
-import { useGraphUserEntry } from '@/lib/hooks/use-graph-user-entry';
+import { UsersApi } from '@/app/(main)/workspace/users/api';
 
 export function AgentBuilderHeader(props: {
   agentName: string;
@@ -47,7 +47,7 @@ export function AgentBuilderHeader(props: {
   /** When editing, show meatball → delete (opens confirmation in parent). */
   canDeleteAgent?: boolean;
   onRequestDeleteAgent?: () => void;
-  /** Graph DB user ID from agent.createdBy — used to resolve and display the creator. */
+  /** MongoDB user ID from agent.createdBy — resolved via by-ids for display. */
   createdBy?: string | null;
 }) {
   const router = useRouter();
@@ -75,11 +75,33 @@ export function AgentBuilderHeader(props: {
   } = props;
 
   const [agentMenuTriggerHovered, setAgentMenuTriggerHovered] = useState(false);
+  const [creatorName, setCreatorName] = useState<string | null>(null);
+  const [creatorAvatarUrl, setCreatorAvatarUrl] = useState<string | undefined>(undefined);
 
-  const creatorEntry = useGraphUserEntry(createdBy);
-  const creatorAvatarUrl =
-    creatorEntry?.profilePicture ??
-    (creatorEntry?.mongoId ? `/api/v1/users/${creatorEntry.mongoId}/dp` : undefined);
+  useEffect(() => {
+    if (!createdBy) {
+      setCreatorName(null);
+      setCreatorAvatarUrl(undefined);
+      return;
+    }
+    let cancelled = false;
+    UsersApi.getUsersByIds([createdBy])
+      .then((users) => {
+        if (cancelled) return;
+        const user = users[0];
+        setCreatorName(user?.name?.trim() || user?.email?.trim() || null);
+        setCreatorAvatarUrl(user?.profilePicture ?? undefined);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCreatorName(null);
+          setCreatorAvatarUrl(undefined);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [createdBy]);
 
   const showDeleteOption = Boolean(editing && canDeleteAgent && onRequestDeleteAgent);
   const showConvertOption = Boolean(!isServiceAccount && onEnableServiceAccount);
@@ -141,14 +163,14 @@ export function AgentBuilderHeader(props: {
                   {agentNameError}
                 </Text>
               ) : null}
-              {creatorEntry?.fullName ? (
+              {creatorName ? (
                 <Flex align="center" gap="1" mt="1">
                   <Text size="1" style={{ color: 'var(--olive-10)' }}>
                     {t('agentBuilder.createdBy')}
                   </Text>
                   <Avatar
                     size="1"
-                    fallback={creatorEntry.fullName.charAt(0).toUpperCase()}
+                    fallback={creatorName.charAt(0).toUpperCase()}
                     src={creatorAvatarUrl}
                     radius="full"
                     style={{ width: 16, height: 16, flexShrink: 0 }}
@@ -163,7 +185,7 @@ export function AgentBuilderHeader(props: {
                       maxWidth: 160,
                     }}
                   >
-                    {creatorEntry.fullName}
+                    {creatorName}
                   </Text>
                 </Flex>
               ) : null}

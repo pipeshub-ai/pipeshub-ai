@@ -193,7 +193,7 @@ class LocalExecutor(BaseExecutor):
                             "Sandbox host cannot reach PyPI and the following "
                             f"packages are not pre-installed: {needs_install}. "
                             "Retry with a pre-installed alternative (pandas, "
-                            "numpy, Pillow, openpyxl, python-docx, pdf2image, "
+                            "numpy, Pillow, openpyxl, python-docx, pdfplumber, "
                             "reportlab, fpdf2, beautifulsoup4, Jinja2) or ask "
                             "the operator to pre-install them on the sandbox host."
                         )

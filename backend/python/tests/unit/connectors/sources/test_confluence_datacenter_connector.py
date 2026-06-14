@@ -110,6 +110,48 @@ class TestConfluenceConstants:
         assert PSEUDO_USER_GROUP_PREFIX == "[Pseudo-User]"
 
 
+class TestParseServerVersionNumbers:
+
+    def test_parses_version_numbers_array(self):
+        data = {"version": "9.1.0", "versionNumbers": [9, 1, 0]}
+        assert ConfluenceDataCenterConnector._parse_server_version_numbers(data) == (9, 1, 0)
+
+    def test_parses_version_string_when_numbers_missing(self):
+        data = {
+            "baseUrl": "http://localhost:8090",
+            "version": "10.2.13",
+            "buildNumber": 9422,
+        }
+        assert ConfluenceDataCenterConnector._parse_server_version_numbers(data) == (10, 2, 13)
+
+    def test_returns_empty_tuple_when_unparseable(self):
+        assert ConfluenceDataCenterConnector._parse_server_version_numbers({}) == ()
+
+
+@pytest.mark.asyncio
+class TestGetServerVersion:
+
+    async def test_get_server_version_from_dc_10_response(self):
+        connector = _make_connector()
+        mock_ds = MagicMock()
+        mock_ds.get_server_information = AsyncMock(
+            return_value=_make_mock_response(
+                status=HttpStatusCode.SUCCESS.value,
+                data={
+                    "baseUrl": "http://localhost:8090",
+                    "version": "10.2.13",
+                    "buildNumber": 9422,
+                },
+            )
+        )
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        version = await connector._get_server_version()
+
+        assert version == (10, 2, 13)
+        assert connector._server_version == (10, 2, 13)
+
+
 # ===========================================================================
 # ConfluenceDataCenterConnector.__init__
 # ===========================================================================
@@ -619,7 +661,6 @@ class TestRunSync:
             mock_space.short_name = "ENG"
             mock_space.name = "Engineering"
 
-            connector._sync_folders = AsyncMock()
             connector._sync_users = AsyncMock()
             connector._sync_user_groups = AsyncMock()
             connector._sync_spaces = AsyncMock(return_value=[mock_space])
@@ -631,7 +672,6 @@ class TestRunSync:
             connector._sync_users.assert_awaited_once()
             connector._sync_user_groups.assert_awaited_once()
             connector._sync_spaces.assert_awaited_once()
-            connector._sync_folders.assert_awaited_once()
             # Two calls to _sync_content: one for pages, one for blogposts
             assert connector._sync_content.await_count == 2
 
@@ -690,7 +730,7 @@ class TestSyncPermissionChangesFromAuditLog:
         connector.audit_log_sync_point = MagicMock()
         connector.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time_ms": 1000})
         connector.audit_log_sync_point.update_sync_point = AsyncMock()
-        connector._fetch_permission_audit_logs = AsyncMock(return_value=[])
+        connector._fetch_permission_audit_content_ids = AsyncMock(return_value=[])
 
         await connector._sync_permission_changes_from_audit_log()
 
@@ -703,12 +743,12 @@ class TestSyncPermissionChangesFromAuditLog:
         connector.audit_log_sync_point = MagicMock()
         connector.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time_ms": 1000})
         connector.audit_log_sync_point.update_sync_point = AsyncMock()
-        connector._fetch_permission_audit_logs = AsyncMock(return_value=["Page Title"])
-        connector._sync_content_permissions_by_titles = AsyncMock()
+        connector._fetch_permission_audit_content_ids = AsyncMock(return_value=["131103"])
+        connector._sync_content_permissions_by_ids = AsyncMock()
 
         await connector._sync_permission_changes_from_audit_log()
 
-        connector._sync_content_permissions_by_titles.assert_awaited_once_with(["Page Title"])
+        connector._sync_content_permissions_by_ids.assert_awaited_once_with(["131103"])
         connector.audit_log_sync_point.update_sync_point.assert_awaited()
 
 
@@ -781,46 +821,263 @@ class TestExtractContentTitleFromAuditRecord:
 
 
 # ===========================================================================
-# ConfluenceDataCenterConnector._fetch_permission_audit_logs
+# ConfluenceDataCenterConnector._normalize_audit_record
 # ===========================================================================
 
 
-class TestFetchPermissionAuditLogs:
+class TestNormalizeAuditRecord:
+
+    def test_normalizes_dc_auditing_api_record(self):
+        """DC Auditing API: category in type.category, affectedObjects, type field."""
+        record = {
+            "timestamp": "2026-06-09T14:04:28.902Z",
+            "type": {"category": "Pages and blogs", "action": "Content restriction added"},
+            "affectedObjects": [
+                {"name": "My Page", "type": "Page", "id": "131103"},
+                {"name": "Soft dev", "type": "Space", "id": "65547"}
+            ]
+        }
+        result = ConfluenceDataCenterConnector._normalize_audit_record(record)
+        assert result["category"] == "pages and blogs"
+        assert len(result["objects"]) == 2
+        assert result["objects"][0] == {"name": "My Page", "type": "page", "id": "131103"}
+        assert result["objects"][1] == {"name": "Soft dev", "type": "space", "id": "65547"}
+
+    def test_normalizes_cloud_legacy_record(self):
+        """Cloud/legacy: category at top level, associatedObjects, objectType field."""
+        record = {
+            "category": "Pages and blogs",
+            "associatedObjects": [
+                {"objectType": "Page", "name": "Legacy Page"},
+                {"objectType": "Space", "name": "ENG"},
+            ]
+        }
+        result = ConfluenceDataCenterConnector._normalize_audit_record(record)
+        assert result["category"] == "pages and blogs"
+        assert len(result["objects"]) == 2
+        assert result["objects"][0] == {"name": "Legacy Page", "type": "page", "id": None}
+        assert result["objects"][1] == {"name": "ENG", "type": "space", "id": None}
+
+    def test_handles_missing_fields(self):
+        """Handle missing or empty fields gracefully."""
+        record = {}
+        result = ConfluenceDataCenterConnector._normalize_audit_record(record)
+        assert result["category"] == ""
+        assert result["objects"] == []
+
+
+# ===========================================================================
+# ConfluenceDataCenterConnector._extract_content_id_from_audit_record
+# ===========================================================================
+
+
+class TestExtractContentIdFromAuditRecord:
+
+    def test_dc_permission_change_with_page_and_space(self):
+        """Extract content ID from DC audit record with Page and Space."""
+        connector = _make_connector()
+        record = {
+            "type": {"category": "Pages and blogs"},
+            "affectedObjects": [
+                {"type": "Page", "name": "My Page", "id": "131103"},
+                {"type": "Space", "name": "Soft dev", "id": "65547"}
+            ]
+        }
+        result = connector._extract_content_id_from_audit_record(record)
+        assert result == "131103"
+
+    def test_dc_permission_change_with_blogpost_and_space(self):
+        """Extract content ID from DC audit record with BlogPost and Space."""
+        connector = _make_connector()
+        record = {
+            "type": {"category": "Pages and blogs"},
+            "affectedObjects": [
+                {"type": "BlogPost", "name": "My Blog", "id": "131104"},
+                {"type": "Space", "name": "ENG", "id": "65548"}
+            ]
+        }
+        result = connector._extract_content_id_from_audit_record(record)
+        assert result == "131104"
+
+    def test_dc_permission_change_without_id_returns_none(self):
+        """Return None if content object has no ID field."""
+        connector = _make_connector()
+        record = {
+            "type": {"category": "Pages and blogs"},
+            "affectedObjects": [
+                {"type": "Page", "name": "My Page"},  # No ID
+                {"type": "Space", "name": "Soft dev", "id": "65547"}
+            ]
+        }
+        result = connector._extract_content_id_from_audit_record(record)
+        assert result is None
+
+    def test_non_pages_and_blogs_category_returns_none(self):
+        """Return None for non-'Pages and blogs' category."""
+        connector = _make_connector()
+        record = {
+            "type": {"category": "Security"},
+            "affectedObjects": [
+                {"type": "Page", "name": "Test", "id": "123"},
+                {"type": "Space", "name": "ENG", "id": "456"}
+            ]
+        }
+        result = connector._extract_content_id_from_audit_record(record)
+        assert result is None
+
+    def test_no_space_returns_none(self):
+        """Permission change without Space is global, not content-level."""
+        connector = _make_connector()
+        record = {
+            "type": {"category": "Pages and blogs"},
+            "affectedObjects": [
+                {"type": "Page", "name": "Test", "id": "123"}
+            ]
+        }
+        result = connector._extract_content_id_from_audit_record(record)
+        assert result is None
+
+    def test_no_content_returns_none(self):
+        """Permission change with Space but no Page/Blog is space-level."""
+        connector = _make_connector()
+        record = {
+            "type": {"category": "Pages and blogs"},
+            "affectedObjects": [
+                {"type": "Space", "name": "ENG", "id": "456"}
+            ]
+        }
+        result = connector._extract_content_id_from_audit_record(record)
+        assert result is None
+
+
+# ===========================================================================
+# ConfluenceDataCenterConnector._fetch_permission_audit_content_ids
+# ===========================================================================
+
+
+class TestFetchPermissionAuditContentIds:
 
     @pytest.mark.asyncio
-    async def test_fetches_and_extracts_titles(self):
+    async def test_fetches_and_extracts_content_ids(self):
+        """Fetch audit events and extract content IDs using DC Auditing API."""
         connector = _make_connector()
         mock_ds = MagicMock()
-        mock_ds.get_audit_logs = AsyncMock(return_value=_make_mock_response(200, {
-            "results": [
+        mock_ds.get_auditing_events_v1 = AsyncMock(return_value=_make_mock_response(200, {
+            "entities": [
                 {
-                    "category": "Pages and blogs",
-                    "associatedObjects": [
-                        {"objectType": "Page", "name": "Restricted Page"},
-                        {"objectType": "Space", "name": "ENG"},
-                    ],
+                    "timestamp": "2026-06-09T14:04:28.902Z",
+                    "type": {"category": "Pages and blogs", "action": "Content restriction added"},
+                    "affectedObjects": [
+                        {"name": "Restricted Page", "type": "Page", "id": "131103"},
+                        {"name": "Soft dev", "type": "Space", "id": "65547"}
+                    ]
                 },
                 {
-                    "category": "Security",
-                    "associatedObjects": [],
-                },
+                    "timestamp": "2026-06-09T14:05:00.000Z",
+                    "type": {"category": "Security", "action": "User added"},
+                    "affectedObjects": []
+                }
             ],
-            "size": 2,
+            "pagingInfo": {
+                "lastPage": True,
+                "nextPageCursor": None,
+                "size": 2
+            }
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        titles = await connector._fetch_permission_audit_logs(1000, 2000)
-        assert "Restricted Page" in titles
+        content_ids = await connector._fetch_permission_audit_content_ids(1000, 2000)
+        assert "131103" in content_ids
+
+    @pytest.mark.asyncio
+    async def test_pagination_with_page_cursor(self):
+        """Test pageCursor pagination through multiple pages."""
+        connector = _make_connector()
+        mock_ds = MagicMock()
+        
+        # First page
+        first_response = _make_mock_response(200, {
+            "entities": [
+                {
+                    "type": {"category": "Pages and blogs"},
+                    "affectedObjects": [
+                        {"type": "Page", "name": "Page 1", "id": "101"},
+                        {"type": "Space", "name": "ENG", "id": "1"}
+                    ]
+                }
+            ],
+            "pagingInfo": {
+                "lastPage": False,
+                "nextPageCursor": "cursor-abc123",
+                "size": 1
+            }
+        })
+        
+        # Second page
+        second_response = _make_mock_response(200, {
+            "entities": [
+                {
+                    "type": {"category": "Pages and blogs"},
+                    "affectedObjects": [
+                        {"type": "Page", "name": "Page 2", "id": "102"},
+                        {"type": "Space", "name": "ENG", "id": "1"}
+                    ]
+                }
+            ],
+            "pagingInfo": {
+                "lastPage": True,
+                "nextPageCursor": None,
+                "size": 1
+            }
+        })
+        
+        mock_ds.get_auditing_events_v1 = AsyncMock(side_effect=[first_response, second_response])
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        content_ids = await connector._fetch_permission_audit_content_ids(1000, 2000)
+        assert "101" in content_ids
+        assert "102" in content_ids
+        assert len(content_ids) == 2
+
+    @pytest.mark.asyncio
+    async def test_deduplicates_content_ids(self):
+        """Ensure duplicate content IDs are deduplicated."""
+        connector = _make_connector()
+        mock_ds = MagicMock()
+        mock_ds.get_auditing_events_v1 = AsyncMock(return_value=_make_mock_response(200, {
+            "entities": [
+                {
+                    "type": {"category": "Pages and blogs"},
+                    "affectedObjects": [
+                        {"type": "Page", "name": "Same Page", "id": "131103"},
+                        {"type": "Space", "name": "ENG", "id": "1"}
+                    ]
+                },
+                {
+                    "type": {"category": "Pages and blogs"},
+                    "affectedObjects": [
+                        {"type": "Page", "name": "Same Page", "id": "131103"},
+                        {"type": "Space", "name": "ENG", "id": "1"}
+                    ]
+                }
+            ],
+            "pagingInfo": {"lastPage": True, "size": 2}
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        content_ids = await connector._fetch_permission_audit_content_ids(1000, 2000)
+        assert content_ids == ["131103"]
 
     @pytest.mark.asyncio
     async def test_api_failure_returns_empty(self):
+        """Return empty list when API call fails."""
         connector = _make_connector()
         mock_ds = MagicMock()
-        mock_ds.get_audit_logs = AsyncMock(return_value=_make_mock_response(500, {}))
+        mock_ds.get_auditing_events_v1 = AsyncMock(return_value=_make_mock_response(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        titles = await connector._fetch_permission_audit_logs(1000, 2000)
-        assert titles == []
+        content_ids = await connector._fetch_permission_audit_content_ids(1000, 2000)
+        assert content_ids == []
 
 
 # ===========================================================================
@@ -883,11 +1140,24 @@ class TestFetchPagePermissions:
     async def test_fetches_page_permissions(self):
         connector = _make_connector()
         mock_ds = MagicMock()
-        mock_ds.get_page_permissions_v1 = AsyncMock(return_value=_make_mock_response(200, {
-            "results": [
-                {"operation": "read", "restrictions": {"user": {"results": []}, "group": {"results": []}}},
-            ],
-        }))
+        mock_ds.get_page_relevant_view_restrictions_v1 = AsyncMock(
+            return_value=_make_mock_response(
+                200,
+                {
+                    "viewContentRestrictions": {
+                        "results": [
+                            {
+                                "operation": "read",
+                                "restrictions": {
+                                    "user": {"results": []},
+                                    "group": {"results": []},
+                                },
+                            }
+                        ],
+                    }
+                },
+            )
+        )
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_page_restriction_to_permissions = AsyncMock(return_value=[])
 
@@ -899,7 +1169,9 @@ class TestFetchPagePermissions:
     async def test_api_failure_returns_empty(self):
         connector = _make_connector()
         mock_ds = MagicMock()
-        mock_ds.get_page_permissions_v1 = AsyncMock(return_value=_make_mock_response(403, {}))
+        mock_ds.get_page_relevant_view_restrictions_v1 = AsyncMock(
+            return_value=_make_mock_response(403, {})
+        )
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         permissions = await connector._fetch_page_permissions("page-1")
@@ -1238,8 +1510,12 @@ class TestTransformToUserGroup:
         assert result.source_user_group_id == "g1"
 
     def test_missing_id(self):
+        """When ID is missing, name is used as source_user_group_id."""
         c = _conn()
-        assert c._transform_to_user_group({"name": "devs"}) is None
+        result = c._transform_to_user_group({"name": "devs"})
+        assert result is not None
+        assert result.name == "devs"
+        assert result.source_user_group_id == "devs"  # Falls back to name when id missing
 
     def test_missing_name(self):
         c = _conn()
@@ -1387,10 +1663,31 @@ class TestConstructWebUrl:
         assert url is None
 
     def test_self_link_without_wiki(self):
+        """DC-style self link with /rest/api/ should extract base URL"""
         c = _conn()
-        links = {"webui": "/path", "self": "https://other.com/api/content/1"}
+        links = {"webui": "/path", "self": "https://other.com/rest/api/content/1"}
         url = c._construct_web_url(links, None)
-        assert url is None
+        assert url == "https://other.com/path"
+
+    def test_dc_list_item_with_explicit_base(self):
+        """DC list item with explicit api_base_url (from response root)"""
+        c = _conn()
+        links = {
+            "webui": "/spaces/SD/pages/131165/Page+with+table+nested+table",
+            "self": "http://localhost:8090/rest/api/content/131165",
+        }
+        url = c._construct_web_url(links, "http://localhost:8090")
+        assert url == "http://localhost:8090/spaces/SD/pages/131165/Page+with+table+nested+table"
+
+    def test_dc_list_item_with_fallback(self):
+        """DC list item without explicit base, fallback via /rest/api/ in self"""
+        c = _conn()
+        links = {
+            "webui": "/spaces/SD/pages/131165/Page+with+table+nested+table",
+            "self": "http://localhost:8090/rest/api/content/131165",
+        }
+        url = c._construct_web_url(links, None)
+        assert url == "http://localhost:8090/spaces/SD/pages/131165/Page+with+table+nested+table"
 
 
 # ===========================================================================
@@ -1492,6 +1789,49 @@ class TestTransformToWebpageRecord:
         result = c._transform_to_webpage_record(data, RecordType.CONFLUENCE_PAGE)
         assert result is not None
         assert result.parent_external_record_id is None
+
+    def test_dc_list_item_with_api_base_url(self):
+        """DC list item without item base but with api_base_url from response root"""
+        c = _conn()
+        data = {
+            "id": "131165",
+            "title": "Page with table nested table",
+            "space": {"id": "SD"},
+            "history": {
+                "createdDate": "2025-01-01T00:00:00.000Z",
+                "lastUpdated": {"when": "2025-02-01T00:00:00.000Z", "number": 1},
+            },
+            "_links": {
+                "webui": "/spaces/SD/pages/131165/Page+with+table+nested+table",
+                "self": "http://localhost:8090/rest/api/content/131165",
+                # No "base" on the item itself
+            },
+        }
+        result = c._transform_to_webpage_record(
+            data, RecordType.CONFLUENCE_PAGE, api_base_url="http://localhost:8090"
+        )
+        assert result is not None
+        assert result.weburl == "http://localhost:8090/spaces/SD/pages/131165/Page+with+table+nested+table"
+
+    def test_dc_list_item_with_fallback(self):
+        """DC list item without api_base_url, should use /rest/api/ fallback"""
+        c = _conn()
+        data = {
+            "id": "131165",
+            "title": "Page with table",
+            "space": {"id": "SD"},
+            "history": {
+                "createdDate": "2025-01-01T00:00:00.000Z",
+                "lastUpdated": {"when": "2025-02-01T00:00:00.000Z", "number": 1},
+            },
+            "_links": {
+                "webui": "/spaces/SD/pages/131165/Page+with+table",
+                "self": "http://localhost:8090/rest/api/content/131165",
+            },
+        }
+        result = c._transform_to_webpage_record(data, RecordType.CONFLUENCE_PAGE)
+        assert result is not None
+        assert result.weburl == "http://localhost:8090/spaces/SD/pages/131165/Page+with+table"
 
 
 # ===========================================================================
@@ -1598,6 +1938,48 @@ class TestTransformToAttachmentFileRecord:
         }
         result = c._transform_to_attachment_file_record(data, "p", "s")
         assert result is not None
+
+    def test_dc_attachment_with_api_base_url(self):
+        """DC attachment with api_base_url from response root"""
+        c = _conn()
+        data = {
+            "id": "att131171",
+            "title": "attachment.pdf",
+            "history": {
+                "createdDate": "2025-01-01T00:00:00.000Z",
+                "lastUpdated": {"when": "2025-02-01T00:00:00.000Z", "number": 1},
+            },
+            "extensions": {"fileSize": 5000, "mediaType": "application/pdf"},
+            "_links": {
+                "webui": "/spaces/SD/pages/131165/attachments/131171",
+                "self": "http://localhost:8090/rest/api/content/att131171",
+            },
+        }
+        result = c._transform_to_attachment_file_record(
+            data, "131165", "SD", api_base_url="http://localhost:8090"
+        )
+        assert result is not None
+        assert result.weburl == "http://localhost:8090/spaces/SD/pages/131165/attachments/131171"
+
+    def test_dc_attachment_with_fallback(self):
+        """DC attachment without api_base_url, should use /rest/api/ fallback"""
+        c = _conn()
+        data = {
+            "id": "att131171",
+            "title": "doc.pdf",
+            "history": {
+                "createdDate": "2025-01-01T00:00:00.000Z",
+                "lastUpdated": {"when": "2025-02-01T00:00:00.000Z", "number": 1},
+            },
+            "extensions": {"fileSize": 3000, "mediaType": "application/pdf"},
+            "_links": {
+                "webui": "/spaces/SD/pages/131165/attachments/131171",
+                "self": "http://localhost:8090/rest/api/content/att131171",
+            },
+        }
+        result = c._transform_to_attachment_file_record(data, "131165", "SD")
+        assert result is not None
+        assert result.weburl == "http://localhost:8090/spaces/SD/pages/131165/attachments/131171"
 
 
 # ===========================================================================
@@ -2409,44 +2791,50 @@ class TestFetchPageContent:
 # ===========================================================================
 
 
+def _mock_comment_record(record_type: RecordType, external_id: str, record_name: str = "") -> MagicMock:
+    record = MagicMock()
+    record.record_type = record_type
+    record.external_record_id = external_id
+    record.record_name = record_name
+    return record
+
+
+def _mock_comment_datasource(body: dict) -> MagicMock:
+    mock_ds = MagicMock()
+    mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, body))
+    mock_ds.fetch_authenticated_binary = AsyncMock(return_value=None)
+    return mock_ds
+
+
 class TestFetchCommentContent:
     @pytest.mark.asyncio
     async def test_footer_comment(self):
         c = _conn()
-        mock_ds = MagicMock()
-        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Footer</p>"}},
-        }))
+        mock_ds = _mock_comment_datasource({
+            "body": {"export_view": {"value": "<p>Footer</p>"}},
+        })
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.COMMENT
-        record.external_record_id = "123"
+        record = _mock_comment_record(RecordType.COMMENT, "123")
         result = await c._fetch_comment_content(record)
         assert result == "<p>Footer</p>"
 
     @pytest.mark.asyncio
     async def test_inline_comment(self):
         c = _conn()
-        mock_ds = MagicMock()
-        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Inline</p>"}},
-        }))
+        mock_ds = _mock_comment_datasource({
+            "body": {"export_view": {"value": "<p>Inline</p>"}},
+        })
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.INLINE_COMMENT
-        record.external_record_id = "456"
+        record = _mock_comment_record(RecordType.INLINE_COMMENT, "456")
         result = await c._fetch_comment_content(record)
         assert result == "<p>Inline</p>"
 
     @pytest.mark.asyncio
     async def test_empty_body(self):
         c = _conn()
-        mock_ds = MagicMock()
-        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {"body": {}}))
+        mock_ds = _mock_comment_datasource({"body": {}})
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.COMMENT
-        record.external_record_id = "789"
+        record = _mock_comment_record(RecordType.COMMENT, "789")
         result = await c._fetch_comment_content(record)
         assert "No content" in result
 
@@ -2473,6 +2861,58 @@ class TestFetchCommentContent:
         with pytest.raises(HTTPException) as exc_info:
             await c._fetch_comment_content(record)
         assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_fetch_comment_content_uses_export_view(self):
+        """Test that _fetch_comment_content uses export_view HTML"""
+        c = _conn()
+        mock_ds = _mock_comment_datasource({
+            "body": {
+                "export_view": {"value": "<p>Rendered HTML with images</p>"},
+                "storage": {"value": "<p>Raw storage with ri:attachment</p>"}
+            }
+        })
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        record = _mock_comment_record(RecordType.COMMENT, "comment123")
+        
+        result = await c._fetch_comment_content(record)
+        
+        # Should use export_view
+        assert result == "<p>Rendered HTML with images</p>"
+        assert "ri:attachment" not in result
+
+    @pytest.mark.asyncio
+    async def test_fetch_comment_content_prepends_title(self):
+        """Test that comment title is prepended for indexing."""
+        c = _conn()
+        mock_ds = _mock_comment_datasource({
+            "title": "API Title",
+            "body": {"export_view": {"value": "<p>Body</p>"}},
+        })
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        record = _mock_comment_record(RecordType.COMMENT, "comment123", record_name="Record Title")
+
+        result = await c._fetch_comment_content(record)
+
+        assert result.startswith("<h1>Record Title</h1>")
+        assert "<p>Body</p>" in result
+
+    @pytest.mark.asyncio
+    async def test_fetch_comment_content_missing_export_view(self):
+        """Test that _fetch_comment_content handles missing export_view gracefully"""
+        c = _conn()
+        mock_ds = _mock_comment_datasource({
+            "body": {
+                "storage": {"value": "<p>Storage content</p>"}
+            }
+        })
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        record = _mock_comment_record(RecordType.COMMENT, "comment456")
+        
+        result = await c._fetch_comment_content(record)
+        
+        # Should return fallback message when export_view is missing
+        assert result == "<p>No content available</p>"
 
 
 # ===========================================================================
@@ -2642,7 +3082,7 @@ class TestCheckAndFetchUpdatedPage:
 
 class TestCheckAndFetchUpdatedAttachment:
     @pytest.mark.asyncio
-    async def test_no_parent_page_id(self):
+    async def test_no_parent_content_id(self):
         c = _conn()
         record = MagicMock()
         record.external_record_id = "att-1"
@@ -2654,9 +3094,9 @@ class TestCheckAndFetchUpdatedAttachment:
     async def test_not_found(self):
         c = _conn()
         mock_ds = MagicMock()
-        mock_ds.get_attachment_by_id = AsyncMock(return_value=_resp(404))
+        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(404))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        c._resolve_attachment_parent_context = AsyncMock(return_value=None)
         record = MagicMock()
         record.external_record_id = "att-1"
         record.parent_external_record_id = "p1"
@@ -2667,16 +3107,150 @@ class TestCheckAndFetchUpdatedAttachment:
     async def test_version_unchanged(self):
         c = _conn()
         mock_ds = MagicMock()
-        mock_ds.get_attachment_by_id = AsyncMock(return_value=_resp(200, {
+        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
             "version": {"number": 2},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        c._resolve_attachment_parent_context = AsyncMock(return_value=None)
         record = MagicMock()
         record.external_record_id = "att-1"
         record.parent_external_record_id = "p1"
         record.external_revision_id = "2"
         result = await c._check_and_fetch_updated_attachment("org1", record)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_attachment_reindex_page_parent_unchanged(self):
+        """Test page-parented attachment reindex with WEBPAGE parent_record_type"""
+        c = _conn()
+        mock_ds = MagicMock()
+        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
+            "id": "att123",
+            "version": {"number": 3},
+            "title": "file.pdf",
+            "extensions": {"fileSize": 1024, "mediaType": "application/pdf"}
+        }))
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        
+        # Mock page record
+        page_record = MagicMock()
+        page_record.id = "page-node-1"
+        
+        # Mock parent context resolution
+        c._resolve_attachment_parent_context = AsyncMock(return_value=(
+            "page123",  # immediate_parent_id
+            RecordType.WEBPAGE,  # parent_record_type
+            "page-node-1",  # parent_node_id
+            "page123"  # page_id_for_permissions
+        ))
+        
+        # Mock transform
+        mock_file_record = MagicMock()
+        c._transform_to_attachment_file_record = MagicMock(return_value=mock_file_record)
+        
+        # Mock permissions
+        c._fetch_page_permissions = AsyncMock(return_value=[])
+        
+        record = MagicMock()
+        record.external_record_id = "att123"
+        record.parent_external_record_id = "page123"
+        record.external_revision_id = "2"
+        record.external_record_group_id = "space1"
+        record.parent_record_type = RecordType.WEBPAGE
+        
+        result = await c._check_and_fetch_updated_attachment("org1", record)
+        
+        assert result is not None
+        assert result[0] == mock_file_record
+        
+        # Verify transform was called with correct parent_record_type
+        c._transform_to_attachment_file_record.assert_called_once()
+        call_kwargs = c._transform_to_attachment_file_record.call_args[1]
+        assert call_kwargs["parent_record_type"] == RecordType.WEBPAGE
+        
+        # Verify permissions fetched with page ID
+        c._fetch_page_permissions.assert_awaited_once_with("page123")
+
+    @pytest.mark.asyncio
+    async def test_attachment_reindex_comment_parent(self):
+        """Test comment-parented attachment reindex with COMMENT parent_record_type"""
+        c = _conn()
+        mock_ds = MagicMock()
+        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
+            "id": "att456",
+            "version": {"number": 1},
+            "title": "screenshot.png",
+            "extensions": {"fileSize": 2048, "mediaType": "image/png"},
+            "container": {"type": "page", "id": "page789"}
+        }))
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        
+        # Mock comment record
+        comment_record = MagicMock()
+        comment_record.id = "comment-node-1"
+        comment_record.parent_external_record_id = "page789"
+        comment_record.parent_record_type = RecordType.WEBPAGE
+        
+        # Mock parent context resolution
+        c._resolve_attachment_parent_context = AsyncMock(return_value=(
+            "comment123",  # immediate_parent_id (comment)
+            RecordType.COMMENT,  # parent_record_type
+            "comment-node-1",  # parent_node_id
+            "page789"  # page_id_for_permissions
+        ))
+        
+        # Mock transform
+        mock_file_record = MagicMock()
+        c._transform_to_attachment_file_record = MagicMock(return_value=mock_file_record)
+        
+        # Mock permissions
+        c._fetch_page_permissions = AsyncMock(return_value=[])
+        
+        record = MagicMock()
+        record.external_record_id = "att456"
+        record.parent_external_record_id = "comment123"
+        record.external_revision_id = "0"
+        record.external_record_group_id = "space1"
+        record.parent_record_type = RecordType.COMMENT
+        
+        result = await c._check_and_fetch_updated_attachment("org1", record)
+        
+        assert result is not None
+        assert result[0] == mock_file_record
+        
+        # Verify transform was called with COMMENT parent_record_type
+        c._transform_to_attachment_file_record.assert_called_once()
+        call_kwargs = c._transform_to_attachment_file_record.call_args[1]
+        assert call_kwargs["parent_record_type"] == RecordType.COMMENT
+        assert call_kwargs["parent_node_id"] == "comment-node-1"
+        
+        # Verify permissions fetched with resolved page ID, not comment ID
+        c._fetch_page_permissions.assert_awaited_once_with("page789")
+
+    @pytest.mark.asyncio
+    async def test_attachment_reindex_comment_parent_no_page(self):
+        """Test comment-parented attachment reindex when page cannot be resolved"""
+        c = _conn()
+        mock_ds = MagicMock()
+        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
+            "id": "att789",
+            "version": {"number": 1},
+            "title": "file.txt"
+        }))
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        
+        # Mock parent context resolution failure
+        c._resolve_attachment_parent_context = AsyncMock(return_value=None)
+        
+        record = MagicMock()
+        record.external_record_id = "att789"
+        record.parent_external_record_id = "comment456"
+        record.external_revision_id = "0"
+        record.parent_record_type = RecordType.COMMENT
+        
+        result = await c._check_and_fetch_updated_attachment("org1", record)
+        
+        # Should return None when parent context cannot be resolved
         assert result is None
 
 
@@ -2814,14 +3388,12 @@ class TestRunSyncCoverage:
         space.short_name = "TEST"
         space.name = "Test Space"
         c._sync_spaces = AsyncMock(return_value=[space])
-        c._sync_folders = AsyncMock()
         c._sync_content = AsyncMock()
         c._sync_permission_changes_from_audit_log = AsyncMock()
 
         await c.run_sync()
         c._sync_users.assert_awaited_once()
         c._sync_user_groups.assert_awaited_once()
-        c._sync_folders.assert_awaited_once()
         assert c._sync_content.await_count == 2  # pages + blogposts
 
 
@@ -3164,8 +3736,12 @@ class TestTransformToUserGroupFullCoverage:
         assert g.name == "devs"
 
     def test_no_id(self):
+        """When ID is missing, name is used as source_user_group_id."""
         c = _c()
-        assert c._transform_to_user_group({"name": "devs"}) is None
+        result = c._transform_to_user_group({"name": "devs"})
+        assert result is not None
+        assert result.name == "devs"
+        assert result.source_user_group_id == "devs"  # Falls back to name when id missing
 
     def test_no_name(self):
         c = _c()
@@ -3628,7 +4204,7 @@ class TestFetchCommentContentFullCoverage:
         c = _c()
         mock_ds = MagicMock()
         mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Footer</p>"}},
+            "body": {"export_view": {"value": "<p>Footer</p>"}},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         record = MagicMock()
@@ -3642,7 +4218,7 @@ class TestFetchCommentContentFullCoverage:
         c = _c()
         mock_ds = MagicMock()
         mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Inline</p>"}},
+            "body": {"export_view": {"value": "<p>Inline</p>"}},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         record = MagicMock()

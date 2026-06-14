@@ -56,7 +56,7 @@
     "@azure/storage-blob": "^12.25.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@node-saml/passport-saml": "^5.1.0",
-    "@pipeshub-ai/mcp": "2.0.0",
+    "@pipeshub-ai/mcp": "2.1.0",
     "@qdrant/js-client-rest": "^1.14.1",
     "@slack/bolt": "^4.6.0",
     "@tryfabric/mack": "^1.2.1",
@@ -106,7 +106,7 @@
     "slug": "^4.1.0",
     "socket.io": "^4.8.3",
     "swagger-ui-express": "^5.0.1",
-    "uuid": "^14.0.0",
+    "uuid": "^11.1.0",
     "winston": "^3.17.0",
     "xss": "^1.0.15",
     "zod": "^3.24.1"

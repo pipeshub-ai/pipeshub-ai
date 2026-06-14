@@ -1370,3 +1370,121 @@ class TestGetWebSearchProviderUsage:
 
         assert exc_info.value.status_code == 403
         assert exc_info.value.detail == "forbidden"
+
+
+# =============================================================================
+# createdBy Mongo userId on agent API responses
+# =============================================================================
+
+
+class TestAgentCreatedByMongoId:
+    @pytest.mark.asyncio
+    async def test_get_agent_maps_graph_created_by_to_mongo_user_id(self) -> None:
+        from app.api.routes.agent import get_agent
+        from app.config.constants.arangodb import CollectionNames
+
+        agent = {"_key": "agent-1", "name": "Bot", "createdBy": "creator-key"}
+        mongo_user_id = "507f1f77bcf86cd799439011"
+
+        graph_provider = AsyncMock()
+        graph_provider.check_agent_permission = AsyncMock(return_value={"role": "OWNER"})
+        graph_provider.get_agent = AsyncMock(return_value=agent)
+        graph_provider.get_document = AsyncMock(
+            return_value={"_key": "creator-key", "userId": mongo_user_id}
+        )
+
+        services = {
+            "graph_provider": graph_provider,
+            "config_service": AsyncMock(),
+            "logger": MagicMock(),
+        }
+
+        request = MagicMock()
+        request.state.user = {"userId": "u1", "orgId": "org-1"}
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}), \
+             patch("app.api.routes.agent._enrich_agent_models", new_callable=AsyncMock), \
+             patch("app.api.routes.agent._mark_deprecated_tools"):
+            response = await get_agent(request, "agent-1")
+
+        graph_provider.get_document.assert_awaited_once_with(
+            "creator-key", CollectionNames.USERS.value
+        )
+        body = json.loads(response.body)
+        assert body["agent"]["createdBy"] == mongo_user_id
+
+    @pytest.mark.asyncio
+    async def test_get_agents_maps_graph_created_by_to_mongo_user_id(self) -> None:
+        from app.api.routes.agent import get_agents
+        from app.config.constants.arangodb import CollectionNames
+
+        mongo_user_id = "507f1f77bcf86cd799439011"
+        agents = [{"_key": "a1", "name": "A", "createdBy": "ck1"}]
+
+        graph_provider = AsyncMock()
+        graph_provider.get_all_agents = AsyncMock(
+            return_value={"agents": agents, "totalItems": 1}
+        )
+        graph_provider.get_nodes_by_field_in = AsyncMock(
+            return_value=[{"id": "ck1", "userId": mongo_user_id}]
+        )
+
+        services = {
+            "graph_provider": graph_provider,
+            "logger": MagicMock(),
+        }
+
+        request = MagicMock()
+        request.state.user = {"userId": "u1", "orgId": "org-1"}
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}):
+            response = await get_agents(request, page=1, limit=20)
+
+        graph_provider.get_nodes_by_field_in.assert_awaited_once_with(
+            CollectionNames.USERS.value,
+            "id",
+            ["ck1"],
+            return_fields=["id", "userId"],
+        )
+        body = json.loads(response.body)
+        assert body["agents"][0]["createdBy"] == mongo_user_id
+
+    @pytest.mark.asyncio
+    async def test_create_agent_returns_mongo_created_by_from_user_context(self) -> None:
+        from app.api.routes.agent import create_agent
+
+        mongo_user_id = "507f1f77bcf86cd799439011"
+        graph_provider = AsyncMock()
+        graph_provider.begin_transaction = AsyncMock(return_value="txn-1")
+        graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        graph_provider.batch_create_edges = AsyncMock(return_value=True)
+        graph_provider.commit_transaction = AsyncMock()
+
+        services = {
+            "graph_provider": graph_provider,
+            "logger": MagicMock(),
+        }
+
+        request = MagicMock()
+        body = (
+            '{"name":"A1","models":[{"modelKey":"mk1","modelName":"mn1","isReasoning":true}]}'
+        )
+        request.body = AsyncMock(return_value=body.encode())
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch(
+                 "app.api.routes.agent._get_user_context",
+                 return_value={"userId": mongo_user_id, "orgId": "org-1"},
+             ), \
+             patch(
+                 "app.api.routes.agent._get_user_document",
+                 new_callable=AsyncMock,
+                 return_value={"email": "a@b.com", "_key": "k1"},
+             ):
+            response = await create_agent(request)
+
+        body_json = json.loads(response.body)
+        assert body_json["agent"]["createdBy"] == mongo_user_id
+        graph_provider.get_document.assert_not_awaited()

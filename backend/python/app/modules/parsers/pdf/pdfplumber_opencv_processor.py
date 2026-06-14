@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
+import re
+import tempfile
 import uuid
 from dataclasses import dataclass
 from io import BytesIO
 from typing import List, Optional, Tuple
 
-import fitz
+import pdfplumber
 
 from app.config.configuration_service import ConfigurationService
 from app.models.blocks import (
@@ -27,18 +30,20 @@ from app.models.blocks import (
     TableMetadata,
 )
 from app.modules.parsers.pdf.opencv_layout_analyzer import (
-    BLOCK_MATCH_OVERLAP_THRESHOLD,
-    DEFAULT_RENDER_DPI,
+    DocumentRasterCache,
     LayoutRegion,
     LayoutRegionType,
-    OpenCVLayoutAnalyzer,
-    _overlap_ratio,
-    _reading_order_key,
+    extract_layout_regions,
 )
 from app.utils.indexing_helpers import (
     generate_simple_row_text,
     get_rows_text,
     get_table_summary_n_headers,
+)
+
+
+_NUMBERED_LIST_ITEM_RE = re.compile(
+    r"^\s*(?:\(\s*\d+\s*\)|\d+[.)])\s+\S",
 )
 
 
@@ -55,7 +60,6 @@ def _normalize_bbox_to_points(
         Point(x=x0 / page_width, y=y1 / page_height),
     ]
 
-
 @dataclass
 class ParsedPageData:
     page_number: int
@@ -64,90 +68,66 @@ class ParsedPageData:
     regions: List[LayoutRegion]
 
 
-class PyMuPDFOpenCVProcessor:
-    """PDF parser combining PyMuPDF text extraction with OpenCV layout analysis.
+class PDFPlumberOpenCVProcessor:
+    """PDF parser combining pdfplumber with OpenCV layout analysis (opencv_layout_analyzer).
 
-    Uses OpenCV morphological operations for table detection, text region grouping,
-    and heading/list heuristics. No ML models required.
+    Uses pdfplumber for rasterization and table detection plus OpenCV segmentation for
+    regions. No ML models required.
     """
 
     def __init__(
         self,
         logger: logging.Logger,
         config: ConfigurationService,
-        render_dpi: int = DEFAULT_RENDER_DPI,
     ) -> None:
         self.logger = logger
         self.config = config
-        self.render_dpi = render_dpi
-        self._analyzer = OpenCVLayoutAnalyzer(logger, render_dpi)
 
     async def parse_document(
         self, doc_name: str, content: bytes | BytesIO
     ) -> List[ParsedPageData]:
         stream = content if isinstance(content, BytesIO) else BytesIO(content)
-        doc = fitz.open(stream=stream.read(), filetype="pdf")
+        stream.seek(0)
+        pdf_bytes = stream.read()
 
-        try:
-            pages_data: List[ParsedPageData] = []
-            for page_idx in range(len(doc)):
-                page = doc[page_idx]
-                regions = await asyncio.to_thread(self._analyzer.analyze_page, page)
-                pages_data.append(
-                    ParsedPageData(
-                        page_number=page_idx + 1,
-                        width=page.rect.width,
-                        height=page.rect.height,
-                        regions=regions,
-                    )
-                )
-                self.logger.debug(
-                    f"Page {page_idx + 1}: detected {len(regions)} layout regions"
-                )
-
-            await asyncio.to_thread(self._extract_tables_with_pymupdf, doc, pages_data)
-            return pages_data
-        finally:
-            doc.close()
-
-    def _extract_tables_with_pymupdf(
-        self, doc: fitz.Document, pages_data: List[ParsedPageData]
-    ) -> None:
-        """Use PyMuPDF's built-in table finder to populate table grids."""
-        for pd in pages_data:
-            page = doc[pd.page_number - 1]
+        def _parse_sync() -> List[ParsedPageData]:
+            out: List[ParsedPageData] = []
+            tmp_path: str | None = None
             try:
-                table_finder = page.find_tables()
-            except Exception as e:
-                self.logger.debug(f"find_tables failed on page {pd.page_number}: {e}")
-                continue
-
-            for table in table_finder.tables:
-                t_bbox = (table.bbox[0], table.bbox[1], table.bbox[2], table.bbox[3])
-                best_region: Optional[LayoutRegion] = None
-                best_overlap = 0.0
-                for region in pd.regions:
-                    if region.type != LayoutRegionType.TABLE:
-                        continue
-                    ov = _overlap_ratio(t_bbox, region.bbox)
-                    if ov > best_overlap:
-                        best_overlap = ov
-                        best_region = region
-
-                grid = table.extract()
-                if best_region and best_overlap > BLOCK_MATCH_OVERLAP_THRESHOLD:
-                    best_region.table_grid = grid
-                    best_region.bbox = t_bbox
-                else:
-                    pd.regions.append(
-                        LayoutRegion(
-                            type=LayoutRegionType.TABLE,
-                            bbox=t_bbox,
-                            table_grid=grid,
+                with tempfile.NamedTemporaryFile(
+                    delete=False, suffix=".pdf", prefix="pipeshub_pdf_"
+                ) as tmp:
+                    tmp_path = tmp.name
+                    tmp.write(pdf_bytes)
+                    tmp.flush()
+                with pdfplumber.open(tmp_path) as pdf:
+                    raster_cache = DocumentRasterCache(tmp_path)
+                    for page_idx, page in enumerate(pdf.pages):
+                        regions = extract_layout_regions(
+                            page, pdf_path=tmp_path, raster_cache=raster_cache
                         )
-                    )
+                        out.append(
+                            ParsedPageData(
+                                page_number=page_idx + 1,
+                                width=float(page.width),
+                                height=float(page.height),
+                                regions=regions,
+                            )
+                        )
+            finally:
+                if tmp_path is not None:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+            return out
 
-            pd.regions.sort(key=_reading_order_key)
+        pages_data = await asyncio.to_thread(_parse_sync)
+        for pd in pages_data:
+            self.logger.debug(
+                f"Page {pd.page_number}: detected {len(pd.regions)} layout regions"
+            )
+        return pages_data
 
     async def create_blocks(
         self,
@@ -165,17 +145,16 @@ class PyMuPDFOpenCVProcessor:
             for region in pd.regions:
                 if region.type == LayoutRegionType.TABLE:
                     await self._build_table_group(
-                        region, pd, blocks, block_groups,
+                        region,
+                        pd,
+                        blocks,
+                        block_groups,
                         skip_llm_enrichment=skip_llm_enrichment,
                     )
                 elif region.type == LayoutRegionType.IMAGE:
                     self._build_image_block(region, pd, blocks)
-                elif region.type in (LayoutRegionType.LIST, LayoutRegionType.ORDERED_LIST):
+                elif region.type == LayoutRegionType.LIST:
                     self._build_list_group(region, pd, blocks, block_groups)
-                elif region.type == LayoutRegionType.HEADING:
-                    self._build_text_block(
-                        region, pd, blocks, sub_type=BlockSubType.HEADING
-                    )
                 else:
                     self._build_text_block(region, pd, blocks)
 
@@ -233,6 +212,10 @@ class PyMuPDFOpenCVProcessor:
             citation_metadata=self._make_citation(region.bbox, page_data),
             image_metadata=ImageMetadata(
                 image_format=region.image_ext,
+                image_size={
+                    "width": int(region.bbox[2] - region.bbox[0]),
+                    "height": int(region.bbox[3] - region.bbox[1]),
+                },
             ),
         )
         blocks.append(block)
@@ -339,11 +322,7 @@ class PyMuPDFOpenCVProcessor:
         blocks: List[Block],
         block_groups: List[BlockGroup],
     ) -> BlockGroup:
-        group_type = (
-            GroupType.ORDERED_LIST
-            if region.type == LayoutRegionType.ORDERED_LIST
-            else GroupType.LIST
-        )
+        group_type = GroupType.LIST
 
         bg = BlockGroup(
             id=str(uuid.uuid4()),
@@ -351,9 +330,6 @@ class PyMuPDFOpenCVProcessor:
             type=group_type,
             citation_metadata=self._make_citation(region.bbox, page_data),
             list_metadata=ListMetadata(
-                list_style=(
-                    "numbered" if group_type == GroupType.ORDERED_LIST else "bullet"
-                ),
                 item_count=len(region.list_items),
             ),
         )
@@ -387,5 +363,4 @@ class PyMuPDFOpenCVProcessor:
     ) -> BlocksContainer:
         parsed = await self.parse_document(doc_name, content)
         return await self.create_blocks(parsed, page_number=page_number)
-
 

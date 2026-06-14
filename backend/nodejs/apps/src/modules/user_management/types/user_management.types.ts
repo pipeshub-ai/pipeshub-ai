@@ -48,17 +48,28 @@ export interface TeamMemberResponse {
   profilePicture?: string;
 }
 
+export interface TeamCreatedByUser {
+  /** Graph user key of the team creator */
+  id: string;
+  userId: string;
+  name: string;
+  email: string;
+  profilePicture?: string;
+}
+
+export interface TeamResponse {
+  id: string;
+  name: string;
+  description?: string | null;
+  createdByUser?: TeamCreatedByUser | null;
+  orgId: string;
+  memberCount: number;
+  members?: TeamMemberResponse[];
+  [key: string]: unknown;
+}
+
 export interface TeamsListResponse {
-  teams: Array<{
-    id: string;
-    name: string;
-    description?: string | null;
-    createdBy: string;
-    orgId: string;
-    memberCount: number;
-    members?: TeamMemberResponse[];
-    [key: string]: unknown;
-  }>;
+  teams: TeamResponse[];
   pagination: {
     page: number;
     limit: number;

@@ -288,6 +288,20 @@ class TestHandleRecordGroup:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_empty_external_group_id_returns_none(self):
+        """Empty string must not create a RecordGroup with blank groupName."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        record = _make_record()
+        record.external_record_group_id = ""
+
+        result = await proc._handle_record_group(record, tx_store)
+
+        assert result is None
+        tx_store.get_record_group_by_external_id.assert_not_awaited()
+        tx_store.batch_upsert_record_groups.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_creates_new_group(self):
         """Creates a new record group when none exists."""
         proc = _make_processor()

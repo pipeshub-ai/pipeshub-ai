@@ -46,7 +46,7 @@ import { toast } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { SIDEBAR_CONVERSATIONS_PAGE_SIZE } from './constants';
-import { useGraphUserEntry } from '@/lib/hooks/use-graph-user-entry';
+import { UsersApi } from '@/app/(main)/workspace/users/api';
 
 // Space reserved below content views to clear the absolutely-positioned chat input.
 const CHAT_INPUT_OFFSET = { mobile: 120, desktop: 128 };
@@ -886,10 +886,36 @@ function ChatContent() {
   const isMobile = useIsMobile();
   const agentContextDisplayName = useChatStore((s) => s.agentContextDisplayName);
   const agentContextCreatedBy = useChatStore((s) => s.agentContextCreatedBy);
-  const agentCreatorEntry = useGraphUserEntry(historyAndShareAgentId ? agentContextCreatedBy : null);
-  const agentCreatorAvatarUrl =
-    agentCreatorEntry?.profilePicture ??
-    (agentCreatorEntry?.mongoId ? `/api/v1/users/${agentCreatorEntry.mongoId}/dp` : undefined);
+  const [agentCreatorName, setAgentCreatorName] = useState<string | null>(null);
+  const [agentCreatorAvatarUrl, setAgentCreatorAvatarUrl] = useState<string | undefined>(
+    undefined
+  );
+
+  useEffect(() => {
+    const mongoUserId = historyAndShareAgentId ? agentContextCreatedBy : null;
+    if (!mongoUserId) {
+      setAgentCreatorName(null);
+      setAgentCreatorAvatarUrl(undefined);
+      return;
+    }
+    let cancelled = false;
+    UsersApi.getUsersByIds([mongoUserId])
+      .then((users) => {
+        if (cancelled) return;
+        const user = users[0];
+        setAgentCreatorName(user?.name?.trim() || user?.email?.trim() || null);
+        setAgentCreatorAvatarUrl(user?.profilePicture ?? undefined);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAgentCreatorName(null);
+          setAgentCreatorAvatarUrl(undefined);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [historyAndShareAgentId, agentContextCreatedBy]);
 
   // Render decisions
   /** Profile from GET /api/v1/users/:id — auth-store `user` is often null (not persisted with tokens). */
@@ -1154,7 +1180,7 @@ function ChatContent() {
       )}
 
       {/* Agent creator chip */}
-      {historyAndShareAgentId && agentCreatorEntry?.fullName && (
+      {historyAndShareAgentId && agentCreatorName && (
         <Box
           style={{
             position: 'absolute',
@@ -1163,7 +1189,7 @@ function ChatContent() {
             zIndex: 19,
           }}
         >
-          <Tooltip content={`${t('agentBuilder.createdBy')}: ${agentCreatorEntry.fullName}`}>
+          <Tooltip content={`${t('agentBuilder.createdBy')}: ${agentCreatorName}`}>
             <Flex
               align="center"
               gap="2"
@@ -1178,7 +1204,7 @@ function ChatContent() {
             >
               <Avatar
                 size="1"
-                fallback={agentCreatorEntry.fullName.charAt(0).toUpperCase()}
+                fallback={agentCreatorName.charAt(0).toUpperCase()}
                 src={agentCreatorAvatarUrl}
                 radius="full"
                 style={{ flexShrink: 0 }}
@@ -1192,7 +1218,7 @@ function ChatContent() {
                   whiteSpace: 'nowrap',
                 }}
               >
-                {agentCreatorEntry.fullName}
+                {agentCreatorName}
               </Text>
             </Flex>
           </Tooltip>

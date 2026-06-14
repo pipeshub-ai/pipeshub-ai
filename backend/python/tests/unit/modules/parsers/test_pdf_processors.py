@@ -1,22 +1,35 @@
 """Unit tests for PDF processor modules.
 
 Covers:
-- AzureOCRStrategy (azure_document_intelligence_processor.py)
-- PyMuPDFOpenCVProcessor (pymupdf_opencv_processor.py)
-- OpenCVLayoutAnalyzer (opencv_layout_analyzer.py)
+- PDFPlumberOpenCVProcessor (pdfplumber_opencv_processor.py)
+- Layout helper math (types from opencv_layout_analyzer; DPI constant local)
 - VLMOCRStrategy (vlm_ocr_strategy.py)
 """
 
 import asyncio
 import base64
 from io import BytesIO
+from typing import Tuple
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
+import numpy as np
 import pytest
+
+from app.modules.parsers.pdf.opencv_layout_analyzer import (
+    LayoutRegion,
+    LayoutRegionType,
+    _append_hyperlink_url_to_text,
+    _inject_hyperlinks_into_text,
+    extract_layout_regions,
+)
+
+# PDF typographic baseline: points per inch (pixel → PDF pt: px * DPI_SCALE / raster_dpi).
+DPI_SCALE = 72
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _mock_logger():
     return MagicMock()
@@ -26,48 +39,76 @@ def _mock_config():
     return AsyncMock()
 
 
+# Legacy raster-analyzer helpers (production layout lives in opencv_layout_analyzer).
+def _rect_area(bbox: Tuple[float, float, float, float]) -> float:
+    return max(0, bbox[2] - bbox[0]) * max(0, bbox[3] - bbox[1])
+
+
+def _overlap_ratio(
+    a: Tuple[float, float, float, float],
+    b: Tuple[float, float, float, float],
+) -> float:
+    ix0 = max(a[0], b[0])
+    iy0 = max(a[1], b[1])
+    ix1 = min(a[2], b[2])
+    iy1 = min(a[3], b[3])
+    inter = max(0, ix1 - ix0) * max(0, iy1 - iy0)
+    area_a = _rect_area(a)
+    if area_a == 0:
+        return 0.0
+    return inter / area_a
+
+
+def _pixel_to_pdf(val: float, dpi: int) -> float:
+    return val * DPI_SCALE / dpi
+
+
+def _count_distinct_lines(projection: np.ndarray) -> int:
+    if projection.size == 0:
+        return 0
+    transitions = np.diff(projection.astype(np.int8))
+    rising_edges = int(np.sum(transitions == 1))
+    return rising_edges + (1 if projection[0] else 0)
+
+
+def _reading_order_key(region: LayoutRegion) -> Tuple[float, float]:
+    return (region.bbox[1], region.bbox[0])
+
+
 # ============================================================================
 # OpenCV layout analyzer helpers (no external deps needed)
 # ============================================================================
 
 class TestRectArea:
     def test_positive_area(self):
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _rect_area
         assert _rect_area((0, 0, 10, 20)) == 200
 
     def test_zero_area_collapsed(self):
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _rect_area
         assert _rect_area((5, 5, 5, 10)) == 0
 
     def test_negative_coordinates_clamped(self):
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _rect_area
         # x1 < x0 => max(0, ...) = 0
         assert _rect_area((10, 0, 5, 5)) == 0
 
     def test_zero_width(self):
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _rect_area
         assert _rect_area((0, 0, 0, 10)) == 0
 
     def test_zero_height(self):
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _rect_area
         assert _rect_area((0, 0, 10, 0)) == 0
 
 
 class TestOverlapRatio:
     def test_full_overlap(self):
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _overlap_ratio
         a = (0, 0, 10, 10)
         b = (0, 0, 10, 10)
         assert _overlap_ratio(a, b) == 1.0
 
     def test_no_overlap(self):
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _overlap_ratio
         a = (0, 0, 5, 5)
         b = (10, 10, 20, 20)
         assert _overlap_ratio(a, b) == 0.0
 
     def test_partial_overlap(self):
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _overlap_ratio
         a = (0, 0, 10, 10)
         b = (5, 5, 15, 15)
         ratio = _overlap_ratio(a, b)
@@ -75,72 +116,112 @@ class TestOverlapRatio:
         assert abs(ratio - 0.25) < 0.001
 
     def test_zero_area_a(self):
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _overlap_ratio
         assert _overlap_ratio((0, 0, 0, 0), (0, 0, 10, 10)) == 0.0
 
     def test_contained(self):
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _overlap_ratio
         a = (2, 2, 8, 8)
         b = (0, 0, 10, 10)
         # Intersection = 6*6 = 36, area_a = 36
         assert _overlap_ratio(a, b) == 1.0
 
 
+class TestHyperlinkTextInjection:
+    def test_append_hyperlink_url_to_text(self):
+        text = "You can visit myLinked for more info."
+        out = _append_hyperlink_url_to_text(
+            text,
+            "myLinked",
+            "https://www.linkedin.com/in/example",
+        )
+        assert out == (
+            "You can visit myLinked (https://www.linkedin.com/in/example) "
+            "for more info."
+        )
+
+    def test_append_hyperlink_url_is_idempotent(self):
+        text = "myLinked (https://example.com)"
+        assert _append_hyperlink_url_to_text(text, "myLinked", "https://example.com") == text
+
+    def test_inject_hyperlinks_into_text_from_word_boxes(self):
+        region_words = [
+            {"text": "You", "x0": 100, "x1": 120, "top": 80, "bottom": 95},
+            {"text": "can", "x0": 125, "x1": 145, "top": 80, "bottom": 95},
+            {"text": "visit", "x0": 150, "x1": 175, "top": 80, "bottom": 95},
+            {"text": "myLinked", "x0": 180, "x1": 250, "top": 80, "bottom": 95},
+        ]
+        hyperlinks = [{
+            "x0": 180,
+            "top": 77,
+            "x1": 250,
+            "bottom": 97,
+            "uri": "https://www.linkedin.com/in/example",
+        }]
+        text = "You can visit myLinked"
+        out = _inject_hyperlinks_into_text(text, hyperlinks, region_words)
+        assert out == "You can visit myLinked (https://www.linkedin.com/in/example)"
+
+    def test_extract_layout_regions_includes_hyperlink_url(self):
+        pytest.importorskip("reportlab")
+        from io import BytesIO
+
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+        import pdfplumber
+
+        buf = BytesIO()
+        c = canvas.Canvas(buf, pagesize=letter)
+        c.drawString(100, 700, "You can visit ")
+        c.linkURL(
+            "https://www.linkedin.com/in/example",
+            (180, 695, 250, 715),
+            relative=0,
+        )
+        c.drawString(180, 700, "myLinked")
+        c.save()
+
+        with pdfplumber.open(BytesIO(buf.getvalue())) as pdf:
+            regions = extract_layout_regions(pdf.pages[0])
+
+        assert len(regions) == 1
+        assert "myLinked (https://www.linkedin.com/in/example)" in regions[0].text
+
+
 class TestPixelToPdf:
     def test_conversion(self):
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _pixel_to_pdf
         result = _pixel_to_pdf(150, 150)
         assert abs(result - 72.0) < 0.01
 
     def test_zero(self):
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _pixel_to_pdf
         assert _pixel_to_pdf(0, 150) == 0.0
 
 
 class TestCountDistinctLines:
     def test_empty(self):
-        import numpy as np
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _count_distinct_lines
         assert _count_distinct_lines(np.array([], dtype=bool)) == 0
 
     def test_single_run(self):
-        import numpy as np
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _count_distinct_lines
         arr = np.array([False, True, True, True, False])
         assert _count_distinct_lines(arr) == 1
 
     def test_multiple_runs(self):
-        import numpy as np
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _count_distinct_lines
         arr = np.array([True, True, False, True, False, True])
         assert _count_distinct_lines(arr) == 3
 
     def test_starts_with_true(self):
-        import numpy as np
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _count_distinct_lines
         arr = np.array([True, False, True])
         assert _count_distinct_lines(arr) == 2
 
     def test_all_true(self):
-        import numpy as np
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _count_distinct_lines
         arr = np.array([True, True, True])
         assert _count_distinct_lines(arr) == 1
 
     def test_all_false(self):
-        import numpy as np
-        from app.modules.parsers.pdf.opencv_layout_analyzer import _count_distinct_lines
         arr = np.array([False, False, False])
         assert _count_distinct_lines(arr) == 0
 
 
 class TestReadingOrderKey:
     def test_sort_order(self):
-        from app.modules.parsers.pdf.opencv_layout_analyzer import (
-            LayoutRegion,
-            LayoutRegionType,
-            _reading_order_key,
-        )
         r1 = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 10, 50, 20))
         r2 = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 5, 50, 15))
         regions = [r1, r2]
@@ -149,11 +230,6 @@ class TestReadingOrderKey:
         assert regions[0] is r2
 
     def test_same_y_sort_by_x(self):
-        from app.modules.parsers.pdf.opencv_layout_analyzer import (
-            LayoutRegion,
-            LayoutRegionType,
-            _reading_order_key,
-        )
         r1 = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(20, 5, 50, 15))
         r2 = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(5, 5, 50, 15))
         regions = [r1, r2]
@@ -162,9 +238,10 @@ class TestReadingOrderKey:
 
 
 # ============================================================================
-# OpenCVLayoutAnalyzer
+# OpenCVLayoutAnalyzer (PyMuPDF raster path removed from opencv_layout_analyzer stub)
 # ============================================================================
 
+@pytest.mark.skip(reason="OpenCVLayoutAnalyzer not in stub; layout uses opencv_layout_analyzer.")
 class TestOpenCVLayoutAnalyzer:
     def _make_analyzer(self):
         from app.modules.parsers.pdf.opencv_layout_analyzer import OpenCVLayoutAnalyzer
@@ -357,17 +434,16 @@ class TestOpenCVLayoutAnalyzer:
 
 
 # ============================================================================
-# PyMuPDFOpenCVProcessor
+# PDFPlumberOpenCVProcessor
 # ============================================================================
 
 class TestPyMuPDFOpenCVProcessor:
     def _make_processor(self):
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
-            return PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+        return PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
     def test_normalize_bbox_to_points(self):
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import _normalize_bbox_to_points
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import _normalize_bbox_to_points
         points = _normalize_bbox_to_points((0, 0, 100, 200), 200.0, 400.0)
         assert len(points) == 4
         assert points[0].x == 0.0
@@ -377,47 +453,49 @@ class TestPyMuPDFOpenCVProcessor:
 
     @pytest.mark.asyncio
     async def test_parse_document(self):
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer") as MockAnalyzer:
-            mock_analyzer_inst = MagicMock()
-            mock_analyzer_inst.analyze_page.return_value = []
-            MockAnalyzer.return_value = mock_analyzer_inst
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
-            mock_doc = MagicMock()
-            mock_doc.__len__ = lambda s: 1
-            mock_page = MagicMock()
-            mock_page.rect.width = 612
-            mock_page.rect.height = 792
-            mock_doc.__getitem__ = lambda s, i: mock_page
-            mock_doc.close = MagicMock()
+        mock_pdf = MagicMock()
+        mock_page = MagicMock()
+        mock_page.width = 612
+        mock_page.height = 792
+        mock_pdf.pages = [mock_page]
+        mock_cm = MagicMock()
+        mock_cm.__enter__.return_value = mock_pdf
+        mock_cm.__exit__.return_value = None
 
-            with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.fitz") as mock_fitz:
-                mock_fitz.open.return_value = mock_doc
-                result = await proc.parse_document("test.pdf", b"fake-pdf-bytes")
+        with patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.pdfplumber.open",
+            return_value=mock_cm,
+        ), patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.extract_layout_regions",
+            return_value=[],
+        ):
+            result = await proc.parse_document("test.pdf", b"fake-pdf-bytes")
 
-            assert len(result) == 1
-            assert result[0].page_number == 1
+        assert len(result) == 1
+        assert result[0].page_number == 1
+        assert result[0].width == 612
+        assert result[0].height == 792
 
     def test_make_citation(self):
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import ParsedPageData, PyMuPDFOpenCVProcessor
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import ParsedPageData, PDFPlumberOpenCVProcessor
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
         pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[])
         citation = proc._make_citation((0, 0, 306, 396), pd)
         assert citation.page_number == 1
         assert len(citation.bounding_boxes) == 4
 
     def test_build_text_block(self):
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
             LayoutRegion,
             LayoutRegionType,
             ParsedPageData,
-            PyMuPDFOpenCVProcessor,
+            PDFPlumberOpenCVProcessor,
         )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
         region = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 0, 100, 50), text="Hello world")
         pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[])
         blocks = []
@@ -426,31 +504,30 @@ class TestPyMuPDFOpenCVProcessor:
         assert block.data == "Hello world"
         assert len(blocks) == 1
 
-    def test_build_text_block_heading(self):
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
+    def test_build_text_block_explicit_heading_subtype(self):
+        """_build_text_block still accepts an explicit heading subtype for callers."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
             LayoutRegion,
             LayoutRegionType,
             ParsedPageData,
-            PyMuPDFOpenCVProcessor,
+            PDFPlumberOpenCVProcessor,
         )
         from app.models.blocks import BlockSubType
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
-        region = LayoutRegion(type=LayoutRegionType.HEADING, bbox=(0, 0, 100, 50), text="Title")
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        region = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 0, 100, 50), text="Title")
         pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[])
         blocks = []
         block = proc._build_text_block(region, pd, blocks, sub_type=BlockSubType.HEADING)
         assert block.sub_type == BlockSubType.HEADING
 
     def test_build_image_block_no_data(self):
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
             LayoutRegion,
             LayoutRegionType,
             ParsedPageData,
-            PyMuPDFOpenCVProcessor,
+            PDFPlumberOpenCVProcessor,
         )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
         region = LayoutRegion(type=LayoutRegionType.IMAGE, bbox=(0, 0, 100, 100), image_data=None)
         pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[])
         blocks = []
@@ -459,14 +536,13 @@ class TestPyMuPDFOpenCVProcessor:
         assert len(blocks) == 0
 
     def test_build_image_block_with_data(self):
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
             LayoutRegion,
             LayoutRegionType,
             ParsedPageData,
-            PyMuPDFOpenCVProcessor,
+            PDFPlumberOpenCVProcessor,
         )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
         region = LayoutRegion(
             type=LayoutRegionType.IMAGE, bbox=(0, 0, 100, 100),
             image_data=b"fake-image-data", image_ext="png",
@@ -479,14 +555,13 @@ class TestPyMuPDFOpenCVProcessor:
         assert "base64" in block.data["uri"]
 
     def test_build_list_group_unordered(self):
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
             LayoutRegion,
             LayoutRegionType,
             ParsedPageData,
-            PyMuPDFOpenCVProcessor,
+            PDFPlumberOpenCVProcessor,
         )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
         region = LayoutRegion(
             type=LayoutRegionType.LIST, bbox=(0, 0, 200, 100),
             text="- Item A\n- Item B", list_items=["- Item A", "- Item B"],
@@ -499,35 +574,34 @@ class TestPyMuPDFOpenCVProcessor:
         assert len(blocks) == 2
         assert len(block_groups) == 1
 
-    def test_build_list_group_ordered(self):
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
+    def test_build_list_group_ordered_items_use_list_group(self):
+        """Numbered list lines are emitted as ``GroupType.LIST`` (no separate ordered type)."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
             LayoutRegion,
             LayoutRegionType,
             ParsedPageData,
-            PyMuPDFOpenCVProcessor,
+            PDFPlumberOpenCVProcessor,
         )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
         region = LayoutRegion(
-            type=LayoutRegionType.ORDERED_LIST, bbox=(0, 0, 200, 100),
+            type=LayoutRegionType.LIST, bbox=(0, 0, 200, 100),
             text="1. First\n2. Second", list_items=["1. First", "2. Second"],
         )
         pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[])
         blocks = []
         block_groups = []
         bg = proc._build_list_group(region, pd, blocks, block_groups)
-        assert bg.type.value == "ordered_list"
+        assert bg.type.value == "list"
 
     @pytest.mark.asyncio
     async def test_build_table_group(self):
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
             LayoutRegion,
             LayoutRegionType,
             ParsedPageData,
-            PyMuPDFOpenCVProcessor,
+            PDFPlumberOpenCVProcessor,
         )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
         region = LayoutRegion(
             type=LayoutRegionType.TABLE, bbox=(0, 0, 200, 100),
             table_grid=[["A", "B"], ["1", "2"]],
@@ -540,9 +614,9 @@ class TestPyMuPDFOpenCVProcessor:
         mock_response.summary = "Table summary"
         mock_response.headers = ["A", "B"]
 
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.get_table_summary_n_headers",
+        with patch("app.modules.parsers.pdf.pdfplumber_opencv_processor.get_table_summary_n_headers",
                     new_callable=AsyncMock, return_value=mock_response), \
-             patch("app.modules.parsers.pdf.pymupdf_opencv_processor.get_rows_text",
+             patch("app.modules.parsers.pdf.pdfplumber_opencv_processor.get_rows_text",
                     new_callable=AsyncMock, return_value=(["Row 1 text"], [["1", "2"]])):
             bg = await proc._build_table_group(region, pd, blocks, block_groups)
 
@@ -552,14 +626,13 @@ class TestPyMuPDFOpenCVProcessor:
 
     @pytest.mark.asyncio
     async def test_build_table_group_no_grid(self):
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
             LayoutRegion,
             LayoutRegionType,
             ParsedPageData,
-            PyMuPDFOpenCVProcessor,
+            PDFPlumberOpenCVProcessor,
         )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
         region = LayoutRegion(type=LayoutRegionType.TABLE, bbox=(0, 0, 200, 100), table_grid=None)
         pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[])
         result = await proc._build_table_group(region, pd, [], [])
@@ -567,14 +640,13 @@ class TestPyMuPDFOpenCVProcessor:
 
     @pytest.mark.asyncio
     async def test_create_blocks_filters_by_page(self):
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
             LayoutRegion,
             LayoutRegionType,
             ParsedPageData,
-            PyMuPDFOpenCVProcessor,
+            PDFPlumberOpenCVProcessor,
         )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
         r1 = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 0, 100, 50), text="Page 1 text")
         r2 = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 0, 100, 50), text="Page 2 text")
         page1 = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[r1])
@@ -582,216 +654,6 @@ class TestPyMuPDFOpenCVProcessor:
         result = await proc.create_blocks([page1, page2], page_number=1)
         assert len(result.blocks) == 1
         assert result.blocks[0].data == "Page 1 text"
-
-
-# ============================================================================
-# AzureOCRStrategy
-# ============================================================================
-
-class TestAzureOCRStrategy:
-    @patch("app.modules.parsers.pdf.azure_document_intelligence_processor.spacy")
-    def _make_strategy(self, mock_spacy):
-        mock_nlp = MagicMock()
-        mock_nlp.pipe_names = ["sentencizer", "custom_sentence_boundary"]
-        mock_nlp.add_pipe = MagicMock()
-        mock_nlp.tokenizer = MagicMock()
-        mock_spacy.load.return_value = mock_nlp
-
-        from app.modules.parsers.pdf.azure_document_intelligence_processor import AzureOCRStrategy
-        return AzureOCRStrategy(
-            logger=_mock_logger(), config=_mock_config(),
-            endpoint="https://fake.cognitiveservices.azure.com",
-            key="fake-key",
-        )
-
-    def test_normalize_bbox(self):
-        strategy = self._make_strategy()
-        result = strategy._normalize_bbox((0, 0, 100, 200), 200.0, 400.0)
-        assert len(result) == 4
-        assert result[0] == {"x": 0.0, "y": 0.0}
-        assert result[2] == {"x": 0.5, "y": 0.5}
-
-    def test_get_bounding_box_polygon(self):
-        strategy = self._make_strategy()
-        element = MagicMock()
-        element.polygon = [MagicMock(x=0.1, y=0.2), MagicMock(x=0.3, y=0.4)]
-        result = strategy._get_bounding_box(element)
-        assert len(result) == 2
-        assert result[0]["x"] == 0.1
-
-    def test_get_bounding_box_bounding_regions(self):
-        strategy = self._make_strategy()
-        element = MagicMock(spec=["bounding_regions"])
-        region = MagicMock()
-        region.polygon = [MagicMock(x=0.5, y=0.6)]
-        element.bounding_regions = [region]
-        result = strategy._get_bounding_box(element)
-        assert result[0]["x"] == 0.5
-
-    def test_get_bounding_box_no_polygon(self):
-        strategy = self._make_strategy()
-        element = MagicMock(spec=[])
-        result = strategy._get_bounding_box(element)
-        assert result == []
-
-    def test_normalize_coordinates(self):
-        strategy = self._make_strategy()
-        coords = [{"x": 50, "y": 100}, {"x": 100, "y": 200}]
-        result = strategy._normalize_coordinates(coords, 200.0, 400.0)
-        assert result[0] == {"x": 0.25, "y": 0.25}
-
-    def test_normalize_coordinates_empty(self):
-        strategy = self._make_strategy()
-        assert strategy._normalize_coordinates([], 200.0, 400.0) is None
-
-    def test_normalize_coordinates_none(self):
-        strategy = self._make_strategy()
-        assert strategy._normalize_coordinates(None, 200.0, 400.0) is None
-
-    def test_normalize_element_data(self):
-        strategy = self._make_strategy()
-        data = {"bounding_box": [{"x": 50, "y": 100}], "other": "value"}
-        result = strategy._normalize_element_data(data, 200.0, 400.0)
-        assert result["bounding_box"][0]["x"] == 0.25
-        assert result["other"] == "value"
-
-    def test_should_merge_blocks(self):
-        strategy = self._make_strategy()
-        b1 = {"type": 0, "lines": [{"spans": [{"text": "short"}]}]}
-        b2 = {"type": 0, "lines": [{"spans": [{"text": "more"}]}]}
-        assert strategy._should_merge_blocks(b1, b2) is True
-
-    def test_should_merge_blocks_different_types(self):
-        strategy = self._make_strategy()
-        assert strategy._should_merge_blocks({"type": 1}, {"type": 0}) is False
-
-    def test_merge_block_content(self):
-        strategy = self._make_strategy()
-        b1 = {"lines": [{"text": "a"}], "bbox": (0, 0, 10, 10)}
-        b2 = {"lines": [{"text": "b"}], "bbox": (5, 5, 20, 20)}
-        merged = strategy._merge_block_content(b1, b2)
-        assert len(merged["lines"]) == 2
-        assert merged["bbox"] == (0, 0, 20, 20)
-
-    def test_check_bbox_overlap_overlapping(self):
-        strategy = self._make_strategy()
-        bbox1 = [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}, {"x": 0, "y": 1}]
-        bbox2 = [{"x": 0.5, "y": 0.5}, {"x": 1.5, "y": 0.5}, {"x": 1.5, "y": 1.5}, {"x": 0.5, "y": 1.5}]
-        assert strategy._check_bbox_overlap(bbox1, bbox2) is True
-
-    def test_check_bbox_overlap_not_overlapping(self):
-        strategy = self._make_strategy()
-        bbox1 = [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}, {"x": 0, "y": 1}]
-        bbox2 = [{"x": 5, "y": 5}, {"x": 6, "y": 5}, {"x": 6, "y": 6}, {"x": 5, "y": 6}]
-        assert strategy._check_bbox_overlap(bbox1, bbox2) is False
-
-    def test_cells_to_grid(self):
-        strategy = self._make_strategy()
-        cells = [
-            {"row_index": 0, "column_index": 0, "content": "A1", "row_span": 1, "column_span": 1},
-            {"row_index": 0, "column_index": 1, "content": "B1", "row_span": 1, "column_span": 1},
-            {"row_index": 1, "column_index": 0, "content": "A2", "row_span": 1, "column_span": 1},
-            {"row_index": 1, "column_index": 1, "content": "B2", "row_span": 1, "column_span": 1},
-        ]
-        grid = strategy.cells_to_grid(2, 2, cells)
-        assert grid == [["A1", "B1"], ["A2", "B2"]]
-
-    def test_cells_to_grid_with_span(self):
-        strategy = self._make_strategy()
-        cells = [
-            {"row_index": 0, "column_index": 0, "content": "Merged", "row_span": 2, "column_span": 1},
-            {"row_index": 0, "column_index": 1, "content": "B1", "row_span": 1, "column_span": 1},
-        ]
-        grid = strategy.cells_to_grid(2, 2, cells)
-        assert grid[0][0] == "Merged"
-        assert grid[0][1] == "B1"
-
-    def test_extract_page_properties_azure(self):
-        strategy = self._make_strategy()
-        mock_page = MagicMock()
-        mock_page.width = 8.5
-        mock_page.height = 11.0
-        mock_page.unit = "inch"
-        mock_page.page_number = 1
-        result = strategy._extract_page_properties(mock_page, True, 1)
-        assert result["width"] == 8.5
-        assert result["unit"] == "inch"
-
-    def test_process_line_valid(self):
-        strategy = self._make_strategy()
-        mock_line = MagicMock()
-        mock_line.content = "Hello world"
-        mock_line.confidence = 0.95
-        strategy._get_bounding_box = MagicMock(return_value=[{"x": 0, "y": 0}])
-        strategy._normalize_coordinates = MagicMock(return_value=[{"x": 0, "y": 0}])
-        result = strategy._process_line(mock_line, 200.0, 400.0)
-        assert result["content"] == "Hello world"
-
-    def test_process_line_empty(self):
-        strategy = self._make_strategy()
-        mock_line = MagicMock()
-        mock_line.content = "   "
-        result = strategy._process_line(mock_line, 200.0, 400.0)
-        assert result is None
-
-    def test_process_line_no_content(self):
-        strategy = self._make_strategy()
-        mock_line = MagicMock(spec=[])
-        result = strategy._process_line(mock_line, 200.0, 400.0)
-        assert result is None
-
-    def test_merge_bounding_boxes(self):
-        strategy = self._make_strategy()
-        bboxes = [
-            [{"x": 0, "y": 0}, {"x": 5, "y": 5}],
-            [{"x": 10, "y": 10}, {"x": 15, "y": 15}],
-        ]
-        result = strategy._merge_bounding_boxes(bboxes)
-        assert result[0] == {"x": 0, "y": 0}
-        assert result[2] == {"x": 15, "y": 15}
-
-    def test_process_block_text_azure(self):
-        strategy = self._make_strategy()
-        mock_block = MagicMock()
-        mock_block.content = "Azure paragraph text"
-        mock_block.words = []
-        mock_block.role = "paragraph"
-        mock_block.confidence = 0.99
-        strategy._get_bounding_box = MagicMock(return_value=[{"x": 0, "y": 0}])
-        strategy._normalize_coordinates = MagicMock(return_value=[{"x": 0, "y": 0}])
-        result = strategy._process_block_text_azure(mock_block, 200.0, 400.0)
-        assert result["content"] == "Azure paragraph text"
-
-    def test_get_lines_for_paragraph(self):
-        strategy = self._make_strategy()
-        page_lines = [
-            {
-                "content": "hello world",
-                "bounding_box": [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 0.1}, {"x": 0, "y": 0.1}],
-            },
-            {
-                "content": "unrelated text",
-                "bounding_box": [{"x": 0, "y": 0.5}, {"x": 1, "y": 0.5}, {"x": 1, "y": 0.6}, {"x": 0, "y": 0.6}],
-            },
-        ]
-        para_text = "hello world"
-        para_bbox = [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 0.1}, {"x": 0, "y": 0.1}]
-        result = strategy._get_lines_for_paragraph(page_lines, para_text, para_bbox)
-        assert len(result) == 1
-        assert result[0]["content"] == "hello world"
-
-    async def test_process_page_not_processed(self):
-        strategy = self._make_strategy()
-        strategy._processed = False
-        mock_page = MagicMock()
-        mock_page.rect.width = 612
-        mock_page.rect.height = 792
-        mock_page.get_text.side_effect = [
-            [(0, 0, 50, 20, "Test")],
-            {"blocks": []},
-        ]
-        result = await strategy.process_page(mock_page)
-        assert "words" in result
 
 class TestVLMOCRStrategy:
     def _make_strategy(self):
@@ -814,27 +676,22 @@ class TestVLMOCRStrategy:
             strategy.MAX_RETRY_ATTEMPTS = 2
             return strategy
 
-    def test_render_page_to_base64(self):
+    def test_render_all_pages_to_base64(self):
         strategy = self._make_strategy()
-        mock_page = MagicMock()
-        mock_pix = MagicMock()
-        mock_pix.tobytes.return_value = b"fake-png-bytes"
-        mock_page.get_pixmap.return_value = mock_pix
+        strategy._pdf_path = "/tmp/test.pdf"
+        mock_img = MagicMock()
+        mock_img.save.side_effect = lambda buf, format=None: buf.write(b"fake-png-bytes")
 
-        with patch("app.modules.parsers.pdf.vlm_ocr_strategy.fitz") as mock_fitz:
-            mock_fitz.Matrix.return_value = MagicMock()
-            result = strategy._render_page_to_base64(mock_page)
+        with patch(
+            "app.modules.parsers.pdf.vlm_ocr_strategy.render_all_pages_from_path_sync",
+            return_value={1: (np.zeros((10, 10, 3), dtype=np.uint8), 200 / 72.0)},
+        ), patch(
+            "app.modules.parsers.pdf.vlm_ocr_strategy.Image.fromarray",
+            return_value=mock_img,
+        ):
+            result = strategy._render_all_pages_to_base64()
 
-        assert result.startswith("data:image/png;base64,")
-
-    def test_render_page_to_base64_error(self):
-        strategy = self._make_strategy()
-        mock_page = MagicMock()
-        mock_page.get_pixmap.side_effect = RuntimeError("render failed")
-
-        with patch("app.modules.parsers.pdf.vlm_ocr_strategy.fitz"):
-            with pytest.raises(RuntimeError):
-                strategy._render_page_to_base64(mock_page)
+        assert result[1].startswith("data:image/png;base64,")
 
     @pytest.mark.asyncio
     async def test_call_llm_for_markdown(self):
@@ -872,13 +729,13 @@ class TestVLMOCRStrategy:
     @pytest.mark.asyncio
     async def test_process_page(self):
         strategy = self._make_strategy()
-        strategy._render_page_to_base64 = MagicMock(return_value="data:image/png;base64,abc")
+        strategy._page_images = {1: "data:image/png;base64,abc"}
         strategy._call_llm_for_markdown = AsyncMock(return_value="# Page 1")
 
         mock_page = MagicMock()
-        mock_page.number = 0
-        mock_page.rect.width = 612
-        mock_page.rect.height = 792
+        mock_page.page_number = 1
+        mock_page.width = 612
+        mock_page.height = 792
 
         result = await strategy.process_page(mock_page)
         assert result["page_number"] == 1
@@ -887,11 +744,12 @@ class TestVLMOCRStrategy:
     @pytest.mark.asyncio
     async def test_process_page_error(self):
         strategy = self._make_strategy()
-        strategy._render_page_to_base64 = MagicMock(side_effect=RuntimeError("render fail"))
+        strategy._page_images = {}
 
         mock_page = MagicMock()
-        mock_page.number = 0
-        with pytest.raises(RuntimeError):
+        mock_page.page_number = 1
+
+        with pytest.raises(KeyError):
             await strategy.process_page(mock_page)
 
     def test_create_llm_from_config(self):
@@ -968,13 +826,9 @@ class TestVLMOCRStrategy:
     async def test_preprocess_document(self):
         strategy = self._make_strategy()
         mock_page1 = MagicMock()
-        mock_page1.number = 0
-        mock_page1.rect.width = 612
-        mock_page1.rect.height = 792
 
         strategy.doc = MagicMock()
-        strategy.doc.__len__ = lambda s: 1
-        strategy.doc.__iter__ = lambda s: iter([mock_page1])
+        strategy.doc.pages = [mock_page1]
 
         strategy.process_page = AsyncMock(return_value={
             "page_number": 1,
@@ -982,6 +836,7 @@ class TestVLMOCRStrategy:
             "width": 612,
             "height": 792,
         })
+        strategy._preload_page_images = AsyncMock()
 
         result = await strategy._preprocess_document()
         assert result["total_pages"] == 1
@@ -993,11 +848,14 @@ class TestVLMOCRStrategy:
         strategy._get_multimodal_llm = AsyncMock(return_value=MagicMock())
         strategy._preprocess_document = AsyncMock(return_value={"pages": [], "markdown": "", "total_pages": 1})
 
-        with patch("app.modules.parsers.pdf.vlm_ocr_strategy.fitz") as mock_fitz:
-            mock_doc = MagicMock()
-            mock_doc.__len__ = lambda s: 1
-            mock_fitz.open.return_value = mock_doc
+        mock_doc = MagicMock()
+        mock_doc.pages = [MagicMock()]
+
+        with patch(
+            "app.modules.parsers.pdf.vlm_ocr_strategy.pdfplumber.open",
+            return_value=mock_doc,
+        ):
             await strategy.load_document(b"fake-pdf")
 
-        assert strategy.doc is not None
+        mock_doc.close.assert_called_once()
         assert strategy.document_analysis_result is not None

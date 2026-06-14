@@ -1131,6 +1131,7 @@
       "toastDefaultError": "Standardmodell konnte nicht gesetzt werden",
       "toastDeleted": "{{name}} gelöscht",
       "toastDeleteError": "Modell konnte nicht gelöscht werden",
+      "toastSentenceTransformerDownloading": "Das Modell wird im Hintergrund heruntergeladen und ist möglicherweise erst in einigen Minuten verfügbar",
       "configAddModel": "Modell hinzufügen",
       "configUpdateModel": "Modell aktualisieren",
       "configFillRequiredTooltip": "Alle Pflichtfelder ausfüllen",

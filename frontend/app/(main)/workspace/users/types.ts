@@ -44,6 +44,8 @@ export interface UserByIdsDoc {
   fullName?: string;
   email?: string;
   hasLoggedIn?: boolean;
+  /** Base64 data URI from POST /by-ids profile-picture enrichment */
+  profilePicture?: string;
 }
 
 /** Single row from GET /api/v1/users?blocked=true */

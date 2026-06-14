@@ -14,6 +14,7 @@ from qdrant_client.http.models import PointStruct
 from spacy.language import Language
 from spacy.tokens import Doc
 
+from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
@@ -61,7 +62,7 @@ HTTP_OK = 200
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50
 _DEFAULT_CONCURRENCY_LIMIT = 5
 # Small batch size for local/CPU embedding models to avoid memory/CPU thrashing
-_LOCAL_CPU_DOCUMENT_BATCH_SIZE = 3
+_LOCAL_CPU_DOCUMENT_BATCH_SIZE = 10
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = ":record_summary"
 
 class VectorStore(Transformer):
@@ -101,9 +102,6 @@ class VectorStore(Transformer):
                     "Failed to initialize sparse embeddings: " + str(e),
                     details={"error": str(e)},
                 )
-
-
-
         except (IndexingError, VectorStoreError):
             raise
         except Exception as e:
@@ -160,7 +158,6 @@ class VectorStore(Transformer):
         virtual_record_id = record.virtual_record_id
         block_containers = record.block_containers
         org_id = record.org_id
-
         block_ids_to_delete = None
         is_reconciliation = False
 
@@ -501,6 +498,52 @@ class VectorStore(Transformer):
             self.logger.error(f"Error deleting embeddings: {str(e)}")
             raise EmbeddingError(f"Failed to delete embeddings: {str(e)}")
 
+    async def _cleanup_orphaned_embeddings_if_needed(
+        self,
+        record_id: str,
+        virtual_record_id: str,
+        record: Optional[Record] = None,
+    ) -> None:
+        """Remove embeddings when the record was deleted and no MD5 duplicate remains."""
+        record_doc = await self.graph_provider.get_document(
+            record_id, CollectionNames.RECORDS.value
+        )
+        if record_doc is not None:
+            return
+
+        md5_checksum = record.md5_hash if record is not None else None
+        if md5_checksum:
+            record_type = None
+            size_in_bytes = None
+            if record is not None:
+                record_type = (
+                    record.record_type.value
+                    if hasattr(record.record_type, "value")
+                    else str(record.record_type)
+                )
+                size_in_bytes = record.size_in_bytes
+
+            duplicate_records = await self.graph_provider.find_duplicate_records(
+                record_key=record_id,
+                md5_checksum=md5_checksum,
+                record_type=record_type,
+                size_in_bytes=size_in_bytes,
+            )
+            duplicate_records = [r for r in (duplicate_records or []) if r is not None]
+            if duplicate_records:
+                self.logger.info(
+                    f"Record {record_id} not found but {len(duplicate_records)} duplicate(s) "
+                    f"with same MD5 exist; keeping embeddings for virtual_record_id "
+                    f"{virtual_record_id}"
+                )
+                return
+
+        self.logger.info(
+            f"Record {record_id} not found and no MD5 duplicates; "
+            f"deleting embeddings for virtual_record_id {virtual_record_id}"
+        )
+        await self.delete_embeddings(virtual_record_id)
+
     async def delete_blocks_by_ids(
         self, block_ids: set, virtual_record_id: str
     ) -> None:
@@ -590,7 +633,6 @@ class VectorStore(Transformer):
                 points.append(result)
             elif isinstance(result, Exception):
                 self.logger.warning(f"Failed to embed image: {str(result)}")
-
         return points
 
     async def _process_image_embeddings_voyage(
@@ -840,9 +882,18 @@ class VectorStore(Transformer):
         return points
 
     async def _process_image_embeddings(
-        self, image_chunks: List[dict], image_base64s: List[str]
+        self, image_chunks: List[dict], image_base64s: List[str], record_id: str
     ) -> List[PointStruct]:
         """Process image embeddings based on the configured provider."""
+        record_doc = await self.graph_provider.get_document(
+            record_id, CollectionNames.RECORDS.value
+        )
+        if record_doc is None:
+            self.logger.warning(
+                f"Record {record_id} not found in database, skipping image embedding"
+            )
+            return []
+
         if self.embedding_provider == EmbeddingProvider.COHERE.value:
             return await self._process_image_embeddings_cohere(image_chunks, image_base64s)
         elif self.embedding_provider == EmbeddingProvider.VOYAGE.value:
@@ -882,7 +933,9 @@ class VectorStore(Transformer):
             or self.embedding_provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value
         )
 
-    async def _process_document_chunks(self, langchain_document_chunks: List[Document]) -> None:
+    async def _process_document_chunks(
+        self, langchain_document_chunks: List[Document], record_id: str
+    ) -> None:
         """Process and store document chunks in the vector store."""
         time.perf_counter()
         self.logger.info(f"⏱️ Starting langchain document embeddings insertion for {len(langchain_document_chunks)} documents")
@@ -911,6 +964,15 @@ class VectorStore(Transformer):
             batch_end = min(batch_start + batch_size, len(langchain_document_chunks))
             batch_documents = langchain_document_chunks[batch_start:batch_end]
             batches.append((batch_start, batch_documents))
+
+        record_doc = await self.graph_provider.get_document(
+            record_id, CollectionNames.RECORDS.value
+        )
+        if record_doc is None:
+            self.logger.warning(
+                f"Record {record_id} not found in database, skipping document embedding"
+            )
+            return
 
         if use_local_sequential:
             # Process one batch at a time, no concurrent tasks - avoids CPU/memory thrashing
@@ -984,13 +1046,17 @@ class VectorStore(Transformer):
             # Process image chunks if any
             if image_chunks:
                 image_base64s = [chunk.get("image_uri") for chunk in image_chunks]
-                points = await self._process_image_embeddings(image_chunks, image_base64s)
+                points = await self._process_image_embeddings(
+                    image_chunks, image_base64s, record_id
+                )
                 await self._store_image_points(points)
 
             # Process document chunks if any
             if langchain_document_chunks:
                 try:
-                    await self._process_document_chunks(langchain_document_chunks)
+                    await self._process_document_chunks(
+                        langchain_document_chunks, record_id
+                    )
                 except Exception as e:
                     raise VectorStoreError(
                         "Failed to store langchain documents in vector store: " + str(e),
@@ -1085,12 +1151,16 @@ class VectorStore(Transformer):
                             record_id, virtual_record_id, org_id, semantic_metadata
                         )
                         if summary_doc:
-                            await self._process_document_chunks([summary_doc])
-                        
+                            await self._process_document_chunks(
+                                [summary_doc], record_id
+                            )
 
             if not blocks and not block_groups:
                 if block_ids_to_delete:
                     await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id)
+                await self._cleanup_orphaned_embeddings_if_needed(
+                record_id, virtual_record_id, record
+                )
                 return None
 
             text_blocks = []
@@ -1380,6 +1450,9 @@ class VectorStore(Transformer):
                 self.logger.warning("⚠️ No documents to embed after filtering by block type")
                 if block_ids_to_delete:
                     await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id)
+                await self._cleanup_orphaned_embeddings_if_needed(
+                    record_id, virtual_record_id, record
+                )
                 return True
 
             # ── Create and store embeddings ──
@@ -1388,10 +1461,12 @@ class VectorStore(Transformer):
                 image_chunks = [d for d in documents_to_embed if not isinstance(d, Document)]
 
                 if langchain_docs:
-                    await self._process_document_chunks(langchain_docs)
+                    await self._process_document_chunks(langchain_docs, record_id)
                 if image_chunks:
                     image_base64s = [c.get("image_uri") for c in image_chunks]
-                    points = await self._process_image_embeddings(image_chunks, image_base64s)
+                    points = await self._process_image_embeddings(
+                        image_chunks, image_base64s, record_id
+                    )
                     await self._store_image_points(points)
             else:
                 await self._create_embeddings(documents_to_embed, record_id, virtual_record_id)
@@ -1401,6 +1476,10 @@ class VectorStore(Transformer):
                 await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id)
 
             self.logger.debug(f"✅ Indexing complete for record {record_id}: {len(documents_to_embed)} documents")
+
+            await self._cleanup_orphaned_embeddings_if_needed(
+                record_id, virtual_record_id, record
+            )
             return True
 
         except (IndexingError, VectorStoreError, DocumentProcessingError, EmbeddingError):

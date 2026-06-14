@@ -96,8 +96,7 @@ export const CreateTeamForm = forwardRef<CreateTeamFormHandle, CreateTeamFormPro
       onLoadMore: handleUserLoadMore,
     } = usePaginatedUserOptions({
       enabled,
-      idField: 'id',
-      source: 'graph',
+      idField: 'userId',
     });
 
     // Cache metadata for selected users while they're visible in options
