@@ -159,7 +159,30 @@
     "moreConnectors": "Weitere Konnektoren",
     "all": "Alle",
     "agents": "Agenten",
-    "searchChats": "Chats suchen"
+    "searchChats": "Chats suchen",
+    "inbox": "Posteingang",
+    "notifications": "Benachrichtigungen"
+  },
+  "notifications": {
+    "title": "Benachrichtigungen",
+    "loading": "Wird geladen…",
+    "empty": "Noch keine Benachrichtigungen",
+    "emptyUnread": "Keine ungelesenen Benachrichtigungen",
+    "emptyArchived": "Keine archivierten Benachrichtigungen",
+    "markRead": "Als gelesen markieren",
+    "markUnread": "Als ungelesen markieren",
+    "markAllRead": "Alle als gelesen markieren",
+    "archive": "Archivieren",
+    "unarchive": "Dearchivieren",
+    "dismiss": "Verwerfen",
+    "filter": "Benachrichtigungen filtern",
+    "filterAll": "Alle",
+    "filterOnlyUnread": "Nur ungelesen",
+    "filterArchived": "Archiviert",
+    "filterTooltip": "Filter: {{filter}}",
+    "loadFailed": "Benachrichtigungen konnten nicht geladen werden",
+    "updateFailed": "Benachrichtigung konnte nicht aktualisiert werden",
+    "removeFailed": "Benachrichtigung konnte nicht entfernt werden"
   },
   "action": {
     "find": "Finden",

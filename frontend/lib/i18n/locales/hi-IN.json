@@ -159,7 +159,30 @@
     "moreConnectors": "अधिक कनेक्टर्स",
     "all": "सभी",
     "agents": "एजेंट",
-    "searchChats": "चैट खोजें"
+    "searchChats": "चैट खोजें",
+    "inbox": "इनबॉक्स",
+    "notifications": "सूचनाएँ"
+  },
+  "notifications": {
+    "title": "सूचनाएँ",
+    "loading": "लोड हो रहा है…",
+    "empty": "अभी तक कोई सूचना नहीं",
+    "emptyUnread": "कोई अपठित सूचना नहीं",
+    "emptyArchived": "कोई संग्रहित सूचना नहीं",
+    "markRead": "पढ़ा हुआ मार्क करें",
+    "markUnread": "अपठित मार्क करें",
+    "markAllRead": "सभी को पढ़ा हुआ मार्क करें",
+    "archive": "संग्रहित करें",
+    "unarchive": "संग्रह से निकालें",
+    "dismiss": "खारिज करें",
+    "filter": "सूचनाएँ फ़िल्टर करें",
+    "filterAll": "सभी",
+    "filterOnlyUnread": "केवल अपठित",
+    "filterArchived": "संग्रहित",
+    "filterTooltip": "फ़िल्टर: {{filter}}",
+    "loadFailed": "सूचनाएँ लोड करने में विफल",
+    "updateFailed": "सूचना अपडेट नहीं हो सकी",
+    "removeFailed": "सूचना हटाने में विफल"
   },
   "action": {
     "find": "खोजें",
