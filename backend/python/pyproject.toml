@@ -283,6 +283,7 @@ dependencies = [
     "zstandard==0.25.0",
     "mariadb>=1.1.0",
     "asyncpg>=0.31.0",
+    "opensearch-py[async]==3.2.0"
 ]
 
 [tool.setuptools.packages.find]

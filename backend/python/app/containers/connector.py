@@ -120,7 +120,9 @@ async def initialize_container(container) -> bool:
                 config_node_constants.DEPLOYMENT.value, default={}
             ) or {}
             existing_deployment["dataStoreType"] = data_store_type
-            existing_deployment["vectorDbType"] = "qdrant"
+            existing_deployment["vectorDbType"] = (
+                os.getenv("VECTOR_DB_TYPE", "qdrant").lower().strip()
+            )
             await config_service.set_config(
                 config_node_constants.DEPLOYMENT.value, existing_deployment
             )

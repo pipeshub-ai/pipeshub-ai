@@ -1,19 +1,29 @@
-import asyncio
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Optional, Tuple, Union
+"""Qdrant vector database provider.
 
-from qdrant_client import AsyncQdrantClient, QdrantClient  # type: ignore
+Fully async — uses AsyncQdrantClient exclusively.
+Supports: sparse + dense named vectors, RRF prefetch/fusion.
+"""
+
+import asyncio
+import threading
+import time
+from typing import Dict, List, Optional, Union
+
+from qdrant_client import AsyncQdrantClient  # type: ignore
 from qdrant_client.http.models import (  # type: ignore
+    BinaryQuantization,
+    BinaryQuantizationConfig,
     Distance,
-    Filter,  # type: ignore
+    Filter,
     FilterSelector,
+    HnswConfigDiff,
     KeywordIndexParams,
     KeywordIndexType,
     Modifier,
     OptimizersConfigDiff,
-    PointStruct,
-    QueryRequest,
+    ProductQuantization,
+    ProductQuantizationConfig,
+    CompressionRatio,
     ScalarQuantization,
     ScalarQuantizationConfig,
     ScalarType,
@@ -24,240 +34,404 @@ from qdrant_client.http.models import (  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
-from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
-from app.services.vector_db.interface.vector_db import FilterValue, IVectorDBService
+from app.services.vector_db.interface.vector_db import IVectorDBService
+from app.services.vector_db.models import (
+    CollectionConfig,
+    DistanceMetric,
+    FieldCondition,
+    FilterExpression,
+    FilterMode,
+    FilterValue,
+    FusionMethod,
+    HealthStatus,
+    HNSWConfig,
+    HybridSearchRequest,
+    MRLConfig,
+    QuantizationType,
+    ScrollResult,
+    SearchResult,
+    VectorCollectionInfo,
+    VectorDBCapabilities,
+    VectorDBHealth,
+    VectorPoint,
+)
 from app.services.vector_db.qdrant.config import QdrantConfig
-from app.services.vector_db.qdrant.filter import QdrantFilterMode
 from app.services.vector_db.qdrant.utils import QdrantUtils
 from app.utils.logger import create_logger
 
 logger = create_logger("qdrant_service")
 
+
+def _is_not_found_error(exc: Exception) -> bool:
+    """Return True when *exc* represents a 404-style collection-not-found condition."""
+    msg = str(exc).lower()
+    # qdrant-client raises UnexpectedResponse with status 404 or a message
+    # containing "not found" / "doesn't exist" for missing collections.
+    return (
+        "not found" in msg
+        or "doesn't exist" in msg
+        or "does not exist" in msg
+        or "404" in msg
+        or getattr(exc, "status_code", None) == 404
+    )
+
+
+_DISTANCE_MAP = {
+    DistanceMetric.COSINE: Distance.COSINE,
+    DistanceMetric.L2: Distance.EUCLID,
+    DistanceMetric.DOT_PRODUCT: Distance.DOT,
+}
+
+_QDRANT_CAPABILITIES = VectorDBCapabilities(
+    supports_sparse_vectors=True,
+    supports_server_side_text_search=False,
+    supported_fusion_methods=[FusionMethod.RRF],
+)
+
+
 class QdrantService(IVectorDBService):
+    """Fully-async Qdrant provider implementing IVectorDBService."""
+
     def __init__(
         self,
         config_service: ConfigurationService | QdrantConfig,
-        is_async: bool = False,
     ) -> None:
         self.config_service = config_service
-        self.client: Optional[QdrantClient | AsyncQdrantClient] = None
-        self.is_async = is_async
+        # The grpc.aio (and httpx) transports inside AsyncQdrantClient are
+        # permanently bound to the event loop running when they are first
+        # used. This service is shared across loops (the main loop for health
+        # checks / API and the indexing consumer's worker-thread loop), so a
+        # single client instance would raise "attached to a different loop".
+        # Instead we keep one client per event loop, created lazily from the
+        # kwargs resolved in connect().
+        self._client_kwargs: Optional[dict] = None
+        self._clients: Dict[Optional[asyncio.AbstractEventLoop], AsyncQdrantClient] = {}
+        self._clients_lock = threading.Lock()
+        # Explicitly assigned client (tests / legacy callers); served to every
+        # loop as-is when set.
+        self._client_override: Optional[AsyncQdrantClient] = None
 
-    @classmethod
-    async def create_sync(
-        cls,
-        config: ConfigurationService | QdrantConfig,
-    ) -> 'QdrantService':
-        """
-        Factory method to create and initialize a QdrantService instance.
-        Args:
-            logger: Logger instance
-            config_service: ConfigurationService instance
-        Returns:
-            QdrantService: Initialized QdrantService instance
-        """
-        service = cls(config, is_async=False)
-        await service.connect_sync()
-        return service
+    @property
+    def client(self) -> Optional[AsyncQdrantClient]:
+        """Return the AsyncQdrantClient bound to the current event loop."""
+        if self._client_override is not None:
+            return self._client_override
+        if self._client_kwargs is None:
+            return None
+        return self._get_client_for_current_loop()
 
-    @classmethod
-    async def create_async(
-        cls,
-        config: ConfigurationService | QdrantConfig,
-    ) -> 'QdrantService':
-        """
-        Factory method to create and initialize a QdrantService instance with async client.
-        Args:
-            logger: Logger instance
-            config_service: ConfigurationService instance
-        Returns:
-            QdrantService: Initialized QdrantService instance with async client
-        """
-        service = cls(config, is_async=True)
-        await service.connect_async()
-        return service
+    @client.setter
+    def client(self, value: Optional[AsyncQdrantClient]) -> None:
+        self._client_override = value
 
-    async def connect_async(self) -> None:
-        """Connect to Qdrant using async client"""
+    def _get_client_for_current_loop(self) -> AsyncQdrantClient:
         try:
-            # Get Qdrant configuration
-            if isinstance(self.config_service, ConfigurationService):
-                qdrant_config = await self.config_service.get_config(config_node_constants.QDRANT.value)
-            else:
-                qdrant_config = self.config_service.qdrant_config
-            if not qdrant_config:
-                raise ValueError("Qdrant configuration not found")
+            loop: Optional[asyncio.AbstractEventLoop] = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
 
-            self.client = AsyncQdrantClient(
-                host=qdrant_config.get("host"), # type: ignore
-                port=qdrant_config.get("port"), # type: ignore
-                api_key=qdrant_config.get("apiKey"), # type: ignore
-                prefer_grpc=True,
-                https=False,
-                timeout=300,  # Increased timeout for large batches
-                grpc_options={
-                    'grpc.max_send_message_length': 64 * 1024 * 1024,  # 64MB
-                    'grpc.max_receive_message_length': 64 * 1024 * 1024,  # 64MB
-                    'grpc.keepalive_time_ms': 30000,
-                    'grpc.keepalive_timeout_ms': 10000,
-                    'grpc.http2.max_pings_without_data': 0,
-                    'grpc.keepalive_permit_without_calls': 1,
-                },
-            )
-            logger.info("✅ Connected to Qdrant with async client successfully")
-        except Exception as e:
-            logger.error(f"❌ Failed to connect to Qdrant with async client: {e}")
-            raise
+        with self._clients_lock:
+            client = self._clients.get(loop)
+            if client is None:
+                client = AsyncQdrantClient(**self._client_kwargs)  # type: ignore[arg-type]
+                self._clients[loop] = client
+                if len(self._clients) > 1:
+                    logger.info(
+                        "Created additional Qdrant client for event loop %r "
+                        "(%d clients total)",
+                        loop,
+                        len(self._clients),
+                    )
+            return client
+
+    # ------------------------------------------------------------------
+    # Factory
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def create(
+        cls,
+        config: ConfigurationService | QdrantConfig,
+    ) -> "QdrantService":
+        service = cls(config)
+        await service.connect()
+        return service
+
+    # Keep legacy names for backward compatibility with VectorDBFactory
+    @classmethod
+    async def create_sync(cls, config: ConfigurationService | QdrantConfig) -> "QdrantService":
+        return await cls.create(config)
+
+    @classmethod
+    async def create_async(cls, config: ConfigurationService | QdrantConfig) -> "QdrantService":
+        return await cls.create(config)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     async def connect(self) -> None:
-        if self.is_async:
-            await self.connect_async()
-        else:
-            await self.connect_sync()
-
-    async def connect_sync(self) -> None:
         try:
-            # Get Qdrant configuration
             if isinstance(self.config_service, ConfigurationService):
-                qdrant_config = await self.config_service.get_config(config_node_constants.QDRANT.value)
+                raw = await self.config_service.get_config(
+                    config_node_constants.QDRANT.value
+                )
             else:
-                qdrant_config = self.config_service.qdrant_config
-            if not qdrant_config:
+                raw = self.config_service.qdrant_config
+
+            if not raw:
                 raise ValueError("Qdrant configuration not found")
 
-            self.client = QdrantClient(
-                host=qdrant_config.get("host"), # type: ignore
-                port=qdrant_config.get("port"), # type: ignore
-                api_key=qdrant_config.get("apiKey"), # type: ignore
-                prefer_grpc=True,
-                https=False,
-                timeout=300,  # Increased timeout for large batches
-                grpc_options={
-                    'grpc.max_send_message_length': 64 * 1024 * 1024,  # 64MB
-                    'grpc.max_receive_message_length': 64 * 1024 * 1024,  # 64MB
-                    'grpc.keepalive_time_ms': 30000,
-                    'grpc.keepalive_timeout_ms': 10000,
-                    'grpc.http2.max_pings_without_data': 0,
-                    'grpc.keepalive_permit_without_calls': 1,
-                },
+            cfg = QdrantConfig.from_dict(raw)
+
+            client_kwargs: dict = dict(
+                host=cfg.host,
+                port=cfg.port,
+                # api_key may be empty string — only pass it when truthy
+                api_key=cfg.api_key or None,
+                prefer_grpc=cfg.prefer_grpc,
+                https=cfg.https,
+                timeout=cfg.timeout,
             )
-            logger.info("✅ Connected to Qdrant successfully")
+            if cfg.prefer_grpc:
+                client_kwargs["grpc_options"] = {
+                    "grpc.max_send_message_length": 64 * 1024 * 1024,
+                    "grpc.max_receive_message_length": 64 * 1024 * 1024,
+                    "grpc.keepalive_time_ms": 30000,
+                    "grpc.keepalive_timeout_ms": 10000,
+                    "grpc.http2.max_pings_without_data": 0,
+                    "grpc.keepalive_permit_without_calls": 1,
+                }
+
+            self._client_kwargs = client_kwargs
+            # Eagerly create the client for the current loop so connect()
+            # fails fast on bad kwargs; clients for other loops are created
+            # lazily on first use.
+            self._get_client_for_current_loop()
+            logger.info(
+                f"Connected to Qdrant at {cfg.host}:{cfg.port} "
+                f"(grpc={cfg.prefer_grpc}, https={cfg.https})"
+            )
         except Exception as e:
-            logger.error(f"❌ Failed to connect to Qdrant: {e}")
+            self._client_kwargs = None
+            logger.error(f"Failed to connect to Qdrant: {e}")
             raise
 
     async def disconnect(self) -> None:
-        if self.client is not None:
+        with self._clients_lock:
+            clients = list(self._clients.values())
+            self._clients.clear()
+        if self._client_override is not None:
+            clients.append(self._client_override)
+            self._client_override = None
+        self._client_kwargs = None
+
+        if not clients:
+            return
+        for client in clients:
             try:
-                if isinstance(self.client, AsyncQdrantClient):
-                    await self.client.close()
-                else:
-                    self.client.close()
-                logger.info("✅ Disconnected from Qdrant successfully")
+                # Clients bound to other (possibly already-stopped) event
+                # loops cannot be closed from here; log and move on.
+                await client.close()
             except Exception as e:
-                logger.warning(f"⚠️ Error during disconnect (likely harmless): {e}")
-            finally:
-                self.client = None
+                logger.warning(f"Error during Qdrant disconnect: {e}")
+        logger.info("Disconnected from Qdrant")
+
+    # ------------------------------------------------------------------
+    # Identity
+    # ------------------------------------------------------------------
 
     def get_service_name(self) -> str:
         return "qdrant"
 
-    def get_service(self) -> 'QdrantService':
+    def get_service(self) -> "QdrantService":
         return self
 
-    def get_service_client(self) -> QdrantClient | AsyncQdrantClient:
-        return self.client
+    def get_service_client(self) -> AsyncQdrantClient:
+        return self.client  # type: ignore
 
-    async def get_collections(self) -> object:
-        """Get all collections"""
-        if self.client is None:
-            raise RuntimeError("Client not connected. Call connect() first.")
-        if isinstance(self.client, AsyncQdrantClient):
-            return await self.client.get_collections()
-        return await asyncio.to_thread(self.client.get_collections)
+    # ------------------------------------------------------------------
+    # Capabilities and health
+    # ------------------------------------------------------------------
 
-    async def get_collection(
-        self,
-        collection_name: str,
-    ) -> object:
-        """Get a collection"""
-        if self.client is None:
-            raise RuntimeError("Client not connected. Call connect() first.")
-        if isinstance(self.client, AsyncQdrantClient):
-            return await self.client.get_collection(collection_name)
-        return await asyncio.to_thread(self.client.get_collection, collection_name)
+    def get_capabilities(self) -> VectorDBCapabilities:
+        return _QDRANT_CAPABILITIES
 
-    async def delete_collection(
-        self,
-        collection_name: str,
-    ) -> None:
-        """Delete a collection"""
+    async def health_check(self) -> VectorDBHealth:
+        start = time.monotonic()
         if self.client is None:
-            raise RuntimeError("Client not connected. Call connect() first.")
-        if isinstance(self.client, AsyncQdrantClient):
-            await self.client.delete_collection(collection_name)
-        else:
-            await asyncio.to_thread(self.client.delete_collection, collection_name)
+            return VectorDBHealth(
+                status=HealthStatus.UNHEALTHY,
+                message="Client not connected",
+            )
+        try:
+            info = await self.client.get_collections()
+            latency_ms = (time.monotonic() - start) * 1000
+            # Try to get server version
+            try:
+                version_info = await self.client.get_service_info()
+                version = getattr(version_info, "version", None)
+            except Exception:
+                version = None
+            return VectorDBHealth(
+                status=HealthStatus.HEALTHY,
+                latency_ms=round(latency_ms, 2),
+                server_version=str(version) if version else None,
+                message=f"{len(info.collections)} collection(s) visible",
+            )
+        except Exception as e:
+            latency_ms = (time.monotonic() - start) * 1000
+            return VectorDBHealth(
+                status=HealthStatus.UNHEALTHY,
+                latency_ms=round(latency_ms, 2),
+                message=str(e),
+            )
+
+    # ------------------------------------------------------------------
+    # Collection management
+    # ------------------------------------------------------------------
 
     async def create_collection(
         self,
-        embedding_size: int=1024,
-        collection_name: str = VECTOR_DB_COLLECTION_NAME,
-        sparse_idf: bool = False,
-        vectors_config: Optional[dict] = None,
-        sparse_vectors_config: Optional[dict] = None,
-        optimizers_config: Optional[dict] = None,
-        quantization_config: Optional[dict] = None,
+        collection_name: str = "records",
+        config: Optional[CollectionConfig] = None,
     ) -> None:
-        """Create a collection with default vector configuration if not provided"""
-        if self.client is None:
-            raise RuntimeError("Client not connected. Call connect() first.")
+        self._assert_connected()
+        if config is None:
+            config = CollectionConfig()
 
-        # Set default values if not provided
-        if vectors_config is None:
-            vectors_config = {"dense": VectorParams(size=embedding_size, distance=Distance.COSINE)}
+        qdrant_distance = _DISTANCE_MAP.get(config.distance_metric, Distance.COSINE)
 
-        if sparse_vectors_config is None:
-            sparse_vectors_config = {
+        # Resolve target dimensionality (MRL dimension reduction or full size)
+        effective_dim = config.embedding_size
+        if config.mrl is not None and config.mrl.dimensions is not None:
+            effective_dim = config.mrl.dimensions
+
+        vectors_config = {
+            "dense": VectorParams(size=effective_dim, distance=qdrant_distance)
+        }
+        sparse_vectors_config = (
+            {
                 "sparse": SparseVectorParams(
                     index=SparseIndexParams(on_disk=False),
-                    modifier=Modifier.IDF if sparse_idf else None
+                    modifier=Modifier.IDF if config.sparse_idf else None,
                 )
             }
+            if config.enable_sparse
+            else None
+        )
+        optimizers_config = OptimizersConfigDiff(default_segment_number=8)
 
-        if optimizers_config is None:
-            # Note: indexing_threshold and memmap_threshold are set globally in docker-compose
-            optimizers_config = OptimizersConfigDiff(
-                default_segment_number=8,
+        # Build HNSW config from knobs (only forward non-None values)
+        hnsw_config: Optional[HnswConfigDiff] = None
+        if config.hnsw is not None:
+            hnsw_kwargs = {}
+            if config.hnsw.m is not None:
+                hnsw_kwargs["m"] = config.hnsw.m
+            if config.hnsw.ef_construct is not None:
+                hnsw_kwargs["ef_construct"] = config.hnsw.ef_construct
+            if config.hnsw.full_scan_threshold is not None:
+                hnsw_kwargs["full_scan_threshold"] = config.hnsw.full_scan_threshold
+            if hnsw_kwargs:
+                hnsw_config = HnswConfigDiff(**hnsw_kwargs)
+
+        # Build quantization config from knobs.
+        # NONE means "no quantization" — pass None, letting Qdrant use its own default.
+        # SCALAR (the CollectionConfig default) preserves the original INT8 behaviour.
+        quantization_config: Optional[object]
+        q_type = config.quantization
+        if q_type == QuantizationType.NONE:
+            quantization_config = None
+        elif q_type == QuantizationType.PRODUCT:
+            quantization_config = ProductQuantization(
+                product=ProductQuantizationConfig(
+                    compression=CompressionRatio.X4,
+                    always_ram=True,
+                )
             )
-
-        if quantization_config is None:
+        elif q_type == QuantizationType.BINARY:
+            quantization_config = BinaryQuantization(
+                binary=BinaryQuantizationConfig(always_ram=True)
+            )
+        else:
+            # SCALAR (default) — INT8 scalar quantization
             quantization_config = ScalarQuantization(
                 scalar=ScalarQuantizationConfig(
                     type=ScalarType.INT8,
                     quantile=0.95,
-                    always_ram=True
+                    always_ram=True,
                 )
             )
 
-        if isinstance(self.client, AsyncQdrantClient):
-            await self.client.create_collection(
-                collection_name=collection_name,
-                vectors_config=vectors_config,
-                sparse_vectors_config=sparse_vectors_config,
-                optimizers_config=optimizers_config,
-                quantization_config=quantization_config,
+        create_kwargs: dict = dict(
+            collection_name=collection_name,
+            vectors_config=vectors_config,
+            sparse_vectors_config=sparse_vectors_config,
+            optimizers_config=optimizers_config,
+        )
+        if quantization_config is not None:
+            create_kwargs["quantization_config"] = quantization_config
+        if hnsw_config is not None:
+            create_kwargs["hnsw_config"] = hnsw_config
+
+        await self.client.create_collection(**create_kwargs)  # type: ignore
+        logger.info(f"Created Qdrant collection '{collection_name}'")
+
+    async def get_collections(self) -> object:
+        self._assert_connected()
+        return await self.client.get_collections()  # type: ignore
+
+    async def get_collection(self, collection_name: str) -> object:
+        self._assert_connected()
+        return await self.client.get_collection(collection_name)  # type: ignore
+
+    async def get_collection_info(self, collection_name: str) -> VectorCollectionInfo:
+        """Return normalised collection metadata.
+
+        Only swallows NotFoundError (collection doesn't exist yet).
+        Connectivity / auth errors are re-raised so callers can distinguish
+        "not created yet" (safe to create) from "cluster unreachable" (unsafe).
+        """
+        try:
+            raw = await self.get_collection(collection_name)
+            vectors = raw.config.params.vectors  # type: ignore
+            dense_dim: Optional[int] = None
+            if isinstance(vectors, dict):
+                dense_params = vectors.get("dense")
+                if dense_params is not None:
+                    dense_dim = getattr(dense_params, "size", None)
+            points_count: int = getattr(raw, "points_count", 0) or 0
+            return VectorCollectionInfo(
+                name=collection_name,
+                exists=True,
+                dense_dimension=dense_dim,
+                points_count=points_count,
             )
-        else:
-            await asyncio.to_thread(
-                self.client.create_collection,
-                collection_name=collection_name,
-                vectors_config=vectors_config,
-                sparse_vectors_config=sparse_vectors_config,
-                optimizers_config=optimizers_config,
-                quantization_config=quantization_config,
-            )
-        logger.info(f"✅ Created collection {collection_name}")
+        except Exception as exc:
+            # Treat only "not found" as a normal "doesn't exist" response.
+            # Any other exception (timeout, auth, connection refused) propagates
+            # so the caller can't accidentally recreate a live collection.
+            if _is_not_found_error(exc):
+                return VectorCollectionInfo(name=collection_name, exists=False)
+            raise
+
+    async def collection_exists(self, collection_name: str) -> bool:
+        """Return True if the collection exists; False on 404.
+
+        Re-raises on connectivity/auth errors (not a 404).
+        """
+        try:
+            await self.get_collection(collection_name)
+            return True
+        except Exception as exc:
+            if _is_not_found_error(exc):
+                return False
+            raise
+
+    async def delete_collection(self, collection_name: str) -> None:
+        self._assert_connected()
+        await self.client.delete_collection(collection_name)  # type: ignore
+        logger.info(f"Deleted Qdrant collection '{collection_name}'")
 
     async def create_index(
         self,
@@ -265,280 +439,155 @@ class QdrantService(IVectorDBService):
         field_name: str,
         field_schema: dict,
     ) -> None:
-        """Create an index"""
-        if self.client is None:
-            raise RuntimeError("Client not connected. Call connect_sync() or connect_async() first.")
-
+        self._assert_connected()
         if field_schema.get("type") == "keyword":
-            field_schema = KeywordIndexParams(
-                type=KeywordIndexType.KEYWORD,
-            )
-
-        if isinstance(self.client, AsyncQdrantClient):
-            await self.client.create_payload_index(collection_name, field_name, field_schema)
+            schema = KeywordIndexParams(type=KeywordIndexType.KEYWORD)
         else:
-            await asyncio.to_thread(self.client.create_payload_index, collection_name, field_name, field_schema)
+            schema = field_schema  # type: ignore
+        await self.client.create_payload_index(collection_name, field_name, schema)  # type: ignore
+
+    # ------------------------------------------------------------------
+    # Filter construction
+    # ------------------------------------------------------------------
 
     async def filter_collection(
         self,
-        filter_mode: Union[str, QdrantFilterMode] = QdrantFilterMode.MUST,
+        filter_mode: Union[str, FilterMode] = FilterMode.MUST,
         must: Optional[Dict[str, FilterValue]] = None,
         should: Optional[Dict[str, FilterValue]] = None,
         must_not: Optional[Dict[str, FilterValue]] = None,
         min_should_match: Optional[int] = None,
         **kwargs: FilterValue,
-    ) -> Filter:
-        """
-        Simple filter builder supporting must (AND), should (OR), and must_not (NOT) conditions
+    ) -> FilterExpression:
+        from app.services.vector_db.filters import build_filter_expression
 
-        Args:
-            mode: Default filter mode for kwargs - FilterMode.MUST, FilterMode.SHOULD, or string
-            must: Dictionary of conditions that MUST all be true (AND logic)
-            should: Dictionary of conditions where at least one SHOULD be true (OR logic)
-            must_not: Dictionary of conditions that MUST NOT be true (NOT logic)
-            min_should_match: Minimum number of should conditions that must match
-            **kwargs: Additional filters treated according to 'mode' parameter
-        Returns:
-            Filter: Qdrant Filter object
-        Examples:
-            # Simple AND (default mode)
-            filter_collection(orgId="123", status="active")
-            # Explicit FilterMode enum
-            filter_collection(
-                mode=FilterMode.SHOULD,
-                department="IT",
-                role="admin"
-            )
-            # String mode (converted to enum)
-            filter_collection(mode="should", department="IT", role="admin")
-            # Explicit must/should/must_not
-            filter_collection(
-                must={"orgId": "123"},
-                should={"department": "IT", "role": "admin"},
-                must_not={"status": "deleted"}
-            )
-            # Mixed with mode - kwargs go to specified mode
-            filter_collection(
-                mode=FilterMode.SHOULD,
-                must={"orgId": "123"},      # Explicit must
-                department="IT",            # Goes to should (because of mode)
-                role="admin"                # Goes to should (because of mode)
-            )
-            # Complex business logic
-            filter_collection(
-                must={"orgId": "123", "active": True},
-                should={"roles": ["admin", "user"], "departments": ["IT", "Engineering"]},
-                must_not={"banned": True, "status": "deleted"},
-                min_should_match=1
-            )
-        """
-        if self.client is None:
-            raise RuntimeError("Client not connected. Call connect() first.")
+        return build_filter_expression(
+            filter_mode,
+            must=must,
+            should=should,
+            must_not=must_not,
+            min_should_match=min_should_match,
+            extra_kwargs=kwargs or None,
+            build_conditions=QdrantUtils.build_conditions_generic,
+        )
 
-        # Convert string mode to enum
-        if isinstance(filter_mode, str):
-            try:
-                filter_mode = QdrantFilterMode(filter_mode.lower())
-            except ValueError:
-                raise ValueError(f"Invalid mode '{filter_mode}'. Must be 'must', 'should', or 'must_not'")
-
-        # Distribute kwargs based on mode
-        all_must_filters = dict(must) if must else {}
-        all_should_filters = dict(should) if should else {}
-        all_must_not_filters = dict(must_not) if must_not else {}
-
-        # Add kwargs to appropriate filter group based on mode
-        if kwargs:
-            if filter_mode == QdrantFilterMode.MUST:
-                all_must_filters.update(kwargs)
-            elif filter_mode == QdrantFilterMode.SHOULD:
-                all_should_filters.update(kwargs)
-            elif filter_mode == QdrantFilterMode.MUST_NOT:
-                all_must_not_filters.update(kwargs)
-
-        # Build conditions for each filter type
-        must_conditions = QdrantUtils.build_conditions(all_must_filters) if all_must_filters else []
-        should_conditions = QdrantUtils.build_conditions(all_should_filters) if all_should_filters else []
-        must_not_conditions = QdrantUtils.build_conditions(all_must_not_filters) if all_must_not_filters else []
-
-        # Validate we have at least some conditions
-        if not must_conditions and not should_conditions and not must_not_conditions:
-            logger.warning("No filters provided - returning empty filter")
-            return Filter(should=[])  # Empty filter matches nothing
-
-        # Build filter based on what we have
-        filter_parts = {}
-
-        if must_conditions:
-            filter_parts["must"] = must_conditions
-
-        if should_conditions:
-            filter_parts["should"] = should_conditions
-            if min_should_match is not None:
-                filter_parts["min_should_match"] = min_should_match
-
-        if must_not_conditions:
-            filter_parts["must_not"] = must_not_conditions
-
-        return Filter(**filter_parts)
+    # ------------------------------------------------------------------
+    # Data operations — all async
+    # ------------------------------------------------------------------
 
     async def scroll(
         self,
         collection_name: str,
-        scroll_filter: Filter,
+        scroll_filter: FilterExpression,
         limit: int,
-    ) -> object:
-        """Scroll through a collection"""
-        if self.client is None:
-            raise RuntimeError("Client not connected. Call connect() first.")
-        if isinstance(self.client, AsyncQdrantClient):
-            return await self.client.scroll(collection_name, scroll_filter, limit)
-        return await asyncio.to_thread(self.client.scroll, collection_name, scroll_filter, limit)
+        offset: Optional[str] = None,
+    ) -> ScrollResult:
+        self._assert_connected()
+        qdrant_filter = QdrantUtils.filter_expression_to_qdrant(scroll_filter)
+        raw_points, next_offset = await self.client.scroll(  # type: ignore
+            collection_name=collection_name,
+            scroll_filter=qdrant_filter,
+            limit=limit,
+            with_payload=True,
+            offset=offset,
+        )
+        points = [
+            VectorPoint(
+                id=str(p.id),
+                payload=p.payload or {},
+            )
+            for p in raw_points
+        ]
+        return ScrollResult(
+            points=points,
+            next_offset=str(next_offset) if next_offset is not None else None,
+        )
+
+    async def query_nearest_points(
+        self,
+        collection_name: str,
+        requests: List[HybridSearchRequest],
+    ) -> List[List[SearchResult]]:
+        self._assert_connected()
+        qdrant_requests = [QdrantUtils.search_request_to_qdrant(req) for req in requests]
+        raw_results = await self.client.query_batch_points(  # type: ignore
+            collection_name=collection_name,
+            requests=qdrant_requests,
+        )
+        results: List[List[SearchResult]] = []
+        for batch_result in raw_results:
+            results.append(
+                [
+                    QdrantUtils.qdrant_result_to_search_result(p)
+                    for p in batch_result.points
+                ]
+            )
+        return results
+
+    async def upsert_points(
+        self,
+        collection_name: str,
+        points: List[VectorPoint],
+        batch_size: int = 500,
+    ) -> None:
+        self._assert_connected()
+        qdrant_points = [QdrantUtils.vector_point_to_qdrant(p) for p in points]
+
+        start = time.perf_counter()
+        logger.info(
+            f"Upserting {len(qdrant_points)} points into '{collection_name}' "
+            f"(batch_size={batch_size})"
+        )
+
+        for i in range(0, len(qdrant_points), batch_size):
+            batch = qdrant_points[i : i + batch_size]
+            await self.client.upsert(  # type: ignore
+                collection_name=collection_name,
+                points=batch,
+            )
+
+        elapsed = time.perf_counter() - start
+        logger.info(
+            f"Upsert complete: {len(qdrant_points)} points in {elapsed:.2f}s "
+            f"({len(qdrant_points)/elapsed:.0f} pts/s)"
+        )
+
+    async def delete_points(
+        self,
+        collection_name: str,
+        filter: FilterExpression,
+    ) -> None:
+        if filter.is_empty():
+            raise ValueError(
+                "delete_points called with an empty filter — this would wipe the entire "
+                "collection. Populate at least one filter condition (e.g. virtualRecordId)."
+            )
+        self._assert_connected()
+        qdrant_filter = QdrantUtils.filter_expression_to_qdrant(filter)
+        await self.client.delete(  # type: ignore
+            collection_name=collection_name,
+            points_selector=FilterSelector(filter=qdrant_filter),
+        )
+        logger.info(f"Deleted points from Qdrant collection '{collection_name}'")
 
     async def overwrite_payload(
         self,
         collection_name: str,
         payload: dict,
-        points: Filter,
+        points: FilterExpression,
     ) -> None:
-        """Overwrite a payload"""
-        if self.client is None:
-            raise RuntimeError("Client not connected. Call connect() first.")
-        if isinstance(self.client, AsyncQdrantClient):
-            await self.client.overwrite_payload(collection_name, payload, points)
-        else:
-            await asyncio.to_thread(self.client.overwrite_payload, collection_name, payload, points)
-
-    async def query_nearest_points(
-        self,
-        collection_name: str,
-        requests: List[QueryRequest],
-    ) -> List[List[PointStruct]]:
-        """Query batch points"""
-        if self.client is None:
-            raise RuntimeError("Client not connected. Call connect() first.")
-        if isinstance(self.client, AsyncQdrantClient):
-            return await self.client.query_batch_points(collection_name, requests)
-        return await asyncio.to_thread(self.client.query_batch_points, collection_name, requests)
-
-    async def count_points(self, collection_name: str) -> int:
-        """Return the number of points in a collection."""
-        if self.client is None:
-            raise RuntimeError("Client not connected. Call connect() first.")
-        if isinstance(self.client, AsyncQdrantClient):
-            result = await self.client.count(collection_name, exact=False)
-        else:
-            result = await asyncio.to_thread(self.client.count, collection_name, exact=False)
-        return result.count
-
-    async def upsert_points(
-        self,
-        collection_name: str,
-        points: List[PointStruct],
-        batch_size: int = 1000,
-        max_workers: int = 5,
-    ) -> None:
-        """Upsert points with parallel batching for better performance"""
-        if self.client is None:
-            raise RuntimeError("Client not connected. Call connect() first.")
-
-        start_time = time.perf_counter()
-        total_points = len(points)
-        logger.info(f"⏱️ Starting upsert of {total_points} points to collection '{collection_name}' (batch size: {batch_size}, parallel workers: {max_workers})")
-
-        if isinstance(self.client, AsyncQdrantClient):
-            await self._upsert_points_async(collection_name, points, batch_size)
-        else:
-            await asyncio.to_thread(
-                self._upsert_points_sync, collection_name, points, batch_size, max_workers
-            )
-
-        elapsed_time = time.perf_counter() - start_time
-        throughput = total_points / elapsed_time if elapsed_time > 0 else 0
-        logger.info(
-            f"✅ Completed upsert of {total_points} points in {elapsed_time:.2f}s "
-            f"(throughput: {throughput:.1f} points/s, avg: {elapsed_time/total_points*1000:.2f}ms per point)"
+        self._assert_connected()
+        qdrant_filter = QdrantUtils.filter_expression_to_qdrant(points)
+        await self.client.overwrite_payload(  # type: ignore
+            collection_name=collection_name,
+            payload=payload,
+            points=FilterSelector(filter=qdrant_filter),
         )
 
-    async def _upsert_points_async(
-        self,
-        collection_name: str,
-        points: List[PointStruct],
-        batch_size: int,
-    ) -> None:
-        if len(points) <= batch_size:
-            await self.client.upsert(collection_name, points)
-        else:
-            for i in range(0, len(points), batch_size):
-                batch = points[i:i + batch_size]
-                await self.client.upsert(collection_name, batch)
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
-    def _upsert_points_sync(
-        self,
-        collection_name: str,
-        points: List[PointStruct],
-        batch_size: int,
-        max_workers: int,
-    ) -> None:
-        total_points = len(points)
-        if total_points <= batch_size:
-            self.client.upsert(collection_name, points)
-        else:
-            batches = []
-            for i in range(0, total_points, batch_size):
-                batch_end = min(i + batch_size, total_points)
-                batch = points[i:batch_end]
-                batch_num = (i // batch_size) + 1
-                batches.append((batch_num, batch))
-
-            total_batches = len(batches)
-            completed_batches = 0
-
-            def upload_batch(batch_info: Tuple[int, List[PointStruct]]) -> Tuple[int, int, float]:
-                batch_num, batch = batch_info
-                batch_start = time.perf_counter()
-                self.client.upsert(collection_name, batch)
-                batch_elapsed = time.perf_counter() - batch_start
-                return batch_num, len(batch), batch_elapsed
-
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(upload_batch, batch_info): batch_info for batch_info in batches}
-
-                for future in as_completed(futures):
-                    try:
-                        batch_num, batch_size_actual, batch_elapsed = future.result()
-                        completed_batches += 1
-                        logger.info(
-                            f"📦 Uploaded batch {batch_num}/{total_batches}: {batch_size_actual} points "
-                            f"in {batch_elapsed:.2f}s ({batch_size_actual/batch_elapsed:.1f} points/s) "
-                            f"[{completed_batches}/{total_batches} complete]"
-                        )
-                    except Exception as e:
-                        batch_info = futures[future]
-                        logger.error(f"❌ Failed to upload batch {batch_info[0]}: {str(e)}")
-                        raise
-
-    async def delete_points(
-        self,
-        collection_name: str,
-        filter: Filter,
-    ) -> None:
-        """Delete points"""
+    def _assert_connected(self) -> None:
         if self.client is None:
-            raise RuntimeError("Client not connected. Call connect() first.")
-        if isinstance(self.client, AsyncQdrantClient):
-            await self.client.delete(
-                collection_name=collection_name,
-                points_selector=FilterSelector(
-                    filter=filter
-                ),
-            )
-        else:
-            await asyncio.to_thread(
-                self.client.delete,
-                collection_name=collection_name,
-                points_selector=FilterSelector(
-                    filter=filter
-                ),
-            )
-        logger.info(f"✅ Deleted points from collection '{collection_name}'")
+            raise RuntimeError("Qdrant client not connected. Call connect() first.")

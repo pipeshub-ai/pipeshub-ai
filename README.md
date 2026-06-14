@@ -113,7 +113,7 @@
 | FastAPI | High-performance Python web framework |
 | LangChain | Framework for LLM pipelines |
 | LangGraph | State graph for LLM workflows |
-| Qdrant | Vector similarity search engine |
+| Qdrant / OpenSearch / Redis | Pluggable vector database layer (Qdrant default; OpenSearch 2.19+ and Redis 8.4+ also supported) |
 | Neo4j / ArangoDB | Graph database |
 | Kafka / Redis Streams | Distributed event streaming platform |
 | Redis | Caching |
@@ -259,7 +259,7 @@ PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in y
 
 ### What is the Knowledge Graph Retrieval feature?
 
-PipesHub uses graph-backed retrieval that captures relationships across enterprise data. It uses Neo4j or ArangoDB as graph databases, combined with Qdrant for vector similarity search.
+PipesHub uses graph-backed retrieval that captures relationships across enterprise data. It uses Neo4j or ArangoDB as graph databases, combined with a pluggable vector database layer for semantic search. By default, Qdrant is used for vector similarity search (supports hybrid dense + sparse search with RRF). OpenSearch 2.19+ and Redis 8.4+ are also supported via the `VECTOR_DB_TYPE` environment variable.
 
 ### Does PipesHub have an MCP server?
 

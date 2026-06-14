@@ -6,6 +6,7 @@ import { TokenEventProducer } from '../services/token-event.producer';
 import { Logger }  from '../../../libs/services/logger.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import axios from 'axios';
+import https from 'https';
 import { AppConfig } from '../config/config';
 import { ConfigService } from '../services/cm.service';
 
@@ -246,12 +247,65 @@ export function createHealthRouter(
         }
       }
 
-      try {
-        const qdrantUrl = `http://${appConfig.qdrant.host}:${appConfig.qdrant.port}`;
-        const qdrantResp = await axios.get(`${qdrantUrl}/healthz`, { timeout: 3000 });
-        services.vectorDb = qdrantResp.status === 200 ? 'healthy' : 'unhealthy';
-        if (qdrantResp.status !== 200) overallHealthy = false;
-      } catch (error) {
+      const vectorDbType = (deployment.vectorDbType || appConfig.vectorDbType || 'qdrant').toLowerCase();
+      const vectorDbLabel =
+        vectorDbType === 'opensearch'
+          ? 'OpenSearch'
+          : vectorDbType === 'redis'
+            ? 'Redis'
+            : 'Qdrant';
+      serviceNames.vectorDb = vectorDbLabel;
+
+      if (vectorDbType === 'qdrant') {
+        if (!appConfig.qdrant) {
+          services.vectorDb = 'unhealthy';
+          overallHealthy = false;
+        } else {
+          try {
+            const qdrantUrl = `http://${appConfig.qdrant.host}:${appConfig.qdrant.port}`;
+            const qdrantResp = await axios.get(`${qdrantUrl}/healthz`, { timeout: 3000 });
+            services.vectorDb = qdrantResp.status === 200 ? 'healthy' : 'unhealthy';
+            if (qdrantResp.status !== 200) overallHealthy = false;
+          } catch (error) {
+            services.vectorDb = 'unhealthy';
+            overallHealthy = false;
+          }
+        }
+      } else if (vectorDbType === 'opensearch') {
+        if (!appConfig.opensearch) {
+          services.vectorDb = 'unhealthy';
+          overallHealthy = false;
+        } else {
+          try {
+            const scheme = appConfig.opensearch.useSsl ? 'https' : 'http';
+            const osUrl = `${scheme}://${appConfig.opensearch.host}:${appConfig.opensearch.port}`;
+            const axiosOpts: {
+              timeout: number;
+              auth?: { username: string; password: string };
+              httpsAgent?: https.Agent;
+            } = { timeout: 3000 };
+            if (appConfig.opensearch.username && appConfig.opensearch.password) {
+              axiosOpts.auth = {
+                username: appConfig.opensearch.username,
+                password: appConfig.opensearch.password,
+              };
+            }
+            if (appConfig.opensearch.useSsl && appConfig.opensearch.verifyCerts === false) {
+              axiosOpts.httpsAgent = new https.Agent({ rejectUnauthorized: false });
+            }
+            const osResp = await axios.get(`${osUrl}/_cluster/health`, axiosOpts);
+            services.vectorDb = osResp.status === 200 ? 'healthy' : 'unhealthy';
+            if (osResp.status !== 200) overallHealthy = false;
+          } catch (error) {
+            services.vectorDb = 'unhealthy';
+            overallHealthy = false;
+          }
+        }
+      } else if (vectorDbType === 'redis') {
+        // Vector DB shares the KV Redis instance — require KV Redis to be healthy
+        services.vectorDb = services.redis === 'healthy' ? 'healthy' : 'unhealthy';
+        if (services.vectorDb === 'unhealthy') overallHealthy = false;
+      } else {
         services.vectorDb = 'unhealthy';
         overallHealthy = false;
       }

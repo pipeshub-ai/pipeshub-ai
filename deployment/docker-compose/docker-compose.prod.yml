@@ -182,7 +182,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:bookworm
+    image: redis:8.4-bookworm
     container_name: redis
     restart: always
     environment:
@@ -191,6 +191,7 @@ services:
       sh -c "redis-server
       --appendonly yes
       --appendfsync everysec
+      --maxmemory-policy noeviction
       ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}"
     volumes:
       - redis_data:/data

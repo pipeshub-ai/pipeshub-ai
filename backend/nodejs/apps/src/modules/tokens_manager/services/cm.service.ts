@@ -228,6 +228,27 @@ export class ConfigService {
     });
   }
 
+  // OpenSearch Configuration
+  public async getOpenSearchConfig(): Promise<{
+    host: string;
+    port: number;
+    username: string;
+    password: string;
+    useSsl: boolean;
+    verifyCerts: boolean;
+  }> {
+    const defaults = {
+      host: process.env.OPENSEARCH_HOST || 'localhost',
+      port: parseInt(process.env.OPENSEARCH_PORT || '9200', 10),
+      username: process.env.OPENSEARCH_USERNAME || 'admin',
+      password: process.env.OPENSEARCH_PASSWORD || 'admin',
+      useSsl: (process.env.OPENSEARCH_USE_SSL || 'false').toLowerCase() === 'true',
+      verifyCerts: (process.env.OPENSEARCH_VERIFY_CERTS || 'false').toLowerCase() === 'true',
+    };
+    await this.saveConfigToEtcd(configPaths.db.opensearch, defaults);
+    return this.getEncryptedConfig(configPaths.db.opensearch, defaults);
+  }
+
   // Arango Configuration
   public async getArangoConfig(): Promise<ArangoConfig> {
     await this.saveConfigToEtcd(configPaths.db.arangodb, {

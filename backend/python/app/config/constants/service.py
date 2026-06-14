@@ -9,6 +9,8 @@ class config_node_constants(Enum):
     NEO4J = "/services/neo4j"
     QDRANT = "/services/qdrant"
     REDIS = "/services/redis"
+    REDIS_VECTOR = "/services/redis-vector"
+    OPENSEARCH = "/services/opensearch"
     AI_MODELS = "/services/aiModels"
     WEB_SEARCH = "/services/webSearch"
     KAFKA = "/services/kafka"
