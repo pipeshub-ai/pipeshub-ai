@@ -49,8 +49,17 @@ services:
       - INDEXING_BACKEND=http://localhost:8091
       - EMBEDDING_SERVER_URL=http://localhost:8002
 
-      # Vector DB
-      - VECTOR_DB_TYPE=redis
+      # Vector DB — OpenSearch (security plugin disabled for local dev)
+      # For production: remove DISABLE_INSTALL_DEMO_CONFIG + plugins.security.disabled
+      # from the opensearch service, set OPENSEARCH_USE_SSL=true, OPENSEARCH_VERIFY_CERTS=true,
+      # and provide OPENSEARCH_USERNAME / OPENSEARCH_PASSWORD.
+      - VECTOR_DB_TYPE=opensearch
+      - OPENSEARCH_HOST=opensearch
+      - OPENSEARCH_PORT=9200
+      - OPENSEARCH_USERNAME=${OPENSEARCH_USERNAME:-}
+      - OPENSEARCH_PASSWORD=${OPENSEARCH_PASSWORD:-}
+      - OPENSEARCH_USE_SSL=${OPENSEARCH_USE_SSL:-false}
+      - OPENSEARCH_VERIFY_CERTS=${OPENSEARCH_VERIFY_CERTS:-false}
 
       # Key-Value Store Configuration
       - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
@@ -64,7 +73,7 @@ services:
       - NEO4J_USERNAME=neo4j
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-your_password}
       - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
-      
+
       # Message broker config
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
@@ -76,7 +85,7 @@ services:
       - KAFKA_PASSWORD=${KAFKA_PASSWORD:-}
       - KAFKA_SASL_MECHANISM=${KAFKA_SASL_MECHANISM:-}
 
-      # Redis config
+      # Redis config (used for KV store and message broker)
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
@@ -106,7 +115,7 @@ services:
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
-      
+
       # ML thread limit — caps PyTorch / OpenBLAS / MKL threads per operation.
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 
@@ -122,7 +131,7 @@ services:
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
       - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
-      
+
       - OPIK_API_KEY=${OPIK_API_KEY:-}
       - OPIK_WORKSPACE=${OPIK_WORKSPACE:-}
 
@@ -149,6 +158,8 @@ services:
       mongodb:
         condition: service_healthy
       neo4j:
+        condition: service_healthy
+      opensearch:
         condition: service_healthy
       sandbox-image:
         condition: service_completed_successfully
@@ -194,19 +205,14 @@ services:
       retries: 5
 
   redis:
-    image: redis:8.4-bookworm
-    ports:
-      - "6379:6379"
+    image: redis:7-alpine
     restart: always
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
-    # No `sh -c` wrapper: the redis:8 image entrypoint only auto-loads the
-    # bundled Query Engine modules (FT.* commands) when arg 1 is `redis-server`.
     command: >
       redis-server
       --appendonly yes
       --appendfsync everysec
-      --maxmemory-policy noeviction
       ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
     volumes:
       - redis_data:/data
@@ -215,6 +221,66 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  opensearch:
+    image: opensearchproject/opensearch:2.19.0
+    restart: always
+    environment:
+      - cluster.name=pipeshub-cluster
+      - node.name=opensearch-node1
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
+      # Skip the demo-config entrypoint script entirely — this also bypasses the
+      # OPENSEARCH_INITIAL_ADMIN_PASSWORD strength check that runs before OpenSearch
+      # itself starts.  Required when security plugin is disabled for local dev.
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      # Disable the security plugin at the OpenSearch config level.
+      # For production, remove these two lines and set OPENSEARCH_INITIAL_ADMIN_PASSWORD
+      # to a strong password (min 8 chars, upper+lower+digit+special).
+      - plugins.security.disabled=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "9200:9200"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.19.0
+    restart: always
+    ports:
+      - "5601:5601"
+    environment:
+      - OPENSEARCH_HOSTS=["http://opensearch:9200"]
+      # Mirror the security-disabled setting from the opensearch service.
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5601/api/status || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
 
   neo4j:
     image: neo4j:5.26.0
@@ -302,6 +368,8 @@ volumes:
   mongodb_data:
     driver: local
   redis_data:
+    driver: local
+  opensearch_data:
     driver: local
   neo4j_data:
     driver: local

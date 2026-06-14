@@ -58,6 +58,7 @@ from app.services.vector_db.redis.utils import (
     filter_expression_to_redis_query,
     parse_ft_hybrid_reply,
     parse_ft_search_reply,
+    reconstruct_metadata,
     vector_point_to_json_doc,
     vector_to_bytes,
 )
@@ -378,9 +379,13 @@ class RedisVectorService(IVectorDBService):
                 json_path, "AS", redis_alias, field_type,
             )
         except Exception as e:
-            # Ignore "already exists" errors
-            if "already exists" not in str(e).lower():
-                logger.warning(f"FT.ALTER failed for field '{field_name}': {e}")
+            err = str(e).lower()
+            # Silently skip fields that are already part of the schema.
+            # Redis surfaces this as either "already exists" or
+            # "duplicate field in schema".
+            if "already exists" in err or "duplicate field" in err:
+                return
+            logger.warning(f"FT.ALTER failed for field '{field_name}': {e}")
 
     # ------------------------------------------------------------------
     # Filter construction
@@ -597,7 +602,7 @@ class RedisVectorService(IVectorDBService):
                                 id=point_id,
                                 payload={
                                     "page_content": doc.get("page_content", ""),
-                                    "metadata": doc.get("metadata", {}),
+                                    "metadata": reconstruct_metadata(doc),
                                 },
                             )
                         )
@@ -670,8 +675,14 @@ class RedisVectorService(IVectorDBService):
         #       [FILTER <tag_query>]               ← pre-filter on the KNN leg
         #   COMBINE RRF 4 WINDOW <w> CONSTANT 60  ← 4 = arg-count for the 2 pairs
         #   LIMIT 0 <k>
-        #   LOAD 1 $                              ← return full JSON document
-        #   PARAMS 2 $vec <bytes>                 ← 2 = param-count (1 name + 1 value)
+        #   LOAD 3 $ @__key @__score              ← full JSON doc + key id + RRF score
+        #   PARAMS 2 vec <bytes>                  ← bare name "vec"; "$vec" is only
+        #                                            the query-syntax reference form
+        #
+        # NOTE: ``LOAD`` overrides FT.HYBRID's default projection, which would
+        # otherwise return @__key/@__score.  We must therefore re-request them
+        # explicitly alongside the ``$`` document, and reserved fields require
+        # the ``@`` prefix in LOAD.
         cmd: List[Any] = [
             "FT.HYBRID", idx,
             "SEARCH", search_query,
@@ -685,8 +696,8 @@ class RedisVectorService(IVectorDBService):
         cmd += [
             "COMBINE", "RRF", "4", "WINDOW", str(window), "CONSTANT", "60",
             "LIMIT", "0", str(k),
-            "LOAD", "1", "$",
-            "PARAMS", "2", "$vec", vec_bytes,
+            "LOAD", "3", "$", "@__key", "@__score",
+            "PARAMS", "2", "vec", vec_bytes,
         ]
 
         # FT.HYBRID errors propagate — do NOT silently fall back to text-only.

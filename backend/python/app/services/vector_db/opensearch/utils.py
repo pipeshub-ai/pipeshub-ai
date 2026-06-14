@@ -55,6 +55,11 @@ class OpenSearchUtils:
             ]
             if expr.min_should_match is not None:
                 bool_query["minimum_should_match"] = expr.min_should_match
+            elif expr.must:
+                # Match Qdrant semantics: when both must and should are present,
+                # at least one should clause must match.  Without this, OpenSearch
+                # treats should as purely optional (score-boosting only).
+                bool_query["minimum_should_match"] = 1
         if expr.must_not:
             bool_query["must_not"] = [
                 OpenSearchUtils._field_condition_to_clause(c) for c in expr.must_not

@@ -120,7 +120,12 @@ class TestRedisHealthCheck:
 class TestRedisCollectionManagement:
     @pytest.mark.asyncio
     async def test_create_collection_calls_ft_create(self, service, mock_redis_client):
-        mock_redis_client.execute_command = AsyncMock(return_value="OK")
+        async def cmd_side_effect(*args):
+            if args[0] == "FT.INFO":
+                raise Exception("Unknown Index name")
+            return "OK"
+
+        mock_redis_client.execute_command = AsyncMock(side_effect=cmd_side_effect)
         config = CollectionConfig(embedding_size=384, distance_metric=DistanceMetric.COSINE)
         await service.create_collection("my_index", config)
 
@@ -222,7 +227,7 @@ class TestRedisHybridQuery:
         Spec:
           FT.HYBRID idx SEARCH q VSIM @dense_embedding $vec KNN 2 K <w>
           [FILTER fq] COMBINE RRF 4 WINDOW <w> CONSTANT 60
-          LIMIT 0 k LOAD 1 $ PARAMS 2 $vec <bytes>
+          LIMIT 0 k LOAD 3 $ @__key @__score PARAMS 2 vec <bytes>
         """
         mock_redis_client.execute_command = AsyncMock(return_value=[0])
 
@@ -241,9 +246,10 @@ class TestRedisHybridQuery:
 
         assert "coll_idx" in args
         assert "SEARCH" in args
-        # text_query is escaped before insertion; 'hello world' → 'hello\ world'
-        assert any("hello" in str(a) for a in args), (
-            "text_query should appear in FT.HYBRID args (possibly escaped)"
+        # Spaces are word separators, not operators — they must NOT be escaped,
+        # otherwise multi-word queries fuse into a single non-matching token.
+        assert any("hello world" in str(a) for a in args), (
+            "multi-word text_query must keep its spaces unescaped"
         )
         assert "VSIM" in args
         assert "@dense_embedding" in args
@@ -259,28 +265,49 @@ class TestRedisHybridQuery:
         assert args[rrf_idx + 1] == "4", f"COMBINE RRF arg-count must be '4', got {args[rrf_idx + 1]!r}"
         assert args[rrf_idx + 2] == "WINDOW"
 
-        # LOAD 1 $ — no WITHSCORES or RETURN
+        # LOAD must re-request the document plus reserved key/score fields,
+        # since LOAD overrides FT.HYBRID's default @__key/@__score projection.
         assert "LOAD" in args, "LOAD must be present in FT.HYBRID command"
+        assert "$" in args, "LOAD must request the full JSON document ($)"
+        assert "@__key" in args, "LOAD must request @__key for the point id"
+        assert "@__score" in args, "LOAD must request @__score for the RRF score"
         assert "WITHSCORES" not in args, "WITHSCORES is not a valid FT.HYBRID option"
         assert "RETURN" not in args, "RETURN is not a valid FT.HYBRID option"
+        # PARAMS uses the bare name 'vec' (the '$' sigil only appears in the
+        # VSIM query expression, never in the PARAMS block).
+        params_idx = args.index("PARAMS")
+        assert args[params_idx + 2] == "vec", "PARAMS name must be bare 'vec'"
 
     @pytest.mark.asyncio
     async def test_ft_hybrid_bytes_reply_parsing(self, service, mock_redis_client):
-        """Verify parse_ft_hybrid_reply handles decode_responses=False bytes keys/field names."""
+        """Verify parse_ft_hybrid_reply handles the real FT.HYBRID map reply.
+
+        Redis 8.4 FT.HYBRID returns a map (``total_results``/``results``/...),
+        which under RESP2 (decode_responses=False) arrives as a flat key/value
+        list.  Each result entry is itself a flat field list from
+        ``LOAD 3 $ @__key @__score``.  Metadata is reconstructed from the
+        flattened ``metadata_*`` keys.
+        """
         import json
         from app.services.vector_db.redis.utils import parse_ft_hybrid_reply
 
-        doc = json.dumps({"page_content": "hello", "metadata": {"orgId": "org1"}}).encode()
+        doc = json.dumps(
+            {"page_content": "hello", "metadata_orgId": "org1"}
+        ).encode()
         reply = [
-            1,
-            b"coll:abc-123",
-            [b"__score", b"0.0167", b"$", doc],
+            b"total_results", 1,
+            b"results", [
+                [b"$", doc, b"__key", b"coll:abc-123", b"__score", b"0.0167"],
+            ],
+            b"warnings", [],
+            b"execution_time", b"3.2",
         ]
         results = parse_ft_hybrid_reply(reply, with_payload=True)
         assert len(results) == 1
         assert results[0].id == "abc-123"
         assert abs(results[0].score - 0.0167) < 1e-6
         assert results[0].payload["page_content"] == "hello"
+        assert results[0].payload["metadata"]["orgId"] == "org1"
 
     @pytest.mark.asyncio
     async def test_text_only_fallback_when_no_dense(self, service, mock_redis_client):

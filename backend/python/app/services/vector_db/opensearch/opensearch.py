@@ -68,6 +68,8 @@ class OpenSearchService(IVectorDBService):
     ) -> None:
         self.config_service = config_service
         self.client: Optional[AsyncOpenSearch] = None
+        self._cfg: Optional[OpenSearchConfig] = None
+        self._client_loop: Optional[asyncio.AbstractEventLoop] = None
 
     # ------------------------------------------------------------------
     # Factory
@@ -88,6 +90,15 @@ class OpenSearchService(IVectorDBService):
     # ------------------------------------------------------------------
 
     async def connect(self) -> None:
+        """Parse and validate config.
+
+        The ``AsyncOpenSearch`` client (and its ``aiohttp`` session) is NOT
+        created here.  It is deferred to ``_ensure_client()`` so the session is
+        always born inside the asyncio Task that first needs it, avoiding
+        ``RuntimeError("Timeout context manager should be used inside a task")``
+        when a Kafka/Redis consumer handler calls the service from a task that
+        differs from the startup task.
+        """
         try:
             if isinstance(self.config_service, ConfigurationService):
                 raw = await self.config_service.get_config(
@@ -99,39 +110,90 @@ class OpenSearchService(IVectorDBService):
             if not raw:
                 raise ValueError("OpenSearch configuration not found")
 
-            cfg = OpenSearchConfig.from_dict(raw)
-            self.client = self._build_client(cfg)
-
-            # Verify actual connectivity
-            info = await self.client.info()
-            version = info.get("version", {}).get("number", "unknown")
-            logger.info(f"Connected to OpenSearch {version} at {cfg.host}:{cfg.port}")
+            self._cfg = OpenSearchConfig.from_dict(raw)
+            logger.info(
+                f"OpenSearch config loaded for {self._cfg.host}:{self._cfg.port} "
+                f"(client will be created lazily on first use)"
+            )
         except Exception as e:
-            logger.error(f"Failed to connect to OpenSearch: {e}")
+            logger.error(f"Failed to load OpenSearch config: {e}")
             raise
 
     @staticmethod
     def _build_client(cfg: "OpenSearchConfig") -> AsyncOpenSearch:
         """Construct AsyncOpenSearch with the given config.
 
-        This is the pluggable auth seam.  Only ``auth_type="basic"`` is
-        implemented.  Future AWS SigV4 support adds a new branch here —
-        no call-site changes are required.
+        This is the pluggable auth seam.  Supported auth_type values:
+
+        - ``"basic"``  — HTTP basic auth (username + password).  Credentials
+          are omitted when both are empty, which is correct for clusters where
+          the security plugin is disabled (e.g. local dev).
+        - ``"none"``   — Explicit no-auth (same behaviour as empty basic creds).
+
+        Future AWS SigV4 support adds a new branch here — no call-site changes.
         """
-        if cfg.auth_type == "basic":
-            return AsyncOpenSearch(
-                hosts=[{"host": cfg.host, "port": cfg.port}],
-                http_auth=(cfg.username, cfg.password),
-                use_ssl=cfg.use_ssl,
-                verify_certs=cfg.verify_certs,
-                ssl_show_warn=cfg.ssl_show_warn,
-                timeout=cfg.timeout,
-            )
+        if cfg.auth_type in ("basic", "none"):
+            kwargs: dict = {
+                "hosts": [{"host": cfg.host, "port": cfg.port}],
+                "use_ssl": cfg.use_ssl,
+                "verify_certs": cfg.verify_certs,
+                "ssl_show_warn": cfg.ssl_show_warn,
+                "timeout": cfg.timeout,
+            }
+            # Only attach credentials when both are provided; omitting http_auth
+            # is correct when the OpenSearch security plugin is disabled.
+            if cfg.username and cfg.password:
+                kwargs["http_auth"] = (cfg.username, cfg.password)
+            return AsyncOpenSearch(**kwargs)
         raise ValueError(
             f"auth_type '{cfg.auth_type}' not supported yet. "
-            "Only 'basic' is implemented. To add AWS SigV4 support, add a new "
+            "Supported values: 'basic', 'none'. To add AWS SigV4 support, add a new "
             "branch to OpenSearchService._build_client() and extend OpenSearchConfig."
         )
+
+    async def _ensure_client(self) -> AsyncOpenSearch:
+        """Return the live client, creating it on the current event loop if needed.
+
+        The ``aiohttp.ClientSession`` inside ``AsyncOpenSearch`` is bound to the
+        event loop where it was created.  The indexing consumer runs a dedicated
+        worker thread with its own ``asyncio.new_event_loop()``, so a client
+        created on the main loop cannot be reused there.
+
+        This method detects a loop mismatch and transparently recreates the
+        client on the current loop — no caller changes required.
+        """
+        current_loop = asyncio.get_running_loop()
+        if self.client is not None:
+            if self._client_loop is None or self._client_loop is current_loop:
+                return self.client
+            # Loop mismatch — the old aiohttp session cannot be used here.
+            self.client = None
+            self._client_loop = None
+
+        if self._cfg is None:
+            raise RuntimeError(
+                "OpenSearch config not loaded. Call connect() first."
+            )
+
+        self.client = self._build_client(self._cfg)
+        self._client_loop = current_loop
+        try:
+            info = await self.client.info()
+            version = info.get("version", {}).get("number", "unknown")
+            logger.info(
+                f"Connected to OpenSearch {version} at "
+                f"{self._cfg.host}:{self._cfg.port} "
+                f"(loop id={id(current_loop)})"
+            )
+        except Exception:
+            try:
+                await self.client.close()
+            except Exception:
+                pass
+            self.client = None
+            self._client_loop = None
+            raise
+        return self.client
 
     async def disconnect(self) -> None:
         if self.client is not None:
@@ -165,10 +227,11 @@ class OpenSearchService(IVectorDBService):
 
     async def health_check(self) -> VectorDBHealth:
         start = time.monotonic()
-        if self.client is None:
+        if self._cfg is None and self.client is None:
             return VectorDBHealth(status=HealthStatus.UNHEALTHY, message="Not connected")
         try:
-            info = await self.client.info()
+            client = await self._ensure_client()
+            info = await client.info()
             latency_ms = round((time.monotonic() - start) * 1000, 2)
             version = info.get("version", {}).get("number")
             # Version gate: RRF score-ranker-processor requires OpenSearch >= 2.19
@@ -204,7 +267,7 @@ class OpenSearchService(IVectorDBService):
         collection_name: str = "records",
         config: Optional[CollectionConfig] = None,
     ) -> None:
-        self._assert_connected()
+        await self._assert_connected()
         if config is None:
             config = CollectionConfig()
 
@@ -291,11 +354,11 @@ class OpenSearchService(IVectorDBService):
         logger.info(f"Created RRF pipeline '{pipeline_name}'")
 
     async def get_collections(self) -> object:
-        self._assert_connected()
+        await self._assert_connected()
         return await self.client.indices.get_alias(index="*")  # type: ignore
 
     async def get_collection(self, collection_name: str) -> object:
-        self._assert_connected()
+        await self._assert_connected()
         return await self.client.indices.get(index=collection_name)  # type: ignore
 
     async def get_collection_info(self, collection_name: str) -> VectorCollectionInfo:
@@ -304,7 +367,7 @@ class OpenSearchService(IVectorDBService):
         Only swallows NotFoundError (index doesn't exist).  Connectivity / auth
         errors propagate so callers can distinguish "not created yet" from "outage".
         """
-        self._assert_connected()
+        await self._assert_connected()
         try:
             exists = bool(await self.client.indices.exists(index=collection_name))  # type: ignore
             if not exists:
@@ -331,7 +394,7 @@ class OpenSearchService(IVectorDBService):
 
     async def collection_exists(self, collection_name: str) -> bool:
         """Return True if the index exists; False on 404; re-raise on connectivity errors."""
-        self._assert_connected()
+        await self._assert_connected()
         try:
             return bool(await self.client.indices.exists(index=collection_name))  # type: ignore
         except Exception as exc:
@@ -340,7 +403,7 @@ class OpenSearchService(IVectorDBService):
             raise
 
     async def delete_collection(self, collection_name: str) -> None:
-        self._assert_connected()
+        await self._assert_connected()
         if await self.client.indices.exists(index=collection_name):  # type: ignore
             await self.client.indices.delete(index=collection_name)  # type: ignore
             logger.info(f"Deleted OpenSearch index '{collection_name}'")
@@ -361,7 +424,7 @@ class OpenSearchService(IVectorDBService):
         field_name: str,
         field_schema: dict,
     ) -> None:
-        self._assert_connected()
+        await self._assert_connected()
         # field_name e.g. "metadata.virtualRecordId"
         # Build nested mapping path
         parts = field_name.split(".")
@@ -426,7 +489,7 @@ class OpenSearchService(IVectorDBService):
         from the previous call.  It is the OpenSearch ``search_after`` value
         serialised as a JSON string.  Pass ``None`` for the first page.
         """
-        self._assert_connected()
+        await self._assert_connected()
         bool_query = OpenSearchUtils.filter_expression_to_bool_query(scroll_filter)
         body: Dict[str, Any] = {
             "query": bool_query,
@@ -444,6 +507,8 @@ class OpenSearchService(IVectorDBService):
 
         result = await self.client.search(index=collection_name, body=body)  # type: ignore
         hits = result.get("hits", {}).get("hits", [])
+        if len(hits) > limit:
+            hits = hits[:limit]
         points = [
             VectorPoint(
                 id=hit["_id"],
@@ -469,7 +534,7 @@ class OpenSearchService(IVectorDBService):
         collection_name: str,
         requests: List[HybridSearchRequest],
     ) -> List[List[SearchResult]]:
-        self._assert_connected()
+        await self._assert_connected()
         pipeline_name = f"{collection_name}-rrf-pipeline"
 
         async def _one_search(req: HybridSearchRequest) -> List[SearchResult]:
@@ -500,7 +565,7 @@ class OpenSearchService(IVectorDBService):
         points: List[VectorPoint],
         batch_size: int = 500,
     ) -> None:
-        self._assert_connected()
+        await self._assert_connected()
         start = time.perf_counter()
         logger.info(
             f"Upserting {len(points)} points into OpenSearch index '{collection_name}'"
@@ -537,16 +602,14 @@ class OpenSearchService(IVectorDBService):
                 "delete_points called with an empty filter — this would wipe the entire "
                 "index. Populate at least one filter condition (e.g. virtualRecordId)."
             )
-        self._assert_connected()
+        await self._assert_connected()
         bool_query = OpenSearchUtils.filter_expression_to_bool_query(filter)
         await self.client.delete_by_query(  # type: ignore
             index=collection_name,
             body={"query": bool_query},
-            params={
-                "conflicts": "proceed",
-                "slices": "auto",
-                "wait_for_completion": True,
-            },
+            conflicts="proceed",
+            slices="auto",
+            wait_for_completion=True,
         )
         logger.info(f"Deleted points from OpenSearch index '{collection_name}'")
 
@@ -562,7 +625,7 @@ class OpenSearchService(IVectorDBService):
         field access (``ctx._source.metadata.status``), not treated as literal
         top-level key names.
         """
-        self._assert_connected()
+        await self._assert_connected()
         bool_query = OpenSearchUtils.filter_expression_to_bool_query(points)
         script_parts = []
         params: Dict[str, Any] = {}
@@ -597,11 +660,9 @@ class OpenSearchService(IVectorDBService):
     # Internal guards
     # ------------------------------------------------------------------
 
-    def _assert_connected(self) -> None:
-        if self.client is None:
-            raise RuntimeError(
-                "OpenSearch client not connected. Call connect() first."
-            )
+    async def _assert_connected(self) -> None:
+        """Ensure the client is ready, creating it lazily if needed."""
+        await self._ensure_client()
 
 
 # ---------------------------------------------------------------------------

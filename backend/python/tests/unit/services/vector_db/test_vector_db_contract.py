@@ -5,7 +5,7 @@ FT.HYBRID) stays in the per-provider test modules.  This file covers the
 shared interface contract that all three providers must honour.
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -100,11 +100,20 @@ class TestFilterCollectionContract:
 
 class TestUpsertPointsContract:
     @pytest.mark.asyncio
-    async def test_upsert_delegates_to_client(self, connected_service):
+    async def test_upsert_delegates_to_client(self, connected_service, request):
         points = [
             VectorPoint(id="p1", dense_vector=[0.1, 0.2], payload={"page_content": "hi"})
         ]
-        await connected_service.upsert_points("records", points)
+        provider = request.node.callspec.id
+        if provider == "opensearch":
+            with patch(
+                "app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk",
+                new_callable=AsyncMock,
+                return_value=(1, []),
+            ):
+                await connected_service.upsert_points("records", points)
+        else:
+            await connected_service.upsert_points("records", points)
         # Each provider calls its underlying client — just verify no exception
 
 

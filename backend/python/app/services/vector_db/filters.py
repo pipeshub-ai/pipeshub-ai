@@ -87,7 +87,7 @@ def build_filter_expression(
         must=must_conds,
         should=should_conds,
         must_not=must_not_conds,
-        min_should_match=min_should_match,
+        min_should_match=min_should_match if should_conds else None,
     )
 
 

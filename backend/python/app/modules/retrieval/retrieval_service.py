@@ -336,8 +336,7 @@ class RetrievalService:
                     )
             else:
                 filter = await self.vector_db_service.filter_collection(
-                        must={"orgId": org_id},
-                        should={"virtualRecordId": list(accessible_virtual_id_to_record_id.keys())}
+                        must={"orgId": org_id, "virtualRecordId": list(accessible_virtual_id_to_record_id.keys())}
                     )
             search_results = await self._execute_parallel_searches(queries, filter, limit)
 

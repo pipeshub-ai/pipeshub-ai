@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
@@ -55,7 +55,12 @@ class IndexingPipeline:
                 details={"error": str(e)},
             )
 
-    async def bulk_delete_embeddings(self, virtual_record_ids: List[str]) -> Dict[str, Any]:
+    async def bulk_delete_embeddings(
+        self,
+        virtual_record_ids: List[str],
+        *,
+        exclude_record_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         """
         Bulk delete embeddings for multiple records in a single operation.
         Uses filter-based deletion for efficiency.
@@ -64,6 +69,12 @@ class IndexingPipeline:
 
         Args:
             virtual_record_ids: List of virtual record IDs to delete embeddings for
+            exclude_record_ids: Record IDs to exclude from the safety check.
+                When processing a DELETE_RECORD event, the record being deleted
+                may still exist in the graph DB due to timing.  Passing its
+                recordId here lets the safety check ignore it so that the
+                embeddings are deleted when no *other* records share the
+                virtualRecordId.
 
         Returns:
             Dict with deletion statistics:
@@ -95,6 +106,7 @@ class IndexingPipeline:
                 f"🗑️ Starting bulk deletion candidate evaluation for {len(normalized_virtual_record_ids)} virtual record IDs"
             )
 
+            excluded = set(exclude_record_ids) if exclude_record_ids else set()
             safe_virtual_record_ids: List[str] = []
             skipped_virtual_record_ids: List[str] = []
 
@@ -103,11 +115,18 @@ class IndexingPipeline:
                     remaining_records = await self.graph_provider.get_records_by_virtual_record_id(
                         virtual_record_id=virtual_record_id
                     )
+                    # Filter out the record(s) that are being deleted right now —
+                    # they may still be in the graph DB due to event ordering.
+                    if excluded and remaining_records:
+                        remaining_records = [
+                            r for r in remaining_records
+                            if r.get("_key") not in excluded
+                        ]
                     if remaining_records:
                         skipped_virtual_record_ids.append(virtual_record_id)
                         self.logger.info(
                             f"⏭️ Skipping bulk deletion for virtual_record_id {virtual_record_id} "
-                            f"because it is still referenced by records: {remaining_records}"
+                            f"because it is still referenced by {len(remaining_records)} other record(s)"
                         )
                         continue
 

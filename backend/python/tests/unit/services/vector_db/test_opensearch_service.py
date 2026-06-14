@@ -98,7 +98,9 @@ def connected_service(service):
 
 @pytest.fixture
 def mock_config_service():
-    cs = AsyncMock()
+    from app.config.configuration_service import ConfigurationService
+
+    cs = AsyncMock(spec=ConfigurationService)
     cs.get_config = AsyncMock(return_value={
         "host": "localhost",
         "port": 9200,
@@ -137,23 +139,28 @@ class TestCreate:
     @pytest.mark.asyncio
     @patch("app.services.vector_db.opensearch.opensearch.AsyncOpenSearch")
     async def test_create_async(self, mock_client_cls, os_config):
-        # connect() now calls await self.client.info() — use AsyncMock
         mock_client = AsyncMock()
         mock_client.info = AsyncMock(return_value={"version": {"number": "3.0.0"}})
         mock_client_cls.return_value = mock_client
 
         svc = await OpenSearchService.create(os_config)
+        # connect() only parses config; client created lazily on first use
+        assert svc._cfg is not None
+        assert svc.client is None
+        # Trigger lazy init
+        await svc._ensure_client()
         assert svc.client is mock_client
 
     @pytest.mark.asyncio
     @patch("app.services.vector_db.opensearch.opensearch.AsyncOpenSearch")
     async def test_create_with_config_service(self, mock_client_cls, mock_config_service):
-        # connect() now calls await self.client.info() — use AsyncMock
         mock_client = AsyncMock()
         mock_client.info = AsyncMock(return_value={"version": {"number": "3.0.0"}})
         mock_client_cls.return_value = mock_client
 
         svc = await OpenSearchService.create(mock_config_service)
+        assert svc._cfg is not None
+        await svc._ensure_client()
         assert svc.client is mock_client
 
 
@@ -166,13 +173,17 @@ class TestConnect:
     @pytest.mark.asyncio
     @patch("app.services.vector_db.opensearch.opensearch.AsyncOpenSearch")
     async def test_connect_async_with_opensearch_config(self, mock_client_cls, os_config):
-        # connect() now calls await self.client.info() to verify connectivity
         mock_client = AsyncMock()
         mock_client.info = AsyncMock(return_value={"version": {"number": "3.0.0"}})
         mock_client_cls.return_value = mock_client
 
         svc = OpenSearchService(os_config)
         await svc.connect()
+        # connect() parses config only; client created on first use
+        assert svc._cfg is not None
+        assert svc.client is None
+        # Trigger lazy init and verify client construction args
+        await svc._ensure_client()
         assert svc.client is mock_client
         mock_client_cls.assert_called_once()
         call_kwargs = mock_client_cls.call_args[1]
@@ -182,13 +193,14 @@ class TestConnect:
     @pytest.mark.asyncio
     @patch("app.services.vector_db.opensearch.opensearch.AsyncOpenSearch")
     async def test_connect_with_config_service(self, mock_client_cls, mock_config_service):
-        # connect() now calls await self.client.info() to verify connectivity
         mock_client = AsyncMock()
         mock_client.info = AsyncMock(return_value={"version": {"number": "3.0.0"}})
         mock_client_cls.return_value = mock_client
 
         svc = OpenSearchService(mock_config_service)
         await svc.connect()
+        assert svc._cfg is not None
+        await svc._ensure_client()
         assert svc.client is mock_client
 
     @pytest.mark.asyncio
@@ -203,10 +215,14 @@ class TestConnect:
     @pytest.mark.asyncio
     @patch("app.services.vector_db.opensearch.opensearch.AsyncOpenSearch")
     async def test_connect_exception(self, mock_client_cls, os_config):
-        mock_client_cls.side_effect = Exception("connection refused")
+        mock_client = AsyncMock()
+        mock_client.info = AsyncMock(side_effect=Exception("connection refused"))
+        mock_client_cls.return_value = mock_client
         svc = OpenSearchService(os_config)
+        await svc.connect()
         with pytest.raises(Exception, match="connection refused"):
-            await svc.connect()
+            await svc._ensure_client()
+        assert svc.client is None
 
 
 # ---------------------------------------------------------------------------
@@ -311,11 +327,18 @@ class TestCreateCollection:
 
     @pytest.mark.asyncio
     async def test_create_collection_creates_pipeline(self, connected_service):
+        # Idempotent: GET checks existence; PUT only when absent.
+        connected_service.client.transport.perform_request = AsyncMock(
+            side_effect=[
+                Exception("not found"),
+                {"acknowledged": True},
+            ]
+        )
         await connected_service.create_collection(collection_name="my-idx")
 
-        connected_service.client.transport.perform_request.assert_awaited()
-        call_args = connected_service.client.transport.perform_request.call_args[0]
-        assert call_args[0] == "PUT"
+        calls = connected_service.client.transport.perform_request.call_args_list
+        assert calls[0][0][0] == "GET"
+        assert calls[1][0][0] == "PUT"
 
     @pytest.mark.asyncio
     async def test_create_collection_pipeline_failure_raises(self, connected_service):
@@ -329,7 +352,7 @@ class TestCreateCollection:
 
     @pytest.mark.asyncio
     async def test_create_collection_not_connected(self, service):
-        with pytest.raises(RuntimeError, match="not connected"):
+        with pytest.raises(RuntimeError, match="config not loaded"):
             await service.create_collection()
 
 
@@ -347,7 +370,7 @@ class TestCollectionOperations:
 
     @pytest.mark.asyncio
     async def test_get_collections_not_connected(self, service):
-        with pytest.raises(RuntimeError, match="not connected"):
+        with pytest.raises(RuntimeError, match="config not loaded"):
             await service.get_collections()
 
     @pytest.mark.asyncio
@@ -359,7 +382,7 @@ class TestCollectionOperations:
 
     @pytest.mark.asyncio
     async def test_get_collection_not_connected(self, service):
-        with pytest.raises(RuntimeError, match="not connected"):
+        with pytest.raises(RuntimeError, match="config not loaded"):
             await service.get_collection("my-idx")
 
     @pytest.mark.asyncio
@@ -396,7 +419,7 @@ class TestCollectionOperations:
 
     @pytest.mark.asyncio
     async def test_delete_collection_not_connected(self, service):
-        with pytest.raises(RuntimeError, match="not connected"):
+        with pytest.raises(RuntimeError, match="config not loaded"):
             await service.delete_collection("my-idx")
 
 
@@ -430,7 +453,7 @@ class TestCreateIndex:
 
     @pytest.mark.asyncio
     async def test_create_index_not_connected(self, service):
-        with pytest.raises(RuntimeError, match="not connected"):
+        with pytest.raises(RuntimeError, match="config not loaded"):
             await service.create_index("my-idx", "field1", {"type": "keyword"})
 
 
@@ -574,7 +597,7 @@ class TestUpsertPoints:
     @pytest.mark.asyncio
     async def test_upsert_not_connected(self, service):
         points = [VectorPoint(id="1", dense_vector=[0.1], payload={})]
-        with pytest.raises(RuntimeError, match="not connected"):
+        with pytest.raises(RuntimeError, match="config not loaded"):
             await service.upsert_points("my-idx", points)
 
 
@@ -598,14 +621,15 @@ class TestDeletePoints:
     @pytest.mark.asyncio
     async def test_delete_points_empty_filter(self, connected_service):
         filter_expr = FilterExpression()
-        await connected_service.delete_points("my-idx", filter_expr)
-        call_kwargs = connected_service.client.delete_by_query.call_args[1]
-        assert "match_all" in call_kwargs["body"]["query"]
+        with pytest.raises(ValueError, match="empty filter"):
+            await connected_service.delete_points("my-idx", filter_expr)
 
     @pytest.mark.asyncio
     async def test_delete_points_not_connected(self, service):
-        filter_expr = FilterExpression()
-        with pytest.raises(RuntimeError, match="not connected"):
+        filter_expr = FilterExpression(
+            must=[GenericFieldCondition(key="metadata.orgId", value="org1")]
+        )
+        with pytest.raises(RuntimeError, match="config not loaded"):
             await service.delete_points("my-idx", filter_expr)
 
 
@@ -679,7 +703,7 @@ class TestQueryNearestPoints:
 
     @pytest.mark.asyncio
     async def test_query_not_connected(self, service):
-        with pytest.raises(RuntimeError, match="not connected"):
+        with pytest.raises(RuntimeError, match="config not loaded"):
             await service.query_nearest_points("my-idx", [])
 
 
@@ -772,7 +796,7 @@ class TestScroll:
 
     @pytest.mark.asyncio
     async def test_scroll_not_connected(self, service):
-        with pytest.raises(RuntimeError, match="not connected"):
+        with pytest.raises(RuntimeError, match="config not loaded"):
             await service.scroll("my-idx", FilterExpression(), 100)
 
 
@@ -811,7 +835,7 @@ class TestOverwritePayload:
 
     @pytest.mark.asyncio
     async def test_overwrite_payload_not_connected(self, service):
-        with pytest.raises(RuntimeError, match="not connected"):
+        with pytest.raises(RuntimeError, match="config not loaded"):
             await service.overwrite_payload("my-idx", {}, FilterExpression())
 
 
@@ -910,6 +934,8 @@ def _make_os_service():
 
     svc = OpenSearchService.__new__(OpenSearchService)
     svc.config_service = MagicMock()
+    svc._cfg = None
+    svc._client_loop = None
     client = MagicMock()
     # Make transport.perform_request awaitable for pipeline tests
     client.transport = MagicMock()
@@ -1056,10 +1082,9 @@ class TestOpenSearchDeletePoints:
         await svc.delete_points("records", filt)
 
         call_kwargs = svc.client.delete_by_query.call_args.kwargs
-        params = call_kwargs.get("params", {})
-        assert params.get("conflicts") == "proceed"
-        assert params.get("slices") == "auto"
-        assert params.get("wait_for_completion") is True
+        assert call_kwargs.get("conflicts") == "proceed"
+        assert call_kwargs.get("slices") == "auto"
+        assert call_kwargs.get("wait_for_completion") is True
 
 
 class TestEnsureRrfPipelineIdempotent:

@@ -33,7 +33,9 @@ _TAG_ESCAPE_CHARS = set(r",.<>{}[]\"':;!@#$%^&*()\- +=/\\|~`")
 
 # Characters that must be escaped in a RediSearch full-text (TEXT field) query.
 # See https://redis.io/docs/latest/develop/interact/search-and-query/advanced-concepts/query_syntax/
-_TEXT_QUERY_ESCAPE_CHARS = set(',.<>{}[]"\'`@!:;#$%^&*()+=-~|/ \\')
+# IMPORTANT: space is NOT included — spaces are word separators, not operators.
+# Escaping them fuses multi-word queries into a single token that never matches.
+_TEXT_QUERY_ESCAPE_CHARS = set(',.<>{}[]"\'`@!:;#$%^&*()+=-~|\\')
 
 
 def escape_tag_value(value: str) -> str:
@@ -111,11 +113,11 @@ def vector_point_to_json_doc(point: VectorPoint) -> Dict[str, Any]:
           "dense_embedding": [...],          # list[float]
           "metadata_orgId": "...",           # flattened metadata fields (TAG indexed)
           "metadata_virtualRecordId": "...",
-          ...raw metadata fields also nested under "metadata"...
         }
 
-    Flattened ``metadata_*`` fields allow Redis TAG/NUMERIC indexing without
-    dots (Redis FT field names cannot contain dots).
+    Metadata is stored only in flattened ``metadata_*`` keys (needed for
+    Redis FT TAG indexing).  On read, ``reconstruct_metadata`` rebuilds the
+    nested ``metadata`` dict from those keys, avoiding data duplication.
     """
     doc: Dict[str, Any] = {
         "page_content": point.payload.get("page_content", ""),
@@ -124,14 +126,24 @@ def vector_point_to_json_doc(point: VectorPoint) -> Dict[str, Any]:
         doc["dense_embedding"] = point.dense_vector
 
     metadata = point.payload.get("metadata", {})
-    # Keep the nested metadata blob for downstream retrieval
-    doc["metadata"] = metadata
-
-    # Flatten selected metadata fields for indexing
     for k, v in metadata.items():
         doc[f"metadata_{k}"] = v
 
     return doc
+
+
+def reconstruct_metadata(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Rebuild the nested ``metadata`` dict from flattened ``metadata_*`` keys.
+
+    Also handles legacy documents that still carry the nested ``metadata`` blob.
+    """
+    if "metadata" in doc and isinstance(doc["metadata"], dict):
+        return doc["metadata"]
+    return {
+        k[len("metadata_"):]: v
+        for k, v in doc.items()
+        if k.startswith("metadata_")
+    }
 
 
 def _decode(val: Any) -> str:
@@ -160,58 +172,86 @@ def _parse_fields_list(fields_list: Any) -> Dict[str, Any]:
     return fields
 
 
+def _as_map(obj: Any) -> Dict[str, Any]:
+    """Normalise a Redis map reply to a ``{str: value}`` dict.
+
+    Handles both RESP2 (flat ``[k, v, k, v, ...]`` list) and RESP3 (native
+    dict) representations, decoding all keys to ``str``.
+    """
+    if isinstance(obj, dict):
+        return {_decode(k): v for k, v in obj.items()}
+    return _parse_fields_list(obj)
+
+
+def _load_json_blob(json_blob: Any) -> Optional[Dict[str, Any]]:
+    """Decode and parse a JSON blob from a Redis reply; None on failure."""
+    if not json_blob:
+        return None
+    try:
+        if isinstance(json_blob, (bytes, bytearray)):
+            json_blob = json_blob.decode()
+        # RediSearch may wrap a JSON-path projection ($) in a single-element list.
+        if isinstance(json_blob, (list, tuple)):
+            json_blob = json_blob[0] if json_blob else None
+            if isinstance(json_blob, (bytes, bytearray)):
+                json_blob = json_blob.decode()
+        if not json_blob:
+            return None
+        doc = json.loads(json_blob)
+        return doc if isinstance(doc, dict) else None
+    except Exception:
+        return None
+
+
 def parse_ft_hybrid_reply(reply: Any, with_payload: bool = True) -> List[SearchResult]:
-    """Parse the reply from ``FT.HYBRID … LOAD 1 $`` into SearchResult objects.
+    """Parse an ``FT.HYBRID`` reply into SearchResult objects.
 
-    Reply format (``decode_responses=False``)::
+    Redis 8.4 ``FT.HYBRID`` returns a *map* (not the ``FT.SEARCH`` array
+    shape).  Under RESP2 (``decode_responses=False``) it arrives as a flat
+    key/value list::
 
-        [total_count,
-         b"prefix:id1", [b"__score", b"0.0167", b"$", b"{...json...}"],
-         b"prefix:id2", [...], ...]
+        [b"total_results", 2,
+         b"results", [
+             [b"$", b"{...json...}", b"__key", b"records:id1", b"__score", b"0.03"],
+             [b"$", b"{...json...}", b"__key", b"records:id2", b"__score", b"0.03"],
+         ],
+         b"warnings", [],
+         b"execution_time", b"3.2"]
 
-    The RRF combined score is stored in the ``__score`` field.
+    Each result entry is itself a flat field list produced by
+    ``LOAD 3 $ @__key @__score``.  ``__score`` is the RRF combined score and
+    ``__key`` is the full Redis key (``{collection}:{point_id}``).
     """
     results: List[SearchResult] = []
-    if not reply or not isinstance(reply, (list, tuple)):
+    if not reply:
         return results
 
-    items = list(reply[1:])  # skip total count at index 0
+    top = _as_map(reply)
+    raw_results = top.get("results")
+    if not isinstance(raw_results, (list, tuple)):
+        return results
 
-    i = 0
-    while i < len(items) - 1:
-        raw_key = items[i]
-        fields_list = items[i + 1]
-        i += 2
+    for entry in raw_results:
+        fields = _as_map(entry)
 
-        if not isinstance(fields_list, (list, tuple)):
-            continue
-
-        fields = _parse_fields_list(fields_list)
-
-        # RRF score field — Redis 8.4 FT.HYBRID returns it as "__score"
-        score_raw = fields.get("__score") or fields.get("@__combined_score") or "0"
+        score_raw = fields.get("__score") or fields.get("@__score") or "0"
         try:
             score = float(_decode(score_raw))
         except (TypeError, ValueError):
             score = 0.0
 
+        key_str = _decode(fields.get("__key") or fields.get("@__key") or "")
+        point_id = key_str.rsplit(":", 1)[-1] if ":" in key_str else key_str
+
         payload: Dict[str, Any] = {}
         if with_payload:
-            json_blob = fields.get("$")
-            if json_blob:
-                try:
-                    if isinstance(json_blob, (bytes, bytearray)):
-                        json_blob = json_blob.decode()
-                    doc = json.loads(json_blob)
-                    payload = {
-                        "page_content": doc.get("page_content", ""),
-                        "metadata": doc.get("metadata", {}),
-                    }
-                except Exception:
-                    pass
+            doc = _load_json_blob(fields.get("$"))
+            if doc is not None:
+                payload = {
+                    "page_content": doc.get("page_content", ""),
+                    "metadata": reconstruct_metadata(doc),
+                }
 
-        key_str = _decode(raw_key)
-        point_id = key_str.rsplit(":", 1)[-1] if ":" in key_str else key_str
         results.append(SearchResult(id=point_id, score=score, payload=payload))
 
     return results
@@ -252,7 +292,7 @@ def parse_ft_search_reply(reply: Any) -> List[SearchResult]:
                 doc = json.loads(json_blob)
                 payload = {
                     "page_content": doc.get("page_content", ""),
-                    "metadata": doc.get("metadata", {}),
+                    "metadata": reconstruct_metadata(doc),
                 }
             except Exception:
                 pass
