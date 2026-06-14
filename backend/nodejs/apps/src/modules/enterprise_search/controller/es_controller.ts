@@ -35,6 +35,7 @@ import {
   ServiceUnavailableError,
   BadGatewayError,
   GatewayTimeoutError,
+  UnprocessableEntityError,
 } from '../../../libs/errors/http.errors';
 import {
   AICommandOptions,
@@ -347,6 +348,9 @@ const hydrateScopedRequestAsUser = async (
 };
 
   const handleBackendError = (error: any, operation: string): Error => {
+    const resolveErrorMessage = (err: any): string =>
+      err?.message || err?.msg || 'Unknown error';
+
     // Network/connection failure handling first
     if (
       (error?.cause && error.cause.code === 'ECONNREFUSED') ||
@@ -363,7 +367,7 @@ const hydrateScopedRequestAsUser = async (
     if (error.response) {
       const { status, data } = error.response;
       const errorDetail =
-        data?.detail || data?.reason || data?.message || 'Unknown error';
+        data?.detail || data?.reason || data?.message || error.msg || 'Unknown error';
   
       logger.error(`Backend error during ${operation}`, {
         status,
@@ -380,6 +384,8 @@ const hydrateScopedRequestAsUser = async (
           return new ForbiddenError(errorDetail);
         case 404:
           return new NotFoundError(errorDetail);
+        case 422:
+          return new UnprocessableEntityError(errorDetail);
         case 500:
           return new InternalServerError(errorDetail);
         case 502:
@@ -411,6 +417,8 @@ const hydrateScopedRequestAsUser = async (
           return new ForbiddenError(errorDetail);
         case 404:
           return new NotFoundError(errorDetail);
+        case 422:
+          return new UnprocessableEntityError(errorDetail);
         case 500:
           return new InternalServerError(errorDetail);
         case 502:
@@ -428,7 +436,7 @@ const hydrateScopedRequestAsUser = async (
       return new BadRequestError(error.detail);
     }
 
-    return new InternalServerError(`${operation} failed: ${error.message}`);
+    return new InternalServerError(`${operation} failed: ${resolveErrorMessage(error)}`);
   };
   
   // Common helper to start AI streams with consistent error mapping and logging

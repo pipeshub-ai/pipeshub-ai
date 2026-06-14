@@ -22,6 +22,7 @@ export interface ProcessedError {
 }
 
 interface NodeValidationApiError {
+  code?: string;
   message?: string;
   metadata?: { errors?: Array<{ message?: string }> };
 }
