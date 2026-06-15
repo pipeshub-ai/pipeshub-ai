@@ -177,8 +177,8 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
       return {
         type: ErrorType.VALIDATION_ERROR,
         message:
-          message.trim() ||
           extractApiErrorMessage(data) ||
+          (typeof message === 'string' ? message.trim() : '') ||
           'Invalid request. Please check your input.',
         statusCode: status,
         details: data?.errors ? { errors: data.errors } : data?.details,

@@ -15,10 +15,10 @@ export class ValidationUtils {
       .filter((message): message is string => Boolean(message));
 
     if (messages.length === 0) {
-      return 'Validation failed';
+      return 'Validation failed'
     }
 
-    return messages.join('\n');
+    return messages.join('\n')
   }
 
   private static formatZodIssue(issue: ZodIssue): ValidationErrorDetail {
