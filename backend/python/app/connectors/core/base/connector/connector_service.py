@@ -39,7 +39,6 @@ class BaseConnector(ABC):
     created_by: str
     creator_email: Optional[str]
     _notification_service: NotificationService | None
-    _notification_cache: dict[str, tuple[float, float]] = {}
 
     def __init__(
         self,
@@ -69,6 +68,7 @@ class BaseConnector(ABC):
         self._connector_group_permission: Optional[Permission] = None
         self._notification_service = None
         self._background_tasks: set[asyncio.Task] = set()
+        self._notification_cache: dict[str, tuple[int, int]] = {}
 
     @abstractmethod
     async def init(self) -> bool:
@@ -401,8 +401,8 @@ class BaseConnector(ABC):
                 if now - next_allowed_time > MAX_NOTIFICATION_BACKOFF: # Backoff expired, reset to initial backoff
                     self._notification_cache[key] = (now + INITIAL_NOTIFICATION_BACKOFF, INITIAL_NOTIFICATION_BACKOFF)
                 else:
-                    new_next_allowed_time = now + backoff
-                    new_backoff = min(backoff * 2, MAX_NOTIFICATION_BACKOFF)
+                    new_backoff = min(backoff * 2, MAX_NOTIFICATION_BACKOFF) # Double the backoff (max 7 days)
+                    new_next_allowed_time = now + new_backoff
                     self._notification_cache[key] = (new_next_allowed_time, new_backoff)
         else:
             self._notification_cache[key] = (now + INITIAL_NOTIFICATION_BACKOFF, INITIAL_NOTIFICATION_BACKOFF)
