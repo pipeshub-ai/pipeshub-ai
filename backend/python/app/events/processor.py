@@ -1729,7 +1729,9 @@ class Processor:
                         caption_map[image["new_alt_text"]] = base64_urls[i]
 
             block_containers = await parser.parse(
-                modified_markdown, caption_map=caption_map or None
+                modified_markdown,
+                caption_map=caption_map or None,
+                name=recordName,
             )
 
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))

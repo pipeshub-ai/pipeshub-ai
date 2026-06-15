@@ -774,7 +774,9 @@ class TestMarkdownStringToBlocks:
 
         result = await parser._markdown_string_to_blocks("# H", "myfile.md")
         assert result is expected
-        parser._md_parser.parse.assert_awaited_once_with("# H", caption_map=None)
+        parser._md_parser.parse.assert_awaited_once_with(
+            "# H", caption_map=None, name="myfile.md"
+        )
 
     @pytest.mark.asyncio
     async def test_passes_caption_map_to_markdown_parser(self):
@@ -794,6 +796,7 @@ class TestMarkdownStringToBlocks:
         parser._md_parser.parse.assert_awaited_once_with(
             "# doc",
             caption_map={"cap1": "data:image/png;base64,QQ=="},
+            name="x.md",
         )
 
     @pytest.mark.asyncio
@@ -807,7 +810,9 @@ class TestMarkdownStringToBlocks:
         parser._md_parser.parse = AsyncMock(return_value=expected)
 
         await parser._markdown_string_to_blocks("# x", "x.md")
-        parser._md_parser.parse.assert_awaited_once_with("# x", caption_map=None)
+        parser._md_parser.parse.assert_awaited_once_with(
+            "# x", caption_map=None, name="x.md"
+        )
 
     @pytest.mark.asyncio
     async def test_image_block_sets_uri_when_data_was_none(self):
@@ -823,4 +828,5 @@ class TestMarkdownStringToBlocks:
         parser._md_parser.parse.assert_awaited_once_with(
             "#",
             caption_map={"c1": "data:x"},
+            name="x.md",
         )

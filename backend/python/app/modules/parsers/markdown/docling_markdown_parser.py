@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 import markdown as markdown_lib
@@ -114,21 +115,24 @@ class DoclingMarkdownParser:
         self,
         md_content: str,
         caption_map: Dict[str, str] | None = None,
+        name: str | None = None,
     ) -> BlocksContainer:
         """Parse Markdown to ``BlocksContainer`` via the Docling pipeline.
 
         Args:
             md_content: Markdown source string.
             caption_map: Optional mapping of image alt-text to base-64 data URIs.
+            name: Optional source filename or record name used for Docling ingestion.
 
         Returns:
             Populated ``BlocksContainer``.
         """
-        from app.modules.parsers.pdf.docling import DoclingProcessor
+        from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 
         html_bytes = self.parse_string(md_content)
         processor = DoclingProcessor(logger=self._logger, config=self._config_service)
-        doc = await processor.parse_document("document.md", html_bytes)
+        filename = f"{Path(name).stem}.md" if name else "document.md"
+        doc = await processor.parse_document(filename, html_bytes)
         container = await processor.create_blocks(doc)
 
         if caption_map:

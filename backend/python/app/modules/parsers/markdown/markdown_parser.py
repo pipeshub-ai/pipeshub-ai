@@ -28,6 +28,7 @@ class MarkdownParserProtocol(Protocol):
         self,
         md_content: str,
         caption_map: Dict[str, str] | None = None,
+        name: str | None = None,
     ) -> BlocksContainer:
         """Parse Markdown content into a ``BlocksContainer``."""
         ...

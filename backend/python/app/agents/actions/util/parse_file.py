@@ -404,5 +404,7 @@ class FileContentParser:
                     caption_map[image["new_alt_text"]] = base64_urls[i]
 
         return await self._md_parser.parse(
-            modified_markdown, caption_map=caption_map or None
+            modified_markdown,
+            caption_map=caption_map or None,
+            name=file_name,
         )

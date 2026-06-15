@@ -68,6 +68,7 @@ class MarkdownItParser:
         self,
         md_content: str,
         caption_map: Dict[str, str] | None = None,
+        name: str | None = None,
     ) -> BlocksContainer:
         """Async wrapper around ``parse_to_blocks`` for protocol conformance."""
         return self.parse_to_blocks(md_content, caption_map)

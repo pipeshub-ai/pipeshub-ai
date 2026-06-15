@@ -51,6 +51,8 @@ valid_group_labels = [
         GroupType.INLINE.value,
         GroupType.KEY_VALUE_AREA.value,
         GroupType.TEXT_SECTION.value,
+        GroupType.TABLE.value,
+        GroupType.CODE.value,
     ]
 
 def _safe_stringify_content(value: Any) -> str:
