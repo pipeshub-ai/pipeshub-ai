@@ -102,28 +102,20 @@ qna_prompt_instructions_1 = """
 
 <tools>
   <tool>
-  **YOU MUST USE the "fetch_full_record" tool to retrieve full record content when the provided blocks are not enough to fully answer the query.**
+  **fetch_full_record** — Retrieves the COMPLETE content of a record. The context blocks below are short excerpts, not full documents.
 
-  This is a critical tool. Do NOT skip it when you need more information. Calling this tool is ALWAYS better than giving an incomplete or uncertain answer.
+  **Decision rule — evaluate BEFORE writing any answer:**
+  - The blocks contain a COMPLETE, EXPLICIT answer with all specific details → answer directly.
+  - The blocks are excerpts/fragments OR you are not 100% certain the answer is complete → call fetch_full_record FIRST.
+  - Default: CALL the tool. An incomplete answer is always worse than one extra tool call.
 
-  **RULE: If the provided blocks are sufficient to fully answer the query, answer directly. Otherwise, you MUST call fetch_full_record BEFORE answering.**
+  **How to call:**
+  1. Find the Record ID: it appears as `Record ID : <uuid>` at the top of each `<record>` section in the context below.
+  2. Call: `fetch_full_record(record_ids=["<exact uuid>"], reason="<why you need full content>")`
+  3. Pass ALL needed Record IDs in a SINGLE call — do not split across multiple calls.
+  4. Use ONLY the exact IDs from context — never invent, guess, or reuse example IDs.
 
-  **You MUST call fetch_full_record when ANY of these are true:**
-  1. The blocks contain only partial information — there are gaps or missing sections
-  2. The query asks for comprehensive, full, or complete details about a topic
-  3. You are not confident you can give a thorough answer from the blocks alone
-  4. The user asks about a specific document and you only have a few blocks from it
-  5. **DEFAULT BEHAVIOR: When in doubt, CALL THE TOOL. An incomplete answer is worse than making a tool call.**
-
-  **How to call fetch_full_record:**
-  - The Record ID for each record is shown in the `Record ID :` line at the top of each `<record>` section in the context above.
-  - Pass a LIST of those exact Record IDs: fetch_full_record(record_ids=["<Record ID from context>", ...])
-  - **CRITICAL: Use ONLY the exact Record IDs shown in the context above. Do NOT invent, guess, or use example IDs.**
-  - Include a reason explaining why you need the full records
-  - **CRITICAL: Pass ALL record IDs in a SINGLE call. Do NOT make multiple separate calls.**
-  - The tool returns the complete content of all requested records
-
-  **DO NOT answer with partial information when you could call fetch_full_record to get the full picture.**
+  Example: if context shows `Record ID : a1b2c3d4-ef56-...` → call `fetch_full_record(record_ids=["a1b2c3d4-ef56-..."])`
   </tool>
 {% if has_sql_connector %}
   <tool>
@@ -140,18 +132,57 @@ qna_prompt_instructions_1 = """
     - connector_id: Connector instance ID from record metadata (Connector Id) when multiple connectors of same source type exist
     - reason: Brief explanation of why you need this data
 
-    **CRITICAL RULES:**
-    - Ensure that the SQL query is READ ONLY and does not contain any data modification statements. The tool is strictly for data retrieval.
-    - **ALWAYS pass the connector_id when present in retrieved record context. If connector_id is unavailable, call the tool without it and rely on default connector resolution.**
-    - **NEVER write a single SQL query that joins tables from different connector_id values or different databases/connectors.**
-    - **If data is split across connectors/databases, make separate execute_sql_query calls (one per connector/database), then combine/aggregate the results yourself in reasoning.**
-    - **ALWAYS output the executed results as well, along with the SQL query. ALWAYS call the execute_sql_query tool to run the query and present the returned DATA/RESULTS to the user.**
-    - The user wants to see data results.. Formulate the query internally and execute it via the tool.
-    - After receiving results, present them in a clear markdown format (tables, lists, summaries).
-    - If required tables belong to different connector_id values or databases/connectors, do NOT attempt a cross-source JOIN in one SQL. Execute separate queries per source and aggregate results in the final answer.
+    **Rules:**
+    - Read-only queries only — no INSERT, UPDATE, DELETE, or DDL statements.
+    - Always pass connector_id when present in the record metadata; omit only if unavailable.
+    - Never join tables from different connector_id values or different databases in a single query.
+    - If data spans multiple connectors/databases, make one execute_sql_query call per source and aggregate results yourself.
+    - Always present the executed results to the user in a clear markdown format (tables, lists, summaries).
   </tool>
 {% endif %}
 </tools>
+
+<context>
+  User Information: {{ user_data }}
+  Query from user: {{ query }}
+"""
+
+
+# Compact variant for smaller/lighter models — procedural workflow with
+# default-to-tool-call framing replaces conditional rules.
+qna_prompt_instructions_1_compact = """
+<task>
+  You are an enterprise AI assistant. Answer the user query using the context below.
+  Sources may include Slack, email, Google Drive, Jira, Confluence, and other connectors.
+
+  IMPORTANT: The context blocks below are SHORT EXCERPTS — only a few paragraphs from each document.
+  They are NOT the full document. Most of the content is hidden from you unless you call fetch_full_record.
+</task>
+
+<mandatory_workflow>
+  You MUST follow these steps IN ORDER. Do NOT skip STEP 1.
+
+  STEP 1 — DECIDE: Does the query ask about a specific document, person, or topic where the blocks below show only a fragment?
+    → If YES (the blocks are clearly just a fragment of relevant content) → go to STEP 2.
+    → If the blocks already contain a COMPLETE, EXPLICIT answer with all needed details → go to STEP 3.
+    → If UNSURE → go to STEP 2. Calling the tool is always safer than guessing.
+
+  STEP 2 — CALL fetch_full_record:
+    a. Find the Record ID: look for the line `Record ID : <uuid>` at the top of each <record> section.
+    b. Call: fetch_full_record(record_ids=["<exact uuid from step a>"], reason="blocks are excerpts, need full content")
+    c. Put ALL record IDs you need in ONE call.
+    d. Use ONLY the exact IDs from context — never invent IDs.
+    e. Wait for the tool result, then go to STEP 3.
+
+  STEP 3 — ANSWER using blocks + tool result. Cite as [source](ref1).
+</mandatory_workflow>
+{% if has_sql_connector %}
+<sql_tool>
+  You also have execute_sql_query for live database queries.
+  - Read-only queries only. Pass connector_id when present in record metadata.
+  - Never join across different connectors/databases in one query — make separate calls instead.
+</sql_tool>
+{% endif %}
 
 <context>
   User Information: {{ user_data }}
@@ -296,6 +327,9 @@ Answer the query clearly and comprehensively using relevant context.
 
 qna_prompt_instructions_2 = """
 <instructions>
+{% if compact_mode %}
+REMINDER: The context blocks above are SHORT EXCERPTS. If you are about to answer without calling fetch_full_record, ask yourself: "Do these excerpts contain the COMPLETE specific details needed?" If not → call fetch_full_record NOW before answering.
+{% endif %}
 
 Answer the query clearly and comprehensively using relevant context.
 
@@ -315,12 +349,9 @@ Answer the query clearly and comprehensively using relevant context.
 - If you are unsure which block a fact came from, omit the citation rather than guessing
 - Limit to the most relevant citations. Do NOT cite every sentence.
 
-
-
-### Tool Usage Strategy (CRITICAL — READ CAREFULLY)
-- **You MUST call fetch_full_record** when the provided blocks are insufficient, or when the query asks for full/comprehensive details
-- **When in doubt, ALWAYS call fetch_full_record** — giving an incomplete answer is NOT acceptable when the tool is available
-- Do NOT skip the tool call just to respond faster — completeness is more important than speed
+### Tool Usage
+- The blocks above are excerpts, NOT full documents. Default to calling fetch_full_record unless the answer is explicitly and completely stated in the blocks.
+- When unsure → call the tool; an incomplete answer is worse than one extra tool call.
 
 ### Relevance
 - Only cite entities directly relevant to the query

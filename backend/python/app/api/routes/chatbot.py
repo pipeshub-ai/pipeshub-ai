@@ -66,6 +66,40 @@ DEFAULT_CONTEXT_LENGTH = 128000
 logger = logging.getLogger(__name__)
 OCR_IMAGE_PAGE_CAP = 30
 
+# Substrings that identify models benefiting from the compact, procedural prompt
+# variant. Three categories:
+#   1. Known small/fast model families by name
+#   2. Parameter-count suffixes (e.g. "7b" in "llama3-7b-instruct")
+#   3. Quantization indicators — GGUF/GGML formats and common quantization
+#      methods (q2..q8 with trailing underscore to avoid false positives like
+#      "seq4"; awq / gptq / gguf / ggml are always local/quantised deployments).
+_SMALL_MODEL_NAME_MARKERS = frozenset({
+    # Small / fast model families
+    "mini", "haiku", "flash", "nano",
+    "phi", "tinyllama", "gemma", "smollm",
+    # Parameter-count indicators
+    "0.5b", "1b", "1.5b", "3b", "7b", "8b", "13b",
+    # Quantization file formats
+    "gguf", "ggml",
+    # GGUF quantization levels (trailing "_" prevents matching unrelated tokens)
+    "q2_", "q3_", "q4_", "q5_", "q6_", "q8_",
+    # Weight-quantization methods
+    "int4", "awq", "gptq",
+})
+
+
+def _is_small_model(model_config: dict[str, Any]) -> bool:
+    """Return True when the selected model is likely too small for verbose conditional prompts."""
+    if (model_config.get("provider") or "").lower() == "ollama":
+        return True
+    model_string = (model_config.get("configuration") or {}).get("model") or ""
+    model_name_lower = model_string.lower()
+    if any(marker in model_name_lower for marker in _SMALL_MODEL_NAME_MARKERS):
+        return True
+    context_length = model_config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
+    # Very short context windows also correlate with lightweight models.
+    return 0 < context_length < 8192
+
 router = APIRouter()
 
 # Pydantic models
@@ -316,10 +350,11 @@ def get_model_config_for_mode(chat_mode: str) -> dict[str, Any]:
             "max_tokens": 4096,
             "system_prompt": (
                 "You are an assistant. Answer queries in a professional, enterprise-appropriate format. "
-                "You MUST ONLY answer based on the provided internal knowledge base documents/attachments. "
+                "Answer based on the provided internal knowledge base documents/attachments. "
                 "Do NOT use your own training knowledge. "
-                "If the answer is not present in the provided context blocks, respond with: "
-                "'This information is not available in the internal knowledge base.'"
+                "When the provided context blocks are insufficient to fully answer a query, "
+                "use the fetch_full_record tool to retrieve the complete record content "
+                "before concluding that information is unavailable."
             )
         },
         "web_search": {
@@ -481,6 +516,7 @@ async def _build_chat_llm_messages(
     has_sql_connector: bool=False,
     blob_store: Any = None,
     org_id: str = "",
+    compact_mode: bool = False,
 ) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """System prompt (with optional custom override), prior turns, then user message with retrieval context."""
     system_prompt = _build_system_prompt(
@@ -519,6 +555,7 @@ async def _build_chat_llm_messages(
         is_multimodal_llm=is_multimodal_llm, from_tool=False, has_sql_connector=has_sql_connector,
         image_blocks=image_blocks or None,
         ref_mapper=ref_mapper,
+        compact_mode=compact_mode,
     )
 
     messages.append({"role": "user", "content": content})
@@ -786,6 +823,7 @@ async def _generate_internal_search_stream(
             )
             is_multimodal_llm = config.get("isMultimodal")
             context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
+            use_compact_prompt = _is_small_model(config)
 
             if llm is None:
                 raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
@@ -921,6 +959,7 @@ async def _generate_internal_search_stream(
                     has_sql_connector=has_sql_connector,
                     blob_store=blob_store,
                     org_id=org_id,
+                    compact_mode=use_compact_prompt,
                 )
 
                 fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
