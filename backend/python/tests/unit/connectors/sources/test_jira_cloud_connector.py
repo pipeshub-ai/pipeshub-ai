@@ -3718,6 +3718,11 @@ class TestFallbackPermissionsForForbiddenSchemeCloud:
         conn._cache_authenticated_jira_email(response)
         assert conn._authenticated_jira_email is None
 
+    def test_cache_authenticated_jira_email_ignores_none_response(self):
+        conn = _make_connector()
+        conn._cache_authenticated_jira_email(None)
+        assert conn._authenticated_jira_email is None
+
     @pytest.mark.asyncio
     async def test_notify_message_uses_cached_myself_email_not_creator_email(self):
         conn = _make_connector()

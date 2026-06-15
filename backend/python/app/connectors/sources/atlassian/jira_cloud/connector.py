@@ -857,6 +857,8 @@ class JiraConnector(BaseConnector):
 
     def _cache_authenticated_jira_email(self, response: Any) -> None:
         """Best-effort: extract emailAddress from GET /rest/api/3/myself response."""
+        if not response:
+            return
         try:
             if response.status == HttpStatusCode.OK.value:
                 email = (response.json() or {}).get("emailAddress")
