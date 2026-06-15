@@ -852,6 +852,19 @@ class JiraConnector(BaseConnector):
         # bulk enumeration.
         self._user_bulk_forbidden: bool = False
 
+        # Authenticated Jira user email from GET /rest/api/3/myself (cached during init)
+        self._authenticated_jira_email: Optional[str] = None
+
+    def _cache_authenticated_jira_email(self, response: Any) -> None:
+        """Best-effort: extract emailAddress from GET /rest/api/3/myself response."""
+        try:
+            if response.status == HttpStatusCode.OK.value:
+                email = (response.json() or {}).get("emailAddress")
+                if email:
+                    self._authenticated_jira_email = email.strip()
+        except Exception as e:
+            self.logger.debug("Could not cache authenticated Jira email: %s", e)
+
     # ============================================================================
     # Initialization & Configuration
     # ============================================================================
@@ -927,6 +940,12 @@ class JiraConnector(BaseConnector):
                         self.creator_email = creator.email
                 except Exception as e:
                     self.logger.warning("Could not resolve creator email for created_by %s: %s", self.created_by, e)
+
+            try:
+                myself_response = await self.data_source.get_current_user()
+                self._cache_authenticated_jira_email(myself_response)
+            except Exception as e:
+                self.logger.debug("Could not fetch authenticated Jira user during init: %s", e)
 
             return True
 
@@ -1926,11 +1945,22 @@ class JiraConnector(BaseConnector):
                 "instead of dropping all ACLs for this project.",
                 stage, project_key, status, self.creator_email,
             )
+            jira_email = self._authenticated_jira_email
+            if jira_email:
+                notify_message = (
+                    f"Ask your Jira admin to add {jira_email} as a project admin. "
+                    f"Until then, only you can access this project."
+                )
+            else:
+                notify_message = (
+                    f"Ask your Jira admin to grant the authenticated Jira sync user "
+                    f"project admin access for {project_key}. Until then, only you can access this project."
+                )
             await self.notify(
                 type=NotificationType.CONNECTOR_WARNING,
                 severity=NotificationSeverity.WARNING,
                 title=f"Could not read permissions for {project_key}",
-                message=f"Ask your Jira admin to add {self.creator_email} as a project admin. Until then, only you can access this project.",
+                message=notify_message,
                 payload={
                     "redirect_link": f"{self.site_url}/plugins/servlet/project-config/{project_key}/permissions",
                 },
