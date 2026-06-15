@@ -1247,7 +1247,7 @@ export const createGoogleWorkspaceCredentials =
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const org = await Org.findOne({ orgId, isDeleted: false });
+      const org = await Org.findOne({ _id: orgId, isDeleted: false });
       if (!org) {
         throw new BadRequestError('Organisaton not found');
       }
@@ -1516,7 +1516,7 @@ export const getGoogleWorkspaceCredentials =
   (keyValueStoreService: KeyValueStoreService, userId: string, orgId: string) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const org = await Org.findOne({ orgId, isDeleted: false });
+      const org = await Org.findOne({ _id: orgId, isDeleted: false });
       if (!org) {
         throw new BadRequestError('Organisaton not found');
       }
@@ -1626,7 +1626,7 @@ export const deleteGoogleWorkspaceCredentials =
   (keyValueStoreService: KeyValueStoreService, orgId: string) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const org = await Org.findOne({ orgId, isDeleted: false });
+      const org = await Org.findOne({ _id: orgId, isDeleted: false });
       if (!org) {
         throw new BadRequestError('Organisaton not found');
       }

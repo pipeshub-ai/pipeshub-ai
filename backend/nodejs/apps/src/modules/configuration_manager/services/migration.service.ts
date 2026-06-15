@@ -11,6 +11,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { ScheduledJobsBackfillMigration } from './migrations/scheduled_jobs_backfill.migration';
+import { DocumentOrgIdBackfillMigration } from './migrations/document_orgid_backfill.migration';
 import { Org } from '../../user_management/schema/org.schema';
 
 export interface MigrationDependencies {
@@ -37,6 +38,7 @@ export class MigrationService {
     this.logger.info('Running migration...');
     // await this.aiModelsMigration();  NO LONGER NEEDED
     await this.connectorSyncScheduleMigration(deps.scheduler, deps.appConfig);
+    await this.documentOrgIdBackfillMigration();
     this.logger.info('✅ Migration completed');
   }
 
@@ -81,6 +83,26 @@ export class MigrationService {
       }
     } catch (error) {
       this.logger.error('Connector sync schedule migration failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async documentOrgIdBackfillMigration(): Promise<void> {
+    this.logger.info('Running document orgId backfill migration');
+    try {
+      const result = await new DocumentOrgIdBackfillMigration(
+        this.logger,
+        this.keyValueStoreService,
+      ).run();
+
+      if (result.skipped) {
+        this.logger.info('✅ Document orgId backfill migration skipped (already done or no data)');
+      } else {
+        this.logger.info('✅ Document orgId backfill migration completed', result);
+      }
+    } catch (error) {
+      this.logger.error('Document orgId backfill migration failed', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }

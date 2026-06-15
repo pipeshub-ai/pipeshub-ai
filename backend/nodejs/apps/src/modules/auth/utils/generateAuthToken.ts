@@ -10,7 +10,7 @@ export async function generateAuthToken(
   jwtSecret: string,
 ) {
   // look up for
-  const org = await Org.findOne({ orgId: user.orgId, isDeleted: false });
+  const org = await Org.findOne({ _id: user.orgId, isDeleted: false });
   if (!org) {
     throw new NotFoundError('Organization not found');
   }

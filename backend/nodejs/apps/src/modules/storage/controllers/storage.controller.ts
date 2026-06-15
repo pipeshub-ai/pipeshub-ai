@@ -282,7 +282,8 @@ export class StorageController {
       const orgId = extractOrgId(req);
       const doc = await DocumentModel.findOne({
         _id: documentId,
-        orgId: orgId,
+        orgId: new mongoose.Types.ObjectId(orgId),
+        isDeleted: false,
       });
 
       if (!doc) {
@@ -306,7 +307,8 @@ export class StorageController {
       const { documentId } = req.params;
       const document = await DocumentModel.findOne({
         _id: documentId,
-        orgId,
+        orgId: new mongoose.Types.ObjectId(orgId),
+        isDeleted: false,
       });
 
       if (!document) {
@@ -849,7 +851,8 @@ export class StorageController {
 
       const document = await DocumentModel.findOne({
         _id: documentId,
-        orgId: req.user?.orgId,
+        orgId: new mongoose.Types.ObjectId(req.user?.orgId),
+        isDeleted: false,
       });
 
       if (!document || !document.documentPath) {
