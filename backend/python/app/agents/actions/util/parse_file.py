@@ -1,7 +1,9 @@
 """
 Parse supported file bytes into a ``BlocksContainer``, mirroring ``Processor`` flows.
 
-- DOCX / PPTX / MD / (HTML→MD) / TXT: ``DoclingProcessor`` parse + ``create_blocks``.
+- PDF: ``PyMuPDFOpenCVProcessor.load_document`` (PyMuPDF + OpenCV), not Docling.
+- HTML: ``HTMLParser.parse()`` (unified interface, backend selected by env var).
+- DOCX / PPTX / MD / TXT: ``DoclingProcessor`` parse + ``create_blocks``.
 - DOC / XLS / PPT: OLE2 → OOXML via existing converters, then same as DOCX / XLSX / PPTX.
 - CSV / TSV: decode → ``read_raw_rows`` → ``find_tables_in_csv`` →
   ``get_blocks_from_csv_with_multiple_tables`` (requires LLM).
@@ -17,8 +19,7 @@ import io
 import logging
 from pathlib import Path
 from typing import Final, Optional, Union
-from bs4 import BeautifulSoup
-from html_to_markdown import convert
+
 from pydantic import BaseModel
 
 from app.api.routes.chatbot import get_model_config
@@ -119,7 +120,7 @@ class FileContentParser:
 
         self._md_parser = MarkdownParser(logger=logger, config_service=config_service)
         self._mdx_parser = MDXParser()
-        self._html_parser = HTMLParser()
+        self._html_parser = HTMLParser(logger=logger, config_service=config_service)
         self._doc_parser = DocParser()
         self._xls_parser = XLSParser()
         self._ppt_parser = PPTParser()
@@ -370,20 +371,8 @@ class FileContentParser:
         return await self._markdown_string_to_blocks(md_content, file_name)
 
     async def handle_html(self, raw: bytes, file_name: str) -> BlocksContainer:
-        try:
-            soup = BeautifulSoup(raw, "html.parser")
-            for element in soup(
-                ["script", "style", "noscript", "iframe", "nav", "footer", "header"]
-            ):
-                element.decompose()
-            html_content = str(soup)
-        except Exception as e:
-            self._logger.warning("Failed to clean HTML: %s", e)
-            html_content = raw.decode("utf-8", errors="replace")
-
-        html_content = self._html_parser.replace_relative_image_urls(html_content)
-        markdown = convert(html_content)
-        return await self._markdown_string_to_blocks(markdown, file_name)
+        html_content = raw.decode("utf-8", errors="replace")
+        return await self._html_parser.parse(html_content)
 
     async def _markdown_string_to_blocks(
         self,

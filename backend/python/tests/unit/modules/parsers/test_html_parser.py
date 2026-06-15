@@ -1,18 +1,18 @@
-"""Unit tests for app.modules.parsers.html_parser.html_parser.HTMLParser."""
+"""Unit tests for DoclingHtmlParser and the HTMLParser env-driven shim."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from bs4 import BeautifulSoup
 
-from app.modules.parsers.html_parser.html_parser import HTMLParser
+from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
 
 
 @pytest.fixture
 def parser():
-    """Create HTMLParser with mocked DocumentConverter to avoid heavy import."""
-    with patch("app.modules.parsers.html_parser.html_parser.DocumentConverter"):
-        return HTMLParser()
+    """Create DoclingHtmlParser with mocked DocumentConverter to avoid heavy import."""
+    with patch("app.modules.parsers.html_parser.docling_html_parser.DocumentConverter"):
+        return DoclingHtmlParser()
 
 
 # ---------------------------------------------------------------------------
@@ -52,8 +52,11 @@ class TestParseFile:
         mock_result.document = MagicMock()
         mock_converter.convert.return_value = mock_result
 
-        with patch("app.modules.parsers.html_parser.html_parser.DocumentConverter", return_value=mock_converter):
-            parser = HTMLParser()
+        with patch(
+            "app.modules.parsers.html_parser.docling_html_parser.DocumentConverter",
+            return_value=mock_converter,
+        ):
+            parser = DoclingHtmlParser()
             doc = parser.parse_file("/path/to/file.html")
             assert doc is mock_result.document
             mock_converter.convert.assert_called_once_with("/path/to/file.html")
@@ -65,8 +68,11 @@ class TestParseFile:
         mock_result.status.__str__ = lambda self: "failure"
         mock_converter.convert.return_value = mock_result
 
-        with patch("app.modules.parsers.html_parser.html_parser.DocumentConverter", return_value=mock_converter):
-            parser = HTMLParser()
+        with patch(
+            "app.modules.parsers.html_parser.docling_html_parser.DocumentConverter",
+            return_value=mock_converter,
+        ):
+            parser = DoclingHtmlParser()
             with pytest.raises(ValueError, match="Failed to parse HTML"):
                 parser.parse_file("/path/to/file.html")
 
@@ -251,3 +257,119 @@ class TestReplaceRelativeImageUrls:
         # <a> and <script> tags should keep relative URLs
         assert 'href="/page"' in result
         assert 'src="/js/app.js"' in result
+
+
+# ---------------------------------------------------------------------------
+# DoclingHtmlParser.clean_html
+# ---------------------------------------------------------------------------
+class TestDoclingHtmlCleanHtml:
+    def test_removes_script_tags(self, parser):
+        html = "<html><body><script>alert('hi')</script><p>Content</p></body></html>"
+        result = parser.clean_html(html)
+        assert "<script>" not in result
+        assert "<p>Content</p>" in result
+
+    def test_removes_style_tags(self, parser):
+        html = "<html><head><style>.foo{color:red}</style></head><body><p>Content</p></body></html>"
+        result = parser.clean_html(html)
+        assert "<style>" not in result
+        assert "<p>Content</p>" in result
+
+    def test_removes_nav_footer_header(self, parser):
+        html = "<html><body><nav>Nav</nav><header>Header</header><p>Content</p><footer>Footer</footer></body></html>"
+        result = parser.clean_html(html)
+        assert "<nav>" not in result
+        assert "<header>" not in result
+        assert "<footer>" not in result
+        assert "<p>Content</p>" in result
+
+    def test_removes_noscript_iframe(self, parser):
+        html = "<html><body><noscript>No JS</noscript><iframe src='x'></iframe><p>Content</p></body></html>"
+        result = parser.clean_html(html)
+        assert "<noscript>" not in result
+        assert "<iframe>" not in result
+        assert "<p>Content</p>" in result
+
+    def test_returns_original_on_error(self, parser):
+        with patch.object(parser, "_logger") as mock_logger:
+            with patch("app.modules.parsers.html_parser.docling_html_parser.BeautifulSoup", side_effect=Exception("parse error")):
+                result = parser.clean_html("<p>Content</p>")
+        assert result == "<p>Content</p>"
+        mock_logger.warning.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# DoclingHtmlParser.parse
+# ---------------------------------------------------------------------------
+class TestDoclingHtmlParse:
+    @pytest.mark.asyncio
+    async def test_parse_uses_docling_processor(self, parser):
+        expected = MagicMock()
+        with patch(
+            "app.modules.parsers.pdf.docling.DoclingProcessor"
+        ) as mock_processor_cls:
+            instance = mock_processor_cls.return_value
+            instance.parse_document = AsyncMock(return_value=MagicMock())
+            instance.create_blocks = AsyncMock(return_value=expected)
+
+            result = await parser.parse("<p>Hello</p>")
+
+        assert result is expected
+        instance.parse_document.assert_awaited_once()
+        instance.create_blocks.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_parse_cleans_absolutizes_and_converts_to_markdown(self, parser):
+        expected = MagicMock()
+        with patch.object(parser, "clean_html", return_value="<p>cleaned</p>") as mock_clean, \
+             patch.object(parser, "replace_relative_image_urls", return_value="<p>abs</p>") as mock_abs, \
+             patch("app.modules.parsers.html_parser.docling_html_parser.convert", return_value="# markdown") as mock_convert, \
+             patch("app.modules.parsers.pdf.docling.DoclingProcessor") as mock_processor_cls:
+            instance = mock_processor_cls.return_value
+            instance.parse_document = AsyncMock(return_value=MagicMock())
+            instance.create_blocks = AsyncMock(return_value=expected)
+
+            await parser.parse("<script>x</script><p>Hello</p>")
+
+        mock_clean.assert_called_once_with("<script>x</script><p>Hello</p>")
+        mock_abs.assert_called_once_with("<p>cleaned</p>")
+        mock_convert.assert_called_once_with("<p>abs</p>")
+        instance.parse_document.assert_awaited_once()
+        call_args = instance.parse_document.call_args
+        assert call_args[0][0] == "document.md"
+
+
+# ---------------------------------------------------------------------------
+# HTMLParser shim — env-driven backend selection
+# ---------------------------------------------------------------------------
+class TestHTMLParserShim:
+    def test_html_parser_defaults_to_selectolax(self):
+        with patch.dict("os.environ", {"HTML_PARSER_BACKEND": "selectolax"}, clear=False):
+            import importlib
+
+            import app.modules.parsers.html_parser.html_parser as html_parser_module
+
+            importlib.reload(html_parser_module)
+            HTMLParser = html_parser_module.HTMLParser
+
+        assert HTMLParser.__name__ == "SelectolaxHtmlParser"
+        assert HTMLParser.__module__ == (
+            "app.modules.parsers.html_parser.selectolax_html_parser"
+        )
+
+    def test_html_parser_can_select_docling_backend(self):
+        with patch.dict("os.environ", {"HTML_PARSER_BACKEND": "docling"}, clear=False):
+            with patch(
+                "app.modules.parsers.html_parser.docling_html_parser.DocumentConverter"
+            ):
+                import importlib
+
+                import app.modules.parsers.html_parser.html_parser as html_parser_module
+
+                importlib.reload(html_parser_module)
+                HTMLParser = html_parser_module.HTMLParser
+
+        assert HTMLParser.__name__ == "DoclingHtmlParser"
+        assert HTMLParser.__module__ == (
+            "app.modules.parsers.html_parser.docling_html_parser"
+        )

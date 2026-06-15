@@ -272,6 +272,7 @@ dependencies = [
     "redis==5.2.1",
     "requests-toolbelt==1.0.0",
     "requests==2.33.0",
+    "selectolax>=0.3.21",
     "sentence-transformers==3.4.1",
     "slack-sdk==3.27.0",
     "spacy==3.8.2",

@@ -3,9 +3,6 @@ import json
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
-from bs4 import BeautifulSoup
-from html_to_markdown import convert
-
 from app.config.constants.ai_models import AzureDocIntelligenceModel, OCRProvider
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -1554,41 +1551,61 @@ class Processor:
         )
 
         try:
-            html_content = None
-            try:
-                soup = BeautifulSoup(html_binary, 'html.parser')
+            # Convert binary to string
+            if isinstance(html_binary, bytes):
+                html_content = html_binary.decode("utf-8")
+            else:
+                html_content = html_binary
 
-                # Remove script, style, and other non-content elements
-                for element in soup(["script", "style", "noscript", "iframe", "nav", "footer", "header"]):
-                    element.decompose()
+            html_content = html_content.strip()
 
-                html_content = str(soup)
+            if not html_content:
+                try:
+                    await self._mark_record(recordId, ProgressStatus.EMPTY)
+                    self.logger.info("✅ HTML processing completed - empty content.")
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                    return
+                except DocumentProcessingError:
+                    raise
+                except Exception as e:
+                    raise DocumentProcessingError(
+                        "Error updating record status: " + str(e),
+                        doc_id=recordId,
+                        details={"error": str(e)},
+                    ) from e
 
-            except Exception as e:
-                self.logger.warning(f"⚠️ Failed to clean HTML: {e}")
-
-            if html_content is None:
-                if isinstance(html_binary, bytes):
-                    html_content = html_binary.decode("utf-8")
-                else:
-                    html_content = html_binary
+            # Use the unified HTML parser interface
+            self.logger.debug("📄 Processing HTML content")
             html_parser = self.parsers[ExtensionTypes.HTML.value]
             html_content = html_parser.replace_relative_image_urls(html_content)
-            markdown = convert(html_content)
-            md_binary = markdown.encode("utf-8")
 
-            # Use the existing markdown processing function
-            async for event in self.process_md_document(
-                recordName=recordName,
-                recordId=recordId,
-                md_binary=md_binary,
-                virtual_record_id=virtual_record_id,
-                event_type=event_type,
-                prev_virtual_record_id=prev_virtual_record_id,
-            ):
-                yield event
+            # Parse HTML directly to blocks (cleaning and URL absolutization handled by parser)
+            block_containers = await html_parser.parse(html_content)
 
-            self.logger.info("✅ HTML processing completed successfully using markdown conversion.")
+            # Signal parsing complete
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+
+            record = await self.graph_provider.get_document(
+                recordId, CollectionNames.RECORDS.value
+            )
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                return
+            record = convert_record_dict_to_record(record)
+
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+
+            ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
+
+            # Signal indexing complete
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+
+            self.logger.info("✅ HTML processing completed successfully.")
 
         except Exception as e:
             self.logger.error(f"❌ Error processing HTML document: {str(e)}")
