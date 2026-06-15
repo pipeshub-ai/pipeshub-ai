@@ -21,32 +21,20 @@ export interface ProcessedError {
   originalError?: Error;
 }
 
-interface NodeValidationApiError {
+interface NestedApiError {
   code?: string;
   message?: string;
-  metadata?: { errors?: Array<{ message?: string }> };
 }
 
 interface ApiErrorResponse {
   message?: string;
-  error?: string | NodeValidationApiError;
+  error?: string | NestedApiError;
   errors?: Record<string, string[]>;
   details?: Record<string, unknown>;
   /** FastAPI / similar */
   detail?: string | Array<string | { msg?: string }>;
   /** Retrieval/search and other services: machine-readable outcome (e.g. `accessible_records_not_found`). */
   status?: string;
-}
-
-/** Node validation middleware: field messages live in error.metadata.errors (dev only). */
-function nodeValidationMiddlewareMessage(data: ApiErrorResponse | undefined, fallback: string): string {
-  const apiError = typeof data?.error === 'object' ? data.error : undefined;
-  const fieldMessages = apiError?.metadata?.errors
-    ?.map((e) => e.message?.trim())
-    .filter(Boolean)
-    .join('\n');
-  if (fieldMessages) return fieldMessages;
-  return apiError?.message?.trim() || fallback;
 }
 
 /**
@@ -91,6 +79,25 @@ export function extractApiErrorMessage(data: unknown): string | null {
   }
 
   return null;
+}
+
+/**
+ * Best-effort user-facing message from an API client rejection (ProcessedError or raw Axios body).
+ */
+export function getApiClientErrorMessage(error: unknown, fallback: string): string {
+  if (isProcessedError(error) && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  const responseData = (error as { response?: { data?: unknown } })?.response?.data;
+  const fromBody = extractApiErrorMessage(responseData);
+  if (fromBody) return fromBody;
+
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  return fallback;
 }
 
 function isAxiosRequestCancelled(error: AxiosError): boolean {
@@ -169,10 +176,10 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
     case 422:
       return {
         type: ErrorType.VALIDATION_ERROR,
-        message: nodeValidationMiddlewareMessage(
-          data,
-          message || 'Invalid request. Please check your input.',
-        ),
+        message:
+          message.trim() ||
+          extractApiErrorMessage(data) ||
+          'Invalid request. Please check your input.',
         statusCode: status,
         details: data?.errors ? { errors: data.errors } : data?.details,
         originalError: error,

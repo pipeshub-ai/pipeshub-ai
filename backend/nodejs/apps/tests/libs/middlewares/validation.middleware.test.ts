@@ -168,7 +168,7 @@ describe('ValidationMiddleware', () => {
       expect(next.calledOnce).to.be.true
       const error = next.firstCall.args[0]
       expect(error).to.be.instanceOf(ValidationError)
-      expect(error.message).to.equal('Validation failed')
+      expect(error.message).to.equal(error.errors[0].message)
       expect(error.errors).to.be.an('array')
       expect(error.errors.length).to.be.greaterThan(0)
     })

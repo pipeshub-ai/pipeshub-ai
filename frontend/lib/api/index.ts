@@ -11,6 +11,8 @@ export type { StreamingOptions, SSEEvent, SSEStreamingOptions } from './streamin
 // Error handling
 export {
   processError,
+  extractApiErrorMessage,
+  getApiClientErrorMessage,
   ErrorType,
   isProcessedError,
   isRequestCancelledError,

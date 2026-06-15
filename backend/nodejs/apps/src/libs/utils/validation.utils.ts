@@ -6,6 +6,21 @@ export class ValidationUtils {
     return error.errors.map((issue) => this.formatZodIssue(issue));
   }
 
+  /** User-facing summary from formatted Zod issues (used as ValidationError.message). */
+  static formatValidationErrorMessage(
+    errors: ValidationErrorDetail[],
+  ): string {
+    const messages = errors
+      .map((issue) => issue.message?.trim())
+      .filter((message): message is string => Boolean(message));
+
+    if (messages.length === 0) {
+      return 'Validation failed';
+    }
+
+    return messages.join('\n');
+  }
+
   private static formatZodIssue(issue: ZodIssue): ValidationErrorDetail {
     return {
       field: issue.path.join('.'),
