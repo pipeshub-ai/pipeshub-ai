@@ -93,6 +93,6 @@
     "typescript": "^5.9.2",
     "@testing-library/react": "^16.3.0",
     "jsdom": "^26.1.0",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.6"
   }
 }
