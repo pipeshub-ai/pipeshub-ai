@@ -81,25 +81,6 @@ export function extractApiErrorMessage(data: unknown): string | null {
   return null;
 }
 
-/**
- * Best-effort user-facing message from an API client rejection (ProcessedError or raw Axios body).
- */
-export function getApiClientErrorMessage(error: unknown, fallback: string): string {
-  if (isProcessedError(error) && error.message.trim()) {
-    return error.message.trim();
-  }
-
-  const responseData = (error as { response?: { data?: unknown } })?.response?.data;
-  const fromBody = extractApiErrorMessage(responseData);
-  if (fromBody) return fromBody;
-
-  if (error instanceof Error && error.message.trim()) {
-    return error.message.trim();
-  }
-
-  return fallback;
-}
-
 function isAxiosRequestCancelled(error: AxiosError): boolean {
   return error.code === 'ERR_CANCELED' || error.message === 'canceled';
 }
