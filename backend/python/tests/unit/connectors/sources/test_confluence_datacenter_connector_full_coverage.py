@@ -667,7 +667,7 @@ class TestFetchCommentContent:
         c = _c()
         mock_ds = MagicMock()
         mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Footer</p>"}},
+            "body": {"export_view": {"value": "<p>Footer</p>"}},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         record = MagicMock()
@@ -681,7 +681,7 @@ class TestFetchCommentContent:
         c = _c()
         mock_ds = MagicMock()
         mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Inline</p>"}},
+            "body": {"export_view": {"value": "<p>Inline</p>"}},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         record = MagicMock()

@@ -198,6 +198,55 @@ class TestOpenAIAdapterGenerate:
 
         assert images == [b"ok"]
 
+    @pytest.mark.asyncio
+    async def test_generate_downloads_url_fallback(self):
+        adapter = get_image_generation_model("openAI", _openai_config())
+        mock_response = SimpleNamespace(
+            data=[SimpleNamespace(b64_json=None, url="https://cdn.example/img.png")]
+        )
+        mock_client = MagicMock()
+        mock_client.images.generate = AsyncMock(return_value=mock_response)
+        mock_client.close = AsyncMock()
+
+        mock_http_response = MagicMock()
+        mock_http_response.content = b"downloaded-png"
+        mock_http_response.raise_for_status = MagicMock()
+
+        mock_http_client = MagicMock()
+        mock_http_client.get = AsyncMock(return_value=mock_http_response)
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("openai.AsyncOpenAI", return_value=mock_client), patch(
+            "httpx.AsyncClient", return_value=mock_http_client
+        ):
+            images = await adapter.generate("x")
+
+        assert images == [b"downloaded-png"]
+        mock_http_client.get.assert_awaited_once_with("https://cdn.example/img.png")
+
+    @pytest.mark.asyncio
+    async def test_generate_url_fallback_failure_is_swallowed(self):
+        adapter = get_image_generation_model("openAI", _openai_config())
+        mock_response = SimpleNamespace(
+            data=[SimpleNamespace(b64_json=None, url="https://cdn.example/bad.png")]
+        )
+        mock_client = MagicMock()
+        mock_client.images.generate = AsyncMock(return_value=mock_response)
+        mock_client.close = AsyncMock()
+
+        mock_http_client = MagicMock()
+        mock_http_client.get = AsyncMock(side_effect=RuntimeError("network down"))
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("openai.AsyncOpenAI", return_value=mock_client), patch(
+            "httpx.AsyncClient", return_value=mock_http_client
+        ):
+            images = await adapter.generate("x")
+
+        assert images == []
+
 
 # ---------------------------------------------------------------------------
 # Gemini adapter.generate()
@@ -232,6 +281,28 @@ class TestGeminiAdapterGenerate:
         kwargs = fake_client.aio.models.generate_images.await_args.kwargs
         assert kwargs["model"] == "imagen-4.0-generate-001"
         assert kwargs["prompt"] == "a cat"
+
+    @pytest.mark.asyncio
+    async def test_imagen_skips_entries_without_bytes(self):
+        adapter = get_image_generation_model(
+            "gemini", _gemini_config("imagen-4.0-generate-001"),
+        )
+        gi_with_bytes = SimpleNamespace(image=SimpleNamespace(image_bytes=b"ok"))
+        gi_without = SimpleNamespace(image=SimpleNamespace(image_bytes=None))
+        gi_no_image = SimpleNamespace(image=None)
+        response = SimpleNamespace(
+            generated_images=[gi_with_bytes, gi_without, gi_no_image]
+        )
+
+        fake_client = MagicMock()
+        fake_client.aio.models.generate_images = AsyncMock(return_value=response)
+
+        with patch("google.genai.Client", return_value=fake_client), patch(
+            "google.genai.types.GenerateImagesConfig", MagicMock()
+        ):
+            images = await adapter.generate("a cat", n=1)
+
+        assert images == [b"ok"]
 
     @pytest.mark.asyncio
     async def test_gemini_image_dispatch(self):

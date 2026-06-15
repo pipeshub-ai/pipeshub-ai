@@ -1455,3 +1455,356 @@ class TestCreateTransformContextCalledByProcessMethods:
             )
 
             mock_ctx.assert_called_once()
+
+
+# ===================================================================
+# Additional branch coverage (>95% on app.events.processor)
+# ===================================================================
+
+
+class TestProcessorCoverageBranchesTo95:
+    """Remaining edge branches in processor.py."""
+
+    @pytest.mark.asyncio
+    async def test_process_pptx_adds_extension_when_missing(self):
+        """recordName normalized to end with .pptx when omitted."""
+        proc = _make_processor()
+
+        mock_processor = AsyncMock()
+        mock_processor.parse_document = AsyncMock(return_value=MagicMock())
+        mock_processor.create_blocks = AsyncMock(
+            return_value=MagicMock(blocks=[], block_groups=[])
+        )
+
+        proc.graph_provider.get_document = AsyncMock(
+            return_value=_mock_record_dict(recordName="slides")
+        )
+
+        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor), \
+             patch("app.events.processor.IndexingPipeline") as MockPipeline:
+            MockPipeline.return_value.apply = AsyncMock()
+
+            await _collect_events(
+                proc.process_pptx_document(
+                    "Slides", "r1", "1", "src", "o1", b"pptx-bin", "vr1"
+                )
+            )
+
+        fname = mock_processor.parse_document.await_args.args[0]
+        assert fname.lower().endswith(".pptx")
+
+    @pytest.mark.asyncio
+    async def test_process_delimited_read_raw_rows_raises_non_unicode_then_succeeds(self):
+        """generic Exception path in decode loop continues to next encoding."""
+        proc = _make_processor()
+        csv_parser = MagicMock()
+        csv_parser.read_raw_rows = MagicMock(
+            side_effect=[ValueError("bad csv"), [["h1", "h2"], ["a", "b"]]]
+        )
+        csv_parser.find_tables_in_csv.return_value = [MagicMock()]
+        csv_parser.get_blocks_from_csv_with_multiple_tables = AsyncMock(
+            return_value=MagicMock()
+        )
+
+        proc.parsers = {"csv": csv_parser}
+
+        proc.graph_provider.get_document = AsyncMock(
+            return_value=_mock_record_dict(recordName="t.csv")
+        )
+
+        data = "a,b\nc,d\n".encode("utf-8")
+
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
+             patch("app.events.processor.IndexingPipeline") as MockPipeline:
+            mock_llm.return_value = (MagicMock(), {})
+            MockPipeline.return_value.apply = AsyncMock()
+
+            events = await _collect_events(
+                proc.process_delimited_document(
+                    "t.csv", "r1", data, "vr1", extension="csv",
+                )
+            )
+
+        assert any(e.event == "indexing_complete" for e in events)
+        assert csv_parser.read_raw_rows.call_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_process_md_with_images_base64_mapping(self):
+        """Markdown path: extract images, urls_to_base64, map captions to IMAGE blocks."""
+        proc = _make_processor()
+        md_parser = MagicMock()
+        md_parser.extract_and_replace_images.return_value = (
+            "![pic](http://example.com/i.png)",
+            [{"url": "http://example.com/i.png", "new_alt_text": "pic"}],
+        )
+        md_parser.parse_string.return_value = b"# md"
+        png_parser = MagicMock()
+        png_parser.urls_to_base64 = AsyncMock(return_value=["data:image/png;base64,AAA"])
+
+        proc.parsers = {"md": md_parser, "png": png_parser}
+
+        from app.models.blocks import (
+            Block,
+            BlockType,
+            DataFormat,
+            BlocksContainer,
+            ImageMetadata,
+        )
+
+        mock_processor = AsyncMock()
+        mock_processor.parse_document = AsyncMock(return_value=MagicMock())
+        blk = Block(
+            index=0,
+            type=BlockType.IMAGE,
+            format=DataFormat.BIN,
+            data=None,
+            image_metadata=ImageMetadata(captions=["pic"]),
+        )
+        mock_processor.create_blocks = AsyncMock(
+            return_value=BlocksContainer(blocks=[blk], block_groups=[])
+        )
+
+        proc.graph_provider.get_document = AsyncMock(
+            return_value=_mock_record_dict(recordName="doc.md")
+        )
+
+        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor), \
+             patch("app.events.processor.IndexingPipeline") as MockPipeline:
+            MockPipeline.return_value.apply = AsyncMock()
+
+            await _collect_events(proc.process_md_document("doc.md", "r1", b"# Hi", "vr1"))
+
+        assert blk.data and blk.data.get("uri", "").startswith("data:")
+
+    @pytest.mark.asyncio
+    async def test_process_blockgroup_images_and_map_base64(self):
+        """_process_blockgroup_images + _map_base64_images_to_blocks."""
+        from app.models.blocks import Block, BlockType, DataFormat, ImageMetadata
+
+        proc = _make_processor()
+        md_parser = MagicMock()
+        md_parser.extract_and_replace_images.return_value = (
+            "text",
+            [{"url": "http://x", "new_alt_text": "cap1"}],
+        )
+        png_parser = MagicMock()
+        png_parser.urls_to_base64 = AsyncMock(return_value=["data:x"])
+
+        proc.parsers = {"md": md_parser, "png": png_parser}
+
+        mod_md, cmap = await proc._process_blockgroup_images("# x", block_group_index=3)
+        assert mod_md == "text"
+        assert cmap.get("cap1") == "data:x"
+
+        blocks = [
+            Block(
+                index=0,
+                type=BlockType.IMAGE,
+                format=DataFormat.BIN,
+                data=None,
+                image_metadata=ImageMetadata(captions=["cap1"]),
+            )
+        ]
+        proc._map_base64_images_to_blocks(blocks, cmap, block_group_index=3)
+        assert blocks[0].data["uri"] == "data:x"
+
+    @pytest.mark.asyncio
+    async def test_ocr_azure_di_after_unknown_provider_iteration(self):
+        """Skip unknown OCR providers; configure Azure on a later config entry."""
+        proc = _make_processor()
+        proc.config_service = AsyncMock()
+        proc.config_service.get_config = AsyncMock(return_value={
+            "ocr": [
+                {"provider": "not_supported_yet"},
+                {
+                    "provider": "azureDI",
+                    "configuration": {"endpoint": "https://e.azure.com", "apiKey": "k"},
+                },
+            ],
+            "llm": [],
+        })
+
+        with patch("app.events.processor.OCRHandler") as MockOCR, \
+             patch("app.events.processor.IndexingPipeline") as MockPipeline:
+            h = AsyncMock()
+            h.process_document = AsyncMock(return_value={
+                "blocks": [],
+                "tables": [],
+            })
+            MockOCR.return_value = h
+            MockPipeline.return_value.apply = AsyncMock()
+
+            proc.graph_provider.get_document = AsyncMock(
+                return_value=_mock_record_dict()
+            )
+
+            await _collect_events(
+                proc.process_pdf_document_with_ocr(
+                    "test.pdf", "r1", "1", "src", "o1", b"pdf", "vr1"
+                )
+            )
+
+        MockOCR.assert_called_once()
+        assert MockOCR.call_args.kwargs["model_id"] == "prebuilt-document"
+
+    @pytest.mark.asyncio
+    async def test_non_vlm_ocr_prebuilt_block_table_row_and_plain_paragraph(self):
+        """Non-VLM: Block TABLE_ROW populates table_rows + second Block skips dict path."""
+        from app.models.blocks import Block, BlockGroup, BlockType, DataFormat, GroupType
+
+        proc = _make_processor()
+        proc.config_service = AsyncMock()
+        proc.config_service.get_config = AsyncMock(return_value={
+            "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://e", "apiKey": "k"}}],
+            "llm": [],
+        })
+
+        row_blk = Block(
+            index=0,
+            type=BlockType.TABLE_ROW,
+            format=DataFormat.TXT,
+            data="cell",
+            parent_index=42,
+        )
+        text_blk = Block(
+            index=0,
+            type=BlockType.TEXT,
+            format=DataFormat.TXT,
+            data="plain",
+            parent_index=None,
+        )
+        tbl = BlockGroup(index=42, type=GroupType.TABLE)
+
+        with patch("app.events.processor.OCRHandler") as MockOCR, \
+             patch("app.events.processor.IndexingPipeline") as MockPipeline:
+            mock_ocr = AsyncMock()
+            mock_ocr.process_document = AsyncMock(return_value={
+                "blocks": [row_blk, text_blk],
+                "tables": [tbl],
+            })
+            MockOCR.return_value = mock_ocr
+            MockPipeline.return_value.apply = AsyncMock()
+
+            proc.graph_provider.get_document = AsyncMock(
+                return_value=_mock_record_dict()
+            )
+
+            events = await _collect_events(
+                proc.process_pdf_document_with_ocr(
+                    "p.pdf", "r1", "1", "s", "o", b"x", "vr"
+                )
+            )
+
+        assert any(e.event == "indexing_complete" for e in events)
+        assert tbl.children is not None
+
+    @pytest.mark.asyncio
+    async def test_vlm_nested_block_groups_children_ranges_shift(self):
+        """VLM path: merge blocks with nested block_groups + ranges."""
+        from app.models.blocks import (
+            Block,
+            BlockGroup,
+            BlockGroupChildren,
+            BlocksContainer,
+            BlockType,
+            DataFormat,
+            GroupType,
+            IndexRange,
+        )
+
+        proc = _make_processor()
+        nested_group = BlockGroup(
+            index=0,
+            type=GroupType.TEXT_SECTION,
+            parent_index=None,
+            children=BlockGroupChildren(
+                block_ranges=[IndexRange(start=0, end=1)],
+                block_group_ranges=[IndexRange(start=0, end=0)],
+            ),
+        )
+        leaf_blocks = [
+            Block(index=0, type=BlockType.TEXT, format=DataFormat.TXT, data="a", parent_index=0),
+            Block(index=1, type=BlockType.TEXT, format=DataFormat.TXT, data="b", parent_index=0),
+        ]
+        nested_container = BlocksContainer(blocks=leaf_blocks, block_groups=[nested_group])
+
+        proc.config_service = AsyncMock()
+        proc.config_service.get_config = AsyncMock(return_value={
+            "ocr": [{"provider": "vlmOCR"}],
+            "llm": [],
+        })
+
+        with patch("app.events.processor.OCRHandler") as MockOCR, \
+             patch("app.events.processor.DoclingProcessor") as MockDocling, \
+             patch("app.events.processor.IndexingPipeline") as MockPipeline:
+            mo = AsyncMock()
+            mo.process_document = AsyncMock(return_value={
+                "pages": [{"page_number": 1, "markdown": "# z"}],
+            })
+            MockOCR.return_value = mo
+
+            mproc = AsyncMock()
+            mproc.parse_document = AsyncMock(return_value=MagicMock())
+            mproc.create_blocks = AsyncMock(return_value=nested_container)
+            MockDocling.return_value = mproc
+            MockPipeline.return_value.apply = AsyncMock()
+
+            proc.graph_provider.get_document = AsyncMock(
+                return_value=_mock_record_dict()
+            )
+
+            events = await _collect_events(
+                proc.process_pdf_document_with_ocr(
+                    "r.pdf", "r1", "1", "s", "o", b"z", "vr"
+                )
+            )
+
+        assert any(e.event == "indexing_complete" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_enhance_tables_legacy_list_children(self):
+        """_enhance_tables_with_llm: list-format children branch."""
+        from unittest.mock import MagicMock as Mg
+
+        from app.models.blocks import (
+            BlockContainerIndex,
+            BlockType,
+            GroupType,
+            TableMetadata,
+        )
+
+        proc = _make_processor()
+        tg = Mg()
+        tg.type = GroupType.TABLE
+        tg.index = 10
+        tg.data = {"table_markdown": "|c|\n|-|"}
+        tg.table_metadata = TableMetadata(column_names=["c"])
+        tg.children = [BlockContainerIndex(block_index=0)]
+        tg.table_row_metadata = None
+
+        row_block = Mg()
+        row_block.type = BlockType.TABLE_ROW
+        row_block.table_row_metadata = Mg()
+        row_block.table_row_metadata.is_header = False
+        row_block.data = {"cells": ["v"]}
+
+        bc = Mg()
+        bc.block_groups = [tg]
+        bc.blocks = [row_block]
+
+        mock_response = Mg()
+        mock_response.summary = "s"
+        mock_response.headers = ["c"]
+
+        with patch(
+            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ), patch(
+            "app.utils.indexing_helpers.get_rows_text",
+            new_callable=AsyncMock,
+            return_value=(["desc"], []),
+        ):
+            await proc._enhance_tables_with_llm(bc)
+
+        assert row_block.data.get("row_natural_language_text") == "desc"

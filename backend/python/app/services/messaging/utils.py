@@ -161,6 +161,18 @@ class MessagingUtils:
             )
 
     @staticmethod
+    async def create_notification_consumer_config(
+        app_container: ConnectorAppContainer,
+    ) -> KafkaConsumerConfig | RedisStreamsConfig:
+        """Consumer config for the notification topic/stream (reserved for future use)."""
+        return await MessagingUtils.create_consumer_config(
+            app_container,
+            "notification_consumer_client",
+            "notification-consumer-group",
+            [Topic.NOTIFICATION.value],
+        )
+
+    @staticmethod
     async def create_entity_consumer_config(
         app_container: ConnectorAppContainer,
     ) -> KafkaConsumerConfig | RedisStreamsConfig:

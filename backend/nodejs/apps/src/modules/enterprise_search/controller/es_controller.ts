@@ -29,11 +29,13 @@ import {
   BadRequestError,
   InternalServerError,
   NotFoundError,
+  HttpError,
   UnauthorizedError,
   ForbiddenError,
   ServiceUnavailableError,
   BadGatewayError,
   GatewayTimeoutError,
+  UnprocessableEntityError,
 } from '../../../libs/errors/http.errors';
 import {
   AICommandOptions,
@@ -93,7 +95,6 @@ import {
 import { getSlackBotStore } from '../../configuration_manager/controller/cm_controller';
 import { Org } from '../../user_management/schema/org.schema';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
-
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
 
@@ -347,6 +348,9 @@ const hydrateScopedRequestAsUser = async (
 };
 
   const handleBackendError = (error: any, operation: string): Error => {
+    const resolveErrorMessage = (err: any): string =>
+      err?.message || err?.msg || 'Unknown error';
+
     // Network/connection failure handling first
     if (
       (error?.cause && error.cause.code === 'ECONNREFUSED') ||
@@ -356,10 +360,14 @@ const hydrateScopedRequestAsUser = async (
       return new ServiceUnavailableError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
     }
 
+    if (error instanceof HttpError) {
+      return error;
+    }
+
     if (error.response) {
       const { status, data } = error.response;
       const errorDetail =
-        data?.detail || data?.reason || data?.message || 'Unknown error';
+        data?.detail || data?.reason || data?.message || error.msg || 'Unknown error';
   
       logger.error(`Backend error during ${operation}`, {
         status,
@@ -376,6 +384,8 @@ const hydrateScopedRequestAsUser = async (
           return new ForbiddenError(errorDetail);
         case 404:
           return new NotFoundError(errorDetail);
+        case 422:
+          return new UnprocessableEntityError(errorDetail);
         case 500:
           return new InternalServerError(errorDetail);
         case 502:
@@ -394,11 +404,39 @@ const hydrateScopedRequestAsUser = async (
       return new ServiceUnavailableError('Backend service unavailable');
     }
 
-  if (error.detail) {
+    // Handle AIServiceResponse format { statusCode, data, msg } from AIServiceCommand.execute()
+    if (typeof error.statusCode === 'number' && error.statusCode >= 400) {
+      const data = error.data as Record<string, unknown> | undefined;
+      const errorDetail = String(data?.detail || data?.reason || data?.message || error.msg || 'Unknown error');
+      switch (error.statusCode) {
+        case 400:
+          return new BadRequestError(errorDetail);
+        case 401:
+          return new UnauthorizedError(errorDetail);
+        case 403:
+          return new ForbiddenError(errorDetail);
+        case 404:
+          return new NotFoundError(errorDetail);
+        case 422:
+          return new UnprocessableEntityError(errorDetail);
+        case 500:
+          return new InternalServerError(errorDetail);
+        case 502:
+          return new BadGatewayError(errorDetail);
+        case 503:
+          return new ServiceUnavailableError(errorDetail);
+        case 504:
+          return new GatewayTimeoutError(errorDetail);
+        default:
+          return new InternalServerError(`Backend error: ${errorDetail}`);
+      }
+    }
+
+    if (error.detail) {
       return new BadRequestError(error.detail);
     }
-  
-    return new InternalServerError(`${operation} failed: ${error.message}`);
+
+    return new InternalServerError(`${operation} failed: ${resolveErrorMessage(error)}`);
   };
   
   // Common helper to start AI streams with consistent error mapping and logging
@@ -4894,270 +4932,6 @@ export const deleteSearchHistory = async (
 
 /////////////////////// AGENT ///////////////////////
 
-export const createAgentTemplate =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/template/create`,
-        method: HttpMethod.POST,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-        body: req.body,
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      if (!aiResponse) {
-        throw new InternalServerError('Failed to get response from AI service');
-      }
-      if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Create Agent Template');
-      }
-      const agentTemplate = aiResponse.data;
-      res.status(HTTP_STATUS.CREATED).json(agentTemplate);
-    } catch (error: any) {
-      logger.error('Error creating agent template', {
-        requestId,
-        message: 'Error creating agent template',
-        error: error.message,
-      });
-      const backendError = handleBackendError(error, 'Create Agent Template');
-      next(backendError);
-    }
-  };
-
-export const getAgentTemplate =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const requestId = req.context?.requestId;
-    const { templateId } = req.params;
-    const orgId = req.user?.orgId;
-    const userId = req.user?.userId;
-    if (!orgId) {
-      throw new BadRequestError('Organization ID is required');
-    }
-    if (!userId) {
-      throw new BadRequestError('User ID is required');
-    }
-    try {
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/template/${templateId}`,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-        method: HttpMethod.GET,
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      if (!aiResponse) {
-        throw new InternalServerError('Failed to get response from AI service');
-      }
-      if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Get Agent Template');
-      }
-      const agentTemplate = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(agentTemplate);
-    } catch (error: any) {
-      logger.error('Error getting agent template', {
-        requestId,
-        message: 'Error getting agent template',
-        error: error.message,
-      });
-      const backendError = handleBackendError(error, 'Get Agent Template');
-      next(backendError);
-    }
-  };
-
-export const listAgentTemplates =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/template/list`,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-        method: HttpMethod.GET,
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      if (!aiResponse) {
-        throw new InternalServerError('Failed to get response from AI service');
-      }
-      if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(
-          {
-            response: { status: aiResponse.statusCode, data: aiResponse.data },
-          },
-          'List Agent Templates',
-        );
-      }
-      const agentTemplates = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(agentTemplates);
-    } catch (error: any) {
-      logger.error('Error getting agent templates', {
-        requestId,
-        message: 'Error getting agent templates',
-        error: error.message,
-      });
-      const backendError = handleBackendError(error, 'List Agent Templates');
-      next(backendError);
-    }
-  };
-
-export const shareAgentTemplate =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      const templateId = req.params.templateId;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/share-template/${templateId}`,
-        method: HttpMethod.POST,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      if (!aiResponse) {
-        throw new InternalServerError('Failed to get response from AI service');
-      }
-      if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Share Agent Template');
-      }
-      const agentTemplate = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(agentTemplate);
-    } catch (error: any) {
-      logger.error('Error sharing agent template', {
-        requestId,
-        message: 'Error sharing agent template',
-        error: error.message,
-      });
-      const backendError = handleBackendError(error, 'Share Agent Template');
-      next(backendError);
-    }
-  };
-
-export const updateAgentTemplate =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      const templateId = req.params.templateId;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/template/${templateId}`,
-        method: HttpMethod.PUT,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-        body: req.body,
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      if (!aiResponse) {
-        throw new InternalServerError('Failed to get response from AI service');
-      }
-      if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Update Agent Template');
-      }
-      const agentTemplate = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(agentTemplate);
-    } catch (error: any) {
-      logger.error('Error updating agent template', {
-        requestId,
-        message: 'Error updating agent template',
-        error: error.message,
-      });
-      const backendError = handleBackendError(error, 'Update Agent Template');
-      next(backendError);
-    }
-  };
-
-export const deleteAgentTemplate =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      const templateId = req.params.templateId;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/template/${templateId}`,
-        method: HttpMethod.DELETE,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      if (!aiResponse) {
-        throw new InternalServerError('Failed to get response from AI service');
-      }
-      if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Delete Agent Template');
-      }
-      const agentTemplate = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(agentTemplate);
-    } catch (error: any) {
-      logger.error('Error deleting agent template', {
-        requestId,
-        message: 'Error deleting agent template',
-        error: error.message,
-      });
-      const backendError = handleBackendError(error, 'Delete Agent Template');
-      next(backendError);
-    }
-  };
-
 export const createAgent =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -5188,7 +4962,7 @@ export const createAgent =
         throw new InternalServerError('Failed to get response from AI service');
       }
       if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Create Agent');
+        throw handleBackendError(aiResponse, 'Create Agent');
       }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.CREATED).json(agent);
@@ -5231,7 +5005,7 @@ export const getAgent =
         throw new InternalServerError('Failed to get response from AI service');
       }
       if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Get Agent');
+        throw handleBackendError(aiResponse, 'Get Agent');
       }
       const responsePayload = aiResponse.data as Record<string, unknown>;
       if (
@@ -5282,7 +5056,7 @@ export const checkServiceAccountAccess =
         return false;
       }
       if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Check Service Account Access');
+        throw handleBackendError(aiResponse, 'Check Service Account Access');
       }
       const response = aiResponse.data as { isServiceAccount: boolean };
       const serviceAccountResponse = response.isServiceAccount;
@@ -5421,9 +5195,12 @@ export const listAgents =
         typeof responsePayload === 'object' &&
         Array.isArray(responsePayload.agents)
       ) {
+        const agents = responsePayload.agents.map((agent) =>
+          omitId(agent),
+        ) as Array<Record<string, unknown>>;
         res.status(HTTP_STATUS.OK).json({
           ...responsePayload,
-          agents: responsePayload.agents.map((agent) => omitId(agent)),
+          agents,
         });
         return;
       }
@@ -5468,7 +5245,7 @@ export const updateAgent =
         throw new InternalServerError('Failed to get response from AI service');
       }
       if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Update Agent');
+        throw handleBackendError(aiResponse, 'Update Agent');
       }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agent);
@@ -5511,7 +5288,7 @@ export const deleteAgent =
         throw new InternalServerError('Failed to get response from AI service');
       }
       if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Delete Agent');
+        throw handleBackendError(aiResponse, 'Delete Agent');
       }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agent);
@@ -5522,141 +5299,6 @@ export const deleteAgent =
         error: error.message,
       });
       const backendError = handleBackendError(error, 'Delete Agent');
-      next(backendError);
-    }
-  };
-
-  export const shareAgent =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      const agentKey = req.params.agentKey;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/share`,
-        method: HttpMethod.POST,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-        body: req.body,
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      if (!aiResponse) {
-        throw new InternalServerError('Failed to get response from AI service');
-      }
-      if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Share Agent');
-      }
-      const agent = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(agent);
-    } catch (error: any) {
-      logger.error('Error sharing agent', {
-        requestId,
-        message: 'Error sharing agent',
-        error: error.message,
-      });
-      const backendError = handleBackendError(error, 'Share Agent');
-      next(backendError);
-    }
-  };
-
-export const unshareAgent =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      const agentKey = req.params.agentKey;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/unshare`,
-        method: HttpMethod.POST,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-        body: req.body,
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      if (!aiResponse) {
-        throw new InternalServerError('Failed to get response from AI service');
-      }
-      if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Unshare Agent');
-      }
-      const agent = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(agent);
-    } catch (error: any) {
-      logger.error('Error unsharing agent', {
-        requestId,
-        message: 'Error unsharing agent',
-        error: error.message,
-      });
-      const backendError = handleBackendError(error, 'Unshare Agent');
-      next(backendError);
-    }
-  };
-
-  export const updateAgentPermissions =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const requestId = req.context?.requestId;
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      const agentKey = req.params.agentKey;
-      if (!orgId) {
-        throw new BadRequestError('Organization ID is required');
-      }
-      if (!userId) {
-        throw new BadRequestError('User ID is required');
-      }
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/permissions`,
-        method: HttpMethod.PUT,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-        body: req.body,
-      };
-      const aiCommand = new AIServiceCommand(aiCommandOptions);
-      const aiResponse = await aiCommand.execute();
-      if (!aiResponse) {
-        throw new InternalServerError('Failed to get response from AI service');
-      }
-      if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Update Agent Permissions');
-      }
-      const agent = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(agent);
-    } catch (error: any) {
-      logger.error('Error updating agent permissions', {
-        requestId,
-        message: 'Error updating agent permissions',
-        error: error.message,
-      });
-      const backendError = handleBackendError(
-        error,
-        'Update Agent Permissions',
-      );
       next(backendError);
     }
   };
@@ -7944,77 +7586,6 @@ export const updateAgentFeedback = async (
     }
   }
 };
-
-export const getAvailableTools =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-  const requestId = req.context?.requestId;
-  try {
-    const aiCommandOptions: AICommandOptions = {
-      uri: `${appConfig.aiBackend}/api/v1/tools/`,
-      method: HttpMethod.GET,
-      headers: {
-        ...(req.headers as Record<string, string>),
-        'Content-Type': 'application/json',
-      },
-    };
-    const aiCommand = new AIServiceCommand(aiCommandOptions);
-    const aiResponse = await aiCommand.execute();
-    if (!aiResponse) {
-      throw new InternalServerError('Failed to get response from AI service');
-    }
-    if (aiResponse.statusCode !== 200) {
-      throw handleBackendError(aiResponse.data, 'Get Available Tools');
-    }
-    const tools = aiResponse.data;
-    res.status(HTTP_STATUS.OK).json(tools);
-  } catch (error: any) {
-    logger.error('Error getting available tools', {
-      requestId,
-      message: 'Error getting available tools',
-      error: error.message,
-    });
-    const backendError = handleBackendError(error, 'Get Available Tools');
-    next(backendError);
-  }
-};
-
-export const getAgentPermissions =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-  const requestId = req.context?.requestId;
-  const { agentKey } = req.params;
-
-  try {
-    const aiCommandOptions: AICommandOptions = {
-      uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/permissions`,
-      method: HttpMethod.GET,
-      headers: {
-        ...(req.headers as Record<string, string>),
-        'Content-Type': 'application/json',
-      },
-    };
-    const aiCommand = new AIServiceCommand(aiCommandOptions);
-    const aiResponse = await aiCommand.execute();
-    if (!aiResponse) {
-      throw new InternalServerError('Failed to get response from AI service');
-    }
-    if (aiResponse.statusCode !== 200) {
-      throw handleBackendError(aiResponse.data, 'Get Agent Permissions');
-    }
-    const permissions = aiResponse.data;
-    res.status(200).json(permissions);    
-  } catch (error: any) {
-    logger.error('Error getting agent permissions', {
-      requestId,
-      message: 'Error getting agent permissions',
-      error: error.message,
-    });
-    const backendError = handleBackendError(error, 'Get Agent Permissions');
-    next(backendError);
-  }
-};
-
 
 /**
  * GET /api/v1/agents/conversations/show/archives

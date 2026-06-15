@@ -1,4 +1,4 @@
-"""Comprehensive tests for app.modules.parsers.pdf.docling to achieve >97% coverage.
+"""Comprehensive tests for app.modules.parsers.pdf.docling_processor to achieve >97% coverage.
 
 Targets uncovered lines:
 - 33-36: _get_local_parse_worker_count() with valid and invalid env var
@@ -30,13 +30,13 @@ def _make_mock_config():
 
 def _make_processor():
     """Create a DoclingProcessor with mocked converter."""
-    with patch("app.modules.parsers.pdf.docling.DocumentConverter") as MockConverter, \
-         patch("app.modules.parsers.pdf.docling.PdfFormatOption"), \
-         patch("app.modules.parsers.pdf.docling.WordFormatOption"), \
-         patch("app.modules.parsers.pdf.docling.MarkdownFormatOption"), \
-         patch("app.modules.parsers.pdf.docling.PdfPipelineOptions"), \
-         patch("app.modules.parsers.pdf.docling.PyPdfiumDocumentBackend"):
-        from app.modules.parsers.pdf.docling import DoclingProcessor
+    with patch("app.modules.parsers.pdf.docling_processor.DocumentConverter") as MockConverter, \
+         patch("app.modules.parsers.pdf.docling_processor.PdfFormatOption"), \
+         patch("app.modules.parsers.pdf.docling_processor.WordFormatOption"), \
+         patch("app.modules.parsers.pdf.docling_processor.MarkdownFormatOption"), \
+         patch("app.modules.parsers.pdf.docling_processor.PdfPipelineOptions"), \
+         patch("app.modules.parsers.pdf.docling_processor.PyPdfiumDocumentBackend"):
+        from app.modules.parsers.pdf.docling_processor import DoclingProcessor
         processor = DoclingProcessor(_make_mock_logger(), _make_mock_config())
     return processor
 
@@ -50,35 +50,35 @@ class TestGetLocalParseWorkerCount:
     def test_valid_env_var_returns_parsed_int(self):
         """When LOCAL_DOCLING_PARSE_WORKERS is a valid positive int, return it."""
         with patch.dict(os.environ, {"LOCAL_DOCLING_PARSE_WORKERS": "4"}):
-            from app.modules.parsers.pdf.docling import _get_local_parse_worker_count
+            from app.modules.parsers.pdf.docling_processor import _get_local_parse_worker_count
             result = _get_local_parse_worker_count()
             assert result == 4
 
     def test_env_var_zero_returns_one(self):
         """When LOCAL_DOCLING_PARSE_WORKERS is '0', max(1, 0) returns 1."""
         with patch.dict(os.environ, {"LOCAL_DOCLING_PARSE_WORKERS": "0"}):
-            from app.modules.parsers.pdf.docling import _get_local_parse_worker_count
+            from app.modules.parsers.pdf.docling_processor import _get_local_parse_worker_count
             result = _get_local_parse_worker_count()
             assert result == 1
 
     def test_env_var_negative_returns_one(self):
         """When LOCAL_DOCLING_PARSE_WORKERS is '-3', max(1, -3) returns 1."""
         with patch.dict(os.environ, {"LOCAL_DOCLING_PARSE_WORKERS": "-3"}):
-            from app.modules.parsers.pdf.docling import _get_local_parse_worker_count
+            from app.modules.parsers.pdf.docling_processor import _get_local_parse_worker_count
             result = _get_local_parse_worker_count()
             assert result == 1
 
     def test_env_var_invalid_returns_one(self):
         """When LOCAL_DOCLING_PARSE_WORKERS is not a number, return 1."""
         with patch.dict(os.environ, {"LOCAL_DOCLING_PARSE_WORKERS": "abc"}):
-            from app.modules.parsers.pdf.docling import _get_local_parse_worker_count
+            from app.modules.parsers.pdf.docling_processor import _get_local_parse_worker_count
             result = _get_local_parse_worker_count()
             assert result == 1
 
     def test_env_var_empty_returns_one(self):
         """When LOCAL_DOCLING_PARSE_WORKERS is empty string, return 1."""
         with patch.dict(os.environ, {"LOCAL_DOCLING_PARSE_WORKERS": ""}):
-            from app.modules.parsers.pdf.docling import _get_local_parse_worker_count
+            from app.modules.parsers.pdf.docling_processor import _get_local_parse_worker_count
             result = _get_local_parse_worker_count()
             assert result == 1
 
@@ -88,14 +88,14 @@ class TestGetLocalParseWorkerCount:
             env = os.environ.copy()
             env.pop("LOCAL_DOCLING_PARSE_WORKERS", None)
             with patch.dict(os.environ, env, clear=True):
-                from app.modules.parsers.pdf.docling import _get_local_parse_worker_count
+                from app.modules.parsers.pdf.docling_processor import _get_local_parse_worker_count
                 result = _get_local_parse_worker_count()
                 assert result == 1
 
     def test_env_var_large_value(self):
         """When LOCAL_DOCLING_PARSE_WORKERS is a large valid int, return it."""
         with patch.dict(os.environ, {"LOCAL_DOCLING_PARSE_WORKERS": "16"}):
-            from app.modules.parsers.pdf.docling import _get_local_parse_worker_count
+            from app.modules.parsers.pdf.docling_processor import _get_local_parse_worker_count
             result = _get_local_parse_worker_count()
             assert result == 16
 
@@ -108,14 +108,14 @@ class TestGetProcessPool:
 
     def test_get_process_pool_returns_executor(self):
         """_get_process_pool returns a ProcessPoolExecutor."""
-        with patch("app.modules.parsers.pdf.docling.ProcessPoolExecutor") as MockExecutor, \
-             patch("app.modules.parsers.pdf.docling.multiprocessing") as mock_mp:
+        with patch("app.modules.parsers.pdf.docling_processor.ProcessPoolExecutor") as MockExecutor, \
+             patch("app.modules.parsers.pdf.docling_processor.multiprocessing") as mock_mp:
             mock_ctx = MagicMock()
             mock_mp.get_context.return_value = mock_ctx
             mock_pool = MagicMock(spec=ProcessPoolExecutor)
             MockExecutor.return_value = mock_pool
 
-            from app.modules.parsers.pdf.docling import _get_process_pool
+            from app.modules.parsers.pdf.docling_processor import _get_process_pool
             # Clear lru_cache so our mock takes effect
             _get_process_pool.cache_clear()
             result = _get_process_pool()
@@ -141,10 +141,10 @@ class TestParseDocumentInWorker:
         mock_converter = MagicMock()
         mock_converter.convert.return_value = mock_conv_result
 
-        with patch("app.modules.parsers.pdf.docling._get_converter", return_value=mock_converter), \
-             patch("app.modules.parsers.pdf.docling.DocumentStream") as MockStream:
+        with patch("app.modules.parsers.pdf.docling_processor._get_converter", return_value=mock_converter), \
+             patch("app.modules.parsers.pdf.docling_processor.DocumentStream") as MockStream:
             MockStream.return_value = MagicMock()
-            from app.modules.parsers.pdf.docling import _parse_document_in_worker
+            from app.modules.parsers.pdf.docling_processor import _parse_document_in_worker
             result = _parse_document_in_worker("test.pdf", b"pdf content")
 
         assert result == '{"text": "hello"}'
@@ -159,10 +159,10 @@ class TestParseDocumentInWorker:
         mock_converter = MagicMock()
         mock_converter.convert.return_value = mock_conv_result
 
-        with patch("app.modules.parsers.pdf.docling._get_converter", return_value=mock_converter), \
-             patch("app.modules.parsers.pdf.docling.DocumentStream") as MockStream:
+        with patch("app.modules.parsers.pdf.docling_processor._get_converter", return_value=mock_converter), \
+             patch("app.modules.parsers.pdf.docling_processor.DocumentStream") as MockStream:
             MockStream.return_value = MagicMock()
-            from app.modules.parsers.pdf.docling import _parse_document_in_worker
+            from app.modules.parsers.pdf.docling_processor import _parse_document_in_worker
             with pytest.raises(ValueError, match="Failed to parse document"):
                 _parse_document_in_worker("bad.pdf", b"bad content")
 
@@ -175,10 +175,10 @@ class TestParseDocumentInWorker:
         mock_converter = MagicMock()
         mock_converter.convert.return_value = mock_conv_result
 
-        with patch("app.modules.parsers.pdf.docling._get_converter", return_value=mock_converter), \
-             patch("app.modules.parsers.pdf.docling.DocumentStream") as MockStream:
+        with patch("app.modules.parsers.pdf.docling_processor._get_converter", return_value=mock_converter), \
+             patch("app.modules.parsers.pdf.docling_processor.DocumentStream") as MockStream:
             MockStream.return_value = MagicMock()
-            from app.modules.parsers.pdf.docling import _parse_document_in_worker
+            from app.modules.parsers.pdf.docling_processor import _parse_document_in_worker
             _parse_document_in_worker("report.pdf", b"content here")
 
             MockStream.assert_called_once()
@@ -203,9 +203,9 @@ class TestParseDocumentMultiWorker:
         mock_serialized = '{"text": "parsed"}'
         mock_doc = MagicMock()
 
-        with patch("app.modules.parsers.pdf.docling.LOCAL_DOCLING_PARSE_WORKERS", 2), \
-             patch("app.modules.parsers.pdf.docling._get_process_pool") as mock_pool, \
-             patch("app.modules.parsers.pdf.docling.DoclingDocument") as MockDoclingDoc, \
+        with patch("app.modules.parsers.pdf.docling_processor.LOCAL_DOCLING_PARSE_WORKERS", 2), \
+             patch("app.modules.parsers.pdf.docling_processor._get_process_pool") as mock_pool, \
+             patch("app.modules.parsers.pdf.docling_processor.DoclingDocument") as MockDoclingDoc, \
              patch("asyncio.get_running_loop") as mock_get_loop:
 
             mock_loop = MagicMock()
@@ -231,9 +231,9 @@ class TestParseDocumentMultiWorker:
         mock_serialized = '{"text": "parsed"}'
         mock_doc = MagicMock()
 
-        with patch("app.modules.parsers.pdf.docling.LOCAL_DOCLING_PARSE_WORKERS", 2), \
-             patch("app.modules.parsers.pdf.docling._get_process_pool") as mock_pool, \
-             patch("app.modules.parsers.pdf.docling.DoclingDocument") as MockDoclingDoc, \
+        with patch("app.modules.parsers.pdf.docling_processor.LOCAL_DOCLING_PARSE_WORKERS", 2), \
+             patch("app.modules.parsers.pdf.docling_processor._get_process_pool") as mock_pool, \
+             patch("app.modules.parsers.pdf.docling_processor.DoclingDocument") as MockDoclingDoc, \
              patch("asyncio.get_running_loop") as mock_get_loop:
 
             mock_loop = MagicMock()
@@ -255,8 +255,8 @@ class TestParseDocumentMultiWorker:
         """When run_in_executor raises, it propagates to caller."""
         processor = _make_processor()
 
-        with patch("app.modules.parsers.pdf.docling.LOCAL_DOCLING_PARSE_WORKERS", 2), \
-             patch("app.modules.parsers.pdf.docling._get_process_pool"), \
+        with patch("app.modules.parsers.pdf.docling_processor.LOCAL_DOCLING_PARSE_WORKERS", 2), \
+             patch("app.modules.parsers.pdf.docling_processor._get_process_pool"), \
              patch("asyncio.get_running_loop") as mock_get_loop:
 
             mock_loop = MagicMock()
@@ -277,18 +277,18 @@ class TestGetConverter:
 
     def test_get_converter_creates_document_converter(self):
         """_get_converter returns a DocumentConverter instance."""
-        with patch("app.modules.parsers.pdf.docling.DocumentConverter") as MockConverter, \
-             patch("app.modules.parsers.pdf.docling.PdfPipelineOptions") as MockPipelineOpts, \
-             patch("app.modules.parsers.pdf.docling.PyPdfiumDocumentBackend") as MockBackend, \
-             patch("app.modules.parsers.pdf.docling.PdfFormatOption") as MockPdfFmt, \
-             patch("app.modules.parsers.pdf.docling.WordFormatOption") as MockWordFmt, \
-             patch("app.modules.parsers.pdf.docling.MarkdownFormatOption") as MockMdFmt, \
-             patch("app.modules.parsers.pdf.docling.InputFormat") as MockInputFmt:
+        with patch("app.modules.parsers.pdf.docling_processor.DocumentConverter") as MockConverter, \
+             patch("app.modules.parsers.pdf.docling_processor.PdfPipelineOptions") as MockPipelineOpts, \
+             patch("app.modules.parsers.pdf.docling_processor.PyPdfiumDocumentBackend") as MockBackend, \
+             patch("app.modules.parsers.pdf.docling_processor.PdfFormatOption") as MockPdfFmt, \
+             patch("app.modules.parsers.pdf.docling_processor.WordFormatOption") as MockWordFmt, \
+             patch("app.modules.parsers.pdf.docling_processor.MarkdownFormatOption") as MockMdFmt, \
+             patch("app.modules.parsers.pdf.docling_processor.InputFormat") as MockInputFmt:
 
             mock_converter = MagicMock()
             MockConverter.return_value = mock_converter
 
-            from app.modules.parsers.pdf.docling import _get_converter
+            from app.modules.parsers.pdf.docling_processor import _get_converter
             _get_converter.cache_clear()
             result = _get_converter()
 

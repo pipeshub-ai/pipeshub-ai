@@ -629,7 +629,7 @@ class TestProcessDelimitedDocument:
 
 
 # ============================================================================
-# process_pdf_with_pymupdf
+# process_pdf_with_pdf_plumber
 # ============================================================================
 
 class TestProcessPdfWithPymupdf:
@@ -646,13 +646,13 @@ class TestProcessPdfWithPymupdf:
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="test.pdf"))
 
-        with patch("app.events.processor.PyMuPDFOpenCVProcessor", return_value=mock_processor), \
+        with patch("app.events.processor.PDFPlumberOpenCVProcessor", return_value=mock_processor), \
              patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch("app.events.processor.TransformContext"):
             MockPipeline.return_value.apply = AsyncMock()
 
             events = await _collect_events(
-                proc.process_pdf_with_pymupdf("test.pdf", "r1", b"pdfdata", "vr1")
+                proc.process_pdf_with_pdf_plumber("test.pdf", "r1", b"pdfdata", "vr1")
             )
 
         assert any(e.event == "parsing_complete" for e in events)
@@ -669,9 +669,9 @@ class TestProcessPdfWithPymupdf:
 
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
-        with patch("app.events.processor.PyMuPDFOpenCVProcessor", return_value=mock_processor):
+        with patch("app.events.processor.PDFPlumberOpenCVProcessor", return_value=mock_processor):
             events = await _collect_events(
-                proc.process_pdf_with_pymupdf("test.pdf", "r1", b"pdfdata", "vr1")
+                proc.process_pdf_with_pdf_plumber("test.pdf", "r1", b"pdfdata", "vr1")
             )
 
         assert any(e.event == "parsing_complete" for e in events)
@@ -685,10 +685,10 @@ class TestProcessPdfWithPymupdf:
         mock_processor = AsyncMock()
         mock_processor.parse_document = AsyncMock(side_effect=RuntimeError("bad pdf"))
 
-        with patch("app.events.processor.PyMuPDFOpenCVProcessor", return_value=mock_processor):
+        with patch("app.events.processor.PDFPlumberOpenCVProcessor", return_value=mock_processor):
             with pytest.raises(RuntimeError, match="bad pdf"):
                 await _collect_events(
-                    proc.process_pdf_with_pymupdf("test.pdf", "r1", b"bad", "vr1")
+                    proc.process_pdf_with_pdf_plumber("test.pdf", "r1", b"bad", "vr1")
                 )
 
     @pytest.mark.asyncio
@@ -701,13 +701,13 @@ class TestProcessPdfWithPymupdf:
         mock_processor.create_blocks = AsyncMock(return_value=MagicMock())
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="report"))
 
-        with patch("app.events.processor.PyMuPDFOpenCVProcessor", return_value=mock_processor) as MockPyMu, \
+        with patch("app.events.processor.PDFPlumberOpenCVProcessor", return_value=mock_processor) as MockPyMu, \
              patch("app.events.processor.IndexingPipeline") as MockPipeline, \
              patch("app.events.processor.TransformContext"):
             MockPipeline.return_value.apply = AsyncMock()
 
             await _collect_events(
-                proc.process_pdf_with_pymupdf("report", "r1", b"pdfdata", "vr1")
+                proc.process_pdf_with_pdf_plumber("report", "r1", b"pdfdata", "vr1")
             )
 
         # parse_document should receive the name with .pdf appended

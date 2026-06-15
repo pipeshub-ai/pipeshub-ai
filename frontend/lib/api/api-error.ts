@@ -21,15 +21,32 @@ export interface ProcessedError {
   originalError?: Error;
 }
 
+interface NodeValidationApiError {
+  code?: string;
+  message?: string;
+  metadata?: { errors?: Array<{ message?: string }> };
+}
+
 interface ApiErrorResponse {
   message?: string;
-  error?: string | { code?: string; message?: string };
+  error?: string | NodeValidationApiError;
   errors?: Record<string, string[]>;
   details?: Record<string, unknown>;
   /** FastAPI / similar */
   detail?: string | Array<string | { msg?: string }>;
   /** Retrieval/search and other services: machine-readable outcome (e.g. `accessible_records_not_found`). */
   status?: string;
+}
+
+/** Node validation middleware: field messages live in error.metadata.errors (dev only). */
+function nodeValidationMiddlewareMessage(data: ApiErrorResponse | undefined, fallback: string): string {
+  const apiError = typeof data?.error === 'object' ? data.error : undefined;
+  const fieldMessages = apiError?.metadata?.errors
+    ?.map((e) => e.message?.trim())
+    .filter(Boolean)
+    .join('\n');
+  if (fieldMessages) return fieldMessages;
+  return apiError?.message?.trim() || fallback;
 }
 
 /**
@@ -152,7 +169,10 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
     case 422:
       return {
         type: ErrorType.VALIDATION_ERROR,
-        message: message || 'Invalid request. Please check your input.',
+        message: nodeValidationMiddlewareMessage(
+          data,
+          message || 'Invalid request. Please check your input.',
+        ),
         statusCode: status,
         details: data?.errors ? { errors: data.errors } : data?.details,
         originalError: error,

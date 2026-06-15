@@ -44,6 +44,8 @@ const MIN_VERTICAL_MARGIN = 8;
 
 export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false, noRolesInfo, anchorRef, onOpenChange, labels }: RoleDropdownMenuProps) {
   const effectiveLabels = labels ?? SHARE_ROLE_LABELS;
+  const roleLabel =
+    effectiveLabels[role]?.label ?? (typeof role === 'string' ? role : 'Reader');
   // Treat as no-roles when isTeam or noRolesInfo is provided
   const isNoRoles = isTeam || !!noRolesInfo;
   const noRolesTitle = noRolesInfo?.title ?? 'Team';
@@ -242,10 +244,10 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
                   weight={r === role ? 'medium' : 'regular'}
                   style={{ color: 'var(--slate-12)', fontSize: 13, lineHeight: '16px' }}
                 >
-                  {effectiveLabels[r].label}
+                  {effectiveLabels[r]?.label ?? r}
                 </Text>
                 <Text size="1" style={{ color: 'var(--slate-11)', fontSize: 12, lineHeight: '15px' }}>
-                  {effectiveLabels[r].description}
+                  {effectiveLabels[r]?.description ?? ''}
                 </Text>
               </Flex>
 

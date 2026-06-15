@@ -1,3 +1,5 @@
+import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
+
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -219,6 +221,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await config_service.close()
     except Exception as e:
         logger.error(f"❌ Error closing configuration service: {e}")
+
+    try:
+        from app.modules.parsers.pdf.pdf_rasterizer import shutdown_pdf_raster_pool
+        if shutdown_pdf_raster_pool():
+            logger.info("✅ PDF rasterization process pool shut down")
+    except Exception as e:
+        logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
 
 
 # Create FastAPI app with lifespan

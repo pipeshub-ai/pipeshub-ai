@@ -1,15 +1,17 @@
 """PostgreSQL client implementation.
 
-This module provides clients for interacting with PostgreSQL databases using:
-1. Username/Password authentication
-2. Connection string authentication
+This module provides PostgreSQL connection and pool management using asyncpg.
 
 PostgreSQL Documentation: https://www.postgresql.org/docs/
-psycopg2 Documentation: https://www.psycopg.org/docs/
+asyncpg Documentation: https://magicstack.github.io/asyncpg/current/
 """
 
+from __future__ import annotations
+
+import asyncio
 import logging
-from typing import Any, Dict, List, Optional, Union
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
 
 from pydantic import AliasChoices, BaseModel, Field, ValidationError, model_validator
@@ -19,27 +21,19 @@ from app.sources.client.iclient import IClient
 
 logger = logging.getLogger(__name__)
 
-try:
-    import psycopg2
-    import psycopg2.extras
-except ImportError:
-    psycopg2 = None
-
+# TYPE_CHECKING is False at runtime but True for Pylance/mypy, so asyncpg types
+# (e.g. asyncpg.Pool) resolve correctly in annotations instead of widening to Any.
+if TYPE_CHECKING:
+    import asyncpg
+else:
+    try:
+        import asyncpg
+    except ImportError:
+        asyncpg = None
 
 class PostgreSQLClient:
-    """PostgreSQL client for database connections.
-    
-    Uses psycopg2 for connecting to PostgreSQL databases.
-    
-    Args:
-        host: PostgreSQL server host
-        port: PostgreSQL server port
-        database: Database name
-        user: Username for authentication
-        password: Password for authentication
-        timeout: Connection timeout in seconds
-    """
-    
+    """PostgreSQL client for asyncpg pool management."""
+
     def __init__(
         self,
         host: str,
@@ -49,26 +43,26 @@ class PostgreSQLClient:
         port: int = 5432,
         timeout: int = 30,
         sslmode: str = "prefer",
+        min_pool_size: int = 1,
+        max_pool_size: int = 10,
+        pool_acquire_timeout: float = 60.0,
     ) -> None:
-        """Initialize PostgreSQL client.
-        
-        Args:
-            host: PostgreSQL server host (e.g., localhost, 192.168.1.1)
-            database: Database name to connect to (REQUIRED)
-            user: Username for authentication
-            password: Password for authentication
-            port: PostgreSQL server port (default: 5432)
-            timeout: Connection timeout in seconds
-            sslmode: SSL mode (disable, allow, prefer, require, verify-ca, verify-full)
-        """
-        if psycopg2 is None:
+        """Initialize PostgreSQL client."""
+        if asyncpg is None:
             raise ImportError(
-                "psycopg2 is required for PostgreSQL client. "
-                "Install with: pip install psycopg2-binary"
+                "asyncpg is required for PostgreSQL client. "
+                "Install with: pip install asyncpg"
             )
-        
+
+        if min_pool_size < 1:
+            raise ValueError("min_pool_size must be >= 1")
+        if max_pool_size < min_pool_size:
+            raise ValueError("max_pool_size must be >= min_pool_size")
+        if pool_acquire_timeout <= 0:
+            raise ValueError("pool_acquire_timeout must be > 0")
+
         logger.debug(f"🔧 [PostgreSQLClient] Initializing with host={host}, port={port}, database={database}, user={user}")
-        
+
         self.host = host
         self.port = port
         self.database = database
@@ -76,163 +70,169 @@ class PostgreSQLClient:
         self.password = password
         self.timeout = timeout
         self.sslmode = sslmode
-        self._connection = None
-        
+        self.min_pool_size = min_pool_size
+        self.max_pool_size = max_pool_size
+        self.pool_acquire_timeout = pool_acquire_timeout
+        self._pool: asyncpg.Pool | None = None
+        self._connect_lock = asyncio.Lock() # Serialize pool creation so concurrent connect() calls create only one pool.
+
         logger.info(f"🔧 [PostgreSQLClient] Initialized successfully for {user}@{host}:{port}/{database}")
-    
-    def connect(self) -> "PostgreSQLClient":
-        """Establish connection to PostgreSQL.
-        
-        Returns:
-            Self for method chaining
-            
-        Raises:
-            ConnectionError: If connection fails
-        """
-        if self._connection is not None and not self._connection.closed:
-            logger.debug("🔧 [PostgreSQLClient] Already connected")
+
+    async def connect(self) -> "PostgreSQLClient":
+        """Initialize the asyncpg connection pool."""
+        if self._pool is not None and not self._pool.is_closing():
+            logger.debug("🔧 [PostgreSQLClient] Pool already initialized")
             return self
-        
-        try:
-            logger.debug(f"🔧 [PostgreSQLClient] Connecting to {self.host}:{self.port}/{self.database}")
-            
-            self._connection = psycopg2.connect(
-                host=self.host,
-                port=self.port,
-                database=self.database,
-                user=self.user,
-                password=self.password,
-                connect_timeout=self.timeout,
-                sslmode=self.sslmode,
-            )
-            
-            logger.info(f"🔧 [PostgreSQLClient] Successfully connected to PostgreSQL")
-            return self
-            
-        except Exception as e:
-            logger.error(f"🔧 [PostgreSQLClient] Connection failed: {e}")
-            raise ConnectionError(f"Failed to connect to PostgreSQL: {e}") from e
-    
-    def close(self) -> None:
-        """Close the PostgreSQL connection."""
-        if self._connection is not None:
+
+        async with self._connect_lock:
+            if self._pool is not None and not self._pool.is_closing():
+                logger.debug("🔧 [PostgreSQLClient] Pool already initialized")
+                return self
+
             try:
-                self._connection.close()
-                logger.info("🔧 [PostgreSQLClient] Connection closed")
+                logger.debug(
+                    f"🔧 [PostgreSQLClient] Initializing pool to "
+                    f"{self.host}:{self.port}/{self.database} "
+                    f"(min={self.min_pool_size}, max={self.max_pool_size})"
+                )
+
+                self._pool = await asyncpg.create_pool(
+                    host=self.host,
+                    port=self.port,
+                    database=self.database,
+                    user=self.user,
+                    password=self.password,
+                    min_size=self.min_pool_size,
+                    max_size=self.max_pool_size,
+                    timeout=self.timeout,
+                    command_timeout=self.timeout,
+                    ssl=(self.sslmode or "prefer").strip().lower(),
+                )
+
+                logger.info("🔧 [PostgreSQLClient] PostgreSQL connection pool ready")
+                return self
+
             except Exception as e:
-                logger.warning(f"🔧 [PostgreSQLClient] Failed to close connection gracefully: {e}")
-            finally:
-                self._connection = None
-    
+                logger.error(f"🔧 [PostgreSQLClient] Pool initialization failed: {e}")
+                raise ConnectionError(f"Failed to connect to PostgreSQL: {e}") from e
+
+    async def close(self) -> None:
+        """Close all connections in the pool."""
+        if self._pool is None:
+            return
+
+        pool = self._pool
+        self._pool = None
+        try:
+            await pool.close()
+            logger.info("🔧 [PostgreSQLClient] Connection pool closed")
+        except Exception as e:
+            logger.warning(f"🔧 [PostgreSQLClient] Failed to close pool gracefully: {e}")
+            pool.terminate()
+
     def is_connected(self) -> bool:
-        """Check if connection is active."""
-        return self._connection is not None and not self._connection.closed
-    
-    def execute_query(
+        """Check if the connection pool is active."""
+        return self._pool is not None and not self._pool.is_closing()
+
+    def resize_pool(self, min_pool_size: int, max_pool_size: int) -> "PostgreSQLClient":
+        """Resize the connection pool. Must be called before ``connect()``."""
+        if self._pool is not None and not self._pool.is_closing():
+            raise RuntimeError("Cannot resize after pool is initialized")
+        if min_pool_size < 1:
+            raise ValueError("min_pool_size must be >= 1")
+        if max_pool_size < min_pool_size:
+            raise ValueError("max_pool_size must be >= min_pool_size")
+        self.min_pool_size = min_pool_size
+        self.max_pool_size = max_pool_size
+        return self
+
+    def get_pool(self) -> asyncpg.Pool | None:
+        """Return the underlying asyncpg pool for datasource-level querying."""
+        return self._pool
+
+    async def execute_query(
         self,
         query: str,
-        params: Optional[Union[Dict[str, Any], List[Any], tuple]] = None,
-    ) -> List[Dict[str, Any]]:
-        """Execute a SQL query and return results as list of dicts.
-        
-        Args:
-            query: SQL query to execute
-            params: Optional query parameters (for parameterized queries)
-            
-        Returns:
-            List of dictionaries containing query results
-            
-        Raises:
-            ConnectionError: If not connected
-            RuntimeError: If query execution fails
-        """
+        params: Sequence[Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Execute a SQL query and return results as list of dicts."""
         if not self.is_connected():
-            self.connect()
-        
+            await self.connect()
+
+        if self._pool is None:
+            raise RuntimeError("PostgreSQL pool not initialized")
+
         try:
-            cursor = self._connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            
-            if params:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
-            
-            # For SELECT queries, fetch results
-            if cursor.description:
-                results = [dict(row) for row in cursor.fetchall()]
-            else:
-                # For INSERT/UPDATE/DELETE, return affected rows count
-                results = [{"affected_rows": cursor.rowcount}]
-            
-            self._connection.commit()
-            cursor.close()
-            
-            return results
-            
+            async with self._pool.acquire(timeout=self.pool_acquire_timeout) as conn:
+                prepared_params = self._normalize_params(params)
+                statement = await conn.prepare(query)
+                if statement.get_attributes():
+                    rows = await statement.fetch(*prepared_params)
+                    return [dict(row) for row in rows]
+
+                status = await conn.execute(query, *prepared_params)
+                return [{"affected_rows": self._parse_affected_rows(status)}]
         except Exception as e:
-            self._connection.rollback()
             logger.error(f"🔧 [PostgreSQLClient] Query execution failed: {e}")
             raise RuntimeError(f"Query execution failed: {e}") from e
-    
-    def execute_query_raw(
+
+    async def execute_query_raw(
         self,
         query: str,
-        params: Optional[Union[Dict[str, Any], List[Any], tuple]] = None,
-    ) -> tuple:
-        """Execute a SQL query and return raw cursor results.
-        
-        Args:
-            query: SQL query to execute
-            params: Optional query parameters
-            
-        Returns:
-            Tuple of (columns, rows) where columns is list of column names
-            and rows is list of tuples
-            
-        Raises:
-            ConnectionError: If not connected
-            RuntimeError: If query execution fails
+        params: Sequence[Any] | None = None,
+    ) -> tuple[list[str], list[tuple[Any, ...]]]:
         """
-        logger.debug(f"🔧 [PostgreSQLClient.execute_query_raw] Executing query: {query[:200]}...")
-        
+        Execute a SQL query and return raw columns/rows.
+        conn.execute doesn't support multi-statement queries.
+        """
         if not self.is_connected():
-            logger.debug("🔧 [PostgreSQLClient.execute_query_raw] Not connected, connecting...")
-            self.connect()
-        
+            await self.connect()
+
+        if self._pool is None:
+            raise RuntimeError("PostgreSQL pool not initialized")
+
         try:
-            cursor = self._connection.cursor()
-            logger.debug("🔧 [PostgreSQLClient.execute_query_raw] Cursor created")
-            
-            if params:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
-            
-            logger.debug(f"🔧 [PostgreSQLClient.execute_query_raw] Query executed, cursor.description={cursor.description is not None}")
-            
-            if cursor.description:
-                columns = [desc[0] for desc in cursor.description]
-                rows = cursor.fetchall()
-                logger.debug(f"🔧 [PostgreSQLClient.execute_query_raw] Fetched {len(rows)} rows with columns {columns}")
-                if rows:
-                    logger.debug(f"🔧 [PostgreSQLClient.execute_query_raw] First row: {rows[0]}")
-            else:
-                columns = []
-                rows = []
-                logger.warning("🔧 [PostgreSQLClient.execute_query_raw] cursor.description is None - no result set")
-            
-            self._connection.commit()
-            cursor.close()
-            
-            logger.info(f"🔧 [PostgreSQLClient.execute_query_raw] Returning {len(columns)} columns, {len(rows)} rows")
-            return (columns, rows)
-            
+            async with self._pool.acquire(timeout=self.pool_acquire_timeout) as conn:
+                prepared_params = self._normalize_params(params)
+                statement = await conn.prepare(query)
+                attributes = statement.get_attributes()
+                if not attributes:
+                    await conn.execute(query, *prepared_params)
+                    return ([], [])
+
+                rows = await statement.fetch(*prepared_params)
+                columns = [attr.name for attr in attributes]
+                raw_rows = [tuple(row) for row in rows]
+                return (columns, raw_rows)
         except Exception as e:
-            self._connection.rollback()
-            logger.error(f"🔧 [PostgreSQLClient] Query execution failed: {e}")
+            logger.error(f"🔧 [PostgreSQLClient.execute_query_raw] Query execution failed: {e}")
             raise RuntimeError(f"Query execution failed: {e}") from e
-    
-    def get_connection_info(self) -> Dict[str, Any]:
+
+    @staticmethod
+    def _normalize_params(
+        params: Any,
+    ) -> tuple[Any, ...]:
+        """Normalize params to asyncpg positional args."""
+        if params is None:
+            return ()
+        if isinstance(params, dict):
+            raise TypeError(
+                "asyncpg only accepts positional parameters ($1, $2, ...); "
+                "dict params with %(name)s placeholders are not supported."
+            )
+        if isinstance(params, Sequence) and not isinstance(params, (str, bytes, bytearray)):
+            return tuple(params)
+        return (params,)
+
+    @staticmethod
+    def _parse_affected_rows(status: str) -> int:
+        """Extract affected row count from an asyncpg status string."""
+        try:
+            return int(status.split()[-1])
+        except (IndexError, ValueError, AttributeError):
+            return 0
+
+    def get_connection_info(self) -> dict[str, Any]:
         """Get connection information."""
         return {
             "host": self.host,
@@ -241,15 +241,15 @@ class PostgreSQLClient:
             "user": self.user,
             "sslmode": self.sslmode,
         }
-    
-    def __enter__(self) -> "PostgreSQLClient":
-        """Context manager entry."""
-        self.connect()
+
+    async def __aenter__(self) -> "PostgreSQLClient":
+        """Async context manager entry."""
+        await self.connect()
         return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Context manager exit."""
-        self.close()
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Async context manager exit."""
+        await self.close()
 
 
 class PostgreSQLConfig(BaseModel):
@@ -279,7 +279,14 @@ class PostgreSQLConfig(BaseModel):
         default="prefer",
         description="SSL mode (disable, allow, prefer, require, verify-ca, verify-full)"
     )
-    
+    min_pool_size: int = Field(default=1, description="Min pool size", ge=1)
+    max_pool_size: int = Field(default=10, description="Max pool size", ge=1)
+    pool_acquire_timeout: float = Field(
+        default=30.0,
+        description="Seconds a caller will wait for a free pool connection",
+        gt=0,
+    )
+
     def create_client(self) -> PostgreSQLClient:
         """Create a PostgreSQL client."""
         return PostgreSQLClient(
@@ -290,23 +297,26 @@ class PostgreSQLConfig(BaseModel):
             password=self.password,
             timeout=self.timeout,
             sslmode=self.sslmode,
+            min_pool_size=self.min_pool_size,
+            max_pool_size=self.max_pool_size,
+            pool_acquire_timeout=self.pool_acquire_timeout,
         )
 
 
 class AuthConfig(BaseModel):
     """Authentication configuration for PostgreSQL connector."""
 
-    host: Optional[str] = Field(default=None, description="PostgreSQL server host")
+    host: str | None = Field(default=None, description="PostgreSQL server host")
     port: int = Field(default=5432, description="PostgreSQL server port")
-    database: Optional[str] = Field(default=None, description="Database name")
-    user: Optional[str] = Field(
+    database: str | None = Field(default=None, description="Database name")
+    user: str | None = Field(
         default=None,
         description="Username",
         validation_alias=AliasChoices("username", "user"),
     )
     password: str = Field(default="", description="Password")
     sslmode: str = Field(default="prefer", description="SSL mode")
-    connection_string: Optional[str] = Field(
+    connection_string: str | None = Field(
         default=None,
         description="Full DSN/URI; used when authType is CONNECTION_STRING",
         validation_alias=AliasChoices("connectionString", "connection_string"),
@@ -373,7 +383,7 @@ class PostgreSQLClientBuilder(IClient):
         """Return the PostgreSQL client object."""
         return self._client
     
-    def get_connection_info(self) -> Dict[str, Any]:
+    def get_connection_info(self) -> dict[str, Any]:
         """Return the connection information."""
         return self._client.get_connection_info()
     
@@ -397,7 +407,7 @@ class PostgreSQLClientBuilder(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
-        connector_instance_id: Optional[str] = None,
+        connector_instance_id: str | None = None,
     ) -> "PostgreSQLClientBuilder":
         """Build PostgreSQLClientBuilder using configuration service.
         
@@ -460,8 +470,8 @@ class PostgreSQLClientBuilder(IClient):
     async def _get_connector_config(
         logger: logging.Logger,
         config_service: ConfigurationService,
-        connector_instance_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        connector_instance_id: str | None = None,
+    ) -> dict[str, Any]:
         """Fetch connector config from etcd for PostgreSQL.
         
         Args:
@@ -502,17 +512,17 @@ class PostgreSQLResponse(BaseModel):
     """Standard response wrapper for PostgreSQL operations."""
     
     success: bool = Field(..., description="Whether the request was successful")
-    data: Optional[Union[Dict[str, Any], List[Any]]] = Field(
+    data: dict[str, Any] | list[Any] | None = Field(
         default=None, description="Response data"
     )
-    error: Optional[str] = Field(default=None, description="Error message if failed")
-    message: Optional[str] = Field(default=None, description="Additional message")
+    error: str | None = Field(default=None, description="Error message if failed")
+    message: str | None = Field(default=None, description="Additional message")
     
     class Config:
         """Pydantic configuration."""
         extra = "allow"
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert response to dictionary."""
         return self.model_dump(exclude_none=True)
     

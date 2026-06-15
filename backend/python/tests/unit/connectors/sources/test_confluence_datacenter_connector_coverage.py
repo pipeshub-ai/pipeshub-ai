@@ -1350,32 +1350,41 @@ class TestFetchPageContent:
 # ===========================================================================
 
 
+def _mock_comment_record(record_type: RecordType, external_id: str, record_name: str = "") -> MagicMock:
+    record = MagicMock()
+    record.record_type = record_type
+    record.external_record_id = external_id
+    record.record_name = record_name
+    return record
+
+
+def _mock_comment_datasource(body: dict) -> MagicMock:
+    mock_ds = MagicMock()
+    mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, body))
+    mock_ds.fetch_authenticated_binary = AsyncMock(return_value=None)
+    return mock_ds
+
+
 class TestFetchCommentContent:
     @pytest.mark.asyncio
     async def test_footer_comment(self):
         c = _conn()
-        mock_ds = MagicMock()
-        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Footer</p>"}},
-        }))
+        mock_ds = _mock_comment_datasource({
+            "body": {"export_view": {"value": "<p>Footer</p>"}},
+        })
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.COMMENT
-        record.external_record_id = "123"
+        record = _mock_comment_record(RecordType.COMMENT, "123")
         result = await c._fetch_comment_content(record)
         assert result == "<p>Footer</p>"
 
     @pytest.mark.asyncio
     async def test_inline_comment(self):
         c = _conn()
-        mock_ds = MagicMock()
-        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Inline</p>"}},
-        }))
+        mock_ds = _mock_comment_datasource({
+            "body": {"export_view": {"value": "<p>Inline</p>"}},
+        })
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.INLINE_COMMENT
-        record.external_record_id = "456"
+        record = _mock_comment_record(RecordType.INLINE_COMMENT, "456")
         result = await c._fetch_comment_content(record)
         assert result == "<p>Inline</p>"
 

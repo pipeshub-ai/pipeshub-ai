@@ -25,6 +25,9 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
 from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     ConfluenceDataCenterConnector,
 )
+from app.connectors.sources.atlassian.confluence_datacenter_personal.connector import (
+    ConfluenceDataCenterPersonalConnector,
+)
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.connectors.sources.atlassian.jira_cloud_personal.connector import (
     JiraCloudPersonalConnector,
@@ -93,6 +96,7 @@ class ConnectorFactory:
         "outlookpersonal": OutlookIndividualConnector,
         "confluence": ConfluenceConnector,
         "confluencedatacenter": ConfluenceDataCenterConnector,
+        "confluencedatacenterpersonal": ConfluenceDataCenterPersonalConnector,
         "jira": JiraConnector,
         "jiracloudpersonal": JiraCloudPersonalConnector,
         "jiradatacenter": JiraDataCenterConnector,
@@ -196,6 +200,7 @@ class ConnectorFactory:
             return None
 
         try:
+            notification_service = kwargs.pop("notification_service", None)
             connector = await connector_class.create_connector(
                 logger=logger,
                 data_store_provider=data_store_provider,
@@ -205,6 +210,8 @@ class ConnectorFactory:
                 created_by=created_by,
                 **kwargs,
             )
+            if connector is not None and notification_service is not None:
+                connector._notification_service = notification_service
             logger.info(f"Created {name} {connector_id} connector successfully")
             return connector
         except Exception as e:

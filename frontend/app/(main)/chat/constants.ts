@@ -23,7 +23,7 @@ export const PROVIDER_FRIENDLY_NAMES: Record<string, string> = {
 export const MODEL_DESCRIPTIONS: Record<string, string> = {
   'gpt-4o-mini': 'Fast and affordable GPT-4 class model for everyday tasks',
   'gpt-4o': 'Flagship multimodal model with vision and audio support',
-  'gpt-5': 'Most capable OpenAI model with advanced reasoning',
+  'gpt-5.4': 'Most capable OpenAI model with advanced reasoning',
   'gpt-5.5': 'Advanced conversational AI with strong reasoning and multimodal capabilities',
   'gpt-5-nano': 'Compact and fast model optimised for quick responses',
   'claude-3-5-sonnet-20241022': 'Balanced performance and intelligence from Anthropic',

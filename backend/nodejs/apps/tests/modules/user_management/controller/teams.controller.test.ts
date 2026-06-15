@@ -70,6 +70,34 @@ describe('TeamsController', () => {
       expect(res.json.calledWith(mockTeam)).to.be.true;
     });
 
+    it('should enrich createdByUser.profilePicture when creating team', async () => {
+      const creatorId = '507f1f77bcf86cd799439011';
+      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 201,
+        data: {
+          id: 'team1',
+          name: 'Engineering',
+          createdByUser: { id: 'graph-creator-key', userId: creatorId, name: 'Alice', email: 'alice@test.com' },
+        },
+      });
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([
+            { userId: creatorId, pic: 'creatorPic', mimeType: 'image/jpeg' },
+          ]),
+        }),
+      } as any);
+
+      req.body = { name: 'Engineering', userIds: [] };
+
+      await controller.createTeam(req, res, next);
+
+      expect(res.status.calledWith(201)).to.be.true;
+      expect(res.json.firstCall.args[0].createdByUser.profilePicture).to.equal(
+        'data:image/jpeg;base64,creatorPic',
+      );
+    });
+
     it('should call next with BadRequestError when orgId is missing', async () => {
       req.user = { userId: '507f1f77bcf86cd799439011' };
 
@@ -120,6 +148,34 @@ describe('TeamsController', () => {
       expect(res.json.calledWith(mockTeam)).to.be.true;
     });
 
+    it('should enrich createdByUser.profilePicture when getting team', async () => {
+      const creatorId = '507f1f77bcf86cd799439011';
+      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {
+          id: 'team1',
+          name: 'Engineering',
+          createdByUser: { id: 'graph-creator-key', userId: creatorId, name: 'Alice', email: 'alice@test.com' },
+        },
+      });
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([
+            { userId: creatorId, pic: 'teamCreatorPic', mimeType: 'image/png' },
+          ]),
+        }),
+      } as any);
+
+      req.params.teamId = 'team1';
+
+      await controller.getTeam(req, res, next);
+
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.json.firstCall.args[0].createdByUser.profilePicture).to.equal(
+        'data:image/png;base64,teamCreatorPic',
+      );
+    });
+
     it('should throw BadRequestError when orgId is missing', async () => {
       req.user = { userId: '507f1f77bcf86cd799439011' };
       req.params.teamId = 'team1';
@@ -152,82 +208,6 @@ describe('TeamsController', () => {
       req.params.teamId = 'nonexistent';
 
       await controller.getTeam(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-  });
-
-  describe('listTeams', () => {
-    it('should list teams with pagination', async () => {
-      const mockTeams = {
-        teams: [{ id: 'team1', name: 'Team 1' }],
-        total: 1,
-      };
-      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: mockTeams,
-      });
-
-      req.query = { page: '1', limit: '10' };
-
-      await controller.listTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledWith(mockTeams)).to.be.true;
-    });
-
-    it('should call next with BadRequestError when orgId is missing', async () => {
-      req.user = { userId: '507f1f77bcf86cd799439011' };
-
-      await controller.listTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
-    it('should call next with BadRequestError when userId is missing', async () => {
-      req.user = { orgId: '507f1f77bcf86cd799439012' };
-
-      await controller.listTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
-    it('should include search param in query', async () => {
-      const mockTeams = { teams: [], total: 0 };
-      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: mockTeams,
-      });
-
-      req.query = { page: '1', limit: '10', search: 'engineering' };
-
-      await controller.listTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-    });
-  });
-
-  describe('addUsersToTeam', () => {
-    it('should add users to a team', async () => {
-      const mockResult = { message: 'Users added' };
-      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: mockResult,
-      });
-
-      req.params.teamId = 'team1';
-      req.body = { userIds: ['u1', 'u2'] };
-
-      await controller.addUsersToTeam(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-    });
-
-    it('should call next with error when orgId is missing', async () => {
-      req.user = { userId: '507f1f77bcf86cd799439011' };
-      req.params.teamId = 'team1';
-
-      await controller.addUsersToTeam(req, res, next);
 
       expect(next.calledOnce).to.be.true;
     });
@@ -279,32 +259,6 @@ describe('TeamsController', () => {
       req.params.teamId = 'team1';
 
       await controller.deleteTeam(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-  });
-
-  describe('removeUserFromTeam', () => {
-    it('should remove a user from team', async () => {
-      const mockResult = { message: 'User removed' };
-      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: mockResult,
-      });
-
-      req.params.teamId = 'team1';
-      req.body = { userIds: ['u1'] };
-
-      await controller.removeUserFromTeam(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-    });
-
-    it('should call next with error when userId is missing', async () => {
-      req.user = { orgId: '507f1f77bcf86cd799439012' };
-      req.params.teamId = 'team1';
-
-      await controller.removeUserFromTeam(req, res, next);
 
       expect(next.calledOnce).to.be.true;
     });
@@ -408,77 +362,15 @@ describe('TeamsController', () => {
 
       expect(next.calledOnce).to.be.true;
     });
-  });
 
-  describe('updateTeamUsersPermissions', () => {
-    it('should update team users permissions', async () => {
-      const mockResult = { message: 'Permissions updated' };
-      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: mockResult,
-      });
-
+    it('should call next with error when AI service returns no response', async () => {
       req.params.teamId = 'team1';
-      req.body = { userRoles: [{ userId: 'u1', role: 'admin' }] };
+      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves(undefined);
 
-      await controller.updateTeamUsersPermissions(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-    });
-
-    it('should call next with error when orgId is missing', async () => {
-      req.user = { userId: '507f1f77bcf86cd799439011' };
-      req.params.teamId = 'team1';
-
-      await controller.updateTeamUsersPermissions(req, res, next);
+      await controller.getTeamUsers(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-    });
-  });
-
-  describe('getUserCreatedTeams', () => {
-    it('should get user-created teams', async () => {
-      const mockTeams = { teams: [{ id: 'team1' }] };
-      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: mockTeams,
-      });
-
-      req.query = { page: '1', limit: '10' };
-
-      await controller.getUserCreatedTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-    });
-
-    it('should call next with error when orgId is missing', async () => {
-      req.user = { userId: '507f1f77bcf86cd799439011' };
-
-      await controller.getUserCreatedTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
-    it('should call next with error when userId is missing', async () => {
-      req.user = { orgId: '507f1f77bcf86cd799439012' };
-
-      await controller.getUserCreatedTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
-    it('should include search param in getUserCreatedTeams query', async () => {
-      const mockTeams = { teams: [], total: 0 };
-      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: mockTeams,
-      });
-
-      req.query = { page: '1', limit: '10', search: 'test' };
-
-      await controller.getUserCreatedTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.status.called).to.be.false;
     });
   });
 
@@ -643,37 +535,23 @@ describe('TeamsController', () => {
       expect(next.calledOnce).to.be.true;
     });
 
-    it('should throw error when AI service returns null data from listTeams', async () => {
-      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: null,
-      });
-
-      req.query = { page: '1', limit: '10' };
-
-      await controller.listTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
-    it('should throw error when AI service returns 500 from addUsersToTeam', async () => {
-      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 500,
-        data: { detail: 'Internal error' },
-      });
-
-      req.params.teamId = 'team1';
-      req.body = { userIds: ['u1'] };
-
-      await controller.addUsersToTeam(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
     it('should throw error when AI service returns non-200 for createTeam', async () => {
       executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 422,
         data: { detail: 'Validation failed' },
+      });
+
+      req.body = { name: 'Team' };
+
+      await controller.createTeam(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+    });
+
+    it('should throw error when AI service returns null data for createTeam', async () => {
+      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 201,
+        data: null,
       });
 
       req.body = { name: 'Team' };
@@ -710,16 +588,16 @@ describe('TeamsController', () => {
       expect(next.calledOnce).to.be.true;
     });
 
-    it('should throw error when AI service returns null data for removeUserFromTeam', async () => {
+    it('should throw error when AI service returns null data for updateTeam', async () => {
       executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
         data: null,
       });
 
       req.params.teamId = 'team1';
-      req.body = { userIds: ['u1'] };
+      req.body = { name: 'Updated' };
 
-      await controller.removeUserFromTeam(req, res, next);
+      await controller.updateTeam(req, res, next);
 
       expect(next.calledOnce).to.be.true;
     });
@@ -738,19 +616,6 @@ describe('TeamsController', () => {
       expect(res.json.calledWith(null)).to.be.true;
     });
 
-    it('should throw error when AI service returns null data for updateTeamUsersPermissions', async () => {
-      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: null,
-      });
-
-      req.params.teamId = 'team1';
-      req.body = { userRoles: [] };
-
-      await controller.updateTeamUsersPermissions(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
   });
 
   // =========================================================================
@@ -763,27 +628,6 @@ describe('TeamsController', () => {
       req.params.teamId = 'team1';
 
       await controller.getTeam(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
-    it('should handle AI service error in listTeams', async () => {
-      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('Timeout'));
-
-      req.query = { page: '1', limit: '10' };
-
-      await controller.listTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
-    it('should handle AI service error in addUsersToTeam', async () => {
-      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('Network error'));
-
-      req.params.teamId = 'team1';
-      req.body = { userIds: ['u1'] };
-
-      await controller.addUsersToTeam(req, res, next);
 
       expect(next.calledOnce).to.be.true;
     });
@@ -809,17 +653,6 @@ describe('TeamsController', () => {
       expect(next.calledOnce).to.be.true;
     });
 
-    it('should handle AI service error in removeUserFromTeam', async () => {
-      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('Remove failed'));
-
-      req.params.teamId = 'team1';
-      req.body = { userIds: ['u1'] };
-
-      await controller.removeUserFromTeam(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
     it('should handle AI service error in getTeamUsers', async () => {
       executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('Fetch users failed'));
 
@@ -838,124 +671,6 @@ describe('TeamsController', () => {
       expect(next.calledOnce).to.be.true;
     });
 
-    it('should handle AI service error in updateTeamUsersPermissions', async () => {
-      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('Perms failed'));
-
-      req.params.teamId = 'team1';
-      req.body = { userRoles: [] };
-
-      await controller.updateTeamUsersPermissions(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
-    it('should handle AI service error in getUserCreatedTeams', async () => {
-      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('Fetch failed'));
-
-      req.query = { page: '1', limit: '10' };
-
-      await controller.getUserCreatedTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // Branch coverage: listTeams - query param branches (page/limit/search)
-  // -----------------------------------------------------------------------
-  describe('listTeams - query param branches', () => {
-    it('should pass all query params when provided', async () => {
-      req.query = { page: '1', limit: '10', search: 'dev' };
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: [{ id: 'team1' }],
-      });
-
-      await controller.listTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-    });
-
-    it('should work with no query params', async () => {
-      req.query = {};
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: [],
-      });
-
-      await controller.listTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-    });
-
-    it('should work with only page', async () => {
-      req.query = { page: '2' };
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: [],
-      });
-
-      await controller.listTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-    });
-
-    it('should work with only limit', async () => {
-      req.query = { limit: '5' };
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: [],
-      });
-
-      await controller.listTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-    });
-
-    it('should work with only search', async () => {
-      req.query = { search: 'team' };
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: [],
-      });
-
-      await controller.listTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-    });
-
-    it('should throw on search > 1000 chars', async () => {
-      req.query = { search: 'a'.repeat(1001) };
-
-      await controller.listTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Search parameter too long');
-    });
-
-    it('should throw on XSS in search', async () => {
-      req.query = { search: '<script>alert("xss")</script>' };
-
-      await controller.listTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
-    it('should throw when orgId is missing', async () => {
-      req.user = { userId: '507f1f77bcf86cd799439011' };
-
-      await controller.listTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
-    it('should throw when userId is missing', async () => {
-      req.user = { orgId: '507f1f77bcf86cd799439012' };
-
-      await controller.listTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
   });
 
   // -----------------------------------------------------------------------
@@ -1067,104 +782,6 @@ describe('TeamsController', () => {
       req.user = { orgId: '507f1f77bcf86cd799439012' };
 
       await controller.getUserTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // Branch coverage: getUserCreatedTeams - query param branches
-  // -----------------------------------------------------------------------
-  describe('getUserCreatedTeams - query param branches', () => {
-    it('should pass all query params', async () => {
-      req.query = { page: '1', limit: '10', search: 'my' };
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: [],
-      });
-
-      await controller.getUserCreatedTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-    });
-
-    it('should work with no query params', async () => {
-      req.query = {};
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: [],
-      });
-
-      await controller.getUserCreatedTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-    });
-
-    it('should work with only page', async () => {
-      req.query = { page: '3' };
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: [],
-      });
-
-      await controller.getUserCreatedTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-    });
-
-    it('should work with only limit', async () => {
-      req.query = { limit: '50' };
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: [],
-      });
-
-      await controller.getUserCreatedTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-    });
-
-    it('should work with only search', async () => {
-      req.query = { search: 'created' };
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: [],
-      });
-
-      await controller.getUserCreatedTeams(req, res, next);
-
-      expect(res.status.calledWith(200)).to.be.true;
-    });
-
-    it('should throw on search > 1000 chars', async () => {
-      req.query = { search: 'a'.repeat(1001) };
-
-      await controller.getUserCreatedTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Search parameter too long');
-    });
-
-    it('should throw on XSS in search', async () => {
-      req.query = { search: '<script>alert("xss")</script>' };
-
-      await controller.getUserCreatedTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
-    it('should throw when orgId is missing', async () => {
-      req.user = { userId: '507f1f77bcf86cd799439011' };
-
-      await controller.getUserCreatedTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
-    it('should throw when userId is missing', async () => {
-      req.user = { orgId: '507f1f77bcf86cd799439012' };
-
-      await controller.getUserCreatedTeams(req, res, next);
 
       expect(next.calledOnce).to.be.true;
     });
@@ -1369,27 +986,9 @@ describe('TeamsController', () => {
   });
 
   // -----------------------------------------------------------------------
-  // Branch coverage: addUsersToTeam/updateTeam/deleteTeam/removeUserFromTeam/getTeamUsers - userId missing
+  // Branch coverage: updateTeam/deleteTeam/getTeamUsers - userId missing
   // -----------------------------------------------------------------------
   describe('methods - missing orgId and userId branches', () => {
-    it('addUsersToTeam should throw when orgId is missing', async () => {
-      req.user = { userId: '507f1f77bcf86cd799439011' };
-      req.params.teamId = 'team1';
-
-      await controller.addUsersToTeam(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
-    it('addUsersToTeam should throw when userId is missing', async () => {
-      req.user = { orgId: '507f1f77bcf86cd799439012' };
-      req.params.teamId = 'team1';
-
-      await controller.addUsersToTeam(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
     it('updateTeam should throw when orgId is missing', async () => {
       req.user = { userId: '507f1f77bcf86cd799439011' };
       req.params.teamId = 'team1';
@@ -1426,24 +1025,6 @@ describe('TeamsController', () => {
       expect(next.calledOnce).to.be.true;
     });
 
-    it('removeUserFromTeam should throw when orgId is missing', async () => {
-      req.user = { userId: '507f1f77bcf86cd799439011' };
-      req.params.teamId = 'team1';
-
-      await controller.removeUserFromTeam(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
-    it('removeUserFromTeam should throw when userId is missing', async () => {
-      req.user = { orgId: '507f1f77bcf86cd799439012' };
-      req.params.teamId = 'team1';
-
-      await controller.removeUserFromTeam(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
     it('getTeamUsers should throw when orgId is missing', async () => {
       req.user = { userId: '507f1f77bcf86cd799439011' };
       req.params.teamId = 'team1';
@@ -1462,23 +1043,6 @@ describe('TeamsController', () => {
       expect(next.calledOnce).to.be.true;
     });
 
-    it('updateTeamUsersPermissions should throw when orgId is missing', async () => {
-      req.user = { userId: '507f1f77bcf86cd799439011' };
-      req.params.teamId = 'team1';
-
-      await controller.updateTeamUsersPermissions(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
-
-    it('updateTeamUsersPermissions should throw when userId is missing', async () => {
-      req.user = { orgId: '507f1f77bcf86cd799439012' };
-      req.params.teamId = 'team1';
-
-      await controller.updateTeamUsersPermissions(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-    });
   });
 
   // -----------------------------------------------------------------------

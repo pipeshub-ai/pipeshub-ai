@@ -490,12 +490,12 @@ class TestProcessPdfWithDocling:
 
 
 # ===========================================================================
-# Processor.process_pdf_with_pymupdf
+# Processor.process_pdf_with_pdf_plumber
 # ===========================================================================
 
 
 class TestProcessPdfWithPyMuPDF:
-    """Tests for Processor.process_pdf_with_pymupdf."""
+    """Tests for Processor.process_pdf_with_pdf_plumber."""
 
     @pytest.mark.asyncio
     async def test_record_not_found_yields_indexing_complete(self):
@@ -503,14 +503,14 @@ class TestProcessPdfWithPyMuPDF:
         proc, _, gp, _ = _make_processor()
         gp.get_document.return_value = None
 
-        with patch("app.events.processor.PyMuPDFOpenCVProcessor") as mock_pymupdf:
+        with patch("app.events.processor.PDFPlumberOpenCVProcessor") as mock_pymupdf:
             mock_instance = AsyncMock()
             mock_instance.parse_document.return_value = {"pages": []}
             mock_instance.create_blocks.return_value = []
             mock_pymupdf.return_value = mock_instance
 
             events = await _collect(
-                proc.process_pdf_with_pymupdf(
+                proc.process_pdf_with_pdf_plumber(
                     recordName="test.pdf",
                     recordId="rec-1",
                     pdf_binary=b"pdf",
@@ -528,7 +528,7 @@ class TestProcessPdfWithPyMuPDF:
         proc, _, gp, _ = _make_processor()
         gp.get_document.return_value = _base_record_dict(mimeType="application/pdf")
 
-        with patch("app.events.processor.PyMuPDFOpenCVProcessor") as mock_pymupdf:
+        with patch("app.events.processor.PDFPlumberOpenCVProcessor") as mock_pymupdf:
             mock_instance = AsyncMock()
             mock_instance.parse_document.return_value = {"pages": []}
             mock_instance.create_blocks.return_value = []
@@ -538,7 +538,7 @@ class TestProcessPdfWithPyMuPDF:
                 mock_pipeline.return_value = AsyncMock()
 
                 await _collect(
-                    proc.process_pdf_with_pymupdf(
+                    proc.process_pdf_with_pdf_plumber(
                         recordName="test",  # no .pdf extension
                         recordId="rec-1",
                         pdf_binary=b"pdf",
@@ -1555,12 +1555,12 @@ class TestProcessGmailMessage:
 
 
 # ===========================================================================
-# Processor.process_pdf_with_pymupdf (lines 263-265)
+# Processor.process_pdf_with_pdf_plumber (lines 263-265)
 # ===========================================================================
 
 
 class TestProcessPdfWithPyMuPDF:
-    """Tests for process_pdf_with_pymupdf."""
+    """Tests for process_pdf_with_pdf_plumber."""
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
@@ -1568,12 +1568,12 @@ class TestProcessPdfWithPyMuPDF:
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = None
 
-        with patch("app.events.processor.PyMuPDFOpenCVProcessor") as mock_proc:
+        with patch("app.events.processor.PDFPlumberOpenCVProcessor") as mock_proc:
             mock_instance = AsyncMock()
             mock_instance.parse_document = AsyncMock(return_value={})
             mock_instance.create_blocks = AsyncMock(return_value=MagicMock())
             mock_proc.return_value = mock_instance
-            events = await _collect(proc.process_pdf_with_pymupdf(
+            events = await _collect(proc.process_pdf_with_pdf_plumber(
                 "test.pdf", "rec-1", b"pdfdata", "vr-1"
             ))
 
@@ -1586,14 +1586,14 @@ class TestProcessPdfWithPyMuPDF:
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict()
 
-        with patch("app.events.processor.PyMuPDFOpenCVProcessor") as mock_proc:
+        with patch("app.events.processor.PDFPlumberOpenCVProcessor") as mock_proc:
             mock_instance = AsyncMock()
             mock_instance.parse_document = AsyncMock(return_value={})
             mock_instance.create_blocks = AsyncMock(return_value=MagicMock())
             mock_proc.return_value = mock_instance
             with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
                 mock_pipeline.return_value = AsyncMock()
-                events = await _collect(proc.process_pdf_with_pymupdf(
+                events = await _collect(proc.process_pdf_with_pdf_plumber(
                     "test.pdf", "rec-1", b"pdfdata", "vr-1"
                 ))
 
@@ -3251,7 +3251,7 @@ class TestProcessImageCoverage:
 
 
 # ===================================================================
-# process_pdf_with_pymupdf
+# process_pdf_with_pdf_plumber
 # ===================================================================
 
 
@@ -3260,7 +3260,7 @@ class TestProcessPdfWithPyMuPDFCoverage:
     async def test_record_not_found(self):
         proc = _make_processor_cov()
 
-        with patch("app.events.processor.PyMuPDFOpenCVProcessor") as mock_proc:
+        with patch("app.events.processor.PDFPlumberOpenCVProcessor") as mock_proc:
             mock_instance = AsyncMock()
             mock_instance.parse_document = AsyncMock(return_value=MagicMock())
             mock_instance.create_blocks = AsyncMock(return_value=MagicMock())
@@ -3269,7 +3269,7 @@ class TestProcessPdfWithPyMuPDFCoverage:
             proc.graph_provider.get_document = AsyncMock(return_value=None)
 
             events = await _collect_events(
-                proc.process_pdf_with_pymupdf("test.pdf", "r1", b"pdf_data", "vr1")
+                proc.process_pdf_with_pdf_plumber("test.pdf", "r1", b"pdf_data", "vr1")
             )
             assert any(e.event == "parsing_complete" for e in events)
             assert any(e.event == "indexing_complete" for e in events)
@@ -3278,7 +3278,7 @@ class TestProcessPdfWithPyMuPDFCoverage:
     async def test_success(self):
         proc = _make_processor_cov()
 
-        with patch("app.events.processor.PyMuPDFOpenCVProcessor") as mock_proc:
+        with patch("app.events.processor.PDFPlumberOpenCVProcessor") as mock_proc:
             mock_instance = AsyncMock()
             mock_instance.parse_document = AsyncMock(return_value=MagicMock())
             mock_instance.create_blocks = AsyncMock(return_value=MagicMock())
@@ -3289,7 +3289,7 @@ class TestProcessPdfWithPyMuPDFCoverage:
             with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
                 mock_pipeline.return_value.apply = AsyncMock()
                 events = await _collect_events(
-                    proc.process_pdf_with_pymupdf("test.pdf", "r1", b"pdf_data", "vr1")
+                    proc.process_pdf_with_pdf_plumber("test.pdf", "r1", b"pdf_data", "vr1")
                 )
 
             assert any(e.event == "parsing_complete" for e in events)

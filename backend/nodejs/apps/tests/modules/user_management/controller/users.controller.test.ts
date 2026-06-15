@@ -687,7 +687,7 @@ describe('UserController', () => {
   });
 
   describe('getUsersByIds', () => {
-    it('should return users by array of ids', async () => {
+    it('should return users by array of ids with profilePicture enrichment', async () => {
       const id1 = new mongoose.Types.ObjectId().toString();
       const id2 = new mongoose.Types.ObjectId().toString();
       req.body = { userIds: [id1, id2] };
@@ -697,12 +697,31 @@ describe('UserController', () => {
         { _id: id2, fullName: 'User Two' },
       ];
 
-      sinon.stub(Users, 'find').resolves(mockUsers as any);
+      sinon.stub(Users, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves(mockUsers),
+        }),
+      } as any);
+
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([
+            {
+              userId: id1,
+              pic: 'abc123',
+              mimeType: 'image/png',
+            },
+          ]),
+        }),
+      } as any);
 
       await controller.getUsersByIds(req, res, next);
 
       expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledWith(mockUsers)).to.be.true;
+      const payload = res.json.firstCall.args[0];
+      expect(payload).to.have.length(2);
+      expect(payload[0].profilePicture).to.equal('data:image/png;base64,abc123');
+      expect(payload[1].profilePicture).to.be.undefined;
     });
 
     it('should call next with BadRequestError when userIds is empty', async () => {
@@ -733,6 +752,18 @@ describe('UserController', () => {
       expect(next.calledOnce).to.be.true;
       const error = next.firstCall.args[0];
       expect(error.message).to.equal('userIds must be provided as a non-empty array');
+    });
+
+    it('should call next with BadRequestError when userIds contain invalid ObjectIds', async () => {
+      req.body = { userIds: ['system', new mongoose.Types.ObjectId().toString()] };
+
+      await controller.getUsersByIds(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      const error = next.firstCall.args[0];
+      expect(error.message).to.equal(
+        'userIds must contain valid MongoDB ObjectIds',
+      );
     });
   });
 

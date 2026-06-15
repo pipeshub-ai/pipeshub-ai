@@ -21,16 +21,11 @@ describe('Teams Routes - handler coverage', () => {
 
     mockTeamsController = {
       createTeam: sinon.stub().resolves(),
-      listTeams: sinon.stub().resolves(),
       getTeam: sinon.stub().resolves(),
       updateTeam: sinon.stub().resolves(),
       deleteTeam: sinon.stub().resolves(),
       getTeamUsers: sinon.stub().resolves(),
-      addUsersToTeam: sinon.stub().resolves(),
-      removeUserFromTeam: sinon.stub().resolves(),
-      updateTeamUsersPermissions: sinon.stub().resolves(),
       getUserTeams: sinon.stub().resolves(),
-      getUserCreatedTeams: sinon.stub().resolves(),
     }
 
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
@@ -73,12 +68,12 @@ describe('Teams Routes - handler coverage', () => {
     })
   })
 
-  describe('GET / handler', () => {
-    it('should call teamsController.listTeams', async () => {
-      const handler = findHandler('/', 'get')
+  describe('GET /user/teams handler', () => {
+    it('should call teamsController.getUserTeams', async () => {
+      const handler = findHandler('/user/teams', 'get')
       expect(handler).to.exist
-      await handler({ query: {} } as any, mockRes(), sinon.stub())
-      expect(mockTeamsController.listTeams.calledOnce).to.be.true
+      await handler({} as any, mockRes(), sinon.stub())
+      expect(mockTeamsController.getUserTeams.calledOnce).to.be.true
     })
   })
 
@@ -115,51 +110,6 @@ describe('Teams Routes - handler coverage', () => {
       expect(handler).to.exist
       await handler({ params: { teamId: 'team1' } } as any, mockRes(), sinon.stub())
       expect(mockTeamsController.getTeamUsers.calledOnce).to.be.true
-    })
-  })
-
-  describe('POST /:teamId/users handler', () => {
-    it('should call teamsController.addUsersToTeam', async () => {
-      const handler = findHandler('/:teamId/users', 'post')
-      expect(handler).to.exist
-      await handler({ params: { teamId: 'team1' }, body: { userIds: ['u1'] } } as any, mockRes(), sinon.stub())
-      expect(mockTeamsController.addUsersToTeam.calledOnce).to.be.true
-    })
-  })
-
-  describe('DELETE /:teamId/users handler', () => {
-    it('should call teamsController.removeUserFromTeam', async () => {
-      const handler = findHandler('/:teamId/users', 'delete')
-      expect(handler).to.exist
-      await handler({ params: { teamId: 'team1' }, body: { userIds: ['u1'] } } as any, mockRes(), sinon.stub())
-      expect(mockTeamsController.removeUserFromTeam.calledOnce).to.be.true
-    })
-  })
-
-  describe('PUT /:teamId/users/permissions handler', () => {
-    it('should call teamsController.updateTeamUsersPermissions', async () => {
-      const handler = findHandler('/:teamId/users/permissions', 'put')
-      expect(handler).to.exist
-      await handler({ params: { teamId: 'team1' }, body: {} } as any, mockRes(), sinon.stub())
-      expect(mockTeamsController.updateTeamUsersPermissions.calledOnce).to.be.true
-    })
-  })
-
-  describe('GET /user/teams handler', () => {
-    it('should call teamsController.getUserTeams', async () => {
-      const handler = findHandler('/user/teams', 'get')
-      expect(handler).to.exist
-      await handler({} as any, mockRes(), sinon.stub())
-      expect(mockTeamsController.getUserTeams.calledOnce).to.be.true
-    })
-  })
-
-  describe('GET /user/teams/created handler', () => {
-    it('should call teamsController.getUserCreatedTeams', async () => {
-      const handler = findHandler('/user/teams/created', 'get')
-      expect(handler).to.exist
-      await handler({ query: {} } as any, mockRes(), sinon.stub())
-      expect(mockTeamsController.getUserCreatedTeams.calledOnce).to.be.true
     })
   })
 })

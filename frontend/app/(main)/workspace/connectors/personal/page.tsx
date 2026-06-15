@@ -30,6 +30,7 @@ import {
 } from '../components';
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
+import { useResolvedConnectorTypeParam } from '../utils/resolve-connector-type-param';
 import type {
   Connector,
   ConnectorInstance,
@@ -56,9 +57,6 @@ function PersonalConnectorsPageContent() {
 
   const managedWatcherIdsRef = useRef<Set<string>>(new Set());
   const [isRefreshingAllInstances, setIsRefreshingAllInstances] = useState(false);
-
-  // The connectorType query param determines whether we show the instance page
-  const connectorType = searchParams.get('connectorType');
 
   const {
     registryConnectors,
@@ -94,6 +92,13 @@ function PersonalConnectorsPageContent() {
     bumpCatalogRefresh,
     setSelectedScope,
   } = useConnectorsStore();
+
+  const { connectorType, showConnectorTypePage } = useResolvedConnectorTypeParam(
+    searchParams,
+    registryConnectors,
+    activeConnectors,
+    '/workspace/connectors/personal/',
+  );
 
   // Keep catalog scope in store aligned with this route (panel + API use `selectedScope`).
   useLayoutEffect(() => {
@@ -511,7 +516,7 @@ function PersonalConnectorsPageContent() {
   }, [setShowConfigSuccessDialog, setNewlyConfiguredConnectorId]);
 
   // ── Render ─────────────────────────────────────────────────
-  if (connectorType) {
+  if (showConnectorTypePage) {
     return (
       <>
         <ConnectorDetailsLayout

@@ -558,6 +558,45 @@ class TestSyncContent:
         assert connector._fetch_comments_recursive.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_comments_fetched_without_childTypes(self):
+        """Comments should be fetched even when childTypes.comment is absent (DC search omits it)"""
+        connector = _make_connector()
+        from app.connectors.core.registry.filters import FilterCollection
+        connector.sync_filters = FilterCollection()
+        connector.indexing_filters = FilterCollection()
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+
+        # Page without childTypes (typical DC response)
+        page_data = {
+            "id": "pg1",
+            "title": "TestPage",
+            "space": {"id": 123},
+            "children": {"attachment": {"results": []}},
+        }
+
+        ds = MagicMock()
+        ds.get_pages_v1 = AsyncMock(return_value=_resp(200, {
+            "results": [page_data],
+            "_links": {},
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector._fetch_page_permissions = AsyncMock(return_value=[])
+        connector._fetch_comments_recursive = AsyncMock(return_value=[])
+
+        mock_update = MagicMock()
+        mock_update.record = MagicMock()
+        mock_update.record.id = "rec-1"
+        mock_update.record.inherit_permissions = True
+        mock_update.record.indexing_status = None
+        connector._process_webpage_with_update = AsyncMock(return_value=mock_update)
+
+        await connector._sync_content("DEV", RecordType.CONFLUENCE_PAGE)
+        # Should still be called for footer + inline
+        assert connector._fetch_comments_recursive.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_attachments_processed(self):
         connector = _make_connector()
         from app.connectors.core.registry.filters import FilterCollection
@@ -1087,6 +1126,159 @@ class TestFetchCommentsRecursive:
             "12345", "TestPage", "footer", [], "s1", "page", "node-1"
         )
         assert comments == []
+
+    @pytest.mark.asyncio
+    async def test_extract_storage_attachment_filenames(self):
+        """Test parsing ri:filename from Confluence storage HTML"""
+        from app.connectors.sources.atlassian.confluence_datacenter.connector import ConfluenceDataCenterConnector
+        
+        # Sample HTML with embedded attachment (from comment 131172)
+        html = '''<p>test comment with attachment</p>
+        <ac:image><ri:attachment ri:filename="Screenshot 2025-10-09 104312.PNG" /></ac:image>'''
+        
+        filenames = ConfluenceDataCenterConnector._extract_storage_attachment_filenames(html)
+        assert len(filenames) == 1
+        assert filenames[0] == "Screenshot 2025-10-09 104312.PNG"
+
+    @pytest.mark.asyncio
+    async def test_extract_storage_attachment_filenames_dedup(self):
+        """Test that duplicate filenames are deduplicated"""
+        from app.connectors.sources.atlassian.confluence_datacenter.connector import ConfluenceDataCenterConnector
+        
+        html = '''<p>
+        <ri:attachment ri:filename="file.png" />
+        <ri:attachment ri:filename="file.png" />
+        <ri:attachment ri:filename="other.pdf" />
+        </p>'''
+        
+        filenames = ConfluenceDataCenterConnector._extract_storage_attachment_filenames(html)
+        assert len(filenames) == 2
+        assert "file.png" in filenames
+        assert "other.pdf" in filenames
+
+    @pytest.mark.asyncio
+    async def test_resolve_attachment_by_filename(self):
+        """Test resolving attachment ID from filename"""
+        from app.connectors.sources.atlassian.confluence_datacenter.connector import ConfluenceDataCenterConnector
+        
+        attachments = [
+            {"id": "att123", "title": "Screenshot 2025-10-09 104312.PNG"},
+            {"id": "att456", "title": "document.pdf"},
+        ]
+        
+        # Exact match (case-insensitive)
+        result = ConfluenceDataCenterConnector._resolve_attachment_by_filename(
+            "screenshot 2025-10-09 104312.png", attachments
+        )
+        assert result == "att123"
+        
+        # No match
+        result = ConfluenceDataCenterConnector._resolve_attachment_by_filename(
+            "nonexistent.txt", attachments
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_comment_attachment_file_records(self):
+        """Test _fetch_attachment_file_records creates FileRecords with correct parent_record_type"""
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.get_content_attachments_v1 = AsyncMock(return_value=_resp(200, {
+            "results": [
+                {
+                    "id": "att789",
+                    "title": "comment-attachment.pdf",
+                    "extensions": {"fileSize": 1024, "mediaType": "application/pdf"},
+                    "version": {"number": 1, "createdAt": "2024-01-01T00:00:00Z"},
+                }
+            ],
+            "_links": {},
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        
+        mock_file_record = MagicMock()
+        mock_file_record.external_record_id = "att789"
+        mock_file_record.indexing_status = None
+        connector._transform_to_attachment_file_record = MagicMock(return_value=mock_file_record)
+
+        permissions = []
+        
+        records = await connector._fetch_attachment_file_records(
+            comment_id="131172",
+            comment_record_type=RecordType.COMMENT,
+            comment_node_id="node-comment-1",
+            parent_space_id="123",
+            attachments_indexing_enabled=True,
+            permissions=permissions
+        )
+        
+        # Should return one FileRecord
+        assert len(records) == 1
+        assert records[0][0] == mock_file_record
+        assert records[0][1] == permissions
+        
+        # Verify _transform_to_attachment_file_record was called with correct parent_record_type
+        connector._transform_to_attachment_file_record.assert_called_once()
+        call_kwargs = connector._transform_to_attachment_file_record.call_args[1]
+        assert call_kwargs["parent_record_type"] == RecordType.COMMENT
+        assert call_kwargs["parent_external_record_id"] == "131172"
+        assert call_kwargs["parent_node_id"] == "node-comment-1"
+
+    @pytest.mark.asyncio
+    async def test_embedded_page_attachment_not_duplicated(self):
+        """Test that embedded page attachments already in DB are not duplicated"""
+        connector = _make_connector()
+        
+        # Mock existing attachment in DB (page attachment 131171)
+        existing_attachment = MagicMock()
+        existing_attachment.external_record_id = "att131171"
+        
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing_attachment
+        )
+        
+        # Mock comment with embedded attachment
+        comment_data = {
+            "id": "131172",
+            "extensions": {"location": "footer"},
+            "body": {
+                "storage": {
+                    "value": '<ri:attachment ri:filename="Screenshot 2025-10-09 104312.PNG" />'
+                }
+            },
+            "version": {"authorId": "admin", "createdAt": "2024-01-01T00:00:00Z", "number": 1},
+        }
+        
+        # Mock page attachment that matches the filename
+        page_attachments = [
+            {"id": "att131171", "title": "Screenshot 2025-10-09 104312.PNG"}
+        ]
+        
+        ds = MagicMock()
+        ds.get_content_comments_v1 = AsyncMock(return_value=_resp(200, {
+            "results": [comment_data],
+            "_links": {"base": "https://dc.atlassian.net/wiki"},
+        }))
+        ds.get_content_attachments_v1 = AsyncMock(return_value=_resp(200, {
+            "results": [],  # No comment attachments
+            "_links": {},
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        
+        mock_comment_record = MagicMock()
+        mock_comment_record.id = "node-comment-1"
+        connector._transform_to_comment_record = MagicMock(return_value=mock_comment_record)
+        connector._fetch_comment_children_recursive = AsyncMock(return_value=[])
+
+        comments = await connector._fetch_comments_recursive(
+            "131165", "TestPage", "footer", [], "123", "page", "node-page-1",
+            page_attachments=page_attachments, attachments_indexing_enabled=True
+        )
+        
+        # Should only have the comment record, not a duplicate FileRecord for the attachment
+        # (since attachment already exists in DB as page attachment)
+        assert len(comments) == 1
+        assert comments[0][0] == mock_comment_record
 
 
 # ===========================================================================

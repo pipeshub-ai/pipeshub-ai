@@ -110,6 +110,24 @@ def _is_keyword_present(keyword: str, query: str) -> bool:
     return bool(re.search(pattern, query))
 
 
+def _last_sql_statement(query: str) -> str:
+    """Return the final non-empty statement from a semicolon-delimited query.
+
+    PostgreSQL queries in this module ultimately flow into
+    ``PostgreSQLClient.execute_query_raw()``, which uses ``asyncpg``
+    ``conn.prepare(query)`` under the hood. Prepared statements there accept
+    exactly one SQL statement, so the ad-hoc PostgreSQL execution path keeps
+    only the final validated statement before calling the client.
+
+    This helper is intentionally simple: callers only use it after
+    `_is_query_safe()` has already accepted the SQL. That validator also splits
+    on semicolons, so any query containing semicolons inside literals/comments
+    would already be rejected before reaching this point.
+    """
+    statements = [stmt.strip() for stmt in query.split(";") if stmt.strip()]
+    return statements[-1] if statements else query.strip()
+
+
 def _is_query_safe(query: str) -> tuple[bool, str]:
     """Validate that query is read-only across all SQL dialects.
 
@@ -315,35 +333,44 @@ async def _execute_postgres_query(
         
         client = client_builder.get_client()
         logger.debug(f"🔍 [_execute_postgres_query] Client built: {client.get_connection_info()}")
-        
-        with client:
-            connection_info = client.get_connection_info()
-            logger.debug(f"🔍 [_execute_postgres_query] Connected to PostgreSQL: host={connection_info.get('host')}, port={connection_info.get('port')}, database={connection_info.get('database')}, user={connection_info.get('user')}")
-            logger.debug(f"🔍 [_execute_postgres_query] Full connection info: {connection_info}")
-            logger.info(f"🔍 [_execute_postgres_query] Executing query: {query}")
-            
-            columns, rows = client.execute_query_raw(query)
-            
-            # Log what we got from the database
-            logger.info(f"🔍 [_execute_postgres_query] Query returned {len(columns)} columns, {len(rows)} rows")
-            logger.debug(f"🔍 [_execute_postgres_query] Columns: {columns}")
-            
-            if rows:
-                logger.debug(f"🔍 [_execute_postgres_query] First row: {rows[0]}")
-                logger.debug(f"🔍 [_execute_postgres_query] Row types: {[type(cell).__name__ for cell in rows[0]]}")
-            else:
-                # IMPORTANT: Log warning when no rows returned - this helps debug "empty result" issues
-                logger.warning(f"🔍 [_execute_postgres_query] ⚠️ QUERY RETURNED NO ROWS!")
-                logger.warning(f"🔍 [_execute_postgres_query] Query was: {query}")
-                logger.warning(f"🔍 [_execute_postgres_query] Database: {connection_info.get('database')} on {connection_info.get('host')}")
-            
-            result = {
-                "ok": True,
-                "columns": columns,
-                "rows": rows,
-            }
-            logger.info(f"🔍 [_execute_postgres_query] Returning result with ok=True")
-            return result
+
+        # Ad-hoc query path: a fresh client is built per call and torn down after.
+        # A multi-connection pool would just open extra TCP connections we never use.
+        client.resize_pool(min_pool_size=1, max_pool_size=1)
+
+        connection_info = client.get_connection_info()
+        logger.debug(f"🔍 [_execute_postgres_query] Connecting to PostgreSQL: host={connection_info.get('host')}, port={connection_info.get('port')}, database={connection_info.get('database')}, user={connection_info.get('user')}")
+        logger.info(f"🔍 [_execute_postgres_query] Executing query: {query}")
+        query_to_execute = _last_sql_statement(query)
+        if query_to_execute != query.strip():
+            logger.warning(
+                "🔍 [_execute_postgres_query] Multi-statement query detected; "
+                "executing only the final statement"
+            )
+        await client.connect()
+        try:
+            columns, rows = await client.execute_query_raw(query_to_execute)
+        finally:
+            await client.close()
+
+        logger.info(f"🔍 [_execute_postgres_query] Query returned {len(columns)} columns, {len(rows)} rows")
+        logger.debug(f"🔍 [_execute_postgres_query] Columns: {columns}")
+
+        if rows:
+            logger.debug(f"🔍 [_execute_postgres_query] First row: {rows[0]}")
+            logger.debug(f"🔍 [_execute_postgres_query] Row types: {[type(cell).__name__ for cell in rows[0]]}")
+        else:
+            logger.warning(f"🔍 [_execute_postgres_query] ⚠️ QUERY RETURNED NO ROWS!")
+            logger.warning(f"🔍 [_execute_postgres_query] Query was: {query}")
+            logger.warning(f"🔍 [_execute_postgres_query] Database: {connection_info.get('database')} on {connection_info.get('host')}")
+
+        result = {
+            "ok": True,
+            "columns": columns,
+            "rows": rows,
+        }
+        logger.info(f"🔍 [_execute_postgres_query] Returning result with ok=True")
+        return result
             
     except Exception as e:
         logger.error(f"PostgreSQL query execution failed: {e}", exc_info=True)
@@ -468,28 +495,35 @@ async def _execute_mariadb_query(
         client = client_builder.get_client()
         logger.debug(f"🔍 [_execute_mariadb_query] Client built: {client.get_connection_info()}")
 
-        with client:
-            connection_info = client.get_connection_info()
-            logger.debug(
-                "🔍 [_execute_mariadb_query] Connected to MariaDB: "
-                f"host={connection_info.get('host')}, "
-                f"port={connection_info.get('port')}, "
-                f"database={connection_info.get('database')}, "
-                f"user={connection_info.get('user')}"
-            )
-            logger.info(f"🔍 [_execute_mariadb_query] Executing query: {query}")
+        # Ad-hoc query path: a fresh client is built per call and torn down after.
+        # The default pool_size=5 would eagerly open 5 TCP connections per query.
+        client.resize_pool(pool_size=1)
 
-            columns, rows = client.execute_query_raw(query)
+        def _run_blocking() -> tuple:
+            with client:
+                return client.execute_query_raw(query)
 
-            logger.info(
-                f"🔍 [_execute_mariadb_query] Query returned {len(columns)} columns, {len(rows)} rows"
-            )
+        connection_info = client.get_connection_info()
+        logger.debug(
+            "🔍 [_execute_mariadb_query] Connecting to MariaDB: "
+            f"host={connection_info.get('host')}, "
+            f"port={connection_info.get('port')}, "
+            f"database={connection_info.get('database')}, "
+            f"user={connection_info.get('user')}"
+        )
+        logger.info(f"🔍 [_execute_mariadb_query] Executing query: {query}")
 
-            return {
-                "ok": True,
-                "columns": columns,
-                "rows": rows,
-            }
+        columns, rows = await asyncio.to_thread(_run_blocking)
+
+        logger.info(
+            f"🔍 [_execute_mariadb_query] Query returned {len(columns)} columns, {len(rows)} rows"
+        )
+
+        return {
+            "ok": True,
+            "columns": columns,
+            "rows": rows,
+        }
     except Exception as e:
         logger.error(f"MariaDB query execution failed: {e}", exc_info=True)
         return {

@@ -10,21 +10,14 @@ from fastapi.responses import JSONResponse
 from app.api.routes.entity import (
     _validate_and_filter_owner_updates,
     _validate_owner_removal,
-    add_users_to_team,
-    bulk_manage_team_users,
     create_team,
     delete_team,
     get_services,
     get_team,
     get_team_users,
-    get_teams,
-    get_user_created_teams,
     get_user_teams,
     get_users,
-    remove_user_from_team,
-    search_teams,
     update_team,
-    update_user_permissions,
 )
 
 
@@ -242,6 +235,25 @@ class TestValidateAndFilterOwnerUpdates:
 # create_team
 # ---------------------------------------------------------------------------
 
+CREATOR_MONGO_ID = "507f1f77bcf86cd799439011"
+MEMBER_MONGO_ID_2 = "507f1f77bcf86cd799439012"
+MEMBER_MONGO_ID_3 = "507f1f77bcf86cd799439013"
+
+
+def _mock_get_graph_user_keys_by_mongo_user_ids(user_ids, org_id=None, chunk_size=500):
+    mapping = {
+        CREATOR_MONGO_ID: "user-key-1",
+        "user-1": "user-key-1",
+        MEMBER_MONGO_ID_2: "graph-key-2",
+        MEMBER_MONGO_ID_3: "graph-key-3",
+    }
+    resolved = {mid: mapping[mid] for mid in user_ids if mid in mapping}
+    missing = [mid for mid in user_ids if mid not in resolved]
+    if missing:
+        raise ValueError(f"Users not found in graph: {missing}")
+    return resolved
+
+
 class TestCreateTeam:
     @pytest.mark.asyncio
     async def test_success_basic(self):
@@ -304,10 +316,11 @@ class TestCreateTeam:
 
     @pytest.mark.asyncio
     async def test_legacy_format_user_ids(self):
-        body = {"name": "Team", "userIds": ["u2", "u3"], "role": "EDITOR"}
+        body = {"name": "Team", "userIds": [MEMBER_MONGO_ID_2, MEMBER_MONGO_ID_3], "role": "EDITOR"}
         req = _make_request(body)
         gp = _graph_provider(req)
         gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
+        gp.get_graph_user_keys_by_mongo_user_ids.side_effect = _mock_get_graph_user_keys_by_mongo_user_ids
         gp.begin_transaction.return_value = "tx-1"
         gp.batch_upsert_nodes.return_value = True
         gp.batch_create_edges.return_value = True
@@ -316,24 +329,25 @@ class TestCreateTeam:
 
         resp = await create_team(req)
         assert resp.status_code == 200
-        # batch_create_edges should be called with edges for creator + u2, u3
         call_args = gp.batch_create_edges.call_args_list[0]
         edges = call_args[0][0]
-        # Creator edge + 2 user edges = 3
         assert len(edges) == 3
+        member_edges = [e for e in edges if e["role"] != "OWNER"]
+        assert {e["from_id"] for e in member_edges} == {"graph-key-2", "graph-key-3"}
 
     @pytest.mark.asyncio
     async def test_user_roles_format(self):
         body = {
             "name": "Team",
             "userRoles": [
-                {"userId": "u2", "role": "EDITOR"},
-                {"userId": "u3", "role": "READER"},
+                {"userId": MEMBER_MONGO_ID_2, "role": "EDITOR"},
+                {"userId": MEMBER_MONGO_ID_3, "role": "READER"},
             ],
         }
         req = _make_request(body)
         gp = _graph_provider(req)
         gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
+        gp.get_graph_user_keys_by_mongo_user_ids.side_effect = _mock_get_graph_user_keys_by_mongo_user_ids
         gp.begin_transaction.return_value = "tx-1"
         gp.batch_upsert_nodes.return_value = True
         gp.batch_create_edges.return_value = True
@@ -342,9 +356,52 @@ class TestCreateTeam:
 
         resp = await create_team(req)
         assert resp.status_code == 200
+        edges = gp.batch_create_edges.call_args_list[0][0][0]
+        assert len(edges) == 3
 
     @pytest.mark.asyncio
     async def test_creator_not_duplicated_in_user_roles(self):
+        req = _make_request({
+            "name": "Team",
+            "userRoles": [{"userId": CREATOR_MONGO_ID, "role": "READER"}],
+        })
+        req.state.user = {"userId": CREATOR_MONGO_ID, "orgId": "org-1"}
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
+        gp.get_graph_user_keys_by_mongo_user_ids.return_value = {}
+        gp.begin_transaction.return_value = "tx-1"
+        gp.batch_upsert_nodes.return_value = True
+        gp.batch_create_edges.return_value = True
+        gp.commit_transaction.return_value = True
+        gp.get_team_with_users.return_value = {}
+
+        resp = await create_team(req)
+        assert resp.status_code == 200
+        edges = gp.batch_create_edges.call_args_list[0][0][0]
+        assert len(edges) == 1
+        assert edges[0]["role"] == "OWNER"
+        gp.get_graph_user_keys_by_mongo_user_ids.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_member_raises_400(self):
+        body = {
+            "name": "Team",
+            "userRoles": [{"userId": MEMBER_MONGO_ID_2, "role": "READER"}],
+        }
+        req = _make_request(body)
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
+        gp.get_graph_user_keys_by_mongo_user_ids.side_effect = ValueError(
+            f"Users not found in graph: [{MEMBER_MONGO_ID_2}]"
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await create_team(req)
+        assert exc.value.status_code == 400
+        assert "Users not found in graph" in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_unknown_user_id_raises_400(self):
         body = {
             "name": "Team",
             "userRoles": [{"userId": "user-key-1", "role": "READER"}],
@@ -352,18 +409,14 @@ class TestCreateTeam:
         req = _make_request(body)
         gp = _graph_provider(req)
         gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
-        gp.begin_transaction.return_value = "tx-1"
-        gp.batch_upsert_nodes.return_value = True
-        gp.batch_create_edges.return_value = True
-        gp.commit_transaction.return_value = True
-        gp.get_team_with_users.return_value = {}
+        gp.get_graph_user_keys_by_mongo_user_ids.side_effect = ValueError(
+            "Users not found in graph: ['user-key-1']"
+        )
 
-        resp = await create_team(req)
-        assert resp.status_code == 200
-        # Only creator OWNER edge, no duplicate
-        edges = gp.batch_create_edges.call_args_list[0][0][0]
-        assert len(edges) == 1
-        assert edges[0]["role"] == "OWNER"
+        with pytest.raises(HTTPException) as exc:
+            await create_team(req)
+        assert exc.value.status_code == 400
+        assert "Users not found in graph" in exc.value.detail
 
     @pytest.mark.asyncio
     async def test_empty_user_id_in_roles_skipped(self):
@@ -410,90 +463,6 @@ class TestCreateTeam:
             await create_team(req)
         assert exc.value.status_code == 500
         gp.rollback_transaction.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# get_teams
-# ---------------------------------------------------------------------------
-
-class TestGetTeams:
-    @pytest.mark.asyncio
-    async def test_success_with_results(self):
-        req = _make_request()
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-        gp.get_teams.return_value = ([{"name": "T1"}], 1)
-
-        resp = await get_teams(req, search=None, page=1, limit=10)
-        assert resp.status_code == 200
-        content = json.loads(resp.body.decode())
-        assert content["status"] == "success"
-        assert len(content["teams"]) == 1
-        assert content["pagination"]["total"] == 1
-        assert content["pagination"]["pages"] == 1
-
-    @pytest.mark.asyncio
-    async def test_empty_results(self):
-        req = _make_request()
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-        gp.get_teams.return_value = ([], 0)
-
-        resp = await get_teams(req, search=None, page=1, limit=10)
-        content = json.loads(resp.body.decode())
-        assert content["teams"] == []
-        assert content["pagination"]["pages"] == 0
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self):
-        req = _make_request()
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await get_teams(req, search=None, page=1, limit=10)
-        assert exc.value.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_exception_raises_500(self):
-        req = _make_request()
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-        gp.get_teams.side_effect = RuntimeError("db down")
-
-        with pytest.raises(HTTPException) as exc:
-            await get_teams(req, search=None, page=1, limit=10)
-        assert exc.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_pagination_fields(self):
-        req = _make_request()
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-        gp.get_teams.return_value = ([{"name": "T"}] * 10, 25)
-
-        resp = await get_teams(req, search="test", page=2, limit=10)
-        content = json.loads(resp.body.decode())
-        assert content["pagination"]["pages"] == 3
-        assert content["pagination"]["hasNext"] is True
-        assert content["pagination"]["hasPrev"] is True
-
-    @pytest.mark.asyncio
-    async def test_search_passed_to_provider(self):
-        req = _make_request()
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-        gp.get_teams.return_value = ([], 0)
-
-        await get_teams(req, search="alpha", page=1, limit=10)
-        gp.get_teams.assert_called_once()
-        call_kwargs = gp.get_teams.call_args
-        assert call_kwargs[1]["search"] == "alpha" or call_kwargs.kwargs.get("search") == "alpha"
-
-
-# ---------------------------------------------------------------------------
-# get_team
-# ---------------------------------------------------------------------------
 
 class TestGetTeam:
     @pytest.mark.asyncio
@@ -564,6 +533,9 @@ class TestUpdateTeam:
         gp.get_edge.return_value = {"role": "OWNER"}
         gp.update_node.return_value = True
         gp.get_team_with_users.return_value = {"team": "updated"}
+        gp.get_graph_user_keys_by_mongo_user_ids.side_effect = (
+            _mock_get_graph_user_keys_by_mongo_user_ids
+        )
         return req, gp
 
     @pytest.mark.asyncio
@@ -626,7 +598,10 @@ class TestUpdateTeam:
 
     @pytest.mark.asyncio
     async def test_remove_users(self):
-        body = {"name": "T", "removeUserIds": ["u2", "u3"]}
+        body = {
+            "name": "T",
+            "removeUserIds": [MEMBER_MONGO_ID_2, MEMBER_MONGO_ID_3],
+        }
         req, gp = self._setup_authorized_request(body)
         gp.get_team_owner_removal_info.return_value = {
             "owners_being_removed": [],
@@ -636,57 +611,85 @@ class TestUpdateTeam:
 
         resp = await update_team(req, "team-1")
         assert resp.status_code == 200
-        gp.delete_team_member_edges.assert_called_once()
+        gp.delete_team_member_edges.assert_called_once_with(
+            team_id="team-1",
+            user_ids=["graph-key-2", "graph-key-3"],
+        )
 
     @pytest.mark.asyncio
     async def test_add_users_legacy_format(self):
-        body = {"name": "T", "addUserIds": ["u2"], "role": "EDITOR"}
+        body = {"name": "T", "addUserIds": [MEMBER_MONGO_ID_2], "role": "EDITOR"}
         req, gp = self._setup_authorized_request(body)
         gp.batch_create_edges.return_value = True
 
         resp = await update_team(req, "team-1")
         assert resp.status_code == 200
         gp.batch_create_edges.assert_called_once()
+        edges = gp.batch_create_edges.call_args[0][0]
+        assert edges[0]["from_id"] == "graph-key-2"
 
     @pytest.mark.asyncio
     async def test_add_users_new_format(self):
-        body = {"name": "T", "addUserRoles": [{"userId": "u2", "role": "READER"}]}
+        body = {
+            "name": "T",
+            "addUserRoles": [{"userId": MEMBER_MONGO_ID_2, "role": "READER"}],
+        }
         req, gp = self._setup_authorized_request(body)
         gp.batch_create_edges.return_value = True
 
         resp = await update_team(req, "team-1")
         assert resp.status_code == 200
+        edges = gp.batch_create_edges.call_args[0][0]
+        assert edges[0]["from_id"] == "graph-key-2"
 
     @pytest.mark.asyncio
     async def test_add_user_skips_creator(self):
         body = {
             "name": "T",
-            "addUserRoles": [{"userId": "user-key-1", "role": "READER"}],
+            "addUserRoles": [{"userId": "user-1", "role": "READER"}],
         }
         req, gp = self._setup_authorized_request(body)
 
         resp = await update_team(req, "team-1")
         assert resp.status_code == 200
-        # batch_create_edges should NOT be called since only creator was in add list
+        gp.get_graph_user_keys_by_mongo_user_ids.assert_called_once()
         gp.batch_create_edges.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_add_users_missing_member_raises_400(self):
+        body = {
+            "name": "T",
+            "addUserRoles": [{"userId": MEMBER_MONGO_ID_2, "role": "READER"}],
+        }
+        req, gp = self._setup_authorized_request(body)
+        gp.get_graph_user_keys_by_mongo_user_ids.side_effect = ValueError(
+            f"Users not found in graph: [{MEMBER_MONGO_ID_2}]"
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await update_team(req, "team-1")
+        assert exc.value.status_code == 400
+        assert "Users not found in graph" in exc.value.detail
 
     @pytest.mark.asyncio
     async def test_update_user_roles(self):
         body = {
             "name": "T",
-            "updateUserRoles": [{"userId": "u2", "role": "EDITOR"}],
+            "updateUserRoles": [{"userId": MEMBER_MONGO_ID_2, "role": "EDITOR"}],
         }
         req, gp = self._setup_authorized_request(body)
         gp.get_team_permissions_and_owner_count.return_value = {
             "team": {"_key": "team-1"},
-            "permissions": {"u2": "READER"},
+            "permissions": {"graph-key-2": "READER"},
             "owner_count": 1,
         }
-        gp.batch_update_team_member_roles.return_value = [{"userId": "u2"}]
+        gp.batch_update_team_member_roles.return_value = [{"userId": "graph-key-2"}]
 
         resp = await update_team(req, "team-1")
         assert resp.status_code == 200
         gp.batch_update_team_member_roles.assert_called_once()
+        user_roles = gp.batch_update_team_member_roles.call_args.kwargs["user_roles"]
+        assert user_roles[0]["userId"] == "graph-key-2"
 
     @pytest.mark.asyncio
     async def test_update_user_roles_invalid_entries_skipped(self):
@@ -705,12 +708,12 @@ class TestUpdateTeam:
     async def test_update_user_roles_no_changes_needed(self):
         body = {
             "name": "T",
-            "updateUserRoles": [{"userId": "u1", "role": "OWNER"}],
+            "updateUserRoles": [{"userId": MEMBER_MONGO_ID_2, "role": "OWNER"}],
         }
         req, gp = self._setup_authorized_request(body)
         gp.get_team_permissions_and_owner_count.return_value = {
             "team": {"_key": "team-1"},
-            "permissions": {"u1": "OWNER"},
+            "permissions": {"graph-key-2": "OWNER"},
             "owner_count": 1,
         }
 
@@ -721,12 +724,12 @@ class TestUpdateTeam:
     async def test_update_user_roles_batch_error(self):
         body = {
             "name": "T",
-            "updateUserRoles": [{"userId": "u2", "role": "EDITOR"}],
+            "updateUserRoles": [{"userId": MEMBER_MONGO_ID_2, "role": "EDITOR"}],
         }
         req, gp = self._setup_authorized_request(body)
         gp.get_team_permissions_and_owner_count.return_value = {
             "team": {"_key": "team-1"},
-            "permissions": {"u2": "READER"},
+            "permissions": {"graph-key-2": "READER"},
             "owner_count": 1,
         }
         gp.batch_update_team_member_roles.side_effect = RuntimeError("db fail")
@@ -737,12 +740,12 @@ class TestUpdateTeam:
 
     @pytest.mark.asyncio
     async def test_add_user_roles_with_empty_user_id(self):
-        """Cover line 452: continue when userId is empty in addUserRoles."""
+        """Continue when userId is empty in addUserRoles."""
         body = {
             "name": "T",
             "addUserRoles": [
                 {"userId": "", "role": "READER"},
-                {"userId": "u2", "role": "READER"},
+                {"userId": MEMBER_MONGO_ID_2, "role": "READER"},
             ],
         }
         req, gp = self._setup_authorized_request(body)
@@ -751,16 +754,15 @@ class TestUpdateTeam:
         resp = await update_team(req, "team-1")
         assert resp.status_code == 200
         edges = gp.batch_create_edges.call_args[0][0]
-        # Only u2 should be added, empty userId is skipped
         assert len(edges) == 1
-        assert edges[0]["from_id"] == "u2"
+        assert edges[0]["from_id"] == "graph-key-2"
 
     @pytest.mark.asyncio
     async def test_add_users_batch_create_returns_falsy(self):
-        """Cover branch 468->472: batch_create_edges returns falsy."""
+        """Cover branch: batch_create_edges returns falsy."""
         body = {
             "name": "T",
-            "addUserRoles": [{"userId": "u2", "role": "READER"}],
+            "addUserRoles": [{"userId": MEMBER_MONGO_ID_2, "role": "READER"}],
         }
         req, gp = self._setup_authorized_request(body)
         gp.batch_create_edges.return_value = None
@@ -772,7 +774,7 @@ class TestUpdateTeam:
     @pytest.mark.asyncio
     async def test_remove_users_returns_empty(self):
         """Cover branch 412->416: deleted_list is empty/falsy."""
-        body = {"name": "T", "removeUserIds": ["u2"]}
+        body = {"name": "T", "removeUserIds": [MEMBER_MONGO_ID_2]}
         req, gp = self._setup_authorized_request(body)
         gp.get_team_owner_removal_info.return_value = {
             "owners_being_removed": [],
@@ -782,6 +784,57 @@ class TestUpdateTeam:
 
         resp = await update_team(req, "team-1")
         assert resp.status_code == 200
+        gp.delete_team_member_edges.assert_called_once_with(
+            team_id="team-1",
+            user_ids=["graph-key-2"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_remove_users_ignores_falsy_ids(self):
+        body = {"name": "T", "removeUserIds": ["", MEMBER_MONGO_ID_2]}
+        req, gp = self._setup_authorized_request(body)
+        gp.get_team_owner_removal_info.return_value = {
+            "owners_being_removed": [],
+            "total_owner_count": 1,
+        }
+        gp.delete_team_member_edges.return_value = ["e1"]
+
+        resp = await update_team(req, "team-1")
+        assert resp.status_code == 200
+        gp.get_graph_user_keys_by_mongo_user_ids.assert_called_once()
+        assert MEMBER_MONGO_ID_2 in gp.get_graph_user_keys_by_mongo_user_ids.call_args[0][0]
+        gp.delete_team_member_edges.assert_called_once_with(
+            team_id="team-1",
+            user_ids=["graph-key-2"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_combined_member_ops_single_resolve(self):
+        body = {
+            "name": "T",
+            "removeUserIds": [MEMBER_MONGO_ID_2],
+            "updateUserRoles": [{"userId": MEMBER_MONGO_ID_3, "role": "WRITER"}],
+            "addUserRoles": [{"userId": MEMBER_MONGO_ID_3, "role": "READER"}],
+        }
+        req, gp = self._setup_authorized_request(body)
+        gp.get_team_owner_removal_info.return_value = {
+            "owners_being_removed": [],
+            "total_owner_count": 1,
+        }
+        gp.delete_team_member_edges.return_value = ["e1"]
+        gp.get_team_permissions_and_owner_count.return_value = {
+            "team": {"_key": "team-1"},
+            "permissions": {"graph-key-3": "READER"},
+            "owner_count": 1,
+        }
+        gp.batch_update_team_member_roles.return_value = [{"userId": "graph-key-3"}]
+        gp.batch_create_edges.return_value = True
+
+        resp = await update_team(req, "team-1")
+        assert resp.status_code == 200
+        gp.get_graph_user_keys_by_mongo_user_ids.assert_called_once()
+        resolved_ids = set(gp.get_graph_user_keys_by_mongo_user_ids.call_args[0][0])
+        assert resolved_ids == {MEMBER_MONGO_ID_2, MEMBER_MONGO_ID_3}
 
     @pytest.mark.asyncio
     async def test_generic_exception_raises_500(self):
@@ -806,401 +859,6 @@ class TestUpdateTeam:
         with pytest.raises(HTTPException) as exc:
             await update_team(req, "team-1")
         assert exc.value.status_code == 409
-
-
-# ---------------------------------------------------------------------------
-# add_users_to_team
-# ---------------------------------------------------------------------------
-
-class TestAddUsersToTeam:
-    def _setup(self, body_dict):
-        req = _make_request(body_dict)
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
-        gp.get_edge.return_value = {"role": "OWNER"}
-        return req, gp
-
-    @pytest.mark.asyncio
-    async def test_success(self):
-        body = {"userRoles": [{"userId": "u2", "role": "READER"}]}
-        req, gp = self._setup(body)
-        gp.batch_create_edges.return_value = True
-        gp.get_team_with_users.return_value = {"team": "t"}
-
-        resp = await add_users_to_team(req, "team-1")
-        assert resp.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_legacy_format(self):
-        body = {"userIds": ["u2", "u3"], "role": "EDITOR"}
-        req, gp = self._setup(body)
-        gp.batch_create_edges.return_value = True
-        gp.get_team_with_users.return_value = {"team": "t"}
-
-        resp = await add_users_to_team(req, "team-1")
-        assert resp.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_no_users_provided(self):
-        body = {}
-        req, gp = self._setup(body)
-
-        with pytest.raises(HTTPException) as exc:
-            await add_users_to_team(req, "team-1")
-        assert exc.value.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self):
-        req = _make_request({"userRoles": [{"userId": "u2", "role": "R"}]})
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await add_users_to_team(req, "team-1")
-        assert exc.value.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_no_permission(self):
-        req = _make_request({"userRoles": [{"userId": "u2", "role": "R"}]})
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-        gp.get_edge.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await add_users_to_team(req, "team-1")
-        assert exc.value.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_non_owner_role(self):
-        req = _make_request({"userRoles": [{"userId": "u2", "role": "R"}]})
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-        gp.get_edge.return_value = {"role": "READER"}
-
-        with pytest.raises(HTTPException) as exc:
-            await add_users_to_team(req, "team-1")
-        assert exc.value.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_only_creator_in_list(self):
-        body = {"userRoles": [{"userId": "user-key-1", "role": "READER"}]}
-        req, gp = self._setup(body)
-        gp.get_team_with_users.return_value = {"team": "t"}
-
-        resp = await add_users_to_team(req, "team-1")
-        assert resp.status_code == 200
-        content = json.loads(resp.body.decode())
-        assert "No users to add" in content["message"]
-
-    @pytest.mark.asyncio
-    async def test_empty_user_id_skipped(self):
-        body = {"userRoles": [{"userId": "", "role": "R"}, {"userId": "u2", "role": "R"}]}
-        req, gp = self._setup(body)
-        gp.batch_create_edges.return_value = True
-        gp.get_team_with_users.return_value = {}
-
-        resp = await add_users_to_team(req, "team-1")
-        assert resp.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_batch_create_edges_fails(self):
-        body = {"userRoles": [{"userId": "u2", "role": "READER"}]}
-        req, gp = self._setup(body)
-        gp.batch_create_edges.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await add_users_to_team(req, "team-1")
-        assert exc.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_generic_exception(self):
-        body = {"userRoles": [{"userId": "u2", "role": "READER"}]}
-        req, gp = self._setup(body)
-        gp.batch_create_edges.side_effect = RuntimeError("boom")
-
-        with pytest.raises(HTTPException) as exc:
-            await add_users_to_team(req, "team-1")
-        assert exc.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_http_exception_re_raised(self):
-        body = {"userRoles": [{"userId": "u2", "role": "READER"}]}
-        req, gp = self._setup(body)
-        gp.batch_create_edges.side_effect = HTTPException(status_code=409, detail="dup")
-
-        with pytest.raises(HTTPException) as exc:
-            await add_users_to_team(req, "team-1")
-        assert exc.value.status_code == 409
-
-
-# ---------------------------------------------------------------------------
-# remove_user_from_team
-# ---------------------------------------------------------------------------
-
-class TestRemoveUserFromTeam:
-    def _setup(self, body_dict):
-        req = _make_request(body_dict)
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
-        gp.get_edge.return_value = {"role": "OWNER"}
-        return req, gp
-
-    @pytest.mark.asyncio
-    async def test_success(self):
-        body = {"userIds": ["u2"]}
-        req, gp = self._setup(body)
-        gp.get_team_owner_removal_info.return_value = {
-            "owners_being_removed": [],
-            "total_owner_count": 1,
-        }
-        gp.delete_team_member_edges.return_value = ["e1"]
-        gp.get_team_with_users.return_value = {"team": "t"}
-
-        resp = await remove_user_from_team(req, "team-1")
-        assert resp.status_code == 200
-        content = json.loads(resp.body.decode())
-        assert "1 user(s)" in content["message"]
-
-    @pytest.mark.asyncio
-    async def test_no_user_ids(self):
-        body = {"userIds": []}
-        req = _make_request(body)
-        with pytest.raises(HTTPException) as exc:
-            await remove_user_from_team(req, "team-1")
-        assert exc.value.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self):
-        body = {"userIds": ["u2"]}
-        req = _make_request(body)
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await remove_user_from_team(req, "team-1")
-        assert exc.value.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_no_permission(self):
-        body = {"userIds": ["u2"]}
-        req, gp = self._setup(body)
-        gp.get_edge.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await remove_user_from_team(req, "team-1")
-        assert exc.value.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_non_owner_role(self):
-        body = {"userIds": ["u2"]}
-        req, gp = self._setup(body)
-        gp.get_edge.return_value = {"role": "MEMBER"}
-
-        with pytest.raises(HTTPException) as exc:
-            await remove_user_from_team(req, "team-1")
-        assert exc.value.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_no_users_found_to_remove(self):
-        body = {"userIds": ["u2"]}
-        req, gp = self._setup(body)
-        gp.get_team_owner_removal_info.return_value = {
-            "owners_being_removed": [],
-            "total_owner_count": 1,
-        }
-        gp.delete_team_member_edges.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await remove_user_from_team(req, "team-1")
-        assert exc.value.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_owner_removal_blocked(self):
-        body = {"userIds": ["owner-1"]}
-        req, gp = self._setup(body)
-        gp.get_team_owner_removal_info.return_value = {
-            "owners_being_removed": ["owner-1"],
-            "total_owner_count": 1,
-        }
-
-        with pytest.raises(HTTPException) as exc:
-            await remove_user_from_team(req, "team-1")
-        assert exc.value.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_generic_exception(self):
-        body = {"userIds": ["u2"]}
-        req, gp = self._setup(body)
-        gp.get_team_owner_removal_info.side_effect = RuntimeError("db")
-
-        with pytest.raises(HTTPException) as exc:
-            await remove_user_from_team(req, "team-1")
-        assert exc.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_http_exception_re_raised(self):
-        body = {"userIds": ["u2"]}
-        req, gp = self._setup(body)
-        gp.get_team_owner_removal_info.side_effect = HTTPException(
-            status_code=400, detail="cannot remove"
-        )
-
-        with pytest.raises(HTTPException) as exc:
-            await remove_user_from_team(req, "team-1")
-        assert exc.value.status_code == 400
-
-
-# ---------------------------------------------------------------------------
-# update_user_permissions
-# ---------------------------------------------------------------------------
-
-class TestUpdateUserPermissions:
-    def _setup(self, body_dict):
-        req = _make_request(body_dict)
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
-        gp.get_edge.return_value = {"role": "OWNER"}
-        return req, gp
-
-    @pytest.mark.asyncio
-    async def test_success(self):
-        body = {"userRoles": [{"userId": "u2", "role": "EDITOR"}]}
-        req, gp = self._setup(body)
-        gp.get_team_permissions_and_owner_count.return_value = {
-            "team": {"_key": "team-1"},
-            "permissions": {"u2": "READER"},
-            "owner_count": 1,
-        }
-        gp.batch_update_team_member_roles.return_value = [{"userId": "u2"}]
-        gp.get_team_with_users.return_value = {"team": "t"}
-
-        resp = await update_user_permissions(req, "team-1")
-        assert resp.status_code == 200
-        content = json.loads(resp.body.decode())
-        assert content["updated_count"] == 1
-
-    @pytest.mark.asyncio
-    async def test_legacy_format(self):
-        body = {"userIds": ["u2"], "role": "EDITOR"}
-        req, gp = self._setup(body)
-        gp.get_team_permissions_and_owner_count.return_value = {
-            "team": {"_key": "team-1"},
-            "permissions": {"u2": "READER"},
-            "owner_count": 1,
-        }
-        gp.batch_update_team_member_roles.return_value = [{"userId": "u2"}]
-        gp.get_team_with_users.return_value = {"team": "t"}
-
-        resp = await update_user_permissions(req, "team-1")
-        assert resp.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_no_users_provided(self):
-        body = {}
-        req, gp = self._setup(body)
-
-        with pytest.raises(HTTPException) as exc:
-            await update_user_permissions(req, "team-1")
-        assert exc.value.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self):
-        req = _make_request({"userRoles": [{"userId": "u2", "role": "R"}]})
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await update_user_permissions(req, "team-1")
-        assert exc.value.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_no_permission(self):
-        req = _make_request({"userRoles": [{"userId": "u2", "role": "R"}]})
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-        gp.get_edge.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await update_user_permissions(req, "team-1")
-        assert exc.value.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_non_owner_role(self):
-        req = _make_request({"userRoles": [{"userId": "u2", "role": "R"}]})
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-        gp.get_edge.return_value = {"role": "READER"}
-
-        with pytest.raises(HTTPException) as exc:
-            await update_user_permissions(req, "team-1")
-        assert exc.value.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_no_valid_roles(self):
-        body = {"userRoles": [{"userId": "", "role": "R"}, {"userId": "u1"}]}
-        req, gp = self._setup(body)
-
-        with pytest.raises(HTTPException) as exc:
-            await update_user_permissions(req, "team-1")
-        assert exc.value.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_no_changes_needed(self):
-        body = {"userRoles": [{"userId": "u1", "role": "OWNER"}]}
-        req, gp = self._setup(body)
-        gp.get_team_permissions_and_owner_count.return_value = {
-            "team": {"_key": "team-1"},
-            "permissions": {"u1": "OWNER"},
-            "owner_count": 1,
-        }
-        gp.get_team_with_users.return_value = {"team": "t"}
-
-        resp = await update_user_permissions(req, "team-1")
-        assert resp.status_code == 200
-        content = json.loads(resp.body.decode())
-        assert "No changes needed" in content["message"]
-
-    @pytest.mark.asyncio
-    async def test_batch_update_returns_none(self):
-        body = {"userRoles": [{"userId": "u2", "role": "EDITOR"}]}
-        req, gp = self._setup(body)
-        gp.get_team_permissions_and_owner_count.return_value = {
-            "team": {"_key": "team-1"},
-            "permissions": {"u2": "READER"},
-            "owner_count": 1,
-        }
-        gp.batch_update_team_member_roles.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await update_user_permissions(req, "team-1")
-        assert exc.value.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_generic_exception(self):
-        body = {"userRoles": [{"userId": "u2", "role": "EDITOR"}]}
-        req, gp = self._setup(body)
-        gp.get_team_permissions_and_owner_count.side_effect = RuntimeError("db")
-
-        with pytest.raises(HTTPException) as exc:
-            await update_user_permissions(req, "team-1")
-        assert exc.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_http_exception_re_raised(self):
-        body = {"userRoles": [{"userId": "u2", "role": "EDITOR"}]}
-        req, gp = self._setup(body)
-        gp.get_team_permissions_and_owner_count.side_effect = HTTPException(
-            status_code=400, detail="bad"
-        )
-
-        with pytest.raises(HTTPException) as exc:
-            await update_user_permissions(req, "team-1")
-        assert exc.value.status_code == 400
-
-
-# ---------------------------------------------------------------------------
-# delete_team
-# ---------------------------------------------------------------------------
 
 class TestDeleteTeam:
     def _setup(self):
@@ -1250,6 +908,18 @@ class TestDeleteTeam:
         assert exc.value.status_code == 403
 
     @pytest.mark.asyncio
+    async def test_system_all_team_cannot_be_deleted(self):
+        req, gp = self._setup()
+
+        with pytest.raises(HTTPException) as exc:
+            await delete_team(req, "all_org-1")
+
+        assert exc.value.status_code == 403
+        assert "All team" in exc.value.detail
+        gp.get_edge.assert_not_called()
+        gp.delete_all_team_permissions.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_team_not_found_on_delete(self):
         req, gp = self._setup()
         gp.delete_all_team_permissions.return_value = True
@@ -1289,10 +959,10 @@ class TestGetUserTeams:
     async def test_success(self):
         req = _make_request()
         gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+        gp.get_user_by_user_id.return_value = {"_key": "uk", "orgId": "org-1"}
         gp.get_user_teams.return_value = ([{"name": "T1"}], 1)
 
-        resp = await get_user_teams(req, search=None, page=1, limit=100)
+        resp = await get_user_teams(req, search=None, page=1, limit=100, created_by=None)
         assert resp.status_code == 200
         content = json.loads(resp.body.decode())
         assert len(content["teams"]) == 1
@@ -1316,100 +986,75 @@ class TestGetUserTeams:
         gp.get_user_by_user_id.return_value = None
 
         with pytest.raises(HTTPException) as exc:
-            await get_user_teams(req, search=None, page=1, limit=100)
+            await get_user_teams(req, search=None, page=1, limit=100, created_by=None)
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_exception_raises_500(self):
         req = _make_request()
         gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+        gp.get_user_by_user_id.return_value = {"_key": "uk", "orgId": "org-1"}
         gp.get_user_teams.side_effect = RuntimeError("db")
 
         with pytest.raises(HTTPException) as exc:
-            await get_user_teams(req, search=None, page=1, limit=100)
+            await get_user_teams(req, search=None, page=1, limit=100, created_by=None)
         assert exc.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_created_by_mongo_id_resolved_to_graph_key(self):
+        req = _make_request()
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.side_effect = [
+            {"_key": "uk", "orgId": "org-1"},
+            {"_key": "graph-key-2", "userId": MEMBER_MONGO_ID_2, "orgId": "org-1"},
+        ]
+        gp.get_user_teams.return_value = ([{"name": "T1"}], 1)
+
+        resp = await get_user_teams(
+            req,
+            search=None,
+            page=1,
+            limit=100,
+            created_by=MEMBER_MONGO_ID_2,
+        )
+        assert resp.status_code == 200
+        assert gp.get_user_by_user_id.call_count == 2
+        call_kwargs = gp.get_user_teams.call_args[1]
+        assert call_kwargs["created_by"] == "graph-key-2"
+
+    @pytest.mark.asyncio
+    async def test_created_by_unknown_mongo_id_raises_400(self):
+        req = _make_request()
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.side_effect = [
+            {"_key": "uk", "orgId": "org-1"},
+            None,
+        ]
+
+        with pytest.raises(HTTPException) as exc:
+            await get_user_teams(
+                req,
+                search=None,
+                page=1,
+                limit=100,
+                created_by=MEMBER_MONGO_ID_2,
+            )
+        assert exc.value.status_code == 400
+        assert "Users not found in graph" in exc.value.detail
+        gp.get_user_teams.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_pagination(self):
         req = _make_request()
         gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+        gp.get_user_by_user_id.return_value = {"_key": "uk", "orgId": "org-1"}
         gp.get_user_teams.return_value = ([{"name": "T"}] * 5, 15)
 
-        resp = await get_user_teams(req, search=None, page=2, limit=5)
+        resp = await get_user_teams(req, search=None, page=2, limit=5, created_by=None)
         content = json.loads(resp.body.decode())
         assert content["pagination"]["pages"] == 3
         assert content["pagination"]["hasNext"] is True
         assert content["pagination"]["hasPrev"] is True
-
-
-# ---------------------------------------------------------------------------
-# get_user_created_teams
-# ---------------------------------------------------------------------------
-
-class TestGetUserCreatedTeams:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        req = _make_request()
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-        gp.get_user_created_teams.return_value = ([{"name": "T1"}], 1)
-
-        resp = await get_user_created_teams(req, search=None, page=1, limit=100)
-        assert resp.status_code == 200
-        content = json.loads(resp.body.decode())
-        assert content["message"] == "User created teams fetched successfully"
-
-    @pytest.mark.asyncio
-    async def test_empty_results(self):
-        req = _make_request()
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-        gp.get_user_created_teams.return_value = ([], 0)
-
-        resp = await get_user_created_teams(req, search=None, page=1, limit=100)
-        content = json.loads(resp.body.decode())
-        assert content["teams"] == []
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self):
-        req = _make_request()
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await get_user_created_teams(req, search=None, page=1, limit=100)
-        assert exc.value.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_exception_raises_500(self):
-        req = _make_request()
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-        gp.get_user_created_teams.side_effect = RuntimeError("db")
-
-        with pytest.raises(HTTPException) as exc:
-            await get_user_created_teams(req, search=None, page=1, limit=100)
-        assert exc.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_pagination(self):
-        req = _make_request()
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-        gp.get_user_created_teams.return_value = ([{"name": "T"}] * 3, 9)
-
-        resp = await get_user_created_teams(req, search="x", page=3, limit=3)
-        content = json.loads(resp.body.decode())
-        assert content["pagination"]["pages"] == 3
-        assert content["pagination"]["hasNext"] is False
-        assert content["pagination"]["hasPrev"] is True
-
-
-# ---------------------------------------------------------------------------
-# get_users
-# ---------------------------------------------------------------------------
 
 class TestGetUsers:
     @pytest.mark.asyncio
@@ -1517,216 +1162,3 @@ class TestGetTeamUsers:
         assert exc.value.status_code == 403
 
 
-# ---------------------------------------------------------------------------
-# bulk_manage_team_users
-# ---------------------------------------------------------------------------
-
-class TestBulkManageTeamUsers:
-    def _setup(self, body_dict):
-        req = _make_request(body_dict)
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
-        return req, gp
-
-    @pytest.mark.asyncio
-    async def test_success_add_only(self):
-        body = {"addUserIds": ["u2", "u3"]}
-        req, gp = self._setup(body)
-        gp.batch_create_edges.return_value = True
-        gp.get_team_with_users.return_value = {"team": "t"}
-
-        resp = await bulk_manage_team_users(req, "team-1")
-        assert resp.status_code == 200
-        content = json.loads(resp.body.decode())
-        assert content["added"] == 2
-        assert content["removed"] == 0
-
-    @pytest.mark.asyncio
-    async def test_success_remove_only(self):
-        body = {"removeUserIds": ["u2"]}
-        req, gp = self._setup(body)
-        gp.delete_team_member_edges.return_value = ["e1"]
-        gp.get_team_with_users.return_value = {"team": "t"}
-
-        resp = await bulk_manage_team_users(req, "team-1")
-        assert resp.status_code == 200
-        content = json.loads(resp.body.decode())
-        assert content["removed"] == 1
-        assert content["added"] == 0
-
-    @pytest.mark.asyncio
-    async def test_success_add_and_remove(self):
-        body = {"addUserIds": ["u3"], "removeUserIds": ["u2"]}
-        req, gp = self._setup(body)
-        gp.delete_team_member_edges.return_value = ["e1"]
-        gp.batch_create_edges.return_value = True
-        gp.get_team_with_users.return_value = {"team": "t"}
-
-        resp = await bulk_manage_team_users(req, "team-1")
-        assert resp.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_no_users_provided(self):
-        body = {}
-        req, gp = self._setup(body)
-
-        with pytest.raises(HTTPException) as exc:
-            await bulk_manage_team_users(req, "team-1")
-        assert exc.value.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self):
-        body = {"addUserIds": ["u2"]}
-        req = _make_request(body)
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await bulk_manage_team_users(req, "team-1")
-        assert exc.value.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_cannot_remove_owner(self):
-        body = {"removeUserIds": ["user-key-1"]}
-        req, gp = self._setup(body)
-
-        with pytest.raises(HTTPException) as exc:
-            await bulk_manage_team_users(req, "team-1")
-        assert exc.value.status_code == 400
-        assert "Cannot remove team owner" in exc.value.detail
-
-    @pytest.mark.asyncio
-    async def test_remove_no_users_found(self):
-        body = {"removeUserIds": ["u2"]}
-        req, gp = self._setup(body)
-        gp.delete_team_member_edges.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await bulk_manage_team_users(req, "team-1")
-        assert exc.value.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_add_batch_create_fails(self):
-        body = {"addUserIds": ["u2"]}
-        req, gp = self._setup(body)
-        gp.batch_create_edges.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await bulk_manage_team_users(req, "team-1")
-        assert exc.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_generic_exception(self):
-        body = {"addUserIds": ["u2"]}
-        req, gp = self._setup(body)
-        gp.batch_create_edges.side_effect = RuntimeError("db")
-
-        with pytest.raises(HTTPException) as exc:
-            await bulk_manage_team_users(req, "team-1")
-        assert exc.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_http_exception_re_raised(self):
-        body = {"removeUserIds": ["user-key-1"]}
-        req, gp = self._setup(body)
-
-        with pytest.raises(HTTPException) as exc:
-            await bulk_manage_team_users(req, "team-1")
-        assert exc.value.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_custom_role(self):
-        body = {"addUserIds": ["u2"], "role": "EDITOR"}
-        req, gp = self._setup(body)
-        gp.batch_create_edges.return_value = True
-        gp.get_team_with_users.return_value = {"team": "t"}
-
-        resp = await bulk_manage_team_users(req, "team-1")
-        assert resp.status_code == 200
-        edges = gp.batch_create_edges.call_args[0][0]
-        assert edges[0]["role"] == "EDITOR"
-
-
-# ---------------------------------------------------------------------------
-# search_teams
-# ---------------------------------------------------------------------------
-
-class TestSearchTeams:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        req = _make_request(query_params={"q": "alpha", "limit": "5", "offset": "0"})
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-        gp.search_teams.return_value = [{"name": "Alpha Team"}]
-
-        resp = await search_teams(req)
-        assert resp.status_code == 200
-        content = json.loads(resp.body.decode())
-        assert content["query"] == "alpha"
-        assert content["count"] == 1
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self):
-        req = _make_request(query_params={"q": "test"})
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = None
-
-        with pytest.raises(HTTPException) as exc:
-            await search_teams(req)
-        assert exc.value.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_empty_query(self):
-        req = _make_request(query_params={"q": ""})
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-
-        with pytest.raises(HTTPException) as exc:
-            await search_teams(req)
-        assert exc.value.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_missing_query_param(self):
-        req = _make_request(query_params={})
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-
-        with pytest.raises(HTTPException) as exc:
-            await search_teams(req)
-        assert exc.value.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_default_limit_and_offset(self):
-        req = _make_request(query_params={"q": "test"})
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-        gp.search_teams.return_value = []
-
-        resp = await search_teams(req)
-        content = json.loads(resp.body.decode())
-        assert content["limit"] == 10
-        assert content["offset"] == 0
-
-    @pytest.mark.asyncio
-    async def test_exception_raises_500(self):
-        req = _make_request(query_params={"q": "test"})
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-        gp.search_teams.side_effect = RuntimeError("db")
-
-        with pytest.raises(HTTPException) as exc:
-            await search_teams(req)
-        assert exc.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_custom_limit_and_offset(self):
-        req = _make_request(query_params={"q": "test", "limit": "20", "offset": "5"})
-        gp = _graph_provider(req)
-        gp.get_user_by_user_id.return_value = {"_key": "uk"}
-        gp.search_teams.return_value = [{"name": "T1"}, {"name": "T2"}]
-
-        resp = await search_teams(req)
-        content = json.loads(resp.body.decode())
-        assert content["limit"] == 20
-        assert content["offset"] == 5
-        assert content["count"] == 2

@@ -223,13 +223,16 @@ async def main() -> None:
         ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC
         LIMIT 5;
     """
-    response = await data_source.execute_query(custom_query)
-    if response.success and response.data:
-        print(f"\nTop 5 largest tables in public schema:")
-        for row in response.data:
-            print(f"  - {row['table']}: {row['size']}")
-    else:
-        print(f"[INFO] No results or error: {response.error}")
+    try:
+        rows = await client.execute_query(custom_query)
+        if rows:
+            print(f"\nTop 5 largest tables in public schema:")
+            for row in rows:
+                print(f"  - {row['table']}: {row['size']}")
+        else:
+            print("[INFO] No results")
+    except Exception as e:
+        print(f"[INFO] Query failed: {e}")
     
     # Close connection
     print_header("Cleanup")

@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import AsyncMock, patch
 
 from app.utils.tool_handlers import (
     ContentHandler,
@@ -549,3 +547,262 @@ class TestToolHandlerRegistry:
 
         ToolHandlerRegistry.register("another_type", AnotherHandler())
         assert "another_type" in ToolHandlerRegistry.list_handlers()
+
+
+# ---------------------------------------------------------------------------
+# UrlContentHandler.format_message — remote http images & phase-1 branches
+# ---------------------------------------------------------------------------
+
+
+class TestUrlContentHandlerFormatMessageRemoteImages:
+    """Cover parallel fetch, image limits, and non–data-URI image branches."""
+
+    def _make_config_service(self, settings: dict | None = None) -> AsyncMock:
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value={"settings": settings or {}})
+        return config_service
+
+    def test_remote_http_image_fetched_and_embedded(self) -> None:
+        handler = UrlContentHandler()
+        tool_result = {
+            "url": "https://page.com",
+            "blocks": [{"type": "image", "url": "https://cdn.com/pic.png"}],
+        }
+        context = {
+            "config_service": self._make_config_service(
+                {"includeImages": True, "maxImages": 3}
+            ),
+            "ref_mapper": None,
+            "is_multimodal_llm": True,
+        }
+        fetch_mock = AsyncMock(return_value=("Ym9n", "image/png"))
+        with (
+            patch("app.utils.tool_handlers._fetch_image_as_base64", fetch_mock),
+            patch("app.utils.tool_handlers.supported_mime_types", ["image/png"]),
+            patch("app.utils.tool_handlers.generate_text_fragment_url", return_value="https://page.com#"),
+            patch(
+                "app.utils.tool_handlers.display_url_for_llm",
+                side_effect=lambda u, r: u,
+            ),
+        ):
+            result = asyncio.run(handler.format_message(tool_result, context))
+
+        fetch_mock.assert_awaited_once_with("https://cdn.com/pic.png")
+        image_blocks = [b for b in result if b.get("type") == "image"]
+        assert len(image_blocks) == 1
+        assert image_blocks[0]["mime_type"] == "image/png"
+        assert image_blocks[0]["base64"] == "Ym9n"
+
+    def test_phase_one_mixed_blocks_and_skips_vector_extensions(self) -> None:
+        """Non-image blocks hit 321→continue; .svg URLs are excluded from fetch list."""
+        handler = UrlContentHandler()
+        tool_result = {
+            "url": "https://page.com",
+            "blocks": [
+                {"type": "text", "content": "intro"},
+                {"type": "image", "url": "https://cdn.com/a.svg"},
+                {"type": "image", "url": "https://cdn.com/ok.webp"},
+            ],
+        }
+        context = {
+            "config_service": self._make_config_service(
+                {"includeImages": True, "maxImages": 5}
+            ),
+            "ref_mapper": None,
+            "is_multimodal_llm": True,
+        }
+        fetch_mock = AsyncMock(return_value=("d2Vi", "image/webp"))
+        with (
+            patch("app.utils.tool_handlers._fetch_image_as_base64", fetch_mock),
+            patch(
+                "app.utils.tool_handlers.supported_mime_types",
+                ["image/png", "image/jpeg", "image/webp"],
+            ),
+            patch("app.utils.tool_handlers.generate_text_fragment_url", return_value="https://page.com#x"),
+            patch(
+                "app.utils.tool_handlers.display_url_for_llm",
+                side_effect=lambda u, r: u,
+            ),
+        ):
+            result = asyncio.run(handler.format_message(tool_result, context))
+
+        fetch_mock.assert_awaited_once_with("https://cdn.com/ok.webp")
+        assert any(b.get("type") == "image" for b in result)
+
+    def test_max_images_limits_phase_one_fetch_count(self) -> None:
+        handler = UrlContentHandler()
+        tool_result = {
+            "url": "https://page.com",
+            "blocks": [
+                {"type": "image", "url": "https://cdn.com/1.png"},
+                {"type": "image", "url": "https://cdn.com/2.png"},
+            ],
+        }
+        context = {
+            "config_service": self._make_config_service(
+                {"includeImages": True, "maxImages": 1}
+            ),
+            "ref_mapper": None,
+            "is_multimodal_llm": True,
+        }
+        fetch_mock = AsyncMock(return_value=("YQ==", "image/png"))
+        with (
+            patch("app.utils.tool_handlers._fetch_image_as_base64", fetch_mock),
+            patch("app.utils.tool_handlers.supported_mime_types", ["image/png"]),
+            patch("app.utils.tool_handlers.generate_text_fragment_url", return_value="https://page.com#"),
+            patch(
+                "app.utils.tool_handlers.display_url_for_llm",
+                side_effect=lambda u, r: u,
+            ),
+        ):
+            asyncio.run(handler.format_message(tool_result, context))
+
+        assert fetch_mock.await_count == 1
+
+    def test_fetched_none_skips_embedding(self) -> None:
+        handler = UrlContentHandler()
+        tool_result = {
+            "url": "https://page.com",
+            "blocks": [{"type": "image", "url": "https://cdn.com/miss.png"}],
+        }
+        context = {
+            "config_service": self._make_config_service(
+                {"includeImages": True, "maxImages": 3}
+            ),
+            "ref_mapper": None,
+            "is_multimodal_llm": True,
+        }
+        fetch_mock = AsyncMock(return_value=None)
+        with (
+            patch("app.utils.tool_handlers._fetch_image_as_base64", fetch_mock),
+            patch("app.utils.tool_handlers.supported_mime_types", ["image/png"]),
+            patch("app.utils.tool_handlers.generate_text_fragment_url", return_value="https://page.com#"),
+            patch(
+                "app.utils.tool_handlers.display_url_for_llm",
+                side_effect=lambda u, r: u,
+            ),
+        ):
+            result = asyncio.run(handler.format_message(tool_result, context))
+
+        assert not any(b.get("type") == "image" for b in result)
+
+    def test_fetched_unsupported_mime_skipped_with_warning(self) -> None:
+        handler = UrlContentHandler()
+        tool_result = {
+            "url": "https://page.com",
+            "blocks": [{"type": "image", "url": "https://cdn.com/x.bin"}],
+        }
+        context = {
+            "config_service": self._make_config_service(
+                {"includeImages": True, "maxImages": 3}
+            ),
+            "ref_mapper": None,
+            "is_multimodal_llm": True,
+        }
+        fetch_mock = AsyncMock(return_value=("data", "image/tiff"))
+        with (
+            patch("app.utils.tool_handlers._fetch_image_as_base64", fetch_mock),
+            patch("app.utils.tool_handlers.supported_mime_types", ["image/png"]),
+            patch("app.utils.tool_handlers.generate_text_fragment_url", return_value="https://page.com#"),
+            patch(
+                "app.utils.tool_handlers.display_url_for_llm",
+                side_effect=lambda u, r: u,
+            ),
+        ):
+            result = asyncio.run(handler.format_message(tool_result, context))
+
+        assert not any(b.get("type") == "image" for b in result)
+
+    def test_relative_image_url_logs_warning_no_embed(self) -> None:
+        handler = UrlContentHandler()
+        tool_result = {
+            "url": "https://page.com",
+            "blocks": [{"type": "image", "url": "/assets/local.png"}],
+        }
+        context = {
+            "config_service": self._make_config_service(
+                {"includeImages": True, "maxImages": 3}
+            ),
+            "ref_mapper": None,
+            "is_multimodal_llm": True,
+        }
+        with (
+            patch("app.utils.tool_handlers._fetch_image_as_base64") as fetch_mock,
+            patch("app.utils.tool_handlers.generate_text_fragment_url", return_value="https://page.com#"),
+            patch(
+                "app.utils.tool_handlers.display_url_for_llm",
+                side_effect=lambda u, r: u,
+            ),
+        ):
+            result = asyncio.run(handler.format_message(tool_result, context))
+
+        fetch_mock.assert_not_called()
+        assert not any(b.get("type") == "image" for b in result)
+
+    def test_second_image_skipped_when_phase_three_count_at_max(self) -> None:
+        """After first embedded image reaches max_images, later images hit continue."""
+        handler = UrlContentHandler()
+        first_data = "data:image/png;base64,aGk="
+        second_data = "data:image/png;base64,aGk="
+        tool_result = {
+            "url": "https://page.com",
+            "blocks": [
+                {"type": "image", "url": first_data},
+                {"type": "image", "url": second_data},
+            ],
+        }
+        context = {
+            "config_service": self._make_config_service(
+                {"includeImages": True, "maxImages": 1}
+            ),
+            "ref_mapper": None,
+            "is_multimodal_llm": True,
+        }
+        fetch_mock = AsyncMock(return_value=("should-not-run", "image/png"))
+        with (
+            patch("app.utils.tool_handlers._fetch_image_as_base64", fetch_mock),
+            patch("app.utils.tool_handlers.supported_mime_types", ["image/png"]),
+            patch("app.utils.tool_handlers.generate_text_fragment_url", return_value="https://page.com#"),
+            patch(
+                "app.utils.tool_handlers.display_url_for_llm",
+                side_effect=lambda u, r: u,
+            ),
+        ):
+            result = asyncio.run(handler.format_message(tool_result, context))
+
+        fetch_mock.assert_not_called()
+        assert sum(1 for b in result if b.get("type") == "image") == 1
+
+    def test_image_block_empty_url_no_output(self) -> None:
+        """Phase 3: image with empty URL skips inner img_uri branches (hits if img_uri false)."""
+        handler = UrlContentHandler()
+        tool_result = {
+            "url": "https://page.com",
+            "blocks": [
+                {"type": "text", "content": "above"},
+                {"type": "image", "url": ""},
+                {"type": "text", "content": "below"},
+            ],
+        }
+        context = {
+            "config_service": self._make_config_service(
+                {"includeImages": True, "maxImages": 3}
+            ),
+            "ref_mapper": None,
+            "is_multimodal_llm": True,
+        }
+        fetch_mock = AsyncMock()
+        with (
+            patch("app.utils.tool_handlers._fetch_image_as_base64", fetch_mock),
+            patch("app.utils.tool_handlers.generate_text_fragment_url", return_value="https://page.com#frag"),
+            patch(
+                "app.utils.tool_handlers.display_url_for_llm",
+                side_effect=lambda u, r: u,
+            ),
+        ):
+            result = asyncio.run(handler.format_message(tool_result, context))
+
+        fetch_mock.assert_not_called()
+        text_parts = "".join(b.get("text", "") for b in result if b.get("type") == "text")
+        assert "above" in text_parts and "below" in text_parts
+        assert not any(b.get("type") == "image" for b in result)
