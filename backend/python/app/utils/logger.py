@@ -23,6 +23,7 @@ class ColoredFormatter(logging.Formatter):
             return f"{color}{formatted}{self.RESET}"
         return formatted
 
+
 class HealthCheckFilter(logging.Filter):
     """Suppress successful uvicorn access log entries for /health* endpoints.
 
@@ -33,8 +34,13 @@ class HealthCheckFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         # uvicorn access log args: (client_addr, method, path, http_version, status_code)
-        if record.args and len(record.args) >= 5:
-            return not (str(record.args[2]).startswith("/health") and 200 <= int(record.args[4]) < 300)
+        if isinstance(record.args, (tuple, list)) and len(record.args) >= 5:
+            try:
+                path = str(record.args[2])
+                status_code = int(record.args[4])
+                return not (path.startswith("/health") and 200 <= status_code < 300)
+            except (ValueError, TypeError):
+                pass
         # Fallback for any non-standard formatting
         msg = record.getMessage()
         return not ("/health" in msg and '" 2' in msg)
@@ -66,7 +72,7 @@ if data_store == "neo4j":
     neo4j_notifications_logger = logging.getLogger("neo4j.notifications")
     neo4j_notifications_logger.setLevel(logging.ERROR)  # Only show errors, suppress warnings
 
-# Suppress /health endpoint noise from uvicorn access logs (process_monitor polling)
+# Suppress /health* endpoint noise from uvicorn access logs (process_monitor polling)
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 
 

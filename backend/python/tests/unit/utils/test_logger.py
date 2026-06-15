@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.utils.logger import ColoredFormatter, create_logger
+from app.utils.logger import ColoredFormatter, HealthCheckFilter, create_logger
 
 
 # ---------------------------------------------------------------------------
@@ -86,9 +86,148 @@ class TestColoredFormatter:
         assert logging.DEBUG not in ColoredFormatter.COLORS
 
 
+
 # ---------------------------------------------------------------------------
-# create_logger
+# HealthCheckFilter
 # ---------------------------------------------------------------------------
+class TestHealthCheckFilter:
+    """Tests for HealthCheckFilter — suppresses successful /health access logs."""
+
+    def _make_uvicorn_record(self, path: str, status: int) -> logging.LogRecord:
+        """Build a LogRecord mimicking uvicorn's access log format.
+
+        uvicorn calls: logger.info('%s - "%s %s HTTP/%s" %d',
+                                   client_addr, method, path, http_version, status_code)
+        """
+        return logging.LogRecord(
+            name="uvicorn.access",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg='%s - "%s %s HTTP/%s" %d',
+            args=("127.0.0.1:12345", "GET", path, "1.1", status),
+            exc_info=None,
+        )
+
+    def _make_record_no_args(self, message: str) -> logging.LogRecord:
+        """Build a pre-formatted record with no args (exercises getMessage() fallback)."""
+        return logging.LogRecord(
+            name="uvicorn.access",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg=message,
+            args=None,
+            exc_info=None,
+        )
+
+    # -- Suppression (2xx on /health) -----------------------------------------
+
+    def test_suppresses_health_200(self):
+        assert HealthCheckFilter().filter(self._make_uvicorn_record("/health", 200)) is False
+
+    def test_suppresses_health_201(self):
+        assert HealthCheckFilter().filter(self._make_uvicorn_record("/health", 201)) is False
+
+    def test_suppresses_health_299(self):
+        assert HealthCheckFilter().filter(self._make_uvicorn_record("/health", 299)) is False
+
+    # -- Allowed (non-2xx on /health) -----------------------------------------
+
+    def test_allows_health_400(self):
+        assert HealthCheckFilter().filter(self._make_uvicorn_record("/health", 400)) is True
+
+    def test_allows_health_500(self):
+        assert HealthCheckFilter().filter(self._make_uvicorn_record("/health", 500)) is True
+
+    def test_allows_health_503(self):
+        assert HealthCheckFilter().filter(self._make_uvicorn_record("/health", 503)) is True
+
+    # -- Allowed (non-health paths) -------------------------------------------
+
+    def test_allows_non_health_200(self):
+        assert HealthCheckFilter().filter(self._make_uvicorn_record("/api/v1/query", 200)) is True
+
+    def test_allows_root_200(self):
+        assert HealthCheckFilter().filter(self._make_uvicorn_record("/", 200)) is True
+
+    def test_suppresses_health_sub_route_200(self):
+        """/health/* sub-routes with 2xx must be suppressed."""
+        assert HealthCheckFilter().filter(self._make_uvicorn_record("/health/graph-db", 200)) is False
+
+    def test_suppresses_health_sub_route_services_200(self):
+        assert HealthCheckFilter().filter(self._make_uvicorn_record("/health/services", 200)) is False
+
+    def test_allows_health_sub_route_500(self):
+        """/health/* sub-routes with non-2xx must still be logged."""
+        assert HealthCheckFilter().filter(self._make_uvicorn_record("/health/graph-db", 500)) is True
+
+    # -- getMessage() fallback (args=None or len < 5) -------------------------
+
+    def test_fallback_suppresses_health_200(self):
+        record = self._make_record_no_args('127.0.0.1:12345 - "GET /health HTTP/1.1" 200')
+        assert HealthCheckFilter().filter(record) is False
+
+    def test_fallback_allows_health_500(self):
+        record = self._make_record_no_args('127.0.0.1:12345 - "GET /health HTTP/1.1" 500')
+        assert HealthCheckFilter().filter(record) is True
+
+    def test_fallback_allows_other_path_200(self):
+        record = self._make_record_no_args('127.0.0.1:12345 - "GET /api/v1/chat HTTP/1.1" 200')
+        assert HealthCheckFilter().filter(record) is True
+
+    def test_fallback_short_args_tuple(self):
+        """Records with fewer than 5 args fall through to getMessage()."""
+        record = logging.LogRecord(
+            name="uvicorn.access",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg='%s - "%s"',
+            args=("127.0.0.1:12345", "GET /health HTTP/1.1"),
+            exc_info=None,
+        )
+        # getMessage() has /health but no '" 2' → allowed
+        assert HealthCheckFilter().filter(record) is True
+
+    def test_dict_args_falls_through_to_fallback(self):
+        """Dict-style args must not raise KeyError; filter falls through to getMessage()."""
+        record = logging.LogRecord(
+            name="uvicorn.access",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="%(client)s - %(path)s",
+            args={"client": "127.0.0.1", "path": "/health"},
+            exc_info=None,
+        )
+        # isinstance guard prevents KeyError; getMessage() fallback applies
+        assert HealthCheckFilter().filter(record) in (True, False)  # no exception
+
+    def test_non_integer_status_code_does_not_raise(self):
+        """Non-integer status in args[4] must not propagate an exception."""
+        record = logging.LogRecord(
+            name="uvicorn.access",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg='%s - "%s %s HTTP/%s" %s',
+            args=("127.0.0.1:12345", "GET", "/health", "1.1", "OK"),
+            exc_info=None,
+        )
+        # ValueError from int("OK") must be swallowed; falls through to getMessage()
+        assert HealthCheckFilter().filter(record) in (True, False)  # no exception
+
+    # -- Module-level registration --------------------------------------------
+
+    def test_registered_on_uvicorn_access_logger(self):
+        """HealthCheckFilter must be registered on uvicorn.access at module import."""
+        uvicorn_access = logging.getLogger("uvicorn.access")
+        filter_types = [type(f) for f in uvicorn_access.filters]
+        assert HealthCheckFilter in filter_types
+
+
+
 class TestCreateLogger:
     """Tests for create_logger()."""
 
