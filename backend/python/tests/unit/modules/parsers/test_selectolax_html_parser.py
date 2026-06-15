@@ -364,6 +364,12 @@ class TestImages:
         assert block.data == {"uri": "data:image/png;base64,abc"}
         assert block.format == DataFormat.BASE64
 
+    def test_malformed_srcset_does_not_crash(self, converter: HtmlToBlocksConverter) -> None:
+        container = converter.convert('<img srcset="   " alt="broken">')
+        images = [block for block in container.blocks if block.type == BlockType.IMAGE]
+        assert len(images) == 1
+        assert images[0].data is None
+
 
 class TestBlockquote:
     def test_blockquote_group(self, converter: HtmlToBlocksConverter) -> None:

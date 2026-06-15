@@ -944,19 +944,18 @@ class TestProcessHtmlDocument:
     """Tests for Processor.process_html_document."""
 
     @pytest.mark.asyncio
-    async def test_delegates_to_md_processor(self):
-        """HTML is cleaned and converted to markdown, then delegated."""
+    async def test_parses_html_and_runs_indexing_pipeline(self):
+        """HTML is parsed to blocks and indexed via IndexingPipeline."""
         proc, _, gp, _ = _make_processor()
+        gp.get_document.return_value = _base_record_dict()
 
         mock_html_parser = MagicMock()
         mock_html_parser.replace_relative_image_urls = MagicMock(return_value="<p>Test</p>")
+        mock_html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers["html"] = mock_html_parser
 
-        async def mock_md(*args, **kwargs):
-            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
-            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
-
-        with patch.object(proc, "process_md_document", side_effect=mock_md):
+        with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
+            mock_pipeline.return_value.apply = AsyncMock()
             events = await _collect(
                 proc.process_html_document(
                     recordName="test.html",
@@ -969,7 +968,10 @@ class TestProcessHtmlDocument:
                 )
             )
 
-        assert len(events) == 2
+        mock_html_parser.parse.assert_awaited_once_with("<p>Test</p>")
+        mock_pipeline.return_value.apply.assert_awaited_once()
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
 
 # ===========================================================================
@@ -1816,60 +1818,54 @@ class TestMarkRecord:
 
 
 # ===========================================================================
-# Processor.process_html_document (lines 1601, 1605-1606, 1609-1612, 1629-1631)
+# Processor.process_html_document (lines 1606-1657)
 # ===========================================================================
 
 
-class TestProcessHtmlDocument:
-    """Tests for process_html_document."""
+class TestProcessHtmlDocumentExtended:
+    """Extended tests for process_html_document."""
 
     @pytest.mark.asyncio
     async def test_success(self):
-        """Should delegate to process_md_document after conversion."""
+        """Should parse HTML and run IndexingPipeline."""
         from app.config.constants.arangodb import ExtensionTypes
         proc, _, gp, config = _make_processor()
+        gp.get_document.return_value = _base_record_dict()
 
         mock_html_parser = MagicMock()
         mock_html_parser.replace_relative_image_urls.return_value = "<html>clean</html>"
+        mock_html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers[ExtensionTypes.HTML.value] = mock_html_parser
 
-        async def mock_md(*args, **kwargs):
-            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
-            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
-
-        proc.process_md_document = mock_md
-
-        with patch("app.events.processor.convert", return_value="# Markdown"):
+        with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
+            mock_pipeline.return_value.apply = AsyncMock()
             events = await _collect(proc.process_html_document(
                 "test.html", "rec-1", 1, "upload", "org-1", b"<html>test</html>", "vr-1"
             ))
 
+        mock_html_parser.parse.assert_awaited_once()
+        mock_pipeline.return_value.apply.assert_awaited_once()
         assert events[0].event == "parsing_complete"
         assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
-    async def test_html_cleaning_failure_fallback(self):
-        """When BeautifulSoup fails, should fall back to raw content."""
+    async def test_record_not_found(self):
+        """When record is missing from DB, indexing_complete is still yielded."""
         from app.config.constants.arangodb import ExtensionTypes
         proc, _, gp, config = _make_processor()
+        gp.get_document.return_value = None
 
         mock_html_parser = MagicMock()
-        mock_html_parser.replace_relative_image_urls.return_value = "<html>raw</html>"
+        mock_html_parser.replace_relative_image_urls.return_value = "<html>test</html>"
+        mock_html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers[ExtensionTypes.HTML.value] = mock_html_parser
 
-        async def mock_md(*args, **kwargs):
-            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
-            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+        events = await _collect(proc.process_html_document(
+            "test.html", "rec-1", 1, "upload", "org-1", b"<html>test</html>", "vr-1"
+        ))
 
-        proc.process_md_document = mock_md
-
-        with patch("app.events.processor.BeautifulSoup", side_effect=Exception("soup failed")):
-            with patch("app.events.processor.convert", return_value="# Markdown"):
-                events = await _collect(proc.process_html_document(
-                    "test.html", "rec-1", 1, "upload", "org-1", b"<html>test</html>", "vr-1"
-                ))
-
-        assert len(events) == 2
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
 
 
 # ===========================================================================

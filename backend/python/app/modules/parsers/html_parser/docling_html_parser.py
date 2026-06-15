@@ -116,7 +116,7 @@ class DoclingHtmlParser:
         return None
 
 
-    def replace_relative_image_urls(self, html_string) -> str:
+    def replace_relative_image_urls(self, html_string: str) -> str:
         """
         Replace all relative image URLs with absolute URLs.
         Absolute URLs are left unchanged.

@@ -173,7 +173,7 @@ def _is_hidden(node: LexborNode) -> bool:
     Checks for ``sr-only`` in the class list or ``aria-hidden="true"``.
     """
     attrs = node.attributes or {}
-    class_attr = attrs.get("class", "")
+    class_attr = attrs.get("class") or ""
     if isinstance(class_attr, list):
         class_attr = " ".join(class_attr)
     if "sr-only" in class_attr.split():
@@ -185,7 +185,7 @@ def _language_from_node(node: LexborNode | None) -> str | None:
     """Parse a code-block language from ``class="language-*"`` on the node."""
     if node is None:
         return None
-    class_attr = (node.attributes or {}).get("class", "")
+    class_attr = (node.attributes or {}).get("class") or ""
     if not class_attr:
         return None
     if isinstance(class_attr, list):
@@ -317,7 +317,7 @@ def _resolve_relative_links(html: str, base_url: str) -> str:
             continue
         if href.startswith(("http://", "https://", "mailto:", "#", "data:")):
             continue
-        anchor.attributes["href"] = urljoin(base_url, href)
+        anchor.attrs["href"] = urljoin(base_url, href)
 
     return wrapper.inner_html
 
@@ -1089,7 +1089,11 @@ class _DomWalker:
         alt_text = (attrs.get("alt") or "").strip()
         src = (attrs.get("src") or "").strip()
         if not src and attrs.get("srcset"):
-            src = attrs["srcset"].split(",")[0].split()[0].strip()
+            srcset_parts = attrs["srcset"].split(",")
+            if srcset_parts:
+                first_part = srcset_parts[0].split()
+                if first_part:
+                    src = first_part[0].strip()
         if src and self.base_url:
             src = urljoin(self.base_url, src)
 
