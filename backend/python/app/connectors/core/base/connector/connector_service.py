@@ -22,7 +22,7 @@ from app.services.notification.notification_service import NotificationService
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 DEFAULT_CONNECTOR_NOTIFICATION_LINK = "workspace/connectors/"
-INITIAL_NOTIFICATION_BACKOFF = 86400 * 1000 # 24 hrs in ms
+INITIAL_NOTIFICATION_BACKOFF = 15 * 60 * 1000 # 15 mins in ms
 MAX_NOTIFICATION_BACKOFF = 604800 * 1000 # 7 days in ms
 
 
