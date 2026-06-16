@@ -25,7 +25,6 @@ import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import { buildExternalStoreConfig, loadHistoricalMessages } from '@/chat/runtime';
 import { debugLog } from '@/chat/debug-logger';
 import { useCommandStore } from '@/lib/store/command-store';
-import { useNotificationStore } from '@/app/(main)/notifications/store';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -244,7 +243,6 @@ function ChatContent() {
   useEffect(() => {
     const { register, unregister } = useCommandStore.getState();
     register('newChat', () => {
-      useNotificationStore.getState().closePanel();
       const store = useChatStore.getState();
 
       // 0. Reset search mode if active (URL won't change since both are /chat)

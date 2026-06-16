@@ -171,7 +171,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:bookworm
+    image: redis:8.4-bookworm
     restart: always
     ports:
       - "6379:6379"

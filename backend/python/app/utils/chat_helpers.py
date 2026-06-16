@@ -329,7 +329,6 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "reporter_email": graph_doc.get("reporterEmail"),
                 "creator_name": graph_doc.get("creatorName"),
                 "creator_email": graph_doc.get("creatorEmail"),
-                "labels": graph_doc.get("labels"),
             }
             return TicketRecord(**base_args, **specific_args)
 
@@ -1292,9 +1291,6 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                 record["mime_type"] = graphDb_record.get("mimeType")
                 record["source_created_at"] = graphDb_record.get("sourceCreatedAtTimestamp")
                 record["source_updated_at"] = graphDb_record.get("sourceLastModifiedTimestamp")
-                graph_external_id = graphDb_record.get("externalRecordId")
-                if graph_external_id:
-                    record["external_record_id"] = graph_external_id
 
                 # Fetch type-specific metadata and generate formatted string
                 graph_doc = None
@@ -1319,11 +1315,6 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                         record["context_metadata"] = await record_instance.to_llm_context_with_graph(
                             frontend_url=frontend_url,
                             graph_provider=graph_provider,
-                        )
-                    elif isinstance(record_instance, TicketRecord):
-                        record["context_metadata"] = await record_instance.to_llm_context_with_live_fields(
-                            frontend_url=frontend_url,
-                            config_service=blob_store.config_service,
                         )
                     else:
                         record["context_metadata"] = record_instance.to_llm_context(
@@ -1397,17 +1388,20 @@ async def create_record_from_vector_metadata(metadata: dict[str, Any], org_id: s
             "virtualRecordId": virtual_record_id,
         })
 
-# Scroll through all points with the filter
+# Scroll through all points with the filter (paginated)
         points = []
-
-        result = await vector_db_service.scroll(
+        scroll_offset = None
+        while True:
+            result = await vector_db_service.scroll(
                 collection_name=VECTOR_DB_COLLECTION_NAME,
                 scroll_filter=payload_filter,
-                limit=100000,
+                limit=500,
+                offset=scroll_offset,
             )
-
-
-        points.extend(result[0])
+            points.extend(result.points)
+            if not result.next_offset:
+                break
+            scroll_offset = result.next_offset
 
         point_id_to_blockIndex = {}
         new_payloads = []

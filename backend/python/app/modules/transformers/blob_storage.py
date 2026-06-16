@@ -999,7 +999,7 @@ class BlobStorage(Transformer):
                 str: The content of the record if found, else an empty string.
             """
             overall_start_time = time.time()
-            self.logger.debug("🔍 Retrieving record from storage for virtual_record_id: %s", virtual_record_id)
+            self.logger.info("🔍 Retrieving record from storage for virtual_record_id: %s", virtual_record_id)
             try:
                 headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
 

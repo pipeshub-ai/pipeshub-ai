@@ -27,8 +27,6 @@ describe('NotificationContainer - coverage', () => {
       expect(container.isBound(NotificationService)).to.be.true
       expect(container.isBound(NotificationProducer)).to.be.true
       expect(container.isBound(NotificationConsumer)).to.be.true
-      expect(container.isBound('MessageConsumer')).to.be.true
-      expect(container.isBound('Logger')).to.be.true
     })
 
     it('should bind AuthTokenService with correct secrets', async () => {

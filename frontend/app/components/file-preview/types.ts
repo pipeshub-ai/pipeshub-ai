@@ -215,8 +215,6 @@ export interface FilePreviewRendererProps {
   citations?: PreviewCitation[];
   /** Currently active citation ID (for scroll-to / active styling) */
   activeCitationId?: string | null;
-  /** Increments on every citation click (even same citation) — drives blink replay in PDFRenderer */
-  citationClickVersion?: number;
   /** Called when user clicks a highlight span in the rendered content */
   onHighlightClick?: (citationId: string) => void;
   /**
@@ -248,8 +246,6 @@ export interface PDFRendererProps {
   citations?: PreviewCitation[];
   /** Currently active citation ID */
   activeCitationId?: string | null;
-  /** Increments on every citation click (even same citation) — forces blink animation replay */
-  citationClickVersion?: number;
   /** Called when user clicks a highlight in the PDF */
   onHighlightClick?: (citationId: string) => void;
 }

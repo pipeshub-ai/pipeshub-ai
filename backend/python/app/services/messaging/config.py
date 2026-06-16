@@ -28,7 +28,6 @@ class Topic(str, Enum):
     AI_CONFIG_EVENTS = "ai-config-events"
     SYNC_EVENTS = "sync-events"
     HEALTH_CHECK = "health-check"
-    NOTIFICATION = "notification"
 
 
 REQUIRED_TOPICS: list[str] = [t.value for t in Topic]

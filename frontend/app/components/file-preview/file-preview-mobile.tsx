@@ -85,7 +85,6 @@ export function FilePreviewMobile({
   // Bidirectional citation <-> page sync
   const {
     activeCitationId,
-    citationClickVersion,
     highlightBox: syncHighlightBox,
     highlightPage: syncHighlightPage,
     handleCitationClick,
@@ -312,7 +311,6 @@ export function FilePreviewMobile({
                   highlightPage={hasCitations ? syncHighlightPage : undefined}
                   citations={hasCitations ? citations : undefined}
                   activeCitationId={hasCitations ? activeCitationId : undefined}
-                  citationClickVersion={hasCitations ? citationClickVersion : undefined}
                   onHighlightClick={hasCitations ? (id: string) => {
                     const citation = citations?.find((c) => c.id === id);
                     if (citation) handleCitationCardClick(citation);

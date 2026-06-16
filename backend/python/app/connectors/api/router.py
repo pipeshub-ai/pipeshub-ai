@@ -5914,8 +5914,7 @@ async def _ensure_connector_initialized(
             config_service=config_service,
             connector_id=connector_id,
             scope=scope,
-            created_by=created_by,
-            notification_service=container.connector_notification_service(),
+            created_by=created_by
         )
 
         if not connector:

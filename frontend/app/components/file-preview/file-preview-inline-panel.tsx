@@ -132,7 +132,6 @@ export function FilePreviewInlinePanel({
   // Bidirectional citation ↔ page sync
   const {
     activeCitationId,
-    citationClickVersion,
     highlightBox: syncHighlightBox,
     highlightPage: syncHighlightPage,
     handleCitationClick,
@@ -325,7 +324,6 @@ export function FilePreviewInlinePanel({
                   highlightPage={hasCitations ? syncHighlightPage : undefined}
                   citations={hasCitations ? citations : undefined}
                   activeCitationId={hasCitations ? activeCitationId : undefined}
-                  citationClickVersion={hasCitations ? citationClickVersion : undefined}
                   onHighlightClick={
                     hasCitations
                       ? (id: string) => {

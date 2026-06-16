@@ -28,7 +28,6 @@ import type { AdminAccessDialogPhase } from '../components/admin-access-required
 import { shouldPromptAdminAccess } from '../utils/admin-access-helpers';
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
-import { useResolvedConnectorTypeParam } from '../utils/resolve-connector-type-param';
 import type { Connector, ConnectorInstance, TeamFilterTab } from '../types';
 
 // ========================================
@@ -65,6 +64,9 @@ function TeamConnectorsPageContent() {
     { value: 'configured', label: t('workspace.actions.tabs.configured') },
     { value: 'not_configured', label: t('workspace.actions.tabs.notConfigured') },
   ];
+
+  // The connectorType query param determines whether we show the instance page
+  const connectorType = searchParams.get('connectorType');
 
   const {
     registryConnectors,
@@ -104,12 +106,6 @@ function TeamConnectorsPageContent() {
   const [pendingSetupConnector, setPendingSetupConnector] = useState<Connector | null>(null);
   const [pendingSetupConnectorId, setPendingSetupConnectorId] = useState<string | undefined>(
     undefined
-  );
-  const { connectorType, showConnectorTypePage } = useResolvedConnectorTypeParam(
-    searchParams,
-    registryConnectors,
-    activeConnectors,
-    '/workspace/connectors/team/',
   );
   const [isRefreshingAllInstances, setIsRefreshingAllInstances] = useState(false);
 
@@ -465,8 +461,8 @@ function TeamConnectorsPageContent() {
   }, [setShowConfigSuccessDialog, setNewlyConfiguredConnectorId]);
 
   // ── Render ─────────────────────────────────────────────────
-  // If connectorType query param is present, show the connector type page
-  if (showConnectorTypePage) {
+  // If connectorType is present, show the connector type page
+  if (connectorType) {
     return (
       <>
         <ConnectorDetailsLayout

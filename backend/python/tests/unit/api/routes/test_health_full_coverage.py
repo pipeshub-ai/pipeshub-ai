@@ -165,7 +165,8 @@ class TestHandleModelChange:
         logger = MagicMock()
 
         from app.api.routes.health import handle_model_change
-        await handle_model_change(retrieval_svc, None, "model-b", 768, 0, 512, logger)
+        # Use matching sizes (512==512) so dimension_mismatch=False and no recreate needed
+        await handle_model_change(retrieval_svc, None, "model-b", 512, 0, 512, logger)
 
     @pytest.mark.asyncio
     async def test_no_change_when_new_is_none(self):
@@ -173,7 +174,8 @@ class TestHandleModelChange:
         logger = MagicMock()
 
         from app.api.routes.health import handle_model_change
-        await handle_model_change(retrieval_svc, "model-a", None, 768, 0, 512, logger)
+        # Use matching sizes (768==768) so dimension_mismatch=False and no recreate needed
+        await handle_model_change(retrieval_svc, "model-a", None, 768, 0, 768, logger)
 
     @pytest.mark.asyncio
     async def test_strips_models_prefix(self):
@@ -206,6 +208,9 @@ class TestRecreateCollection:
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
         retrieval_svc.vector_db_service = AsyncMock()
+        caps = MagicMock()
+        caps.supports_sparse_vectors = False
+        retrieval_svc.vector_db_service.get_capabilities = MagicMock(return_value=caps)
         logger = MagicMock()
 
         from app.api.routes.health import recreate_collection
@@ -276,13 +281,13 @@ class TestCheckCollectionInfo:
     async def test_unexpected_exception(self):
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(side_effect=RuntimeError("bad"))
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(side_effect=RuntimeError("bad"))
         logger = MagicMock()
 
         from app.api.routes.health import check_collection_info
-        with pytest.raises(HTTPException) as exc_info:
-            await check_collection_info(retrieval_svc, MagicMock(), 768, logger)
-        assert exc_info.value.status_code == 500
+        # check_collection_info swallows non-HTTP exceptions with a warning, does not raise
+        await check_collection_info(retrieval_svc, MagicMock(), 768, logger)
+        logger.warning.assert_called()
 
 
 class TestEmbeddingHealthCheck:
@@ -481,18 +486,16 @@ class TestPerformEmbeddingHealthCheck:
         config = {"provider": "openai", "configuration": {"model": "text-embedding-3-small"}}
         mock_embed = MagicMock()
 
-        dense_vec = MagicMock()
-        dense_vec.size = 768
-        vectors = MagicMock()
-        vectors.get.return_value = dense_vec
+        # Use provider-neutral VectorCollectionInfo-style mock
         coll_info = MagicMock()
-        coll_info.config.params.vectors = vectors
-        coll_info.points_count = 0
+        coll_info.exists = True
+        coll_info.dense_dimension = 768  # matches embedding dimension
+        coll_info.points_count = 0       # no data - no mismatch check
 
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
         retrieval_svc.vector_db_service = AsyncMock()
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(return_value=coll_info)
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(return_value=coll_info)
         mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
         with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
@@ -543,18 +546,16 @@ class TestPerformEmbeddingHealthCheck:
         config = {"provider": "openai", "configuration": {"model": "text-embedding-3-small"}}
         mock_embed = MagicMock()
 
-        dense_vec = MagicMock()
-        dense_vec.size = 1024
-        vectors = MagicMock()
-        vectors.get.return_value = dense_vec
+        # Use provider-neutral VectorCollectionInfo-style mock
         coll_info = MagicMock()
-        coll_info.config.params.vectors = vectors
+        coll_info.exists = True
+        coll_info.dense_dimension = 1024  # mismatch: embeddings return 768
         coll_info.points_count = 100
 
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
         retrieval_svc.vector_db_service = AsyncMock()
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(return_value=coll_info)
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(return_value=coll_info)
         mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
         with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
@@ -620,7 +621,7 @@ class TestPerformEmbeddingHealthCheck:
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
         retrieval_svc.vector_db_service = AsyncMock()
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(side_effect=RuntimeError("conn failed"))
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(side_effect=RuntimeError("conn failed"))
         mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
         with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \

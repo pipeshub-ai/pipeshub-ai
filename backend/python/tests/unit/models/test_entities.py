@@ -457,57 +457,6 @@ class TestTicketRecord:
         assert "Creator" in ctx
         assert "Delivery Status" in ctx
 
-    def test_to_llm_context_includes_labels(self):
-        rec = TicketRecord(**_record_kwargs(
-            record_type=RecordType.TICKET,
-            connector_name=Connectors.JIRA,
-            labels=["bug", "backend"],
-        ))
-        ctx = rec.to_llm_context()
-        assert "* Labels: bug, backend" in ctx
-
-    @pytest.mark.asyncio
-    async def test_to_llm_context_with_live_fields_delegates_to_enrichment(self):
-        rec = TicketRecord(**_record_kwargs(
-            record_type=RecordType.TICKET,
-            connector_name=Connectors.JIRA,
-        ))
-
-        with patch(
-            "app.connectors.sources.atlassian.jira.enrichment.service.enrich_ticket_llm_context",
-            new=AsyncMock(return_value="merged context"),
-        ) as mock_enrich:
-            ctx = await rec.to_llm_context_with_live_fields(config_service=AsyncMock())
-
-        assert ctx == "merged context"
-        mock_enrich.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_to_llm_context_with_live_fields_falls_back_on_error(self):
-        rec = TicketRecord(**_record_kwargs(
-            record_type=RecordType.TICKET,
-            connector_name=Connectors.JIRA,
-            status="OPEN",
-        ))
-
-        with patch(
-            "app.connectors.sources.atlassian.jira.enrichment.service.enrich_ticket_llm_context",
-            new=AsyncMock(side_effect=RuntimeError("boom")),
-        ):
-            ctx = await rec.to_llm_context_with_live_fields(config_service=AsyncMock())
-
-        assert "Status" in ctx
-        assert ctx == rec.to_llm_context()
-
-    @pytest.mark.asyncio
-    async def test_to_llm_context_with_live_fields_skips_without_config_service(self):
-        rec = TicketRecord(**_record_kwargs(
-            record_type=RecordType.TICKET,
-            connector_name=Connectors.JIRA,
-        ))
-        ctx = await rec.to_llm_context_with_live_fields(config_service=None)
-        assert ctx == rec.to_llm_context()
-
     def test_to_arango_record(self):
         rec = TicketRecord(**_record_kwargs(
             id="ticket-1",

@@ -32,13 +32,7 @@
   <br/>
   <a href="https://x.com/PipesHub"><img src="https://img.shields.io/twitter/follow/PipesHub?style=social" alt="Twitter"></a>
   <a href="https://www.linkedin.com/company/pipeshub"><img src="https://img.shields.io/badge/LinkedIn-PipesHub-blue?logo=linkedin&amp;logoColor=white" alt="LinkedIn"></a>
-  <br/>
-  <img src="https://img.shields.io/badge/-d0d0d0?style=flat" width="40%" height="1" alt="" />
-  <br/>
-  <a href="https://www.npmjs.com/package/@pipeshub-ai/sdk"><img src="https://img.shields.io/npm/v/@pipeshub-ai/sdk?logo=npm&amp;logoColor=white&amp;label=node%20sdk" alt="Node.js SDK" /></a>
-  <a href="https://pypi.org/project/pipeshub-sdk/"><img src="https://img.shields.io/pypi/v/pipeshub-sdk?logo=python&amp;logoColor=white&amp;label=python%20sdk" alt="Python SDK" /></a>
-  <a href="https://github.com/pipeshub-ai/pipeshub-sdk-go"><img src="https://img.shields.io/github/v/release/pipeshub-ai/pipeshub-sdk-go?logo=go&amp;logoColor=white&amp;label=go%20sdk" alt="Go SDK" /></a>
-  <a href="https://www.npmjs.com/package/pipeshub"><img src="https://img.shields.io/npm/v/pipeshub?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
+  
 </p>
 
 **Translations:** [Français](docs/i18n/fr/README.md) · [Deutsch](docs/i18n/de/README.md) · [简体中文](docs/i18n/zh-CN/README.md) · [日本語](docs/i18n/ja/README.md) · [Русский](docs/i18n/ru/README.md) · [עברית](docs/i18n/he/README.md) · [한국어](docs/i18n/ko/README.md) · [Español](docs/i18n/es/README.md) · [Português](docs/i18n/pt/README.md) · [Türkçe](docs/i18n/tr/README.md) · [Tiếng Việt](docs/i18n/vi/README.md) · [Italiano](docs/i18n/it/README.md)
@@ -119,14 +113,14 @@
 | FastAPI | High-performance Python web framework |
 | LangChain | Framework for LLM pipelines |
 | LangGraph | State graph for LLM workflows |
-| Qdrant | Vector similarity search engine |
+| Qdrant / OpenSearch / Redis | Pluggable vector database layer (Qdrant default; OpenSearch 2.19+ and Redis 8.4+ also supported) |
 | Neo4j / ArangoDB | Graph database |
 | Kafka / Redis Streams | Distributed event streaming platform |
 | Redis | Caching |
 | Redis / etcd3 | Distributed key-value configuration store |
 | Celery | Distributed task queue system |
 | Docling | Document parsing and extraction toolkit |
-| pdfplumber | PDF processing library |
+| PyMuPDF | PDF processing library |
 | pandas | Data analysis and manipulation |
 
 ## 🚀 Deployment Guide
@@ -265,7 +259,7 @@ PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in y
 
 ### What is the Knowledge Graph Retrieval feature?
 
-PipesHub uses graph-backed retrieval that captures relationships across enterprise data. It uses Neo4j or ArangoDB as graph databases, combined with Qdrant for vector similarity search.
+PipesHub uses graph-backed retrieval that captures relationships across enterprise data. It uses Neo4j or ArangoDB as graph databases, combined with a pluggable vector database layer for semantic search. By default, Qdrant is used for vector similarity search (supports hybrid dense + sparse search with RRF). OpenSearch 2.19+ and Redis 8.4+ are also supported via the `VECTOR_DB_TYPE` environment variable.
 
 ### Does PipesHub have an MCP server?
 
@@ -284,7 +278,7 @@ Yes. PipesHub has a no-code agent builder. You can build agents visually and exe
 
 ### What is the multimodal support?
 
-PipesHub supports image, diagram, and scanned-file understanding, plus voice-based interaction. It uses Docling and pdfplumber for document parsing, or a multimodal LLM (VLM) for scanned PDF OCR.
+PipesHub supports image, diagram, and scanned-file understanding, plus voice-based interaction. It uses Docling and PyMuPDF for document parsing, and Azure Document Intelligence or a multimodal LLM (VLM) for scanned PDF OCR.
 
 ### How do I troubleshoot deployment issues?
 

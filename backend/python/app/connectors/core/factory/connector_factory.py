@@ -200,7 +200,6 @@ class ConnectorFactory:
             return None
 
         try:
-            notification_service = kwargs.pop("notification_service", None)
             connector = await connector_class.create_connector(
                 logger=logger,
                 data_store_provider=data_store_provider,
@@ -210,8 +209,6 @@ class ConnectorFactory:
                 created_by=created_by,
                 **kwargs,
             )
-            if connector is not None and notification_service is not None:
-                connector._notification_service = notification_service
             logger.info(f"Created {name} {connector_id} connector successfully")
             return connector
         except Exception as e:

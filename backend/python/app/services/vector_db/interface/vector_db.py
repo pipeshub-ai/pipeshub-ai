@@ -1,63 +1,117 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Union
 
-from qdrant_client.http.models import (  # type: ignore
-    Filter,
-    PointStruct,
-    QueryRequest,
+from app.services.vector_db.models import (
+    CollectionConfig,
+    FilterExpression,
+    FilterMode,
+    FilterValue,
+    HybridSearchRequest,
+    ScrollResult,
+    SearchResult,
+    VectorCollectionInfo,
+    VectorDBCapabilities,
+    VectorDBHealth,
+    VectorPoint,
 )
-
-from app.services.vector_db.qdrant.filter import QdrantFilterMode
-
-# Type alias for filter values
-FilterValue = Union[str, int, float, bool, List[Union[str, int, float, bool]]]
 
 
 class IVectorDBService(ABC):
+    """Abstract interface for vector database providers.
+
+    All data-path methods are **async** so they can be safely awaited in
+    async request handlers and background tasks without blocking the event loop.
+
+    Providers
+    ---------
+    Qdrant   – sparse + dense vectors, native RRF prefetch/fusion
+    OpenSearch – dense KNN + server-side BM25, RRF via score-ranker pipeline
+    Redis    – dense KNN + server-side BM25, RRF via FT.HYBRID (Redis >= 8.4)
+
+    Capability negotiation
+    ----------------------
+    Call ``get_capabilities()`` at startup to learn whether a provider accepts
+    client-computed sparse vectors or relies on server-side text search for the
+    lexical leg.  Indexing and retrieval paths branch on these flags so the
+    *call-site code never hard-codes provider names*.
+    """
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
     @abstractmethod
     async def connect(self) -> None:
-        raise NotImplementedError("connect() is not implemented")
+        raise NotImplementedError
 
     @abstractmethod
     async def disconnect(self) -> None:
-        raise NotImplementedError("disconnect() is not implemented")
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Identity
+    # ------------------------------------------------------------------
 
     @abstractmethod
     def get_service_name(self) -> str:
-        raise NotImplementedError("get_service_name() is not implemented")
+        raise NotImplementedError
 
     @abstractmethod
-    def get_service(self) -> 'IVectorDBService':
-        raise NotImplementedError("get_service() is not implemented")
+    def get_service(self) -> "IVectorDBService":
+        raise NotImplementedError
 
     @abstractmethod
     def get_service_client(self) -> object:
-        raise NotImplementedError("get_service_client() is not implemented")
+        """Return the underlying raw client (for langchain adapters if needed)."""
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Capabilities and health (new)
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def get_capabilities(self) -> VectorDBCapabilities:
+        """Return static capability descriptor for this provider."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def health_check(self) -> VectorDBHealth:
+        """Perform a live health check and return a structured result."""
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Collection management
+    # ------------------------------------------------------------------
 
     @abstractmethod
     async def create_collection(
         self,
-        collection_name: str,
-        embedding_size: int=1024,
-        sparse_idf: bool = False,
-        vectors_config: Optional[dict] = None,
-        sparse_vectors_config: Optional[dict] = None,
-        optimizers_config: Optional[dict] = None,
-        quantization_config: Optional[dict] = None,
+        collection_name: str = "records",
+        config: Optional[CollectionConfig] = None,
     ) -> None:
-        raise NotImplementedError("create_collection() is not implemented")
+        raise NotImplementedError
 
     @abstractmethod
     async def get_collections(self) -> object:
-        raise NotImplementedError("get_collections() is not implemented")
+        raise NotImplementedError
 
     @abstractmethod
     async def get_collection(self, collection_name: str) -> object:
-        raise NotImplementedError("get_collection() is not implemented")
+        """Return raw provider-specific collection info (for legacy callers)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_collection_info(self, collection_name: str) -> VectorCollectionInfo:
+        """Return normalised, provider-neutral collection metadata."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def collection_exists(self, collection_name: str) -> bool:
+        raise NotImplementedError
 
     @abstractmethod
     async def delete_collection(self, collection_name: str) -> None:
-        raise NotImplementedError("delete_collection() is not implemented")
+        raise NotImplementedError
 
     @abstractmethod
     async def create_index(
@@ -66,43 +120,67 @@ class IVectorDBService(ABC):
         field_name: str,
         field_schema: dict,
     ) -> None:
-        raise NotImplementedError("create_index() is not implemented")
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Filter construction
+    # ------------------------------------------------------------------
 
     @abstractmethod
     async def filter_collection(
         self,
-        filter_mode: Union[str, QdrantFilterMode] = QdrantFilterMode.MUST,
+        filter_mode: Union[str, FilterMode] = FilterMode.MUST,
         must: Optional[Dict[str, FilterValue]] = None,
         should: Optional[Dict[str, FilterValue]] = None,
         must_not: Optional[Dict[str, FilterValue]] = None,
         min_should_match: Optional[int] = None,
         **filters: FilterValue,
-    ) -> Filter:
-        raise NotImplementedError("filter_collection() is not implemented")
+    ) -> FilterExpression:
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Data operations — all async
+    # ------------------------------------------------------------------
 
     @abstractmethod
-    async def scroll(self, collection_name: str, scroll_filter: Filter, limit: int) -> object:
-        raise NotImplementedError("scroll() is not implemented")
+    async def scroll(
+        self,
+        collection_name: str,
+        scroll_filter: FilterExpression,
+        limit: int,
+        offset: Optional[str] = None,
+    ) -> ScrollResult:
+        raise NotImplementedError
 
     @abstractmethod
     async def query_nearest_points(
         self,
         collection_name: str,
-        requests: List[QueryRequest],
-    ) -> List[List[PointStruct]]:
-        """Query batch points"""
-        raise NotImplementedError("query_nearest_points() is not implemented")
-
-    @abstractmethod
-    async def count_points(self, collection_name: str) -> int:
-        """Return the number of points in a collection."""
-        raise NotImplementedError("count_points() is not implemented")
+        requests: List[HybridSearchRequest],
+    ) -> List[List[SearchResult]]:
+        raise NotImplementedError
 
     @abstractmethod
     async def upsert_points(
         self,
         collection_name: str,
-        points: List[PointStruct],
+        points: List[VectorPoint],
     ) -> None:
-        """Upsert points"""
-        raise NotImplementedError("upsert() is not implemented")
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_points(
+        self,
+        collection_name: str,
+        filter: FilterExpression,
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def overwrite_payload(
+        self,
+        collection_name: str,
+        payload: dict,
+        points: FilterExpression,
+    ) -> None:
+        raise NotImplementedError

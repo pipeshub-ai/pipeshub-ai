@@ -92,26 +92,33 @@ from app.utils.streaming import create_stream_record_response
 DEFAULT_MAX_RESULTS: int = 50
 BATCH_PROCESSING_SIZE: int = 100
 USER_PAGE_SIZE: int = 50
+GROUP_PAGE_SIZE: int = 50
 GROUP_MEMBER_PAGE_SIZE: int = 50
-GROUPS_PICKER_MAX: int = 1000  # maxResults for GET /rest/api/2/groups/picker
-AUDIT_PAGE_SIZE: int = 500  # page size for GET /rest/auditing/1.0/events
-DC_AUDIT_ISSUE_DELETED_ACTIONS: str = "Issue deleted,Sub-task deleted"
-DC_AUDIT_ISSUE_CATEGORY: str = "issue"
+# DC audit endpoint (/rest/api/2/auditing/record) caps ``limit`` server-side; the
+# documented hard cap is 1000 but values above 500 occasionally time out on
+# large installs. Mirror Cloud's 500.
+AUDIT_PAGE_SIZE: int = 500
 
 # JQL query constants
 ISSUE_SEARCH_FIELDS: list[str] = [
     "summary", "description", "status", "priority",
     "creator", "reporter", "assignee", "created", "updated",
     "issuetype", "project", "parent", "attachment", "security",
-    "issuelinks",
+    "issuelinks"
 ]
-
-DC_EPIC_LINK_FIELD_NAME = "Epic Link"
-DC_EPIC_LINK_SCHEMA_CUSTOM = "com.pyxis.greenhopper.jira:gh-epic-link"
 
 
 def _normalize_jira_dc_group_row(raw: dict[str, Any]) -> dict[str, Any] | None:
-    """Normalize a DC groups/picker row to ``{name, groupId}`` (name is the DC group key)."""
+    """Map a Jira DC group bulk/picker row to ``{name, groupId}``.
+
+    On Server / Data Center, ``GET /rest/api/2/group/bulk`` and ``/groups/picker`` often
+    return only ``{"name": ...}`` without ``groupId``/``id`` (groups are identified by
+    name across the v2 API). Treat ``name`` as the canonical DC group identifier and
+    only fall back to ``groupId``/``id`` when the server exposes one. The returned
+    ``groupId`` is used as ``AppUserGroup.source_user_group_id`` and must match the
+    ``Permission.external_id`` produced from permission-scheme holders (which also
+    carry the group **name** on DC) — keep both sides keyed by the same value.
+    """
     name = raw.get("name")
     if not name:
         return None
@@ -119,37 +126,562 @@ def _normalize_jira_dc_group_row(raw: dict[str, Any]) -> dict[str, Any] | None:
     return {"name": str(name), "groupId": str(gid)}
 
 
-def _application_role_groups_from_dc_role(role: dict[str, Any]) -> list[dict[str, str]]:
-    """Map DC ``GET /rest/api/2/applicationrole`` ``groups`` strings to ``{name, groupId}``."""
-    normalized: list[dict[str, str]] = []
-    for group_name in role.get("groups") or []:
-        if not isinstance(group_name, str) or not group_name.strip():
-            continue
-        name = group_name.strip()
-        normalized.append({"groupId": name, "name": name})
-    return normalized
+def extract_media_from_adf(adf_content: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    Extract all media nodes from ADF content.
+
+    Returns list of media info dicts with:
+        - id: Media ID/token
+        - alt: Alt text (usually filename)
+        - type: Media type (file, image, etc.)
+        - width: Image width (if available)
+        - height: Image height (if available)
+        - collection: Media collection (if available)
+    """
+    if not adf_content or not isinstance(adf_content, dict):
+        return []
+
+    media_nodes: list[dict[str, Any]] = []
+
+    def traverse(node: dict[str, Any]) -> None:
+        """Recursively traverse ADF nodes to find media."""
+        if not isinstance(node, dict):
+            return
+
+        node_type = node.get("type", "")
+
+        # Check if this is a media node
+        if node_type == "media":
+            attrs = node.get("attrs", {})
+            # Get filename from multiple sources:
+            # - __fileName: Used for PDFs and other files
+            # - alt: Used for images (usually contains filename)
+            alt_text = attrs.get("alt", "")
+            internal_filename = attrs.get("__fileName", "")
+            # Best filename: prefer __fileName (more reliable for files), fallback to alt
+            filename = internal_filename or alt_text
+
+            media_info = {
+                "id": attrs.get("id", ""),
+                "alt": alt_text,
+                "filename": filename,  # Best filename for matching
+                "type": attrs.get("type", "file"),
+                "width": attrs.get("width"),
+                "height": attrs.get("height"),
+                "collection": attrs.get("collection", ""),
+            }
+            if media_info["id"]:  # Only add if we have an ID
+                media_nodes.append(media_info)
+
+        # Recurse into content
+        if "content" in node:
+            for child in node.get("content", []):
+                traverse(child)
+
+    # Start traversal from root
+    if "content" in adf_content:
+        for node in adf_content.get("content", []):
+            traverse(node)
+    else:
+        traverse(adf_content)
+
+    return media_nodes
+
+def adf_to_text(
+    adf_content: dict[str, Any],
+    media_cache: Optional[dict[str, str]] = None
+) -> str:
+    """
+    Convert Atlassian Document Format (ADF) to Markdown.
+    Returns markdown-formatted text with headers, lists, code blocks, tables, etc.
+
+    Args:
+        adf_content: The ADF document to convert
+        media_cache: Optional dict mapping media_id -> base64 data URI for embedding images
+    """
+    if not adf_content or not isinstance(adf_content, dict):
+        return ""
+
+    text_parts: list[str] = []
+    _media_cache = media_cache or {}
+
+    def apply_text_marks(text: str, marks: list[dict[str, Any]]) -> str:
+        """Apply markdown formatting based on text marks (bold, italic, link, etc.)."""
+        if not marks:
+            return text
+
+        # Process marks in reverse order (innermost first)
+        for mark in reversed(marks):
+            mark_type = mark.get("type", "")
+            attrs = mark.get("attrs", {})
+
+            if mark_type == "strong":
+                text = f"**{text}**"
+            elif mark_type == "em":
+                text = f"*{text}*"
+            elif mark_type == "code":
+                text = f"`{text}`"
+            elif mark_type == "strike":
+                text = f"~~{text}~~"
+            elif mark_type == "link":
+                href = attrs.get("href", "")
+                if href:
+                    text = f"[{text}]({href})"
+            elif mark_type == "underline":
+                # Markdown doesn't have underline, use emphasis
+                text = f"*{text}*"
+
+        return text
+
+    def extract_list_item_content(list_item: dict[str, Any], depth: int) -> dict[str, str]:
+        """Extract text content and nested lists from a list item.
+
+        Returns dict with:
+            - text: The main text content of the list item
+            - nested: Any nested lists formatted with proper indentation
+        """
+        content = list_item.get("content", [])
+        text_parts: list[str] = []
+        nested_parts: list[str] = []
+
+        for child in content:
+            child_type = child.get("type", "")
+            if child_type in ["bulletList", "orderedList", "taskList"]:
+                # Nested list - extract with current depth
+                nested_text = extract_text(child, depth)
+                if nested_text:
+                    nested_parts.append(nested_text)
+            else:
+                # Regular content (paragraph, text, etc.)
+                child_text = extract_text(child, depth)
+                if child_text:
+                    text_parts.append(child_text)
+
+        # Join text parts, clean up excessive whitespace
+        main_text = " ".join(text_parts).strip()
+        main_text = re.sub(r'\s+', ' ', main_text)  # Normalize whitespace
+
+        # Join nested lists
+        nested_text = "\n".join(nested_parts) if nested_parts else ""
+
+        return {"text": main_text, "nested": nested_text}
+
+    def extract_text(node: dict[str, Any], list_depth: int = 0, strip_marks: bool = False) -> str:
+        """Recursively extract text from ADF nodes and convert to markdown.
+
+        Args:
+            node: The ADF node to process
+            list_depth: Current nesting level for lists (0 = not in list, 1+ = nested depth)
+            strip_marks: If True, ignore text formatting marks (for table cells)
+        """
+        if not isinstance(node, dict):
+            return ""
+
+        node_type = node.get("type", "")
+        text = ""
+        indent = "  " * list_depth  # 2 spaces per nesting level
+
+        if node_type == "text":
+            text = node.get("text", "")
+            # Skip formatting marks for table cells (they don't render well in markdown tables)
+            if not strip_marks:
+                marks = node.get("marks", [])
+                text = apply_text_marks(text, marks)
+
+        elif node_type == "paragraph":
+            content = node.get("content", [])
+            para_text = "".join(extract_text(child, list_depth, strip_marks) for child in content).strip()
+            if para_text:
+                # In lists or tables, paragraphs should contribute text without adding newlines
+                if list_depth > 0 or strip_marks:
+                    # Just return the text, no newlines - let list item/table cell handle spacing
+                    text = para_text
+                else:
+                    # Check if paragraph contains only a list - if so, don't add extra spacing
+                    has_list = any(child.get("type") in ["bulletList", "orderedList", "taskList"] for child in content)
+                    if has_list:
+                        # Lists already have their own spacing, don't add extra
+                        text = para_text
+                    else:
+                        text = f"{para_text}\n\n"
+
+        elif node_type == "heading":
+            level = node.get("attrs", {}).get("level", 1)
+            content = node.get("content", [])
+            heading_text = "".join(extract_text(child, list_depth, strip_marks) for child in content).strip()
+            if heading_text:
+                if strip_marks:
+                    # In tables, just return heading text without # markers
+                    text = heading_text
+                else:
+                    text = f"{'#' * level} {heading_text}\n\n"
+
+        elif node_type == "blockquote":
+            content = node.get("content", [])
+            quote_text = "".join(extract_text(child, list_depth, strip_marks) for child in content).strip()
+            if quote_text:
+                if strip_marks:
+                    # In tables, just return the quote text
+                    text = quote_text
+                else:
+                    # Add > to each line for proper markdown blockquote
+                    quoted_lines = quote_text.split("\n")
+                    quoted_lines = [f"> {line}" if line.strip() else ">" for line in quoted_lines]
+                    text = "\n".join(quoted_lines) + "\n\n"
+
+        # Handle both "bulletList" and "unorderedList" (some Jira versions use different names)
+        elif node_type in ["bulletList", "unorderedList"]:
+            content = node.get("content", [])
+            bullet_lines: list[str] = []
+
+            for child in content:
+                child_type = child.get("type", "")
+
+                # Extract the text content from the list item
+                if child_type == "listItem":
+                    # Standard structure: listItem > paragraph > text
+                    item_content = extract_list_item_content(child, list_depth + 1)
+                    item_text = item_content.get("text", "").strip()
+                    nested_content = item_content.get("nested", "")
+                else:
+                    # Fallback: directly extract text from whatever node this is
+                    item_text = extract_text(child, list_depth + 1, strip_marks).strip()
+                    nested_content = ""
+
+                # Add bullet marker if we have text
+                if item_text:
+                    bullet_line = f"{indent}- {item_text}"
+                    bullet_lines.append(bullet_line)
+                    if nested_content:
+                        bullet_lines.append(nested_content)
+
+            # Join all bullet items with newlines
+            if bullet_lines:
+                text = "\n".join(bullet_lines)
+                if list_depth == 0:
+                    text += "\n\n"
+
+        # Handle both "orderedList" and "numberedList" (some variations exist)
+        elif node_type in ["orderedList", "numberedList"]:
+            content = node.get("content", [])
+            numbered_lines: list[str] = []
+
+            for i, child in enumerate(content, start=1):
+                child_type = child.get("type", "")
+
+                # Extract the text content from the list item
+                if child_type == "listItem":
+                    # Standard structure: listItem > paragraph > text
+                    item_content = extract_list_item_content(child, list_depth + 1)
+                    item_text = item_content.get("text", "").strip()
+                    nested_content = item_content.get("nested", "")
+                else:
+                    # Fallback: directly extract text from whatever node this is
+                    item_text = extract_text(child, list_depth + 1, strip_marks).strip()
+                    nested_content = ""
+
+                # Add number marker if we have text
+                if item_text:
+                    numbered_line = f"{indent}{i}. {item_text}"
+                    numbered_lines.append(numbered_line)
+                    if nested_content:
+                        numbered_lines.append(nested_content)
+
+            # Join all numbered items with newlines
+            if numbered_lines:
+                text = "\n".join(numbered_lines)
+                if list_depth == 0:
+                    text += "\n\n"
+
+        elif node_type == "listItem":
+            # This is handled by extract_list_item_content, but provide fallback
+            content = node.get("content", [])
+            text = "".join(extract_text(child, list_depth) for child in content).strip()
+
+        elif node_type == "codeBlock":
+            content = node.get("content", [])
+            code_text = "".join(extract_text(child, list_depth) for child in content)
+            language = node.get("attrs", {}).get("language", "")
+            # Preserve code formatting - don't strip, but ensure proper code block
+            text = f"```{language}\n{code_text}\n```\n\n"
+
+        elif node_type == "inlineCode":
+            text = f"`{node.get('text', '')}`"
+
+        elif node_type == "hardBreak":
+            text = "\n"
+
+        elif node_type == "rule":
+            text = "---\n\n"
+
+        elif node_type == "media":
+            attrs = node.get("attrs", {})
+            media_id = attrs.get("id", "")
+            alt = attrs.get("alt", "")
+            title = attrs.get("title", "")
+
+            display_text = alt or title or "attachment"
+
+            # Check if we have base64 data for this media in cache
+            if media_id and media_id in _media_cache:
+                data_uri = _media_cache[media_id]
+                if list_depth > 0:
+                    text = f"\n![{display_text}]({data_uri})\n"
+                else:
+                    text = f"\n![{display_text}]({data_uri})\n\n"
+            else:
+                # Fallback: just show the image name/alt text
+                if list_depth > 0:
+                    text = f"\n![{display_text}]\n"
+                else:
+                    text = f"\n![{display_text}]\n\n"
+
+        elif node_type == "mention":
+            attrs = node.get("attrs", {})
+            mention_text = attrs.get("text", attrs.get("id", "mention"))
+            text = f"@{mention_text}"
+
+        elif node_type == "emoji":
+            attrs = node.get("attrs", {})
+            short_name = attrs.get("shortName", "")
+            text = f":{short_name}:" if short_name else attrs.get("text", "")
+
+        elif node_type == "table":
+            content = node.get("content", [])
+            rows: list[str] = []
+            is_first_row = True
+
+            for row in content:
+                if row.get("type") == "tableRow":
+                    cells: list[str] = []
+                    for cell in row.get("content", []):
+                        cell_type = cell.get("type", "")
+                        if cell_type in ["tableCell", "tableHeader"]:
+                            # Strip marks (bold, italic, etc.) - they don't render in markdown tables
+                            cell_text = extract_text(cell, list_depth, strip_marks=True).strip()
+                            # Escape pipe characters in cell content
+                            cell_text = cell_text.replace("|", "\\|")
+                            # Replace newlines with space for markdown table compatibility
+                            cell_text = cell_text.replace("\n", " ")
+                            cells.append(cell_text)
+
+                    if cells:
+                        rows.append("| " + " | ".join(cells) + " |")
+
+                        # Add header separator after first row
+                        if is_first_row:
+                            separator = "| " + " | ".join(["---"] * len(cells)) + " |"
+                            rows.append(separator)
+                            is_first_row = False
+
+            if rows:
+                text = "\n".join(rows) + "\n\n"
+
+        elif node_type in ["tableCell", "tableHeader"]:
+            content = node.get("content", [])
+            # Pass strip_marks through to children
+            text = "".join(extract_text(child, list_depth, strip_marks) for child in content)
+
+        elif node_type == "panel":
+            attrs = node.get("attrs", {})
+            panel_type = attrs.get("panelType", "info")
+            content = node.get("content", [])
+            panel_text = "".join(extract_text(child, list_depth) for child in content).strip()
+            if panel_text:
+                # Use blockquote style for panels
+                panel_lines = panel_text.split("\n")
+                panel_lines = [f"> **{panel_type.upper()}**: {line}" if line.strip() else ">" for line in panel_lines]
+                text = "\n".join(panel_lines) + "\n\n"
+
+        # Media wrappers - just extract the media content
+        elif node_type in ["mediaSingle", "mediaGroup"]:
+            content = node.get("content", [])
+            text = "".join(extract_text(child, list_depth) for child in content)
+
+        # Smart links / inline cards
+        elif node_type == "inlineCard":
+            attrs = node.get("attrs", {})
+            url = attrs.get("url", "")
+            if url:
+                text = f"[{url}]({url})"
+
+        # Task lists (checkboxes)
+        elif node_type == "taskList":
+            content = node.get("content", [])
+            task_items: list[str] = []
+            for child in content:
+                if child.get("type") == "taskItem":
+                    item_text = extract_text(child, list_depth + 1).strip()
+                    if item_text:
+                        task_items.append(item_text)
+            if task_items:
+                text = "\n".join(task_items) + "\n\n"
+
+        elif node_type == "taskItem":
+            attrs = node.get("attrs", {})
+            state = attrs.get("state", "TODO")
+            content = node.get("content", [])
+            item_text = "".join(extract_text(child, list_depth) for child in content).strip()
+            checkbox = "[x]" if state == "DONE" else "[ ]"
+            task_indent = "  " * (list_depth - 1) if list_depth > 0 else ""
+            text = f"{task_indent}- {checkbox} {item_text}"
+
+        # Decision lists
+        elif node_type == "decisionList":
+            content = node.get("content", [])
+            decision_items: list[str] = []
+            for child in content:
+                if child.get("type") == "decisionItem":
+                    item_text = extract_text(child, list_depth + 1).strip()
+                    if item_text:
+                        decision_items.append(item_text)
+            if decision_items:
+                text = "\n".join(decision_items) + "\n\n"
+
+        elif node_type == "decisionItem":
+            attrs = node.get("attrs", {})
+            state = attrs.get("state", "DECIDED")
+            content = node.get("content", [])
+            item_text = "".join(extract_text(child, list_depth) for child in content).strip()
+            marker = "✓" if state == "DECIDED" else "◇"
+            decision_indent = "  " * (list_depth - 1) if list_depth > 0 else ""
+            text = f"{decision_indent}{marker} {item_text}"
+
+        # Status badges
+        elif node_type == "status":
+            attrs = node.get("attrs", {})
+            status_text = attrs.get("text", "")
+            if status_text:
+                text = f"[{status_text}]"
+
+        # Date nodes
+        elif node_type == "date":
+            attrs = node.get("attrs", {})
+            timestamp = attrs.get("timestamp", "")
+            if timestamp:
+                try:
+                    # Convert timestamp to readable date
+                    dt = datetime.fromtimestamp(int(timestamp) / 1000, tz=timezone.utc)
+                    text = dt.strftime("%Y-%m-%d")
+                except (ValueError, TypeError):
+                    text = timestamp
+
+        # Expand/collapsible sections
+        elif node_type in ["expand", "nestedExpand"]:
+            attrs = node.get("attrs", {})
+            title = attrs.get("title", "Details")
+            content = node.get("content", [])
+            expand_text = "".join(extract_text(child, list_depth) for child in content).strip()
+            if expand_text:
+                text = f"**{title}**\n{expand_text}\n\n"
+
+        # Layout containers - just extract content
+        elif node_type == "layoutSection":
+            content = node.get("content", [])
+            column_texts: list[str] = []
+            for child in content:
+                child_text = extract_text(child, list_depth).strip()
+                if child_text:
+                    column_texts.append(child_text)
+            if column_texts:
+                text = "\n\n".join(column_texts) + "\n\n"
+
+        elif node_type == "layoutColumn":
+            content = node.get("content", [])
+            text = "".join(extract_text(child, list_depth) for child in content)
+
+        # Placeholder nodes - just show placeholder text
+        elif node_type == "placeholder":
+            attrs = node.get("attrs", {})
+            text = attrs.get("text", "")
+
+        # Generic fallback for any node with content
+        elif "content" in node:
+            content = node.get("content", [])
+            text = "".join(extract_text(child, list_depth, strip_marks) for child in content)
+
+        return text
+
+    if "content" in adf_content:
+        for node in adf_content.get("content", []):
+            text = extract_text(node)
+            if text:
+                text_parts.append(text)
+    else:
+        text = extract_text(adf_content)
+        if text:
+            text_parts.append(text)
+
+    result = "".join(text_parts)
+    # Clean up excessive newlines (more than 2 consecutive)
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    # Remove trailing whitespace from lines
+    result = "\n".join(line.rstrip() for line in result.split("\n"))
+    # Clean up spacing around lists - remove blank lines before lists
+    # This helps when paragraphs contain lists - ensure lists start without extra spacing
+    result = re.sub(r'\n\n+(\d+\. )', r'\n\1', result)  # Remove extra newlines before numbered list items
+    result = re.sub(r'\n\n+(- )', r'\n\1', result)  # Remove extra newlines before bullet list items
+    # Clean up spacing between list items (should be single newline)
+    result = re.sub(r'(\n\d+\. .+)\n\n+(\d+\. )', r'\1\n\2', result)  # Between numbered items
+    result = re.sub(r'(\n- .+)\n\n+(- )', r'\1\n\2', result)  # Between bullet items
+
+    return result.strip()
+
+async def adf_to_text_with_images(
+    adf_content: dict[str, Any],
+    media_fetcher: Callable[[str, str], Awaitable[Optional[str]]]
+) -> str:
+    """
+    Convert Atlassian Document Format (ADF) to Markdown with embedded images.
+
+    This async version fetches media content and embeds it as base64 data URIs.
+    Used for streaming content that needs to be indexed by multimodal models.
+
+    Args:
+        adf_content: The ADF document to convert
+        media_fetcher: Async callback that takes (media_id, alt_text) and returns
+                      base64 data URI string or None if fetch fails
+
+    Returns:
+        Markdown text with images embedded as base64 data URIs
+    """
+    if not adf_content or not isinstance(adf_content, dict):
+        return ""
+
+    # Extract all media nodes and fetch their content
+    media_nodes = extract_media_from_adf(adf_content)
+    media_cache: dict[str, str] = {}
+
+    # Fetch all media (sequentially to avoid rate limits)
+    for media_info in media_nodes:
+        media_id = media_info.get("id", "")
+        alt_text = media_info.get("alt", "")
+        if media_id:
+            try:
+                data_uri = await media_fetcher(media_id, alt_text)
+                if data_uri:
+                    media_cache[media_id] = data_uri
+            except Exception:
+                # If fetch fails, we'll just use the alt text
+                pass
+
+    # Reuse the main adf_to_text function with the media cache
+    return adf_to_text(adf_content, media_cache)
 
 
-
-# Jira wiki attachments: !filename.png|width=100! or [^filename.pdf]
-_JIRA_WIKI_ATTACHMENT_RE = re.compile(r"!([^!]+)!|\[\^([^\]]+)\]")
-
-
-def _wiki_match_filename(match: re.Match[str]) -> str:
-    """Extract filename from a combined wiki attachment regex match."""
-    if match.group(1) is not None:
-        return match.group(1).split("|", 1)[0].strip()
-    return (match.group(2) or "").strip()
+# Jira wiki inline attachment: !filename.png|width=100,alt="..."!
+_JIRA_WIKI_INLINE_ATTACHMENT_RE = re.compile(r"!([^!]+)!")
 
 
 def extract_jira_wiki_attachment_filenames(text: str) -> list[str]:
-    """Return filenames from Jira wiki ``!file.ext|...!`` and ``[^file.ext]`` markers."""
+    """Return attachment filenames referenced by Jira wiki ``!file.ext|...!`` markers."""
     if not text:
         return []
     filenames: list[str] = []
     seen: set[str] = set()
-    for match in _JIRA_WIKI_ATTACHMENT_RE.finditer(text):
-        filename = _wiki_match_filename(match)
+    for match in _JIRA_WIKI_INLINE_ATTACHMENT_RE.finditer(text):
+        inner = match.group(1)
+        filename = inner.split("|", 1)[0].strip()
         if not filename:
             continue
         key = filename.lower()
@@ -215,7 +747,7 @@ async def jira_storage_text_to_markdown_with_images(
     """
     Convert Jira wiki/plain storage text to markdown, inlining image attachments as base64.
 
-    Handles ``!filename.png|width=...!`` and ``[^filename.pdf]`` markers (Server/DC wiki).
+    Handles ``!filename.png|width=...!`` markers (Server/DC wiki and similar storage).
     Returns (markdown_text, attachment_ids_inlined_as_images).
     """
     embedded_image_ids: set[str] = set()
@@ -224,9 +756,10 @@ async def jira_storage_text_to_markdown_with_images(
 
     parts: list[str] = []
     last_end = 0
-    for match in _JIRA_WIKI_ATTACHMENT_RE.finditer(text):
+    for match in _JIRA_WIKI_INLINE_ATTACHMENT_RE.finditer(text):
         parts.append(text[last_end:match.start()])
-        filename = _wiki_match_filename(match)
+        inner = match.group(1)
+        filename = inner.split("|", 1)[0].strip()
         replaced = False
         if filename:
             attachment_id = resolve_jira_attachment_id_by_filename(
@@ -427,14 +960,13 @@ class JiraDataCenterConnector(BaseConnector):
         self.value_mapper = ValueMapper()
         self._issue_attachments_cache: dict[str, list[dict[str, Any]]] = {}
 
-        self._app_roles_forbidden: bool = False  # GET /applicationrole returned 403
-        self._user_bulk_forbidden: bool = False  # GET /user/search returned 401/403
-        # DC username (``name``) -> source_user_id (``key``); built during _fetch_users
-        self._dc_name_to_source_id: dict[str, str] = {}
-        # Epic Link field id: None = before init, "" = not found, else customfield id
-        self._epic_link_field_id: str | None = None
-        # Epic key -> numeric id; cleared at start of each project sync
-        self._issue_key_to_id_cache: dict[str, str] = {}
+        # Tracks whether /applicationrole returned 403 (non-admin user)
+        self._app_roles_forbidden: bool = False
+        # Tracks whether /user/search returned 401/403 (configuring user lacks
+        # "Browse users and groups" global permission). When True, downstream
+        # consumers can branch to per-email reverse-lookup instead of relying
+        # on the bulk enumeration.
+        self._user_bulk_forbidden: bool = False
 
     async def init(self) -> bool:
         try:
@@ -491,8 +1023,6 @@ class JiraDataCenterConnector(BaseConnector):
                         self.creator_email = creator.email
                 except Exception as e:
                     self.logger.warning("Could not resolve creator email for created_by %s: %s", self.created_by, e)
-
-            await self._discover_epic_link_field_id()
 
             return True
         except Exception as e:
@@ -666,6 +1196,11 @@ class JiraDataCenterConnector(BaseConnector):
             # Fetch and sync user groups (returns mapping for role resolution)
             groups_members_map = await self._sync_user_groups(jira_users)
 
+            # Hoisted out of ``_fetch_projects``: this is a single
+            # ``GET /rest/api/2/applicationrole`` call, but ``_fetch_projects``
+            # may be called more than once in future code paths (e.g. delta
+            # vs. full reconciliation). Computing it here ties the call rate
+            # to ``run_sync`` instead of to the number of project sweeps.
             app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
             # Get project_keys filter if configured (to fetch only those projects)
@@ -707,6 +1242,11 @@ class JiraDataCenterConnector(BaseConnector):
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
 
+            # Reconcile deletions via the DC audit log. Independent of the
+            # forward sync — uses its own ``issues_audit_deletions`` checkpoint
+            # so the audit cursor can advance even when no new issues were
+            # written. Internal failures are swallowed inside the method so a
+            # broken audit endpoint never tanks the whole ``run_sync``.
             await self._handle_issue_deletions(last_sync_time)
 
             self.logger.info(
@@ -780,7 +1320,23 @@ class JiraDataCenterConnector(BaseConnector):
         await self.issues_sync_point.update_sync_point(sync_point_key, sync_point_data)
 
     async def _handle_issue_deletions(self, global_last_sync_time: Optional[int]) -> None:
-        """Reconcile deleted issues via ``GET /rest/auditing/1.0/events`` (separate sync checkpoint)."""
+        """Detect and reconcile issue deletions via the DC audit log.
+
+        Uses a dedicated ``issues_audit_deletions`` sync point so the audit
+        cursor advances independently of the JQL ``updated`` window. Order of
+        precedence for the deletion-check baseline:
+
+        1. ``issues_audit_deletions`` checkpoint (audit cursor from a prior run),
+        2. ``global_last_sync_time`` passed in by ``run_sync`` (the JQL global
+           ``updated`` watermark) when the audit cursor doesn't exist yet.
+
+        If neither is available this is the first sync — there's nothing to
+        reconcile against, so skip. All failures are swallowed: a broken or
+        admin-gated audit endpoint must not kill the forward sync. The audit
+        checkpoint is only advanced when the pass actually completes, so a
+        transient failure causes the next run to retry the same window rather
+        than silently skipping it.
+        """
         audit_sync_key = "issues_audit_deletions"
 
         try:
@@ -796,6 +1352,9 @@ class JiraDataCenterConnector(BaseConnector):
         try:
             await self._detect_and_handle_deletions(deletion_check_time)
         except Exception as e:
+            # Reconciliation pass — never raise into the outer ``run_sync``
+            # try/except. Skip the checkpoint advance so the next run retries
+            # this window.
             self.logger.error(
                 "❌ Audit deletion pass failed (window from %s): %s",
                 deletion_check_time, e,
@@ -817,44 +1376,64 @@ class JiraDataCenterConnector(BaseConnector):
     # Deletion Handling (DC audit log)
     # ============================================================================
 
-    @staticmethod
-    def _issue_key_from_auditing_event(entity: dict[str, Any]) -> str | None:
-        """Extract an issue key from a ``/rest/auditing/1.0/events`` row."""
-        for obj in entity.get("affectedObjects") or []:
-            if not isinstance(obj, dict):
-                continue
-            if (obj.get("type") or "").upper() == "ISSUE":
-                name = obj.get("name")
-                if name:
-                    return str(name)
-        return None
-
     async def _detect_and_handle_deletions(self, last_sync_time: int) -> int:
-        """Fetch deleted issue keys from the audit log and delete each one flat."""
-        self.logger.info("🔍 Checking for deleted issues via Jira DC audit log...")
+        """Fetch deleted issue keys from the DC audit log and cascade-delete
+        each one's records. Returns the number of issues successfully handled.
 
-        deleted_issue_keys = await self._fetch_deleted_issues_from_audit(last_sync_time)
-        if not deleted_issue_keys:
-            self.logger.info("ℹ️ No deleted issues found in DC audit log")
+        Failures inside the per-issue loop are logged and skipped so a single
+        bad row doesn't abort the rest of the reconciliation.
+        """
+        try:
+            self.logger.info("🔍 Checking for deleted issues via DC Audit API...")
+
+            # DC ``/auditing/record`` accepts ISO-8601 strings for ``from`` / ``to``.
+            from_date = datetime.fromtimestamp(
+                last_sync_time / 1000, tz=timezone.utc,
+            ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            to_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+            deleted_issue_keys = await self._fetch_deleted_issues_from_audit(from_date, to_date)
+
+            if not deleted_issue_keys:
+                self.logger.info("ℹ️ No deleted issues found in DC audit log")
+                return 0
+
+            deleted_count = 0
+            for issue_key in deleted_issue_keys:
+                try:
+                    await self._handle_deleted_issue(issue_key)
+                    deleted_count += 1
+                except Exception as e:
+                    self.logger.error(f"❌ Error handling deleted issue {issue_key}: {e}")
+                    continue
+
+            return deleted_count
+
+        except Exception as e:
+            self.logger.error(f"❌ Error detecting deletions: {e}", exc_info=True)
             return 0
 
-        deleted_count = 0
-        for issue_key in deleted_issue_keys:
-            try:
-                await self._handle_deleted_issue(issue_key)
-                deleted_count += 1
-            except Exception as e:
-                self.logger.error("❌ Error handling deleted issue %s: %s", issue_key, e)
+    async def _fetch_deleted_issues_from_audit(
+        self,
+        from_date: str,
+        to_date: str,
+    ) -> list[str]:
+        """Paginated read of ``GET /rest/api/2/auditing/record`` filtering for
+        issue-deletion events.
 
-        return deleted_count
+        DC's audit row shape differs from Cloud:
 
-    async def _fetch_deleted_issues_from_audit(self, last_sync_time: int) -> list[str]:
-        """Return issue keys deleted since ``last_sync_time`` (admin-only auditing API)."""
-        from_date = datetime.fromtimestamp(
-            last_sync_time / 1000, tz=timezone.utc,
-        ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        to_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        - ``objectItem.typeName`` is the entity type (``"ISSUE"``, ``"USER"``,
+          etc.) — NOT the event verb.
+        - The verb lives in ``summary`` (e.g. ``"Issue deleted"``,
+          ``"Issue updated"``). Match it case-insensitively against ``"delete"``
+          to cover both ``"Issue deleted"`` and locale/casing variants.
 
+        Admin-gated: non-admin sync users get 401/403 here. Mirror the other
+        admin-fallbacks in this connector — return ``[]`` on the first
+        forbidden response without retrying or paginating further, so the
+        sync proceeds without deletion reconciliation rather than dying.
+        """
         deleted_issue_keys: list[str] = []
         offset = 0
         limit = AUDIT_PAGE_SIZE
@@ -862,13 +1441,11 @@ class JiraDataCenterConnector(BaseConnector):
         while True:
             try:
                 datasource = await self._get_fresh_datasource()
-                response = await datasource.get_auditing_events_v1(
+                response = await datasource.get_audit_records_v2(
                     offset=offset,
                     limit=limit,
                     from_=from_date,
                     to=to_date,
-                    actions=DC_AUDIT_ISSUE_DELETED_ACTIONS,
-                    categories=DC_AUDIT_ISSUE_CATEGORY,
                 )
 
                 if response.status in (
@@ -876,62 +1453,80 @@ class JiraDataCenterConnector(BaseConnector):
                     HttpStatusCode.FORBIDDEN.value,
                 ):
                     self.logger.warning(
-                        "⚠️ DC /rest/auditing/1.0/events returned %s — configuring "
-                        "user lacks Jira System Administrator. Skipping deletion "
-                        "reconciliation.",
+                        "⚠️ DC /auditing/record returned %s — configuring user "
+                        "lacks Jira System Administrator. Skipping deletion "
+                        "reconciliation; orphaned records will be cleaned up on "
+                        "the next sync where an admin token is available.",
                         response.status,
-                    )
-                    return []
-
-                if response.status == HttpStatusCode.NOT_FOUND.value:
-                    self.logger.warning(
-                        "⚠️ DC /rest/auditing/1.0/events unavailable (404). "
-                        "Skipping deletion reconciliation."
                     )
                     return []
 
                 if response.status != HttpStatusCode.OK.value:
                     self.logger.warning(
-                        "⚠️ Failed to fetch DC auditing events (HTTP %s): %s",
+                        "⚠️ Failed to fetch DC audit records (HTTP %s): %s",
                         response.status, response.text(),
                     )
-                    return []
-
-                audit_data = response.json() or {}
-                entities = audit_data.get("entities") or []
-                if not entities:
                     break
 
-                for entity in entities:
-                    issue_key = self._issue_key_from_auditing_event(entity)
-                    if issue_key:
+                audit_data = response.json() or {}
+                records = audit_data.get("records") or []
+                if not records:
+                    break
+
+                for record in records:
+                    object_item = record.get("objectItem") or {}
+                    type_name = object_item.get("typeName")
+                    summary = (record.get("summary") or "").lower()
+                    issue_key = object_item.get("name")
+                    # DC: entity type must be ISSUE, summary must contain
+                    # "delete" (covers "Issue deleted" / "ISSUE DELETED" /
+                    # localized "Issue deleted by ..."), and the row must
+                    # carry the issue key in ``objectItem.name``.
+                    if (
+                        type_name == "ISSUE"
+                        and "delete" in summary
+                        and issue_key
+                    ):
                         deleted_issue_keys.append(issue_key)
                         self.logger.debug(
                             "Audit: Issue %s deleted at %s",
-                            issue_key, entity.get("timestamp"),
+                            issue_key, record.get("created"),
                         )
 
-                paging = audit_data.get("pagingInfo") or {}
-                if paging.get("lastPage", True):
+                # Stop when we've consumed everything the server told us about.
+                # Guards against infinite loops if the server reports a
+                # non-decreasing ``total`` across pages.
+                total = audit_data.get("total", 0)
+                if offset + len(records) >= total:
                     break
 
-                next_offset = paging.get("nextPageOffset")
-                if next_offset is not None:
-                    offset = int(next_offset)
-                else:
-                    offset += len(entities)
+                offset += limit
 
             except Exception as e:
                 self.logger.error(
-                    "❌ Error fetching DC auditing events at offset %s: %s",
+                    "❌ Error fetching DC audit records at offset %s: %s",
                     offset, e,
                 )
-                return list(dict.fromkeys(deleted_issue_keys))
+                break
 
-        return list(dict.fromkeys(deleted_issue_keys))
+        return deleted_issue_keys
 
     async def _handle_deleted_issue(self, issue_key: str) -> None:
-        """Delete local records for one issue confirmed gone in Jira (flat)."""
+        """Cascade-delete records for an issue surfaced by the audit log.
+
+        Mirrors Cloud's behavior:
+
+        - First confirm the issue is *actually* gone by hitting
+          ``GET /rest/api/2/issue/{key}``. A 200 here means the audit row was
+          a move/rename, not a deletion — bail out without touching the DB.
+        - Look up our local record by issue key inside a single transaction.
+        - Cascade per Jira's own delete semantics:
+            * Epic → keep child tasks (they only lose their epic link in Jira).
+            * Task/Story → delete subtasks (recursive) and attachments.
+            * Subtask → delete attachments only.
+        - Hard-delete the issue record itself last so any partial failure
+          above leaves the parent in place for the next reconciliation pass.
+        """
         try:
             self.logger.info(f"🗑️ Handling deletion of issue {issue_key}")
 
@@ -946,6 +1541,8 @@ class JiraDataCenterConnector(BaseConnector):
                     )
                     return
             except Exception:
+                # The issue not being fetchable is consistent with a real
+                # deletion; fall through to the DB cleanup below.
                 pass
 
             async with self.data_store_provider.transaction() as tx_store:
@@ -965,13 +1562,35 @@ class JiraDataCenterConnector(BaseConnector):
                 issue_id = issue_record.external_record_id
                 record_internal_id = issue_record.id
 
+                # Both enum (Type.EPIC) and string ("EPIC") representations
+                # are accepted on TicketRecord — normalize before comparing.
+                issue_type = getattr(issue_record, "type", None)
+                if issue_type:
+                    type_value = (
+                        issue_type.value if hasattr(issue_type, "value") else str(issue_type)
+                    )
+                    is_epic = type_value.upper() == "EPIC"
+                else:
+                    is_epic = False
+
                 self.logger.info(
-                    "✅ Found issue %s internal=%s external=%s",
-                    issue_key, record_internal_id, issue_id,
+                    "✅ Found issue %s (type: %s, is_epic: %s) internal=%s external=%s",
+                    issue_key, issue_type, is_epic, record_internal_id, issue_id,
                 )
 
-                attachment_count = await self._delete_direct_attachment_records(
-                    issue_id, tx_store,
+                child_issue_count = 0
+                if not is_epic:
+                    child_issue_count = await self._delete_issue_children(
+                        issue_id, RecordType.TICKET, tx_store,
+                    )
+                else:
+                    self.logger.info(
+                        "📋 Epic %s deleted — child tasks/stories remain (Jira behavior)",
+                        issue_key,
+                    )
+
+                attachment_count = await self._delete_issue_children(
+                    issue_id, RecordType.FILE, tx_store,
                 )
 
                 await tx_store.delete_records_and_relations(
@@ -979,46 +1598,90 @@ class JiraDataCenterConnector(BaseConnector):
                     hard_delete=True,
                 )
 
-                self.logger.info(
-                    "🗑️ Deleted issue %s (%s direct attachments)",
-                    issue_key, attachment_count,
-                )
+                if is_epic:
+                    self.logger.info(
+                        "🗑️ Deleted Epic %s (%s direct attachments)",
+                        issue_key, attachment_count,
+                    )
+                else:
+                    self.logger.info(
+                        "🗑️ Deleted issue %s and its hierarchy "
+                        "(%s subtasks, %s direct attachments)",
+                        issue_key, child_issue_count, attachment_count,
+                    )
 
         except Exception as e:
             self.logger.error(
                 "❌ Error handling deleted issue %s: %s", issue_key, e, exc_info=True,
             )
 
-    async def _delete_direct_attachment_records(
+    async def _delete_issue_children(
         self,
         parent_issue_id: str,
+        child_type: RecordType,
         tx_store,
     ) -> int:
-        """Delete direct FILE children (attachments) of ``parent_issue_id``."""
+        """Recursively delete child records of ``child_type`` under
+        ``parent_issue_id``.
+
+        For ``TICKET`` children (subtasks): recurse into their own subtasks
+        and attachments first, then delete the subtask record itself. For
+        ``FILE`` children (attachments): just delete the attachment record.
+
+        Called only for non-Epic deletions — Epic cascade is gated by the
+        caller (Jira itself does not cascade-delete tasks when an Epic is
+        deleted). Returns the number of records actually deleted at this level
+        (excluding nested counts, which are logged at debug).
+        """
+        child_type_name = {
+            RecordType.TICKET: "child issue",
+            RecordType.FILE: "attachment",
+        }.get(child_type, str(child_type))
+
         try:
             deleted_count = 0
             child_records = await tx_store.get_records_by_parent(
                 connector_id=self.connector_id,
                 parent_external_record_id=parent_issue_id,
-                record_type=RecordType.FILE.value,
+                record_type=child_type.value,
             )
 
             for record in child_records:
+                if child_type == RecordType.TICKET:
+                    child_issue_id = record.external_record_id
+                    nested_subtask_count = await self._delete_issue_children(
+                        child_issue_id, RecordType.TICKET, tx_store,
+                    )
+                    if nested_subtask_count > 0:
+                        self.logger.debug(
+                            "  Deleted %s nested subtasks for %s",
+                            nested_subtask_count, child_issue_id,
+                        )
+
+                    nested_attachment_count = await self._delete_issue_children(
+                        child_issue_id, RecordType.FILE, tx_store,
+                    )
+                    if nested_attachment_count > 0:
+                        self.logger.debug(
+                            "  Deleted %s attachments for %s",
+                            nested_attachment_count, child_issue_id,
+                        )
+
                 await tx_store.delete_records_and_relations(
                     record_key=record.id,
                     hard_delete=True,
                 )
                 deleted_count += 1
                 self.logger.debug(
-                    "  Deleted attachment %s", record.external_record_id,
+                    "  Deleted %s %s", child_type_name, record.external_record_id,
                 )
 
             return deleted_count
 
         except Exception as e:
             self.logger.error(
-                "❌ Error deleting attachments for issue %s: %s",
-                parent_issue_id, e,
+                "❌ Error deleting %ss for issue %s: %s",
+                child_type_name, parent_issue_id, e,
             )
             return 0
 
@@ -1038,8 +1701,6 @@ class JiraDataCenterConnector(BaseConnector):
 
         if not self.data_source:
             raise ValueError("DataSource not initialized")
-
-        self._dc_name_to_source_id = {}
 
         # ====================================================================
         # Phase 1: DB reads (0 API calls)
@@ -1076,10 +1737,6 @@ class JiraDataCenterConnector(BaseConnector):
 
             all_active_user_keys.add(user_key)
             key_to_display[user_key] = user.get("displayName", "")
-
-            username = user.get("name")
-            if username:
-                self._dc_name_to_source_id[username.lower()] = user_key
 
             email = user.get("emailAddress")
             if email:
@@ -1229,8 +1886,7 @@ class JiraDataCenterConnector(BaseConnector):
         self,
         candidate_emails: set[str],
         unresolved_user_keys: set[str],
-        resolved: dict[str, "AppUser"],
-        name_to_source_id: dict[str, str] | None = None,
+        resolved: dict[str, "AppUser"]
     ) -> int:
         """
         Reverse-lookup PipesHub emails against Jira DC to resolve hidden-email users.
@@ -1265,9 +1921,6 @@ class JiraDataCenterConnector(BaseConnector):
                     user_key = user.get("accountId") or user.get("key") or user.get("name")
                     if not user_key:
                         return None
-                    username = user.get("name")
-                    if username:
-                        self._dc_name_to_source_id[username.lower()] = user_key
                     display_name = user.get("displayName") or email
                     return (user_key, email, display_name)
                 except Exception as e:
@@ -1341,22 +1994,30 @@ class JiraDataCenterConnector(BaseConnector):
                 return {}
 
             roles_data = response.json()
-            if not isinstance(roles_data, list):
-                roles_data = []
 
             for role in roles_data:
-                if not isinstance(role, dict):
-                    continue
                 role_key = role.get("key")
-                if not role_key:
-                    continue
+                group_details = role.get("groupDetails", [])
 
-                normalized = _application_role_groups_from_dc_role(role)
-                if normalized:
-                    mapping[role_key] = normalized
-                    self.logger.debug(
-                        "ApplicationRole '%s' → %s groups", role_key, len(normalized),
-                    )
+                if role_key and group_details:
+                    # DC ``groupDetails`` entries commonly carry only ``name``; treat name as
+                    # the canonical DC group identifier (same convention as
+                    # ``_normalize_jira_dc_group_row``) so application-role groups don't get
+                    # silently dropped and the BROWSE_PROJECTS fallback below doesn't
+                    # over-grant ORG-wide access.
+                    normalized: list[dict[str, str]] = []
+                    for g in group_details:
+                        name = g.get("name")
+                        gid = g.get("groupId") or g.get("id") or name
+                        if not (name or gid):
+                            continue
+                        normalized.append({
+                            "groupId": str(gid) if gid else "",
+                            "name": str(name) if name else "",
+                        })
+                    if normalized:
+                        mapping[role_key] = normalized
+                        self.logger.debug(f"ApplicationRole '{role_key}' → {len(normalized)} groups")
 
             self.logger.info(f"🔐 Fetched {len(mapping)} application roles with group mappings")
 
@@ -1409,10 +2070,9 @@ class JiraDataCenterConnector(BaseConnector):
         """
         Fetch permission holders for a project from its Permission Scheme (Data Center).
 
-        Uses ``GET /rest/api/2/project/{projectKeyOrId}/permissionscheme?expand=all``,
-        which embeds fully expanded ``permissions`` (including ``user.key`` / email).
-        Falls back to ``GET /rest/api/2/permissionscheme/{schemeId}/permission`` only
-        when the project scheme response has no ``permissions`` array.
+        Uses ``GET /rest/api/2/project/{projectKeyOrId}/permissionscheme`` then
+        ``GET /rest/api/2/permissionscheme/{schemeId}/permission`` — same holder model as Cloud;
+        parsing matches ``jira_cloud``.
 
         Permission Schemes grant permissions (like BROWSE_PROJECTS) through different holder types:
         - group: Direct group permissions (e.g., "jira-software-users")
@@ -1460,37 +2120,31 @@ class JiraDataCenterConnector(BaseConnector):
 
             scheme_data = scheme_response.json()
             scheme_id = scheme_data.get("id")
-            permission_grants = scheme_data.get("permissions")
 
-            if not permission_grants:
-                # Fallback when expand=all did not embed permissions (older DC / tests).
-                grants_response = await datasource.get_permission_scheme_grants_v2(
-                    schemeId=scheme_id,
-                    expand="all",
-                )
+            # Step 2: permission grants in this scheme (DC REST v2)
+            grants_response = await datasource.get_permission_scheme_grants_v2(
+                schemeId=scheme_id,
+                expand="all",
+            )
 
-                if grants_response.status != HttpStatusCode.OK.value:
-                    if grants_response.status in (
-                        HttpStatusCode.UNAUTHORIZED.value,
-                        HttpStatusCode.FORBIDDEN.value,
-                    ):
-                        return self._fallback_permissions_for_forbidden_scheme(
-                            project_key=project_key,
-                            status=grants_response.status,
-                            stage=f"permission grants (scheme {scheme_id})",
-                        )
-                    self.logger.warning(
-                        "⚠️ Failed to fetch permission grants for scheme %s: %s",
-                        scheme_id,
-                        grants_response.text(),
+            if grants_response.status != HttpStatusCode.OK.value:
+                # Same admin-only gating applies to the grants endpoint; apply
+                # the same fallback so a partial admin (can read scheme name
+                # but not grants) doesn't yield empty ACLs either.
+                if grants_response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value,
+                    HttpStatusCode.FORBIDDEN.value,
+                ):
+                    return self._fallback_permissions_for_forbidden_scheme(
+                        project_key=project_key,
+                        status=grants_response.status,
+                        stage=f"permission grants (scheme {scheme_id})",
                     )
-                    return []
+                self.logger.warning(f"⚠️ Failed to fetch permission grants for scheme {scheme_id}: {grants_response.text()}")
+                return []
 
-                grants_data = grants_response.json()
-                permission_grants = grants_data.get("permissions", [])
-
-            if not isinstance(permission_grants, list):
-                permission_grants = []
+            grants_data = grants_response.json()
+            permission_grants = grants_data.get("permissions", [])
 
             # Step 3: Filter for BROWSE_PROJECTS permission (determines who can see the project)
             relevant_permission_types = ["BROWSE_PROJECTS"]
@@ -1515,15 +2169,13 @@ class JiraDataCenterConnector(BaseConnector):
                 seen_holders.add(holder_key)
 
                 # Process different holder types and create Permission objects
-                if holder_type == "group":
-                    # DC uses ``parameter``; Cloud often uses ``value`` — accept either.
-                    group_id = holder_param or holder_value
-                    if group_id:
-                        permissions.append(Permission(
-                            entity_type=EntityType.GROUP,
-                            external_id=group_id,
-                            type=PermissionType.READ
-                        ))
+                if holder_type == "group" and holder_value:
+                    # Group has BROWSE_PROJECTS permission
+                    permissions.append(Permission(
+                        entity_type=EntityType.GROUP,
+                        external_id=holder_value,
+                        type=PermissionType.READ
+                    ))
 
                 elif holder_type == "applicationRole":
                     role_key = holder_param
@@ -1734,48 +2386,202 @@ class JiraDataCenterConnector(BaseConnector):
             return {}
 
     async def _fetch_groups(self) -> list[dict[str, Any]]:
-        """List DC groups via ``GET /rest/api/2/groups/picker?query=&maxResults=1000``."""
+        """
+        Fetch Jira Data Center groups via ``GET /rest/api/2/group/bulk``, normalized to
+        ``groupId`` + ``name``.
+        """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
-        try:
-            datasource = await self._get_fresh_datasource()
-            response = await datasource.groups_picker_get_v2(
-                query="",
-                maxResults=GROUPS_PICKER_MAX,
-            )
+        groups: list[dict[str, Any]] = []
+        start_at = 0
+        max_results = GROUP_PAGE_SIZE
 
-            if response.status != HttpStatusCode.OK.value:
-                self.logger.warning(
-                    "DC /groups/picker failed (%s): %s",
-                    response.status,
-                    response.text()[:300],
+        while True:
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.bulk_get_groups_v2(
+                    startAt=start_at,
+                    maxResults=max_results,
                 )
-                return []
 
-            payload = response.json() or {}
-            if not isinstance(payload, dict):
-                return []
+                if response.status == HttpStatusCode.NOT_FOUND.value:
+                    # /rest/api/2/group/bulk was introduced in Jira Data Center 11.x.
+                    # Older Server/DC builds (8.x / 9.x / 10.x) reply with a Tomcat
+                    # 404 (HTML/XML, not a JSON Jira error). Without a fallback the
+                    # outer loop would silently treat the tenant as having zero
+                    # groups and drop every group-based permission downstream.
+                    # /rest/api/2/groups/picker has existed since Jira 4.x and is the
+                    # documented enumeration endpoint on legacy DC.
+                    self.logger.warning(
+                        "DC /group/bulk unavailable on this Jira version (404) — "
+                        "falling back to /groups/picker for group enumeration"
+                    )
+                    return await self._fetch_groups_via_picker()
 
-            raw_groups = payload.get("groups") or []
-            if not isinstance(raw_groups, list):
-                return []
+                if response.status != HttpStatusCode.OK.value:
+                    self.logger.error(
+                        "DC group bulk failed (%s): %s",
+                        response.status,
+                        response.text()[:500],
+                    )
+                    break
 
-            groups = [
-                norm for row in raw_groups
-                if (norm := _normalize_jira_dc_group_row(row))
-            ]
+                payload = response.json()
+                if isinstance(payload, list):
+                    batch_raw = payload
+                    is_last = None
+                elif isinstance(payload, dict):
+                    vals = payload.get("values", [])
+                    batch_raw = vals if isinstance(vals, list) else []
+                    is_last = payload.get("isLast")
+                else:
+                    batch_raw = []
+                    is_last = True
+                batch_norm = [g for g in (_normalize_jira_dc_group_row(r) for r in batch_raw) if g]
 
-            self.logger.info(
-                "👥 Fetched %s groups from /groups/picker (server total=%s)",
-                len(groups),
-                payload.get("total"),
-            )
-            return groups
+                if not batch_norm:
+                    break
 
-        except Exception as e:
-            self.logger.error("❌ Error fetching groups via /groups/picker: %s", e)
-            return []
+                groups.extend(batch_norm)
+
+                if is_last is True:
+                    break
+                if is_last is None:
+                    if len(batch_norm) < max_results:
+                        break
+                    start_at += len(batch_norm)
+                    continue
+                start_at += len(batch_norm)
+                if len(batch_norm) < max_results:
+                    break
+
+            except Exception as e:
+                self.logger.error("❌ Error fetching groups at offset %s: %s", start_at, e)
+                break
+
+        self.logger.info("👥 Fetched %s total groups (DC)", len(groups))
+        return groups
+
+    async def _fetch_groups_via_picker(self) -> list[dict[str, Any]]:
+        """Enumerate groups via ``GET /rest/api/2/groups/picker``.
+
+        Used as a fallback when ``/group/bulk`` returns 404 on Jira DC versions
+        prior to 11.x. The picker endpoint does not support ``startAt`` pagination
+        and is typically capped server-side by ``jira.ajax.autocomplete.limit``
+        (default 50, configurable up to a few thousand). To approximate full
+        enumeration we sweep across an empty query plus alphanumeric prefixes
+        and deduplicate by group name (which is the canonical DC group key —
+        see ``_normalize_jira_dc_group_row``).
+
+        Short-circuits the sweep when the server's reported ``total`` matches
+        the number of groups already collected, so small/medium tenants exit
+        after the first call instead of doing 36 useless round trips. Also
+        bails out early when several consecutive prefixes contribute nothing
+        new (convergence on a large tenant).
+        """
+        if not self.data_source:
+            raise ValueError("DataSource not initialized")
+
+        seen_names: set[str] = set()
+        groups: list[dict[str, Any]] = []
+
+        # Empty query first (covers small tenants in one shot); then prefix sweep
+        # to pick up the tail when the server caps results below the true total.
+        prefix_queries: list[str] = [""] + list("abcdefghijklmnopqrstuvwxyz0123456789")
+        # Request a high cap; the server clamps to its own limit
+        # (``jira.ajax.autocomplete.limit``, default 50 on most DC installs).
+        picker_max = 1000
+        # Stop scanning prefixes once this many in a row contribute zero new
+        # groups — we've converged and further sweeps just burn API budget.
+        empty_streak_limit = 5
+        empty_streak = 0
+
+        for idx, q in enumerate(prefix_queries):
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.groups_picker_get_v2(
+                    query=q,
+                    maxResults=picker_max,
+                )
+
+                if response.status != HttpStatusCode.OK.value:
+                    self.logger.warning(
+                        "DC /groups/picker fallback failed for query %r (%s): %s",
+                        q,
+                        response.status,
+                        response.text()[:300],
+                    )
+                    continue
+
+                payload = response.json() or {}
+                if not isinstance(payload, dict):
+                    continue
+                raw_groups = payload.get("groups") or []
+                if not isinstance(raw_groups, list):
+                    continue
+                # Server-reported total for this query (may be absent on very
+                # old Server builds). Used only for the empty-query short-circuit.
+                reported_total = payload.get("total")
+                try:
+                    reported_total = int(reported_total) if reported_total is not None else None
+                except (TypeError, ValueError):
+                    reported_total = None
+
+                added_this_round = 0
+                for row in raw_groups:
+                    norm = _normalize_jira_dc_group_row(row)
+                    if not norm:
+                        continue
+                    name = norm["name"]
+                    if name in seen_names:
+                        continue
+                    seen_names.add(name)
+                    groups.append(norm)
+                    added_this_round += 1
+
+                self.logger.info(
+                    "groups/picker q=%r returned %s rows (%s new, running total=%s, server total=%s)",
+                    q, len(raw_groups), added_this_round, len(groups), reported_total,
+                )
+
+                # Short-circuit: if this was the empty query and the server told
+                # us how many matched in total, and we already have all of them
+                # (deduped), there is nothing left to enumerate.
+                if q == "" and reported_total is not None and len(groups) >= reported_total:
+                    self.logger.info(
+                        "groups/picker empty-query returned full set "
+                        "(%s of %s) — skipping prefix sweep",
+                        len(groups), reported_total,
+                    )
+                    break
+
+                # Convergence bail-out: large tenants where prefix sweeps stop
+                # producing new groups for several rounds in a row.
+                if idx > 0:
+                    if added_this_round == 0:
+                        empty_streak += 1
+                        if empty_streak >= empty_streak_limit:
+                            self.logger.info(
+                                "groups/picker prefix sweep converged "
+                                "(%s consecutive prefixes returned 0 new groups) — "
+                                "stopping at total=%s",
+                                empty_streak, len(groups),
+                            )
+                            break
+                    else:
+                        empty_streak = 0
+
+            except Exception as e:
+                self.logger.warning(
+                    "Error in /groups/picker fallback for query %r: %s", q, e
+                )
+                continue
+
+        self.logger.info(
+            "👥 Fetched %s total groups (DC, /groups/picker fallback)", len(groups)
+        )
+        return groups
 
     async def _fetch_group_members(self, group_id: str, group_name: str) -> list[str]:
         """
@@ -1850,53 +2656,6 @@ class JiraDataCenterConnector(BaseConnector):
                 break
 
         return member_keys
-
-    def _resolve_dc_app_user_from_role_actor(
-        self,
-        actor: dict[str, Any],
-        user_by_account_id: dict[str, AppUser],
-        user_by_email: dict[str, AppUser],
-        name_to_source_id: dict[str, str] | None = None,
-    ) -> AppUser | None:
-        """Resolve a DC project-role user actor to a synced ``AppUser``.
-
-        DC often omits nested ``actorUser`` and exposes only top-level ``name``
-        (username). ``_fetch_users`` stores ``source_user_id`` as the immutable
-        ``key``, so fall back through ``name_to_source_id`` when needed.
-        """
-        actor_user = actor.get("actorUser") or {}
-        if not isinstance(actor_user, dict):
-            actor_user = {}
-
-        for identifier in (
-            actor_user.get("accountId"),
-            actor_user.get("key"),
-            actor_user.get("name"),
-        ):
-            if identifier:
-                user = user_by_account_id.get(identifier)
-                if user:
-                    return user
-
-        email = actor_user.get("emailAddress")
-        if email:
-            user = user_by_email.get(email.lower())
-            if user:
-                return user
-
-        for identifier in (actor.get("key"), actor.get("name")):
-            if identifier:
-                user = user_by_account_id.get(identifier)
-                if user:
-                    return user
-
-        actor_name = actor.get("name")
-        if actor_name and name_to_source_id:
-            source_id = name_to_source_id.get(actor_name.lower())
-            if source_id:
-                return user_by_account_id.get(source_id)
-
-        return None
 
     async def _sync_project_roles(
         self,
@@ -1998,23 +2757,31 @@ class JiraDataCenterConnector(BaseConnector):
                             actor_type = actor.get("type", "")
 
                             if actor_type == "atlassian-user-role-actor":
-                                user = self._resolve_dc_app_user_from_role_actor(
-                                    actor,
-                                    user_by_account_id,
-                                    user_by_email,
-                                    self._dc_name_to_source_id,
-                                )
+                                # Direct user actor. On DC the actor often has only
+                                # ``name``/``key`` (no ``accountId``); ``_fetch_users``
+                                # stores ``source_user_id`` as ``accountId or key or name``
+                                # (~1326), so try each identifier in turn.
+                                actor_user = actor.get("actorUser", {})
+                                account_id = actor_user.get("accountId")
+                                user_key = actor_user.get("key")
+                                user_name = actor_user.get("name")
+                                email = actor_user.get("emailAddress")
+
+                                user = None
+                                for identifier in (account_id, user_key, user_name):
+                                    if identifier:
+                                        user = user_by_account_id.get(identifier)
+                                        if user:
+                                            break
+                                if not user and email:
+                                    user = user_by_email.get(email.lower())
 
                                 if user:
                                     member_users.append(user)
                                 else:
-                                    actor_user = actor.get("actorUser") or {}
                                     self.logger.debug(
                                         f"  {project_key}/{role_name}: User not found - "
-                                        f"accountId={actor_user.get('accountId')}, "
-                                        f"key={actor_user.get('key') or actor.get('key')}, "
-                                        f"name={actor_user.get('name') or actor.get('name')}, "
-                                        f"email={actor_user.get('emailAddress')}"
+                                        f"accountId={account_id}, key={user_key}, name={user_name}, email={email}"
                                     )
 
                             elif actor_type == "atlassian-group-role-actor":
@@ -2239,7 +3006,9 @@ class JiraDataCenterConnector(BaseConnector):
             project_key = project.get("key")
 
             description = project.get("description")
-            if not description or not isinstance(description, str):
+            if description and isinstance(description, dict):
+                description = adf_to_text(description)
+            elif not description:
                 description = None
 
             record_group = RecordGroup(
@@ -2338,9 +3107,6 @@ class JiraDataCenterConnector(BaseConnector):
             self.logger.info(f"🆕 New project detected: {project_key}. Fetching ALL issues (no timestamp filter).")
         elif resume_from_timestamp:
             self.logger.info(f"🔄 Starting sync for project {project_key} from timestamp {resume_from_timestamp}")
-
-        # Per-project sync: reset Epic Link key→id cache
-        self._issue_key_to_id_cache.clear()
 
         # Fetch and process issues in batches
         total_issues_processed = 0
@@ -2523,7 +3289,6 @@ class JiraDataCenterConnector(BaseConnector):
         start_at = 0
         # Track last issue updated timestamp for resume (starts with resume_from_timestamp if resuming)
         last_issue_updated = resume_from_timestamp
-        search_fields = self._get_issue_search_fields()
 
         while True:
             page_count += 1
@@ -2534,7 +3299,7 @@ class JiraDataCenterConnector(BaseConnector):
                     jql=jql,
                     start_at=start_at,
                     max_results=DEFAULT_MAX_RESULTS,
-                    fields=search_fields,
+                    fields=ISSUE_SEARCH_FIELDS,
                 )
 
                 if response.status != HttpStatusCode.OK.value:
@@ -2712,127 +3477,6 @@ class JiraDataCenterConnector(BaseConnector):
 
         return related_records
 
-    async def _discover_epic_link_field_id(self) -> None:
-        """Discover Epic Link custom field id via GET /rest/api/2/field (once at init)."""
-        if self._epic_link_field_id is not None:
-            return
-        self._epic_link_field_id = ""
-        try:
-            datasource = await self._get_fresh_datasource()
-            response = await datasource.get_fields_v2()
-            if response.status != HttpStatusCode.OK.value:
-                self.logger.warning(
-                    "Failed to discover Epic Link field: HTTP %s", response.status
-                )
-                return
-            fields_list = self._safe_json_parse(response, "Epic Link field discovery")
-            if isinstance(fields_list, list):
-                for field in fields_list:
-                    if not isinstance(field, dict):
-                        continue
-                    name = field.get("name")
-                    schema = field.get("schema") or {}
-                    custom = schema.get("custom") if isinstance(schema, dict) else None
-                    if name == DC_EPIC_LINK_FIELD_NAME or custom == DC_EPIC_LINK_SCHEMA_CUSTOM:
-                        field_id = field.get("id")
-                        if field_id:
-                            self._epic_link_field_id = str(field_id)
-                            self.logger.info(
-                                "Discovered Epic Link field: %s", self._epic_link_field_id
-                            )
-                        return
-            self.logger.debug(
-                "Epic Link field not found (non-Scrum or custom epic link configuration)"
-            )
-        except Exception as e:
-            self.logger.warning("Epic Link field discovery failed: %s", e)
-
-    def _get_issue_search_fields(self) -> list[str]:
-        if self._epic_link_field_id:
-            return ISSUE_SEARCH_FIELDS + [self._epic_link_field_id]
-        return list(ISSUE_SEARCH_FIELDS)
-
-    async def _resolve_hierarchy_parent_id(
-        self,
-        fields: dict[str, Any],
-        *,
-        is_subtask: bool,
-        is_epic: bool,
-        parent_from_parent_field: str | None,
-    ) -> str | None:
-        """Resolve parent id from fields.parent (sub-tasks) or Epic Link (stories)."""
-        if is_epic:
-            return None
-        if is_subtask or parent_from_parent_field:
-            return parent_from_parent_field
-
-        epic_link_field_id = self._epic_link_field_id
-        if not epic_link_field_id:
-            return None
-
-        raw = fields.get(epic_link_field_id)
-        if not raw:
-            return None
-
-        epic_key: str | None = None
-        epic_id: str | None = None
-        if isinstance(raw, str) and raw.strip():
-            epic_key = raw.strip()
-        elif isinstance(raw, dict):
-            key = raw.get("key")
-            inline_id = raw.get("id")
-            epic_key = str(key).strip() if key else None
-            epic_id = str(inline_id) if inline_id else None
-
-        if epic_id:
-            if epic_key:
-                self._issue_key_to_id_cache[epic_key] = epic_id
-            return epic_id
-        if not epic_key:
-            return None
-
-        cached = self._issue_key_to_id_cache.get(epic_key)
-        if cached:
-            return cached
-
-        try:
-            datasource = await self._get_fresh_datasource()
-            response = await datasource.get_issue_v2(issueIdOrKey=epic_key, fields=["id"])
-            if response.status == HttpStatusCode.NOT_FOUND.value:
-                self.logger.debug("Epic Link target issue %s not found", epic_key)
-                return None
-            if response.status != HttpStatusCode.OK.value:
-                self.logger.warning(
-                    "Failed to resolve Epic Link key %s: HTTP %s", epic_key, response.status
-                )
-                return None
-            issue = self._safe_json_parse(response, f"Epic Link resolve {epic_key}")
-            resolved_id = issue.get("id") if issue else None
-        except Exception as e:
-            self.logger.warning("Failed to resolve Epic Link key %s: %s", epic_key, e)
-            return None
-        if not resolved_id:
-            return None
-        resolved_id = str(resolved_id)
-        self._issue_key_to_id_cache[epic_key] = resolved_id
-        return resolved_id
-
-    async def _extract_issue_data_with_parent(
-        self,
-        issue: dict[str, Any],
-        user_by_account_id: dict[str, AppUser],
-    ) -> dict[str, Any]:
-        """Extract issue fields and resolve hierarchy parent (Epic Link + parent field)."""
-        issue_data = self._extract_issue_data(issue, user_by_account_id)
-        fields = issue.get("fields", {}) or {}
-        issue_data["parent_external_id"] = await self._resolve_hierarchy_parent_id(
-            fields,
-            is_subtask=issue_data["is_subtask"],
-            is_epic=issue_data["is_epic"],
-            parent_from_parent_field=issue_data["parent_external_id"],
-        )
-        return issue_data
-
     def _extract_issue_data(
         self,
         issue: dict[str, Any],
@@ -2846,26 +3490,38 @@ class JiraDataCenterConnector(BaseConnector):
         fields = issue.get("fields", {})
         issue_summary = fields.get("summary") or f"Issue {issue_key}"
 
-        # DC returns description as wiki/plain string (not ADF).
+        # Extract description (ADF on Cloud/modern DC; plain/wiki string on legacy DC)
         description_raw = fields.get("description")
-        if isinstance(description_raw, str) and description_raw.strip():
-            description_text = description_raw
-        else:
+        if description_raw and isinstance(description_raw, dict):
+            description_text = adf_to_text(description_raw)
+        elif not description_raw:
             description_text = None
+        else:
+            description_text = description_raw
 
-        # Extract issue type information
+        # Extract issue type and hierarchy information
         issue_type_obj = fields.get("issuetype", {}) or {}
         raw_issue_type = issue_type_obj.get("name") if issue_type_obj else None
         # Map issue type to standardized value using value mapper
         issue_type = self.value_mapper.map_type(raw_issue_type)
+        hierarchy_level = issue_type_obj.get("hierarchyLevel")
 
-        # Extract parent issue information (sub-task parent at extract time; Epic Link resolved later)
+        # Extract parent issue information
         parent_obj = fields.get("parent")
         parent_external_id = parent_obj.get("id") if parent_obj else None
         parent_key = parent_obj.get("key") if parent_obj else None
 
-        is_subtask = bool(issue_type_obj.get("subtask"))
-        is_epic = (raw_issue_type or "").strip().lower() == "epic"
+        # Categorize issue type. ``hierarchyLevel`` is a Cloud-era / modern-DC field;
+        # older Data Center builds omit it. Fall back to:
+        #   - ``issuetype.subtask == True`` for subtasks (standard DC field).
+        #   - issue-type name match for epics (``"Epic"``); DC's epic detection is
+        #     by name unless customized per-project.
+        if hierarchy_level is not None:
+            is_epic = hierarchy_level == 1
+            is_subtask = hierarchy_level == -1
+        else:
+            is_subtask = bool(issue_type_obj.get("subtask"))
+            is_epic = (raw_issue_type or "").strip().lower() == "epic"
 
         # Build record name with issue key in square brackets at start for better searchability
         issue_name = f"[{issue_key}] {issue_summary}" if issue_key else issue_summary
@@ -2938,6 +3594,7 @@ class JiraDataCenterConnector(BaseConnector):
             "issue_name": issue_name,
             "description": description,
             "issue_type": issue_type,
+            "hierarchy_level": hierarchy_level,
             "is_epic": is_epic,
             "is_subtask": is_subtask,
             "parent_external_id": parent_external_id,
@@ -2980,7 +3637,8 @@ class JiraDataCenterConnector(BaseConnector):
         user_by_account_id = {user.source_user_id: user for user in users if user.source_user_id}
 
         for issue in issues:
-            issue_data = await self._extract_issue_data_with_parent(issue, user_by_account_id)
+            # Extract and process issue data
+            issue_data = self._extract_issue_data(issue, user_by_account_id)
 
             issue_id = issue_data["issue_id"]
             issue_key = issue_data["issue_key"]
@@ -3003,6 +3661,7 @@ class JiraDataCenterConnector(BaseConnector):
             # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
             permissions = []
 
+            # Get fields for attachments (needed by _fetch_issue_attachments)
             fields = issue.get("fields", {})
 
             # Check for existing record (works for both Epics and regular issues)
@@ -3292,10 +3951,11 @@ class JiraDataCenterConnector(BaseConnector):
         Attachment assignment logic:
         - Attachments used in comments → assigned to that comment's children
         - Embedded images in description → excluded from children (already in content as base64)
+        - Embedded files in description → included in description children
         - Standalone attachments → included in description children
 
-        DC issue text is wiki/plain string; attachments are matched by filename markers
-        (``!file.png!`` / ``[^file.pdf]``) in description and comment bodies.
+        IMPORTANT: In Jira ADF, media.attrs.id is a UUID token, NOT the numeric attachment ID!
+        We use FILENAME matching to map ADF media nodes to attachments from fields.attachment[].
         """
         issue_id = issue_data.get("id", "")
         fields = issue_data.get("fields", {})
@@ -3304,7 +3964,7 @@ class JiraDataCenterConnector(BaseConnector):
         issue_name = (
             f"[{resolved_issue_key}] {issue_summary}" if resolved_issue_key else issue_summary
         )
-        issue_description = fields.get("description")
+        issue_description_adf = fields.get("description")
 
         if not weburl:
             raise ValueError("weburl is required when creating BlockGroup for issues")
@@ -3313,6 +3973,10 @@ class JiraDataCenterConnector(BaseConnector):
         blocks: list[Block] = []
         block_group_index = 0
 
+        # Prepare maps for resolving ADF media nodes to attachment IDs
+        # IMPORTANT: In Jira ADF, media.attrs.id is a UUID token, NOT the attachment ID!
+        # The attachment ID is numeric (e.g., "12345"). We must use FILENAME matching
+        # to map ADF media nodes to actual attachments.
         _attachment_mime_types = dict(attachment_mime_types or {})
         raw_attachments = fields.get("attachment") or []
         if not isinstance(raw_attachments, list):
@@ -3324,6 +3988,13 @@ class JiraDataCenterConnector(BaseConnector):
             raw_attachments,
         )
         media_fetcher = self._create_media_fetcher(issue_id)
+
+        def resolve_attachment_id(media_info: dict[str, Any]) -> Optional[str]:
+            """Resolve ADF media node to attachment ID via filename matching."""
+            media_filename = media_info.get("filename", "") or media_info.get("alt", "")
+            return resolve_jira_attachment_id_by_filename(
+                media_filename, filename_to_attachment_id
+            )
 
         def is_image_attachment(attachment_id: str) -> bool:
             """Check if attachment is an image based on MIME type."""
@@ -3337,11 +4008,17 @@ class JiraDataCenterConnector(BaseConnector):
 
         # Pre-scan comments to identify which attachments are used in comments
         comments_data = issue_data.get("comments", [])
+        # Handle both formats: direct list or nested structure
         if isinstance(comments_data, dict):
             comments_data = comments_data.get("comments", [])
         for comment in comments_data:
             comment_body_raw = comment.get("body")
-            if isinstance(comment_body_raw, str) and comment_body_raw.strip():
+            if comment_body_raw and isinstance(comment_body_raw, dict):
+                for media_info in extract_media_from_adf(comment_body_raw):
+                    attachment_id = resolve_attachment_id(media_info)
+                    if attachment_id:
+                        comment_attachment_ids.add(attachment_id)
+            elif isinstance(comment_body_raw, str) and comment_body_raw.strip():
                 for wiki_filename in extract_jira_wiki_attachment_filenames(comment_body_raw):
                     attachment_id = resolve_jira_attachment_id_by_filename(
                         wiki_filename, filename_to_attachment_id
@@ -3349,10 +4026,23 @@ class JiraDataCenterConnector(BaseConnector):
                     if attachment_id:
                         comment_attachment_ids.add(attachment_id)
 
-        # 1. Description BlockGroup (index=0) — wiki/plain string on DC
-        if isinstance(issue_description, str) and issue_description.strip():
+        # Extract media from description ADF - identify embedded images (to exclude from children)
+        if issue_description_adf and isinstance(issue_description_adf, dict):
+            for media_info in extract_media_from_adf(issue_description_adf):
+                attachment_id = resolve_attachment_id(media_info)
+                if attachment_id and is_image_attachment(attachment_id):
+                    description_image_ids.add(attachment_id)
+
+        # 1. Description BlockGroup (index=0)
+        # ADF on modern DC/Cloud; plain/wiki string on legacy Server/DC
+        if issue_description_adf and isinstance(issue_description_adf, dict):
+            description_content = await adf_to_text_with_images(
+                issue_description_adf,
+                media_fetcher,
+            )
+        elif isinstance(issue_description_adf, str) and issue_description_adf.strip():
             description_content, wiki_desc_images = await jira_storage_text_to_markdown_with_images(
-                issue_description,
+                issue_description_adf,
                 media_fetcher,
                 filename_to_attachment_id,
                 _attachment_mime_types,
@@ -3423,20 +4113,30 @@ class JiraDataCenterConnector(BaseConnector):
                 # Create BlockGroup objects for each comment in the thread
                 for comment in thread_comments:
                     comment_id = comment.get("id", "")
-                    comment_body_raw = comment.get("body")
+                    comment_body_adf = comment.get("body")
 
-                    if not comment_body_raw or not isinstance(comment_body_raw, str):
+                    # Skip comments without body
+                    if not comment_body_adf:
                         continue
 
-                    comment_body, wiki_comment_images = (
-                        await jira_storage_text_to_markdown_with_images(
-                            comment_body_raw,
+                    # Convert ADF comment body to markdown with base64 images
+                    if isinstance(comment_body_adf, dict):
+                        comment_body = await adf_to_text_with_images(
+                            comment_body_adf,
                             media_fetcher,
-                            filename_to_attachment_id,
-                            _attachment_mime_types,
                         )
-                    )
-                    comment_attachment_ids.update(wiki_comment_images)
+                    elif isinstance(comment_body_adf, str):
+                        comment_body, wiki_comment_images = (
+                            await jira_storage_text_to_markdown_with_images(
+                                comment_body_adf,
+                                media_fetcher,
+                                filename_to_attachment_id,
+                                _attachment_mime_types,
+                            )
+                        )
+                        comment_attachment_ids.update(wiki_comment_images)
+                    else:
+                        comment_body = str(comment_body_adf) if comment_body_adf else ""
 
                     if not comment_body:
                         continue
@@ -3451,23 +4151,34 @@ class JiraDataCenterConnector(BaseConnector):
                     author = comment.get("author", {})
                     author_name = author.get("displayName", "Unknown")
 
+                    # Get file attachments used in this comment (images excluded - already as base64)
                     comment_children: list[ChildRecord] = []
                     if attachment_children_map:
-                        for wiki_filename in extract_jira_wiki_attachment_filenames(
-                            comment_body_raw
-                        ):
-                            attachment_id = resolve_jira_attachment_id_by_filename(
-                                wiki_filename, filename_to_attachment_id
-                            )
-                            if (
-                                attachment_id
-                                and attachment_id in attachment_children_map
-                                and not is_image_attachment(attachment_id)
+                        if isinstance(comment_body_adf, dict):
+                            for media_info in extract_media_from_adf(comment_body_adf):
+                                attachment_id = resolve_attachment_id(media_info)
+                                if attachment_id and attachment_id in attachment_children_map:
+                                    comment_attachment_ids.add(attachment_id)
+                                    if not is_image_attachment(attachment_id):
+                                        comment_children.append(
+                                            attachment_children_map[attachment_id]
+                                        )
+                        elif isinstance(comment_body_adf, str):
+                            for wiki_filename in extract_jira_wiki_attachment_filenames(
+                                comment_body_adf
                             ):
-                                comment_attachment_ids.add(attachment_id)
-                                comment_children.append(
-                                    attachment_children_map[attachment_id]
+                                attachment_id = resolve_jira_attachment_id_by_filename(
+                                    wiki_filename, filename_to_attachment_id
                                 )
+                                if (
+                                    attachment_id
+                                    and attachment_id in attachment_children_map
+                                    and not is_image_attachment(attachment_id)
+                                ):
+                                    comment_attachment_ids.add(attachment_id)
+                                    comment_children.append(
+                                        attachment_children_map[attachment_id]
+                                    )
 
                     # Create BlockGroup with sub_type=COMMENT
                     comment_block_group = BlockGroup(
@@ -3814,7 +4525,8 @@ class JiraDataCenterConnector(BaseConnector):
             project = fields.get("project") or {}
             project_id = project.get("id") or ""
 
-        # Build attachment_id -> mimeType map (wiki inline images vs file attachments).
+        # Build attachment_id -> mimeType map for determining image vs file
+        # This is needed because Jira ADF media nodes always have type="file"
         attachment_mime_types: dict[str, str] = {}
         for attachment in attachments_data:
             att_id = attachment.get("id", "")
@@ -3917,8 +4629,17 @@ class JiraDataCenterConnector(BaseConnector):
         """
         Fetch attachment content and return as base64 data URI.
 
-        Used for wiki inline images (``!filename.png!``) in description/comments.
-        Tries attachment id match first, then filename from the wiki marker.
+        Jira inline media (images in description/comments) reference attachments
+        on the issue. Per Jira API, media.attrs.id in ADF IS the attachment ID,
+        so we first try direct lookup by media_id, then fall back to filename matching.
+
+        Args:
+            issue_id: The issue ID containing the attachment
+            media_id: The media ID from ADF (should match attachment ID)
+            media_alt: The alt text/filename for fallback matching
+
+        Returns:
+            Base64 data URI string like "data:image/png;base64,..." or None
         """
         try:
             # Get issue attachments (cached per issue to avoid repeated calls)
@@ -4517,8 +5238,8 @@ class JiraDataCenterConnector(BaseConnector):
                         source_user_id=identifier
                     )
 
-            issue_data = await self._extract_issue_data_with_parent(issue, user_by_account_id)
-            parent_external_id = issue_data["parent_external_id"]
+            # Extract issue data using existing function
+            issue_data = self._extract_issue_data(issue, user_by_account_id)
 
             # Get project info
             project = fields.get("project") or {}
@@ -4549,8 +5270,8 @@ class JiraDataCenterConnector(BaseConnector):
                 connector_id=self.connector_id,
                 record_group_type=record.record_group_type if hasattr(record, 'record_group_type') else RecordGroupType.PROJECT,
                 external_record_group_id=record.external_record_group_id if hasattr(record, 'external_record_group_id') else project_id,
-                parent_external_record_id=parent_external_id,
-                parent_record_type=RecordType.TICKET if parent_external_id else None,
+                parent_external_record_id=record.parent_external_record_id if hasattr(record, 'parent_external_record_id') else issue_data.get("parent_external_id"),
+                parent_record_type=record.parent_record_type if hasattr(record, 'parent_record_type') else (RecordType.TICKET if issue_data.get("parent_external_id") else None),
                 version=version,
                 mime_type=MimeTypes.BLOCKS.value,  # Use BLOCKS for blockgroups/blocks streaming
                 weburl=record.weburl if hasattr(record, 'weburl') else None,

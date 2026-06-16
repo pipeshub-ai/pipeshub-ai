@@ -31,7 +31,6 @@ def _make_service(*, strict_container: bool = False) -> EntityEventService:
         app_container.config_service = MagicMock(return_value=AsyncMock())
         app_container.data_store = AsyncMock()
         app_container.messaging_producer = AsyncMock()
-        app_container.connector_notification_service = MagicMock(return_value=MagicMock())
     else:
         app_container = MagicMock()
         app_container.messaging_producer = AsyncMock()

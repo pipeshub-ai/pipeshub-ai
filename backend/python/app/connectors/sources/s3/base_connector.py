@@ -26,11 +26,6 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
-from app.services.notification.types import (
-    NotificationSeverity,
-    NotificationType,
-    NotificationRecipientRole,
-)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -412,15 +407,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.logger.info("Listing all buckets...")
                 buckets_response = await self.data_source.list_buckets()
                 if not buckets_response.success:
-                    err = buckets_response.error or "unknown error"
-                    self.logger.error(f"Failed to list buckets: {err}")
-                    await self.notify(
-                        type=NotificationType.CONNECTOR_SYNC_ERROR,
-                        title="Failed to list S3 buckets",
-                        message=f"Failed to list S3 buckets: {err}. "
-                        "Check credentials and s3:ListAllMyBuckets / bucket access.",
-                        severity=NotificationSeverity.ERROR,
-                    )
+                    self.logger.error(f"Failed to list buckets: {buckets_response.error}")
                     return
 
                 buckets_data = buckets_response.data
@@ -731,22 +718,9 @@ class S3CompatibleBaseConnector(BaseConnector):
                                 f"  - s3:ListBucketVersions on arn:aws:s3:::{bucket_name} (if versioning is enabled)\n"
                                 f"Also check if there's a bucket policy that might be blocking access."
                             )
-                            await self.notify(
-                                type=NotificationType.CONNECTOR_AUTH_ERROR,
-                                title="Access denied",
-                                message=f"Access denied when listing objects in bucket '{bucket_name}'. "
-                                f"Verify IAM permissions (s3:ListBucket, s3:GetObject). Details: {error_msg}",
-                                severity=NotificationSeverity.ERROR,
-                            )
                         else:
                             self.logger.error(
                                 f"Failed to list objects in bucket {bucket_name}: {error_msg}"
-                            )
-                            await self.notify(
-                                type=NotificationType.CONNECTOR_SYNC_ERROR,
-                                title="Failed to list objects in bucket",
-                                message=f"Failed to list objects in bucket '{bucket_name}': {error_msg}",
-                                severity=NotificationSeverity.ERROR,
                             )
                         has_more = False
                         continue
@@ -1131,23 +1105,9 @@ class S3CompatibleBaseConnector(BaseConnector):
                 return True
             else:
                 self.logger.error(f"{self.connector_name} connection test failed: {response.error}")
-                await self.notify(
-                    type=NotificationType.CONNECTOR_AUTH_ERROR,
-                    severity=NotificationSeverity.ERROR,
-                    title=f"Connection test failed",
-                    message=f"{self.connector_name.value}: {response.error}",
-                    recipient_roles=[NotificationRecipientRole.EVERYONE],
-                )
                 return False
         except Exception as e:
             self.logger.error(f"{self.connector_name} connection test failed: {e}", exc_info=True)
-            await self.notify(
-                type=NotificationType.CONNECTOR_AUTH_ERROR,
-                severity=NotificationSeverity.ERROR,
-                title=f"Connection test failed",
-                message=f"{self.connector_name.value}: {e}",
-                recipient_roles=[NotificationRecipientRole.ADMIN],
-            )
             return False
 
     async def get_signed_url(self, record: Record) -> str | None:

@@ -35,11 +35,23 @@ export interface AppConfig {
     db: string;
   };
 
-  qdrant: {
+  /** Active vector database type — 'qdrant' | 'opensearch' | 'redis' */
+  vectorDbType: string;
+
+  qdrant?: {
     port: number;
     apiKey: string;
     host: string;
     grpcPort: number;
+  };
+
+  opensearch?: {
+    host: string;
+    port: number;
+    username: string;
+    password: string;
+    useSsl?: boolean;
+    verifyCerts?: boolean;
   };
 
   arango: {
@@ -115,7 +127,14 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
     kafka: await configService.getKafkaConfig(),
     redis: await configService.getRedisConfig(),
     arango: await configService.getArangoConfig(),
-    qdrant: await configService.getQdrantConfig(),
+    vectorDbType: (process.env.VECTOR_DB_TYPE || 'qdrant').toLowerCase(),
+    ...await (async () => {
+      const dbType = (process.env.VECTOR_DB_TYPE || 'qdrant').toLowerCase();
+      if (dbType === 'qdrant') return { qdrant: await configService.getQdrantConfig() };
+      if (dbType === 'opensearch') return { opensearch: await configService.getOpenSearchConfig() };
+      // 'redis' — reuses the existing redis KV config; no separate opensearch/qdrant entry needed
+      return {};
+    })(),
     mongo: await configService.getMongoConfig(),
     smtp: await configService.getSmtpConfig(),
 

@@ -2,5 +2,4 @@ from app.services.messaging.config import Topic
 
 sync_events_topic = Topic.SYNC_EVENTS.value
 entity_events_topic = Topic.ENTITY_EVENTS.value
-notification_topic = Topic.NOTIFICATION.value
-topics = [sync_events_topic, entity_events_topic, notification_topic]
+topics = [sync_events_topic, entity_events_topic]

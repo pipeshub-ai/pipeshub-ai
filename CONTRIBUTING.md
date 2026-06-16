@@ -62,13 +62,35 @@ brew install mariadb-connector-c # Add to path
 ### Starting Required Docker Containers
 
 **Redis:**
+
+Redis 8.4+ is required for the vector search feature (`FT.HYBRID`). The same Redis instance handles BullMQ job scheduling, key-value config, Redis Streams messaging, and vector search (RediSearch, DB 0 only).
+
 ```bash
-docker run -d --name redis --restart always -p 6379:6379 redis:bookworm
+docker run -d --name redis --restart always -p 6379:6379 \
+  redis:8.4-bookworm \
+  --maxmemory-policy noeviction
 ```
 
-**Qdrant:** (API Key must match with .env)
+> Note: `noeviction` is required so BullMQ jobs and vector indexes are never silently dropped under memory pressure.
+
+**Qdrant:** (API Key must match with .env) — default vector database
+
 ```bash
-docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.13.6
+docker run -p 6333:6333 -p 6334:6334 \
+  -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key \
+  qdrant/qdrant:v1.15
+```
+
+**OpenSearch** (optional; use when `VECTOR_DB_TYPE=opensearch`):
+
+OpenSearch 2.19+ is required for the RRF hybrid search pipeline. OpenSearch 3.x is recommended.
+
+```bash
+docker run -d --name opensearch \
+  -p 9200:9200 -p 9600:9600 \
+  -e discovery.type=single-node \
+  -e OPENSEARCH_INITIAL_ADMIN_PASSWORD=your_opensearch_password \
+  opensearchproject/opensearch:3.0.0
 ```
 
 **ETCD Server:**
@@ -325,6 +347,44 @@ pytest --cov=app --cov-report=term-missing
 # Run tests in parallel (requires pytest-xdist)
 pytest -n auto
 ```
+
+### Running Vector DB Integration Tests
+
+The vector DB integration tests require running Docker services (Redis 8.4+, OpenSearch 3.x, and Qdrant). Use the provided Compose file to start them:
+
+```bash
+# Start vector DB services
+docker compose -f deployment/docker-compose/docker-compose.integration.vector-db.yml up -d
+
+# Wait for services to be healthy (usually ~30s), then run:
+cd backend/python
+source venv/bin/activate
+
+# Run all vector DB integration tests
+pytest -m integration tests/integration/vector_db/ -v
+
+# Run only Redis vector tests
+pytest -m integration tests/integration/vector_db/test_redis_integration.py -v
+
+# Run only OpenSearch vector tests
+pytest -m integration tests/integration/vector_db/test_opensearch_integration.py -v
+
+# Run only Qdrant vector tests
+pytest -m integration tests/integration/vector_db/test_qdrant_integration.py -v
+
+# Tear down when done
+docker compose -f deployment/docker-compose/docker-compose.integration.vector-db.yml down -v
+```
+
+**`VECTOR_DB_TYPE` environment variable** selects the active vector database at runtime:
+
+| Value | Provider | Minimum Version | Notes |
+|-------|----------|-----------------|-------|
+| `qdrant` | Qdrant | v1.15 | Default. Dense + sparse hybrid search with RRF. |
+| `opensearch` | OpenSearch | 2.19 (3.x recommended) | Server-side BM25 + kNN with RRF score-ranker-processor. |
+| `redis` | Redis (RediSearch) | 8.4 | `FT.HYBRID` command for dev/small deployments. DB 0 only. |
+
+Set `VECTOR_DB_TYPE=qdrant` (or `opensearch` / `redis`) in your `.env` file or `env.template`.
 
 ### Running Frontend E2E Tests (Playwright)
 

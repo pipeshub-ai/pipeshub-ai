@@ -1,0 +1,49 @@
+services:
+  # Redis 8.4 — required for FT.HYBRID hybrid search (KNN + BM25 via RRF)
+  redis-vector:
+    image: redis:8.4-bookworm
+    restart: unless-stopped
+    ports:
+      - "6399:6379"
+    command:
+      - redis-server
+      - --appendonly yes
+      - --appendfsync everysec
+      - --maxmemory-policy noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # OpenSearch 3.x — score-ranker-processor (RRF) requires >= 2.19
+  opensearch-vector:
+    image: opensearchproject/opensearch:3.6.0
+    restart: unless-stopped
+    ports:
+      - "9299:9200"
+      - "9399:9300"
+    environment:
+      - discovery.type=single-node
+      - DISABLE_SECURITY_PLUGIN=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  # Qdrant v1.15 — pinned for reproducible sparse+dense RRF behaviour
+  qdrant-vector:
+    image: qdrant/qdrant:v1.15
+    restart: unless-stopped
+    ports:
+      - "6334:6333"
+      - "6344:6334"
+    healthcheck:
+      # qdrant/qdrant:v1.15 does not ship curl; use a bash TCP check instead
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/localhost/6333' && echo ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

@@ -126,7 +126,6 @@ class EventService:
                 connector_id=connector_id,
                 scope=scope,
                 created_by=created_by,
-                notification_service=self.app_container.connector_notification_service(),
             )
 
             if not connector:
@@ -211,8 +210,7 @@ class EventService:
                 config_service=config_service,
                 connector_id=connector_id,
                 scope=scope,
-                created_by=created_by,
-                notification_service=self.app_container.connector_notification_service(),
+                created_by=created_by
             )
 
             if not connector:

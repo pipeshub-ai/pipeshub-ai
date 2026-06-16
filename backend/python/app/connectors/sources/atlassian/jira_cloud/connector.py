@@ -88,7 +88,6 @@ from app.models.entities import (
     RelatedExternalRecord,
     TicketRecord,
 )
-from app.services.notification.types import NotificationType, NotificationSeverity, NotificationRecipientRole
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.jira.jira import JiraClient
 from app.sources.external.common.atlassian import match_atlassian_cloud_resource
@@ -1182,13 +1181,6 @@ class JiraConnector(BaseConnector):
                 f"✅ Jira sync completed. Total: {sync_stats['total_synced']} issues "
                 f"(New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']})"
             )
-            await self.notify(
-                type=NotificationType.CONNECTOR_SUCCESS,
-                severity=NotificationSeverity.SUCCESS,
-                title=f"Jira sync completed",
-                message=f"Total: {sync_stats['total_synced']} issues (New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']})",
-                recipient_user_ids=[self.created_by],
-            )
 
         except Exception as e:
             self.logger.error(f"❌ Error during Jira sync: {e}", exc_info=True)
@@ -1344,16 +1336,6 @@ class JiraConnector(BaseConnector):
 
                 if response.status != HttpStatusCode.OK.value:
                     self.logger.warning(f"⚠️ Failed to fetch audit records: {response.text()}")
-                    await self.notify(
-                        type=NotificationType.CONNECTOR_WARNING,
-                        severity=NotificationSeverity.WARNING,
-                        title=f"Failed to fetch audit records",
-                        message=f"You do not have the Jira Administrator permission required to get audit records.",
-                        recipient_user_ids=[self.created_by],
-                        payload={
-                            "redirect_link": None,
-                        }
-                    )
                     break
 
                 audit_data = response.json()
@@ -1734,13 +1716,6 @@ class JiraConnector(BaseConnector):
                         "reverse lookup only.",
                         response.status, len(users),
                     )
-                    await self.notify(
-                        type=NotificationType.CONNECTOR_WARNING,
-                        severity=NotificationSeverity.WARNING,
-                        title=f"Failed to fetch users",
-                        message=f"You do not have permissions to fetch users. Contact your Jira administrator.",
-                        recipient_user_ids=[self.created_by],
-                    )
                     return users
                 raise Exception(f"Failed to fetch users: {response.text()}")
 
@@ -1867,16 +1842,6 @@ class JiraConnector(BaseConnector):
                         "Projects whose permission scheme uses applicationRole holders will "
                         "grant the configuring user direct access instead."
                     )
-                    await self.notify(
-                        type=NotificationType.CONNECTOR_WARNING,
-                        severity=NotificationSeverity.WARNING,
-                        title=f"Application roles API inaccessible",
-                        message=f"You do not have the Jira Admin permission required to get application roles. Application roles permissions will not be synced.",
-                        recipient_user_ids=[self.created_by],
-                        payload={
-                            "redirect_link": None
-                        }
-                    )
                 else:
                     self.logger.warning(
                         "⚠️ Failed to fetch application roles (HTTP %s)", response.status
@@ -1904,7 +1869,7 @@ class JiraConnector(BaseConnector):
 
         return mapping
 
-    async def _fallback_permissions_for_forbidden_scheme(
+    def _fallback_permissions_for_forbidden_scheme(
         self,
         project_key: str,
         status: int,
@@ -1925,16 +1890,6 @@ class JiraConnector(BaseConnector):
                 "Projects. Granting configuring user '%s' direct BROWSE access "
                 "instead of dropping all ACLs for this project.",
                 stage, project_key, status, self.creator_email,
-            )
-            await self.notify(
-                type=NotificationType.CONNECTOR_WARNING,
-                severity=NotificationSeverity.WARNING,
-                title=f"Could not read permissions for {project_key}",
-                message=f"Ask your Jira admin to add {self.creator_email} as a project admin. Until then, only you can access this project.",
-                payload={
-                    "redirect_link": f"{self.site_url}/plugins/servlet/project-config/{project_key}/permissions",
-                },
-                recipient_user_ids=[self.created_by],
             )
             return [Permission(
                 entity_type=EntityType.USER,
@@ -1985,7 +1940,7 @@ class JiraConnector(BaseConnector):
                     HttpStatusCode.UNAUTHORIZED.value,
                     HttpStatusCode.FORBIDDEN.value,
                 ):
-                    return await self._fallback_permissions_for_forbidden_scheme(
+                    return self._fallback_permissions_for_forbidden_scheme(
                         project_key=project_key,
                         status=scheme_response.status,
                         stage="permission scheme",
@@ -2007,7 +1962,7 @@ class JiraConnector(BaseConnector):
                     HttpStatusCode.UNAUTHORIZED.value,
                     HttpStatusCode.FORBIDDEN.value,
                 ):
-                    return await self._fallback_permissions_for_forbidden_scheme(
+                    return self._fallback_permissions_for_forbidden_scheme(
                         project_key=project_key,
                         status=grants_response.status,
                         stage=f"permission grants (scheme {scheme_id})",
@@ -4726,13 +4681,6 @@ class JiraConnector(BaseConnector):
             return response.status == HttpStatusCode.OK.value
         except Exception as e:
             self.logger.error(f"❌ Connection test failed: {e}")
-            await self.notify(
-                type=NotificationType.CONNECTOR_AUTH_ERROR,
-                severity=NotificationSeverity.ERROR,
-                title=f"Connection failed",
-                message=f"{self.connector_name.value}: {e}",
-                recipient_roles=[NotificationRecipientRole.ADMIN],
-            )
             return False
 
     async def run_incremental_sync(self) -> None:

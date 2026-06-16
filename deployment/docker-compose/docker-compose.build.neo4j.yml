@@ -49,6 +49,9 @@ services:
       - INDEXING_BACKEND=http://localhost:8091
       - EMBEDDING_SERVER_URL=http://localhost:8002
 
+      # Vector DB
+      - VECTOR_DB_TYPE=redis
+
       # Key-Value Store Configuration
       - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
 
@@ -87,12 +90,6 @@ services:
       - MONGO_DB_NAME=es
       # Standalone mongod — multi-document transactions unavailable. App branches on this.
       - REPLICA_SET_AVAILABLE=false
-
-      # Qdrant config
-      - QDRANT_API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
-      - QDRANT_HOST=qdrant
-      - QDRANT_GRPC_PORT=6334
-      - QDRANT_PORT=6333
 
       - OLLAMA_API_URL=http://host.docker.internal:11434
 
@@ -147,8 +144,6 @@ services:
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
 
     depends_on:
-      qdrant:
-        condition: service_healthy
       redis:
         condition: service_healthy
       mongodb:
@@ -199,15 +194,20 @@ services:
       retries: 5
 
   redis:
-    image: redis:bookworm
+    image: redis:8.4-bookworm
+    ports:
+      - "6379:6379"
     restart: always
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    # No `sh -c` wrapper: the redis:8 image entrypoint only auto-loads the
+    # bundled Query Engine modules (FT.* commands) when arg 1 is `redis-server`.
     command: >
-      sh -c "redis-server
+      redis-server
       --appendonly yes
       --appendfsync everysec
-      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}"
+      --maxmemory-policy noeviction
+      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
     volumes:
       - redis_data:/data
     healthcheck:
@@ -298,43 +298,6 @@ services:
     restart: "no"
     command: ["sh", "-c", "echo 'pipeshub/sandbox:latest image ready'"]
 
-  qdrant:
-    image: qdrant/qdrant:v1.15
-    environment:
-      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
-      # Performance optimizations
-      - QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=64
-      - QDRANT__SERVICE__GRPC_PORT=6334
-      - QDRANT__SERVICE__HTTP_PORT=6333
-      - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=0  # Use all available CPUs
-      - QDRANT__STORAGE__OPTIMIZERS__DEFAULT_SEGMENT_NUMBER=8
-      - QDRANT__STORAGE__OPTIMIZERS__MEMMAP_THRESHOLD=50000
-      - QDRANT__STORAGE__WAL__WAL_CAPACITY_MB=256
-      - QDRANT__CLUSTER__CONSENSUS__MAX_MESSAGE_QUEUE_SIZE=1000
-    volumes:
-      - qdrant_storage:/qdrant/storage
-    deploy:
-      resources:
-        limits:
-          cpus: '4'
-          memory: 4G
-        reservations:
-          cpus: '2'
-          memory: 2G
-    ulimits:
-      nofile:
-        soft: 50000
-        hard: 50000
-    restart: always
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
 volumes:
   mongodb_data:
     driver: local
@@ -343,8 +306,6 @@ volumes:
   neo4j_data:
     driver: local
   neo4j_logs:
-    driver: local
-  qdrant_storage:
     driver: local
   pipeshub_data:
     driver: local

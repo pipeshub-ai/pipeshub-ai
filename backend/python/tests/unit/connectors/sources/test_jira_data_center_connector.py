@@ -17,8 +17,9 @@ from app.connectors.sources.atlassian.core.apps import JiraDataCenterApp
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
     _normalize_jira_dc_group_row,
+    adf_to_text,
+    extract_media_from_adf,
 )
-from app.models.entities import RecordType
 
 
 def _make_logger() -> logging.Logger:
@@ -513,41 +514,47 @@ class TestJiraDataCenterModuleHelpers:
             "groupId": "2",
         }
 
+    def test_extract_media_from_adf_empty(self) -> None:
+        assert extract_media_from_adf({}) == []
+        # id must be non-empty to be collected
+        assert extract_media_from_adf({"type": "media", "attrs": {"id": ""}}) == []
+
+    def test_extract_media_from_adf_with_id(self) -> None:
+        nodes = extract_media_from_adf(
+            {"content": [{"type": "media", "attrs": {"id": "f1", "alt": "a.png"}}]}
+        )
+        assert len(nodes) == 1
+        assert nodes[0]["id"] == "f1"
+
+    def test_adf_to_text_minimal(self) -> None:
+        body = {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Hi"}]}]}
+        assert "Hi" in adf_to_text(body)
+
 
 # -----------------------------------------------------------------------------
-# Deletion handling (DC auditing API)
+# Deletion handling (DC v2 audit endpoint)
 # -----------------------------------------------------------------------------
 
 
-def _auditing_event(
-    action: str = "Issue deleted",
-    issue_name: str = "PROJ-1",
-    extra_objects: list[dict] | None = None,
+def _audit_record(
+    type_name: str = "ISSUE",
+    summary: str = "Issue deleted",
+    name: str = "PROJ-1",
 ) -> dict:
-    affected = list(extra_objects or [])
-    affected.insert(0, {"name": issue_name, "type": "ISSUE", "id": "10001"})
     return {
-        "timestamp": "2026-06-10T10:00:00.000Z",
-        "type": {"action": action, "category": "issue"},
-        "affectedObjects": affected,
+        "summary": summary,
+        "category": "issue tracking",
+        "objectItem": {"name": name, "typeName": type_name},
     }
 
 
-def _auditing_events_response(
-    entities: list[dict],
-    *,
-    last_page: bool = True,
-    next_page_offset: int | None = None,
-):
+def _audit_response(records: list[dict], total: int | None = None):
     resp = MagicMock()
     resp.status = HttpStatusCode.OK.value
-    paging: dict = {"lastPage": last_page}
-    if next_page_offset is not None:
-        paging["nextPageOffset"] = next_page_offset
-    resp.json.return_value = {
-        "entities": entities,
-        "pagingInfo": paging,
-    }
+    body = {"records": records}
+    if total is not None:
+        body["total"] = total
+    resp.json.return_value = body
     return resp
 
 
@@ -612,42 +619,28 @@ class TestJiraDataCenterDeletionAudit:
 
     @pytest.mark.asyncio
     async def test_fetch_deleted_issues_from_audit_filters_non_issue_rows(self) -> None:
-        """Only issue-deletion auditing events with an ISSUE affected object are returned."""
+        """Only ``objectItem.typeName == "ISSUE"`` rows with a delete-shaped
+        summary are returned; everything else (USER, ISSUE without "delete"
+        summary, etc.) is ignored."""
         conn = _make_connector()
         conn.data_source = MagicMock()
 
-        entities = [
-            _auditing_event(issue_name="PROJ-1"),
-            {
-                "type": {"action": "Issue updated"},
-                "affectedObjects": [{"name": "PROJ-2", "type": "PROJECT", "id": "1"}],
-            },
-            {
-                "type": {"action": "Issue deleted"},
-                "affectedObjects": [{"name": "alice", "type": "USER", "id": "u1"}],
-            },
-            _auditing_event(action="ISSUE DELETED", issue_name="PROJ-3"),
-            {
-                "type": {"action": "Issue deleted"},
-                "affectedObjects": [{"name": "", "type": "ISSUE", "id": "x"}],
-            },
+        records = [
+            _audit_record(name="PROJ-1"),  # match
+            _audit_record(type_name="USER", name="alice"),  # wrong type
+            _audit_record(summary="Issue updated", name="PROJ-2"),  # wrong summary
+            _audit_record(summary="ISSUE DELETED", name="PROJ-3"),  # case-insensitive match
+            {"summary": "Issue deleted", "objectItem": {}},  # no name
         ]
         mock_ds = MagicMock()
-        mock_ds.get_auditing_events_v1 = AsyncMock(
-            return_value=_auditing_events_response(entities)
+        mock_ds.get_audit_records_v2 = AsyncMock(
+            return_value=_audit_response(records, total=len(records))
         )
 
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            keys = await conn._fetch_deleted_issues_from_audit(1_700_000_000_000)
+            keys = await conn._fetch_deleted_issues_from_audit("from", "to")
 
         assert keys == ["PROJ-1", "PROJ-3"]
-        mock_ds.get_auditing_events_v1.assert_awaited()
-        call_kwargs = mock_ds.get_auditing_events_v1.await_args.kwargs
-        assert call_kwargs["actions"] == "Issue deleted,Sub-task deleted"
-        assert call_kwargs["categories"] == "issue"
-        assert call_kwargs["limit"] == 500
-        assert call_kwargs["from_"].endswith("Z")
-        assert call_kwargs["to"].endswith("Z")
 
     @pytest.mark.asyncio
     async def test_fetch_deleted_issues_from_audit_handles_forbidden(self) -> None:
@@ -659,93 +652,42 @@ class TestJiraDataCenterDeletionAudit:
         resp.status = HttpStatusCode.FORBIDDEN.value
         resp.text.return_value = "forbidden"
         mock_ds = MagicMock()
-        mock_ds.get_auditing_events_v1 = AsyncMock(return_value=resp)
+        mock_ds.get_audit_records_v2 = AsyncMock(return_value=resp)
 
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            keys = await conn._fetch_deleted_issues_from_audit(1_700_000_000_000)
+            keys = await conn._fetch_deleted_issues_from_audit("from", "to")
 
         assert keys == []
-        mock_ds.get_auditing_events_v1.assert_awaited_once()
+        mock_ds.get_audit_records_v2.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_fetch_deleted_issues_from_audit_returns_empty_on_404(self) -> None:
-        conn = _make_connector()
-        conn.data_source = MagicMock()
-        missing = MagicMock()
-        missing.status = HttpStatusCode.NOT_FOUND.value
-        missing.text.return_value = "404"
-        mock_ds = MagicMock()
-        mock_ds.get_auditing_events_v1 = AsyncMock(return_value=missing)
-
-        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            keys = await conn._fetch_deleted_issues_from_audit(1_700_000_000_000)
-
-        assert keys == []
-
-    @pytest.mark.asyncio
-    async def test_fetch_deleted_issues_auditing_events_pagination(self) -> None:
-        """Auditing 1.0 API paginates via ``pagingInfo.nextPageOffset``."""
+    async def test_fetch_deleted_issues_paginates_until_total_reached(self) -> None:
+        """Pagination must stop when ``offset + len(records) >= total`` — guard
+        against infinite loops when the server reports a non-decreasing total.
+        """
         conn = _make_connector()
         conn.data_source = MagicMock()
 
-        page1 = _auditing_events_response(
-            [_auditing_event(issue_name=f"PROJ-{i}") for i in range(500)],
-            last_page=False,
-            next_page_offset=500,
+        page1 = _audit_response(
+            [_audit_record(name=f"PROJ-{i}") for i in range(500)], total=750
         )
-        page2 = _auditing_events_response(
-            [_auditing_event(issue_name=f"PROJ-{i}") for i in range(500, 750)],
-            last_page=True,
+        page2 = _audit_response(
+            [_audit_record(name=f"PROJ-{i}") for i in range(500, 750)], total=750
         )
+
         mock_ds = MagicMock()
-        mock_ds.get_auditing_events_v1 = AsyncMock(side_effect=[page1, page2])
+        mock_ds.get_audit_records_v2 = AsyncMock(side_effect=[page1, page2])
 
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            keys = await conn._fetch_deleted_issues_from_audit(1_700_000_000_000)
+            keys = await conn._fetch_deleted_issues_from_audit("from", "to")
 
         assert len(keys) == 750
-        assert mock_ds.get_auditing_events_v1.await_count == 2
-
-    @pytest.mark.asyncio
-    async def test_fetch_deleted_issues_from_audit_subtask_deleted(self) -> None:
-        """Sub-task deleted events yield the subtask issue key from affectedObjects."""
-        conn = _make_connector()
-        conn.data_source = MagicMock()
-        entities = [
-            _auditing_event(action="Sub-task deleted", issue_name="PA-12"),
-        ]
-        mock_ds = MagicMock()
-        mock_ds.get_auditing_events_v1 = AsyncMock(
-            return_value=_auditing_events_response(entities)
-        )
-
-        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            keys = await conn._fetch_deleted_issues_from_audit(1_700_000_000_000)
-
-        assert keys == ["PA-12"]
-
-    @pytest.mark.asyncio
-    async def test_fetch_deleted_issues_from_audit_dedupes_keys(self) -> None:
-        conn = _make_connector()
-        conn.data_source = MagicMock()
-        entities = [
-            _auditing_event(issue_name="PROJ-1"),
-            _auditing_event(issue_name="PROJ-1"),
-        ]
-        mock_ds = MagicMock()
-        mock_ds.get_auditing_events_v1 = AsyncMock(
-            return_value=_auditing_events_response(entities)
-        )
-
-        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            keys = await conn._fetch_deleted_issues_from_audit(1_700_000_000_000)
-
-        assert keys == ["PROJ-1"]
+        assert mock_ds.get_audit_records_v2.await_count == 2
 
     @pytest.mark.asyncio
     async def test_handle_deleted_issue_skips_when_still_in_jira(self) -> None:
         """Audit hit + 200 OK from ``get_issue_v2`` means the issue was moved or
-        renamed, not deleted. Don't delete from our side."""
+        renamed, not deleted. Don't cascade-delete from our side."""
         conn = _make_connector()
         conn.data_source = MagicMock()
         resp = MagicMock()
@@ -767,58 +709,6 @@ class TestJiraDataCenterDeletionAudit:
         # Must not have touched the DB at all.
         tx_store.get_record_by_issue_key.assert_not_called()
         tx_store.delete_records_and_relations.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_handle_deleted_issue_deletes_attachments_only_not_subtasks(self) -> None:
-        """Flat delete: FILE children removed, TICKET children left, issue removed."""
-        conn = _make_connector()
-        conn.data_source = MagicMock()
-        mock_ds = MagicMock()
-        mock_ds.get_issue_v2 = AsyncMock(
-            return_value=MagicMock(status=HttpStatusCode.NOT_FOUND.value)
-        )
-
-        issue_record = MagicMock()
-        issue_record.id = "internal-issue-1"
-        issue_record.external_record_id = "10004"
-
-        file_child = MagicMock()
-        file_child.id = "file-1"
-        file_child.external_record_id = "att-10004-1"
-
-        ticket_child = MagicMock()
-        ticket_child.id = "subtask-1"
-        ticket_child.external_record_id = "10011"
-
-        tx_store = MagicMock()
-        tx_store.get_record_by_issue_key = AsyncMock(return_value=issue_record)
-        tx_store.get_records_by_parent = AsyncMock(
-            side_effect=lambda **kwargs: (
-                [file_child] if kwargs.get("record_type") == RecordType.FILE.value else [ticket_child]
-            )
-        )
-        tx_store.delete_records_and_relations = AsyncMock()
-        conn.data_store_provider = MagicMock()
-        conn.data_store_provider.transaction = MagicMock(
-            return_value=_aenter_ctx(tx_store)
-        )
-
-        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            await conn._handle_deleted_issue("PA-5")
-
-        deleted_keys = [
-            call.kwargs.get("record_key") or call.args[0]
-            for call in tx_store.delete_records_and_relations.await_args_list
-        ]
-        assert "file-1" in deleted_keys
-        assert "internal-issue-1" in deleted_keys
-        assert "subtask-1" not in deleted_keys
-        assert tx_store.get_records_by_parent.await_count == 1
-        tx_store.get_records_by_parent.assert_awaited_once_with(
-            connector_id=conn.connector_id,
-            parent_external_record_id="10004",
-            record_type=RecordType.FILE.value,
-        )
 
 
 class _AsyncContext:

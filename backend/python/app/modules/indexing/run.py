@@ -1,6 +1,4 @@
-from typing import Any, Dict, List
-
-from langchain_qdrant import FastEmbedSparse
+from typing import Any, Dict, List, Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
@@ -10,8 +8,14 @@ from app.exceptions.indexing_exceptions import (
     MetadataProcessingError,
     VectorStoreError,
 )
-from app.services.vector_db.const.const import ORG_ID_FIELD, VIRTUAL_RECORD_ID_FIELD
 from app.services.vector_db.interface.vector_db import IVectorDBService
+
+# Module-level stub to allow tests to patch FastEmbedSparse even though
+# it is only lazily imported inside VectorStore (not used here directly).
+try:
+    from fastembed import SparseTextEmbedding as FastEmbedSparse  # noqa: F401
+except ImportError:
+    FastEmbedSparse = None  # type: ignore[assignment,misc]
 
 # Constants for bulk deletion
 QDRANT_BULK_DELETE_BATCH_SIZE = 100
@@ -26,31 +30,22 @@ class IndexingPipeline:
         collection_name: str,
         vector_db_service: IVectorDBService,
     ) -> None:
-        self.logger = logger
-        self.config_service = config_service
-        self.graph_provider = graph_provider
-        """
-        Initialize the indexing pipeline with necessary configurations.
+        """Initialize the indexing pipeline with necessary configurations.
 
         Args:
+            logger: Logger instance
             config_service: Configuration service
             graph_provider: Arango service
             collection_name: Name for the collection
             vector_db_service: Vector DB service
         """
-        try:
-            # Initialize sparse embeddings
-            try:
-                self.sparse_embeddings = FastEmbedSparse(model_name="Qdrant/BM25")
-            except Exception as e:
-                raise IndexingError(
-                    "Failed to initialize sparse embeddings: " + str(e),
-                    details={"error": str(e)},
-                )
+        self.logger = logger
+        self.config_service = config_service
+        self.graph_provider = graph_provider
 
+        try:
             self.vector_db_service = vector_db_service
             self.collection_name = collection_name
-            self.vector_store = None
 
         except (IndexingError, VectorStoreError):
             raise
@@ -60,76 +55,26 @@ class IndexingPipeline:
                 details={"error": str(e)},
             )
 
-    async def _initialize_collection(
-        self, embedding_size: int = 1024, sparse_idf: bool = False
-    ) -> None:
-        """Initialize collection with proper configuration."""
-        try:
-            collection_info = await self.vector_db_service.get_collection(self.collection_name)
-            if not collection_info:
-                self.logger.info(
-                    f"Collection {self.collection_name} not found, creating new collection"
-                )
-                raise Exception("Collection not found")
-            current_vector_size = collection_info.config.params.vectors["dense"].size #type: ignore
-
-            if current_vector_size != embedding_size:
-                self.logger.warning(
-                    f"Collection {self.collection_name} has size {current_vector_size}, but {embedding_size} is required."
-                    " Recreating collection."
-                )
-                await self.vector_db_service.delete_collection(self.collection_name)
-                raise Exception(
-                    "Recreating collection due to vector dimension mismatch."
-                )
-
-        except Exception:
-            self.logger.info(
-                f"Collection {self.collection_name} not found, creating new collection"
-            )
-            try:
-                # create the collection
-                await self.vector_db_service.create_collection(
-                    collection_name=self.collection_name,
-                    embedding_size=embedding_size,
-                    sparse_idf=sparse_idf,
-                )
-                self.logger.info(
-                    f"✅ Successfully created collection {self.collection_name}"
-                )
-                await self.vector_db_service.create_index(
-                    collection_name=self.collection_name,
-                    field_name=VIRTUAL_RECORD_ID_FIELD,
-                    field_schema={
-                        "type": "keyword",
-                    }
-                )
-                await self.vector_db_service.create_index(
-                    collection_name=self.collection_name,
-                    field_name=ORG_ID_FIELD,
-                    field_schema={
-                        "type": "keyword",
-                    }
-                )
-            except Exception as e:
-                self.logger.error(
-                    f"❌ Error creating collection {self.collection_name}: {str(e)}"
-                )
-                raise VectorStoreError(
-                    "Failed to create collection",
-                    details={"collection": self.collection_name, "error": str(e)},
-                )
-
-
-    async def bulk_delete_embeddings(self, virtual_record_ids: List[str]) -> Dict[str, Any]:
+    async def bulk_delete_embeddings(
+        self,
+        virtual_record_ids: List[str],
+        *,
+        exclude_record_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         """
         Bulk delete embeddings for multiple records in a single operation.
-        Uses Qdrant's filter-based deletion for efficiency.
+        Uses filter-based deletion for efficiency.
 
         This is used when deleting a connector instance and all its records.
 
         Args:
             virtual_record_ids: List of virtual record IDs to delete embeddings for
+            exclude_record_ids: Record IDs to exclude from the safety check.
+                When processing a DELETE_RECORD event, the record being deleted
+                may still exist in the graph DB due to timing.  Passing its
+                recordId here lets the safety check ignore it so that the
+                embeddings are deleted when no *other* records share the
+                virtualRecordId.
 
         Returns:
             Dict with deletion statistics:
@@ -161,6 +106,7 @@ class IndexingPipeline:
                 f"🗑️ Starting bulk deletion candidate evaluation for {len(normalized_virtual_record_ids)} virtual record IDs"
             )
 
+            excluded = set(exclude_record_ids) if exclude_record_ids else set()
             safe_virtual_record_ids: List[str] = []
             skipped_virtual_record_ids: List[str] = []
 
@@ -169,11 +115,18 @@ class IndexingPipeline:
                     remaining_records = await self.graph_provider.get_records_by_virtual_record_id(
                         virtual_record_id=virtual_record_id
                     )
+                    # Filter out the record(s) that are being deleted right now —
+                    # they may still be in the graph DB due to event ordering.
+                    if excluded and remaining_records:
+                        remaining_records = [
+                            r for r in remaining_records
+                            if r.get("_key") not in excluded
+                        ]
                     if remaining_records:
                         skipped_virtual_record_ids.append(virtual_record_id)
                         self.logger.info(
                             f"⏭️ Skipping bulk deletion for virtual_record_id {virtual_record_id} "
-                            f"because it is still referenced by records: {remaining_records}"
+                            f"because it is still referenced by {len(remaining_records)} other record(s)"
                         )
                         continue
 
@@ -215,16 +168,14 @@ class IndexingPipeline:
                     f"❌ Failed to delete from virtualRecordToDocIdMapping: {e}. "
                     f"This may lead to orphaned entries in ArangoDB."
                 )
-                # Continue with Qdrant cleanup as primary goal, but error is logged
-
+                # Continue with vector store cleanup as primary goal
 
             # Process in batches to avoid filter size limits
             for i in range(0, len(safe_virtual_record_ids), QDRANT_BULK_DELETE_BATCH_SIZE):
                 batch = safe_virtual_record_ids[i:i + QDRANT_BULK_DELETE_BATCH_SIZE]
+                batch_num = i // QDRANT_BULK_DELETE_BATCH_SIZE + 1
 
                 try:
-                    # Build filter for batch - use "should" for OR logic
-                    # should expects a dict with field name as key and list of values
                     filter_dict = await self.vector_db_service.filter_collection(
                         should={"virtualRecordId": batch}
                     )
@@ -233,10 +184,10 @@ class IndexingPipeline:
                         collection_name=self.collection_name,
                         filter=filter_dict,
                     )
-                    self.logger.info(f"✅ Deleted embeddings for batch {i // QDRANT_BULK_DELETE_BATCH_SIZE + 1}")
+                    self.logger.info(f"✅ Deleted embeddings for batch {batch_num}")
 
                 except Exception as e:
-                    self.logger.error(f"❌ Failed to delete embeddings for batch {i // QDRANT_BULK_DELETE_BATCH_SIZE + 1}: {e}")
+                    self.logger.error(f"❌ Failed to delete embeddings for batch {batch_num}: {e}")
                     # Continue with next batch even if one fails
                     continue
 
@@ -256,8 +207,6 @@ class IndexingPipeline:
                 record_id="bulk_delete",
                 details={"error": str(e), "count": len(virtual_record_ids) if virtual_record_ids else 0}
             )
-
-
 
     def _process_metadata(self, meta: Dict[str, Any]) -> Dict[str, Any]:
         """

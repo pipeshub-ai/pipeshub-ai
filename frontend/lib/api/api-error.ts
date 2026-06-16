@@ -21,14 +21,9 @@ export interface ProcessedError {
   originalError?: Error;
 }
 
-interface NestedApiError {
-  code?: string;
-  message?: string;
-}
-
 interface ApiErrorResponse {
   message?: string;
-  error?: string | NestedApiError;
+  error?: string | { code?: string; message?: string };
   errors?: Record<string, string[]>;
   details?: Record<string, unknown>;
   /** FastAPI / similar */
@@ -157,10 +152,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
     case 422:
       return {
         type: ErrorType.VALIDATION_ERROR,
-        message:
-          extractApiErrorMessage(data) ||
-          (typeof message === 'string' ? message.trim() : '') ||
-          'Invalid request. Please check your input.',
+        message: message || 'Invalid request. Please check your input.',
         statusCode: status,
         details: data?.errors ? { errors: data.errors } : data?.details,
         originalError: error,

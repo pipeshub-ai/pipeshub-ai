@@ -163,23 +163,4 @@ describe('validation.utils', () => {
       }
     })
   })
-
-  describe('ValidationUtils.formatValidationErrorMessage', () => {
-    it('should join multiple issue messages with newlines', () => {
-      const message = ValidationUtils.formatValidationErrorMessage([
-        { field: 'body.name', message: 'Name is required', code: 'TOO_SMALL', value: '' },
-        { field: 'body.models', message: 'At least one reasoning model is required', code: 'CUSTOM', value: '' },
-      ])
-
-      expect(message).to.equal('Name is required\nAt least one reasoning model is required')
-    })
-
-    it('should fall back when no issue messages are present', () => {
-      const message = ValidationUtils.formatValidationErrorMessage([
-        { field: 'body.name', message: '', code: 'TOO_SMALL', value: '' },
-      ])
-
-      expect(message).to.equal('Validation failed')
-    })
-  })
 })

@@ -6,9 +6,6 @@ from typing import Any
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_qdrant import FastEmbedSparse
-from qdrant_client import models
-
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
@@ -25,6 +22,11 @@ from app.models.blocks import GroupType
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.interface.vector_db import IVectorDBService
+from app.services.vector_db.models import (
+    FusionMethod,
+    HybridSearchRequest,
+)
+from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.sources.client.http.exception.exception import VectorDBEmptyError
 from app.utils.aimodels import (
     get_default_embedding_model,
@@ -83,30 +85,41 @@ class RetrievalService:
         self.llm = None
         self.graph_provider = graph_provider
         self.blob_store = blob_store
-        # Defer sparse embeddings init to first use — FastEmbedSparse downloads
-        # and loads an ONNX model which blocks the event loop for 30-60s on a
-        # cold cache.  Lazy-load in a worker thread via _ensure_sparse_embeddings().
-        self.sparse_embeddings = None
-        self._sparse_embeddings_lock = asyncio.Lock()
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
-        self.logger.info(f"Retrieval service initialized with collection name: {self.collection_name}")
+
+        # Capability negotiation — determines which embedding legs are needed.
+        self._capabilities = vector_db_service.get_capabilities()
+
+        # Sparse embeddings — only for providers that store client-side sparse vectors.
+        # SparseEmbedder lazy-initialises in a worker thread on first use.
+        self._sparse_embedder: SparseEmbedder | None = None
+        self._sparse_embedder_lock = asyncio.Lock()
+
+        self.logger.info(
+            f"Retrieval service initialised: collection='{collection_name}', "
+            f"provider='{vector_db_service.get_service_name()}', "
+            f"supports_sparse={self._capabilities.supports_sparse_vectors}, "
+            f"supports_text_search={self._capabilities.supports_server_side_text_search}"
+        )
         # NOTE: the dense embedding model is intentionally NOT cached on the
         # instance. It is re-resolved from configuration on every search so the
         # query service always embeds queries with the exact same model the
         # indexing pipeline used to write the collection. Caching it here risks
         # serving a stale model after the embedding configuration changes.
 
-    async def _ensure_sparse_embeddings(self) -> FastEmbedSparse:
-        """Lazily initialise FastEmbedSparse in a worker thread."""
-        if self.sparse_embeddings is not None:
-            return self.sparse_embeddings
-        async with self._sparse_embeddings_lock:
-            if self.sparse_embeddings is None:
-                self.sparse_embeddings = await asyncio.to_thread(
-                    FastEmbedSparse, model_name="Qdrant/BM25"
-                )
-        return self.sparse_embeddings
+    async def _ensure_sparse_embedder(self) -> SparseEmbedder | None:
+        """Return the SparseEmbedder if this provider uses client-side sparse vectors."""
+        if not self._capabilities.supports_sparse_vectors:
+            return None
+        if self._sparse_embedder is not None:
+            return self._sparse_embedder
+        async with self._sparse_embedder_lock:
+            if self._sparse_embedder is None:
+                embedder = SparseEmbedder()
+                await embedder._ensure_initialized()
+                self._sparse_embedder = embedder
+        return self._sparse_embedder
 
     async def get_llm_instance(self, use_cache: bool = False) -> BaseChatModel | None:
         try:
@@ -213,6 +226,32 @@ class RetrievalService:
         else:
             return None
 
+    @staticmethod
+    def to_qdrant_sparse(sparse: Any) -> Any:
+        """Convert a sparse embedding to Qdrant SparseVector format.
+
+        Kept for backward compatibility with callers that pre-date the generic
+        ``to_generic_sparse_vector`` helper.  New code should use
+        ``app.services.vector_db.models.to_generic_sparse_vector`` instead.
+        """
+        try:
+            from qdrant_client import models as qdrant_models  # type: ignore
+            SparseVector = qdrant_models.SparseVector
+        except Exception:
+            SparseVector = None  # type: ignore[assignment]
+
+        if SparseVector is not None and isinstance(sparse, SparseVector):
+            return sparse
+        if hasattr(sparse, "indices") and hasattr(sparse, "values"):
+            if SparseVector is not None:
+                return SparseVector(indices=list(sparse.indices), values=list(sparse.values))
+            return sparse
+        if isinstance(sparse, dict) and "indices" in sparse and "values" in sparse:
+            if SparseVector is not None:
+                return SparseVector(indices=sparse["indices"], values=sparse["values"])
+            return sparse
+        raise ValueError("Cannot convert sparse embedding to Qdrant SparseVector")
+
     async def _preprocess_query(self, query: str) -> str:
         """
         Preprocess the query text.
@@ -297,8 +336,7 @@ class RetrievalService:
                     )
             else:
                 filter = await self.vector_db_service.filter_collection(
-                        must={"orgId": org_id},
-                        should={"virtualRecordId": list(accessible_virtual_id_to_record_id.keys())}
+                        must={"orgId": org_id, "virtualRecordId": list(accessible_virtual_id_to_record_id.keys())}
                     )
             search_results = await self._execute_parallel_searches(queries, filter, limit)
 
@@ -308,7 +346,7 @@ class RetrievalService:
 
             self.logger.info(f"Search results count: {len(search_results) if search_results else 0}")
 
-            self.logger.debug("Extracting virtualRecordIds from Qdrant results")
+            self.logger.debug("Extracting virtualRecordIds from search results")
             returned_virtual_record_ids = list({
                 result["metadata"]["virtualRecordId"]
                 for result in search_results
@@ -318,7 +356,7 @@ class RetrievalService:
                 and result["metadata"].get("virtualRecordId") is not None
             })
 
-            self.logger.debug(f"Qdrant returned {len(returned_virtual_record_ids)} unique virtualRecordIds")
+            self.logger.debug(f"Vector DB returned {len(returned_virtual_record_ids)} unique virtualRecordIds")
 
             if not returned_virtual_record_ids:
                 return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
@@ -623,79 +661,71 @@ class RetrievalService:
 
         return user_data
 
-    # Convert sparse embeddings to Qdrant's SparseVector format; FastEmbedSparse returns
-    # LangChain's SparseVector, which Prefetch does not accept.
-    @staticmethod
-    def to_qdrant_sparse(sparse: models.SparseVector | dict[str, Any] | object) -> models.SparseVector:
-        if isinstance(sparse, models.SparseVector):
-            return sparse
-        if hasattr(sparse, "indices") and hasattr(sparse, "values"):
-            return models.SparseVector(indices=list(sparse.indices), values=list(sparse.values))
-        if isinstance(sparse, dict) and "indices" in sparse and "values" in sparse:
-            return models.SparseVector(indices=sparse["indices"], values=sparse["values"])
-        raise ValueError("Cannot convert sparse embedding to Qdrant SparseVector")
-
     async def _execute_parallel_searches(self, queries, filter, limit) -> list[dict[str, Any]]:
-        """Execute all searches in parallel using hybrid (dense + sparse) retrieval with RRF fusion."""
-        all_results = []
+        """Execute all searches in parallel using hybrid (dense + sparse) retrieval with RRF fusion.
+
+        The search strategy adapts to provider capabilities:
+        - Providers with sparse vector support (Qdrant): full dense+sparse hybrid with client-side BM25.
+        - Providers without sparse support (OpenSearch, Redis): dense-only search,
+          server-side BM25/text handled by the provider internally.
+        """
+        all_results: list[tuple] = []
 
         dense_embeddings = await self.get_embedding_model_instance()
         if not dense_embeddings:
             raise ValueError("No dense embeddings found")
-        sparse_embeddings = await self._ensure_sparse_embeddings()
-        if not sparse_embeddings:
-            raise ValueError("No sparse embeddings found")
 
-        # OPTIMIZATION: Parallelize dense and sparse embedding generation for multiple queries
+        sparse_embedder = await self._ensure_sparse_embedder()
+
         dense_tasks = [dense_embeddings.aembed_query(query) for query in queries]
-        sparse_tasks = [
-            asyncio.to_thread(sparse_embeddings.embed_query, query) for query in queries
-        ]
-        dense_query_embeddings, sparse_query_embeddings = await asyncio.gather(
-            asyncio.gather(*dense_tasks),
-            asyncio.gather(*sparse_tasks),
-        )
+        supports_sparse = self._capabilities.supports_sparse_vectors
+        supports_text = self._capabilities.supports_server_side_text_search
 
-        query_requests = [
-            models.QueryRequest(
-                prefetch=[
-                    models.Prefetch(
-                        query=dense_embedding,
-                        using="dense",
-                        limit=limit * 2,  # Fetch more candidates
-                    ),
-                    models.Prefetch(
-                        query=self.to_qdrant_sparse(sparse_embedding),
-                        using="sparse",
-                        limit=limit * 2,
-                    ),
-                ],
-                query=models.FusionQuery(fusion=models.Fusion.RRF),  # Reciprocal Rank Fusion
-                with_payload=True,
-                limit=limit,
-                filter=filter,
+        if sparse_embedder is not None and supports_sparse:
+            # Parallelise dense and sparse embedding generation
+            sparse_tasks = [sparse_embedder.embed_query(query) for query in queries]
+            (dense_query_embeddings, sparse_query_embeddings) = await asyncio.gather(
+                asyncio.gather(*dense_tasks),
+                asyncio.gather(*sparse_tasks),
             )
-            for dense_embedding, sparse_embedding in zip(dense_query_embeddings, sparse_query_embeddings)
+        else:
+            dense_query_embeddings = await asyncio.gather(*dense_tasks)
+            sparse_query_embeddings = [None] * len(queries)
+
+        requests = [
+            HybridSearchRequest(
+                dense_query=dense_embedding,
+                # Only send sparse vectors to providers that store them (Qdrant)
+                sparse_query=sparse_embedding if supports_sparse else None,
+                # Send text query to providers that do server-side BM25 (OpenSearch, Redis)
+                text_query=query if supports_text else None,
+                filter=filter,
+                limit=limit,
+                fusion_method=FusionMethod.RRF,
+            )
+            for query, dense_embedding, sparse_embedding in zip(
+                queries, dense_query_embeddings, sparse_query_embeddings
+            )
         ]
+
         search_results = await self.vector_db_service.query_nearest_points(
             collection_name=self.collection_name,
-            requests=query_requests,
+            requests=requests,
         )
-        seen_points = set()
-        for r in search_results:
-                points = r.points
-                for point in points:
-                    if point.id in seen_points:
-                        continue
-                    seen_points.add(point.id)
-                    metadata = point.payload.get("metadata", {})
-                    metadata.update({"point_id": point.id})
-                    doc = Document(
-                        page_content=point.payload.get("page_content", ""),
-                        metadata=metadata
-                    )
-                    score = point.score
-                    all_results.append((doc, score))
+
+        seen_points: set = set()
+        for batch in search_results:
+            for point in batch:
+                if point.id in seen_points:
+                    continue
+                seen_points.add(point.id)
+                metadata = point.payload.get("metadata") or {}
+                metadata["point_id"] = point.id
+                doc = Document(
+                    page_content=point.payload.get("page_content", ""),
+                    metadata=metadata,
+                )
+                all_results.append((doc, point.score))
 
         return self._format_results(all_results)
 

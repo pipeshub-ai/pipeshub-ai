@@ -25,11 +25,6 @@ interface UseCitationSyncOptions {
 interface UseCitationSyncResult {
   /** Currently active citation ID (highlighted in the panel) */
   activeCitationId: string | null;
-  /**
-   * Increments on every citation click, even when the same citation is clicked
-   * again. PDFRenderer uses this to force-replay the blink animation.
-   */
-  citationClickVersion: number;
   /** Dynamic highlight bounding box (changes on citation click) */
   highlightBox: Array<{ x: number; y: number }> | undefined;
   /** Page number on which to show the highlight overlay */
@@ -60,7 +55,6 @@ export function useCitationSync({
   const [activeCitationId, setActiveCitationId] = useState<string | null>(
     initialCitationId ?? null,
   );
-  const [citationClickVersion, setCitationClickVersion] = useState(0);
   const [activeHighlightBox, setActiveHighlightBox] = useState(initialHighlightBox);
   const [activeHighlightPage, setActiveHighlightPage] = useState(initialPage);
 
@@ -87,7 +81,6 @@ export function useCitationSync({
   useEffect(() => {
     if (!initialCitationId) return;
     setActiveCitationId(initialCitationId);
-    setCitationClickVersion((v) => v + 1);
     hasConsumedInitialSeed.current = false;
     initialPageRef.current = initialPage;
 
@@ -137,7 +130,6 @@ export function useCitationSync({
   const handleCitationClick = useCallback(
     (citation: PreviewCitation) => {
       setActiveCitationId(citation.id);
-      setCitationClickVersion((v) => v + 1);
       // Any user-driven citation click supersedes the initial seed
       hasConsumedInitialSeed.current = true;
 
@@ -166,7 +158,6 @@ export function useCitationSync({
 
   return {
     activeCitationId,
-    citationClickVersion,
     highlightBox: activeHighlightBox,
     highlightPage: activeHighlightPage,
     handleCitationClick,

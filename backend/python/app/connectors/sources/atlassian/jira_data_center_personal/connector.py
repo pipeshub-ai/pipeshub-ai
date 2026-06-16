@@ -34,6 +34,7 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.atlassian.core.apps import JiraDataCenterPersonalApp
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
+    adf_to_text,
 )
 from app.models.entities import AppUser, RecordGroup, RecordGroupType
 from app.models.permission import Permission
@@ -434,7 +435,9 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
             project_key = project.get("key")
 
             description = project.get("description")
-            if not description or not isinstance(description, str):
+            if description and isinstance(description, dict):
+                description = adf_to_text(description)
+            elif not description:
                 description = None
 
             record_group = RecordGroup(

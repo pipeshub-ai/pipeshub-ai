@@ -11,8 +11,6 @@
     "build": "next build",
     "start": "next start -p 3001",
     "lint": "next lint",
-    "test:unit": "vitest run",
-    "test:unit:watch": "vitest",
     "deploy:dev": "bash scripts/deploy-dev.sh",
     "test:e2e": "npx playwright test",
     "test:e2e:ui": "npx playwright test --ui",
@@ -72,7 +70,6 @@
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
-    "socket.io-client": "^4.8.3",
     "swr": "^2.3.6",
     "xlsx": "^0.18.5",
     "zustand": "^5.0.9"
@@ -90,9 +87,6 @@
     "eslint-config-next": "^16.2.2",
     "monocart-reporter": "^2.10.1",
     "sharp": "^0.34.5",
-    "typescript": "^5.9.2",
-    "@testing-library/react": "^16.3.0",
-    "jsdom": "^26.1.0",
-    "vitest": "^3.2.4"
+    "typescript": "^5.9.2"
   }
 }

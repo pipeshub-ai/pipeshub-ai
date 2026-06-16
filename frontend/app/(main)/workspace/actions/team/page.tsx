@@ -9,7 +9,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useToastStore } from '@/lib/store/toast-store';
-import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { primaryHttpDocumentationUrl } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
 import {
   ToolsetsApi,
@@ -57,17 +57,12 @@ function TeamActionsPageContent() {
     return 'all';
   }, [instanceTabParam]);
 
-  const [activeTab, setActiveTab] = useState(() => {
-    const tab = searchParams.get('tab');
-    const valid = TEAM_TABS.map((x) => x.value);
-    return tab && valid.includes(tab) ? tab : 'all';
-  });
-
   /** Fallback for type detail when catalog was never loaded (e.g. deep link). */
   const [registryRows, setRegistryRows] = useState<RegistryToolsetRow[]>([]);
   const [catalogRows, setCatalogRows] = useState<BuilderSidebarToolset[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedCatalogSearch, setDebouncedCatalogSearch] = useState('');
+  const [activeTab, setActiveTab] = useState('all');
   const [isLoading, setIsLoading] = useState(true);
   const [createFor, setCreateFor] = useState<RegistryToolsetRow | null>(null);
   const [configureToolset, setConfigureToolset] = useState<BuilderSidebarToolset | null>(null);
@@ -112,6 +107,12 @@ function TeamActionsPageContent() {
     refreshToolsetLists,
     toolsetTypeParam,
   ]);
+
+  useEffect(() => {
+    if (!isAdmin) {
+      router.replace('/workspace/actions/personal/');
+    }
+  }, [isAdmin, router]);
 
   useEffect(() => {
     const tab = searchParams.get('tab');
@@ -285,7 +286,6 @@ function TeamActionsPageContent() {
 
   const handleTabChange = useCallback(
     (val: string) => {
-      setActiveTab(val);
       const params = new URLSearchParams(searchParams.toString());
       params.delete('toolsetType');
       params.delete('instanceTab');
@@ -336,6 +336,8 @@ function TeamActionsPageContent() {
   const handleAddFromType = useCallback(() => {
     if (typeRegistryRow) setCreateFor(typeRegistryRow);
   }, [typeRegistryRow]);
+
+  if (!isAdmin) return null;
 
   if (toolsetTypeParam) {
     return (
@@ -569,30 +571,11 @@ function NavigateButton({ label, onClick }: { label: string; onClick: () => void
   );
 }
 
-function TeamActionsAccessGate() {
-  const router = useRouter();
-  const isAdmin = useUserStore(selectIsAdmin);
-  const isProfileInitialized = useUserStore(selectIsProfileInitialized);
-
-  useEffect(() => {
-    if (!isProfileInitialized) return;
-    if (isAdmin !== true) {
-      router.replace('/workspace/actions/personal/');
-    }
-  }, [isProfileInitialized, isAdmin, router]);
-
-  if (!isProfileInitialized || isAdmin !== true) {
-    return null;
-  }
-
-  return <TeamActionsPageContent />;
-}
-
 export default function TeamActionsPage() {
   return (
     <ServiceGate services={['connector']}>
       <Suspense>
-        <TeamActionsAccessGate />
+        <TeamActionsPageContent />
       </Suspense>
     </ServiceGate>
   );

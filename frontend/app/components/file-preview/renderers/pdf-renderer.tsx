@@ -142,10 +142,10 @@ export function PDFRenderer({
   pagination,
   citations,
   activeCitationId,
-  citationClickVersion,
   onHighlightClick,
 }: PDFRendererProps) {
   const scrollViewerTo = useRef<(highlight: IHighlight) => void>(() => {});
+  const [selectedHighlightId, setSelectedHighlightId] = useState<string | null>(null);
   const [viewerReadyEpoch, setViewerReadyEpoch] = useState(0);
 
   // Stable ref to latest pagination callbacks — avoids effects re-running on every render
@@ -227,16 +227,10 @@ export function PDFRenderer({
       .filter((h): h is IHighlight => h !== null);
   }, [citations]);
 
-  // Inject custom highlight CSS
+  // Inject custom highlight CSS (matching demo styling)
   useEffect(() => {
     const style = document.createElement('style');
     style.textContent = `
-
-      @keyframes citationBracketPulse {
-        0%, 100% { opacity: 1; }
-        45%      { opacity: 0.15; }
-      }
-
       .Highlight__part {
         cursor: pointer;
         position: absolute;
@@ -246,6 +240,7 @@ export function PDFRenderer({
 
       .Highlight--scrolledTo .Highlight__part {
         background: rgba(139, 250, 209, 0.4);
+        position: relative;
       }
 
       .Highlight--scrolledTo .Highlight__part::before {
@@ -264,7 +259,6 @@ export function PDFRenderer({
         box-sizing: border-box;
         z-index: 10;
         pointer-events: none;
-        animation: citationBracketPulse 0.85s ease-in-out 3 forwards;
       }
 
       .Highlight--scrolledTo .Highlight__part::after {
@@ -283,7 +277,6 @@ export function PDFRenderer({
         box-sizing: border-box;
         z-index: 10;
         pointer-events: none;
-        animation: citationBracketPulse 0.85s ease-in-out 3 forwards;
       }
     `;
     document.head.appendChild(style);
@@ -386,6 +379,11 @@ export function PDFRenderer({
       // Ignore transient pdf.js layout errors while the viewer is mounting/unmounting.
     }
   }, [scale, fileUrl]);
+
+  // Sync selected highlight with activeCitationId from external citation panel
+  useEffect(() => {
+    setSelectedHighlightId(activeCitationId ?? null);
+  }, [activeCitationId]);
 
   // Scroll to a citation when activeCitationId changes or when highlights load.
   // If the viewer isn't ready yet (PDF still loading), park the scroll in
@@ -521,7 +519,7 @@ export function PDFRenderer({
               onSelectionFinished={() => null}
               highlightTransform={(
                 highlight,
-                _index,
+                index,
                 setTip,
                 hideTip,
                 _viewportToScaled,
@@ -529,13 +527,14 @@ export function PDFRenderer({
                 _isScrolledTo,
               ) => {
                 const isHighlighted =
-                  activeCitationId !== null &&
-                  activeCitationId === highlight.id;
+                  selectedHighlightId !== null &&
+                  selectedHighlightId === highlight.id;
 
                 const isTextHighlight = !highlight.content?.image;
                 const component = isTextHighlight ? (
                   <div
                     onClick={() => {
+                      setSelectedHighlightId(highlight.id);
                       onHighlightClick?.(highlight.id);
                     }}
                     style={{
@@ -561,15 +560,15 @@ export function PDFRenderer({
                     popupContent={<div />}
                     onMouseOver={() => {}}
                     onMouseOut={hideTip}
-                    key={`${activeCitationId ?? 'none'}-${citationClickVersion ?? 0}`}
+                    key={index}
                   >
                     {component}
                   </Popup>
                 );
               }}
               highlights={
-                activeCitationId
-                  ? highlights.filter((h) => h.id === activeCitationId)
+                selectedHighlightId
+                  ? highlights.filter((h) => h.id === selectedHighlightId)
                   : []
               }
             />

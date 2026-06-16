@@ -1,5 +1,5 @@
 """
-Broad unit tests for jira_data_center.connector: wiki parsing utilities,
+Broad unit tests for jira_data_center.connector: ADF helpers, parsing utilities,
 issue extraction, filter option error paths, and smaller public/async paths that
 were previously uncovered without standing up Jira DC.
 """
@@ -19,8 +19,11 @@ from app.models.blocks import ChildRecord, ChildType, GroupSubType
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
     _normalize_jira_dc_group_row,
+    adf_to_text,
+    adf_to_text_with_images,
     build_jira_attachment_filename_lookup,
     extract_jira_wiki_attachment_filenames,
+    extract_media_from_adf,
     jira_storage_text_to_markdown_with_images,
 )
 from app.models.entities import (
@@ -133,6 +136,240 @@ def _record_group_proj() -> RecordGroup:
         connector_id="conn-dc-cov",
         group_type=RecordGroupType.PROJECT,
     )
+
+
+# -----------------------------------------------------------------------------
+# ADF + media helpers
+# -----------------------------------------------------------------------------
+
+
+def _adf_doc(*nodes: object) -> dict[str, object]:
+    """ADF body shape processed by ``adf_to_text`` (top-level ``content`` list)."""
+    return {"content": list(nodes)}
+
+
+@pytest.mark.parametrize(
+    "adf, expected_substr",
+    [
+        pytest.param(None, "", id="adf_none"),
+        pytest.param([], "", id="adf_not_dict"),
+        (
+            _adf_doc(
+                {"type": "paragraph", "content": [{"type": "text", "text": "X", "marks": [{"type": "strong"}]}]}
+            ),
+            "**X**",
+        ),
+        (
+            _adf_doc(
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {
+                                    "type": "bulletList",
+                                    "content": [{"type": "listItem", "content": [{"type": "text", "text": "nested"}]}],
+                                },
+                                {"type": "paragraph", "content": [{"type": "text", "text": "root"}]},
+                            ],
+                        }
+                    ],
+                }
+            ),
+            "- nested",
+        ),
+        (
+            _adf_doc(
+                {
+                    "type": "numberedList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "One"}]}],
+                        }
+                    ],
+                }
+            ),
+            "1. One",
+        ),
+        (
+            _adf_doc(
+                {
+                    "type": "blockquote",
+                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "quoted"}]}],
+                }
+            ),
+            "> quoted",
+        ),
+        (
+            _adf_doc({"type": "paragraph", "content": [{"type": "bulletList", "content": []}]}),
+            "",
+        ),
+        (
+            _adf_doc({"type": "paragraph", "content": [{"type": "text", "text": "a"}]}),
+            "a",
+        ),
+        (
+            _adf_doc({"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "Hi"}]}),
+            "## Hi",
+        ),
+        (
+            _adf_doc(
+                {"type": "paragraph", "content": [{"type": "text", "text": "c", "marks": [{"type": "code"}]}]}
+            ),
+            "`c`",
+        ),
+        (
+            _adf_doc({"type": "paragraph", "content": [{"type": "text", "text": "x", "marks": [{"type": "em"}]}]}),
+            "*x*",
+        ),
+        (
+            _adf_doc(
+                {"type": "paragraph", "content": [{"type": "text", "text": "del", "marks": [{"type": "strike"}]}]}
+            ),
+            "~~del~~",
+        ),
+        (
+            _adf_doc(
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "lnk", "marks": [{"type": "link", "attrs": {"href": "https://x"}}]}
+                    ],
+                }
+            ),
+            "[lnk](https://x)",
+        ),
+        (_adf_doc({"type": "codeBlock", "attrs": {"language": "py"}, "content": [{"type": "text", "text": "a=1"}]}), "```py"),
+        (_adf_doc({"type": "paragraph", "content": [{"type": "hardBreak"}, {"type": "text", "text": "after"}]}), "after"),
+        (
+            _adf_doc({"type": "paragraph", "content": [{"type": "rule"}, {"type": "text", "text": ""}]}),
+            "---",
+        ),
+        (_adf_doc({"type": "mention", "attrs": {"text": "bob"}}), "@bob"),
+        (_adf_doc({"type": "emoji", "attrs": {"shortName": "rocket"}}), ":rocket:"),
+        (
+            _adf_doc(
+                {"type": "paragraph", "content": [{"type": "inlineCard", "attrs": {"url": "https://u"}}]},
+            ),
+            "[https://u](https://u)",
+        ),
+        (
+            _adf_doc({"type": "paragraph", "content": [{"type": "status", "attrs": {"text": "DONE"}}]}),
+            "[DONE]",
+        ),
+        (
+            _adf_doc(
+                {"type": "paragraph", "content": [{"type": "date", "attrs": {"timestamp": "1700000000000"}}]},
+            ),
+            "2023-11-14",
+        ),
+        (
+            _adf_doc(
+                {"type": "paragraph", "content": [{"type": "date", "attrs": {"timestamp": "not-int"}}]},
+            ),
+            "not-int",
+        ),
+        (
+            _adf_doc({"type": "paragraph", "content": [{"type": "placeholder", "attrs": {"text": "PH"}}]}),
+            "PH",
+        ),
+        (
+            _adf_doc(
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "unknownWithContent", "content": [{"type": "text", "text": "v"}]}],
+                },
+            ),
+            "v",
+        ),
+        (
+            _adf_doc(
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": "tableHeader",
+                                    "content": [{"type": "text", "text": "h", "marks": [{"type": "strong"}]}],
+                                },
+                                {
+                                    "type": "tableCell",
+                                    "content": [{"type": "text", "text": "cell|broken"}],
+                                },
+                            ],
+                        },
+                        {
+                            "type": "tableRow",
+                            "content": [{"type": "tableCell", "content": [{"type": "text", "text": "r"}]}],
+                        },
+                    ],
+                },
+            ),
+            "| h",
+        ),
+        pytest.param(
+            _adf_doc({"type": "paragraph", "content": [{"type": "media", "attrs": {"id": "m1", "alt": ""}}]}),
+            "![attachment]",
+            id="media_fallback_no_cache",
+        ),
+    ],
+)
+def test_adf_to_text_variants(adf, expected_substr: str):
+    md = adf_to_text(adf)
+    assert expected_substr in md if expected_substr else md == ""
+
+
+def test_adf_to_text_media_with_cache():
+    md = adf_to_text(
+        {"type": "paragraph", "content": [{"type": "media", "attrs": {"id": "mid", "alt": "pic"}}]},
+        {"mid": "data:image/png;base64,abcd"},
+    )
+    assert "data:image/png;base64,abcd" in md
+
+
+@pytest.mark.parametrize(
+    "root",
+    [
+        {"type": "mediaSingle", "content": [{"type": "media", "attrs": {"id": "", "alt": "", "__fileName": "a.pdf"}}]},
+        {"type": "paragraph", "content": [{"type": "media", "attrs": {"id": "", "alt": "", "__fileName": "ignored"}}]},
+    ],
+)
+def test_extract_media_prefers_filename_and_skips_blank_id(root: dict):
+    assert extract_media_from_adf({"content": [root]}) == []
+
+
+def test_extract_media_root_without_content_wrap():
+    adf = {"type": "paragraph", "content": [{"type": "text", "text": "n"}]}
+    assert extract_media_from_adf(adf) == []
+    nested = extract_media_from_adf(
+        {
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "media", "attrs": {"id": "zz", "__fileName": "f"}}]}
+            ],
+        }
+    )
+    assert nested[0]["filename"] == "f"
+
+
+@pytest.mark.asyncio
+async def test_adf_to_text_with_images_success_and_fetch_error():
+    adf = {
+        "content": [{"type": "paragraph", "content": [{"type": "media", "attrs": {"id": "mid", "alt": "alt"}}]}]
+    }
+    fetch_ok = AsyncMock(return_value="data:image/png;base64,xx")
+    ok_md = await adf_to_text_with_images(adf, fetch_ok)
+    assert "data:image/png;base64,xx" in ok_md
+
+    async def boom(_mid, _alt):
+        raise RuntimeError("x")
+
+    err_md = await adf_to_text_with_images(adf, boom)
+    assert "attachment" in err_md or "[" in err_md
 
 
 # -----------------------------------------------------------------------------
@@ -365,7 +602,7 @@ class TestExtractIssueData:
             "fields": {
                 "summary": "Title",
                 "description": {"type": "paragraph", "content": [{"type": "text", "text": "d"}]},
-                "issuetype": {"name": "Epic", "subtask": False},
+                "issuetype": {"name": "Bug", "hierarchyLevel": 1},
                 "parent": {"id": "p1", "key": "P-99"},
                 "status": {"name": "Doing"},
                 "priority": {"name": "Highest"},
@@ -383,7 +620,7 @@ class TestExtractIssueData:
         assert row["parent_external_id"] == "p1"
         assert "Issue Type:" in row["description"]
         assert row["creator_email"] == "u@example.com"
-        mapper.map_type.assert_called_once_with("Epic")
+        mapper.map_type.assert_called_once_with("Bug")
 
 
 @pytest.mark.asyncio
@@ -691,85 +928,6 @@ async def test_fetch_users_paginates_and_maps_legacy_key():
 
 
 @pytest.mark.asyncio
-async def test_fetch_users_builds_name_to_source_id():
-    conn = _make_connector()
-    conn.data_source = MagicMock()
-
-    r1 = MagicMock()
-    r1.status = HttpStatusCode.OK.value
-    r1.json = MagicMock(
-        return_value=[
-            {
-                "name": "darshan",
-                "key": "JIRAUSER10000",
-                "emailAddress": "d@example.com",
-                "active": True,
-            }
-        ]
-    )
-    r2 = MagicMock()
-    r2.status = HttpStatusCode.OK.value
-    r2.json = MagicMock(return_value=[])
-
-    ds = MagicMock()
-    ds.get_user_search_v2 = AsyncMock(side_effect=[r1, r2])
-
-    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        users = await conn._fetch_users()
-
-    assert len(users) == 1
-    assert users[0].source_user_id == "JIRAUSER10000"
-    assert conn._dc_name_to_source_id["darshan"] == "JIRAUSER10000"
-
-
-@pytest.mark.asyncio
-async def test_sync_project_roles_resolves_top_level_username():
-    conn = _make_connector()
-    conn.data_source = MagicMock()
-    conn._dc_name_to_source_id = {"darshan": "JIRAUSER10000"}
-    u = AppUser(
-        app_name=Connectors.JIRA_DATA_CENTER,
-        connector_id=conn.connector_id,
-        source_user_id="JIRAUSER10000",
-        org_id="org-dc-cov",
-        email="d@example.com",
-        full_name="Darshan",
-        is_active=True,
-    )
-    list_resp = MagicMock()
-    list_resp.status = HttpStatusCode.OK.value
-    list_resp.json = MagicMock(
-        return_value={"Administrators": "https://jira/rest/api/2/project/P/role/10002"}
-    )
-    role_resp = MagicMock()
-    role_resp.status = HttpStatusCode.OK.value
-    role_resp.json = MagicMock(
-        return_value={
-            "name": "Administrators",
-            "actors": [
-                {
-                    "type": "atlassian-user-role-actor",
-                    "name": "darshan",
-                    "displayName": "Darshan",
-                },
-            ],
-        }
-    )
-
-    ds = MagicMock()
-    ds.get_project_roles_v2 = AsyncMock(return_value=list_resp)
-    ds.get_project_role_v2 = AsyncMock(return_value=role_resp)
-
-    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        await conn._sync_project_roles(["P"], [u], {})
-
-    conn.data_entities_processor.on_new_app_roles.assert_awaited()
-    args = conn.data_entities_processor.on_new_app_roles.call_args[0][0]
-    assert len(args) == 1
-    assert args[0][1] == [u]
-
-
-@pytest.mark.asyncio
 async def test_fetch_users_non_ok_raises():
     conn = _make_connector()
     conn.data_source = MagicMock()
@@ -806,25 +964,14 @@ async def test_fetch_application_roles_ok():
     ok.status = HttpStatusCode.OK.value
     ok.json = MagicMock(
         return_value=[
-            {
-                "key": "jira-software",
-                "groups": [
-                    "jira-administrators",
-                    "jira-software-users",
-                    "jira-system-administrators",
-                ],
-                "name": "Jira Software",
-                "defaultGroups": ["jira-software-users"],
-            },
+            {"key": "k", "groupDetails": [{"groupId": "g2", "name": "G2"}]},
         ]
     )
     ds = MagicMock()
     ds.get_all_application_roles_v2 = AsyncMock(return_value=ok)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         m = await conn._fetch_application_roles_to_groups_mapping()
-    assert "jira-software" in m
-    assert len(m["jira-software"]) == 3
-    assert m["jira-software"][0]["name"] == "jira-administrators"
+    assert "k" in m and m["k"][0]["groupId"] == "g2"
 
 
 @pytest.mark.asyncio
@@ -842,47 +989,54 @@ async def test_fetch_application_roles_non_ok_returns_empty():
 
 
 def _perm_resp():
-    permissions = [
-        {"permission": "OTHER", "holder": {"type": "group", "value": "x"}},
-        {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "value": "gid1"}},
-        {
-            "permission": "BROWSE_PROJECTS",
-            "holder": {"type": "applicationRole", "parameter": "jira-software"},
-        },
-        {
-            "permission": "BROWSE_PROJECTS",
-            "holder": {
-                "type": "user",
-                "parameter": "acc",
-                "user": {"emailAddress": "u@example.com"},
-            },
-        },
-        {"permission": "BROWSE_PROJECTS", "holder": {"type": "anyone"}},
-        {
-            "permission": "BROWSE_PROJECTS",
-            "holder": {
-                "type": "projectRole",
-                "parameter": "10400",
-                "projectRole": {"name": "Developers", "id": "10400"},
-            },
-        },
-        {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectLead"}},
-        {
-            "permission": "BROWSE_PROJECTS",
-            "holder": {
-                "type": "projectRole",
-                "parameter": "1",
-                "projectRole": {"name": "atlassian-addons-project-access"},
-            },
-        },
-        {"permission": "BROWSE_PROJECTS", "holder": {"type": "unknownThing", "parameter": "z"}},
-    ]
     sch = MagicMock()
     sch.status = HttpStatusCode.OK.value
-    sch.json = MagicMock(return_value={"id": 10, "permissions": permissions})
+    sch.json = MagicMock(
+        return_value={
+            "id": 10,
+        }
+    )
     grants = MagicMock()
     grants.status = HttpStatusCode.OK.value
-    grants.json = MagicMock(return_value={"permissions": permissions})
+    grants.json = MagicMock(
+        return_value={
+            "permissions": [
+                {"permission": "OTHER", "holder": {"type": "group", "value": "x"}},
+                {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "value": "gid1"}},
+                {
+                    "permission": "BROWSE_PROJECTS",
+                    "holder": {"type": "applicationRole", "parameter": "jira-software"},
+                },
+                {
+                    "permission": "BROWSE_PROJECTS",
+                    "holder": {
+                        "type": "user",
+                        "parameter": "acc",
+                        "user": {"emailAddress": "u@example.com"},
+                    },
+                },
+                {"permission": "BROWSE_PROJECTS", "holder": {"type": "anyone"}},
+                {
+                    "permission": "BROWSE_PROJECTS",
+                    "holder": {
+                        "type": "projectRole",
+                        "parameter": "10400",
+                        "projectRole": {"name": "Developers", "id": "10400"},
+                    },
+                },
+                {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectLead"}},
+                {
+                    "permission": "BROWSE_PROJECTS",
+                    "holder": {
+                        "type": "projectRole",
+                        "parameter": "1",
+                        "projectRole": {"name": "atlassian-addons-project-access"},
+                    },
+                },
+                {"permission": "BROWSE_PROJECTS", "holder": {"type": "unknownThing", "parameter": "z"}},
+            ],
+        }
+    )
     return sch, grants
 
 
@@ -899,7 +1053,6 @@ async def test_fetch_project_permission_scheme_dc_branches():
     }
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         perms = await conn._fetch_project_permission_scheme("PROJ", app_map)
-    ds.get_permission_scheme_grants_v2.assert_not_awaited()
     types = {(p.entity_type, p.email, p.external_id) for p in perms}
     assert (EntityType.GROUP, None, "gid1") in types
     assert (EntityType.GROUP, None, "expanded-g") in types
@@ -907,75 +1060,6 @@ async def test_fetch_project_permission_scheme_dc_branches():
     assert (EntityType.ORG, None, "anyone_authenticated") in types
     assert (EntityType.ROLE, None, "PROJ_10400") in types
     assert (EntityType.ROLE, None, "PROJ_projectLead") in types
-
-
-@pytest.mark.asyncio
-async def test_fetch_project_permission_scheme_group_uses_parameter():
-    """DC permission schemes put the group name in ``holder.parameter``, not ``value``."""
-    conn = _make_connector()
-    conn.data_source = MagicMock()
-    sch = MagicMock()
-    sch.status = HttpStatusCode.OK.value
-    sch.json = MagicMock(
-        return_value={
-            "id": 10000,
-            "permissions": [
-                {
-                    "permission": "BROWSE_PROJECTS",
-                    "holder": {
-                        "type": "group",
-                        "parameter": "jira-software-users",
-                    },
-                },
-            ],
-        }
-    )
-    ds = MagicMock()
-    ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
-    ds.get_permission_scheme_grants_v2 = AsyncMock()
-    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        perms = await conn._fetch_project_permission_scheme("TEST", {})
-    ds.get_permission_scheme_grants_v2.assert_not_awaited()
-    assert len(perms) == 1
-    assert perms[0].entity_type == EntityType.GROUP
-    assert perms[0].external_id == "jira-software-users"
-
-
-@pytest.mark.asyncio
-async def test_fetch_project_permission_scheme_user_from_embedded_scheme():
-    """Step 1 project permissionscheme embeds ``user.key``; step 2 only has username."""
-    conn = _make_connector()
-    conn.data_source = MagicMock()
-    sch = MagicMock()
-    sch.status = HttpStatusCode.OK.value
-    sch.json = MagicMock(
-        return_value={
-            "id": 10000,
-            "permissions": [
-                {
-                    "permission": "BROWSE_PROJECTS",
-                    "holder": {
-                        "type": "user",
-                        "parameter": "JIRAUSER10000",
-                        "user": {
-                            "key": "JIRAUSER10000",
-                            "name": "darshan",
-                            "emailAddress": "darshan@example.com",
-                        },
-                    },
-                },
-            ],
-        }
-    )
-    ds = MagicMock()
-    ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
-    ds.get_permission_scheme_grants_v2 = AsyncMock()
-    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        perms = await conn._fetch_project_permission_scheme("TEST", {})
-    ds.get_permission_scheme_grants_v2.assert_not_awaited()
-    assert len(perms) == 1
-    assert perms[0].entity_type == EntityType.USER
-    assert perms[0].email == "darshan@example.com"
 
 
 @pytest.mark.asyncio
@@ -1080,7 +1164,7 @@ class TestExtractIssueDataBranches:
             "key": "K-2",
             "fields": {
                 "summary": "S",
-                "issuetype": {"name": "Bug", "subtask": False},
+                "issuetype": {"name": "Bug", "hierarchyLevel": 0},
             },
         }
         row = conn._extract_issue_data(issue, {})
@@ -1107,6 +1191,30 @@ class TestExtractIssueDataBranches:
 # -----------------------------------------------------------------------------
 # Deeper connector branches: groups, projects, issues batch, reindex, media
 # -----------------------------------------------------------------------------
+
+
+def test_extract_media_skips_non_dict_nodes_in_content():
+    adf = {"content": [{"type": "paragraph", "content": ["bad", {"type": "media", "attrs": {"id": "z", "alt": "a"}}]}]}
+    out = extract_media_from_adf(adf)
+    assert len(out) == 1 and out[0]["id"] == "z"
+
+
+def test_adf_to_text_underline_and_link_without_href():
+    ul = adf_to_text(
+        _adf_doc(
+            {"type": "paragraph", "content": [{"type": "text", "text": "u", "marks": [{"type": "underline"}]}]},
+        )
+    )
+    assert "*u*" in ul
+    plain = adf_to_text(
+        _adf_doc(
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": "x", "marks": [{"type": "link", "attrs": {}}]}],
+            },
+        )
+    )
+    assert plain.strip() == "x"
 
 
 @pytest.mark.asyncio
@@ -1147,6 +1255,52 @@ async def test_sync_user_groups_no_groups_returns_empty():
     with patch.object(conn, "_fetch_groups", new_callable=AsyncMock, return_value=[]):
         assert await conn._sync_user_groups([]) == {}
     conn.data_entities_processor.on_new_user_groups.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_groups_paginates_dict_payload_is_last():
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    r1 = MagicMock()
+    r1.status = HttpStatusCode.OK.value
+    r1.json = MagicMock(
+        return_value={
+            "values": [{"name": "a", "groupId": "1"}],
+            "isLast": False,
+        }
+    )
+    r2 = MagicMock()
+    r2.status = HttpStatusCode.OK.value
+    r2.json = MagicMock(
+        return_value={
+            "values": [{"name": "b", "groupId": "2"}],
+            "isLast": True,
+        }
+    )
+    ds = MagicMock()
+    ds.bulk_get_groups_v2 = AsyncMock(side_effect=[r1, r2])
+    # DC pagination stops after a short page unless maxResults/page size matches: with default
+    # GROUP_PAGE_SIZE=50 a single-row ``isLast: false`` batch still breaks (len < max_results).
+    with patch(
+        "app.connectors.sources.atlassian.jira_data_center.connector.GROUP_PAGE_SIZE",
+        1,
+    ):
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            groups = await conn._fetch_groups()
+    assert [g["groupId"] for g in groups] == ["1", "2"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_groups_non_ok_stops():
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    bad = MagicMock()
+    bad.status = 500
+    bad.text = MagicMock(return_value="err")
+    ds = MagicMock()
+    ds.bulk_get_groups_v2 = AsyncMock(return_value=bad)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        assert await conn._fetch_groups() == []
 
 
 @pytest.mark.asyncio
@@ -1524,19 +1678,6 @@ def test_extract_jira_wiki_attachment_filenames():
     assert extract_jira_wiki_attachment_filenames(text) == ["image-20260516-133226.png"]
 
 
-def test_extract_jira_wiki_attachment_filenames_bracket_syntax():
-    text = "[^Ack p2.pdf]Root cause fixed.\r\n[^Certificate-1.pdf]Next steps."
-    assert extract_jira_wiki_attachment_filenames(text) == [
-        "Ack p2.pdf",
-        "Certificate-1.pdf",
-    ]
-
-
-def test_extract_jira_wiki_attachment_filenames_mixed_syntax_dedupes():
-    text = "!doc.pdf|width=100! and [^doc.pdf] again"
-    assert extract_jira_wiki_attachment_filenames(text) == ["doc.pdf"]
-
-
 @pytest.mark.asyncio
 async def test_jira_storage_text_to_markdown_with_images_inlines_png():
     mime = {"13352": "image/png"}
@@ -1557,29 +1698,6 @@ async def test_jira_storage_text_to_markdown_with_images_inlines_png():
     assert "data:image/png;base64,QUJD" in md
     assert "!image-20260516" not in md
     assert embedded == {"13352"}
-
-
-@pytest.mark.asyncio
-async def test_jira_storage_text_to_markdown_bracket_syntax_inlines_png():
-    mime = {"10014": "image/png"}
-    lookup = build_jira_attachment_filename_lookup(
-        mime,
-        None,
-        [{"id": "10014", "filename": "dk.png", "mimeType": "image/png"}],
-    )
-
-    async def fetcher(att_id: str, filename: str) -> str:
-        assert att_id == "10014"
-        assert filename == "dk.png"
-        return "data:image/png;base64,QUJD"
-
-    wiki = "[^dk.png]Screenshot attached."
-    md, embedded = await jira_storage_text_to_markdown_with_images(
-        wiki, fetcher, lookup, mime
-    )
-    assert "data:image/png;base64,QUJD" in md
-    assert "[^dk.png]" not in md
-    assert embedded == {"10014"}
 
 
 @pytest.mark.asyncio
@@ -1945,8 +2063,173 @@ async def test_check_and_fetch_updated_attachment_missing_parent_and_unchanged()
 
 
 # -----------------------------------------------------------------------------
-# Coverage push: sync filters, groups/members list payloads, streaming
+# Coverage push: ADF branches, sync filters, groups/members list payloads, streaming
 # -----------------------------------------------------------------------------
+
+
+def test_extract_media_from_adf_rejects_non_dict_doc():
+    assert extract_media_from_adf(None) == []  # type: ignore[arg-type]
+    assert extract_media_from_adf([]) == []  # type: ignore[arg-type]
+
+
+def test_adf_to_text_single_root_node_without_top_level_content():
+    md = adf_to_text({"type": "text", "text": "solo"})
+    assert md == "solo"
+
+
+@pytest.mark.parametrize(
+    "fragment, needle",
+    [
+        (
+            {
+                "type": "bulletList",
+                "content": [{"type": "paragraph", "content": [{"type": "text", "text": "x"}]}],
+            },
+            "- x",
+        ),
+        (
+            {
+                "type": "unorderedList",
+                "content": [
+                    {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "u"}]}]},
+                ],
+            },
+            "- u",
+        ),
+        (
+            {
+                "type": "orderedList",
+                "content": [{"type": "paragraph", "content": [{"type": "text", "text": "orphan"}]}],
+            },
+            "1. orphan",
+        ),
+        (
+            {
+                "type": "taskList",
+                "content": [
+                    {"type": "taskItem", "attrs": {"state": "DONE"}, "content": [{"type": "text", "text": "done"}]},
+                ],
+            },
+            "[x]",
+        ),
+        (
+            {
+                "type": "taskList",
+                "content": [
+                    {"type": "taskItem", "attrs": {"state": "TODO"}, "content": [{"type": "text", "text": "todo"}]},
+                ],
+            },
+            "[ ]",
+        ),
+        (
+            {
+                "type": "decisionList",
+                "content": [{"type": "decisionItem", "attrs": {"state": "DECIDED"}, "content": [{"type": "text", "text": "d"}]}],
+            },
+            "✓",
+        ),
+        (
+            {
+                "type": "decisionList",
+                "content": [{"type": "decisionItem", "attrs": {"state": "OPEN"}, "content": [{"type": "text", "text": "d"}]}],
+            },
+            "◇",
+        ),
+        (
+            {"type": "panel", "attrs": {"panelType": "note"}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "p"}]}]},
+            "NOTE",
+        ),
+        (
+            {"type": "inlineCard", "attrs": {"url": "https://card.example"}},
+            "https://card.example",
+        ),
+        (
+            {"type": "inlineCode", "text": "ic"},
+            "`ic`",
+        ),
+        (
+            {"type": "listItem", "content": [{"type": "text", "text": "li"}]},
+            "li",
+        ),
+        (
+            {
+                "type": "blockquote",
+                "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}, {"type": "hardBreak"}, {"type": "text", "text": "b"}]}],
+            },
+            "> a",
+        ),
+        (
+            {"type": "heading", "attrs": {"level": 3}, "content": [{"type": "text", "text": "h"}]},
+            "### h",
+        ),
+        (
+            {"type": "expand", "attrs": {"title": "More"}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "in"}]}]},
+            "**More**",
+        ),
+        (
+            {
+                "type": "layoutSection",
+                "content": [
+                    {"type": "layoutColumn", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "L"}]}]},
+                    {"type": "layoutColumn", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "R"}]}]},
+                ],
+            },
+            "L",
+        ),
+        (
+            {"type": "mediaSingle", "content": [{"type": "media", "attrs": {"id": "m1", "alt": "pic"}}]},
+            "![pic]",
+        ),
+        (
+            {"type": "unknownWithContent", "content": [{"type": "text", "text": "fall"}]},
+            "fall",
+        ),
+        (
+            {"type": "paragraph", "content": [{"type": "date", "attrs": {"timestamp": "not-int"}}]},
+            "not-int",
+        ),
+        (
+            {"type": "paragraph", "content": [{"type": "emoji", "attrs": {"shortName": "", "text": "E"}}]},
+            "E",
+        ),
+        (
+            {"type": "paragraph", "content": [{"type": "mention", "attrs": {"id": "mid"}}]},
+            "@mid",
+        ),
+    ],
+)
+def test_adf_to_text_more_node_types(fragment: dict, needle: str):
+    assert needle in adf_to_text(_adf_doc(fragment))
+
+
+def test_adf_to_text_media_in_list_depth_uses_cache_shape():
+    adf = {
+        "content": [
+            {
+                "type": "bulletList",
+                "content": [
+                    {
+                        "type": "listItem",
+                        "content": [{"type": "media", "attrs": {"id": "z9", "alt": "a"}}],
+                    },
+                ],
+            },
+        ]
+    }
+    md = adf_to_text(adf, {"z9": "data:image/png;base64,xx"})
+    assert "data:image/png;base64,xx" in md
+
+
+@pytest.mark.asyncio
+async def test_adf_to_text_with_images_non_dict_and_fetch_exception():
+    assert await adf_to_text_with_images(None, AsyncMock()) == ""  # type: ignore[arg-type]
+
+    async def boom(_a, _b):
+        raise RuntimeError("fetch")
+
+    adf = {"content": [{"type": "paragraph", "content": [{"type": "media", "attrs": {"id": "x", "alt": ""}}]}]}
+    md = await adf_to_text_with_images(adf, boom)
+    assert "attachment" in md or "!" in md
 
 
 @pytest.mark.asyncio
@@ -2127,6 +2410,45 @@ async def test_sync_user_groups_single_group_failure_continues():
 
 
 @pytest.mark.asyncio
+async def test_fetch_groups_list_payload_two_calls():
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    r1 = MagicMock()
+    r1.status = HttpStatusCode.OK.value
+    r1.json = MagicMock(return_value=[{"name": "a", "groupId": "1"}])
+    r2 = MagicMock()
+    r2.status = HttpStatusCode.OK.value
+    r2.json = MagicMock(return_value=[{"name": "b", "groupId": "2"}])
+    ds = MagicMock()
+    ds.bulk_get_groups_v2 = AsyncMock(side_effect=[r1, r2])
+    with patch("app.connectors.sources.atlassian.jira_data_center.connector.GROUP_PAGE_SIZE", 1):
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            groups = await conn._fetch_groups()
+    assert [g["groupId"] for g in groups] == ["1", "2"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_groups_malformed_payload_and_exception():
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    bad = MagicMock()
+    bad.status = HttpStatusCode.OK.value
+    bad.json = MagicMock(return_value=12345)
+    ds = MagicMock()
+    ds.bulk_get_groups_v2 = AsyncMock(return_value=bad)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        assert await conn._fetch_groups() == []
+
+    boom = MagicMock()
+    boom.status = HttpStatusCode.OK.value
+    boom.json = MagicMock(side_effect=OSError("net"))
+    ds2 = MagicMock()
+    ds2.bulk_get_groups_v2 = AsyncMock(return_value=boom)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds2):
+        assert await conn._fetch_groups() == []
+
+
+@pytest.mark.asyncio
 async def test_fetch_group_members_list_payload_pages():
     conn = _make_connector()
     conn.data_source = MagicMock()
@@ -2224,7 +2546,7 @@ async def test_sync_project_lead_roles_warns_when_lead_has_no_account_id():
 
 
 @pytest.mark.asyncio
-async def test_fetch_projects_non_string_description_ignored():
+async def test_fetch_projects_adf_description_converted():
     conn = _make_connector()
     conn.data_source = MagicMock()
     row = _sample_project_row(
@@ -2240,8 +2562,7 @@ async def test_fetch_projects_non_string_description_ignored():
                 return_value=[Permission(entity_type=EntityType.GROUP, external_id="g", type=PermissionType.READ)],
             ) as fp:
                 groups, raw = await conn._fetch_projects()
-    assert groups[0][0].description is None
-    assert isinstance(raw[0]["description"], dict)
+    assert raw[0]["description"] == "adf" or "adf" in str(raw[0]["description"])
     fp.assert_awaited()
     assert groups and groups[0][1]
 
@@ -2760,6 +3081,56 @@ async def test_get_filter_options_project_keys_delegates():
     assert out is expected
 
 
+def test_adf_to_text_table_heading_strip_marks_and_list_in_paragraph():
+    md = adf_to_text(
+        _adf_doc(
+            {
+                "type": "table",
+                "content": [
+                    {
+                        "type": "tableRow",
+                        "content": [
+                            {
+                                "type": "tableHeader",
+                                "content": [{"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "H"}]}],
+                            },
+                        ],
+                    },
+                ],
+            },
+        )
+    )
+    assert "| H" in md
+    md2 = adf_to_text(
+        _adf_doc(
+            {
+                "type": "paragraph",
+                "content": [
+                    {"type": "bulletList", "content": [{"type": "listItem", "content": [{"type": "text", "text": "x"}]}]},
+                ],
+            },
+        )
+    )
+    assert "- x" in md2
+
+
+def test_adf_to_text_media_in_nested_list_without_cache():
+    adf = {
+        "content": [
+            {
+                "type": "bulletList",
+                "content": [
+                    {
+                        "type": "listItem",
+                        "content": [{"type": "media", "attrs": {"id": "m", "alt": "pic"}}],
+                    },
+                ],
+            },
+        ]
+    }
+    assert "![pic]" in adf_to_text(adf)
+
+
 @pytest.mark.asyncio
 async def test_fetch_users_paginates_two_pages():
     conn = _make_connector()
@@ -2830,11 +3201,7 @@ async def test_fetch_users_reverse_lookup_resolves_hidden_email():
 
     reverse_resp = MagicMock()
     reverse_resp.status = HttpStatusCode.OK.value
-    reverse_resp.json = MagicMock(
-        return_value=[
-            {"key": "k2", "name": "hiddenuser", "displayName": "Hidden User", "active": True}
-        ]
-    )
+    reverse_resp.json = MagicMock(return_value=[{"key": "k2", "displayName": "Hidden User", "active": True}])
 
     ds = MagicMock()
     # Bulk returns 2 items < USER_PAGE_SIZE so it breaks after 1st call; then reverse lookup
@@ -2845,7 +3212,6 @@ async def test_fetch_users_reverse_lookup_resolves_hidden_email():
     assert "hidden@example.com" in emails
     assert "visible@example.com" in emails
     assert len(users) == 2
-    assert conn._dc_name_to_source_id["hiddenuser"] == "k2"
 
 
 @pytest.mark.asyncio
@@ -3079,7 +3445,7 @@ async def test_build_issue_records_epic_subtask_links_and_indexing_off():
         "key": "E-1",
         "fields": {
             "summary": "Epic",
-            "issuetype": {"name": "Epic", "subtask": False},
+            "issuetype": {"name": "Epic", "hierarchyLevel": 1},
             "updated": "2025-01-01T00:00:00.000+0000",
             "created": "2025-01-01T00:00:00.000+0000",
         },
@@ -3089,7 +3455,7 @@ async def test_build_issue_records_epic_subtask_links_and_indexing_off():
         "key": "S-1",
         "fields": {
             "summary": "Sub",
-            "issuetype": {"name": "Sub-task", "subtask": True},
+            "issuetype": {"name": "Sub-task", "hierarchyLevel": -1},
             "parent": {"id": "e1", "key": "E-1"},
             "updated": "2025-01-02T00:00:00.000+0000",
             "created": "2025-01-01T00:00:00.000+0000",
@@ -3110,129 +3476,6 @@ async def test_build_issue_records_epic_subtask_links_and_indexing_off():
     assert by_id["s1"].parent_external_record_id == "e1"
     assert by_id["s1"].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
     assert by_id["s1"].related_external_records
-
-
-@pytest.mark.asyncio
-async def test_discover_epic_link_field_id():
-    conn = _make_connector()
-    resp = MagicMock()
-    resp.status = HttpStatusCode.OK.value
-    resp.json = MagicMock(
-        return_value=[
-            {"id": "customfield_10108", "name": "Epic Link", "schema": {"custom": "com.pyxis.greenhopper.jira:gh-epic-link"}},
-        ]
-    )
-    ds = MagicMock()
-    ds.get_fields_v2 = AsyncMock(return_value=resp)
-    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        with patch.object(conn, "_safe_json_parse", return_value=resp.json()):
-            await conn._discover_epic_link_field_id()
-    assert conn._epic_link_field_id == "customfield_10108"
-
-
-@pytest.mark.asyncio
-async def test_resolve_hierarchy_parent_epic_link_uses_cache():
-    conn = _make_connector()
-    conn._epic_link_field_id = "customfield_10108"
-    fields = {"customfield_10108": "PA-24"}
-    resp = MagicMock()
-    resp.status = HttpStatusCode.OK.value
-    ds = MagicMock()
-    ds.get_issue_v2 = AsyncMock(return_value=resp)
-    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        with patch.object(conn, "_safe_json_parse", return_value={"id": "10023"}):
-            first = await conn._resolve_hierarchy_parent_id(
-                fields, is_subtask=False, is_epic=False, parent_from_parent_field=None
-            )
-            second = await conn._resolve_hierarchy_parent_id(
-                fields, is_subtask=False, is_epic=False, parent_from_parent_field=None
-            )
-    assert first == "10023"
-    assert second == "10023"
-    ds.get_issue_v2.assert_awaited_once()
-    assert ds.get_issue_v2.call_args.kwargs["fields"] == ["id"]
-
-
-@pytest.mark.asyncio
-async def test_resolve_hierarchy_parent_from_epic_link_string():
-    conn = _make_connector()
-    conn._epic_link_field_id = "customfield_10108"
-    fields = {"customfield_10108": "PA-24"}
-    resp = MagicMock()
-    resp.status = HttpStatusCode.OK.value
-    ds = MagicMock()
-    ds.get_issue_v2 = AsyncMock(return_value=resp)
-    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        with patch.object(conn, "_safe_json_parse", return_value={"id": "10023"}):
-            parent_id = await conn._resolve_hierarchy_parent_id(
-                fields,
-                is_subtask=False,
-                is_epic=False,
-                parent_from_parent_field=None,
-            )
-    assert parent_id == "10023"
-    assert conn._issue_key_to_id_cache["PA-24"] == "10023"
-
-
-@pytest.mark.asyncio
-async def test_build_issue_records_epic_story_subtask_chain():
-    conn = _make_connector()
-    conn.data_source = MagicMock()
-    conn.site_url = "https://jira.example"
-    conn._epic_link_field_id = "customfield_10108"
-    tx = MagicMock()
-    tx.get_record_by_external_id = AsyncMock(return_value=None)
-    epic = {
-        "id": "10023",
-        "key": "PA-24",
-        "fields": {
-            "summary": "Epic",
-            "issuetype": {"name": "Epic", "subtask": False},
-            "updated": "2025-01-01T00:00:00.000+0000",
-            "created": "2025-01-01T00:00:00.000+0000",
-        },
-    }
-    story = {
-        "id": "10024",
-        "key": "PA-25",
-        "fields": {
-            "summary": "Story",
-            "issuetype": {"name": "Story", "subtask": False},
-            "customfield_10108": "PA-24",
-            "updated": "2025-01-02T00:00:00.000+0000",
-            "created": "2025-01-01T00:00:00.000+0000",
-        },
-    }
-    subtask = {
-        "id": "10025",
-        "key": "PA-26",
-        "fields": {
-            "summary": "Sub",
-            "issuetype": {"name": "Sub-task", "subtask": True},
-            "parent": {"id": "10024", "key": "PA-25"},
-            "updated": "2025-01-03T00:00:00.000+0000",
-            "created": "2025-01-01T00:00:00.000+0000",
-        },
-    }
-    mapper = MagicMock()
-    mapper.map_type.return_value = "Task"
-    mapper.map_status.return_value = "Open"
-    mapper.map_priority.return_value = "Low"
-    conn.value_mapper = mapper
-    resp = MagicMock()
-    resp.status = HttpStatusCode.OK.value
-    ds = MagicMock()
-    ds.get_issue_v2 = AsyncMock(return_value=resp)
-    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        with patch.object(conn, "_safe_json_parse", return_value={"id": "10023"}):
-            with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, return_value=[]):
-                rows = await conn._build_issue_records(
-                    [epic, story, subtask], "pid", [], tx, is_new_project=False
-                )
-    by_id = {r[0].external_record_id: r[0] for r in rows}
-    assert by_id["10023"].parent_external_record_id is None
-    assert by_id["10024"].parent_external_record_id == "10023"
-    assert by_id["10025"].parent_external_record_id == "10024"
 
 
 @pytest.mark.asyncio
@@ -3370,7 +3613,15 @@ async def test_parse_issue_to_blocks_rich_comments_and_attachments():
         "key": "KF",
         "fields": {
             "summary": "Title",
-            "description": "Screenshot: !shot.png!",
+            "description": {
+                "type": "doc",
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [{"type": "media", "attrs": {"id": "tok", "alt": "shot.png", "__fileName": "shot.png"}}],
+                    },
+                ],
+            },
         },
         "comments": {
             "comments": [
@@ -3379,20 +3630,35 @@ async def test_parse_issue_to_blocks_rich_comments_and_attachments():
                     "id": "c1",
                     "author": {"displayName": "Ann"},
                     "created": "2024-01-01T00:00:00.000+0000",
-                    "body": "[^doc.pdf]See attached.",
+                    "body": {
+                        "type": "doc",
+                        "content": [
+                            {
+                                "type": "paragraph",
+                                "content": [{"type": "media", "attrs": {"id": "tok2", "alt": "doc.pdf", "__fileName": "doc.pdf"}}],
+                            },
+                        ],
+                    },
                 },
             ],
         },
     }
 
-    with patch.object(conn, "_create_media_fetcher", return_value=AsyncMock(return_value=None)):
-        box = await conn._parse_issue_to_blocks(
-            issue_data,
-            issue_key="KF",
-            weburl="https://jira.example/browse/KF",
-            attachment_children_map=att_map,
-            attachment_mime_types=att_mimes,
-        )
+    async def fake_adf(adf, fetcher):
+        return "comment-md"
+
+    with patch(
+        "app.connectors.sources.atlassian.jira_data_center.connector.adf_to_text_with_images",
+        new=fake_adf,
+    ):
+        with patch.object(conn, "_create_media_fetcher", return_value=AsyncMock(return_value=None)):
+            box = await conn._parse_issue_to_blocks(
+                issue_data,
+                issue_key="KF",
+                weburl="https://jira.example/browse/KF",
+                attachment_children_map=att_map,
+                attachment_mime_types=att_mimes,
+            )
     subtypes = {bg.sub_type for bg in box.block_groups}
     assert GroupSubType.COMMENT_THREAD in subtypes
     comment_bgs = [bg for bg in box.block_groups if bg.sub_type == GroupSubType.COMMENT]
@@ -3400,159 +3666,6 @@ async def test_parse_issue_to_blocks_rich_comments_and_attachments():
     assert comment_bgs[0].children_records
     assert comment_bgs[0].children_records[0].child_name == "doc.pdf"
     assert box.block_groups[0].children is not None
-
-
-@pytest.mark.asyncio
-async def test_parse_issue_to_blocks_bracket_attachment_in_comment():
-    conn = _make_connector()
-    conn.site_url = "https://jira.example"
-    child_ack = ChildRecord(child_type=ChildType.RECORD, child_id="aid", child_name="Ack p2.pdf")
-    child_cert = ChildRecord(
-        child_type=ChildType.RECORD, child_id="cid", child_name="Certificate-1.pdf"
-    )
-    child_standalone = ChildRecord(
-        child_type=ChildType.RECORD, child_id="sid", child_name="BlackBookAiReport.pdf"
-    )
-    att_map = {
-        "10013": child_ack,
-        "10010": child_cert,
-        "10012": child_standalone,
-    }
-    att_mimes = {
-        "10013": "application/pdf",
-        "10010": "application/pdf",
-        "10012": "application/pdf",
-    }
-    issue_data = {
-        "id": "10003",
-        "key": "TEST-1",
-        "fields": {
-            "summary": "Password reset bug",
-            "description": "Steps to reproduce",
-            "attachment": [
-                {"id": "10013", "filename": "Ack p2.pdf", "mimeType": "application/pdf"},
-                {"id": "10010", "filename": "Certificate-1.pdf", "mimeType": "application/pdf"},
-                {"id": "10012", "filename": "BlackBookAiReport.pdf", "mimeType": "application/pdf"},
-            ],
-        },
-        "comments": [
-            {
-                "id": "10000",
-                "author": {"displayName": "Darshan"},
-                "created": "2026-06-10T18:20:30.927+0000",
-                "body": "[^Ack p2.pdf]Root cause identified and fixed.",
-            },
-            {
-                "id": "10001",
-                "author": {"displayName": "Darshan"},
-                "created": "2026-06-10T18:21:30.118+0000",
-                "body": "[^Certificate-1.pdf]Initial investigation completed.",
-            },
-        ],
-    }
-
-    with patch.object(conn, "_create_media_fetcher", return_value=AsyncMock(return_value=None)):
-        box = await conn._parse_issue_to_blocks(
-            issue_data,
-            issue_key="TEST-1",
-            weburl="https://jira.example/browse/TEST-1",
-            attachment_children_map=att_map,
-            attachment_mime_types=att_mimes,
-        )
-
-    comment_bgs = [bg for bg in box.block_groups if bg.sub_type == GroupSubType.COMMENT]
-    assert len(comment_bgs) == 2
-    assert comment_bgs[0].children_records
-    assert comment_bgs[0].children_records[0].child_name == "Ack p2.pdf"
-    assert comment_bgs[1].children_records
-    assert comment_bgs[1].children_records[0].child_name == "Certificate-1.pdf"
-    assert box.block_groups[0].children_records
-    assert len(box.block_groups[0].children_records) == 1
-    assert box.block_groups[0].children_records[0].child_name == "BlackBookAiReport.pdf"
-
-
-@pytest.mark.asyncio
-async def test_parse_issue_to_blocks_mixed_wiki_images_and_file_children():
-    """Description image, comment image, comment PDF, and standalone PDF route correctly."""
-    conn = _make_connector()
-    conn.site_url = "https://jira.example"
-    child_desc_img = ChildRecord(
-        child_type=ChildType.RECORD, child_id="did", child_name="desc-screenshot.png"
-    )
-    child_comment_img = ChildRecord(
-        child_type=ChildType.RECORD, child_id="cid", child_name="comment-shot.png"
-    )
-    child_comment_pdf = ChildRecord(
-        child_type=ChildType.RECORD, child_id="cpid", child_name="report.pdf"
-    )
-    child_standalone_pdf = ChildRecord(
-        child_type=ChildType.RECORD, child_id="spid", child_name="spec.pdf"
-    )
-    att_map = {
-        "1": child_desc_img,
-        "2": child_comment_img,
-        "3": child_comment_pdf,
-        "4": child_standalone_pdf,
-    }
-    att_mimes = {
-        "1": "image/png",
-        "2": "image/png",
-        "3": "application/pdf",
-        "4": "application/pdf",
-    }
-    issue_data = {
-        "id": "100",
-        "key": "MIX-1",
-        "fields": {
-            "summary": "Mixed attachments",
-            "description": "Overview\n!desc-screenshot.png!",
-            "attachment": [
-                {"id": "1", "filename": "desc-screenshot.png", "mimeType": "image/png"},
-                {"id": "2", "filename": "comment-shot.png", "mimeType": "image/png"},
-                {"id": "3", "filename": "report.pdf", "mimeType": "application/pdf"},
-                {"id": "4", "filename": "spec.pdf", "mimeType": "application/pdf"},
-            ],
-        },
-        "comments": {
-            "comments": [
-                {
-                    "id": "c1",
-                    "author": {"displayName": "Dev"},
-                    "created": "2024-01-01T00:00:00.000+0000",
-                    "body": "See !comment-shot.png! and [^report.pdf]",
-                },
-            ],
-        },
-    }
-
-    async def fetcher(att_id: str, filename: str) -> str:
-        return f"data:image/png;base64,IMG_{att_id}"
-
-    with patch.object(conn, "_create_media_fetcher", return_value=fetcher):
-        box = await conn._parse_issue_to_blocks(
-            issue_data,
-            issue_key="MIX-1",
-            weburl="https://jira.example/browse/MIX-1",
-            attachment_children_map=att_map,
-            attachment_mime_types=att_mimes,
-        )
-
-    desc_bg = box.block_groups[0]
-    assert "data:image/png;base64,IMG_1" in desc_bg.data
-    assert "!desc-screenshot.png!" not in desc_bg.data
-    assert desc_bg.children_records
-    assert len(desc_bg.children_records) == 1
-    assert desc_bg.children_records[0].child_name == "spec.pdf"
-
-    comment_bgs = [bg for bg in box.block_groups if bg.sub_type == GroupSubType.COMMENT]
-    assert len(comment_bgs) == 1
-    comment_bg = comment_bgs[0]
-    assert "data:image/png;base64,IMG_2" in comment_bg.data
-    assert "!comment-shot.png!" not in comment_bg.data
-    assert "[^report.pdf]" in comment_bg.data
-    assert comment_bg.children_records
-    assert len(comment_bg.children_records) == 1
-    assert comment_bg.children_records[0].child_name == "report.pdf"
 
 
 @pytest.mark.asyncio
@@ -3567,7 +3680,10 @@ async def test_parse_issue_to_blocks_description_child_for_standalone_pdf():
         "key": "K",
         "fields": {
             "summary": "T",
-            "description": "see file",
+            "description": {
+                "type": "doc",
+                "content": [{"type": "paragraph", "content": [{"type": "text", "text": "see file"}]}],
+            },
         },
         "comments": [],
     }
@@ -3741,57 +3857,128 @@ def _mock_ds_attachment_download_fail(final_status: int = 404, final_body: str =
 
 
 # ===========================================================================
-# _fetch_groups — DC uses /groups/picker (no /group/bulk on Server/DC)
+# Patch fix 1: _fetch_groups — 404 from /group/bulk triggers picker fallback
 # ===========================================================================
 
 
-class TestFetchGroupsPicker:
+class TestFetchGroups404Fallback:
+
+    @pytest.mark.asyncio
+    async def test_404_delegates_to_picker(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.bulk_get_groups_v2 = AsyncMock(return_value=_err_resp(HttpStatusCode.NOT_FOUND.value, "<html>404</html>"))
+        expected = [{"name": "devs", "groupId": "devs"}]
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch.object(conn, "_fetch_groups_via_picker", new_callable=AsyncMock, return_value=expected) as pm:
+                result = await conn._fetch_groups()
+        pm.assert_awaited_once()
+        assert result == expected
+
+    @pytest.mark.asyncio
+    async def test_non_404_error_does_not_call_picker(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.bulk_get_groups_v2 = AsyncMock(return_value=_err_resp(500, "Internal error"))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch.object(conn, "_fetch_groups_via_picker", new_callable=AsyncMock) as pm:
+                result = await conn._fetch_groups()
+        pm.assert_not_awaited()
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_ok_does_not_call_picker(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.bulk_get_groups_v2 = AsyncMock(return_value=_ok_resp({"values": [{"name": "a", "groupId": "1"}], "isLast": True}))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch.object(conn, "_fetch_groups_via_picker", new_callable=AsyncMock) as pm:
+                result = await conn._fetch_groups()
+        pm.assert_not_awaited()
+        assert len(result) == 1
+
+
+# ===========================================================================
+# Patch fix 2: _fetch_groups_via_picker
+# ===========================================================================
+
+
+class TestFetchGroupsViaPicker:
 
     @pytest.mark.asyncio
     async def test_happy_path_returns_groups(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         ds = MagicMock()
-        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({
-            "header": "Showing 3 of 3 matching groups",
-            "total": 3,
-            "groups": [
-                {"name": "jira-administrators", "html": "jira-administrators"},
-                {"name": "jira-software-users", "html": "jira-software-users"},
-                {"name": "jira-system-administrators", "html": "jira-system-administrators"},
-            ],
-        }))
+
+        def side_effect(**kwargs):
+            if kwargs.get("query", "") == "":
+                return _ok_resp({"groups": [{"name": "alpha", "groupId": "g-alpha"}, {"name": "beta", "groupId": "g-beta"}]})
+            return _ok_resp({"groups": []})
+
+        ds.groups_picker_get_v2 = AsyncMock(side_effect=side_effect)
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            groups = await conn._fetch_groups()
-        assert len(groups) == 3
-        assert groups[0]["name"] == "jira-administrators"
-        assert groups[0]["groupId"] == "jira-administrators"
-        ds.groups_picker_get_v2.assert_awaited_once_with(query="", maxResults=1000)
+            groups = await conn._fetch_groups_via_picker()
+        names = [g["name"] for g in groups]
+        assert "alpha" in names
+        assert "beta" in names
 
     @pytest.mark.asyncio
-    async def test_non_ok_returns_empty(self):
+    async def test_deduplicates_groups_across_prefix_sweeps(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         ds = MagicMock()
-        ds.groups_picker_get_v2 = AsyncMock(return_value=_err_resp(403, "Forbidden"))
+        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({"groups": [{"name": "devs", "groupId": "devs"}]}))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            assert await conn._fetch_groups() == []
+            groups = await conn._fetch_groups_via_picker()
+        assert len(groups) == 1
 
     @pytest.mark.asyncio
-    async def test_transport_exception_returns_empty(self):
+    async def test_non_ok_query_skips_and_continues(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         ds = MagicMock()
-        ds.groups_picker_get_v2 = AsyncMock(side_effect=httpx.RemoteProtocolError("disconnected"))
+
+        def side_effect(**kwargs):
+            if kwargs.get("query", "") == "":
+                return _err_resp(403, "Forbidden")
+            if kwargs.get("query") == "a":
+                return _ok_resp({"groups": [{"name": "admins", "groupId": "admins"}]})
+            return _ok_resp({"groups": []})
+
+        ds.groups_picker_get_v2 = AsyncMock(side_effect=side_effect)
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            assert await conn._fetch_groups() == []
+            groups = await conn._fetch_groups_via_picker()
+        assert any(g["name"] == "admins" for g in groups)
+
+    @pytest.mark.asyncio
+    async def test_transport_exception_on_one_prefix_does_not_abort(self):
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        call_count = 0
+
+        def side_effect(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise httpx.RemoteProtocolError("disconnected")
+            return _ok_resp({"groups": [{"name": "team", "groupId": "team"}]})
+
+        ds.groups_picker_get_v2 = AsyncMock(side_effect=side_effect)
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            groups = await conn._fetch_groups_via_picker()
+        assert any(g["name"] == "team" for g in groups)
 
     @pytest.mark.asyncio
     async def test_raises_when_data_source_not_initialized(self):
         conn = _make_connector()
         conn.data_source = None
         with pytest.raises(ValueError, match="not initialized"):
-            await conn._fetch_groups()
+            await conn._fetch_groups_via_picker()
 
     @pytest.mark.asyncio
     async def test_normalizes_group_without_group_id_uses_name(self):
@@ -3800,9 +3987,60 @@ class TestFetchGroupsPicker:
         ds = MagicMock()
         ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({"groups": [{"name": "no-id-group"}]}))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            groups = await conn._fetch_groups()
+            groups = await conn._fetch_groups_via_picker()
         match = next(g for g in groups if g["name"] == "no-id-group")
         assert match["groupId"] == "no-id-group"
+
+    @pytest.mark.asyncio
+    async def test_short_circuits_when_empty_query_returns_full_set(self):
+        """``total`` reported by the server equals what we received => no prefix sweep."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({
+            "groups": [{"name": "alpha"}, {"name": "beta"}, {"name": "gamma"}],
+            "total": 3,
+        }))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            groups = await conn._fetch_groups_via_picker()
+        assert len(groups) == 3
+        # Empty query only — must not iterate the alphanumeric prefix sweep.
+        assert ds.groups_picker_get_v2.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_short_circuit_does_not_fire_when_total_exceeds_returned(self):
+        """If server caps results below ``total``, the prefix sweep must still run."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+
+        def side_effect(**kwargs):
+            if kwargs.get("query", "") == "":
+                return _ok_resp({
+                    "groups": [{"name": "alpha"}],
+                    "total": 50,
+                })
+            return _ok_resp({"groups": []})
+
+        ds.groups_picker_get_v2 = AsyncMock(side_effect=side_effect)
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await conn._fetch_groups_via_picker()
+        assert ds.groups_picker_get_v2.await_count > 1
+
+    @pytest.mark.asyncio
+    async def test_converges_after_consecutive_empty_prefixes(self):
+        """Sweep bails out after 5 consecutive prefixes return 0 new groups."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({
+            "groups": [{"name": "shared"}],
+        }))
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            groups = await conn._fetch_groups_via_picker()
+        assert len(groups) == 1
+        # 1 empty-query call + 5 prefix calls that each contribute 0 new groups.
+        assert ds.groups_picker_get_v2.await_count == 6
 
 
 # ===========================================================================

@@ -50,16 +50,10 @@ function PersonalActionsPageContent() {
     return 'all';
   }, [instanceTabParam]);
 
-  const [catalogTab, setCatalogTab] = useState<MyActionsTab>(() => {
+  const catalogTab = useMemo((): MyActionsTab => {
     const tab = searchParams.get('tab');
     if (tab === 'authenticated' || tab === 'not_authenticated') return tab;
     return 'all';
-  });
-
-  useEffect(() => {
-    const tab = searchParams.get('tab');
-    if (tab === 'authenticated' || tab === 'not_authenticated') setCatalogTab(tab);
-    else setCatalogTab('all');
   }, [searchParams]);
 
   const [myToolsets, setMyToolsets] = useState<BuilderSidebarToolset[]>([]);
@@ -254,8 +248,6 @@ function PersonalActionsPageContent() {
 
   const handleTabChange = useCallback(
     (val: string) => {
-      const validTab = (val === 'authenticated' || val === 'not_authenticated') ? val : 'all';
-      setCatalogTab(validTab as MyActionsTab);
       const params = new URLSearchParams(searchParams.toString());
       params.delete('toolsetType');
       params.delete('instanceTab');

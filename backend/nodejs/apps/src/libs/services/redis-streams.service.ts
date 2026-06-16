@@ -466,16 +466,8 @@ export abstract class BaseRedisStreamsConsumerConnection
           ...streams,
         );
 
-        if (xreadResult === null) {
-          // Normal: BLOCK timeout expired with no new messages.
-          continue;
-        }
-
         if (!isRedisXReadGroupResult(xreadResult)) {
-          this.logger.warn('Unexpected Redis xreadgroup payload shape', {
-            type: typeof xreadResult,
-            value: JSON.stringify(xreadResult),
-          });
+          this.logger.warn('Unexpected Redis xreadgroup payload shape');
           continue;
         }
 
