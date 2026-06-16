@@ -589,7 +589,7 @@ class TestRecordToMessageContentMultimodalAndFk:
                     {"index": 0, "type": "text", "parent_index": 0, "data": "nested"},
                 ],
                 "block_groups": [
-                    {"type": "table", "children": [{"block_index": 0}]},
+                    {"type": "commits", "children": [{"block_index": 0}]},
                 ],
             },
         }
