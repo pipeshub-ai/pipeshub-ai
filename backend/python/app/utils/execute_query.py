@@ -496,12 +496,8 @@ async def _execute_mariadb_query(
         logger.debug(f"🔍 [_execute_mariadb_query] Client built: {client.get_connection_info()}")
 
         # Ad-hoc query path: a fresh client is built per call and torn down after.
-        # The default pool_size=5 would eagerly open 5 TCP connections per query.
+        # Keep the pool capped at one connection for this one-shot execution.
         client.resize_pool(pool_size=1)
-
-        def _run_blocking() -> tuple:
-            with client:
-                return client.execute_query_raw(query)
 
         connection_info = client.get_connection_info()
         logger.debug(
@@ -513,7 +509,8 @@ async def _execute_mariadb_query(
         )
         logger.info(f"🔍 [_execute_mariadb_query] Executing query: {query}")
 
-        columns, rows = await asyncio.to_thread(_run_blocking)
+        async with client:
+            columns, rows = await client.execute_query_raw(query)
 
         logger.info(
             f"🔍 [_execute_mariadb_query] Query returned {len(columns)} columns, {len(rows)} rows"
