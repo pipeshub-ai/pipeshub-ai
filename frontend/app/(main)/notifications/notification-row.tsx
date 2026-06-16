@@ -256,6 +256,7 @@ export function NotificationRow({
     <Box
       data-ph-notification-row=""
       data-read={isRead ? 'true' : 'false'}
+      data-action-pending={isBusy ? 'true' : 'false'}
       style={{
         width: '100%',
         boxSizing: 'border-box',

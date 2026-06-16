@@ -457,6 +457,11 @@ export function NotificationsPanel() {
           visibility: visible;
           pointer-events: auto;
         }
+        [data-ph-notification-row][data-action-pending="true"] [data-ph-notification-row-actions] {
+          opacity: 1;
+          visibility: visible;
+          pointer-events: auto;
+        }
         [data-ph-notification-row] [data-ph-notification-row-time] {
           position: absolute;
           right: 0;
@@ -467,6 +472,11 @@ export function NotificationsPanel() {
           white-space: nowrap;
         }
         [data-ph-notification-row]:hover [data-ph-notification-row-time] {
+          opacity: 0;
+          visibility: hidden;
+          pointer-events: none;
+        }
+        [data-ph-notification-row][data-action-pending="true"] [data-ph-notification-row-time] {
           opacity: 0;
           visibility: hidden;
           pointer-events: none;
@@ -551,12 +561,10 @@ export function NotificationsPanel() {
               </Text>
               <Text
                 size="1"
+                truncate
                 style={{
                   color: 'var(--gray-11)',
                   opacity: 0.5,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
                 }}
               >
                 {filterLabels[listFilter]}
