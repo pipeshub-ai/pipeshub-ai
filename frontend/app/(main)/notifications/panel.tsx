@@ -593,6 +593,7 @@ export function NotificationsPanel() {
                   onClick={() => void onMarkAllRead()}
                   style={{
                     cursor: unreadCount === 0 || markingAllRead ? 'not-allowed' : 'pointer',
+                    pointerEvents: unreadCount === 0 || markingAllRead ? 'auto' : undefined,
                   }}
                 >
                   {markingAllRead ? (

@@ -161,6 +161,7 @@ function NotificationActionButton({
             flexShrink: 0,
             cursor: disabled || loading ? 'not-allowed' : 'pointer',
             opacity: disabled || loading ? 0.5 : 1,
+            pointerEvents: disabled || loading ? 'auto' : undefined,
           }}
         >
           {loading ? (
