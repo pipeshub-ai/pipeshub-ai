@@ -285,11 +285,7 @@ async def _fetch_multiple_records_impl(
         None,
     )
 
-    config_service = (
-        graph_provider.config_service
-        if graph_provider and getattr(graph_provider, "config_service", None)
-        else None
-    )
+    config_service = graph_provider.config_service if graph_provider else None
 
     for record_id in record_ids:
         virtual_record_id = None
