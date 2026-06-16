@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from uuid import uuid4
 
@@ -20,6 +21,9 @@ from app.models.blocks import (
     ImageMetadata,
     TableMetadata,
 )
+
+_MD_IMAGE_RE = re.compile(r'!\[([^\]]*)\]\(([^\s)]+)(?:\s+"[^"]*")?\)')
+_HTML_IMG_ALT_RE = re.compile(r'<img\s[^>]*alt=["\']([^"\']*)["\']', re.IGNORECASE)
 
 
 @dataclass
@@ -201,6 +205,7 @@ class _TokenWalker:
                             parent_index=self._current_parent_index(),
                         )
                     )
+                    self._emit_images_from_raw_markdown(raw_markdown)
             self.list_item_depth += 1
             return index
 
@@ -229,6 +234,7 @@ class _TokenWalker:
                             parent_index=self._current_parent_index(),
                         )
                     )
+                    self._emit_images_from_raw_markdown(raw_markdown)
             self.blockquote_depth += 1
             return index
 
@@ -268,6 +274,10 @@ class _TokenWalker:
                 md_text = inline_tok.content.strip()
                 if self.table_state is not None:
                     self.table_state.current_row.append(_TableCell(plain=plain, markdown=md_text))
+                if inline_tok.children:
+                    for child in inline_tok.children:
+                        if child.type == "image":
+                            self._add_image_block(child)
                 return index + 2
             if self.table_state is not None:
                 self.table_state.current_row.append(_TableCell(plain="", markdown=""))
@@ -436,6 +446,64 @@ class _TokenWalker:
                 image_metadata=ImageMetadata(captions=[alt_text] if alt_text else []),
             )
         )
+
+    def _emit_images_from_raw_markdown(self, raw_markdown: str) -> None:
+        """Scan raw markdown text for image references and emit IMAGE blocks.
+
+        Used for structures (list items, blockquotes) where the content is
+        captured as a raw slice and inner image tokens are suppressed.
+        Matches both ``![alt](url)`` and ``<img alt="...">`` patterns.
+        """
+        if not self.caption_map:
+            return
+
+        seen: set[str] = set()
+
+        for match in _MD_IMAGE_RE.finditer(raw_markdown):
+            alt_text = match.group(1)
+            src = match.group(2)
+            if alt_text in self.caption_map and alt_text not in seen:
+                seen.add(alt_text)
+                self._add_block(
+                    Block(
+                        id=str(uuid4()),
+                        index=0,
+                        type=BlockType.IMAGE,
+                        format=DataFormat.BASE64,
+                        data={"uri": self.caption_map[alt_text]},
+                        parent_index=self._current_parent_index(),
+                        image_metadata=ImageMetadata(captions=[alt_text]),
+                    )
+                )
+            elif src and alt_text not in seen:
+                seen.add(alt_text or src)
+                self._add_block(
+                    Block(
+                        id=str(uuid4()),
+                        index=0,
+                        type=BlockType.IMAGE,
+                        format=DataFormat.TXT,
+                        data={"url": src},
+                        parent_index=self._current_parent_index(),
+                        image_metadata=ImageMetadata(captions=[alt_text] if alt_text else []),
+                    )
+                )
+
+        for match in _HTML_IMG_ALT_RE.finditer(raw_markdown):
+            alt_text = match.group(1)
+            if alt_text in self.caption_map and alt_text not in seen:
+                seen.add(alt_text)
+                self._add_block(
+                    Block(
+                        id=str(uuid4()),
+                        index=0,
+                        type=BlockType.IMAGE,
+                        format=DataFormat.BASE64,
+                        data={"uri": self.caption_map[alt_text]},
+                        parent_index=self._current_parent_index(),
+                        image_metadata=ImageMetadata(captions=[alt_text]),
+                    )
+                )
 
     # ---------------------------------------------------------- inline render
 

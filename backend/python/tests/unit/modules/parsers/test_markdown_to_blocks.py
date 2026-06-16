@@ -372,7 +372,7 @@ class TestImages:
     def test_image_inside_blockquote_is_preserved_in_raw_markdown(
         self, converter: MarkdownToBlocksConverter
     ):
-        """Image inside a blockquote stays in the quote block's raw markdown slice."""
+        """Without caption_map, image inside blockquote stays in raw markdown only."""
         container = converter.convert("> ![Image_1](https://example.com/img.png)\n")
         assert len(container.block_groups) == 1
         quote_group = container.block_groups[0]
@@ -386,10 +386,37 @@ class TestImages:
         assert quote_block.format == DataFormat.MARKDOWN
         assert quote_block.parent_index == quote_group.index
 
+    def test_image_inside_blockquote_with_caption_map_emits_image_block(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        """With caption_map, blockquote keeps raw markdown and adds a sibling IMAGE block."""
+        caption_map = {"Image_1": "data:image/png;base64,QUOTEIMG"}
+        container = converter.convert(
+            "> ![Image_1](https://example.com/img.png)\n",
+            caption_map=caption_map,
+        )
+        quote_group = container.block_groups[0]
+        quote_blocks = [
+            b for b in container.blocks if b.sub_type == BlockSubType.QUOTE
+        ]
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+
+        assert len(quote_blocks) == 1
+        assert quote_blocks[0].data == "> ![Image_1](https://example.com/img.png)"
+        assert len(image_blocks) == 1
+        assert image_blocks[0].data == {"uri": "data:image/png;base64,QUOTEIMG"}
+        assert image_blocks[0].format == DataFormat.BASE64
+        assert image_blocks[0].parent_index == quote_group.index
+        assert image_blocks[0].image_metadata.captions == ["Image_1"]
+        assert _child_block_indices(quote_group) == [
+            quote_blocks[0].index,
+            image_blocks[0].index,
+        ]
+
     def test_image_inside_list_is_preserved_in_raw_markdown(
         self, converter: MarkdownToBlocksConverter
     ):
-        """Image inside a list item stays in the list item's raw markdown slice."""
+        """Without caption_map, image inside list item stays in raw markdown only."""
         container = converter.convert("- ![Image_1](https://example.com/img.png)\n")
         assert len(container.block_groups) == 1
         list_group = container.block_groups[0]
@@ -401,6 +428,83 @@ class TestImages:
         assert list_item.data == "- ![Image_1](https://example.com/img.png)"
         assert list_item.format == DataFormat.MARKDOWN
         assert list_item.parent_index == list_group.index
+
+    def test_image_inside_list_with_caption_map_emits_image_block(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        """With caption_map, list item keeps raw markdown and adds a sibling IMAGE block."""
+        caption_map = {"Image_1": "data:image/png;base64,LISTIMG"}
+        container = converter.convert(
+            "- Available connectors: ![Image_1](https://example.com/img.png)\n",
+            caption_map=caption_map,
+        )
+        list_group = container.block_groups[0]
+        list_items = [
+            b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM
+        ]
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+
+        assert len(list_items) == 1
+        assert "![Image_1](https://example.com/img.png)" in list_items[0].data
+        assert len(image_blocks) == 1
+        assert image_blocks[0].data == {"uri": "data:image/png;base64,LISTIMG"}
+        assert image_blocks[0].format == DataFormat.BASE64
+        assert image_blocks[0].parent_index == list_group.index
+        assert _child_block_indices(list_group) == [
+            list_items[0].index,
+            image_blocks[0].index,
+        ]
+
+    def test_image_inside_table_cell_with_caption_map_emits_image_block(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        """Table cells with inline images emit IMAGE blocks linked to the TABLE group."""
+        markdown = (
+            "| Name | Icon |\n"
+            "| --- | --- |\n"
+            "| Connectors | ![Image_1](https://example.com/icon.png) |\n"
+        )
+        caption_map = {"Image_1": "data:image/png;base64,TABLEIMG"}
+        container = converter.convert(markdown, caption_map=caption_map)
+
+        table_group = container.block_groups[0]
+        row_blocks = _blocks_by_type(container, BlockType.TABLE_ROW)
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+
+        assert len(row_blocks) == 1
+        assert len(image_blocks) == 1
+        assert image_blocks[0].data == {"uri": "data:image/png;base64,TABLEIMG"}
+        assert image_blocks[0].format == DataFormat.BASE64
+        assert image_blocks[0].parent_index == table_group.index
+        assert _child_block_indices(table_group) == [row_blocks[0].index]
+
+    def test_image_inside_code_block_is_not_emitted(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        """Fenced code is literal text; image syntax inside it must not become IMAGE blocks."""
+        markdown = "```markdown\n![Image_1](https://example.com/img.png)\n```\n"
+        caption_map = {"Image_1": "data:image/png;base64,SHOULDNOTAPPEAR"}
+        container = converter.convert(markdown, caption_map=caption_map)
+
+        code_blocks = [b for b in container.blocks if b.sub_type == BlockSubType.CODE]
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+
+        assert len(code_blocks) == 1
+        assert "![Image_1](https://example.com/img.png)" in code_blocks[0].data
+        assert image_blocks == []
+
+    def test_html_img_inside_blockquote_with_caption_map_emits_image_block(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        """HTML img tags embedded in blockquote raw markdown are also surfaced."""
+        markdown = '> <img src="https://example.com/a.png" alt="Image_1"/>\n'
+        caption_map = {"Image_1": "data:image/png;base64,HTMLIMG"}
+        container = converter.convert(markdown, caption_map=caption_map)
+
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+        assert len(image_blocks) == 1
+        assert image_blocks[0].data == {"uri": "data:image/png;base64,HTMLIMG"}
+        assert image_blocks[0].format == DataFormat.BASE64
 
     # ------------------------------------------------------------------
     # Full pipeline: extract_and_replace_images → parse_to_blocks
