@@ -14,7 +14,7 @@ import { Theme, Flex, Text, Box, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { NotificationsApi, type NotificationListFilter, type NotificationListItem } from './api';
 import { useNotificationStore, getVisibleNotifications } from './store';
-import { NotificationRow } from './notification-row';
+import { NotificationRow, type NotificationRowAction } from './notification-row';
 import {
   NotificationFilterMenu,
   NOTIFICATIONS_PANEL_TOOLTIP_CLASS,
@@ -200,6 +200,32 @@ export function NotificationsPanel() {
   const [loading, setLoading] = useState(false);
   const [markingAllRead, setMarkingAllRead] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pendingActionsRef = useRef(new Map<string, NotificationRowAction>());
+  const [pendingActions, setPendingActions] = useState<
+    Map<string, NotificationRowAction>
+  >(() => new Map());
+
+  const syncPendingActions = useCallback(() => {
+    setPendingActions(new Map(pendingActionsRef.current));
+  }, []);
+
+  const beginRowAction = useCallback(
+    (id: string, action: NotificationRowAction): boolean => {
+      if (pendingActionsRef.current.has(id)) return false;
+      pendingActionsRef.current.set(id, action);
+      syncPendingActions();
+      return true;
+    },
+    [syncPendingActions],
+  );
+
+  const endRowAction = useCallback(
+    (id: string) => {
+      pendingActionsRef.current.delete(id);
+      syncPendingActions();
+    },
+    [syncPendingActions],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -276,7 +302,7 @@ export function NotificationsPanel() {
   }, [isPanelOpen, closePanel]);
 
   const onMarkRead = async (n: NotificationListItem) => {
-    if (n.status === 'read' || !n._id) return;
+    if (n.status === 'read' || !n._id || !beginRowAction(n._id, 'markRead')) return;
     try {
       await NotificationsApi.markRead(n._id);
       markReadStore(n._id);
@@ -284,11 +310,13 @@ export function NotificationsPanel() {
       setStats(stats);
     } catch {
       setError(t('notifications.updateFailed'));
+    } finally {
+      endRowAction(n._id);
     }
   };
 
   const onMarkUnread = async (n: NotificationListItem) => {
-    if (n.status === 'unread' || !n._id) return;
+    if (n.status === 'unread' || !n._id || !beginRowAction(n._id, 'markUnread')) return;
     try {
       await NotificationsApi.markUnread(n._id);
       markUnreadStore(n._id);
@@ -296,6 +324,8 @@ export function NotificationsPanel() {
       setStats(stats);
     } catch {
       setError(t('notifications.updateFailed'));
+    } finally {
+      endRowAction(n._id);
     }
   };
 
@@ -316,7 +346,7 @@ export function NotificationsPanel() {
   };
 
   const onDismiss = async (n: NotificationListItem) => {
-    if (!n._id) return;
+    if (!n._id || !beginRowAction(n._id, 'dismiss')) return;
     try {
       await NotificationsApi.remove(n._id);
       removeStore(n._id);
@@ -324,11 +354,13 @@ export function NotificationsPanel() {
       setStats(stats);
     } catch {
       setError(t('notifications.removeFailed'));
+    } finally {
+      endRowAction(n._id);
     }
   };
 
   const onArchive = async (n: NotificationListItem) => {
-    if (!n._id || n.status === 'archived') return;
+    if (!n._id || n.status === 'archived' || !beginRowAction(n._id, 'archive')) return;
     try {
       await NotificationsApi.archive(n._id);
       archiveStore(n._id);
@@ -336,16 +368,20 @@ export function NotificationsPanel() {
       setStats(stats);
     } catch {
       setError(t('notifications.updateFailed'));
+    } finally {
+      endRowAction(n._id);
     }
   };
 
   const onUnarchive = async (n: NotificationListItem) => {
-    if (!n._id || n.status !== 'archived') return;
+    if (!n._id || n.status !== 'archived' || !beginRowAction(n._id, 'unarchive')) return;
     try {
       await NotificationsApi.unarchive(n._id);
       unarchiveStore(n._id);
     } catch {
       setError(t('notifications.updateFailed'));
+    } finally {
+      endRowAction(n._id);
     }
   };
 
@@ -594,6 +630,7 @@ export function NotificationsPanel() {
                   key={n._id}
                   notification={n}
                   compactTime={layoutPanelWidth < PANEL_COMPACT_TIME_WIDTH}
+                  pendingAction={pendingActions.get(n._id) ?? null}
                   onMarkRead={(item) => void onMarkRead(item)}
                   onMarkUnread={(item) => void onMarkUnread(item)}
                   onArchive={(item) => void onArchive(item)}

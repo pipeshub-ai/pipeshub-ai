@@ -4,9 +4,17 @@ import { useState, useRef, useLayoutEffect, useCallback, type CSSProperties, typ
 import Link from 'next/link';
 import { Flex, Text, Box, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { Spinner } from '@/app/components/ui/spinner';
 import { useTranslation } from 'react-i18next';
 import type { NotificationListItem, NotificationSeverity } from './api';
 import { NOTIFICATIONS_PANEL_TOOLTIP_CLASS } from './notification-filter-menu';
+
+export type NotificationRowAction =
+  | 'markRead'
+  | 'markUnread'
+  | 'archive'
+  | 'unarchive'
+  | 'dismiss';
 
 /** App-relative paths from the API may omit a leading slash; Next.js Link needs one. */
 function notificationHref(redirectLink: string): string | null {
@@ -156,14 +164,18 @@ function NotificationActionButton({
   icon,
   onClick,
   variant = 'default',
+  disabled = false,
+  loading = false,
 }: {
   label: string;
   icon: string;
   onClick: () => void;
   variant?: 'default' | 'danger';
+  disabled?: boolean;
+  loading?: boolean;
 }) {
   const [isHovered, setIsHovered] = useState(false);
-  const isDangerHover = variant === 'danger' && isHovered;
+  const isDangerHover = variant === 'danger' && isHovered && !disabled && !loading;
 
   return (
     <Box style={{ display: 'inline-flex', flexShrink: 0, position: 'relative' }}>
@@ -178,15 +190,24 @@ function NotificationActionButton({
           size="1"
           onClick={onClick}
           aria-label={label}
+          disabled={disabled || loading}
           onMouseEnter={() => setIsHovered(true)}
           onMouseLeave={() => setIsHovered(false)}
-          style={{ flexShrink: 0 }}
+          style={{
+            flexShrink: 0,
+            cursor: disabled || loading ? 'not-allowed' : 'pointer',
+            opacity: disabled || loading ? 0.5 : 1,
+          }}
         >
-          <MaterialIcon
-            name={icon}
-            size={16}
-            color={isDangerHover ? 'var(--red-11)' : 'var(--slate-11)'}
-          />
+          {loading ? (
+            <Spinner size={16} />
+          ) : (
+            <MaterialIcon
+              name={icon}
+              size={16}
+              color={isDangerHover ? 'var(--red-11)' : 'var(--slate-11)'}
+            />
+          )}
         </IconButton>
       </Tooltip>
     </Box>
@@ -206,6 +227,7 @@ export function NotificationRow({
   unarchiveLabel,
   dismissLabel,
   compactTime = false,
+  pendingAction = null,
 }: {
   notification: NotificationListItem;
   onMarkRead: (n: NotificationListItem) => void;
@@ -219,6 +241,7 @@ export function NotificationRow({
   unarchiveLabel: string;
   dismissLabel: string;
   compactTime?: boolean;
+  pendingAction?: NotificationRowAction | null;
 }) {
   const { i18n } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(false);
@@ -239,6 +262,7 @@ export function NotificationRow({
   const isRead = n.status === 'read' || n.status === 'archived';
   const readOpacity = isRead ? 0.65 : 1;
   const titleStyle = { color: 'var(--slate-12)' };
+  const isBusy = pendingAction != null;
 
   const measureMessageTruncation = useCallback(() => {
     const el = measureRef.current;
@@ -402,12 +426,16 @@ export function NotificationRow({
                   label={markReadLabel}
                   icon="done"
                   onClick={() => onMarkRead(n)}
+                  disabled={isBusy}
+                  loading={pendingAction === 'markRead'}
                 />
               ): n.status != 'archived' ? (
                 <NotificationActionButton
                   label={markUnreadLabel}
                   icon="mark_email_unread"
                   onClick={() => onMarkUnread(n)}
+                  disabled={isBusy}
+                  loading={pendingAction === 'markUnread'}
                 />
               ) : null}
               {n.status !== 'archived' ? (
@@ -415,12 +443,16 @@ export function NotificationRow({
                   label={archiveLabel}
                   icon="archive"
                   onClick={() => onArchive(n)}
+                  disabled={isBusy}
+                  loading={pendingAction === 'archive'}
                 />
               ) : (
                 <NotificationActionButton
                   label={unarchiveLabel}
                   icon="unarchive"
                   onClick={() => onUnarchive(n)}
+                  disabled={isBusy}
+                  loading={pendingAction === 'unarchive'}
                 />
               )}
               <NotificationActionButton
@@ -428,6 +460,8 @@ export function NotificationRow({
                 icon="close"
                 variant="danger"
                 onClick={() => onDismiss(n)}
+                disabled={isBusy}
+                loading={pendingAction === 'dismiss'}
               />
             </Flex>
             <Text
