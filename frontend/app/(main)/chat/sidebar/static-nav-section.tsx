@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 import { getModifierSymbol } from '@/lib/utils/platform';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
+import { useNotificationStore } from '@/app/(main)/notifications/store';
 import { SidebarItem } from './sidebar-item';
 
 // ========================================
@@ -61,6 +62,34 @@ export function StaticNavSection() {
   const modKey = useMemo(() => getModifierSymbol(), []);
   const isMobile = useIsMobile();
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
+  const unreadCount = useNotificationStore((s) => s.unreadCount);
+  const toggleNotificationsPanel = useNotificationStore((s) => s.togglePanel);
+
+  const notificationLabel = unreadCount > 99 ? '99+' : String(unreadCount);
+  const notificationBadgeSize =
+    notificationLabel.length >= 3 ? 22 : notificationLabel.length === 2 ? 20 : 18;
+
+  const notificationBadge =
+    unreadCount > 0 ? (
+      <span
+        style={{
+          width: notificationBadgeSize,
+          height: notificationBadgeSize,
+          borderRadius: '50%',
+          backgroundColor: 'var(--red-9)',
+          color: 'white',
+          fontSize: notificationLabel.length >= 3 ? 9 : notificationLabel.length === 2 ? 10 : 11,
+          fontWeight: 600,
+          lineHeight: 1,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0,
+        }}
+      >
+        {notificationLabel}
+      </span>
+    ) : undefined;
 
   const handleNewChat = () => {
     if (isMobile) closeMobileSidebar();
@@ -93,6 +122,18 @@ export function StaticNavSection() {
           onClick={handleOpenSearch}
           rightSlot={<KbdBadge>{modKey} +K</KbdBadge>}
         />
+
+      <div data-ph-notifications-trigger style={{ width: '100%' }}>
+        <SidebarItem
+          icon={<MaterialIcon name="inbox" size={ICON_SIZE_DEFAULT} />}
+          label={t('nav.inbox')}
+          onClick={() => {
+            if (isMobile) closeMobileSidebar();
+            toggleNotificationsPanel();
+          }}
+          rightSlot={notificationBadge}
+        />
+      </div>
 
       {/* Navigation items — hidden on mobile */}
       {!isMobile &&

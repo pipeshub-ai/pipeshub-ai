@@ -5,17 +5,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from jinja2 import Template
 from pydantic import BaseModel, Field
 
-from app.config.configuration_service import ConfigurationService
-from app.models.blocks import (
-    Block,
-    BlockGroup,
-    BlockType,
-    CitationMetadata,
-    DataFormat,
-    GroupType,
-    Point,
-    TableMetadata,
-)
 from app.modules.parsers.excel.prompt_template import RowDescriptions, row_text_prompt
 from app.utils.llm import get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
@@ -126,7 +115,7 @@ async def get_rows_text(
     table = table_data.get("grid")
     if table:
         try:
-            # Prepare rows data
+            # Skip first row if column_headers provided (first row is header)
             if column_headers:
                 table_rows = table[1:]
             else:
@@ -182,94 +171,18 @@ def generate_simple_row_text(row_data: Dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
-def _normalize_bbox(
-    bbox: Tuple[float, float, float, float],
-    page_width: float,
-    page_height: float,
-) -> List[Dict[str, float]]:
-    """Normalize bounding box coordinates to 0-1 range"""
-    x0, y0, x1, y1 = bbox
-    return [
-        {"x": x0 / page_width, "y": y0 / page_height},
-        {"x": x1 / page_width, "y": y0 / page_height},
-        {"x": x1 / page_width, "y": y1 / page_height},
-        {"x": x0 / page_width, "y": y1 / page_height},
-    ]
-
-
 def image_bytes_to_base64(image_bytes, extention) -> str:
     mime_type = f"image/{extention}"
     base64_encoded = base64.b64encode(image_bytes).decode('utf-8')
     return f"data:{mime_type};base64,{base64_encoded}"
 
-async def process_table_pymupdf(
-    page,
-    result: dict,
-    config: ConfigurationService,
-    page_number: int,
-) -> Tuple[List[str], List[List[dict]]]:
-    """Process table data with normalized coordinates"""
-    page_width = page.rect.width
-    page_height = page.rect.height
-    table_finder = page.find_tables()
-    tables = table_finder.tables
-    for table in tables:
-        table_data = table.extract()
-        response = await get_table_summary_n_headers(config, table_data)
-        table_summary = response.summary if response else ""
-        column_headers = response.headers if response else []
-        table_rows_text,table_rows = await get_rows_text(config, {"grid": table_data}, table_summary, column_headers)
-        bbox = _normalize_bbox(table.bbox, page_width, page_height)
-        bbox = [Point(x=p["x"], y=p["y"]) for p in bbox]
-
-        num_of_rows = len(table_data)
-        num_of_cols = table.col_count if table.col_count else (len(table_data[0]) if table_data and len(table_data) > 0 else None)
-        num_of_cells = num_of_rows * num_of_cols if num_of_cols else None
-
-        block_group = BlockGroup(
-            index=len(result["tables"]),
-            type=GroupType.TABLE,
-            description=None,
-            table_metadata=TableMetadata(
-                num_of_rows=num_of_rows,
-                num_of_cols=num_of_cols,
-                num_of_cells=num_of_cells,
-            ),
-            data={
-                "table_summary": table_summary,
-                "column_headers": column_headers,
-            },
-            format=DataFormat.JSON,
-            citation_metadata=CitationMetadata(
-                page_number=page_number,
-                bounding_boxes=bbox,
-            ),
-        )
-        for i,row in enumerate(table_rows):
-            block = Block(
-                type=BlockType.TABLE_ROW,
-                format=DataFormat.JSON,
-                comments=[],
-                parent_index=block_group.index,
-                data={
-                    "row_natural_language_text": table_rows_text[i] if i<len(table_rows_text) else "",
-                    "row_number": i+1
-                },
-                citation_metadata=block_group.citation_metadata
-            )
-            # _enrich_metadata(block, row, doc_dict)
-            result["blocks"].append(block)
-
-
-        result["tables"].append(block_group)
-
 
 def format_rows_with_index(rows: list[dict]) -> str:
-        """Format rows with explicit numbering for clarity."""
-        numbered_rows = []
-        for i, row in enumerate(rows, 1):
-            numbered_rows.append(f"Row {i}: {json.dumps(row, indent=2)}")
-        return "\n".join(numbered_rows)
+    """Format rows with explicit numbering for clarity."""
+    numbered_rows = []
+    for i, row in enumerate(rows, 1):
+        numbered_rows.append(f"Row {i}: {json.dumps(row, indent=2)}")
+    return "\n".join(numbered_rows)
 
 
 

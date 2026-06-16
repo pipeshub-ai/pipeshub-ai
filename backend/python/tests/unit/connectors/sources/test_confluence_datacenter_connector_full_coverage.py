@@ -200,8 +200,12 @@ class TestTransformToUserGroup:
         assert g.name == "devs"
 
     def test_no_id(self):
+        """When ID is missing, name is used as source_user_group_id."""
         c = _c()
-        assert c._transform_to_user_group({"name": "devs"}) is None
+        result = c._transform_to_user_group({"name": "devs"})
+        assert result is not None
+        assert result.name == "devs"
+        assert result.source_user_group_id == "devs"  # Falls back to name when id missing
 
     def test_no_name(self):
         c = _c()
@@ -663,7 +667,7 @@ class TestFetchCommentContent:
         c = _c()
         mock_ds = MagicMock()
         mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Footer</p>"}},
+            "body": {"export_view": {"value": "<p>Footer</p>"}},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         record = MagicMock()
@@ -677,7 +681,7 @@ class TestFetchCommentContent:
         c = _c()
         mock_ds = MagicMock()
         mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Inline</p>"}},
+            "body": {"export_view": {"value": "<p>Inline</p>"}},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         record = MagicMock()

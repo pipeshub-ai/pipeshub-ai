@@ -56,17 +56,8 @@ export interface ShareTeam {
 
 /** Org user (for suggestions) */
 export interface ShareUser {
-  /**
-   * The identifier expected by the current entity's share endpoint.
-   * For collections/KB this is the graph UUID; for chat this is the MongoDB ObjectID.
-   */
+  /** MongoDB userId used by share endpoints (KB backend resolves to graph keys). */
   id: string;
-  /**
-   * The graph UUID for this user. Always set when available and used by flows that
-   * operate on UUIDs regardless of which adapter produced the list (e.g. team creation,
-   * which requires UUIDs even when the surrounding entity uses MongoDB IDs).
-   */
-  uuid?: string;
   name: string;
   email?: string;
   avatarUrl?: string;
@@ -98,8 +89,7 @@ export interface ShareAdapter {
   /**
    * Override the user list shown in the share sidebar search/suggestions.
    * When provided, this replaces ShareCommonApi.getAllUsers().
-   * Use when the entity's share endpoint requires a different ID type
-   * (e.g. chat uses MongoDB ObjectIDs, collections use UUIDs).
+   * Use when the entity needs a custom user list instead of the default Mongo list.
    */
   getSharingUsers?: () => Promise<ShareUser[]>;
 

@@ -329,6 +329,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "reporter_email": graph_doc.get("reporterEmail"),
                 "creator_name": graph_doc.get("creatorName"),
                 "creator_email": graph_doc.get("creatorEmail"),
+                "labels": graph_doc.get("labels"),
             }
             return TicketRecord(**base_args, **specific_args)
 
@@ -935,16 +936,17 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                             row_text = child_block.get("data", {}).get("row_natural_language_text", "")
 
                             # Create a result for the table row
-                            child_result = {
-                                "content": row_text,
-                                "block_type": BlockType.TABLE_ROW.value,
-                                "virtual_record_id": virtual_record_id,
-                                "block_index": child_block_index,
-                                "metadata": get_enhanced_metadata(record, child_block, meta),
-                                "score": float(result.get("score",0.0)),
-                                "citationType": "vectordb|document",
-                            }
-                            child_results.append(child_result)
+                            if row_text:
+                                child_result = {
+                                    "content": row_text,
+                                    "block_type": BlockType.TABLE_ROW.value,
+                                    "virtual_record_id": virtual_record_id,
+                                    "block_index": child_block_index,
+                                    "metadata": get_enhanced_metadata(record, child_block, meta),
+                                    "score": float(result.get("score",0.0)),
+                                    "citationType": "vectordb|document",
+                                }
+                                child_results.append(child_result)
 
                     table_result = {
                         "content":(table_summary,child_results),
@@ -1011,16 +1013,17 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 block_type = block.get("type")
                 if block_type == BlockType.TABLE_ROW.value:
                     block_text = block.get("data",{}).get("row_natural_language_text","")
-                    enhanced_metadata = get_enhanced_metadata(record,block,{})
-                    child_results.append({
-                        "content": block_text,
-                        "block_type": block_type,
-                        "metadata": enhanced_metadata,
-                        "virtual_record_id": virtual_record_id,
-                        "block_index": row_index,
-                        "citationType": "vectordb|document",
-                        "score": row_score,
-                    })
+                    if block_text:
+                        enhanced_metadata = get_enhanced_metadata(record,block,{})
+                        child_results.append({
+                            "content": block_text,
+                            "block_type": block_type,
+                            "metadata": enhanced_metadata,
+                            "virtual_record_id": virtual_record_id,
+                            "block_index": row_index,
+                            "citationType": "vectordb|document",
+                            "score": row_score,
+                        })
             elif qdrant_content:
                 # Block not in blob (SQL row limit) — use Qdrant page_content
                 logger.debug(f"Using Qdrant page_content for row {row_index} of virtual record {virtual_record_id}")
@@ -1289,6 +1292,9 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                 record["mime_type"] = graphDb_record.get("mimeType")
                 record["source_created_at"] = graphDb_record.get("sourceCreatedAtTimestamp")
                 record["source_updated_at"] = graphDb_record.get("sourceLastModifiedTimestamp")
+                graph_external_id = graphDb_record.get("externalRecordId")
+                if graph_external_id:
+                    record["external_record_id"] = graph_external_id
 
                 # Fetch type-specific metadata and generate formatted string
                 graph_doc = None
@@ -1313,6 +1319,11 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                         record["context_metadata"] = await record_instance.to_llm_context_with_graph(
                             frontend_url=frontend_url,
                             graph_provider=graph_provider,
+                        )
+                    elif isinstance(record_instance, TicketRecord):
+                        record["context_metadata"] = await record_instance.to_llm_context_with_live_fields(
+                            frontend_url=frontend_url,
+                            config_service=blob_store.config_service,
                         )
                     else:
                         record["context_metadata"] = record_instance.to_llm_context(
@@ -1793,14 +1804,14 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
                                     row_text = block_data.get("row_natural_language_text", "")
                                 else:
                                     row_text = str(block_data)
-
-                                child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index)
-                                child_results.append({
-                                    "content": row_text,
-                                    "block_index": row_index,
-                                    "block_web_url": child_block_web_url,
-                                    "citation_ref": ref_mapper.get_or_create_ref(child_block_web_url),
-                                })
+                                if row_text:
+                                    child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index)
+                                    child_results.append({
+                                        "content": row_text,
+                                        "block_index": row_index,
+                                        "block_web_url": child_block_web_url,
+                                        "citation_ref": ref_mapper.get_or_create_ref(child_block_web_url),
+                                    })
 
                         if isinstance(data, dict):
                             table_summary = data.get("table_summary", "Not Available")

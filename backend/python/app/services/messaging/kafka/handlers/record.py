@@ -149,8 +149,8 @@ class RecordEventHandler(BaseEventService):
                 )
 
                 self.logger.info(
-                    f"✅ Bulk deletion complete: {result.get('deleted_count', 0)} embeddings deleted "
-                    f"for {result.get('virtual_record_ids_processed', 0)} virtual record IDs"
+                    f"✅ Bulk deletion complete: embeddings deleted for "
+                    f"{result.get('virtual_record_ids_processed', 0)} virtual record IDs"
                 )
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
@@ -166,7 +166,9 @@ class RecordEventHandler(BaseEventService):
             if not record_id:
                 self.logger.error(f"Missing record_id in message {payload}")
                 return
-            asyncio.get_event_loop
+
+        
+
             record = await self.event_processor.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
@@ -179,7 +181,7 @@ class RecordEventHandler(BaseEventService):
 
             # Handle delete event - no parsing/indexing phases
             if event_type == EventTypes.DELETE_RECORD.value:
-                await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([ virtual_record_id])
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -208,7 +210,7 @@ class RecordEventHandler(BaseEventService):
                         f"skipping full embedding deletion"
                     )
                 else:
-                    await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+                    await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([virtual_record_id])
 
             doc = dict(record)
 

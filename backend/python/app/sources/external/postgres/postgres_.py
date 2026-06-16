@@ -9,6 +9,7 @@ Provides async wrapper methods for PostgreSQL operations:
 - Index information
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -166,7 +167,7 @@ class PostgreSQLDataSource:
         logger.debug("🔧 [PostgreSQLDataSource] list_databases called")
         
         query = """
-            SELECT datname as name, 
+            SELECT datname as name,
                    pg_encoding_to_char(encoding) as encoding,
                    datcollate as collation,
                    pg_size_pretty(pg_database_size(datname)) as size
@@ -176,7 +177,7 @@ class PostgreSQLDataSource:
         """
         
         try:
-            results = self._client.execute_query(query)
+            results = await self._client.execute_query(query)
             databases = [DatabaseInfo.model_validate(row) for row in results]
             logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(databases)} databases")
             
@@ -213,7 +214,7 @@ class PostgreSQLDataSource:
         """
         
         try:
-            results = self._client.execute_query(query)
+            results = await self._client.execute_query(query)
             schemas = [SchemaInfo.model_validate(row) for row in results]
             logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(schemas)} schemas")
             
@@ -242,18 +243,18 @@ class PostgreSQLDataSource:
         logger.debug(f"🔧 [PostgreSQLDataSource] list_tables called for schema: {schema}")
         
         query = """
-            SELECT 
+            SELECT
                 table_name as name,
                 table_schema as schema,
                 table_type as type
             FROM information_schema.tables
-            WHERE table_schema = %s
+            WHERE table_schema = $1
               AND table_type = 'BASE TABLE'
             ORDER BY table_name;
         """
         
         try:
-            results = self._client.execute_query(query, (schema,))
+            results = await self._client.execute_query(query, (schema,))
             tables = [TableListEntry.model_validate(row) for row in results]
             logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(tables)} tables")
             
@@ -285,18 +286,18 @@ class PostgreSQLDataSource:
         
         # Get table metadata
         table_query = """
-            SELECT 
+            SELECT
                 table_name as name,
                 table_schema as schema,
                 table_type as type
             FROM information_schema.tables
-            WHERE table_schema = %s AND table_name = %s;
+            WHERE table_schema = $1 AND table_name = $2;
         """
         
         # Enhanced column information query with full type details
         # Note: is_identity columns only exist in PostgreSQL 10+, so we omit them for compatibility
         columns_query = """
-            SELECT 
+            SELECT
                 c.column_name as name,
                 c.data_type,
                 c.udt_name,
@@ -307,7 +308,7 @@ class PostgreSQLDataSource:
                 CASE WHEN c.is_nullable = 'YES' THEN true ELSE false END as nullable,
                 c.column_default as "default"
             FROM information_schema.columns c
-            WHERE c.table_schema = %s AND c.table_name = %s
+            WHERE c.table_schema = $1 AND c.table_name = $2
             ORDER BY c.ordinal_position;
         """
         
@@ -319,40 +320,42 @@ class PostgreSQLDataSource:
               ON tc.constraint_name = kcu.constraint_name
               AND tc.table_schema = kcu.table_schema
             WHERE tc.constraint_type = 'UNIQUE'
-              AND tc.table_schema = %s
-              AND tc.table_name = %s;
+              AND tc.table_schema = $1
+              AND tc.table_name = $2;
         """
         
         # Get CHECK constraints
         check_query = """
-            SELECT 
+            SELECT
                 cc.constraint_name,
                 cc.check_clause
             FROM information_schema.check_constraints cc
             JOIN information_schema.table_constraints tc
               ON cc.constraint_name = tc.constraint_name
               AND cc.constraint_schema = tc.table_schema
-            WHERE tc.table_schema = %s 
-              AND tc.table_name = %s
+            WHERE tc.table_schema = $1
+              AND tc.table_name = $2
               AND tc.constraint_type = 'CHECK'
-              AND cc.check_clause NOT LIKE '%%IS NOT NULL%%';
+              AND cc.check_clause NOT LIKE '%IS NOT NULL%';
         """
         
         try:
-            table_info_raw = self._client.execute_query(table_query, (schema, table))
+            table_info_raw = await self._client.execute_query(table_query, (schema, table))
             if not table_info_raw:
                 return PostgreSQLResponse(
                     success=False,
                     error="Table not found",
                     message=f"Table {schema}.{table} not found"
                 )
-            
-            columns_raw = self._client.execute_query(columns_query, (schema, table))
-            unique_cols_raw = self._client.execute_query(unique_query, (schema, table))
-            check_raw = self._client.execute_query(check_query, (schema, table))
-            
-            unique_column_names = {row.get('column_name') for row in unique_cols_raw}
-            
+
+            columns_raw, unique_cols_raw, check_raw = await asyncio.gather(
+                self._client.execute_query(columns_query, (schema, table)),
+                self._client.execute_query(unique_query, (schema, table)),
+                self._client.execute_query(check_query, (schema, table)),
+            )
+
+            unique_column_names = {row['column_name'] for row in unique_cols_raw}
+
             columns = [ColumnInfo.model_validate(row) for row in columns_raw]
             for col in columns:
                 col.is_unique = col.name in unique_column_names
@@ -392,17 +395,17 @@ class PostgreSQLDataSource:
         logger.debug(f"🔧 [PostgreSQLDataSource] list_views called for schema: {schema}")
         
         query = """
-            SELECT 
+            SELECT
                 table_name as name,
                 table_schema as schema,
                 view_definition as definition
             FROM information_schema.views
-            WHERE table_schema = %s
+            WHERE table_schema = $1
             ORDER BY table_name;
         """
         
         try:
-            results = self._client.execute_query(query, (schema,))
+            results = await self._client.execute_query(query, (schema,))
             views = [ViewInfo.model_validate(row) for row in results]
             logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(views)} views")
             
@@ -446,12 +449,12 @@ class PostgreSQLDataSource:
               ON ccu.constraint_name = tc.constraint_name
               AND ccu.table_schema = tc.table_schema
             WHERE tc.constraint_type = 'FOREIGN KEY'
-              AND tc.table_schema = %s
-              AND tc.table_name = %s;
+              AND tc.table_schema = $1
+              AND tc.table_name = $2;
         """
         
         try:
-            results = self._client.execute_query(query, (schema, table))
+            results = await self._client.execute_query(query, (schema, table))
             foreign_keys = [ForeignKeyInfo.model_validate(row) for row in results]
             logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(foreign_keys)} foreign keys")
             
@@ -488,13 +491,13 @@ class PostgreSQLDataSource:
               ON tc.constraint_name = kcu.constraint_name
               AND tc.table_schema = kcu.table_schema
             WHERE tc.constraint_type = 'PRIMARY KEY'
-              AND tc.table_schema = %s
-              AND tc.table_name = %s
+              AND tc.table_schema = $1
+              AND tc.table_name = $2
             ORDER BY kcu.ordinal_position;
         """
         
         try:
-            results = self._client.execute_query(query, (schema, table))
+            results = await self._client.execute_query(query, (schema, table))
             primary_keys = [PrimaryKeyInfo.model_validate(row) for row in results]
             logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(primary_keys)} primary key columns")
             
@@ -518,7 +521,7 @@ class PostgreSQLDataSource:
         - Column definitions with full type info (length, precision, scale)
         - NOT NULL constraints
         - DEFAULT values
-        - PRIMARY KEY constraints  
+        - PRIMARY KEY constraints
         - UNIQUE constraints
         - FOREIGN KEY constraints
         - CHECK constraints
@@ -534,11 +537,11 @@ class PostgreSQLDataSource:
         
         # Get column definitions with full type info
         columns_query = """
-            SELECT 
+            SELECT
                 a.attname as column_name,
                 format_type(a.atttypid, a.atttypmod) as data_type,
                 a.attnotnull as not_null,
-                CASE 
+                CASE
                     WHEN a.atthasdef THEN pg_get_expr(d.adbin, d.adrelid)
                     ELSE NULL
                 END as default_value,
@@ -547,16 +550,16 @@ class PostgreSQLDataSource:
             JOIN pg_class c ON a.attrelid = c.oid
             JOIN pg_namespace n ON c.relnamespace = n.oid
             LEFT JOIN pg_attrdef d ON a.attrelid = d.adrelid AND a.attnum = d.adnum
-            WHERE n.nspname = %s 
-              AND c.relname = %s
-              AND a.attnum > 0 
+            WHERE n.nspname = $1
+              AND c.relname = $2
+              AND a.attnum > 0
               AND NOT a.attisdropped
             ORDER BY a.attnum;
         """
         
         # Get PRIMARY KEY constraint
         pk_query = """
-            SELECT 
+            SELECT
                 tc.constraint_name,
                 string_agg(kcu.column_name, ', ' ORDER BY kcu.ordinal_position) as columns
             FROM information_schema.table_constraints tc
@@ -564,14 +567,14 @@ class PostgreSQLDataSource:
               ON tc.constraint_name = kcu.constraint_name
               AND tc.table_schema = kcu.table_schema
             WHERE tc.constraint_type = 'PRIMARY KEY'
-              AND tc.table_schema = %s
-              AND tc.table_name = %s
+              AND tc.table_schema = $1
+              AND tc.table_name = $2
             GROUP BY tc.constraint_name;
         """
         
         # Get UNIQUE constraints (not already covered by primary key)
         unique_query = """
-            SELECT 
+            SELECT
                 tc.constraint_name,
                 string_agg(kcu.column_name, ', ' ORDER BY kcu.ordinal_position) as columns
             FROM information_schema.table_constraints tc
@@ -579,8 +582,8 @@ class PostgreSQLDataSource:
               ON tc.constraint_name = kcu.constraint_name
               AND tc.table_schema = kcu.table_schema
             WHERE tc.constraint_type = 'UNIQUE'
-              AND tc.table_schema = %s
-              AND tc.table_name = %s
+              AND tc.table_schema = $1
+              AND tc.table_name = $2
             GROUP BY tc.constraint_name;
         """
         
@@ -600,32 +603,34 @@ class PostgreSQLDataSource:
               ON ccu.constraint_name = tc.constraint_name
               AND ccu.table_schema = tc.table_schema
             WHERE tc.constraint_type = 'FOREIGN KEY'
-              AND tc.table_schema = %s
-              AND tc.table_name = %s;
+              AND tc.table_schema = $1
+              AND tc.table_name = $2;
         """
         
         # Get CHECK constraints
         check_query = """
-            SELECT 
+            SELECT
                 cc.constraint_name,
                 cc.check_clause
             FROM information_schema.check_constraints cc
             JOIN information_schema.table_constraints tc
               ON cc.constraint_name = tc.constraint_name
               AND cc.constraint_schema = tc.table_schema
-            WHERE tc.table_schema = %s 
-              AND tc.table_name = %s
+            WHERE tc.table_schema = $1
+              AND tc.table_name = $2
               AND tc.constraint_type = 'CHECK'
-              AND cc.check_clause NOT LIKE '%%IS NOT NULL%%';
+              AND cc.check_clause NOT LIKE '%IS NOT NULL%';
         """
         
         try:
-            columns_raw = self._client.execute_query(columns_query, (schema, table))
-            pk_raw = self._client.execute_query(pk_query, (schema, table))
-            unique_raw = self._client.execute_query(unique_query, (schema, table))
-            fk_raw = self._client.execute_query(fk_query, (schema, table))
-            check_raw = self._client.execute_query(check_query, (schema, table))
-            
+            columns_raw, pk_raw, unique_raw, fk_raw, check_raw = await asyncio.gather(
+                self._client.execute_query(columns_query, (schema, table)),
+                self._client.execute_query(pk_query, (schema, table)),
+                self._client.execute_query(unique_query, (schema, table)),
+                self._client.execute_query(fk_query, (schema, table)),
+                self._client.execute_query(check_query, (schema, table)),
+            )
+
             columns = [_DDLColumnDef.model_validate(c) for c in columns_raw]
             if not columns:
                 return PostgreSQLResponse(
@@ -695,7 +700,7 @@ class PostgreSQLDataSource:
         query = "SELECT version() as version, current_database() as database, current_user as user;"
         
         try:
-            results = self._client.execute_query(query)
+            results = await self._client.execute_query(query)
             logger.info("🔧 [PostgreSQLDataSource] Connection test successful")
             
             conn_info = ConnectionTestResult.model_validate(results[0]) if results else ConnectionTestResult()
@@ -710,35 +715,6 @@ class PostgreSQLDataSource:
                 success=False,
                 error=str(e),
                 message="Connection test failed"
-            )
-    
-    async def execute_query(self, query: str, params: Optional[tuple] = None) -> PostgreSQLResponse:
-        """Execute a custom SQL query.
-        
-        Args:
-            query: SQL query to execute
-            params: Optional query parameters
-            
-        Returns:
-            PostgreSQLResponse with query results
-        """
-        logger.debug(f"🔧 [PostgreSQLDataSource] execute_query called")
-        
-        try:
-            results = self._client.execute_query(query, params)
-            logger.debug(f"🔧 [PostgreSQLDataSource] Query returned {len(results)} rows")
-            
-            return PostgreSQLResponse(
-                success=True,
-                data=results,
-                message=f"Query executed successfully, {len(results)} rows returned"
-            )
-        except Exception as e:
-            logger.error(f"🔧 [PostgreSQLDataSource] Query execution failed: {e}")
-            return PostgreSQLResponse(
-                success=False,
-                error=str(e),
-                message="Query execution failed"
             )
 
     async def fetch_table_rows(
@@ -760,9 +736,7 @@ class PostgreSQLDataSource:
         row_limit = limit if limit is not None else DEFAULT_TABLE_ROW_FETCH_LIMIT
         query = f'SELECT * FROM "{schema_name}"."{table_name}" LIMIT {row_limit}'
         try:
-            response = await self.execute_query(query)
-            if response.success and response.data:
-                return response.data
+            return await self._client.execute_query(query)
         except Exception as e:
             logger.warning(
                 "🔧 [PostgreSQLDataSource] fetch_table_rows failed for %s.%s: %s",
@@ -770,7 +744,7 @@ class PostgreSQLDataSource:
                 table_name,
                 e,
             )
-        return []
+            return []
 
     async def get_table_stats(self, schemas: Optional[List[str]] = None) -> PostgreSQLResponse:
         """Get table statistics for change detection.
@@ -791,9 +765,16 @@ class PostgreSQLDataSource:
             - n_tup_del: Cumulative number of rows deleted
         """
         logger.debug("🔧 [PostgreSQLDataSource] get_table_stats called")
-        
+
+        if schemas is not None and len(schemas) == 0:
+            return PostgreSQLResponse(
+                success=True,
+                data=[],
+                message="Successfully retrieved stats for 0 tables"
+            )
+
         query = """
-            SELECT 
+            SELECT
                 schemaname as schema_name,
                 relname as table_name,
                 n_live_tup,
@@ -803,17 +784,14 @@ class PostgreSQLDataSource:
             FROM pg_stat_user_tables
             WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
         """
-        
-        params = None
+
         if schemas:
-            placeholders = ', '.join(['%s'] * len(schemas))
-            query += f" AND schemaname IN ({placeholders})"
-            params = tuple(schemas)
-        
+            query += " AND schemaname = ANY($1::text[])"
         query += " ORDER BY schemaname, relname;"
-        
+
         try:
-            results = self._client.execute_query(query, params)
+            params = (list(schemas),) if schemas else None
+            results = await self._client.execute_query(query, params)
             stats = [TableStats.model_validate(row) for row in results]
             logger.debug(f"🔧 [PostgreSQLDataSource] Found stats for {len(stats)} tables")
             
@@ -829,3 +807,4 @@ class PostgreSQLDataSource:
                 error=str(e),
                 message="Failed to get table stats"
             )
+

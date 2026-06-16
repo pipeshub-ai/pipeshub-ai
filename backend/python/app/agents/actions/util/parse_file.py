@@ -1,7 +1,6 @@
 """
 Parse supported file bytes into a ``BlocksContainer``, mirroring ``Processor`` flows.
 
-- PDF: ``PyMuPDFOpenCVProcessor.load_document`` (PyMuPDF + OpenCV), not Docling.
 - DOCX / PPTX / MD / (HTML→MD) / TXT: ``DoclingProcessor`` parse + ``create_blocks``.
 - DOC / XLS / PPT: OLE2 → OOXML via existing converters, then same as DOCX / XLSX / PPTX.
 - CSV / TSV: decode → ``read_raw_rows`` → ``find_tables_in_csv`` →
@@ -39,8 +38,8 @@ from app.modules.parsers.html_parser.html_parser import HTMLParser
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.markdown.mdx_parser import MDXParser
-from app.modules.parsers.pdf.docling import DoclingProcessor
-from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
+from app.modules.parsers.pdf.docling_processor import DoclingProcessor
+from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.utils.chat_helpers import count_tokens_text
 from app.utils.llm import get_llm_for_role
@@ -273,7 +272,7 @@ class FileContentParser:
             if file_name.lower().endswith(".pdf")
             else f"{file_name}.pdf"
         )
-        processor = PyMuPDFOpenCVProcessor(logger=self._logger, config=self._config)
+        processor = PDFPlumberOpenCVProcessor(logger=self._logger, config=self._config)
         return await processor.load_document(name, raw)
 
     async def handle_docx(self, raw: bytes, file_name: str) -> BlocksContainer:

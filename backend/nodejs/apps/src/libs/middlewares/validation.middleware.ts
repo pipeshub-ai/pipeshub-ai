@@ -46,7 +46,7 @@ export class ValidationMiddleware {
         if (error instanceof z.ZodError) {
           const errors = ValidationUtils.formatZodError(error);
           const validationError = new ValidationError(
-            'Validation failed',
+            ValidationUtils.formatValidationErrorMessage(errors),
             errors,
           );
 

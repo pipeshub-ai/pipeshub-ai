@@ -14,7 +14,9 @@ from uuid import uuid4
 
 from bs4 import BeautifulSoup
 
-import fitz
+from io import BytesIO
+
+import pdfplumber
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -74,15 +76,15 @@ def shutdown_pdf_ocr_pool() -> bool:
 def _detect_pdf_needs_ocr(file_content: bytes) -> bool:
     logger = logging.getLogger(__name__)
 
-    with fitz.open(stream=file_content, filetype="pdf") as temp_doc:
-        page_count = len(temp_doc)
+    with pdfplumber.open(BytesIO(file_content)) as pdf:
+        page_count = len(pdf.pages)
         if page_count == 0:
             return False
 
         threshold = math.ceil(page_count * 0.5)
         ocr_pages = 0
 
-        for page_index, page in enumerate(temp_doc):
+        for page_index, page in enumerate(pdf.pages):
             if OCRStrategy.needs_ocr(page, logger):
                 ocr_pages += 1
                 if ocr_pages >= threshold:
@@ -561,11 +563,11 @@ class EventProcessor:
                     ):
                         yield event
                 else:
-                    use_pymupdf = os.environ.get("ENABLE_PYMUPDF_PROCESSOR", "false").lower() == "true"
-                    if use_pymupdf:
-                        self.logger.info("📄 Using PyMuPDF+OpenCV processor (ENABLE_PYMUPDF_PROCESSOR=true)")
+                    use_pdfplumber = os.environ.get("ENABLE_PDFPLUMBER_PROCESSOR", "false").lower() == "true"
+                    if use_pdfplumber:
+                        self.logger.info("📄 Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR=true)")
                         try:
-                            async for event in self.processor.process_pdf_with_pymupdf(
+                            async for event in self.processor.process_pdf_with_pdf_plumber(
                                 recordName=record_name,
                                 recordId=record_id,
                                 pdf_binary=file_content,
@@ -575,7 +577,7 @@ class EventProcessor:
                             ):
                                 yield event
                         except Exception as e:
-                            self.logger.warning(f"⚠️ PyMuPDF+OpenCV processing failed, falling back to OCR: {e}")
+                            self.logger.warning(f"⚠️ PdfPlumber+OpenCV processing failed, falling back to OCR: {e}")
                             async for event in self.processor.process_pdf_document_with_ocr(
                                 recordName=record_name,
                                 recordId=record_id,

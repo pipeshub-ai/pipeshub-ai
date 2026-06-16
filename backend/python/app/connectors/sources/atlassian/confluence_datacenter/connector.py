@@ -7,6 +7,7 @@ Authentication: API token (personal access token or HTTP basic with API token).
 """
 
 import uuid
+import re
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from logging import Logger
@@ -59,6 +60,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.atlassian.core.apps import ConfluenceDataCenterApp
+from app.connectors.sources.atlassian.core.confluence_html import prepare_streaming_html
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -82,6 +84,23 @@ from app.utils.streaming import create_stream_record_response
 # between the application and Confluence server, ensuring no data is missed during sync
 TIME_OFFSET_HOURS = 24
 
+def _extract_item_last_modified_when(item_data: dict[str, Any]) -> Optional[str]:
+    """Extract last modified timestamp from Confluence item data.
+    
+    Tries history.lastUpdated.when first, then falls back to version.when or version.createdAt.
+    """
+    history = item_data.get("history")
+    if isinstance(history, dict):
+        last_updated = history.get("lastUpdated")
+        if isinstance(last_updated, dict):
+            when = last_updated.get("when")
+            if when:
+                return when
+    version = item_data.get("version")
+    if isinstance(version, dict):
+        return version.get("when") or version.get("createdAt")
+    return None
+
 # Expand parameters for fetching pages and blogposts with required metadata
 # Includes: ancestors, history, space, attachments, and comments
 CONTENT_EXPAND_PARAMS = (
@@ -96,15 +115,7 @@ CONTENT_EXPAND_PARAMS = (
 
 # Single-item v1 GET /content/{id} expand (streaming + reindex)
 CONTENT_V1_SINGLE_EXPAND = (
-    "body.storage,body.export_view,version,history,space,ancestors"
-)
-
-# Folders: v1 ``content/search`` with CQL ``type=folder`` (same endpoint as pages/blogposts).
-# Omit attachment/comment expands — folders are structural nodes only.
-FOLDER_EXPAND_PARAMS = (
-    "ancestors,"
-    "history.lastUpdated,"
-    "space"
+    "body.export_view,version,history,space,ancestors"
 )
 
 # ------------------------------------------------------------------------------
@@ -126,7 +137,7 @@ FOLDER_EXPAND_PARAMS = (
 # ------------------------------------------------------------------------------
 USE_DATA_CENTER_APIS = True
 CONTENT_V1_COMMENT_EXPAND = (
-    "body.storage,version,history.lastUpdated,extensions.inlineProperties"
+    "body.storage,body.export_view,version,history.lastUpdated,extensions.inlineProperties"
 )
 CONTENT_V1_ATTACHMENT_EXPAND = "version,history,metadata,extensions"
 
@@ -135,7 +146,7 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
 @ConnectorBuilder("Confluence Data Center")\
     .in_group("Atlassian")\
-    .with_description("Sync pages, folders, spaces, and users from Confluence Data Center")\
+    .with_description("Sync pages, spaces, and users from Confluence Data Center")\
     .with_categories(["Knowledge Management", "Collaboration"])\
     .with_scopes([ConnectorScope.TEAM.value])\
     .with_auth([
@@ -219,7 +230,7 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
         .add_filter_field(FilterField(
             name="space_keys",
             display_name="Space Name",
-            description="Filter pages, blogposts, and folders by space name",
+            description="Filter pages and blogposts by space name",
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
             option_source_type=OptionSourceType.DYNAMIC
@@ -240,8 +251,8 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
             category=FilterCategory.SYNC,
             option_source_type=OptionSourceType.DYNAMIC
         ))
-        .add_filter_field(CommonFields.modified_date_filter("Filter pages, blogposts, and folders by modification date."))
-        .add_filter_field(CommonFields.created_date_filter("Filter pages, blogposts, and folders by creation date."))
+        .add_filter_field(CommonFields.modified_date_filter("Filter pages and blogposts by modification date."))
+        .add_filter_field(CommonFields.created_date_filter("Filter pages and blogposts by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         # Indexing filters - Pages
         .add_filter_field(FilterField(
@@ -293,15 +304,15 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
             description="Enable indexing of blogpost comments",
             default_value=True
         ))
+        .with_admin_access_required(True, personal_connector_type="Confluence Data Center Personal")
     )\
     .build_decorator()
 class ConfluenceDataCenterConnector(BaseConnector):
     """
     Confluence Data Center Connector
 
-    Syncs spaces, users, folders (as directory FileRecord rows), pages, and blogposts
-    using Confluence REST **v1** only. Folders are listed via CQL ``type=folder`` on
-    ``/rest/api/content/search`` (there is no separate bulk folder API on DC).
+    Syncs spaces, users, pages, and blogposts using Confluence REST **v1** only.
+    Folders are not synced — DC CQL does not support ``type=folder`` (Cloud-only).
 
     Authentication: Personal Access Token (Bearer) or HTTP Basic (username/password).
     OAuth is not supported.
@@ -463,12 +474,9 @@ class ConfluenceDataCenterConnector(BaseConnector):
             # Step 3: Sync spaces
             spaces = await self._sync_spaces()
 
-            # Step 4: Sync folders, then pages and blogposts per space (folders first for hierarchy)
+            # Step 4: Sync pages and blogposts per space
             for space in spaces:
                 space_key = space.short_name
-
-                self.logger.info(f"Syncing folders for space: {space.name} ({space_key})")
-                await self._sync_folders(space_key)
 
                 # Sync pages (with attachments, comments, permissions)
                 self.logger.info(f"Syncing pages for space: {space.name} ({space_key})")
@@ -816,166 +824,106 @@ class ConfluenceDataCenterConnector(BaseConnector):
             self.logger.error(f"❌ Space sync failed: {e}", exc_info=True)
             raise
 
-    async def _sync_folders(self, space_key: str) -> None:
-        """Sync folders for a space using v1 ``content/search`` (CQL ``type=folder``).
-
-        Folders are stored as ``FileRecord`` with ``is_file=False`` and
-        ``mime_type=text/directory``. Permissions use the same v1 restriction API as
-        pages (content id is the folder id).
-
-        Pagination: supports both offset-based (``start``) and cursor-based pagination
-        via ``_split_pagination_token``, matching ``_sync_content``.
-
-        Sync checkpoint is separate from pages/blogposts so incremental runs stay consistent.
-        """
+    async def _fetch_space_homepage_info(
+        self, space_key: str
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """Return (homepage_id, title, last_modified) from GET /rest/api/space?expand=homepage."""
         try:
-            self.logger.info("Starting folder synchronization for space %s...", space_key)
-
-            pages_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.PAGES)
-
-            sync_point_key = generate_record_sync_point_key(
-                RecordType.FILE.value, "confluence_folders", space_key
+            datasource = await self._get_fresh_datasource()
+            space_resp = await datasource.get_spaces_v1(
+                keys=[space_key], limit=1, expand="homepage"
             )
-            last_sync_data = await self.pages_sync_point.read_sync_point(sync_point_key)
-            last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
-            if last_sync_time:
-                self.logger.info("Incremental folder sync: modified after %s", last_sync_time)
-
-            modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
-            modified_after = None
-            modified_before = None
-            if modified_filter:
-                modified_after, modified_before = modified_filter.get_datetime_iso()
-
-            created_filter = self.sync_filters.get(SyncFilterKey.CREATED)
-            created_after = None
-            created_before = None
-            if created_filter:
-                created_after, created_before = created_filter.get_datetime_iso()
-
-            if modified_after and last_sync_time:
-                modified_after = max(modified_after, last_sync_time)
-                self.logger.info("Using latest modified_after for folders: %s", modified_after)
-            elif last_sync_time:
-                modified_after = last_sync_time
-                self.logger.info("Incremental folder sync: modified_after=%s", modified_after)
-            elif modified_after:
-                self.logger.info("Filter: folders modified after %s", modified_after)
-            else:
-                self.logger.info("Full folder sync (no prior checkpoint)")
-
-            batch_size = 50
-            pagination_token: Optional[str] = None
-            total_synced = 0
-            total_permissions_synced = 0
-
-            while True:
-                datasource = await self._get_fresh_datasource()
-
-                start_offset, cursor_token = self._split_pagination_token(pagination_token)
-
-                response = await datasource.get_folders_v1(
-                    modified_after=modified_after,
-                    modified_before=modified_before,
-                    created_after=created_after,
-                    created_before=created_before,
-                    start=start_offset,
-                    cursor=cursor_token,
-                    limit=batch_size,
-                    space_key=space_key,
-                    order_by="lastModified",
-                    sort_order="asc",
-                    expand=FOLDER_EXPAND_PARAMS,
-                    time_offset_hours=TIME_OFFSET_HOURS,
+            if not space_resp or space_resp.status != HttpStatusCode.SUCCESS.value:
+                return None, None, None
+            space_results = space_resp.json().get("results", [])
+            if not space_results:
+                return None, None, None
+            homepage = space_results[0].get("homepage") or {}
+            homepage_id = str(homepage.get("id")) if homepage.get("id") else None
+            homepage_title = homepage.get("title")
+            homepage_last_modified: Optional[str] = None
+            if homepage_id:
+                hp_resp = await datasource.get_content_v1(
+                    homepage_id,
+                    expand="history.lastUpdated,version,space",
                 )
-
-                if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    self.logger.error(
-                        "Failed to fetch folders: %s",
-                        response.status if response else "no response",
-                    )
-                    break
-
-                response_data = response.json()
-                items_data = response_data.get("results", [])
-
-                if not items_data:
-                    break
-
-                records_with_permissions: list[tuple[FileRecord, list[Permission]]] = []
-                for item_data in items_data:
-                    try:
-                        item_id = item_data.get("id")
-                        item_title = item_data.get("title")
-
-                        if not item_id or not item_title:
-                            continue
-
-                        self.logger.debug("Processing folder: %s (%s)", item_title, item_id)
-
-                        existing_record = await self.data_entities_processor.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_record_id=item_id,
-                        )
-
-                        permissions = await self._fetch_page_permissions(item_id)
-                        total_permissions_synced += len(permissions)
-
-                        folder_record = self._transform_to_folder_file_record(item_data, existing_record)
-                        if not folder_record:
-                            continue
-
-                        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-                        if read_permissions:
-                            folder_record.inherit_permissions = False
-
-                        if not pages_indexing_enabled:
-                            folder_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-
-                        records_with_permissions.append((folder_record, permissions))
-                        total_synced += 1
-                        self.logger.debug("Folder %s: %s permissions", item_title, len(permissions))
-
-                    except Exception as item_error:
-                        self.logger.error(
-                            "Failed to process folder %s: %s",
-                            item_data.get("title"),
-                            item_error,
-                        )
-                        continue
-
-                if records_with_permissions:
-                    await self.data_entities_processor.on_new_records(records_with_permissions)
-                    self.logger.info("Synced batch of %s folders", len(records_with_permissions))
-
-                next_url = response_data.get("_links", {}).get("next")
-                if not next_url:
-                    break
-
-                pagination_token = self._pagination_token_from_next_link(next_url)
-                if pagination_token is None:
-                    if len(items_data) < batch_size:
-                        break
-                    start_offset = (start_offset or 0) + len(items_data)
-                    pagination_token = str(start_offset)
-                    continue
-
-            if total_synced > 0:
-                current_sync_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-                await self.pages_sync_point.update_sync_point(
-                    sync_point_key, {"last_sync_time": current_sync_time}
-                )
-                self.logger.info("Updated folders sync checkpoint to %s", current_sync_time)
-
-            self.logger.info(
-                "Folder sync complete. Folders: %s, Permissions: %s",
-                total_synced,
-                total_permissions_synced,
-            )
-
+                if hp_resp and hp_resp.status == HttpStatusCode.SUCCESS.value:
+                    hp_data = hp_resp.json()
+                    homepage_last_modified = _extract_item_last_modified_when(hp_data)
+                    homepage_title = hp_data.get("title") or homepage_title
+            return homepage_id, homepage_title, homepage_last_modified
         except Exception as e:
-            self.logger.error("Folder sync failed: %s", e, exc_info=True)
-            raise
+            self.logger.warning(
+                "Failed to fetch space homepage for %s: %s", space_key, e
+            )
+            return None, None, None
+
+    async def _backfill_space_homepage_from_api(
+        self,
+        space_homepage_id: str,
+        space_key: str,
+        record_type: RecordType,
+        content_indexing_enabled: bool,
+    ) -> int:
+        """Sync space homepage via GET /content/{id} when CQL search omits it."""
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_content_v1(
+                space_homepage_id,
+                expand=CONTENT_EXPAND_PARAMS,
+            )
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
+                self.logger.warning(
+                    "Failed to backfill space homepage %s for space %s: HTTP %s",
+                    space_homepage_id,
+                    space_key,
+                    response.status if response else "no response",
+                )
+                return 0
+
+            item_data = response.json()
+            item_id = item_data.get("id")
+            item_title = item_data.get("title")
+            if not item_id or not item_title:
+                return 0
+
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id,
+                external_record_id=item_id,
+            )
+            permissions = await self._fetch_page_permissions(item_id)
+            webpage_record_update = await self._process_webpage_with_update(
+                item_data, record_type, existing_record, permissions
+            )
+            if not webpage_record_update.record:
+                return 0
+
+            webpage_record = webpage_record_update.record
+            if not content_indexing_enabled:
+                webpage_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+            read_permissions = [p for p in permissions if p.type == PermissionType.READ]
+            if read_permissions:
+                webpage_record.inherit_permissions = False
+
+            await self.data_entities_processor.on_new_records(
+                [(webpage_record, permissions)]
+            )
+            self.logger.info(
+                "Backfilled space homepage %s (%s) for space %s — omitted from CQL search",
+                item_title,
+                item_id,
+                space_key,
+            )
+            return 1
+        except Exception as e:
+            self.logger.error(
+                "Failed to backfill homepage %s for space %s: %s",
+                space_homepage_id,
+                space_key,
+                e,
+                exc_info=True,
+            )
+            return 0
 
     async def _sync_content(self, space_key: str, record_type: RecordType) -> None:
         """
@@ -1064,6 +1012,11 @@ class ConfluenceDataCenterConnector(BaseConnector):
             if created_before:
                 self.logger.info(f"🔍 Filter: Fetching {content_type}s created before {created_before}")
 
+            space_homepage_id: Optional[str] = None
+            homepage_seen_in_search = False
+            if record_type == RecordType.CONFLUENCE_PAGE:
+                space_homepage_id, _, _ = await self._fetch_space_homepage_info(space_key)
+
             # Pagination variables
             # Supports both offset-based (start/limit) and cursor-based pagination
             batch_size = 50
@@ -1072,6 +1025,22 @@ class ConfluenceDataCenterConnector(BaseConnector):
             total_attachments_synced = 0
             total_comments_synced = 0
             total_permissions_synced = 0
+
+            if record_type == RecordType.CONFLUENCE_PAGE and space_homepage_id:
+                homepage_in_db = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_record_id=space_homepage_id,
+                )
+                if not homepage_in_db:
+                    backfilled = await self._backfill_space_homepage_from_api(
+                        space_homepage_id,
+                        space_key,
+                        record_type,
+                        content_indexing_enabled,
+                    )
+                    if backfilled:
+                        total_synced += backfilled
+                        homepage_seen_in_search = True
 
             # Paginate through all content items
             while True:
@@ -1124,6 +1093,9 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 response_data = response.json()
                 items_data = response_data.get("results", [])
 
+                # Extract api_base_url from response root for URL construction
+                api_base_url = (response_data.get("_links") or {}).get("base")
+
                 if not items_data:
                     break
 
@@ -1137,6 +1109,13 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
                         if not item_id or not item_title:
                             continue
+
+                        if (
+                            record_type == RecordType.CONFLUENCE_PAGE
+                            and space_homepage_id
+                            and str(item_id) == space_homepage_id
+                        ):
+                            homepage_seen_in_search = True
 
                         self.logger.debug(f"Processing {content_type}: {item_title} ({item_id})")
 
@@ -1152,7 +1131,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
                         # Transform to WebpageRecord with update tracking
                         webpage_record_update = await self._process_webpage_with_update(
-                            item_data, record_type, existing_record, permissions
+                            item_data, record_type, existing_record, permissions, api_base_url
                         )
 
                         if not webpage_record_update.record:
@@ -1182,33 +1161,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         # Get parent_node_id for dependent nodes (comments and attachments)
                         parent_node_id = webpage_record.id
 
-                        # Process comments
-                        child_types = item_data.get("childTypes", {})
-                        comment_info = child_types.get("comment", {})
-                        has_comments = comment_info.get("value", False)
-
-                        if has_comments:
-                            self.logger.debug(f"{content_type.capitalize()} {item_title} has comments, fetching...")
-
-                            # Fetch comments (footer and inline)
-                            for comment_type in ["footer", "inline"]:
-                                comments = await self._fetch_comments_recursive(
-                                    item_id,
-                                    item_title,
-                                    comment_type,
-                                    permissions,
-                                    space_id,
-                                    content_type,
-                                    parent_node_id=parent_node_id
-                                )
-                                # Set indexing status for comments if disabled
-                                for comment_record, comment_permissions in comments:
-                                    if not content_comments_indexing_enabled:
-                                        comment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                                records_with_permissions.extend(comments)
-                                total_comments_synced += len(comments)
-
-                        # Process attachments
+                        # Process attachments first (keep list in memory for comment embedded attachment resolution)
                         children = item_data.get("children", {})
                         attachment_data = children.get("attachment", {})
                         inline_attachments = attachment_data.get("results", [])
@@ -1222,15 +1175,18 @@ class ConfluenceDataCenterConnector(BaseConnector):
                                 f"({len(inline_attachments)}/{attachment_size}), fetching separately"
                             )
                             # Fetch all attachments via separate pagination
-                            attachments = await self._fetch_all_attachments(item_id)
+                            page_attachments, fetched_api_base_url = await self._fetch_all_attachments(item_id)
+                            # Use fetched base URL if we don't already have one
+                            if not api_base_url and fetched_api_base_url:
+                                api_base_url = fetched_api_base_url
                         else:
                             # Use inline results if complete
-                            attachments = inline_attachments
+                            page_attachments = inline_attachments
 
-                        if attachments:
-                            self.logger.debug(f"Found {len(attachments)} attachments for {content_type} {item_title}")
+                        if page_attachments:
+                            self.logger.debug(f"Found {len(page_attachments)} attachments for {content_type} {item_title}")
 
-                            for attachment in attachments:
+                            for attachment in page_attachments:
                                 try:
                                     attachment_id = attachment.get("id")
                                     if not attachment_id:
@@ -1247,7 +1203,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
                                         item_id,
                                         space_id,
                                         existing_record=existing_attachment,
-                                        parent_node_id=parent_node_id
+                                        parent_node_id=parent_node_id,
+                                        api_base_url=api_base_url
                                     )
 
                                     if attachment_record:
@@ -1262,6 +1219,28 @@ class ConfluenceDataCenterConnector(BaseConnector):
                                 except Exception as att_error:
                                     self.logger.error(f"❌ Failed to process attachment: {att_error}")
                                     continue
+
+                        # Process comments (always fetch; DC /content/search omits childTypes.comment even when present)
+                        self.logger.debug(f"Fetching comments for {content_type} {item_title}...")
+
+                        # Fetch comments (footer and inline) with page attachments for embedded resolution
+                        for comment_type in ["footer", "inline"]:
+                            comments = await self._fetch_comments_recursive(
+                                item_id,
+                                item_title,
+                                comment_type,
+                                permissions,
+                                space_id,
+                                content_type,
+                                parent_node_id=parent_node_id,
+                                page_attachments=page_attachments,
+                                attachments_indexing_enabled=content_attachments_indexing_enabled
+                            )
+                            # Comments already have indexing status set; just count them
+                            # (Note: comments now includes attachment records too)
+                            comment_count = sum(1 for rec, _ in comments if rec.record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT])
+                            records_with_permissions.extend(comments)
+                            total_comments_synced += comment_count
 
                     except Exception as item_error:
                         self.logger.error(f"❌ Failed to process {content_type} {item_data.get('title')}: {item_error}")
@@ -1289,6 +1268,21 @@ class ConfluenceDataCenterConnector(BaseConnector):
                     pagination_token = str(start_offset)
                     continue
 
+            if (
+                record_type == RecordType.CONFLUENCE_PAGE
+                and space_homepage_id
+                and not homepage_seen_in_search
+            ):
+                backfilled = await self._backfill_space_homepage_from_api(
+                    space_homepage_id,
+                    space_key,
+                    record_type,
+                    content_indexing_enabled,
+                )
+                if backfilled:
+                    total_synced += backfilled
+
+
             # Update sync checkpoint with current time (only if we synced something)
             # Using current time instead of last item's time avoids re-fetching due to the 24-hour offset
             if total_synced > 0:
@@ -1304,7 +1298,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
     async def _sync_permission_changes_from_audit_log(self) -> None:
         """
-        Sync permission changes for pages/blogs using Confluence Audit Log API.
+        Sync permission changes for pages/blogs using Confluence DC Auditing API.
 
         This method tracks permission changes that don't update the content's
         lastModified timestamp, ensuring we capture:
@@ -1314,11 +1308,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
         Flow:
         1. Get last audit sync time
         2. If first run (no checkpoint): Initialize with current time and skip (permissions already synced)
-        3. If subsequent run: Fetch audit logs since last sync
-        4. Extract unique content titles from audit records
-        5. Search content by titles and check if exists in DB
-        6. For each existing content: Fetch current permissions and update
-        7. Update audit log sync point with current timestamp
+        3. If subsequent run: Fetch audit events since last sync
+        4. Extract unique content IDs from audit records
+        5. For each content ID: Check if exists in DB and update permissions
+        6. Update audit log sync point with current timestamp
 
         Note: First run initializes checkpoint but skips permission sync because
         the initial content sync (_sync_content) already synced all permissions.
@@ -1350,12 +1343,12 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 )
                 return
 
-            self.logger.info(f"🔄 Fetching audit logs from {last_sync_time_ms} to {current_time_ms}")
+            self.logger.info(f"🔄 Fetching audit events from {last_sync_time_ms} to {current_time_ms}")
 
-            # Fetch audit logs and extract content titles that had permission changes
-            content_titles = await self._fetch_permission_audit_logs(last_sync_time_ms, current_time_ms)
+            # Fetch audit events and extract content IDs that had permission changes
+            content_ids = await self._fetch_permission_audit_content_ids(last_sync_time_ms, current_time_ms)
 
-            if not content_titles:
+            if not content_ids:
                 self.logger.info("✅ No permission changes found in audit log")
                 # Update sync point even if no changes
                 await self.audit_log_sync_point.update_sync_point(
@@ -1364,10 +1357,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 )
                 return
 
-            self.logger.info(f"📋 Found {len(content_titles)} content items with permission changes")
+            self.logger.info(f"📋 Found {len(content_ids)} content IDs with permission changes")
 
-            # Search for content by titles and sync their permissions (only if exists in DB)
-            await self._sync_content_permissions_by_titles(content_titles)
+            # Sync permissions by content IDs (only if exists in DB)
+            await self._sync_content_permissions_by_ids(content_ids)
 
             # Update audit log sync point with current time
             await self.audit_log_sync_point.update_sync_point(
@@ -1381,63 +1374,72 @@ class ConfluenceDataCenterConnector(BaseConnector):
             self.logger.error(f"❌ Permission sync from audit log failed: {e}", exc_info=True)
             raise
 
-    async def _fetch_permission_audit_logs(
+    async def _fetch_permission_audit_content_ids(
         self,
         start_date_ms: int,
         end_date_ms: int
     ) -> list[str]:
         """
-        Fetch audit logs and extract content titles that had permission changes.
+        Fetch audit events from DC Auditing API and extract content IDs with permission changes.
 
+        Uses /rest/auditing/1.0/events with pageCursor pagination.
         Filters for:
-        - category = "Permissions"
+        - category = "Pages and Blogs" (DC End user activity)
         - scope = content (pages/blogs, not global or space-level)
 
         Args:
-            start_date_ms: Start timestamp in milliseconds
-            end_date_ms: End timestamp in milliseconds
+            start_date_ms: Start timestamp in milliseconds (Unix epoch * 1000)
+            end_date_ms: End timestamp in milliseconds (Unix epoch * 1000)
 
         Returns:
-            List of unique content titles (pages/blogs) that had permission changes
+            List of unique content IDs (pages/blogs) that had permission changes
         """
-        content_titles_set: set[str] = set()
+        content_ids_set: set[str] = set()
         batch_size = 100
-        start = 0
+        page_cursor: Optional[str] = None
+
+        # Convert millisecond timestamps to ISO-8601 UTC format
+        from_date = datetime.fromtimestamp(start_date_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+        to_date = datetime.fromtimestamp(end_date_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
 
         while True:
             datasource = await self._get_fresh_datasource()
-            response = await datasource.get_audit_logs(
-                start_date=start_date_ms,
-                end_date=end_date_ms,
-                start=start,
-                limit=batch_size
+            response = await datasource.get_auditing_events_v1(
+                from_date=from_date,
+                to_date=to_date,
+                limit=batch_size,
+                page_cursor=page_cursor,
+                categories="Pages and Blogs"  # Filter server-side to reduce noise
             )
 
             if not response or response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.warning(f"⚠️ Failed to fetch audit logs: {response.status if response else 'No response'}")
+                self.logger.warning(f"⚠️ Failed to fetch audit events: {response.status if response else 'No response'}")
                 break
 
             response_data = response.json()
-            audit_records = response_data.get("results", [])
+            audit_records = response_data.get("entities", [])
 
             if not audit_records:
                 break
 
             # Process each audit record
             for record in audit_records:
-                content_title = self._extract_content_title_from_audit_record(record)
-                if content_title:
-                    content_titles_set.add(content_title)
+                content_id = self._extract_content_id_from_audit_record(record)
+                if content_id:
+                    content_ids_set.add(content_id)
 
-            # Check for more pages
-            if len(audit_records) < batch_size:
+            # Check for next page using pageCursor
+            paging_info = response_data.get("pagingInfo", {})
+            if paging_info.get("lastPage", True):
+                break
+            
+            page_cursor = paging_info.get("nextPageCursor")
+            if not page_cursor:
                 break
 
-            start += batch_size
+        return list(content_ids_set)
 
-        return list(content_titles_set)
-
-    # Data Center page/blog restriction events use category "Pages and blogs"
+    # Data Center page/blog restriction events use category "Pages and Blogs"
     # (End user activity — Advanced coverage), not "Permissions" (space/global only).
     _AUDIT_CONTENT_OBJECT_TYPES = frozenset({"page", "blog", "blogpost"})
     _AUDIT_SPACE_OBJECT_TYPES = frozenset({"space"})
@@ -1480,6 +1482,93 @@ class ConfluenceDataCenterConnector(BaseConnector):
             return None
 
         return content_obj.get("name")
+
+    @staticmethod
+    def _normalize_audit_record(record: dict[str, Any]) -> dict[str, Any]:
+        """
+        Normalize audit record to unified internal shape for both Cloud and DC.
+
+        Handles:
+        - Cloud: category at top level, associatedObjects, objectType
+        - DC: category in type.category, affectedObjects, type (case-insensitive)
+
+        Args:
+            record: Raw audit record from either Cloud or DC API
+
+        Returns:
+            Normalized record with consistent keys:
+            {
+                "category": str,
+                "objects": [{"name": str, "type": str, "id": str|None}, ...]
+            }
+        """
+        # Extract category
+        if "type" in record and isinstance(record["type"], dict):
+            # DC Auditing API: category in type.category
+            category = (record["type"].get("category") or "").lower()
+        else:
+            # Cloud or legacy: category at top level
+            category = (record.get("category") or "").lower()
+
+        # Extract objects list
+        objects = record.get("affectedObjects") or record.get("associatedObjects") or []
+
+        # Normalize each object
+        normalized_objects = []
+        for obj in objects:
+            obj_type = (obj.get("type") or obj.get("objectType") or "").lower()
+            normalized_objects.append({
+                "name": obj.get("name"),
+                "type": obj_type,
+                "id": obj.get("id")
+            })
+
+        return {
+            "category": category,
+            "objects": normalized_objects
+        }
+
+    def _extract_content_id_from_audit_record(self, record: dict[str, Any]) -> Optional[str]:
+        """
+        Extract content ID from a DC audit record if it's a content permission change.
+
+        Filters for:
+        - category is "Pages and blogs" (case-insensitive — DC End user activity)
+        - Has a Page or Blog/BlogPost in affectedObjects (content-level permission)
+        - Has a Space in affectedObjects (confirms it's content, not global)
+        - Content object must have an ID field
+
+        Args:
+            record: Raw audit event record from DC Auditing API
+
+        Returns:
+            Content ID (page/blog) or None if not a content permission change or ID missing
+        """
+        normalized = self._normalize_audit_record(record)
+        
+        if normalized["category"] != "pages and blogs":
+            return None
+
+        objects = normalized["objects"]
+
+        has_space = any(
+            obj["type"] in self._AUDIT_SPACE_OBJECT_TYPES
+            for obj in objects
+        )
+        content_obj = next(
+            (
+                obj for obj in objects
+                if obj["type"] in self._AUDIT_CONTENT_OBJECT_TYPES
+            ),
+            None,
+        )
+
+        # Content restriction must have both page/blog AND space
+        if not has_space or not content_obj:
+            return None
+
+        # Return ID if present (DC provides IDs, Cloud does not)
+        return content_obj.get("id")
 
 
     async def _sync_content_permissions_by_titles(self, titles: list[str]) -> None:
@@ -1524,6 +1613,9 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 response_data = response.json()
                 content_items = response_data.get("results", [])
 
+                # Extract api_base_url from response root for URL construction
+                api_base_url = (response_data.get("_links") or {}).get("base")
+
                 if not content_items:
                     self.logger.debug(f"No content found for titles batch {i // batch_size + 1}")
                     continue
@@ -1566,7 +1658,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         self.logger.debug(f"Updating permissions for {item_type}: {item_title} ({item_id})")
 
                         # Transform to WebpageRecord
-                        webpage_record = self._transform_to_webpage_record(item_data, record_type)
+                        webpage_record = self._transform_to_webpage_record(item_data, record_type, api_base_url=api_base_url)
                         if not webpage_record:
                             continue
 
@@ -1607,48 +1699,172 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
         self.logger.info(f"✅ Permission sync complete. Items updated: {total_synced}, Permissions: {total_permissions}")
 
+    async def _sync_content_permissions_by_ids(self, content_ids: list[str]) -> None:
+        """
+        Fetch content by IDs and sync their current permissions.
+
+        IMPORTANT: This method ONLY updates permissions for records that already exist in the database.
+        It will NOT create new records, ensuring sync filters are respected.
+
+        For each content ID:
+        1. Check if record exists in DB (by external_record_id)
+        2. If exists: Fetch current content metadata and permissions, then update
+        3. If not exists: Skip (record was filtered out during initial sync)
+
+        Args:
+            content_ids: List of Confluence content IDs to sync
+        """
+        if not content_ids:
+            return
+
+        # Deduplicate IDs
+        unique_ids = list(set(content_ids))
+        
+        total_synced = 0
+        total_skipped = 0
+        total_permissions = 0
+        has_failures = False
+
+        self.logger.info(f"🔄 Syncing permissions for {len(unique_ids)} content items by ID")
+
+        for content_id in unique_ids:
+            try:
+                # Check if record exists in database first (respects sync filters)
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_record_id=content_id
+                )
+
+                if not existing_record:
+                    # Record doesn't exist - it was filtered out during initial sync
+                    self.logger.debug(
+                        f"Skipping content {content_id} - not in database (filtered out during sync)"
+                    )
+                    total_skipped += 1
+                    continue
+
+                # Fetch content metadata
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_content_v1(
+                    content_id=content_id,
+                    expand="version,space,history.lastUpdated,ancestors"
+                )
+
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
+                    if response and response.status == HttpStatusCode.NOT_FOUND.value:
+                        self.logger.info(f"Content {content_id} not found (likely deleted), skipping permission sync")
+                        continue
+                    self.logger.warning(
+                        f"⚠️ Failed to fetch content {content_id}: "
+                        f"{response.status if response else 'No response'}"
+                    )
+                    has_failures = True
+                    continue
+
+                item_data = response.json()
+                item_title = item_data.get("title")
+                item_type = item_data.get("type", "").lower()
+
+                if not item_title:
+                    self.logger.warning(f"⚠️ Content {content_id} has no title, skipping")
+                    continue
+
+                # Determine record type
+                if item_type == "page":
+                    record_type = RecordType.CONFLUENCE_PAGE
+                elif item_type == "blogpost":
+                    record_type = RecordType.CONFLUENCE_BLOGPOST
+                else:
+                    self.logger.debug(f"Skipping unknown content type: {item_type}")
+                    continue
+
+                self.logger.debug(f"Updating permissions for {item_type}: {item_title} ({content_id})")
+
+                # Transform to WebpageRecord
+                webpage_record = self._transform_to_webpage_record(item_data, record_type)
+                if not webpage_record:
+                    continue
+
+                # Fetch current permissions
+                permissions = await self._fetch_page_permissions(content_id)
+                total_permissions += len(permissions)
+
+                # Only set inherit_permissions to False if there are READ restrictions
+                read_permissions = [p for p in permissions if p.type == PermissionType.READ]
+                if len(read_permissions) > 0:
+                    webpage_record.inherit_permissions = False
+
+                # Update in database
+                await self.data_entities_processor.on_new_records([(webpage_record, permissions)])
+                total_synced += 1
+
+            except Exception as item_error:
+                self.logger.error(f"❌ Failed to sync permissions for content {content_id}: {item_error}")
+                has_failures = True
+                continue
+
+        if has_failures:
+            raise ValueError("Failed to sync permissions for some content items")
+
+        if total_skipped > 0:
+            self.logger.info(f"🔍 Skipped {total_skipped} items not in database (filtered during sync)")
+
+        self.logger.info(f"✅ Permission sync complete. Items updated: {total_synced}, Permissions: {total_permissions}")
+
     async def _fetch_page_permissions(self, page_id: str) -> list[Permission]:
         """
-        Fetch permissions for a Confluence page using v1 API.
+        Fetch read (view) permissions for a Confluence page using DC v1 API.
+
+        Uses ``/restriction/relevantViewRestrictions`` which returns effective
+        view restrictions only (no edit/update restrictions).
 
         Args:
             page_id: The page ID
 
         Returns:
-            List of Permission objects
+            List of Permission objects with READ type only
         """
         permissions = []
 
         try:
-            self.logger.debug(f"Fetching permissions for page: {page_id}")
+            self.logger.debug(f"Fetching view permissions for page: {page_id}")
 
-            # Fetch page restrictions using v1 API
             datasource = await self._get_fresh_datasource()
-            response = await datasource.get_page_permissions_v1(
+            response = await datasource.get_page_relevant_view_restrictions_v1(
                 page_id=page_id
             )
 
-            # Check response
             if not response or response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.warning(f"⚠️ Failed to fetch permissions for page {page_id}: {response.status if response else 'No response'}")
+                self.logger.warning(
+                    f"⚠️ Failed to fetch view permissions for page {page_id}: "
+                    f"{response.status if response else 'No response'}"
+                )
                 return []
 
             response_data = response.json()
-            restrictions = response_data.get("results", [])
+            view_restrictions = response_data.get("viewContentRestrictions", {})
+            restrictions = view_restrictions.get("results", [])
 
-            # Process each restriction (read and update operations)
             for restriction_data in restrictions:
-                operation_permissions = await self._transform_page_restriction_to_permissions(restriction_data)
+                if restriction_data.get("operation") != "read":
+                    continue
+                operation_permissions = await self._transform_page_restriction_to_permissions(
+                    restriction_data
+                )
                 permissions.extend(operation_permissions)
 
-            self.logger.debug(f"Found {len(permissions)} permissions for page {page_id}")
+            self.logger.debug(
+                f"Found {len(permissions)} view permissions for page {page_id}"
+            )
             return permissions
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to fetch permissions for page {page_id}: {e}")
-            return []  # Return empty list on error, page will be created without permissions
+            self.logger.error(
+                f"❌ Failed to fetch view permissions for page {page_id}: {e}"
+            )
+            return []
 
-    async def _fetch_all_attachments(self, content_id: str) -> list[dict[str, Any]]:
+    async def _fetch_all_attachments(self, content_id: str) -> tuple[list[dict[str, Any]], Optional[str]]:
         """
         Fetch all attachments for a content item using separate pagination.
 
@@ -1659,9 +1875,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
             content_id: The page or blogpost ID
 
         Returns:
-            List of attachment data dictionaries
+            Tuple of (list of attachment data dictionaries, api_base_url from response)
         """
         all_attachments = []
+        api_base_url = None
         batch_size = 100
         start = 0
 
@@ -1683,6 +1900,11 @@ class ConfluenceDataCenterConnector(BaseConnector):
                     break
 
                 response_data = response.json()
+                
+                # Capture api_base_url from first response
+                if api_base_url is None:
+                    api_base_url = (response_data.get("_links") or {}).get("base")
+                
                 attachments = response_data.get("results", [])
 
                 if not attachments:
@@ -1696,10 +1918,61 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
                 start += batch_size
 
-            return all_attachments
+            return all_attachments, api_base_url
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch attachments for content {content_id}: {e}")
+            return [], None
+
+    async def _fetch_attachment_file_records(
+        self,
+        comment_id: str,
+        comment_record_type: RecordType,
+        comment_node_id: str,
+        parent_space_id: Optional[str],
+        attachments_indexing_enabled: bool,
+        permissions: list[Permission]
+    ) -> list[tuple[FileRecord, list[Permission]]]:
+        """
+        Fetch and transform attachment file records for a comment.
+
+        Args:
+            comment_id: External record ID of the comment
+            comment_record_type: RecordType.COMMENT or RecordType.INLINE_COMMENT
+            comment_node_id: Internal record ID of the comment
+            parent_space_id: Space ID from parent page
+            attachments_indexing_enabled: Whether attachments should be indexed
+            permissions: Permissions inherited from parent page
+
+        Returns:
+            List of (FileRecord, permissions) tuples
+        """
+        try:
+            attachments, attachment_api_base_url = await self._fetch_all_attachments(comment_id)
+            if not attachments:
+                return []
+
+            records_with_permissions = []
+            for attachment_data in attachments:
+                file_record = self._transform_to_attachment_file_record(
+                    attachment_data=attachment_data,
+                    parent_external_record_id=comment_id,
+                    parent_external_record_group_id=parent_space_id,
+                    parent_node_id=comment_node_id,
+                    parent_record_type=comment_record_type,
+                    api_base_url=attachment_api_base_url
+                )
+                if file_record:
+                    # Apply indexing filter
+                    if not attachments_indexing_enabled:
+                        file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+                    # Inherit page permissions
+                    records_with_permissions.append((file_record, permissions))
+
+            return records_with_permissions
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch attachment file records for comment {comment_id}: {e}")
             return []
 
     async def _fetch_comments_recursive(
@@ -1710,12 +1983,14 @@ class ConfluenceDataCenterConnector(BaseConnector):
         page_permissions: list[Permission],
         parent_space_id: Optional[str],
         parent_type: str = "page",
-        parent_node_id: Optional[str] = None
-    ) -> list[tuple[CommentRecord, list[Permission]]]:
+        parent_node_id: Optional[str] = None,
+        page_attachments: Optional[list[dict[str, Any]]] = None,
+        attachments_indexing_enabled: bool = True
+    ) -> list[tuple[Record, list[Permission]]]:
         """
         Recursively fetch all comments (footer or inline) for a page or blogpost.
 
-        Fetches top-level comments and all nested replies in a flat list.
+        Fetches top-level comments and all nested replies in a flat list, plus their attachments.
         Each comment inherits permissions from the parent.
 
         Args:
@@ -1726,9 +2001,11 @@ class ConfluenceDataCenterConnector(BaseConnector):
             parent_space_id: Space ID for external_record_group_id
             parent_type: "page" or "blogpost" (determines which API to call)
             parent_node_id: Internal record ID of parent page
+            page_attachments: List of page attachment data for resolving embedded filenames
+            attachments_indexing_enabled: Whether comment attachments should be indexed
 
         Returns:
-            List of tuples (CommentRecord, permissions list)
+            List of tuples (Record, permissions list) for comments and their attachments
         """
         try:
             all_comments = []
@@ -1796,6 +2073,74 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         if comment_record:
                             all_comments.append((comment_record, page_permissions))
 
+                            # Sync comment attachments (explicit child attachments)
+                            comment_record_type = RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT
+                            comment_file_records = await self._fetch_attachment_file_records(
+                                comment_id=comment_id_str,
+                                comment_record_type=comment_record_type,
+                                comment_node_id=comment_record.id,
+                                parent_space_id=parent_space_id,
+                                attachments_indexing_enabled=attachments_indexing_enabled,
+                                permissions=page_permissions
+                            )
+                            all_comments.extend(comment_file_records)
+
+                            # Extract and resolve embedded attachments from comment body.storage
+                            body = comment_data.get("body", {})
+                            storage = body.get("storage", {})
+                            body_storage_html = storage.get("value", "")
+                            
+                            if body_storage_html:
+                                embedded_filenames = self._extract_storage_attachment_filenames(body_storage_html)
+                                
+                                if embedded_filenames:
+                                    # Build combined attachment list for resolution (comment attachments + page attachments)
+                                    comment_attachments_data, comment_api_base_url = await self._fetch_all_attachments(comment_id_str)
+                                    # Use base_url from parent comment list response if comment attachments don't have one
+                                    effective_base_url = comment_api_base_url or base_url
+                                    combined_attachments = comment_attachments_data + (page_attachments or [])
+                                    
+                                    # Track already-synced attachment IDs to avoid duplicates
+                                    synced_attachment_ids = {
+                                        rec[0].external_record_id 
+                                        for rec in comment_file_records
+                                    }
+                                    
+                                    # Resolve each embedded filename and create FileRecord if not already synced
+                                    for filename in embedded_filenames:
+                                        attachment_id = self._resolve_attachment_by_filename(filename, combined_attachments)
+                                        
+                                        if attachment_id and attachment_id not in synced_attachment_ids:
+                                            # Find the attachment data
+                                            attachment_data = next(
+                                                (att for att in combined_attachments if att.get("id") == attachment_id),
+                                                None
+                                            )
+                                            
+                                            if attachment_data:
+                                                # Check if attachment already exists in DB (e.g., page attachment)
+                                                existing_attachment = await self.data_entities_processor.get_record_by_external_id(
+                                                    connector_id=self.connector_id,
+                                                    external_record_id=attachment_id
+                                                )
+                                                
+                                                if not existing_attachment:
+                                                    # Create FileRecord for embedded attachment
+                                                    file_record = self._transform_to_attachment_file_record(
+                                                        attachment_data=attachment_data,
+                                                        parent_external_record_id=comment_id_str,
+                                                        parent_external_record_group_id=parent_space_id,
+                                                        parent_node_id=comment_record.id,
+                                                        parent_record_type=comment_record_type,
+                                                        api_base_url=effective_base_url
+                                                    )
+                                                    
+                                                    if file_record:
+                                                        if not attachments_indexing_enabled:
+                                                            file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+                                                        all_comments.append((file_record, page_permissions))
+                                                        synced_attachment_ids.add(attachment_id)
+
                         children = await self._fetch_comment_children_recursive(
                             comment_id_str,
                             comment_type,
@@ -1803,6 +2148,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
                             parent_space_id,
                             page_permissions,
                             parent_node_id=parent_node_id,
+                            page_attachments=page_attachments,
+                            attachments_indexing_enabled=attachments_indexing_enabled
                         )
                         all_comments.extend(children)
 
@@ -1836,8 +2183,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
         page_id: str,
         parent_space_id: Optional[str],
         page_permissions: list[Permission],
-        parent_node_id: Optional[str] = None
-    ) -> list[tuple[CommentRecord, list[Permission]]]:
+        parent_node_id: Optional[str] = None,
+        page_attachments: Optional[list[dict[str, Any]]] = None,
+        attachments_indexing_enabled: bool = True
+    ) -> list[tuple[Record, list[Permission]]]:
         """
         Recursively fetch all children (replies) of a comment.
 
@@ -1848,9 +2197,11 @@ class ConfluenceDataCenterConnector(BaseConnector):
             parent_space_id: Space ID for external_record_group_id
             page_permissions: Permissions inherited from parent page
             parent_node_id: Internal record ID of parent page
+            page_attachments: List of page attachment data for resolving embedded filenames
+            attachments_indexing_enabled: Whether comment attachments should be indexed
 
         Returns:
-            List of tuples (CommentRecord, permissions list)
+            List of tuples (Record, permissions list) for comments and their attachments
         """
         try:
             all_children = []
@@ -1905,6 +2256,74 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         if child_record:
                             all_children.append((child_record, page_permissions))
 
+                            # Sync comment attachments (explicit child attachments)
+                            child_record_type = RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT
+                            child_file_records = await self._fetch_attachment_file_records(
+                                comment_id=child_id_str,
+                                comment_record_type=child_record_type,
+                                comment_node_id=child_record.id,
+                                parent_space_id=parent_space_id,
+                                attachments_indexing_enabled=attachments_indexing_enabled,
+                                permissions=page_permissions
+                            )
+                            all_children.extend(child_file_records)
+
+                            # Extract and resolve embedded attachments from comment body.storage
+                            body = child_data.get("body", {})
+                            storage = body.get("storage", {})
+                            body_storage_html = storage.get("value", "")
+                            
+                            if body_storage_html:
+                                embedded_filenames = self._extract_storage_attachment_filenames(body_storage_html)
+                                
+                                if embedded_filenames:
+                                    # Build combined attachment list for resolution
+                                    child_attachments_data, child_api_base_url = await self._fetch_all_attachments(child_id_str)
+                                    # Use base_url from parent comment list response if child attachments don't have one
+                                    effective_base_url = child_api_base_url or base_url
+                                    combined_attachments = child_attachments_data + (page_attachments or [])
+                                    
+                                    # Track already-synced attachment IDs
+                                    synced_attachment_ids = {
+                                        rec[0].external_record_id 
+                                        for rec in child_file_records
+                                    }
+                                    
+                                    # Resolve each embedded filename and create FileRecord if not already synced
+                                    for filename in embedded_filenames:
+                                        attachment_id = self._resolve_attachment_by_filename(filename, combined_attachments)
+                                        
+                                        if attachment_id and attachment_id not in synced_attachment_ids:
+                                            # Find the attachment data
+                                            attachment_data = next(
+                                                (att for att in combined_attachments if att.get("id") == attachment_id),
+                                                None
+                                            )
+                                            
+                                            if attachment_data:
+                                                # Check if attachment already exists in DB
+                                                existing_attachment = await self.data_entities_processor.get_record_by_external_id(
+                                                    connector_id=self.connector_id,
+                                                    external_record_id=attachment_id
+                                                )
+                                                
+                                                if not existing_attachment:
+                                                    # Create FileRecord for embedded attachment
+                                                    file_record = self._transform_to_attachment_file_record(
+                                                        attachment_data=attachment_data,
+                                                        parent_external_record_id=child_id_str,
+                                                        parent_external_record_group_id=parent_space_id,
+                                                        parent_node_id=child_record.id,
+                                                        parent_record_type=child_record_type,
+                                                        api_base_url=effective_base_url
+                                                    )
+                                                    
+                                                    if file_record:
+                                                        if not attachments_indexing_enabled:
+                                                            file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+                                                        all_children.append((file_record, page_permissions))
+                                                        synced_attachment_ids.add(attachment_id)
+
                         grandchildren = await self._fetch_comment_children_recursive(
                             child_id_str,
                             comment_type,
@@ -1912,6 +2331,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
                             parent_space_id,
                             page_permissions,
                             parent_node_id=parent_node_id,
+                            page_attachments=page_attachments,
+                            attachments_indexing_enabled=attachments_indexing_enabled
                         )
                         all_children.extend(grandchildren)
 
@@ -2075,9 +2496,15 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
         # Fall back to v1 format (extract from _links.self)
         self_link = links.get("self")
-        if self_link and "://" in self_link and "/wiki/" in self_link:
-            extracted_base_url = self_link.split("/wiki/")[0] + "/wiki"
-            return f"{extracted_base_url}{web_path}"
+        if self_link and "://" in self_link:
+            # Cloud pattern: /wiki/
+            if "/wiki/" in self_link:
+                extracted_base_url = self_link.split("/wiki/")[0] + "/wiki"
+                return f"{extracted_base_url}{web_path}"
+            # DC pattern: /rest/api/
+            if "/rest/api/" in self_link:
+                extracted_base_url = self_link.split("/rest/api/")[0]
+                return f"{extracted_base_url}{web_path}"
 
         return None
 
@@ -2092,7 +2519,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
         by = version.get("by") or {}
         if by and not version.get("authorId"):
             version["authorId"] = (
-                by.get("accountId") or by.get("username") or by.get("key") or ""
+                by.get("accountId") or by.get("username") or by.get("userKey") or by.get("key") or ""
             )
         if version.get("when") and not version.get("createdAt"):
             version["createdAt"] = version["when"]
@@ -2111,15 +2538,6 @@ class ConfluenceDataCenterConnector(BaseConnector):
             if isinstance(res, dict) and "resolved" in res:
                 normalized["resolutionStatus"] = bool(res.get("resolved"))
         return normalized
-
-    @staticmethod
-    def _html_export_from_content_v1(body: dict[str, Any]) -> str:
-        """Prefer ``export_view`` HTML from v1 content body; fall back to ``storage``."""
-        export_view = body.get("export_view") or {}
-        if export_view.get("value"):
-            return str(export_view["value"])
-        storage = body.get("storage") or {}
-        return str(storage.get("value") or "")
 
     @staticmethod
     def _split_pagination_token(token: Optional[str]) -> tuple[Optional[int], Optional[str]]:
@@ -2157,6 +2575,192 @@ class ConfluenceDataCenterConnector(BaseConnector):
         except Exception:
             return None
 
+    @staticmethod
+    def _parse_server_version_numbers(data: dict) -> tuple[int, ...]:
+        """Parse ``versionNumbers`` or dotted ``version`` from server-information JSON."""
+        version_numbers = data.get("versionNumbers") or []
+        if isinstance(version_numbers, list) and version_numbers:
+            return tuple(int(v) for v in version_numbers)
+
+        version_str = data.get("version")
+        if isinstance(version_str, str) and version_str:
+            parts = [int(part) for part in version_str.split(".") if part.isdigit()]
+            if parts:
+                return tuple(parts)
+
+        return ()
+
+    @staticmethod
+    def _extract_storage_attachment_filenames(body_storage_html: str) -> list[str]:
+        """
+        Extract attachment filenames from Confluence storage HTML.
+        
+        Parses ri:attachment tags with ri:filename attributes from comment/page body.
+        Example: <ri:attachment ri:filename="Screenshot 2025-10-09 104312.PNG" />
+        
+        Args:
+            body_storage_html: HTML content from body.storage.value
+            
+        Returns:
+            Deduplicated list of filenames found in the HTML
+        """
+        if not body_storage_html:
+            return []
+        
+        # Match ri:filename="..." in ri:attachment tags
+        # Handles both self-closing tags and nested within ac:image
+        pattern = r'ri:filename="([^"]+)"'
+        matches = re.findall(pattern, body_storage_html)
+        
+        # Dedupe while preserving order
+        seen = set()
+        filenames = []
+        for filename in matches:
+            if filename not in seen:
+                seen.add(filename)
+                filenames.append(filename)
+        
+        return filenames
+
+    @staticmethod
+    def _resolve_attachment_by_filename(
+        filename: str,
+        attachments: list[dict[str, Any]]
+    ) -> Optional[str]:
+        """
+        Resolve attachment ID by filename from an attachment list.
+        
+        Matches attachment["title"] case-insensitively (same logic as Cloud connector).
+        
+        Args:
+            filename: Filename to search for (from ri:filename)
+            attachments: List of attachment data dictionaries with "id" and "title" keys
+            
+        Returns:
+            Attachment external_record_id (e.g., "att123") if found, None otherwise
+        """
+        if not filename or not attachments:
+            return None
+        
+        filename_lower = filename.lower()
+        for attachment in attachments:
+            attachment_title = attachment.get("title", "")
+            if attachment_title.lower() == filename_lower:
+                return attachment.get("id")
+        
+        return None
+
+    @staticmethod
+    def _resolve_page_id_from_comment_json(
+        comment_data: dict[str, Any],
+        fallback_parent_id: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Extract parent page/blogpost ID from comment JSON.
+        
+        Args:
+            comment_data: Comment JSON from Confluence API
+            fallback_parent_id: Optional fallback ID (from record.parent_external_record_id)
+            
+        Returns:
+            Page ID if found, None otherwise
+        """
+        container = comment_data.get("container") or {}
+        if container.get("type") in ("page", "blogpost"):
+            page_id = container.get("id")
+            if page_id:
+                return str(page_id)
+        
+        return fallback_parent_id
+
+    async def _resolve_attachment_parent_context(
+        self,
+        record: Record,
+        attachment_data: Optional[dict[str, Any]] = None
+    ) -> Optional[tuple[str, RecordType, Optional[str], str]]:
+        """
+        Resolve attachment parent context for reindex.
+        
+        Args:
+            record: FileRecord being reindexed
+            attachment_data: Optional attachment metadata from API (may contain container info)
+            
+        Returns:
+            Tuple of (immediate_parent_external_id, parent_record_type, parent_node_id, page_id_for_permissions)
+            or None if resolution fails
+        """
+        try:
+            immediate_parent_id = record.parent_external_record_id
+            if not immediate_parent_id:
+                self.logger.warning(f"Attachment {record.external_record_id} has no parent_external_record_id")
+                return None
+            
+            # Determine parent_record_type (default to WEBPAGE for legacy records)
+            parent_record_type = record.parent_record_type or RecordType.WEBPAGE
+            
+            # Page parent case
+            if parent_record_type == RecordType.WEBPAGE:
+                parent_record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_record_id=immediate_parent_id
+                )
+                parent_node_id = parent_record.id if parent_record else None
+                return (immediate_parent_id, parent_record_type, parent_node_id, immediate_parent_id)
+            
+            # Comment parent case
+            if parent_record_type in (RecordType.COMMENT, RecordType.INLINE_COMMENT):
+                # Get comment's internal node ID
+                comment_record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_record_id=immediate_parent_id
+                )
+                parent_node_id = comment_record.id if comment_record else None
+                
+                # Resolve page ID for permissions
+                page_id = None
+                
+                # Try to extract from attachment_data container if available
+                if attachment_data:
+                    container = attachment_data.get("container") or {}
+                    if container.get("type") in ("page", "blogpost"):
+                        page_id = str(container.get("id")) if container.get("id") else None
+                
+                # If not found, fetch comment to get container
+                if not page_id:
+                    datasource = await self._get_fresh_datasource()
+                    response = await datasource.get_content_v1(
+                        content_id=str(immediate_parent_id),
+                        expand="container"
+                    )
+                    if response and response.status == HttpStatusCode.SUCCESS.value:
+                        comment_data = response.json()
+                        page_id = self._resolve_page_id_from_comment_json(comment_data)
+                
+                # Final fallback: check record's parent if it's a WEBPAGE
+                if not page_id and comment_record:
+                    if comment_record.parent_record_type == RecordType.WEBPAGE:
+                        page_id = comment_record.parent_external_record_id
+                
+                if not page_id:
+                    self.logger.warning(
+                        f"Attachment {record.external_record_id}: could not resolve page ID from comment {immediate_parent_id}"
+                    )
+                    return None
+                
+                return (immediate_parent_id, parent_record_type, parent_node_id, page_id)
+            
+            self.logger.warning(
+                f"Attachment {record.external_record_id}: unsupported parent_record_type {parent_record_type}"
+            )
+            return None
+            
+        except Exception as e:
+            self.logger.error(
+                f"Error resolving attachment parent context for {record.external_record_id}: {e}",
+                exc_info=True
+            )
+            return None
+
     async def _get_server_version(self) -> tuple[int, ...]:
         """
         Get Confluence server version as tuple (e.g. (9, 1, 0)).
@@ -2176,9 +2780,9 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
             if response and response.status == HttpStatusCode.SUCCESS.value:
                 data = response.json()
-                version_numbers = data.get("versionNumbers", [])
-                if version_numbers and isinstance(version_numbers, list):
-                    self._server_version = tuple(version_numbers)
+                parsed_version = self._parse_server_version_numbers(data)
+                if parsed_version:
+                    self._server_version = parsed_version
                     version_str = data.get("version", "unknown")
                     deployment_type = data.get("deploymentType", "unknown")
                     self.logger.info(
@@ -2538,27 +3142,54 @@ class ConfluenceDataCenterConnector(BaseConnector):
         permissions: list[Permission] = []
         try:
             operation = entry.get("operation", {})
-            # v1 uses "operation" key; v2 uses "key" — note the difference
-            operation_key = operation.get("operation")
+            # Cloud v1: operation.operation; DC: operation.operationKey
+            operation_key = operation.get("operation") or operation.get("operationKey")
             target_type = operation.get("targetType")
 
             if not operation_key:
                 return permissions
 
-            # Check for anonymous access (public space)
+            # Check for anonymous access (public space) — Cloud bundled format
             is_anonymous = entry.get("anonymousAccess", False)
             if is_anonymous and operation_key == "read":
                 self.logger.debug(
                     "Space has anonymous read access (public), skipping explicit permissions"
                 )
-                # Return empty list — records in this space will inherit public access
-                # via the space-level inherit_permissions flag
                 return permissions
 
             permission_type = self._map_confluence_permission(operation_key, target_type)
+
+            # DC flat format: one subject per array item
+            subject = entry.get("subject")
+            if isinstance(subject, dict):
+                subject_type = subject.get("type")
+                if subject_type == "anonymous":
+                    return permissions
+                if subject_type == "user":
+                    user_id = (
+                        subject.get("userKey")
+                        or subject.get("accountId")
+                        or subject.get("key")
+                    )
+                    if user_id:
+                        perm = await self._create_permission_from_principal(
+                            "user", user_id, permission_type
+                        )
+                        if perm:
+                            permissions.append(perm)
+                elif subject_type == "group":
+                    group_id = subject.get("name") or subject.get("id")
+                    if group_id:
+                        perm = await self._create_permission_from_principal(
+                            "group", group_id, permission_type
+                        )
+                        if perm:
+                            permissions.append(perm)
+                return permissions
+
             subjects = entry.get("subjects", {})
 
-            # Process users
+            # Process users (Cloud bundled format)
             for user_data in subjects.get("user", {}).get("results", []):
                 # Cloud:  accountId field
                 # DC v1:  userKey field (userKey is the stable identifier)
@@ -2855,7 +3486,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
         self,
         data: dict[str, Any],
         record_type: RecordType,
-        existing_record: Optional[Record] = None
+        existing_record: Optional[Record] = None,
+        api_base_url: Optional[str] = None
     ) -> Optional[WebpageRecord]:
         """
         Unified transform for page/blogpost data to WebpageRecord.
@@ -2864,6 +3496,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
             data: Raw data from Confluence API
             record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
             existing_record: Optional existing record to check for updates
+            api_base_url: Optional base URL from response level (_links.base)
 
         Returns:
             WebpageRecord object or None if transformation fails
@@ -2948,22 +3581,12 @@ class ConfluenceDataCenterConnector(BaseConnector):
                     parent_external_record_id = direct_parent.get("id")
                     parent_type_str = direct_parent.get("type")
 
-            # Construct web URL - v1 vs v2 have different link structures
-            web_url = None
+            # Construct web URL using unified helper
             links = data.get("_links", {})
-            webui = links.get("webui")
-
-            if webui:
-                # Try v2 format first (_links.base)
-                base_url = links.get("base")
-                if base_url:
-                    web_url = f"{base_url}{webui}"
-                else:
-                    # Fall back to v1 format (extract from _links.self)
-                    self_link = links.get("self")
-                    if self_link and "/wiki/" in self_link:
-                        base_url = self_link.split("/wiki/")[0] + "/wiki"
-                        web_url = f"{base_url}{webui}"
+            web_url = self._construct_web_url(
+                links,
+                api_base_url or links.get("base")
+            )
 
             # Cloud v2 / DC v1: parent may be folder, page, or blogpost — map to RecordType for graph edges.
             # When ancestor ``type`` is missing (older expands), fall back to same type as this record.
@@ -3018,152 +3641,15 @@ class ConfluenceDataCenterConnector(BaseConnector):
             self.logger.error(f"❌ Failed to transform {content_type}: {e}")
             return None
 
-    def _transform_to_folder_file_record(
-        self,
-        data: dict[str, Any],
-        existing_record: Optional[Record] = None,
-    ) -> Optional[FileRecord]:
-        """Map a Confluence folder (v1 ``type=folder`` content) to a directory ``FileRecord``.
-
-        Cloud may expose v2-shaped fields (``createdAt``, ``parentType``); DC v1 uses
-        ``history.*`` and ``ancestors[-1].type`` when ``ancestors`` is expanded.
-        """
-        try:
-            folder_id = data.get("id")
-            folder_title = data.get("title")
-
-            if not folder_id or not folder_title:
-                return None
-
-            source_created_at = None
-            source_updated_at = None
-            version_number = 0
-
-            created_at_v2 = data.get("createdAt")
-            if created_at_v2:
-                source_created_at = self._parse_confluence_datetime(created_at_v2)
-            else:
-                history = data.get("history", {})
-                created_date = history.get("createdDate")
-                if created_date:
-                    source_created_at = self._parse_confluence_datetime(created_date)
-
-            version_data = data.get("version", {})
-            if isinstance(version_data, dict):
-                version_created_at = version_data.get("createdAt")
-                if version_created_at:
-                    source_updated_at = self._parse_confluence_datetime(version_created_at)
-                version_number = version_data.get("number", 0)
-
-            if not source_updated_at:
-                history = data.get("history", {})
-                last_updated = history.get("lastUpdated", {})
-                if isinstance(last_updated, dict):
-                    updated_when = last_updated.get("when")
-                    if updated_when:
-                        source_updated_at = self._parse_confluence_datetime(updated_when)
-                    if not version_number:
-                        version_number = last_updated.get("number", 0)
-
-            external_record_group_id = None
-            space_id_v2 = data.get("spaceId")
-            if space_id_v2:
-                external_record_group_id = str(space_id_v2)
-            else:
-                space_data = data.get("space", {})
-                space_id = space_data.get("id")
-                external_record_group_id = str(space_id) if space_id else None
-
-            if not external_record_group_id:
-                self.logger.warning("Folder %s has no space — skipping", folder_id)
-                return None
-
-            parent_external_record_id = None
-            parent_type_str: Optional[str] = None
-            parent_id_v2 = data.get("parentId")
-            parent_type_v2 = data.get("parentType")
-            if parent_id_v2:
-                parent_external_record_id = str(parent_id_v2)
-                parent_type_str = parent_type_v2
-            else:
-                ancestors = data.get("ancestors", [])
-                if ancestors and len(ancestors) > 0:
-                    direct_parent = ancestors[-1]
-                    parent_external_record_id = direct_parent.get("id")
-                    parent_type_str = direct_parent.get("type")
-
-            web_url = None
-            links = data.get("_links", {})
-            webui = links.get("webui")
-
-            if webui:
-                base_url = links.get("base")
-                if base_url:
-                    web_url = f"{base_url}{webui}"
-                else:
-                    self_link = links.get("self")
-                    if self_link and "/wiki/" in self_link:
-                        base_url = self_link.split("/wiki/")[0] + "/wiki"
-                        web_url = f"{base_url}{webui}"
-
-            parent_record_type = None
-            if parent_external_record_id:
-                if parent_type_str == "folder":
-                    parent_record_type = RecordType.FILE
-                elif parent_type_str == "page":
-                    parent_record_type = RecordType.CONFLUENCE_PAGE
-                elif parent_type_str == "blogpost":
-                    parent_record_type = RecordType.CONFLUENCE_BLOGPOST
-                else:
-                    parent_record_type = RecordType.FILE
-
-            is_new = existing_record is None
-            record_id = str(uuid.uuid4()) if is_new else existing_record.id
-
-            record_version = 0
-            if not is_new:
-                if str(version_number) != existing_record.external_revision_id:
-                    record_version = existing_record.version + 1
-                else:
-                    record_version = existing_record.version
-
-            return FileRecord(
-                id=record_id,
-                org_id=self.data_entities_processor.org_id,
-                record_name=folder_title,
-                record_type=RecordType.FILE,
-                external_record_id=folder_id,
-                external_revision_id=str(version_number) if version_number else None,
-                version=record_version,
-                origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.CONFLUENCE_DATA_CENTER,
-                connector_id=self.connector_id,
-                record_group_type=RecordGroupType.CONFLUENCE_SPACES,
-                external_record_group_id=external_record_group_id,
-                parent_external_record_id=parent_external_record_id,
-                parent_record_type=parent_record_type,
-                is_file=False,
-                extension=None,
-                mime_type=MimeTypes.FOLDER.value,
-                size_in_bytes=0,
-                weburl=web_url,
-                path=None,
-                source_created_at=source_created_at,
-                source_updated_at=source_updated_at,
-            )
-
-        except Exception as e:
-            self.logger.error("Failed to transform folder: %s", e)
-            return None
-
-
     def _transform_to_attachment_file_record(
         self,
         attachment_data: dict[str, Any],
         parent_external_record_id: str,
         parent_external_record_group_id: Optional[str],
         existing_record: Optional[Record] = None,
-        parent_node_id: Optional[str] = None
+        parent_node_id: Optional[str] = None,
+        parent_record_type: RecordType = RecordType.WEBPAGE,
+        api_base_url: Optional[str] = None
     ) -> Optional[FileRecord]:
         """
         Transform Confluence attachment to FileRecord entity.
@@ -3171,10 +3657,12 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
         Args:
             attachment_data: Raw attachment data from v1 (children.attachment.results) or v2 API
-            parent_external_record_id: Parent page external_record_id
+            parent_external_record_id: Parent page/comment external_record_id
             parent_external_record_group_id: Space ID from parent page
             existing_record: Optional existing record to check for updates
-            parent_node_id: Internal record ID of parent page
+            parent_node_id: Internal record ID of parent page/comment
+            parent_record_type: RecordType of parent (WEBPAGE, COMMENT, or INLINE_COMMENT)
+            api_base_url: Optional base URL from response level (_links.base)
 
         Returns:
             FileRecord object or None if transformation fails
@@ -3263,9 +3751,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
             # Construct web URL using helper method
             links = attachment_data.get("_links", {})
-            # For attachments, base_url might be in _links itself (v2 format)
-            base_url_from_links = links.get("base")
-            web_url = self._construct_web_url(links, base_url_from_links)
+            web_url = self._construct_web_url(links, api_base_url or links.get("base"))
 
             # Determine record ID and version
             is_new = existing_record is None
@@ -3293,7 +3779,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 connector_id=self.connector_id,
                 mime_type=mime_type,
                 parent_external_record_id=parent_external_record_id,
-                parent_record_type=RecordType.WEBPAGE,
+                parent_record_type=parent_record_type,
                 external_record_group_id=parent_external_record_group_id,
                 record_group_type=RecordGroupType.CONFLUENCE_SPACES,
                 weburl=web_url,
@@ -3303,7 +3789,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
                 is_dependent_node=True,  # Attachments are dependent nodes
-                parent_node_id=parent_node_id,  # Internal record ID of parent page
+                parent_node_id=parent_node_id,  # Internal record ID of parent page/comment
             )
 
         except Exception as e:
@@ -3315,7 +3801,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
         data: dict[str, Any],
         record_type: RecordType,
         existing_record: Optional[Record],
-        permissions: list[Permission]
+        permissions: list[Permission],
+        api_base_url: Optional[str] = None
     ) -> RecordUpdate:
         """Process webpage with change detection.
 
@@ -3324,13 +3811,14 @@ class ConfluenceDataCenterConnector(BaseConnector):
             record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
             existing_record: Existing record from database (if any)
             permissions: Permissions for the record
+            api_base_url: Optional base URL from response level (_links.base)
 
         Returns:
             RecordUpdate object with change tracking
         """
         # Transform with existing record context
         webpage_record = self._transform_to_webpage_record(
-            data, record_type, existing_record
+            data, record_type, existing_record, api_base_url
         )
 
         if not webpage_record:
@@ -3635,11 +4123,11 @@ class ConfluenceDataCenterConnector(BaseConnector):
             AppUserGroup object or None if transformation fails
         """
         try:
-            group_id = group_data.get("id")
             group_name = group_data.get("name")
-
-            if not group_id or not group_name:
+            if not group_name:
                 return None
+            # DC often returns name only; use name as stable group identifier
+            group_id = group_data.get("id") or group_name
 
             return AppUserGroup(
                 app_name=Connectors.CONFLUENCE_DATA_CENTER,
@@ -3786,11 +4274,22 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
             response_data = response.json()
             body = response_data.get("body", {}) or {}
-            html_content = self._html_export_from_content_v1(body)
+            export_view = body.get("export_view") or {}
+            html_content = str(export_view.get("value") or "")
 
             if not html_content:
                 self.logger.warning(f"Content {page_id} has no body")
                 html_content = "<p>No content available</p>"
+
+            async def _download(url: str):
+                return await datasource.fetch_authenticated_binary(url)
+
+            html_content = await prepare_streaming_html(
+                html_content,
+                response_data,
+                _download,
+                logger=self.logger,
+            )
 
             self.logger.debug(f"✅ Fetched {len(html_content)} bytes of HTML for {page_id}")
             return html_content
@@ -3844,14 +4343,23 @@ class ConfluenceDataCenterConnector(BaseConnector):
             response_data = response.json()
 
             body = response_data.get("body", {}) or {}
-            storage = body.get("storage", {}) or {}
-            html_content = storage.get("value") or ""
-            if not html_content:
-                html_content = self._html_export_from_content_v1(body)
+            export_view = body.get("export_view") or {}
+            html_content = str(export_view.get("value") or "")
 
             if not html_content:
                 self.logger.warning(f"Comment {comment_id} has no content")
                 html_content = "<p>No content available</p>"
+
+            async def _download(url: str):
+                return await datasource.fetch_authenticated_binary(url)
+
+            html_content = await prepare_streaming_html(
+                html_content,
+                response_data,
+                _download,
+                title=record.record_name,
+                logger=self.logger,
+            )
 
             self.logger.debug(f"✅ Fetched {len(html_content)} bytes of HTML for comment {comment_id}")
             return html_content
@@ -3880,7 +4388,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
         """
         try:
             attachment_id = record.external_record_id
-            parent_page_id = record.parent_external_record_id
+            parent_content_id = record.parent_external_record_id
 
             if not attachment_id:
                 raise HTTPException(
@@ -3888,18 +4396,33 @@ class ConfluenceDataCenterConnector(BaseConnector):
                     detail=f"No attachment ID available for record {record.id}"
                 )
 
-            if not parent_page_id:
+            if not parent_content_id:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"No parent page ID available for attachment {attachment_id}"
+                    detail=f"No parent content ID available for attachment {attachment_id}"
                 )
 
-            # Use datasource to stream attachment content
             datasource = await self._get_fresh_datasource()
-            async for chunk in datasource.download_attachment(
-                parent_page_id=parent_page_id,
-                attachment_id=attachment_id
-            ):
+
+            # DC has no REST download endpoint; use _links.download from attachment metadata.
+            meta_response = await datasource.get_content_v1(
+                content_id=str(attachment_id),
+                expand="",
+            )
+            if not meta_response or meta_response.status != HttpStatusCode.SUCCESS.value:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Attachment {attachment_id} not found at source",
+                )
+
+            download_path = (meta_response.json() or {}).get("_links", {}).get("download")
+            if not download_path:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No download link for attachment {attachment_id}",
+                )
+
+            async for chunk in datasource.download_attachment_from_link(download_path):
                 yield chunk
 
         except HTTPException:
@@ -4213,20 +4736,11 @@ class ConfluenceDataCenterConnector(BaseConnector):
         """Fetch attachment from source for reindexing."""
         try:
             attachment_id = record.external_record_id
-            parent_page_id = record.parent_external_record_id
+            parent_content_id = record.parent_external_record_id
 
-            if not parent_page_id:
-                self.logger.warning(f"Attachment {attachment_id} has no parent page ID")
+            if not parent_content_id:
+                self.logger.warning(f"Attachment {attachment_id} has no parent content ID")
                 return None
-
-            # Get parent page's internal record ID
-            parent_node_id = None
-            parent_record = await self.data_entities_processor.get_record_by_external_id(
-                connector_id=self.connector_id,
-                external_record_id=parent_page_id
-            )
-            if parent_record:
-                parent_node_id = parent_record.id
 
             # Fetch attachment metadata from source using v1 unified content API
             datasource = await self._get_fresh_datasource()
@@ -4254,23 +4768,31 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
             self.logger.info(f"Attachment {attachment_id} has changed at source (version {record.external_revision_id} -> {current_version})")
 
-            # Get space_id from parent page or use existing
+            # Resolve parent context (handles both page and comment parents)
+            parent_context = await self._resolve_attachment_parent_context(record, attachment_data)
+            if not parent_context:
+                return None
+            
+            immediate_parent_id, parent_record_type, parent_node_id, page_id_for_permissions = parent_context
+
+            # Get space_id from existing record
             parent_space_id = record.external_record_group_id
 
             # Transform attachment to FileRecord with existing record context
             attachment_record = self._transform_to_attachment_file_record(
                 attachment_data,
-                parent_page_id,
+                immediate_parent_id,
                 parent_space_id,
                 existing_record=record,
-                parent_node_id=parent_node_id
+                parent_node_id=parent_node_id,
+                parent_record_type=parent_record_type
             )
 
             if not attachment_record:
                 return None
 
             # Attachments inherit permissions from parent page - fetch page permissions
-            permissions = await self._fetch_page_permissions(parent_page_id)
+            permissions = await self._fetch_page_permissions(page_id_for_permissions)
 
             return (attachment_record, permissions)
 

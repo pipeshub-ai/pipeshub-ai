@@ -1,20 +1,21 @@
 import mongoose, { Document, Schema, Model } from "mongoose";
+import { NOTIFICATION_RETENTION_DAYS } from "../utils/notification-api.utils";
+
+const NOTIFICATION_TTL_SECONDS = NOTIFICATION_RETENTION_DAYS * 24 * 60 * 60;
 
 const { ObjectId } = Schema.Types;
 
 export interface INotification extends Document {
   title: string;
-  orgId: mongoose.Types.ObjectId;
+  message: string;
   type: string;
-  link: string;
-  status: "Read" | "Unread" | "Archived";
-  origin: "Internal Service" | "External Service" | "PipesHub";
-  initiator?: mongoose.Types.ObjectId;
-  externalInitiator?: string;
+  orgId: mongoose.Types.ObjectId;
+  originService: "Connector Service" | "Indexing Service" | "AI Service" | "External Service";
+  severity: "info" | "warning" | "error" | "critical" | "success";
+  status: "read" | "unread" | "archived";
   assignedTo: mongoose.Types.ObjectId;
-  appName?: string;
-  appId?: string;
-  payload?: Record<string, any>;
+  redirectLink?: string;
+  payload?: Record<string, unknown>;
   isDeleted: boolean;
   deletedBy?: mongoose.Types.ObjectId;
   createdAt?: Date;
@@ -23,10 +24,6 @@ export interface INotification extends Document {
 
 const notificationSchema = new Schema<INotification>(
   {
-    title: {
-      type: String,
-      required: [true, "Notification title is required"],
-    },
     orgId: {
       type: ObjectId,
       required: [true, "Organization ID is required"],
@@ -35,42 +32,35 @@ const notificationSchema = new Schema<INotification>(
       type: String,
       required: [true, "Notification type is required"],
     },
-    link: {
+    title: {
       type: String,
-      required: [true, "Link is required"],
+      required: false,
+    },
+    message: {
+      type: String,
+      required: false,
+    },
+    redirectLink: {
+      type: String,
+      required: false,
+    },
+    severity: {
+      type: String,
+      required: false,
+      enum: ["info", "warning", "error", "critical", "success"],
     },
     status: {
       type: String,
-      enum: ["Read", "Unread", "Archived"],
-      default: "Unread",
+      enum: ["read", "unread", "archived"],
+      default: "unread",
     },
-    origin: {
+    originService: {
       type: String,
-      enum: ["Internal Service", "External Service", "PipesHub"],
-      default: "Internal Service",
-    },
-    initiator: {
-      type: ObjectId,
-      required: false,
-    },
-    externalInitiator: {
-      type: String,
-      validate: {
-        validator: (v: string | undefined) => !v || /\S+@\S+\.\S+/.test(v),
-        message: "Invalid email format",
-      },
+      enum: ["Connector Service", "Indexing Service", "AI Service", "External Service"],
     },
     assignedTo: {
       type: ObjectId,
       required: [true, "Assignee is required"],
-    },
-    appName: {
-      type: String,
-      required: false,
-    },
-    appId: {
-      type: String,
-      required: false,
     },
     payload: {
       type: Schema.Types.Mixed,
@@ -90,6 +80,7 @@ const notificationSchema = new Schema<INotification>(
 
 // Indexes for performance improvements
 notificationSchema.index({ orgId: 1, status: 1 });
-notificationSchema.index({ assignedTo: 1, isDeleted: 1 });
+notificationSchema.index({ assignedTo: 1, isDeleted: 1, status: 1, createdAt: -1, _id: -1 });
+notificationSchema.index({ createdAt: 1 }, { expireAfterSeconds: NOTIFICATION_TTL_SECONDS });
 
 export const Notifications: Model<INotification> = mongoose.model<INotification>("Notifications", notificationSchema);

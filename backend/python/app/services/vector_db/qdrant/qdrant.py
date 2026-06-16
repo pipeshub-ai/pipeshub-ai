@@ -421,6 +421,16 @@ class QdrantService(IVectorDBService):
             return await self.client.query_batch_points(collection_name, requests)
         return await asyncio.to_thread(self.client.query_batch_points, collection_name, requests)
 
+    async def count_points(self, collection_name: str) -> int:
+        """Return the number of points in a collection."""
+        if self.client is None:
+            raise RuntimeError("Client not connected. Call connect() first.")
+        if isinstance(self.client, AsyncQdrantClient):
+            result = await self.client.count(collection_name, exact=False)
+        else:
+            result = await asyncio.to_thread(self.client.count, collection_name, exact=False)
+        return result.count
+
     async def upsert_points(
         self,
         collection_name: str,

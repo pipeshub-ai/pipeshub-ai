@@ -140,6 +140,19 @@ const messageIdParam = { messageId: objectId('message ID') };
 const agentKeyParam = {
   agentKey: z.string().min(1, { message: 'Agent key is required' }),
 };
+const webSearchProviderParam = {
+  provider: z
+    .string()
+    .trim()
+    .min(1, { message: 'Provider is required' })
+    .transform((value) => value.toLowerCase()),
+};
+const modelUsageParam = {
+  model_key: z
+    .string()
+    .trim()
+    .min(1, { message: 'Model key is required' }),
+};
 
 // ---------------------------------------------------------------------------
 // Enterprise search: create
@@ -472,6 +485,16 @@ export const updateAgentSchema = z.object({
 
 export const getAgentParamsSchema = z.object({
   params: z.object(agentKeyParam),
+});
+
+export const getWebSearchProviderUsageRequestSchema = z.object({
+  params: z.object(webSearchProviderParam),
+  query: z.object({}).strict(),
+});
+
+export const getModelUsageRequestSchema = z.object({
+  params: z.object(modelUsageParam),
+  query: z.object({}).strict(),
 });
 
 // ---------------------------------------------------------------------------

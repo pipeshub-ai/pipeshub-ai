@@ -10,17 +10,6 @@
             "orgId": "69803cedc03caefc0f8c167e",
             "createdAtTimestamp": 1770722667183,
             "updatedAtTimestamp": 1770722736431,
-            "currentUserPermission": {
-                "_key": "2278180",
-                "_id": "permission/2278180",
-                "_from": "users/81bf21fe-49b1-48f2-b419-a226422489f0",
-                "_to": "teams/d51ba7dd-67d0-4412-a2fb-f0892d21542d",
-                "_rev": "_lCbKsRO--_",
-                "type": "USER",
-                "role": "OWNER",
-                "createdAtTimestamp": 1770722667183,
-                "updatedAtTimestamp": 1770722736435
-            },
             "members": [
                 {
                     "id": "a71ccb81-3c36-4c79-aa7c-019ece1b3cd9",
@@ -63,17 +52,6 @@
             "orgId": "69803cedc03caefc0f8c167e",
             "createdAtTimestamp": 1770712418174,
             "updatedAtTimestamp": 1770712426683,
-            "currentUserPermission": {
-                "_key": "2212419",
-                "_id": "permission/2212419",
-                "_from": "users/81bf21fe-49b1-48f2-b419-a226422489f0",
-                "_to": "teams/a7fc16a1-c044-4a10-9140-8f1a5dd3933d",
-                "_rev": "_lCYtP2K--_",
-                "type": "USER",
-                "role": "OWNER",
-                "createdAtTimestamp": 1770712418174,
-                "updatedAtTimestamp": 1770712418174
-            },
             "members": [
                 {
                     "id": "81bf21fe-49b1-48f2-b419-a226422489f0",
@@ -98,17 +76,6 @@
             "orgId": "69803cedc03caefc0f8c167e",
             "createdAtTimestamp": 1770712356681,
             "updatedAtTimestamp": 1770712391877,
-            "currentUserPermission": {
-                "_key": "2212098",
-                "_id": "permission/2212098",
-                "_from": "users/81bf21fe-49b1-48f2-b419-a226422489f0",
-                "_to": "teams/504c1820-953b-41d4-9387-f8fa626ffd3c",
-                "_rev": "_lCYshq2---",
-                "type": "USER",
-                "role": "OWNER",
-                "createdAtTimestamp": 1770712356681,
-                "updatedAtTimestamp": 1770712370893
-            },
             "members": [
                 {
                     "id": "81bf21fe-49b1-48f2-b419-a226422489f0",
@@ -142,17 +109,6 @@
             "orgId": "69803cedc03caefc0f8c167e",
             "createdAtTimestamp": 1770186937359,
             "updatedAtTimestamp": 1770704068664,
-            "currentUserPermission": {
-                "_key": "893922",
-                "_id": "permission/893922",
-                "_from": "users/81bf21fe-49b1-48f2-b419-a226422489f0",
-                "_to": "teams/d5175c44-9845-494f-9150-8649ceb7bfb6",
-                "_rev": "_lCWt2Bu--_",
-                "type": "USER",
-                "role": "READER",
-                "createdAtTimestamp": 1770186937360,
-                "updatedAtTimestamp": 1770704068666
-            },
             "members": [
                 {
                     "id": "e142e9df-d007-4f80-b641-9b1f7e289655",

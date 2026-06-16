@@ -15,6 +15,7 @@ import {
   archiveConversation,
   unarchiveConversation,
   listAllArchivesConversation,
+  searchArchivedConversations,
   search,
   searchHistory,
   getSearchById,
@@ -34,29 +35,18 @@ import {
   getAllAgentConversations,
   getAgentConversationById,
   deleteAgentConversationById,
-  createAgentTemplate,
-  getAgentTemplate,
-  deleteAgentTemplate,
-  listAgentTemplates,
   createAgent,
   getAgent,
   deleteAgent,
   updateAgent,
-  updateAgentTemplate,
   listAgents,
   getModelUsage,
-  getAvailableTools,
-  getAgentPermissions,
-  shareAgentTemplate,
-  shareAgent,
-  unshareAgent,
   streamAgentConversation,
   streamAgentConversationInternal,
   addMessageToAgentConversation,
   addMessageStreamToAgentConversation,
   addMessageStreamToAgentConversationInternal,
   regenerateAgentAnswers,
-  updateAgentPermissions,
   updateAgentFeedback,
   uploadChatAttachments,
   uploadChatAttachmentsInternal,
@@ -1712,6 +1702,39 @@ describe('Enterprise Search Controller', () => {
     })
   })
 
+  describe('searchArchivedConversations', () => {
+    it('should exclude soft-deleted agent keys from the agent archive count filter', async () => {
+      const handler = searchArchivedConversations(createMockAppConfig())
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {
+          agents: [{ _key: 'deleted-agent-1' }],
+          pagination: { hasNext: false },
+        },
+      } as any)
+
+      sinon.stub(Conversation, 'aggregate').resolves([] as any)
+      sinon.stub(Conversation, 'countDocuments').resolves(0)
+      const agentCountStub = sinon.stub(AgentConversation, 'countDocuments').resolves(0)
+
+      const req = createMockRequest({
+        query: { search: 'archived roadmap' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(agentCountStub.calledOnce).to.be.true
+      expect(agentCountStub.firstCall.args[0]).to.have.nested.property('agentKey.$nin')
+      expect(agentCountStub.firstCall.args[0].agentKey.$nin).to.deep.equal(['deleted-agent-1'])
+      expect(res.status.calledWith(200)).to.be.true
+    })
+  })
+
   describe('regenerateAnswers', () => {
     it('should return a handler function', () => {
       const handler = regenerateAnswers(createMockAppConfig())
@@ -1801,6 +1824,53 @@ describe('Enterprise Search Controller', () => {
         expect(response).to.have.property('searchId')
         expect(response).to.have.property('searchResponse')
       }
+    })
+
+    it('should strip graph id fields from search response records and metadata', async () => {
+      const handler = search(createMockAppConfig())
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {
+          searchResults: [
+            {
+              content: 'result1',
+              chunkIndex: 0,
+              citationType: 'text',
+              metadata: { id: 'meta-id', _key: 'meta-key', source: 'doc' },
+            },
+          ],
+          records: [{ id: 'record-id', _key: 'record-key', title: 'Doc' }],
+          virtual_to_record_map: {
+            virtual1: { id: 'virtual-id', _key: 'virtual-key', title: 'Virtual doc' },
+          },
+        },
+      } as any)
+
+      const mockCitation = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
+      mockCitation.save.resolves(mockCitation)
+      sinon.stub(Citation.prototype, 'save').resolves(mockCitation as any)
+
+      const mockSearch = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
+      mockSearch.save.resolves(mockSearch)
+      sinon.stub(EnterpriseSemanticSearch.prototype, 'save').resolves(mockSearch as any)
+
+      const req = createMockRequest({
+        body: { query: 'test search', limit: 10 },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      const response = res.json.firstCall.args[0]
+      expect(response.searchResponse.records[0]).to.not.have.property('id')
+      expect(response.searchResponse.records[0]._key).to.equal('record-key')
+      expect(response.searchResponse.virtual_to_record_map.virtual1).to.not.have.property('id')
+      expect(response.searchResponse.searchResults[0].metadata).to.not.have.property('id')
+      expect(response.searchResponse.searchResults[0].metadata._key).to.equal('meta-key')
     })
 
     it('should call next when AI service returns no data', async () => {
@@ -2336,292 +2406,6 @@ describe('Enterprise Search Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // Agent Templates
-  // -----------------------------------------------------------------------
-  describe('createAgentTemplate', () => {
-    it('should return a handler function', () => {
-      const handler = createAgentTemplate(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should call next when orgId is missing', async () => {
-      const handler = createAgentTemplate(createMockAppConfig())
-      const req = createMockRequest({ user: { userId: VALID_OID } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when userId is missing', async () => {
-      const handler = createAgentTemplate(createMockAppConfig())
-      const req = createMockRequest({ user: { orgId: VALID_OID2 } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should create agent template successfully', async () => {
-      const handler = createAgentTemplate(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { name: 'Test Template', _id: VALID_OID },
-      } as any)
-
-      const req = createMockRequest({
-        body: { name: 'Test Template' },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(201)).to.be.true
-      }
-    })
-
-    it('should call next when AI backend returns error', async () => {
-      const handler = createAgentTemplate(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('Backend error'))
-
-      const req = createMockRequest({
-        body: { name: 'Test Template' },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('getAgentTemplate', () => {
-    it('should return a handler function', () => {
-      const handler = getAgentTemplate(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should get agent template successfully', async () => {
-      const handler = getAgentTemplate(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { name: 'Template', _id: VALID_OID },
-      } as any)
-
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next on error', async () => {
-      const handler = getAgentTemplate(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('Not found'))
-
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('listAgentTemplates', () => {
-    it('should return a handler function', () => {
-      const handler = listAgentTemplates(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should list agent templates successfully', async () => {
-      const handler = listAgentTemplates(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: [{ name: 'Template1' }],
-      } as any)
-
-      const req = createMockRequest({
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next when orgId is missing', async () => {
-      const handler = listAgentTemplates(createMockAppConfig())
-      const req = createMockRequest({ user: { userId: VALID_OID } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('updateAgentTemplate', () => {
-    it('should return a handler function', () => {
-      const handler = updateAgentTemplate(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should update template successfully', async () => {
-      const handler = updateAgentTemplate(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { name: 'Updated Template' },
-      } as any)
-
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        body: { name: 'Updated Template' },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next when userId is missing', async () => {
-      const handler = updateAgentTemplate(createMockAppConfig())
-      const req = createMockRequest({ user: { orgId: VALID_OID2 }, params: { templateId: VALID_OID } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('deleteAgentTemplate', () => {
-    it('should return a handler function', () => {
-      const handler = deleteAgentTemplate(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should delete template successfully', async () => {
-      const handler = deleteAgentTemplate(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { deleted: true },
-      } as any)
-
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next on error', async () => {
-      const handler = deleteAgentTemplate(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('Delete failed'))
-
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('shareAgentTemplate', () => {
-    it('should return a handler function', () => {
-      const handler = shareAgentTemplate(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should share template successfully', async () => {
-      const handler = shareAgentTemplate(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { shared: true },
-      } as any)
-
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next when orgId is missing', async () => {
-      const handler = shareAgentTemplate(createMockAppConfig())
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { userId: VALID_OID },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
   // Agents
   // -----------------------------------------------------------------------
   describe('createAgent', () => {
@@ -2789,6 +2573,7 @@ describe('Enterprise Search Controller', () => {
 
       expect(next.calledOnce).to.be.true
     })
+
   })
 
   describe('listAgents', () => {
@@ -3037,140 +2822,6 @@ describe('Enterprise Search Controller', () => {
       const handler = deleteAgent(createMockAppConfig())
 
       sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('Delete fail'))
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('unshareAgent', () => {
-    it('should return a handler function', () => {
-      const handler = unshareAgent(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should unshare agent successfully', async () => {
-      const handler = unshareAgent(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { unshared: true },
-      } as any)
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        body: { userIds: [VALID_OID2] },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next when orgId is missing', async () => {
-      const handler = unshareAgent(createMockAppConfig())
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        user: { userId: VALID_OID },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('getAvailableTools', () => {
-    it('should return a handler function', () => {
-      const handler = getAvailableTools(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should return tools list successfully', async () => {
-      const handler = getAvailableTools(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: [{ name: 'search_tool' }, { name: 'calc_tool' }],
-      } as any)
-
-      const req = createMockRequest({
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next on backend error', async () => {
-      const handler = getAvailableTools(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('Tools error'))
-
-      const req = createMockRequest({
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('getAgentPermissions', () => {
-    it('should return a handler function', () => {
-      const handler = getAgentPermissions(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should return permissions successfully', async () => {
-      const handler = getAgentPermissions(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { canEdit: true, canDelete: false },
-      } as any)
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next on backend error', async () => {
-      const handler = getAgentPermissions(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('Permissions error'))
 
       const req = createMockRequest({
         params: { agentKey: 'agent-1' },
@@ -4618,107 +4269,6 @@ describe('Enterprise Search Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // shareAgent (completely new coverage)
-  // -----------------------------------------------------------------------
-  describe('shareAgent', () => {
-    it('should return a handler function', () => {
-      const handler = shareAgent(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should share agent successfully', async () => {
-      const handler = shareAgent(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { shared: true, agentKey: 'agent-1' },
-      } as any)
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        body: { userIds: [VALID_OID2] },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-        expect(res.json.calledOnce).to.be.true
-      }
-    })
-
-    it('should call next when orgId is missing', async () => {
-      const handler = shareAgent(createMockAppConfig())
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        user: { userId: VALID_OID },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when userId is missing', async () => {
-      const handler = shareAgent(createMockAppConfig())
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        user: { orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when AI backend returns non-200', async () => {
-      const handler = shareAgent(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 400,
-        data: { detail: 'Bad request' },
-      } as any)
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        body: { userIds: [VALID_OID2] },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when AI backend throws error', async () => {
-      const handler = shareAgent(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('Service error'))
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        body: { userIds: [VALID_OID2] },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
   // handleBackendError coverage via various error paths
   // -----------------------------------------------------------------------
   describe('error handling via backend errors', () => {
@@ -4880,43 +4430,6 @@ describe('Enterprise Search Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('should handle backend error with request but no response in getAgentTemplate', async () => {
-      const handler = getAgentTemplate(createMockAppConfig())
-
-      const axiosLikeError: any = new Error('No response')
-      axiosLikeError.request = {} // has request but no response
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(axiosLikeError)
-
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should handle backend error with detail field in deleteAgentTemplate', async () => {
-      const handler = deleteAgentTemplate(createMockAppConfig())
-
-      const detailError: any = new Error('Detail error')
-      detailError.detail = 'Detailed error description'
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(detailError)
-
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
   })
 
   // -----------------------------------------------------------------------
@@ -5965,106 +5478,6 @@ describe('Enterprise Search Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // updateAgentPermissions (previously untested)
-  // -----------------------------------------------------------------------
-  describe('updateAgentPermissions', () => {
-    it('should return a handler function', () => {
-      const handler = updateAgentPermissions(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should update agent permissions successfully', async () => {
-      const handler = updateAgentPermissions(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { canEdit: true, canDelete: true },
-      } as any)
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        body: { permissions: { canEdit: true } },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next when orgId is missing', async () => {
-      const handler = updateAgentPermissions(createMockAppConfig())
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        user: { userId: VALID_OID },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when userId is missing', async () => {
-      const handler = updateAgentPermissions(createMockAppConfig())
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        user: { orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when AI backend returns non-200', async () => {
-      const handler = updateAgentPermissions(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 400,
-        data: { detail: 'Invalid permissions' },
-      } as any)
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        body: { permissions: {} },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when AI backend throws error', async () => {
-      const handler = updateAgentPermissions(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('Permissions update failed'))
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        body: { permissions: {} },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
   // createConversation - service request path (lines 578-634)
   // -----------------------------------------------------------------------
   describe('createConversation (service request path)', () => {
@@ -6246,25 +5659,6 @@ describe('Enterprise Search Controller', () => {
 
       const req = createMockRequest({
         body: { query: 'test' },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should handle status 500 error in createAgentTemplate', async () => {
-      const handler = createAgentTemplate(createMockAppConfig())
-
-      const err: any = new Error('Server error')
-      err.response = { status: 500, data: { detail: 'Internal failure' } }
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(err)
-
-      const req = createMockRequest({
-        body: { name: 'Template' },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()
@@ -6622,56 +6016,6 @@ describe('Enterprise Search Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // Additional getAgentTemplate / listAgentTemplates validation branches
-  // -----------------------------------------------------------------------
-  describe('getAgentTemplate (validation branches)', () => {
-    it('should throw when orgId is missing', async () => {
-      const handler = getAgentTemplate(createMockAppConfig())
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { userId: VALID_OID },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      try {
-        await handler(req, res, next)
-      } catch (error: any) {
-        expect(error.message).to.include('Organization ID')
-      }
-    })
-
-    it('should throw when userId is missing', async () => {
-      const handler = getAgentTemplate(createMockAppConfig())
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      try {
-        await handler(req, res, next)
-      } catch (error: any) {
-        expect(error.message).to.include('User ID')
-      }
-    })
-  })
-
-  describe('listAgentTemplates (validation branches)', () => {
-    it('should throw when userId is missing', async () => {
-      const handler = listAgentTemplates(createMockAppConfig())
-      const req = createMockRequest({ user: { orgId: VALID_OID2 } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
   // Agent CRUD validation branches
   // -----------------------------------------------------------------------
   describe('getAgent (validation branches)', () => {
@@ -6766,115 +6110,6 @@ describe('Enterprise Search Controller', () => {
     })
   })
 
-  describe('shareAgentTemplate (validation branches)', () => {
-    it('should throw when userId is missing', async () => {
-      const handler = shareAgentTemplate(createMockAppConfig())
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('deleteAgentTemplate (validation branches)', () => {
-    it('should throw when orgId is missing', async () => {
-      const handler = deleteAgentTemplate(createMockAppConfig())
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { userId: VALID_OID },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should throw when userId is missing', async () => {
-      const handler = deleteAgentTemplate(createMockAppConfig())
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('updateAgentTemplate (validation branches)', () => {
-    it('should throw when orgId is missing', async () => {
-      const handler = updateAgentTemplate(createMockAppConfig())
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        body: { name: 'Updated' },
-        user: { userId: VALID_OID },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // unshareAgent validation branches
-  // -----------------------------------------------------------------------
-  describe('unshareAgent (validation branches)', () => {
-    it('should throw when userId is missing', async () => {
-      const handler = unshareAgent(createMockAppConfig())
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        user: { orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // shareAgent validation branches
-  // -----------------------------------------------------------------------
-  describe('shareAgent (validation branches)', () => {
-    it('should handle ECONNREFUSED from AI service', async () => {
-      const handler = shareAgent(createMockAppConfig())
-
-      const connError = new Error('fetch failed')
-      ;(connError as any).cause = { code: 'ECONNREFUSED' }
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(connError)
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        body: { userIds: [VALID_OID2] },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-      const err = next.firstCall.args[0]
-      expect(err.message).to.include('unavailable')
-    })
-  })
-
   // -----------------------------------------------------------------------
   // listAgents - userId validation
   // -----------------------------------------------------------------------
@@ -6939,24 +6174,6 @@ describe('Enterprise Search Controller', () => {
       expect(res.status.calledOnceWith(200)).to.be.true
       expect(res.json.calledOnceWith({ success: true, agents: [] })).to.be.true
       expect(next.called).to.be.false
-    })
-
-    it('should call next with BadRequestError when model_key is missing', async () => {
-      const handler = getModelUsage(createMockAppConfig())
-      const req = createMockRequest({
-        params: {},
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-      const err = next.firstCall.args[0]
-      expect(err).to.exist
-      expect(err.statusCode).to.equal(400)
-      expect(err.message).to.include('Model key is required')
     })
 
     it('should call next when AI backend throws', async () => {
@@ -8593,100 +7810,6 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
 
   // -----------------------------------------------------------------------
-  // handleBackendError: ECONNREFUSED via error.cause.code
-  // -----------------------------------------------------------------------
-  describe('handleBackendError - ECONNREFUSED via cause.code', () => {
-    it('should return ServiceUnavailableError for ECONNREFUSED in cause', async () => {
-      const handler = createAgentTemplate(createMockAppConfig())
-
-      const connError: any = new Error('Connection refused')
-      connError.cause = { code: 'ECONNREFUSED' }
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(connError)
-
-      const req = createMockRequest({
-        body: { name: 'template' },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-      const err = next.firstCall.args[0]
-      expect(err.message).to.include('unavailable')
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // handleBackendError: fetch failed without ECONNREFUSED cause
-  // -----------------------------------------------------------------------
-  describe('handleBackendError - fetch failed without ECONNREFUSED', () => {
-    it('should return ServiceUnavailableError when error message includes fetch failed', async () => {
-      const handler = listAgentTemplates(createMockAppConfig())
-
-      const fetchError = new Error('fetch failed')
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(fetchError)
-
-      const req = createMockRequest({
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-      const err = next.firstCall.args[0]
-      expect(err.message).to.include('unavailable')
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // handleBackendError: error.response.data with only 'message' field
-  // -----------------------------------------------------------------------
-  describe('handleBackendError - data.message fallback', () => {
-    it('should use data.message when detail and reason are absent', async () => {
-      const handler = updateAgentTemplate(createMockAppConfig())
-
-      const err: any = new Error('Server Error')
-      err.response = { status: 500, data: { message: 'Custom error message' } }
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(err)
-
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        body: { name: 'Updated' },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should use Unknown error when detail, reason, and message are all absent', async () => {
-      const handler = deleteAgentTemplate(createMockAppConfig())
-
-      const err: any = new Error('No details')
-      err.response = { status: 500, data: {} }
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(err)
-
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
   // startAIStream: catch branch
   // -----------------------------------------------------------------------
   describe('startAIStream - error mapping', () => {
@@ -10227,76 +9350,8 @@ describe('Enterprise Search Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // listAgentTemplates / createAgentTemplate: AI response non-200
+  // getAgent: AI response non-200
   // -----------------------------------------------------------------------
-  describe('listAgentTemplates - AI response non-200', () => {
-    it('should throw handleBackendError when AI response is non-200', async () => {
-      const handler = listAgentTemplates(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 500,
-        data: { detail: 'Template listing failed' },
-      } as any)
-
-      const req = createMockRequest({
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('createAgentTemplate - AI response non-200', () => {
-    it('should throw handleBackendError when AI response is non-200', async () => {
-      const handler = createAgentTemplate(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 400,
-        data: { detail: 'Invalid template format' },
-      } as any)
-
-      const req = createMockRequest({
-        body: { name: 'Template' },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // getAgentTemplate / updateAgentTemplate / deleteAgentTemplate: AI response non-200
-  // -----------------------------------------------------------------------
-  describe('getAgentTemplate - AI response non-200', () => {
-    it('should throw when AI response is non-200', async () => {
-      const handler = getAgentTemplate(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 404,
-        data: { detail: 'Template not found' },
-      } as any)
-
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
   describe('getAgent - AI response non-200', () => {
     it('should throw when AI response is non-200', async () => {
       const handler = getAgent(createMockAppConfig())
@@ -10353,185 +9408,6 @@ describe('Enterprise Search Controller', () => {
 
       const req = createMockRequest({
         params: { agentKey: 'agent-1' },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('shareAgent - AI response non-200', () => {
-    it('should throw when AI response is non-200', async () => {
-      const handler = shareAgent(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 500,
-        data: { detail: 'Share failed' },
-      } as any)
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        body: { userIds: [VALID_OID2] },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('unshareAgent - AI response non-200', () => {
-    it('should throw when AI response is non-200', async () => {
-      const handler = unshareAgent(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 400,
-        data: { detail: 'Invalid unshare request' },
-      } as any)
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        body: { userIds: [VALID_OID2] },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('getAvailableTools - AI response non-200', () => {
-    it('should throw when AI response is non-200', async () => {
-      const handler = getAvailableTools(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 500,
-        data: { detail: 'Tools fetch failed' },
-      } as any)
-
-      const req = createMockRequest({
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('getAgentPermissions - AI response non-200', () => {
-    it('should throw when AI response is non-200', async () => {
-      const handler = getAgentPermissions(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 403,
-        data: { detail: 'Permissions denied' },
-      } as any)
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('updateAgentPermissions - AI response non-200', () => {
-    it('should throw when AI response is non-200', async () => {
-      const handler = updateAgentPermissions(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 500,
-        data: { detail: 'Permissions update failed' },
-      } as any)
-
-      const req = createMockRequest({
-        params: { agentKey: 'agent-1' },
-        body: { permissions: {} },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('shareAgentTemplate - AI response non-200', () => {
-    it('should throw when AI response is non-200', async () => {
-      const handler = shareAgentTemplate(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 400,
-        data: { detail: 'Template share failed' },
-      } as any)
-
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('updateAgentTemplate - AI response non-200', () => {
-    it('should throw when AI response is non-200', async () => {
-      const handler = updateAgentTemplate(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 400,
-        data: { detail: 'Invalid update' },
-      } as any)
-
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
-        body: { name: 'Updated' },
-        user: { userId: VALID_OID, orgId: VALID_OID2 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('deleteAgentTemplate - AI response non-200', () => {
-    it('should throw when AI response is non-200', async () => {
-      const handler = deleteAgentTemplate(createMockAppConfig())
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-        statusCode: 404,
-        data: { detail: 'Template not found' },
-      } as any)
-
-      const req = createMockRequest({
-        params: { templateId: VALID_OID },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const res = createMockResponse()

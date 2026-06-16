@@ -2,8 +2,8 @@
 
 Covers: run_sync, _sync_users, _sync_user_groups, _sync_spaces,
 _sync_content, _sync_permission_changes_from_audit_log,
-_fetch_permission_audit_logs, _extract_content_title_from_audit_record,
-_sync_content_permissions_by_titles, _fetch_space_permissions,
+_fetch_permission_audit_content_ids, _extract_content_id_from_audit_record,
+_sync_content_permissions_by_ids, _fetch_space_permissions,
 _fetch_page_permissions, _fetch_comments_recursive,
 _fetch_group_members, _extract_cursor_from_next_link.
 """
@@ -132,7 +132,6 @@ class TestConfluenceRunSync:
             connector._sync_user_groups = AsyncMock()
             rg = _space_rg()
             connector._sync_spaces = AsyncMock(return_value=[rg])
-            connector._sync_folders = AsyncMock()
             connector._sync_content = AsyncMock()
             connector._sync_permission_changes_from_audit_log = AsyncMock()
 
@@ -141,7 +140,6 @@ class TestConfluenceRunSync:
             connector._sync_users.assert_awaited_once()
             connector._sync_user_groups.assert_awaited_once()
             connector._sync_spaces.assert_awaited_once()
-            connector._sync_folders.assert_awaited_once()
             # For each space: pages + blogposts
             assert connector._sync_content.await_count == 2
             connector._sync_permission_changes_from_audit_log.assert_awaited_once()
@@ -161,7 +159,6 @@ class TestConfluenceRunSync:
             connector._sync_users = AsyncMock()
             connector._sync_user_groups = AsyncMock()
             connector._sync_spaces = AsyncMock(return_value=[_space_rg("S1"), _space_rg("S2")])
-            connector._sync_folders = AsyncMock()
             connector._sync_content = AsyncMock()
             connector._sync_permission_changes_from_audit_log = AsyncMock()
 
@@ -561,6 +558,45 @@ class TestSyncContent:
         assert connector._fetch_comments_recursive.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_comments_fetched_without_childTypes(self):
+        """Comments should be fetched even when childTypes.comment is absent (DC search omits it)"""
+        connector = _make_connector()
+        from app.connectors.core.registry.filters import FilterCollection
+        connector.sync_filters = FilterCollection()
+        connector.indexing_filters = FilterCollection()
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+
+        # Page without childTypes (typical DC response)
+        page_data = {
+            "id": "pg1",
+            "title": "TestPage",
+            "space": {"id": 123},
+            "children": {"attachment": {"results": []}},
+        }
+
+        ds = MagicMock()
+        ds.get_pages_v1 = AsyncMock(return_value=_resp(200, {
+            "results": [page_data],
+            "_links": {},
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector._fetch_page_permissions = AsyncMock(return_value=[])
+        connector._fetch_comments_recursive = AsyncMock(return_value=[])
+
+        mock_update = MagicMock()
+        mock_update.record = MagicMock()
+        mock_update.record.id = "rec-1"
+        mock_update.record.inherit_permissions = True
+        mock_update.record.indexing_status = None
+        connector._process_webpage_with_update = AsyncMock(return_value=mock_update)
+
+        await connector._sync_content("DEV", RecordType.CONFLUENCE_PAGE)
+        # Should still be called for footer + inline
+        assert connector._fetch_comments_recursive.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_attachments_processed(self):
         connector = _make_connector()
         from app.connectors.core.registry.filters import FilterCollection
@@ -628,18 +664,18 @@ class TestSyncPermissionChangesFromAuditLog:
         assert not hasattr(connector, '_fetch_permission_audit_logs_called')
 
     @pytest.mark.asyncio
-    async def test_subsequent_run_fetches_audit_logs(self):
+    async def test_subsequent_run_fetches_audit_events(self):
         connector = _make_connector()
         connector.audit_log_sync_point = MagicMock()
         connector.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time_ms": 1700000000000})
         connector.audit_log_sync_point.update_sync_point = AsyncMock()
-        connector._fetch_permission_audit_logs = AsyncMock(return_value=["Page Title 1"])
-        connector._sync_content_permissions_by_titles = AsyncMock()
+        connector._fetch_permission_audit_content_ids = AsyncMock(return_value=["131103"])
+        connector._sync_content_permissions_by_ids = AsyncMock()
 
         await connector._sync_permission_changes_from_audit_log()
 
-        connector._fetch_permission_audit_logs.assert_awaited_once()
-        connector._sync_content_permissions_by_titles.assert_awaited_once_with(["Page Title 1"])
+        connector._fetch_permission_audit_content_ids.assert_awaited_once()
+        connector._sync_content_permissions_by_ids.assert_awaited_once_with(["131103"])
 
     @pytest.mark.asyncio
     async def test_no_changes_still_updates_checkpoint(self):
@@ -647,7 +683,7 @@ class TestSyncPermissionChangesFromAuditLog:
         connector.audit_log_sync_point = MagicMock()
         connector.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time_ms": 1700000000000})
         connector.audit_log_sync_point.update_sync_point = AsyncMock()
-        connector._fetch_permission_audit_logs = AsyncMock(return_value=[])
+        connector._fetch_permission_audit_content_ids = AsyncMock(return_value=[])
 
         await connector._sync_permission_changes_from_audit_log()
 
@@ -655,35 +691,42 @@ class TestSyncPermissionChangesFromAuditLog:
 
 
 # ===========================================================================
-# _fetch_permission_audit_logs
+# _fetch_permission_audit_content_ids (DC Auditing API)
 # ===========================================================================
 
 
-class TestFetchPermissionAuditLogs:
+class TestFetchPermissionAuditContentIds:
 
     @pytest.mark.asyncio
-    async def test_extracts_content_titles(self):
+    async def test_extracts_content_ids(self):
+        """Extract content IDs from DC Auditing API entities."""
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_audit_logs = AsyncMock(return_value=_resp(200, {
-            "results": [
+        ds.get_auditing_events_v1 = AsyncMock(return_value=_resp(200, {
+            "entities": [
                 {
-                    "category": "Pages and blogs",
-                    "associatedObjects": [
-                        {"objectType": "Space", "name": "Dev"},
-                        {"objectType": "Page", "name": "My Page"},
-                    ],
+                    "timestamp": "2026-06-09T14:04:28.902Z",
+                    "type": {"category": "Pages and blogs", "action": "Content restriction added"},
+                    "affectedObjects": [
+                        {"name": "My Page", "type": "Page", "id": "131103"},
+                        {"name": "Dev", "type": "Space", "id": "65547"}
+                    ]
                 }
             ],
-            "size": 1,
+            "pagingInfo": {
+                "lastPage": True,
+                "nextPageCursor": None,
+                "size": 1
+            }
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        titles = await connector._fetch_permission_audit_logs(1700000000000, 1700001000000)
-        assert "My Page" in titles
+        content_ids = await connector._fetch_permission_audit_content_ids(1700000000000, 1700001000000)
+        assert "131103" in content_ids
 
     @pytest.mark.asyncio
-    async def test_pagination_until_smaller_batch(self):
+    async def test_pagination_with_page_cursor(self):
+        """Test pageCursor-based pagination through multiple pages."""
         connector = _make_connector()
 
         call_count = 0
@@ -693,127 +736,162 @@ class TestFetchPermissionAuditLogs:
             call_count += 1
             if call_count == 1:
                 return _resp(200, {
-                    "results": [
+                    "entities": [
                         {
-                            "category": "Pages and blogs",
-                            "associatedObjects": [
-                                {"objectType": "Space", "name": "Dev"},
-                                {"objectType": "Page", "name": "Page1"},
-                            ],
+                            "type": {"category": "Pages and blogs"},
+                            "affectedObjects": [
+                                {"type": "Page", "name": "Page 1", "id": "101"},
+                                {"type": "Space", "name": "ENG", "id": "1"}
+                            ]
                         }
-                    ] * 100,
-                    "size": 100,
+                    ],
+                    "pagingInfo": {
+                        "lastPage": False,
+                        "nextPageCursor": "cursor-abc123",
+                        "size": 1
+                    }
                 })
             return _resp(200, {
-                "results": [
+                "entities": [
                     {
-                        "category": "Pages and blogs",
-                        "associatedObjects": [
-                            {"objectType": "Space", "name": "Dev"},
-                            {"objectType": "Page", "name": "Page2"},
-                        ],
+                        "type": {"category": "Pages and blogs"},
+                        "affectedObjects": [
+                            {"type": "Page", "name": "Page 2", "id": "102"},
+                            {"type": "Space", "name": "ENG", "id": "1"}
+                        ]
                     }
                 ],
-                "size": 1,
+                "pagingInfo": {
+                    "lastPage": True,
+                    "nextPageCursor": None,
+                    "size": 1
+                }
             })
 
         ds = MagicMock()
-        ds.get_audit_logs = AsyncMock(side_effect=mock_audit)
+        ds.get_auditing_events_v1 = AsyncMock(side_effect=mock_audit)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        titles = await connector._fetch_permission_audit_logs(1700000000000, 1700001000000)
+        content_ids = await connector._fetch_permission_audit_content_ids(1700000000000, 1700001000000)
         assert call_count == 2
-        assert "Page1" in titles
-        assert "Page2" in titles
+        assert "101" in content_ids
+        assert "102" in content_ids
 
     @pytest.mark.asyncio
-    async def test_deduplicates_titles(self):
+    async def test_deduplicates_ids(self):
+        """Ensure duplicate content IDs are deduplicated."""
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_audit_logs = AsyncMock(return_value=_resp(200, {
-            "results": [
+        ds.get_auditing_events_v1 = AsyncMock(return_value=_resp(200, {
+            "entities": [
                 {
-                    "category": "Pages and blogs",
-                    "associatedObjects": [
-                        {"objectType": "Space", "name": "S1"},
-                        {"objectType": "Page", "name": "Same Page"},
-                    ],
+                    "type": {"category": "Pages and blogs"},
+                    "affectedObjects": [
+                        {"type": "Page", "name": "Same Page", "id": "131103"},
+                        {"type": "Space", "name": "ENG", "id": "1"}
+                    ]
                 },
                 {
-                    "category": "Pages and blogs",
-                    "associatedObjects": [
-                        {"objectType": "Space", "name": "S1"},
-                        {"objectType": "Page", "name": "Same Page"},
-                    ],
+                    "type": {"category": "Pages and blogs"},
+                    "affectedObjects": [
+                        {"type": "Page", "name": "Same Page Again", "id": "131103"},
+                        {"type": "Space", "name": "ENG", "id": "1"}
+                    ]
                 },
+                {
+                    "type": {"category": "Pages and blogs"},
+                    "affectedObjects": [
+                        {"type": "Page", "name": "Different Page", "id": "131104"},
+                        {"type": "Space", "name": "ENG", "id": "1"}
+                    ]
+                }
             ],
-            "size": 2,
+            "pagingInfo": {"lastPage": True, "size": 3}
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        titles = await connector._fetch_permission_audit_logs(1700000000000, 1700001000000)
-        assert len(titles) == 1
+        content_ids = await connector._fetch_permission_audit_content_ids(1700000000000, 1700001000000)
+        assert len(content_ids) == 2
+        assert "131103" in content_ids
+        assert "131104" in content_ids
 
 
 # ===========================================================================
-# _extract_content_title_from_audit_record
+# _extract_content_id_from_audit_record (DC Auditing API)
 # ===========================================================================
 
 
-class TestExtractContentTitleFromAuditRecord:
+class TestExtractContentIdFromAuditRecord:
 
-    def test_returns_page_title(self):
+    def test_returns_page_id(self):
+        """Extract page ID from DC audit record."""
         connector = _make_connector()
         record = {
-            "category": "Pages and blogs",
-            "associatedObjects": [
-                {"objectType": "Space", "name": "Dev Space"},
-                {"objectType": "Page", "name": "My Page"},
-            ],
+            "type": {"category": "Pages and blogs"},
+            "affectedObjects": [
+                {"type": "Space", "name": "Dev Space", "id": "65547"},
+                {"type": "Page", "name": "My Page", "id": "131103"}
+            ]
         }
-        assert connector._extract_content_title_from_audit_record(record) == "My Page"
+        assert connector._extract_content_id_from_audit_record(record) == "131103"
 
-    def test_returns_blog_title(self):
+    def test_returns_blog_id(self):
+        """Extract blog ID from DC audit record."""
         connector = _make_connector()
         record = {
-            "category": "Pages and blogs",
-            "associatedObjects": [
-                {"objectType": "Space", "name": "Dev"},
-                {"objectType": "Blog", "name": "My Blog"},
-            ],
+            "type": {"category": "Pages and blogs"},
+            "affectedObjects": [
+                {"type": "Space", "name": "Dev", "id": "1"},
+                {"type": "BlogPost", "name": "My Blog", "id": "131104"}
+            ]
         }
-        assert connector._extract_content_title_from_audit_record(record) == "My Blog"
+        assert connector._extract_content_id_from_audit_record(record) == "131104"
 
-    def test_returns_none_if_not_permissions_category(self):
+    def test_returns_none_if_not_pages_and_blogs_category(self):
+        """Return None for non-'Pages and blogs' category."""
         connector = _make_connector()
         record = {
-            "category": "Content",
-            "associatedObjects": [
-                {"objectType": "Space", "name": "S1"},
-                {"objectType": "Page", "name": "P1"},
-            ],
+            "type": {"category": "Content"},
+            "affectedObjects": [
+                {"type": "Space", "name": "S1", "id": "1"},
+                {"type": "Page", "name": "P1", "id": "101"}
+            ]
         }
-        assert connector._extract_content_title_from_audit_record(record) is None
+        assert connector._extract_content_id_from_audit_record(record) is None
 
     def test_returns_none_if_no_space(self):
+        """Permission change without Space is global, not content-level."""
         connector = _make_connector()
         record = {
-            "category": "Pages and blogs",
-            "associatedObjects": [
-                {"objectType": "Page", "name": "Orphan Page"},
-            ],
+            "type": {"category": "Pages and blogs"},
+            "affectedObjects": [
+                {"type": "Page", "name": "P1", "id": "101"}
+            ]
         }
-        assert connector._extract_content_title_from_audit_record(record) is None
+        assert connector._extract_content_id_from_audit_record(record) is None
 
-    def test_returns_none_if_no_content_object(self):
+    def test_returns_none_if_no_content(self):
+        """Permission change with Space but no Page/Blog is space-level."""
         connector = _make_connector()
         record = {
-            "category": "Pages and blogs",
-            "associatedObjects": [
-                {"objectType": "Space", "name": "S1"},
-            ],
+            "type": {"category": "Pages and blogs"},
+            "affectedObjects": [
+                {"type": "Space", "name": "S1", "id": "1"}
+            ]
         }
-        assert connector._extract_content_title_from_audit_record(record) is None
+        assert connector._extract_content_id_from_audit_record(record) is None
+
+    def test_returns_none_if_no_id(self):
+        """Return None if content object has no ID field."""
+        connector = _make_connector()
+        record = {
+            "type": {"category": "Pages and blogs"},
+            "affectedObjects": [
+                {"type": "Space", "name": "S1", "id": "1"},
+                {"type": "Page", "name": "P1"}  # No ID field
+            ]
+        }
+        assert connector._extract_content_id_from_audit_record(record) is None
 
 
 # ===========================================================================
@@ -900,11 +978,24 @@ class TestFetchPagePermissions:
     async def test_returns_permissions(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_page_permissions_v1 = AsyncMock(return_value=_resp(200, {
-            "results": [
-                {"operation": "read", "restrictions": {"user": {"results": []}, "group": {"results": []}}}
-            ]
-        }))
+        ds.get_page_relevant_view_restrictions_v1 = AsyncMock(
+            return_value=_resp(
+                200,
+                {
+                    "viewContentRestrictions": {
+                        "results": [
+                            {
+                                "operation": "read",
+                                "restrictions": {
+                                    "user": {"results": []},
+                                    "group": {"results": []},
+                                },
+                            }
+                        ],
+                    }
+                },
+            )
+        )
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._transform_page_restriction_to_permissions = AsyncMock(return_value=[
             Permission(entity_type=EntityType.GROUP, external_id="g1", type=PermissionType.READ)
@@ -917,7 +1008,9 @@ class TestFetchPagePermissions:
     async def test_api_failure_returns_empty(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_page_permissions_v1 = AsyncMock(return_value=_resp(500, {}))
+        ds.get_page_relevant_view_restrictions_v1 = AsyncMock(
+            return_value=_resp(500, {})
+        )
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         perms = await connector._fetch_page_permissions("pg1")
@@ -1033,6 +1126,159 @@ class TestFetchCommentsRecursive:
             "12345", "TestPage", "footer", [], "s1", "page", "node-1"
         )
         assert comments == []
+
+    @pytest.mark.asyncio
+    async def test_extract_storage_attachment_filenames(self):
+        """Test parsing ri:filename from Confluence storage HTML"""
+        from app.connectors.sources.atlassian.confluence_datacenter.connector import ConfluenceDataCenterConnector
+        
+        # Sample HTML with embedded attachment (from comment 131172)
+        html = '''<p>test comment with attachment</p>
+        <ac:image><ri:attachment ri:filename="Screenshot 2025-10-09 104312.PNG" /></ac:image>'''
+        
+        filenames = ConfluenceDataCenterConnector._extract_storage_attachment_filenames(html)
+        assert len(filenames) == 1
+        assert filenames[0] == "Screenshot 2025-10-09 104312.PNG"
+
+    @pytest.mark.asyncio
+    async def test_extract_storage_attachment_filenames_dedup(self):
+        """Test that duplicate filenames are deduplicated"""
+        from app.connectors.sources.atlassian.confluence_datacenter.connector import ConfluenceDataCenterConnector
+        
+        html = '''<p>
+        <ri:attachment ri:filename="file.png" />
+        <ri:attachment ri:filename="file.png" />
+        <ri:attachment ri:filename="other.pdf" />
+        </p>'''
+        
+        filenames = ConfluenceDataCenterConnector._extract_storage_attachment_filenames(html)
+        assert len(filenames) == 2
+        assert "file.png" in filenames
+        assert "other.pdf" in filenames
+
+    @pytest.mark.asyncio
+    async def test_resolve_attachment_by_filename(self):
+        """Test resolving attachment ID from filename"""
+        from app.connectors.sources.atlassian.confluence_datacenter.connector import ConfluenceDataCenterConnector
+        
+        attachments = [
+            {"id": "att123", "title": "Screenshot 2025-10-09 104312.PNG"},
+            {"id": "att456", "title": "document.pdf"},
+        ]
+        
+        # Exact match (case-insensitive)
+        result = ConfluenceDataCenterConnector._resolve_attachment_by_filename(
+            "screenshot 2025-10-09 104312.png", attachments
+        )
+        assert result == "att123"
+        
+        # No match
+        result = ConfluenceDataCenterConnector._resolve_attachment_by_filename(
+            "nonexistent.txt", attachments
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_comment_attachment_file_records(self):
+        """Test _fetch_attachment_file_records creates FileRecords with correct parent_record_type"""
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.get_content_attachments_v1 = AsyncMock(return_value=_resp(200, {
+            "results": [
+                {
+                    "id": "att789",
+                    "title": "comment-attachment.pdf",
+                    "extensions": {"fileSize": 1024, "mediaType": "application/pdf"},
+                    "version": {"number": 1, "createdAt": "2024-01-01T00:00:00Z"},
+                }
+            ],
+            "_links": {},
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        
+        mock_file_record = MagicMock()
+        mock_file_record.external_record_id = "att789"
+        mock_file_record.indexing_status = None
+        connector._transform_to_attachment_file_record = MagicMock(return_value=mock_file_record)
+
+        permissions = []
+        
+        records = await connector._fetch_attachment_file_records(
+            comment_id="131172",
+            comment_record_type=RecordType.COMMENT,
+            comment_node_id="node-comment-1",
+            parent_space_id="123",
+            attachments_indexing_enabled=True,
+            permissions=permissions
+        )
+        
+        # Should return one FileRecord
+        assert len(records) == 1
+        assert records[0][0] == mock_file_record
+        assert records[0][1] == permissions
+        
+        # Verify _transform_to_attachment_file_record was called with correct parent_record_type
+        connector._transform_to_attachment_file_record.assert_called_once()
+        call_kwargs = connector._transform_to_attachment_file_record.call_args[1]
+        assert call_kwargs["parent_record_type"] == RecordType.COMMENT
+        assert call_kwargs["parent_external_record_id"] == "131172"
+        assert call_kwargs["parent_node_id"] == "node-comment-1"
+
+    @pytest.mark.asyncio
+    async def test_embedded_page_attachment_not_duplicated(self):
+        """Test that embedded page attachments already in DB are not duplicated"""
+        connector = _make_connector()
+        
+        # Mock existing attachment in DB (page attachment 131171)
+        existing_attachment = MagicMock()
+        existing_attachment.external_record_id = "att131171"
+        
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing_attachment
+        )
+        
+        # Mock comment with embedded attachment
+        comment_data = {
+            "id": "131172",
+            "extensions": {"location": "footer"},
+            "body": {
+                "storage": {
+                    "value": '<ri:attachment ri:filename="Screenshot 2025-10-09 104312.PNG" />'
+                }
+            },
+            "version": {"authorId": "admin", "createdAt": "2024-01-01T00:00:00Z", "number": 1},
+        }
+        
+        # Mock page attachment that matches the filename
+        page_attachments = [
+            {"id": "att131171", "title": "Screenshot 2025-10-09 104312.PNG"}
+        ]
+        
+        ds = MagicMock()
+        ds.get_content_comments_v1 = AsyncMock(return_value=_resp(200, {
+            "results": [comment_data],
+            "_links": {"base": "https://dc.atlassian.net/wiki"},
+        }))
+        ds.get_content_attachments_v1 = AsyncMock(return_value=_resp(200, {
+            "results": [],  # No comment attachments
+            "_links": {},
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        
+        mock_comment_record = MagicMock()
+        mock_comment_record.id = "node-comment-1"
+        connector._transform_to_comment_record = MagicMock(return_value=mock_comment_record)
+        connector._fetch_comment_children_recursive = AsyncMock(return_value=[])
+
+        comments = await connector._fetch_comments_recursive(
+            "131165", "TestPage", "footer", [], "123", "page", "node-page-1",
+            page_attachments=page_attachments, attachments_indexing_enabled=True
+        )
+        
+        # Should only have the comment record, not a duplicate FileRecord for the attachment
+        # (since attachment already exists in DB as page attachment)
+        assert len(comments) == 1
+        assert comments[0][0] == mock_comment_record
 
 
 # ===========================================================================

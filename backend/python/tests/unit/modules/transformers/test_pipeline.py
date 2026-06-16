@@ -6,11 +6,19 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-from app.models.blocks import BlocksContainer
+from app.models.blocks import Block, BlockGroup, BlockType, DataFormat, GroupType
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 
 _SENTINEL = object()
+
+
+def _valid_text_block(index: int = 0) -> Block:
+    return Block(index=index, type=BlockType.TEXT, data="sample text", format=DataFormat.TXT)
+
+
+def _valid_text_section_group(index: int = 0) -> BlockGroup:
+    return BlockGroup(index=index, type=GroupType.TEXT_SECTION)
 
 
 def _make_record(blocks=_SENTINEL, block_groups=_SENTINEL, record_id="rec-123"):
@@ -102,6 +110,18 @@ class TestApplyEmpty:
         doc_extraction.apply.assert_awaited_once_with(ctx)
         sink_orchestrator.apply.assert_awaited_once_with(ctx)
 
+    @pytest.mark.asyncio
+    async def test_block_containers_none_skips_validation(self, pipeline, doc_extraction, sink_orchestrator):
+        """When block_containers is None, apply should not crash before extraction."""
+        record = _make_record()
+        record.block_containers = None
+        ctx = _make_ctx(record)
+
+        await pipeline.apply(ctx)
+
+        doc_extraction.apply.assert_awaited_once_with(ctx)
+        sink_orchestrator.apply.assert_awaited_once_with(ctx)
+
 
 # ---------------------------------------------------------------------------
 # apply -- non-empty blocks
@@ -109,8 +129,7 @@ class TestApplyEmpty:
 class TestApplyNonEmpty:
     @pytest.mark.asyncio
     async def test_non_empty_calls_extraction_then_sink(self, pipeline, doc_extraction, sink_orchestrator):
-        block = MagicMock()
-        record = _make_record(blocks=[block], block_groups=[])
+        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
         ctx = _make_ctx(record)
 
         await pipeline.apply(ctx)
@@ -120,8 +139,7 @@ class TestApplyNonEmpty:
 
     @pytest.mark.asyncio
     async def test_non_empty_block_groups_calls_extraction_then_sink(self, pipeline, doc_extraction, sink_orchestrator):
-        bg = MagicMock()
-        record = _make_record(blocks=[], block_groups=[bg])
+        record = _make_record(blocks=[], block_groups=[_valid_text_section_group()])
         ctx = _make_ctx(record)
 
         await pipeline.apply(ctx)
@@ -131,9 +149,10 @@ class TestApplyNonEmpty:
 
     @pytest.mark.asyncio
     async def test_both_blocks_and_groups_calls_extraction_then_sink(self, pipeline, doc_extraction, sink_orchestrator):
-        block = MagicMock()
-        bg = MagicMock()
-        record = _make_record(blocks=[block], block_groups=[bg])
+        record = _make_record(
+            blocks=[_valid_text_block()],
+            block_groups=[_valid_text_section_group()],
+        )
         ctx = _make_ctx(record)
 
         await pipeline.apply(ctx)
@@ -155,8 +174,7 @@ class TestApplyNonEmpty:
         doc_extraction.apply = track_extraction
         sink_orchestrator.apply = track_sink
 
-        block = MagicMock()
-        record = _make_record(blocks=[block], block_groups=[])
+        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
         ctx = _make_ctx(record)
 
         await pipeline.apply(ctx)
@@ -166,7 +184,7 @@ class TestApplyNonEmpty:
     @pytest.mark.asyncio
     async def test_exception_in_extraction_propagates(self, pipeline, doc_extraction, sink_orchestrator):
         doc_extraction.apply = AsyncMock(side_effect=RuntimeError("extraction boom"))
-        record = _make_record(blocks=[MagicMock()], block_groups=[])
+        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
         ctx = _make_ctx(record)
 
         with pytest.raises(RuntimeError, match="extraction boom"):
@@ -177,7 +195,7 @@ class TestApplyNonEmpty:
     @pytest.mark.asyncio
     async def test_exception_in_sink_propagates(self, pipeline, doc_extraction, sink_orchestrator):
         sink_orchestrator.apply = AsyncMock(side_effect=RuntimeError("sink boom"))
-        record = _make_record(blocks=[MagicMock()], block_groups=[])
+        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
         ctx = _make_ctx(record)
 
         with pytest.raises(RuntimeError, match="sink boom"):

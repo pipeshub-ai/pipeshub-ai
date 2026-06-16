@@ -88,6 +88,7 @@ from app.models.entities import (
     RelatedExternalRecord,
     TicketRecord,
 )
+from app.services.notification.types import NotificationType, NotificationSeverity, NotificationRecipientRole
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.jira.jira import JiraClient
 from app.sources.external.common.atlassian import match_atlassian_cloud_resource
@@ -1181,6 +1182,13 @@ class JiraConnector(BaseConnector):
                 f"✅ Jira sync completed. Total: {sync_stats['total_synced']} issues "
                 f"(New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']})"
             )
+            await self.notify(
+                type=NotificationType.CONNECTOR_SUCCESS,
+                severity=NotificationSeverity.SUCCESS,
+                title=f"Jira sync completed",
+                message=f"Total: {sync_stats['total_synced']} issues (New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']})",
+                recipient_user_ids=[self.created_by],
+            )
 
         except Exception as e:
             self.logger.error(f"❌ Error during Jira sync: {e}", exc_info=True)
@@ -1336,6 +1344,16 @@ class JiraConnector(BaseConnector):
 
                 if response.status != HttpStatusCode.OK.value:
                     self.logger.warning(f"⚠️ Failed to fetch audit records: {response.text()}")
+                    await self.notify(
+                        type=NotificationType.CONNECTOR_WARNING,
+                        severity=NotificationSeverity.WARNING,
+                        title=f"Failed to fetch audit records",
+                        message=f"You do not have the Jira Administrator permission required to get audit records.",
+                        recipient_user_ids=[self.created_by],
+                        payload={
+                            "redirect_link": None,
+                        }
+                    )
                     break
 
                 audit_data = response.json()
@@ -1716,6 +1734,13 @@ class JiraConnector(BaseConnector):
                         "reverse lookup only.",
                         response.status, len(users),
                     )
+                    await self.notify(
+                        type=NotificationType.CONNECTOR_WARNING,
+                        severity=NotificationSeverity.WARNING,
+                        title=f"Failed to fetch users",
+                        message=f"You do not have permissions to fetch users. Contact your Jira administrator.",
+                        recipient_user_ids=[self.created_by],
+                    )
                     return users
                 raise Exception(f"Failed to fetch users: {response.text()}")
 
@@ -1842,6 +1867,16 @@ class JiraConnector(BaseConnector):
                         "Projects whose permission scheme uses applicationRole holders will "
                         "grant the configuring user direct access instead."
                     )
+                    await self.notify(
+                        type=NotificationType.CONNECTOR_WARNING,
+                        severity=NotificationSeverity.WARNING,
+                        title=f"Application roles API inaccessible",
+                        message=f"You do not have the Jira Admin permission required to get application roles. Application roles permissions will not be synced.",
+                        recipient_user_ids=[self.created_by],
+                        payload={
+                            "redirect_link": None
+                        }
+                    )
                 else:
                     self.logger.warning(
                         "⚠️ Failed to fetch application roles (HTTP %s)", response.status
@@ -1869,7 +1904,7 @@ class JiraConnector(BaseConnector):
 
         return mapping
 
-    def _fallback_permissions_for_forbidden_scheme(
+    async def _fallback_permissions_for_forbidden_scheme(
         self,
         project_key: str,
         status: int,
@@ -1890,6 +1925,16 @@ class JiraConnector(BaseConnector):
                 "Projects. Granting configuring user '%s' direct BROWSE access "
                 "instead of dropping all ACLs for this project.",
                 stage, project_key, status, self.creator_email,
+            )
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title=f"Could not read permissions for {project_key}",
+                message=f"Ask your Jira admin to add {self.creator_email} as a project admin. Until then, only you can access this project.",
+                payload={
+                    "redirect_link": f"{self.site_url}/plugins/servlet/project-config/{project_key}/permissions",
+                },
+                recipient_user_ids=[self.created_by],
             )
             return [Permission(
                 entity_type=EntityType.USER,
@@ -1940,7 +1985,7 @@ class JiraConnector(BaseConnector):
                     HttpStatusCode.UNAUTHORIZED.value,
                     HttpStatusCode.FORBIDDEN.value,
                 ):
-                    return self._fallback_permissions_for_forbidden_scheme(
+                    return await self._fallback_permissions_for_forbidden_scheme(
                         project_key=project_key,
                         status=scheme_response.status,
                         stage="permission scheme",
@@ -1962,7 +2007,7 @@ class JiraConnector(BaseConnector):
                     HttpStatusCode.UNAUTHORIZED.value,
                     HttpStatusCode.FORBIDDEN.value,
                 ):
-                    return self._fallback_permissions_for_forbidden_scheme(
+                    return await self._fallback_permissions_for_forbidden_scheme(
                         project_key=project_key,
                         status=grants_response.status,
                         stage=f"permission grants (scheme {scheme_id})",
@@ -2994,13 +3039,13 @@ class JiraConnector(BaseConnector):
             page_count += 1
 
             try:
-                datasource = await self._get_fresh_datasource()
-                response = await datasource.search_and_reconsile_issues_using_jql_post(
+                response = await self._search_issues_with_retry(
+                    project_key=project_key,
                     jql=jql,
-                    maxResults=DEFAULT_MAX_RESULTS,
-                    nextPageToken=next_page_token,
+                    next_page_token=next_page_token,
+                    max_results=DEFAULT_MAX_RESULTS,
                     fields=ISSUE_SEARCH_FIELDS,
-                    expand="renderedFields,changelog"
+                    expand="renderedFields,changelog",
                 )
 
                 if response.status != HttpStatusCode.OK.value:
@@ -4180,6 +4225,58 @@ class JiraConnector(BaseConnector):
 
         return attachment_children_map
 
+    async def _search_issues_with_retry(
+        self,
+        *,
+        project_key: str,
+        jql: str,
+        next_page_token: str | None,
+        max_results: int,
+        fields: list[str],
+        expand: str,
+        max_attempts: int = 3,
+    ) -> Any:
+        """Search Jira issues, retrying on transient httpx transport errors.
+
+        Targeted at stale keep-alive sockets that raise ``RemoteProtocolError``
+        before any HTTP response is received during paginated sync. Replaying the
+        same JQL and page token is safe when no response was received — search is
+        read-only and httpx evicts the broken connection on failure.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(max_attempts):
+            try:
+                datasource = await self._get_fresh_datasource()
+                return await datasource.search_and_reconsile_issues_using_jql_post(
+                    jql=jql,
+                    maxResults=max_results,
+                    nextPageToken=next_page_token,
+                    fields=fields,
+                    expand=expand,
+                )
+            except (
+                httpx.RemoteProtocolError,
+                httpx.ReadError,
+                httpx.WriteError,
+                httpx.ConnectError,
+                httpx.PoolTimeout,
+                httpx.ReadTimeout,
+            ) as e:
+                last_exc = e
+                if attempt == max_attempts - 1:
+                    break
+                backoff = 0.5 * (2 ** attempt)  # 0.5s, 1.0s, ...
+                self.logger.warning(
+                    "Transient transport error searching issues for project %s "
+                    "(attempt %s/%s): %s — retrying in %.1fs",
+                    project_key, attempt + 1, max_attempts, e, backoff,
+                )
+                await asyncio.sleep(backoff)
+
+        raise Exception(
+            f"Failed to fetch issues for {project_key} after {max_attempts} attempts: {last_exc}"
+        ) from last_exc
+
     async def _get_issue_with_retry(
         self,
         issue_id: str,
@@ -4255,7 +4352,7 @@ class JiraConnector(BaseConnector):
         # before any HTTP response is received. Retry via ``_get_issue_with_retry``.
         response = await self._get_issue_with_retry(
             issue_id=issue_id,
-            fields=["summary", "description", "attachment", "comment"],
+            fields=["summary", "description", "attachment", "comment", "project"],
             expand=["comments"],
         )
 
@@ -4287,8 +4384,11 @@ class JiraConnector(BaseConnector):
         else:
             comments_data = []
 
-        # Get project ID from record group
+        # Resolve project for new attachment FileRecords (see DC streaming path).
         project_id = record.external_record_group_id or ""
+        if not project_id:
+            project = fields.get("project") or {}
+            project_id = project.get("id") or ""
 
         # Build attachment_id -> mimeType map for determining image vs file
         # This is needed because Jira ADF media nodes always have type="file"
@@ -4626,6 +4726,13 @@ class JiraConnector(BaseConnector):
             return response.status == HttpStatusCode.OK.value
         except Exception as e:
             self.logger.error(f"❌ Connection test failed: {e}")
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=f"Connection failed",
+                message=f"{self.connector_name.value}: {e}",
+                recipient_roles=[NotificationRecipientRole.ADMIN],
+            )
             return False
 
     async def run_incremental_sync(self) -> None:
@@ -4885,7 +4992,7 @@ class JiraConnector(BaseConnector):
             # Build user lookup from emailAddress if available (for _extract_issue_data)
             user_by_account_id = {}
             for user_field in ["creator", "reporter", "assignee"]:
-                user_obj = fields.get(user_field, {})
+                user_obj = fields.get(user_field) or {}
                 account_id = user_obj.get("accountId")
                 email = user_obj.get("emailAddress")
                 if account_id and email:
@@ -4902,7 +5009,7 @@ class JiraConnector(BaseConnector):
             issue_data = self._extract_issue_data(issue, user_by_account_id)
 
             # Get project info
-            project = fields.get("project", {})
+            project = fields.get("project") or {}
             project_id = project.get("id", "")
 
             # Increment version

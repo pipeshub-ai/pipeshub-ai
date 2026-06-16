@@ -83,6 +83,7 @@ class TestConnectorAppContainerProviders:
             "key_value_store",
             "config_service",
             "kafka_service",
+            "connector_notification_service",
             "arango_service",
             "arango_client",
             "graph_provider",

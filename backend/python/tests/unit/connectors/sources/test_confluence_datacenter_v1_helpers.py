@@ -10,20 +10,6 @@ from app.connectors.sources.atlassian.confluence_datacenter.connector import (
 
 
 class TestConfluenceDataCenterV1Helpers:
-    def test_html_export_from_content_v1_prefers_export_view(self) -> None:
-        body = {
-            "export_view": {"value": "<p>export</p>"},
-            "storage": {"value": "<p>storage</p>"},
-        }
-        assert ConfluenceDataCenterConnector._html_export_from_content_v1(body) == "<p>export</p>"
-
-    def test_html_export_from_content_v1_falls_back_to_storage(self) -> None:
-        body = {"storage": {"value": "<p>storage only</p>"}}
-        assert (
-            ConfluenceDataCenterConnector._html_export_from_content_v1(body)
-            == "<p>storage only</p>"
-        )
-
     def test_pagination_token_from_next_link_cursor(self) -> None:
         c = object.__new__(ConfluenceDataCenterConnector)
         url = "https://example.com/wiki/rest/api/content/search?cql=type%3Dpage&cursor=abc123"

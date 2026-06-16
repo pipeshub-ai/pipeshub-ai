@@ -161,6 +161,40 @@ export function createMessageConsumer(
   return createMessageConsumerByParts(brokerType, kafka, redis, logger);
 }
 
+const NOTIFICATION_CONSUMER_GROUP = 'notification-consumer-group';
+const NOTIFICATION_CLIENT_ID = 'notification-consumer';
+
+/** Dedicated consumer group/stream group for the notification topic (Kafka + Redis). */
+export function createNotificationMessageConsumer(
+  appConfig: AppConfig,
+  logger: Logger,
+): IMessageConsumer {
+  const resolved = resolveMessageBrokerConfig(appConfig);
+  if (resolved.type === MessageBrokerType.KAFKA) {
+    const kafka: KafkaConfig = {
+      ...resolved.kafka,
+      clientId: NOTIFICATION_CLIENT_ID,
+      groupId: NOTIFICATION_CONSUMER_GROUP,
+    };
+    return createMessageConsumerByParts(
+      MessageBrokerType.KAFKA,
+      kafka,
+      undefined,
+      logger,
+    );
+  }
+  const redis = buildRedisBrokerConfig(appConfig.redis, {
+    clientId: NOTIFICATION_CLIENT_ID,
+    groupId: NOTIFICATION_CONSUMER_GROUP,
+  });
+  return createMessageConsumerByParts(
+    MessageBrokerType.REDIS,
+    undefined,
+    redis,
+    logger,
+  );
+}
+
 export function buildRedisBrokerConfig(
   redisConfig: RedisConfig,
   options?: { clientId?: string; groupId?: string },

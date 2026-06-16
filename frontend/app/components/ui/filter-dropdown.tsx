@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
-import { Flex, Box, Text, Badge, Button, Popover, Checkbox, TextField } from '@radix-ui/themes';
+import { Flex, Box, Text, Badge, Button, Popover, Checkbox, RadioGroup, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
 
@@ -81,6 +81,11 @@ export interface FilterDropdownProps {
    * so the button stays one line and does not overflow narrow columns.
    */
   summaryBelowTrigger?: boolean;
+  /**
+   * `multiple` (default): checkbox multi-select.
+   * `single`: radio single-select (one value at a time).
+   */
+  selectionMode?: 'single' | 'multiple';
 }
 
 /**
@@ -139,21 +144,49 @@ export function FilterDropdown({
   triggerLayout = 'segmented',
   triggerTitle,
   summaryBelowTrigger = false,
+  selectionMode = 'multiple',
 }: FilterDropdownProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  /** Labels for selected values — kept when server-side option lists refresh after close */
+  const [selectedLabels, setSelectedLabels] = useState<Record<string, string>>({});
   const listRef = useRef<HTMLDivElement>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevOpenRef = useRef(false);
 
   const hasSelection = selectedValues.length > 0;
+  const isSingleSelect = selectionMode === 'single';
   const isServerSearch = !!onSearch;
+  const selectionVerb = isSingleSelect ? 'is' : 'is any of';
+
+  // Remember labels at selection time so chips stay human-readable after paginated refetch
+  useEffect(() => {
+    if (selectedValues.length === 0) {
+      setSelectedLabels({});
+      return;
+    }
+    setSelectedLabels((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const val of selectedValues) {
+        const opt = options.find((o) => o.value === val);
+        if (opt && next[val] !== opt.label) {
+          next[val] = opt.label;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [selectedValues, options]);
 
   const optionLabelByValue = useMemo(() => {
     const map = new Map<string, string>();
+    for (const [value, label] of Object.entries(selectedLabels)) {
+      map.set(value, label);
+    }
     for (const o of options) map.set(o.value, o.label);
     return map;
-  }, [options]);
+  }, [options, selectedLabels]);
 
   // Filter options by search query (only when not using server search)
   const filteredOptions = useMemo(() => {
@@ -196,8 +229,12 @@ export function FilterDropdown({
     prevOpenRef.current = isOpen;
   }, [isOpen, isServerSearch, onSearch]);
 
-  // Toggle option selection
-  const toggleOption = (value: string) => {
+  const selectOption = (value: string) => {
+    if (isSingleSelect) {
+      onSelectionChange([value]);
+      setIsOpen(false);
+      return;
+    }
     if (selectedValues.includes(value)) {
       onSelectionChange(selectedValues.filter((v) => v !== value));
     } else {
@@ -363,7 +400,7 @@ export function FilterDropdown({
                 }}
               >
                 <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>
-                  is any of
+                  {selectionVerb}
                 </Text>
               </Flex>
 
@@ -512,42 +549,87 @@ export function FilterDropdown({
               </Text>
             </Flex>
           ) : null}
-          {filteredOptions.map((option) => (
-            <Flex
-              key={option.value}
-              align="center"
-              gap="2"
-              onClick={() => toggleOption(option.value)}
-              style={{
-                padding: '6px 8px',
-                borderRadius: 'var(--radius-1)',
-                cursor: 'pointer',
-                backgroundColor: selectedValues.includes(option.value)
-                  ? 'var(--gray-a3)'
-                  : 'transparent',
+          {isSingleSelect ? (
+            <RadioGroup.Root
+              value={selectedValues[0] ?? ''}
+              onValueChange={(value) => {
+                onSelectionChange(value ? [value] : []);
+                if (value) setIsOpen(false);
               }}
             >
-              <Checkbox
-                size="1"
-                checked={selectedValues.includes(option.value)}
-                onCheckedChange={() => toggleOption(option.value)}
-                onClick={(e) => e.stopPropagation()}
-                style={{ cursor: 'pointer' }}
-              />
-              {option.customIcon ? (
-                option.customIcon
-              ) : option.icon ? (
-                <MaterialIcon
-                  name={option.icon}
-                  size={16}
-                  color={option.iconColor || 'var(--slate-11)'}
+              {filteredOptions.map((option) => (
+                <Flex
+                  key={option.value}
+                  align="center"
+                  gap="2"
+                  onClick={() => selectOption(option.value)}
+                  style={{
+                    padding: '6px 8px',
+                    borderRadius: 'var(--radius-1)',
+                    cursor: 'pointer',
+                    backgroundColor: selectedValues.includes(option.value)
+                      ? 'var(--gray-a3)'
+                      : 'transparent',
+                  }}
+                >
+                  <RadioGroup.Item
+                    value={option.value}
+                    onClick={(e) => e.stopPropagation()}
+                    style={{ cursor: 'pointer', flexShrink: 0 }}
+                  />
+                  {option.customIcon ? (
+                    option.customIcon
+                  ) : option.icon ? (
+                    <MaterialIcon
+                      name={option.icon}
+                      size={16}
+                      color={option.iconColor || 'var(--slate-11)'}
+                    />
+                  ) : null}
+                  <Text size="2" style={{ color: 'var(--slate-12)' }}>
+                    {option.label}
+                  </Text>
+                </Flex>
+              ))}
+            </RadioGroup.Root>
+          ) : (
+            filteredOptions.map((option) => (
+              <Flex
+                key={option.value}
+                align="center"
+                gap="2"
+                onClick={() => selectOption(option.value)}
+                style={{
+                  padding: '6px 8px',
+                  borderRadius: 'var(--radius-1)',
+                  cursor: 'pointer',
+                  backgroundColor: selectedValues.includes(option.value)
+                    ? 'var(--gray-a3)'
+                    : 'transparent',
+                }}
+              >
+                <Checkbox
+                  size="1"
+                  checked={selectedValues.includes(option.value)}
+                  onCheckedChange={() => selectOption(option.value)}
+                  onClick={(e) => e.stopPropagation()}
+                  style={{ cursor: 'pointer' }}
                 />
-              ) : null}
-              <Text size="2" style={{ color: 'var(--slate-12)' }}>
-                {option.label}
-              </Text>
-            </Flex>
-          ))}
+                {option.customIcon ? (
+                  option.customIcon
+                ) : option.icon ? (
+                  <MaterialIcon
+                    name={option.icon}
+                    size={16}
+                    color={option.iconColor || 'var(--slate-11)'}
+                  />
+                ) : null}
+                <Text size="2" style={{ color: 'var(--slate-12)' }}>
+                  {option.label}
+                </Text>
+              </Flex>
+            ))
+          )}
           {isLoadingMore && (
             <Flex align="center" justify="center" gap="2" style={{ padding: '8px' }}>
               <Spinner size={12} />

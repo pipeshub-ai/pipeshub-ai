@@ -2958,6 +2958,42 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
             return None
 
+    async def get_graph_user_keys_by_mongo_user_ids(
+        self,
+        user_ids: list[str],
+        org_id: str | None = None,
+        *,
+        chunk_size: int,
+    ) -> dict[str, str]:
+        """Return graph user _key for each Mongo userId (batched lookup)."""
+        if not user_ids:
+            return {}
+
+        mongo_to_key: dict[str, str] = {}
+        for i in range(0, len(user_ids), chunk_size):
+            chunk = user_ids[i:i + chunk_size]
+            query = """
+            MATCH (u:User)
+            WHERE u.userId IN $user_ids
+              AND ($org_id IS NULL OR u.orgId = $org_id)
+            RETURN u.userId AS userId, u.id AS _key
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"user_ids": chunk, "org_id": org_id},
+            )
+            for record in results:
+                mongo_id = record.get("userId")
+                graph_key = record.get("_key")
+                if mongo_id and graph_key:
+                    mongo_to_key[mongo_id] = graph_key
+
+        missing = [user_id for user_id in user_ids if user_id not in mongo_to_key]
+        if missing:
+            raise ValueError(f"Users not found in graph: {missing}")
+
+        return mongo_to_key
+
     async def get_users(
         self,
         org_id: str,
@@ -15845,128 +15881,61 @@ class Neo4jProvider(IGraphDBProvider):
 
     # ==================== Team Operations ====================
 
-    async def get_teams(
+    async def _enrich_created_by_user(
         self,
-        org_id: str,
-        user_key: str,
-        search: str | None = None,
-        page: int = 1,
-        limit: int = 10,
-        transaction: str | None = None
-    ) -> tuple[list[dict], int]:
-        """
-        Get teams for an organization with pagination, search, members, and permissions.
-        """
-        try:
-            offset = (page - 1) * limit
-            team_label = collection_to_label(CollectionNames.TEAMS.value)
+        entities: list[dict],
+        transaction: str | None = None,
+    ) -> None:
+        """Attach createdByUser (graph id, Mongo userId, name, email) from graph createdBy keys."""
+        if not entities:
+            return
+
+        creator_keys: set[str] = set()
+        for entity in entities:
+            if not entity:
+                continue
+            creator_key = entity.get("createdBy")
+            if creator_key and creator_key != "system":
+                creator_keys.add(creator_key)
+
+        users_by_key: dict[str, dict] = {}
+        if creator_keys:
             user_label = collection_to_label(CollectionNames.USERS.value)
-            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
-
-            # Build search filter (case-insensitive)
-            search_where = ""
-            if search:
-                search_where = "AND toLower(team.name) CONTAINS toLower($search)"
-
-            # Query to get teams with current user's permission and team members
-            teams_query = f"""
-            MATCH (team:{team_label} {{orgId: $orgId}})
-            WHERE 1=1 {search_where}
-            OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
-            OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL
-            WITH team,
-                 collect(DISTINCT properties(current_permission))[0] AS current_user_permission,
-                 collect(DISTINCT {{
-                     id: member_user.id,
-                     userId: member_user.userId,
-                     userName: member_user.fullName,
-                     userEmail: member_user.email,
-                     role: member_permission.role,
-                     joinedAt: member_permission.createdAtTimestamp,
-                     isOwner: member_permission.role = 'OWNER'
-                 }}) AS team_members
-            WITH team, current_user_permission, team_members, size(team_members) AS user_count
-            ORDER BY team.createdAtTimestamp DESC
-            SKIP $offset
-            LIMIT $limit
-            RETURN {{
-                id: team.id,
-                name: team.name,
-                description: team.description,
-                createdBy: team.createdBy,
-                orgId: team.orgId,
-                createdAtTimestamp: team.createdAtTimestamp,
-                updatedAtTimestamp: team.updatedAtTimestamp,
-                currentUserPermission: CASE WHEN current_user_permission IS NOT NULL THEN current_user_permission ELSE null END,
-                members: team_members,
-                memberCount: user_count,
-                canEdit: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END,
-                canDelete: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER' THEN true ELSE false END,
-                canManageMembers: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END
-            }} AS result
+            query = f"""
+                MATCH (u:{user_label})
+                WHERE u.id IN $keys
+                RETURN u.id AS _key, u.userId AS userId, u.fullName AS fullName, u.email AS email
             """
-
-            # Count total teams for pagination
-            count_query = f"""
-            MATCH (team:{team_label} {{orgId: $orgId}})
-            WHERE 1=1 {search_where}
-            RETURN count(team) AS total_count
-            """
-
-            # Get total count
-            count_params = {"orgId": org_id}
-            if search:
-                count_params["search"] = search
-
-            count_results = await self.client.execute_query(
-                count_query,
-                parameters=count_params,
-                txn_id=transaction
+            results = await self.client.execute_query(
+                query,
+                parameters={"keys": list(creator_keys)},
+                txn_id=transaction,
             )
-            total_count = count_results[0]["total_count"] if count_results else 0
-
-            # Get teams with pagination
-            teams_params = {
-                "orgId": org_id,
-                "user_key": user_key,
-                "offset": offset,
-                "limit": limit
+            users_by_key = {
+                user["_key"]: user
+                for user in (results or [])
+                if user.get("_key")
             }
-            if search:
-                teams_params["search"] = search
 
-            result_list = await self.client.execute_query(
-                teams_query,
-                parameters=teams_params,
-                txn_id=transaction
-            )
-
-            # Convert results to ArangoDB format
-            converted_results = []
-            for row in result_list:
-                result = row.get("result", {})
-                # Convert team node
-                team_data = self._neo4j_to_arango_node(result, CollectionNames.TEAMS.value)
-                # Convert permission if present
-                if result.get("currentUserPermission"):
-                    perm = result["currentUserPermission"]
-                    # Add from_id and to_id for edge conversion
-                    perm["from_id"] = user_key
-                    perm["to_id"] = result.get("id")
-                    perm["from_collection"] = CollectionNames.USERS.value
-                    perm["to_collection"] = CollectionNames.TEAMS.value
-                    perm_data = self._neo4j_to_arango_edge(perm, CollectionNames.PERMISSION.value)
-                    team_data["currentUserPermission"] = perm_data
-                else:
-                    team_data["currentUserPermission"] = None
-                converted_results.append(team_data)
-
-            return converted_results if converted_results else [], total_count
-
-        except Exception as e:
-            self.logger.error(f"Error in get_teams: {str(e)}", exc_info=True)
-            return [], 0
+        for entity in entities:
+            if not entity:
+                continue
+            creator_key = entity.get("createdBy")
+            if not creator_key or creator_key == "system":
+                entity["createdByUser"] = None
+                entity.pop("createdBy", None)
+                continue
+            user_doc = users_by_key.get(creator_key)
+            if not user_doc or not user_doc.get("userId"):
+                entity["createdByUser"] = None
+            else:
+                entity["createdByUser"] = {
+                    "id": creator_key,
+                    "userId": user_doc["userId"],
+                    "name": user_doc.get("fullName") or "",
+                    "email": user_doc.get("email") or "",
+                }
+            entity.pop("createdBy", None)
 
     async def get_team_with_users(
         self,
@@ -16006,11 +15975,10 @@ class Neo4jProvider(IGraphDBProvider):
                 orgId: team.orgId,
                 createdAtTimestamp: team.createdAtTimestamp,
                 updatedAtTimestamp: team.updatedAtTimestamp,
-                currentUserPermission: CASE WHEN current_user_permission IS NOT NULL THEN current_user_permission ELSE null END,
                 members: team_members,
                 memberCount: size(team_members),
                 canEdit: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END,
-                canDelete: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER' THEN true ELSE false END,
+                canDelete: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER' AND team.id <> ('all_' + team.orgId) THEN true ELSE false END,
                 canManageMembers: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END
             }} AS result
             """
@@ -16027,22 +15995,9 @@ class Neo4jProvider(IGraphDBProvider):
             if not results:
                 return None
 
-            result = results[0].get("result", {})
-            # Convert team node
-            team_data = self._neo4j_to_arango_node(result, CollectionNames.TEAMS.value)
-            # Convert permission if present
-            if result.get("currentUserPermission"):
-                perm = result["currentUserPermission"]
-                # Add from_id and to_id for edge conversion
-                perm["from_id"] = user_key
-                perm["to_id"] = result.get("id")
-                perm["from_collection"] = CollectionNames.USERS.value
-                perm["to_collection"] = CollectionNames.TEAMS.value
-                perm_data = self._neo4j_to_arango_edge(perm, CollectionNames.PERMISSION.value)
-                team_data["currentUserPermission"] = perm_data
-            else:
-                team_data["currentUserPermission"] = None
+            team_data = results[0].get("result", {})
 
+            await self._enrich_created_by_user([team_data], transaction=transaction)
             return team_data
 
         except Exception as e:
@@ -16111,11 +16066,10 @@ class Neo4jProvider(IGraphDBProvider):
                 orgId: team.orgId,
                 createdAtTimestamp: team.createdAtTimestamp,
                 updatedAtTimestamp: team.updatedAtTimestamp,
-                currentUserPermission: current_user_permission,
                 members: team_members,
                 memberCount: member_count,
                 canEdit: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END,
-                canDelete: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER' THEN true ELSE false END,
+                canDelete: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER' AND team.id <> ('all_' + team.orgId) THEN true ELSE false END,
                 canManageMembers: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END
             }} AS result
             """
@@ -16162,156 +16116,13 @@ class Neo4jProvider(IGraphDBProvider):
                 txn_id=transaction
             )
 
-            # Convert results to ArangoDB format
-            converted_results = []
-            for row in result_list:
-                result = row.get("result", {})
-                # Convert team node
-                team_data = self._neo4j_to_arango_node(result, CollectionNames.TEAMS.value)
-                # Convert permission
-                if result.get("currentUserPermission"):
-                    perm = result["currentUserPermission"]
-                    # Add from_id and to_id for edge conversion
-                    perm["from_id"] = user_key
-                    perm["to_id"] = result.get("id")
-                    perm["from_collection"] = CollectionNames.USERS.value
-                    perm["to_collection"] = CollectionNames.TEAMS.value
-                    perm_data = self._neo4j_to_arango_edge(perm, CollectionNames.PERMISSION.value)
-                    team_data["currentUserPermission"] = perm_data
-                converted_results.append(team_data)
+            converted_results = [row.get("result", {}) for row in result_list]
 
+            await self._enrich_created_by_user(converted_results, transaction=transaction)
             return converted_results if converted_results else [], total_count
 
         except Exception as e:
             self.logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
-            return [], 0
-
-    async def get_user_created_teams(
-        self,
-        org_id: str,
-        user_key: str,
-        search: str | None = None,
-        page: int = 1,
-        limit: int = 100,
-        transaction: str | None = None
-    ) -> tuple[list[dict], int]:
-        """
-        Get all teams created by a user.
-        """
-        try:
-            offset = (page - 1) * limit
-            team_label = collection_to_label(CollectionNames.TEAMS.value)
-            user_label = collection_to_label(CollectionNames.USERS.value)
-            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
-
-            # Build search filter (case-insensitive)
-            search_where = ""
-            if search:
-                search_where = "AND (toLower(team.name) CONTAINS toLower($search) OR toLower(team.description) CONTAINS toLower($search))"
-
-            # Optimized query: Batch fetch team members
-            created_teams_query = f"""
-            MATCH (team:{team_label} {{orgId: $orgId, createdBy: $userKey}})
-            WHERE 1=1 {search_where}
-            WITH team
-            ORDER BY team.createdAtTimestamp DESC
-            SKIP $offset
-            LIMIT $limit
-            WITH collect(team) AS teams
-            UNWIND teams AS team
-            OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
-            OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL
-            WITH team,
-                 collect(DISTINCT properties(current_permission))[0] AS current_user_permission,
-                 collect(DISTINCT {{
-                     id: member_user.id,
-                     userId: member_user.userId,
-                     userName: member_user.fullName,
-                     userEmail: member_user.email,
-                     role: member_permission.role,
-                     joinedAt: member_permission.createdAtTimestamp,
-                     isOwner: member_permission.role = 'OWNER'
-                 }}) AS team_members
-            RETURN {{
-                id: team.id,
-                name: team.name,
-                description: team.description,
-                createdBy: team.createdBy,
-                orgId: team.orgId,
-                createdAtTimestamp: team.createdAtTimestamp,
-                updatedAtTimestamp: team.updatedAtTimestamp,
-                currentUserPermission: CASE WHEN current_user_permission IS NOT NULL THEN current_user_permission ELSE null END,
-                members: team_members,
-                memberCount: size(team_members),
-                canEdit: true,
-                canDelete: true,
-                canManageMembers: true
-            }} AS result
-            """
-
-            # Count total teams for pagination
-            count_query = f"""
-            MATCH (team:{team_label} {{orgId: $orgId, createdBy: $userKey}})
-            WHERE 1=1 {search_where}
-            RETURN count(team) AS total_count
-            """
-
-            count_params = {
-                "orgId": org_id,
-                "userKey": user_key
-            }
-            if search:
-                count_params["search"] = search
-
-            count_results = await self.client.execute_query(
-                count_query,
-                parameters=count_params,
-                txn_id=transaction
-            )
-            total_count = count_results[0]["total_count"] if count_results else 0
-
-            # Get teams with pagination
-            teams_params = {
-                "orgId": org_id,
-                "userKey": user_key,
-                "user_key": user_key,
-                "offset": offset,
-                "limit": limit
-            }
-            if search:
-                teams_params["search"] = search
-
-            result_list = await self.client.execute_query(
-                created_teams_query,
-                parameters=teams_params,
-                txn_id=transaction
-            )
-
-            # Convert results to ArangoDB format
-            converted_results = []
-            for row in result_list:
-                result = row.get("result", {})
-                # Convert team node
-                team_data = self._neo4j_to_arango_node(result, CollectionNames.TEAMS.value)
-                # Convert permission if present
-                if result.get("currentUserPermission"):
-                    perm = result["currentUserPermission"]
-                    # Add from_id and to_id for edge conversion
-                    perm["from_id"] = user_key
-                    perm["to_id"] = result.get("id")
-                    perm["from_collection"] = CollectionNames.USERS.value
-                    perm["to_collection"] = CollectionNames.TEAMS.value
-                    perm_data = self._neo4j_to_arango_edge(perm, CollectionNames.PERMISSION.value)
-                    team_data["currentUserPermission"] = perm_data
-                else:
-                    team_data["currentUserPermission"] = None
-                converted_results.append(team_data)
-
-            return converted_results if converted_results else [], total_count
-
-        except Exception as e:
-            self.logger.error(f"Error in get_user_created_teams: {str(e)}", exc_info=True)
             return [], 0
 
     async def get_team_users(
@@ -16361,11 +16172,10 @@ class Neo4jProvider(IGraphDBProvider):
                 orgId: team.orgId,
                 createdAtTimestamp: team.createdAtTimestamp,
                 updatedAtTimestamp: team.updatedAtTimestamp,
-                currentUserPermission: CASE WHEN current_user_permission IS NOT NULL THEN current_user_permission ELSE null END,
                 members: all_members[$offset..($offset + $limit)],
                 memberCount: size(all_members),
                 canEdit: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END,
-                canDelete: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER' THEN true ELSE false END,
+                canDelete: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER' AND team.id <> ('all_' + team.orgId) THEN true ELSE false END,
                 canManageMembers: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END
             }} AS result
             """
@@ -16389,122 +16199,14 @@ class Neo4jProvider(IGraphDBProvider):
             if not results:
                 return None
 
-            result = results[0].get("result", {})
-            # Convert team node
-            team_data = self._neo4j_to_arango_node(result, CollectionNames.TEAMS.value)
-            # Convert permission if present
-            if result.get("currentUserPermission"):
-                perm = result["currentUserPermission"]
-                # Add from_id and to_id for edge conversion
-                perm["from_id"] = user_key
-                perm["to_id"] = result.get("id")
-                perm["from_collection"] = CollectionNames.USERS.value
-                perm["to_collection"] = CollectionNames.TEAMS.value
-                perm_data = self._neo4j_to_arango_edge(perm, CollectionNames.PERMISSION.value)
-                team_data["currentUserPermission"] = perm_data
-            else:
-                team_data["currentUserPermission"] = None
+            team_data = results[0].get("result", {})
 
+            await self._enrich_created_by_user([team_data], transaction=transaction)
             return team_data
 
         except Exception as e:
             self.logger.error(f"Error in get_team_users: {str(e)}", exc_info=True)
             return None
-
-    async def search_teams(
-        self,
-        org_id: str,
-        user_key: str,
-        query: str,
-        limit: int = 10,
-        offset: int = 0,
-        transaction: str | None = None
-    ) -> list[dict]:
-        """
-        Search teams by name or description.
-        """
-        try:
-            team_label = collection_to_label(CollectionNames.TEAMS.value)
-            user_label = collection_to_label(CollectionNames.USERS.value)
-            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
-
-            search_query = f"""
-            MATCH (team:{team_label} {{orgId: $orgId}})
-            WHERE toLower(team.name) CONTAINS toLower($query) OR toLower(team.description) CONTAINS toLower($query)
-            OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
-            OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL
-            WITH team,
-                 collect(DISTINCT properties(current_permission))[0] AS current_user_permission,
-                 collect(DISTINCT {{
-                     id: member_user.id,
-                     userId: member_user.userId,
-                     userName: member_user.fullName,
-                     userEmail: member_user.email,
-                     role: member_permission.role,
-                     joinedAt: member_permission.createdAtTimestamp,
-                     isOwner: member_user.id = team.createdBy
-                 }}) AS team_members
-            SKIP $offset
-            LIMIT $limit
-            RETURN {{
-                team: {{
-                    id: team.id,
-                    name: team.name,
-                    description: team.description,
-                    createdBy: team.createdBy,
-                    orgId: team.orgId,
-                    createdAtTimestamp: team.createdAtTimestamp,
-                    updatedAtTimestamp: team.updatedAtTimestamp
-                }},
-                currentUserPermission: CASE WHEN current_user_permission IS NOT NULL THEN current_user_permission ELSE null END,
-                members: team_members,
-                memberCount: size(team_members),
-                canEdit: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END,
-                canDelete: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER' THEN true ELSE false END,
-                canManageMembers: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END
-            }} AS result
-            """
-
-            results = await self.client.execute_query(
-                search_query,
-                parameters={
-                    "orgId": org_id,
-                    "query": query,
-                    "limit": limit,
-                    "offset": offset,
-                    "user_key": user_key
-                },
-                txn_id=transaction
-            )
-
-            # Convert results to ArangoDB format
-            converted_results = []
-            for row in results:
-                result = row.get("result", {})
-                # Convert team node within the wrapped structure
-                if result.get("team"):
-                    team_data = self._neo4j_to_arango_node(result["team"], CollectionNames.TEAMS.value)
-                    result["team"] = team_data
-                # Convert permission if present
-                if result.get("currentUserPermission"):
-                    perm = result["currentUserPermission"]
-                    # Add from_id and to_id for edge conversion
-                    perm["from_id"] = user_key
-                    perm["to_id"] = result.get("team", {}).get("id")
-                    perm["from_collection"] = CollectionNames.USERS.value
-                    perm["to_collection"] = CollectionNames.TEAMS.value
-                    perm_data = self._neo4j_to_arango_edge(perm, CollectionNames.PERMISSION.value)
-                    result["currentUserPermission"] = perm_data
-                else:
-                    result["currentUserPermission"] = None
-                converted_results.append(result)
-
-            return converted_results if converted_results else []
-
-        except Exception as e:
-            self.logger.error(f"Error in search_teams: {str(e)}", exc_info=True)
-            return []
 
     async def delete_team_member_edges(
         self,
@@ -16987,6 +16689,180 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Failed to check connector usage: {str(e)}")
             raise
 
+    async def _get_documents_by_ids(
+        self, ids: list[str], collection: str, transaction: str | None = None
+    ) -> dict[str, dict]:
+        """Batch-fetch documents by id from a collection; returns a map keyed by id.
+
+        Single Cypher round-trip regardless of how many ids are requested. Missing
+        ids are simply absent from the returned map.
+        """
+        if not ids:
+            return {}
+        label = collection_to_label(collection)
+        query = f"""
+        MATCH (n:{label})
+        WHERE n.id IN $ids
+        RETURN n
+        """
+        docs: dict[str, dict] = {}
+        try:
+            results = await self.client.execute_query(
+                query, parameters={"ids": ids}, txn_id=transaction
+            )
+        except Exception as e:
+            # Match the per-document resilience of the old get_agent path: a
+            # lookup failure must not abort the whole projection. Callers treat a
+            # missing id as "unresolved" and fall back to an UNKNOWN label.
+            self.logger.warning(f"Batch document lookup failed for {collection}: {str(e)}")
+            return {}
+        for record in results or []:
+            node = self._neo4j_to_arango_node(dict(record["n"]), collection)
+            key = node.get("_key") or node.get("id")
+            if key:
+                docs[key] = node
+        return docs
+
+    async def _project_agents_toolsets_and_knowledge(
+        self, agent_ids: list[str], transaction: str | None = None
+    ) -> dict[str, dict[str, list[dict]]]:
+        """Build the toolsets + knowledge graph projection for many agents at once.
+
+        Shared by ``get_agent`` (single id) and ``get_all_agents`` (a page of ids)
+        so both expose an identical shape. Uses a fixed number of Cypher
+        round-trips regardless of how many agents are passed (toolsets, knowledge,
+        plus two batched document lookups), instead of querying per agent. Does
+        not perform any permission check.
+
+        Returns a map keyed by agent id; every requested id is present, defaulting
+        to empty ``toolsets``/``knowledge`` lists.
+        """
+        result_map: dict[str, dict[str, list[dict]]] = {
+            agent_id: {"toolsets": [], "knowledge": []} for agent_id in agent_ids
+        }
+        if not agent_ids:
+            return result_map
+
+        agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+        agent_has_toolset_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_TOOLSET.value)
+        toolset_has_tool_rel = edge_collection_to_relationship(CollectionNames.TOOLSET_HAS_TOOL.value)
+        agent_has_knowledge_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_KNOWLEDGE.value)
+        toolset_label = collection_to_label(CollectionNames.AGENT_TOOLSETS.value)
+        tool_label = collection_to_label(CollectionNames.AGENT_TOOLS.value)
+        knowledge_label = collection_to_label(CollectionNames.AGENT_KNOWLEDGE.value)
+
+        # ── Query 1: toolsets (+ tools) for every requested agent ──────────────
+        toolsets_query = f"""
+        MATCH (agent:{agent_label})-[r:{agent_has_toolset_rel}]->(ts:{toolset_label})
+        WHERE agent.id IN $agent_ids
+        OPTIONAL MATCH (ts)-[tr:{toolset_has_tool_rel}]->(tool:{tool_label})
+        WITH agent, ts, collect(DISTINCT CASE
+            WHEN tool IS NOT NULL THEN {{
+                _key: tool.id,
+                name: tool.name,
+                fullName: tool.fullName,
+                toolsetName: tool.toolsetName,
+                description: tool.description
+            }}
+            ELSE null
+        END) AS tools_raw
+        WITH agent, ts, [t IN tools_raw WHERE t IS NOT NULL] AS tools
+        RETURN agent.id AS agent_id, {{
+            _key: ts.id,
+            name: ts.name,
+            displayName: ts.displayName,
+            type: ts.type,
+            instanceId: ts.instanceId,
+            instanceName: ts.instanceName,
+            selectedTools: ts.selectedTools,
+            tools: tools
+        }} AS toolset
+        """
+        toolsets_result = await self.client.execute_query(
+            toolsets_query, parameters={"agent_ids": agent_ids}, txn_id=transaction
+        )
+        for row in toolsets_result or []:
+            agent_id = row["agent_id"]
+            if agent_id in result_map:
+                result_map[agent_id]["toolsets"].append(row["toolset"])
+
+        # ── Query 2: raw knowledge edges for every requested agent ─────────────
+        knowledge_query = f"""
+        MATCH (agent:{agent_label})-[r:{agent_has_knowledge_rel}]->(k:{knowledge_label})
+        WHERE agent.id IN $agent_ids
+        RETURN agent.id AS agent_id, k.id AS _key, k.connectorId AS connectorId, k.filters AS filters
+        """
+        knowledge_result = await self.client.execute_query(
+            knowledge_query, parameters={"agent_ids": agent_ids}, txn_id=transaction
+        )
+
+        # First pass: parse filters, stage raw items, and collect the KB / app ids
+        # that still need resolving so they can be fetched in two batched lookups
+        # rather than one round-trip per knowledge item.
+        staged: list[tuple[str, dict, str | None, str | None]] = []  # (agent_id, item, kb_id, app_id)
+        kb_ids: set[str] = set()
+        app_ids: set[str] = set()
+        for k_row in knowledge_result or []:
+            item = {
+                "_key": k_row["_key"],
+                "connectorId": k_row["connectorId"],
+                "filters": k_row["filters"],
+            }
+            filters_str = item.get("filters")
+            if filters_str is None:
+                # Graph node stored filters: null (no filter configured).
+                filters_parsed = {}
+            elif isinstance(filters_str, str):
+                try:
+                    filters_parsed = json.loads(filters_str)
+                except json.JSONDecodeError:
+                    filters_parsed = {}
+            else:
+                filters_parsed = filters_str
+            item["filtersParsed"] = filters_parsed
+
+            record_groups = filters_parsed.get("recordGroups", []) if isinstance(filters_parsed, dict) else []
+            kb_id = record_groups[0] if record_groups else None
+            app_id = None if kb_id else item["connectorId"]
+            if kb_id:
+                kb_ids.add(kb_id)
+            elif app_id:
+                app_ids.add(app_id)
+            staged.append((k_row["agent_id"], item, kb_id, app_id))
+
+        # ── Query 3 & 4: batch-resolve the referenced KB groups and app docs ───
+        kb_docs = await self._get_documents_by_ids(list(kb_ids), CollectionNames.RECORD_GROUPS.value, transaction)
+        app_docs = await self._get_documents_by_ids(list(app_ids), CollectionNames.APPS.value, transaction)
+
+        # Second pass: enrich each staged knowledge item from the prefetched maps.
+        for agent_id, item, kb_id, app_id in staged:
+            connector_id = item["connectorId"]
+            if kb_id is not None:
+                kb_doc = kb_docs.get(kb_id)
+                if kb_doc and kb_doc.get("groupType") == Connectors.KNOWLEDGE_BASE.value:
+                    item["name"] = kb_doc.get("groupName", "")
+                    item["type"] = "KB"
+                    item["displayName"] = kb_doc.get("groupName", "")
+                    item["connectorId"] = kb_doc.get("connectorId") or connector_id
+                else:
+                    item["name"] = connector_id
+                    item["type"] = "UNKNOWN"
+                    item["displayName"] = connector_id
+            else:
+                app_doc = app_docs.get(app_id) if app_id else None
+                if app_doc:
+                    item["name"] = app_doc.get("name", "")
+                    item["type"] = app_doc.get("type", "APP")
+                    item["displayName"] = app_doc.get("name", "")
+                else:
+                    item["name"] = connector_id
+                    item["type"] = "UNKNOWN"
+                    item["displayName"] = connector_id
+            if agent_id in result_map:
+                result_map[agent_id]["knowledge"].append(item)
+
+        return result_map
+
     async def get_agent(self, agent_id: str, org_id: str | None = None, transaction: str | None = None) -> dict | None:
         """
         Fetch the complete agent document with linked graph data.
@@ -17004,12 +16880,6 @@ class Neo4jProvider(IGraphDBProvider):
             agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
             org_label = collection_to_label(CollectionNames.ORGS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
-            agent_has_toolset_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_TOOLSET.value)
-            toolset_has_tool_rel = edge_collection_to_relationship(CollectionNames.TOOLSET_HAS_TOOL.value)
-            agent_has_knowledge_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_KNOWLEDGE.value)
-            toolset_label = collection_to_label(CollectionNames.AGENT_TOOLSETS.value)
-            tool_label = collection_to_label(CollectionNames.AGENT_TOOLS.value)
-            knowledge_label = collection_to_label(CollectionNames.AGENT_KNOWLEDGE.value)
 
             # Fetch agent document (no permission filtering)
             agent_query = f"""
@@ -17031,111 +16901,11 @@ class Neo4jProvider(IGraphDBProvider):
             agent_data = dict(agent_result[0]["agent"])
             agent = self._neo4j_to_arango_node(agent_data, CollectionNames.AGENT_INSTANCES.value)
 
-            # Get linked toolsets with their tools
-            toolsets_query = f"""
-            MATCH (agent:{agent_label} {{id: $agent_id}})-[r:{agent_has_toolset_rel}]->(ts:{toolset_label})
-            OPTIONAL MATCH (ts)-[tr:{toolset_has_tool_rel}]->(tool:{tool_label})
-            WITH agent, ts, collect(DISTINCT CASE
-                WHEN tool IS NOT NULL THEN {{
-                    _key: tool.id,
-                    name: tool.name,
-                    fullName: tool.fullName,
-                    toolsetName: tool.toolsetName,
-                    description: tool.description
-                }}
-                ELSE null
-            END) AS tools_raw
-            WITH agent, ts, [t IN tools_raw WHERE t IS NOT NULL] AS tools
-            RETURN {{
-                _key: ts.id,
-                name: ts.name,
-                displayName: ts.displayName,
-                type: ts.type,
-                instanceId: ts.instanceId,
-                instanceName: ts.instanceName,
-                selectedTools: ts.selectedTools,
-                tools: tools
-            }} AS toolset
-            """
-            toolsets_result = await self.client.execute_query(
-                toolsets_query,
-                parameters={"agent_id": agent_id},
-                txn_id=transaction
-            )
-            agent["toolsets"] = [r["toolset"] for r in toolsets_result] if toolsets_result else []
-
-            # Get linked knowledge with filters
-            knowledge_query = f"""
-            MATCH (agent:{agent_label} {{id: $agent_id}})-[r:{agent_has_knowledge_rel}]->(k:{knowledge_label})
-            RETURN k.id AS _key, k.connectorId AS connectorId, k.filters AS filters
-            """
-            knowledge_result = await self.client.execute_query(
-                knowledge_query,
-                parameters={"agent_id": agent_id},
-                txn_id=transaction
-            )
-
-            knowledge_list = []
-            if knowledge_result:
-                import json
-                for k_row in knowledge_result:
-                    knowledge_item = {
-                        "_key": k_row["_key"],
-                        "connectorId": k_row["connectorId"],
-                        "filters": k_row["filters"]
-                    }
-
-                    filters_str = knowledge_item.get("filters", "{}")
-                    if isinstance(filters_str, str):
-                        try:
-                            filters_parsed = json.loads(filters_str)
-                        except json.JSONDecodeError:
-                            filters_parsed = {}
-                    else:
-                        filters_parsed = filters_str
-
-                    knowledge_item["filtersParsed"] = filters_parsed
-                    record_groups = filters_parsed.get("recordGroups", [])
-                    is_kb = len(record_groups) > 0
-
-                    if is_kb and record_groups:
-                        try:
-                            first_kb_id = record_groups[0]
-                            kb_doc = await self.get_document(first_kb_id, CollectionNames.RECORD_GROUPS.value, transaction=transaction)
-                            if kb_doc and kb_doc.get("groupType") == Connectors.KNOWLEDGE_BASE.value:
-                                knowledge_item["name"] = kb_doc.get("groupName", "")
-                                knowledge_item["type"] = "KB"
-                                knowledge_item["displayName"] = kb_doc.get("groupName", "")
-                                knowledge_item["connectorId"] = kb_doc.get("connectorId") or knowledge_item["connectorId"]
-                            else:
-                                knowledge_item["name"] = knowledge_item["connectorId"]
-                                knowledge_item["type"] = "UNKNOWN"
-                                knowledge_item["displayName"] = knowledge_item["connectorId"]
-                        except Exception as e:
-                            self.logger.warning(f"Error getting KB document {first_kb_id}: {str(e)}")
-                            knowledge_item["name"] = knowledge_item["connectorId"]
-                            knowledge_item["type"] = "UNKNOWN"
-                            knowledge_item["displayName"] = knowledge_item["connectorId"]
-                    else:
-                        try:
-                            app_doc = await self.get_document(knowledge_item["connectorId"], CollectionNames.APPS.value, transaction=transaction)
-                            if app_doc:
-                                knowledge_item["name"] = app_doc.get("name", "")
-                                knowledge_item["type"] = app_doc.get("type", "APP")
-                                knowledge_item["displayName"] = app_doc.get("name", "")
-                            else:
-                                knowledge_item["name"] = knowledge_item["connectorId"]
-                                knowledge_item["type"] = "UNKNOWN"
-                                knowledge_item["displayName"] = knowledge_item["connectorId"]
-                        except Exception as e:
-                            self.logger.warning(f"Error getting app document {knowledge_item['connectorId']}: {str(e)}")
-                            knowledge_item["name"] = knowledge_item["connectorId"]
-                            knowledge_item["type"] = "UNKNOWN"
-                            knowledge_item["displayName"] = knowledge_item["connectorId"]
-
-                    knowledge_list.append(knowledge_item)
-
-            agent["knowledge"] = knowledge_list
+            # Get linked toolsets + knowledge (shared with the GET /agents list projection)
+            projection = await self._project_agents_toolsets_and_knowledge([agent_id], transaction)
+            agent_projection = projection.get(agent_id, {"toolsets": [], "knowledge": []})
+            agent["toolsets"] = agent_projection["toolsets"]
+            agent["knowledge"] = agent_projection["knowledge"]
 
             # shareWithOrg: when org_id is provided match the specific org node;
             # when org_id is absent check whether any Orgs label node has a
@@ -17588,14 +17358,38 @@ class Neo4jProvider(IGraphDBProvider):
             # Pagination is applied AFTER deduplication and (Cypher-side) search,
             # so `total_items` correctly reflects the count of matching agents
             # across ALL pages, not just the current page.
+            #
+            # Toolsets/knowledge are projected for the agents we are about to
+            # return so the list shape matches GET /agents/{agentKey}. The
+            # projection is batched (fixed number of Cypher round-trips for the
+            # whole list, not one per agent), so it stays cheap for a page and is
+            # also safe on the unpaginated backward-compat branch below.
+            async def _enrich(agent_list: list[dict]) -> list[dict]:
+                ids = [ag.get("_key") for ag in agent_list if ag.get("_key")]
+                try:
+                    projection = await self._project_agents_toolsets_and_knowledge(ids, transaction)
+                except Exception as e:
+                    # Enrichment must not empty the whole list on a transient DB
+                    # error. Degrade to the consistent empty-array shape instead.
+                    self.logger.warning(f"Agent list enrichment failed; returning agents without toolsets/knowledge: {str(e)}")
+                    projection = {}
+                for ag in agent_list:
+                    proj = projection.get(ag.get("_key"), {"toolsets": [], "knowledge": []})
+                    ag["toolsets"] = proj["toolsets"]
+                    ag["knowledge"] = proj["knowledge"]
+                return agent_list
+
             has_paging = page is not None and limit is not None
             if not has_paging:
-                return agents
+                # Flat-list path still gets the same enriched shape as the paged
+                # path. Enrichment is batched, so this stays a fixed number of
+                # round-trips even when returning every visible agent.
+                return await _enrich(agents)
 
             total_items = len(agents)          # count after search + dedup
             start_index = max((page - 1) * limit, 0)
             end_index = start_index + limit
-            paged = agents[start_index:end_index]
+            paged = await _enrich(agents[start_index:end_index])
 
             return {
                 "agents": paged,
