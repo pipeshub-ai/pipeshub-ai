@@ -12,6 +12,7 @@ import { SidebarLoadMoreButton } from '@/app/(main)/knowledge-base/sidebar/sideb
 import { createPortal } from 'react-dom';
 import { Theme, Flex, Text, Box, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { Spinner } from '@/app/components/ui/spinner';
 import { NotificationsApi, type NotificationListFilter, type NotificationListItem } from './api';
 import { useNotificationStore, getVisibleNotifications } from './store';
 import { NotificationRow, type NotificationRowAction } from './notification-row';
@@ -590,9 +591,15 @@ export function NotificationsPanel() {
                   disabled={unreadCount === 0 || markingAllRead}
                   aria-label={t('notifications.markAllRead')}
                   onClick={() => void onMarkAllRead()}
-                  style={{ cursor: unreadCount === 0 ? 'not-allowed' : 'pointer' }}
+                  style={{
+                    cursor: unreadCount === 0 || markingAllRead ? 'not-allowed' : 'pointer',
+                  }}
                 >
-                  <MaterialIcon name="done_all" size={18} color="var(--slate-11)" />
+                  {markingAllRead ? (
+                    <Spinner size={18} />
+                  ) : (
+                    <MaterialIcon name="done_all" size={18} color="var(--slate-11)" />
+                  )}
                 </IconButton>
               </Tooltip>
             </Box>
