@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useLayoutEffect, useCallback, type CSSProperties, type RefObject } from 'react';
+import { useState, useRef, useLayoutEffect, useCallback, type CSSProperties } from 'react';
 import Link from 'next/link';
 import { Flex, Text, Box, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -77,12 +77,12 @@ function severityColor(severity: NotificationSeverity): string {
   }
 }
 
-const titleTruncateStyle: CSSProperties = {
+const titleWrapStyle: CSSProperties = {
   minWidth: 0,
   display: 'block',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
+  width: '100%',
+  whiteSpace: 'normal',
+  overflowWrap: 'anywhere',
 };
 
 function NotificationTitle({
@@ -96,66 +96,30 @@ function NotificationTitle({
   style: CSSProperties;
   onNavigate?: () => void;
 }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const textRef = useRef<HTMLElement>(null);
-  const [isTitleTruncated, setIsTitleTruncated] = useState(false);
+  if (!title) return null;
 
-  const measure = useCallback(() => {
-    const el = textRef.current;
-    if (!el) return;
-    setIsTitleTruncated(el.scrollWidth > el.clientWidth + 1);
-  }, []);
-
-  useLayoutEffect(() => {
-    measure();
-    const container = containerRef.current;
-    if (!container) return;
-    const ro = new ResizeObserver(measure);
-    ro.observe(container);
-    return () => ro.disconnect();
-  }, [measure, title, href]);
-
-  const textEl = href ? (
-    <Text size="2" weight="medium" style={style} truncate asChild>
-      <Link
-        ref={textRef as RefObject<HTMLAnchorElement>}
-        href={href}
-        data-ph-notification-row-title-link=""
-        style={{ ...titleTruncateStyle, width: '100%' }}
-        onClick={onNavigate}
-        {...(/^https?:\/\//i.test(href)
-          ? { target: '_blank', rel: 'noopener noreferrer' }
-          : {})}
-      >
-        {title}
-      </Link>
-    </Text>
-  ) : (
-    <Text
-      ref={textRef as RefObject<HTMLSpanElement>}
-      size="2"
-      weight="medium"
-      style={{ ...style, ...titleTruncateStyle, width: '100%' }}
-      truncate
-    >
-      {title}
-    </Text>
-  );
+  if (href) {
+    return (
+      <Text size="2" weight="medium" asChild>
+        <Link
+          href={href}
+          data-ph-notification-row-title-link=""
+          style={{ ...titleWrapStyle, ...style }}
+          onClick={onNavigate}
+          {...(/^https?:\/\//i.test(href)
+            ? { target: '_blank', rel: 'noopener noreferrer' }
+            : {})}
+        >
+          {title}
+        </Link>
+      </Text>
+    );
+  }
 
   return (
-    <Box ref={containerRef} style={{ minWidth: 0, width: '100%' }}>
-      {!title || !isTitleTruncated ? (
-        textEl
-      ) : (
-        <Tooltip
-          className={NOTIFICATIONS_PANEL_TOOLTIP_CLASS}
-          content={title}
-          side="bottom"
-        >
-          {textEl}
-        </Tooltip>
-      )}
-    </Box>
+    <Text size="2" weight="medium" style={{ ...style, ...titleWrapStyle }}>
+      {title}
+    </Text>
   );
 }
 

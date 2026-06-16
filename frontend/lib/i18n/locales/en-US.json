@@ -177,7 +177,7 @@
     "dismiss": "Dismiss",
     "filter": "Filter notifications",
     "filterAll": "All",
-    "filterOnlyUnread": "Only Unread",
+    "filterOnlyUnread": "Unread",
     "filterArchived": "Archived",
     "filterTooltip": "Filter: {{filter}}",
     "loadFailed": "Failed to load notifications",

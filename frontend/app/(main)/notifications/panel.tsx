@@ -18,6 +18,7 @@ import { NotificationRow, type NotificationRowAction } from './notification-row'
 import {
   NotificationFilterMenu,
   NOTIFICATIONS_PANEL_TOOLTIP_CLASS,
+  useNotificationFilterLabels,
 } from './notification-filter-menu';
 import { useTranslation } from 'react-i18next';
 import { usePathname, useSearchParams } from 'next/navigation';
@@ -42,6 +43,7 @@ const TRANSITION = '0.25s cubic-bezier(0.4, 0, 0.2, 1)';
  */
 export function NotificationsPanel() {
   const { t } = useTranslation();
+  const filterLabels = useNotificationFilterLabels();
   const isPanelOpen = useNotificationStore((s) => s.isPanelOpen);
   const closePanel = useNotificationStore((s) => s.closePanel);
   const notifications = useNotificationStore((s) => s.notifications);
@@ -542,10 +544,24 @@ export function NotificationsPanel() {
           }}
         >
           <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-            <MaterialIcon name="inbox" size={16} color="var(--slate-11)" />
-            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              {t('nav.inbox')}
-            </Text>
+            <MaterialIcon name="inbox" size={20} color="var(--slate-11)" />
+            <Flex direction="column" gap="0" style={{ minWidth: 0 }}>
+              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                {t('nav.inbox')}
+              </Text>
+              <Text
+                size="1"
+                style={{
+                  color: 'var(--gray-11)',
+                  opacity: 0.5,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {filterLabels[listFilter]}
+              </Text>
+            </Flex>
           </Flex>
           <Flex
             align="center"

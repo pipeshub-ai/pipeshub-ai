@@ -176,7 +176,7 @@
     "dismiss": "Descartar",
     "filter": "Filtrar notificaciones",
     "filterAll": "Todas",
-    "filterOnlyUnread": "Solo no leídas",
+    "filterOnlyUnread": "No leídas",
     "filterArchived": "Archivadas",
     "filterTooltip": "Filtro: {{filter}}",
     "loadFailed": "No se pudieron cargar las notificaciones",

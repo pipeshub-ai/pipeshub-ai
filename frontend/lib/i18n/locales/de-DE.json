@@ -177,7 +177,7 @@
     "dismiss": "Verwerfen",
     "filter": "Benachrichtigungen filtern",
     "filterAll": "Alle",
-    "filterOnlyUnread": "Nur ungelesen",
+    "filterOnlyUnread": "Ungelesen",
     "filterArchived": "Archiviert",
     "filterTooltip": "Filter: {{filter}}",
     "loadFailed": "Benachrichtigungen konnten nicht geladen werden",

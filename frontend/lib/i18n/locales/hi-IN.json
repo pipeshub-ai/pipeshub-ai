@@ -177,7 +177,7 @@
     "dismiss": "खारिज करें",
     "filter": "सूचनाएँ फ़िल्टर करें",
     "filterAll": "सभी",
-    "filterOnlyUnread": "केवल अपठित",
+    "filterOnlyUnread": "अपठित",
     "filterArchived": "संग्रहित",
     "filterTooltip": "फ़िल्टर: {{filter}}",
     "loadFailed": "सूचनाएँ लोड करने में विफल",
