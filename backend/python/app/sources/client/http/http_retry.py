@@ -88,7 +88,7 @@ async def call_with_retry(
                         
                         # Try to extract error message from response body
                         try:
-                            response_text = result.text() if hasattr(result, 'text') else ""
+                            response_text = result.text()
                             if response_text:
                                 # Limit to 500 chars to avoid overly long error messages
                                 error_detail += f" - {response_text[:500]}"
@@ -97,8 +97,7 @@ async def call_with_retry(
                         
                         logger.error("%s", error_detail)
                         
-                        # Use the underlying httpx.Response if available to preserve all details
-                        if hasattr(result, 'response') and isinstance(result.response, httpx.Response):
+                        if isinstance(result.response, httpx.Response):
                             raise httpx.HTTPStatusError(
                                 error_detail,
                                 request=result.response.request,
@@ -164,8 +163,7 @@ async def call_with_retry(
             httpx.ReadError,
             httpx.WriteError,
             httpx.ConnectError,
-            httpx.PoolTimeout,
-            httpx.ReadTimeout,
+            httpx.TimeoutException,
         ) as e:
             last_exc = e
             if attempt == max_attempts - 1:

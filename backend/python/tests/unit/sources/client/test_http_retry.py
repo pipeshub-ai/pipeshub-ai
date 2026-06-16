@@ -222,3 +222,27 @@ async def test_http_response_503_exhausts_retries_raises_http_status_error(mock_
     assert call_count == 3
     assert mock_logger.warning.call_count == 2
     assert mock_logger.error.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_succeeds_on_second_attempt_after_connect_timeout(mock_logger):
+    """Test that call_with_retry retries on httpx.ConnectTimeout (TimeoutException subclass)."""
+    call_count = 0
+
+    async def failing_op():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise httpx.ConnectTimeout("Connection timed out")
+        return "success"
+
+    result = await call_with_retry(
+        failing_op,
+        logger=mock_logger,
+        label="test_op",
+        max_attempts=3,
+    )
+
+    assert result == "success"
+    assert call_count == 2
+    assert mock_logger.warning.call_count == 1
