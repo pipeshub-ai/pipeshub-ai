@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
@@ -65,6 +66,7 @@ export function FilePreviewInlinePanel({
   onPointerDownLeftEdgeResize,
   style,
 }: FilePreviewInlinePanelProps) {
+  const { t } = useTranslation();
   const hasCitations = citations && citations.length > 0;
   const hasError = !isLoading && !!error;
   const canDownload =
@@ -392,8 +394,8 @@ export function FilePreviewInlinePanel({
                   size="1"
                   onClick={toggleZoomLock}
                   style={{ width: '24px', height: '24px', padding: 0 }}
-                  title={isZoomLocked ? 'Unlock zoom level' : 'Lock zoom level'}
-                  aria-label={isZoomLocked ? 'Unlock zoom level' : 'Lock zoom level'}
+                  title={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
+                  aria-label={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
                   aria-pressed={isZoomLocked}
                 >
                   <MaterialIcon
