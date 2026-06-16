@@ -1,15 +1,18 @@
 """Unit tests for app.connectors.core.base.connector.connector_service.BaseConnector.
 
-Covers the concrete accessor methods (lines 103-116):
-- get_app, get_app_group, get_app_name, get_app_group_name, get_connector_id
+Covers accessor methods, notify(), and _suppress_notification() backoff dedupe.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    INITIAL_NOTIFICATION_BACKOFF,
+    MAX_NOTIFICATION_BACKOFF,
+    BaseConnector,
+)
 from app.services.notification.types import NotificationSeverity, NotificationType
 
 # ---------------------------------------------------------------------------
@@ -159,4 +162,162 @@ class TestBaseConnectorNotifyError:
             payload={},
         )
         await asyncio.sleep(0)
+        mock_svc.publish_notification.assert_not_called()
+
+
+@pytest.fixture(autouse=True)
+def clear_notification_cache():
+    BaseConnector._notification_cache.clear()
+    yield
+    BaseConnector._notification_cache.clear()
+
+
+class TestBaseConnectorSuppressNotification:
+    TITLE = "Website not accessible"
+    MESSAGE = "Website https://example.com is not accessible."
+
+    def _key(self, connector_id: str = "conn-1") -> str:
+        return f"{connector_id}:{self.TITLE}:{self.MESSAGE}"
+
+    def test_info_and_success_never_suppressed(self):
+        c = TestBaseConnectorAccessors()._make_connector()
+        for severity in (NotificationSeverity.INFO, NotificationSeverity.SUCCESS):
+            assert c._suppress_notification(self.TITLE, self.MESSAGE, severity) is False
+        assert BaseConnector._notification_cache == {}
+
+    def test_first_error_not_suppressed_and_seeds_cache(self):
+        c = TestBaseConnectorAccessors()._make_connector()
+        now = 1_000_000
+
+        with patch(
+            "app.connectors.core.base.connector.connector_service.get_epoch_timestamp_in_ms",
+            return_value=now,
+        ):
+            assert c._suppress_notification(
+                self.TITLE, self.MESSAGE, NotificationSeverity.ERROR
+            ) is False
+
+        key = self._key()
+        assert BaseConnector._notification_cache[key] == (
+            now + INITIAL_NOTIFICATION_BACKOFF,
+            INITIAL_NOTIFICATION_BACKOFF,
+        )
+
+    def test_duplicate_within_backoff_is_suppressed(self):
+        c = TestBaseConnectorAccessors()._make_connector()
+        now = 1_000_000
+        key = self._key()
+        BaseConnector._notification_cache[key] = (
+            now + INITIAL_NOTIFICATION_BACKOFF,
+            INITIAL_NOTIFICATION_BACKOFF,
+        )
+
+        with patch(
+            "app.connectors.core.base.connector.connector_service.get_epoch_timestamp_in_ms",
+            return_value=now + 1,
+        ):
+            assert c._suppress_notification(
+                self.TITLE, self.MESSAGE, NotificationSeverity.ERROR
+            ) is True
+
+    def test_after_backoff_window_doubles_backoff(self):
+        c = TestBaseConnectorAccessors()._make_connector()
+        now = 10_000_000
+        key = self._key()
+        next_allowed = now - 1_000
+        BaseConnector._notification_cache[key] = (next_allowed, INITIAL_NOTIFICATION_BACKOFF)
+
+        with patch(
+            "app.connectors.core.base.connector.connector_service.get_epoch_timestamp_in_ms",
+            return_value=now,
+        ):
+            assert c._suppress_notification(
+                self.TITLE, self.MESSAGE, NotificationSeverity.ERROR
+            ) is False
+
+        expected_backoff = INITIAL_NOTIFICATION_BACKOFF * 2
+        assert BaseConnector._notification_cache[key] == (
+            now + expected_backoff,
+            expected_backoff,
+        )
+
+    def test_after_max_backoff_resets_to_initial(self):
+        c = TestBaseConnectorAccessors()._make_connector()
+        now = 100_000_000
+        key = self._key()
+        next_allowed = now - MAX_NOTIFICATION_BACKOFF - 1
+        BaseConnector._notification_cache[key] = (next_allowed, MAX_NOTIFICATION_BACKOFF)
+
+        with patch(
+            "app.connectors.core.base.connector.connector_service.get_epoch_timestamp_in_ms",
+            return_value=now,
+        ):
+            assert c._suppress_notification(
+                self.TITLE, self.MESSAGE, NotificationSeverity.ERROR
+            ) is False
+
+        assert BaseConnector._notification_cache[key] == (
+            now + INITIAL_NOTIFICATION_BACKOFF,
+            INITIAL_NOTIFICATION_BACKOFF,
+        )
+
+    def test_cache_shared_across_connector_instances(self):
+        first = TestBaseConnectorAccessors()._make_connector()
+        second = TestBaseConnectorAccessors()._make_connector()
+        now = 2_000_000
+
+        with patch(
+            "app.connectors.core.base.connector.connector_service.get_epoch_timestamp_in_ms",
+            return_value=now,
+        ):
+            assert first._suppress_notification(
+                self.TITLE, self.MESSAGE, NotificationSeverity.ERROR
+            ) is False
+            assert second._suppress_notification(
+                self.TITLE, self.MESSAGE, NotificationSeverity.ERROR
+            ) is True
+
+    def test_different_messages_are_independent(self):
+        c = TestBaseConnectorAccessors()._make_connector()
+        now = 3_000_000
+
+        with patch(
+            "app.connectors.core.base.connector.connector_service.get_epoch_timestamp_in_ms",
+            return_value=now,
+        ):
+            assert c._suppress_notification(
+                self.TITLE, self.MESSAGE, NotificationSeverity.ERROR
+            ) is False
+            assert c._suppress_notification(
+                self.TITLE, "other message", NotificationSeverity.ERROR
+            ) is False
+
+        assert len(BaseConnector._notification_cache) == 2
+
+    @pytest.mark.asyncio
+    async def test_notify_skips_publish_when_suppressed(self):
+        c = TestBaseConnectorAccessors()._make_connector()
+        mock_svc = MagicMock()
+        mock_svc.publish_notification = AsyncMock()
+        c._notification_service = mock_svc
+        c.data_entities_processor.org_id = "org-xyz"
+        now = 4_000_000
+        key = self._key()
+        BaseConnector._notification_cache[key] = (
+            now + INITIAL_NOTIFICATION_BACKOFF,
+            INITIAL_NOTIFICATION_BACKOFF,
+        )
+
+        with patch(
+            "app.connectors.core.base.connector.connector_service.get_epoch_timestamp_in_ms",
+            return_value=now + 1,
+        ):
+            await c.notify(
+                type=NotificationType.CONNECTOR_NOT_ACCESSIBLE,
+                severity=NotificationSeverity.ERROR,
+                title=self.TITLE,
+                message=self.MESSAGE,
+            )
+            await asyncio.sleep(0)
+
         mock_svc.publish_notification.assert_not_called()

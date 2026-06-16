@@ -1040,11 +1040,34 @@ class TicketRecord(Record):
         if self.creator_name or self.creator_email:
             specific_lines.append(f"* Creator: {self._format_person(self.creator_name, self.creator_email)}")
 
+        if self.labels:
+            specific_lines.append(f"* Labels: {', '.join(self.labels)}")
+
         if specific_lines:
             lines.append("Ticket Information:")
             lines.extend(specific_lines)
 
         return "\n".join(lines)
+
+    async def to_llm_context_with_live_fields(
+        self,
+        frontend_url: str | None = None,
+        config_service: Any = None,
+    ) -> str:
+        """Return ticket LLM context with live Jira fields when connector is Jira Cloud/DC."""
+        base = self.to_llm_context(frontend_url=frontend_url)
+        if not config_service:
+            return base
+        try:
+            from app.connectors.sources.atlassian.jira.enrichment.service import (
+                enrich_ticket_llm_context,
+                is_jira_connector,
+            )
+            if not is_jira_connector(self.connector_name):
+                return base
+            return await enrich_ticket_llm_context(base, self, config_service)
+        except Exception:
+            return base
 
     def to_arango_record(self) -> dict:
         def _get_value(field_value: Enum | str | None) -> str | None:

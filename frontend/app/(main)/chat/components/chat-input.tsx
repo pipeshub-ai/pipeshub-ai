@@ -171,6 +171,7 @@ export function ChatInput({
   const [showUploadArea, setShowUploadArea] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [isPanelDragging, setIsPanelDragging] = useState(false);
   const [isExpanded, setIsExpanded] = useState(variant === 'full');
   const [isAnimatingIn, setIsAnimatingIn] = useState(false);
   const [isModePanelOpen, setIsModePanelOpen] = useState(false);
@@ -303,6 +304,7 @@ export function ChatInput({
   const resolvedWidgetPlaceholder = widgetPlaceholder || resolvedPlaceholder;
 
   const isSearchMode = settings.mode === 'search' && !isAgentChat;
+  const canAcceptDrop = !isRegenerateMode && !isSearchMode && settings.queryMode !== 'web-search';
   const selectedKbCount = (settings.filters?.apps?.length ?? 0) + (settings.filters?.kb?.length ?? 0);
   const agentResourcesCustomized =
     isAgentChat &&
@@ -843,8 +845,41 @@ export function ChatInput({
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
+    setIsPanelDragging(false);
 
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      processFiles(e.dataTransfer.files);
+    }
+  };
+
+  // Panel-level drag handlers — activate the drop overlay when any file is
+  // dragged over the whole chat input area (not just the upload-area box).
+  const handlePanelDragEnter = (e: React.DragEvent) => {
+    if (!canAcceptDrop) return;
+    if (!e.dataTransfer?.types.includes('Files')) return;
+    e.preventDefault();
+    setIsPanelDragging(true);
+  };
+
+  const handlePanelDragOver = (e: React.DragEvent) => {
+    if (!canAcceptDrop) return;
+    if (!e.dataTransfer?.types.includes('Files')) return;
+    e.preventDefault();
+  };
+
+  // Use relatedTarget to distinguish cursor-left-container from cursor-moved-to-child.
+  // Handles drag-leaves-window (relatedTarget === null) correctly.
+  const handlePanelDragLeave = (e: React.DragEvent) => {
+    if (e.relatedTarget && containerRef.current?.contains(e.relatedTarget as Node)) return;
+    setIsPanelDragging(false);
+  };
+
+  const handlePanelDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsPanelDragging(false);
+    if (!canAcceptDrop) return;
+    if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
       processFiles(e.dataTransfer.files);
     }
   };
@@ -974,6 +1009,9 @@ export function ChatInput({
       setIsAgentResourcesPanelOpen(false);
       setIsModelPanelOpen(false);
       setExpansionViewMode('inline');
+      // Clear any stale drag overlay state so the panel overlay doesn't bleed
+      // into the upload area UI when files were dragged prior to opening it.
+      setIsPanelDragging(false);
     }
     setShowUploadArea(next);
   };
@@ -1167,6 +1205,10 @@ export function ChatInput({
       direction="column"
       onAnimationEnd={() => setIsAnimatingIn(false)}
       onPaste={handlePaste}
+      onDragEnter={handlePanelDragEnter}
+      onDragOver={handlePanelDragOver}
+      onDragLeave={handlePanelDragLeave}
+      onDrop={handlePanelDrop}
       style={{
         width: isMobile ? '100%' : 'min(50rem, 100%)',
         fontFamily: 'Manrope, sans-serif',
@@ -1452,6 +1494,7 @@ export function ChatInput({
       direction="column"
       gap="2"
       style={{
+        position: 'relative',
         backdropFilter: 'blur(25px)',
         background: (isInputFocused || message.trim() || isListening) ? 'var(--olive-2)' : 'var(--effects-translucent)',
         transition: 'background 0.15s ease',
@@ -1490,25 +1533,41 @@ export function ChatInput({
           <Box
             style={{
               position: 'relative',
-              border: `1px dashed ${isDragging ? 'var(--accent-11)' : 'var(--slate-9)'}`,
+              border: `2px dashed ${isDragging ? 'var(--accent-8)' : 'var(--slate-6)'}`,
               borderRadius: 'var(--radius-4)',
               padding: 'var(--space-7)',
               transition: 'all 0.15s',
-              backgroundColor: isDragging ? 'var(--accent-a3)' : 'transparent',
+              backgroundColor: isDragging ? 'var(--accent-2)' : 'transparent',
+              cursor: 'pointer',
             }}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             onClick={() => fileInputRef.current?.click()}
           >
-            <Flex direction="column" align="center" gap="1">
-              <MaterialIcon name="add" size={24} color="var(--slate-9)" />
-              <Box style={{ textAlign: 'center' }}>
-                <Text size="2" style={{ color: 'var(--slate-12)' }}>{t('action.upload')}</Text>
-                <br />
-              </Box>
+            <Flex direction="column" align="center" gap="2">
+              <MaterialIcon
+                name={isDragging ? 'file_upload' : 'add'}
+                size={isDragging ? 32 : 24}
+                color={isDragging ? 'var(--accent-9)' : 'var(--slate-9)'}
+              />
+              <Text
+                size="2"
+                weight={isDragging ? 'medium' : 'regular'}
+                style={{ color: isDragging ? 'var(--accent-11)' : 'var(--slate-12)' }}
+              >
+                {isDragging ? t('chat.dropFilesHere') : t('action.upload')}
+              </Text>
               <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 {t('chat.supportsFileTypes', { types: SUPPORTED_FILE_TYPES.join(', ') })}
+              </Text>
+              <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                {uploadedFiles.length > 0
+                  ? t('chat.uploadFilesRemaining', {
+                      remaining: CHAT_ATTACHMENT_MAX_FILES - uploadedFiles.length,
+                      total: CHAT_ATTACHMENT_MAX_FILES,
+                    })
+                  : t('chat.uploadFilesLimit', { count: CHAT_ATTACHMENT_MAX_FILES })}
               </Text>
             </Flex>
           </Box>
@@ -2111,6 +2170,43 @@ export function ChatInput({
           )}
         </Flex>
       </Flex>
+
+      {/* Drop overlay — shown only when the dedicated upload area is NOT open.
+          When showUploadArea=true the inner drop box handles drag/drop directly. */}
+      {isPanelDragging && !showUploadArea && (
+        <Box
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 10,
+            borderRadius: 'inherit',
+            border: '2px dashed var(--accent-8)',
+            backgroundColor: 'var(--accent-2)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexDirection: 'column',
+            gap: 'var(--space-2)',
+            pointerEvents: 'none',
+          }}
+        >
+          <MaterialIcon name="file_upload" size={36} color="var(--accent-9)" />
+          <Text size="3" weight="medium" style={{ color: 'var(--accent-11)' }}>
+            {t('chat.dropFilesHere')}
+          </Text>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
+            {t('chat.supportsFileTypes', { types: SUPPORTED_FILE_TYPES.join(', ') })}
+          </Text>
+          <Text size="1" style={{ color: 'var(--slate-10)' }}>
+            {uploadedFiles.length > 0
+              ? t('chat.uploadFilesRemaining', {
+                  remaining: CHAT_ATTACHMENT_MAX_FILES - uploadedFiles.length,
+                  total: CHAT_ATTACHMENT_MAX_FILES,
+                })
+              : t('chat.uploadFilesLimit', { count: CHAT_ATTACHMENT_MAX_FILES })}
+          </Text>
+        </Box>
+      )}
     </Flex>
     </Flex>
 
