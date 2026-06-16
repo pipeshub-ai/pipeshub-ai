@@ -89,6 +89,103 @@ class TestHeadings:
         assert container.blocks[0].data == expected
 
 
+class TestHeadingMergesIntoParagraph:
+    """Heading followed by a paragraph merges into one PARAGRAPH block."""
+
+    def test_heading_merges_with_following_paragraph(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("## Section\n\nSome text.\n")
+        assert len(container.blocks) == 1
+        block = container.blocks[0]
+        assert block.sub_type == BlockSubType.PARAGRAPH
+        assert block.data == "## Section\nSome text."
+        assert block.format == DataFormat.MARKDOWN
+
+    def test_all_heading_levels_merge(self, converter: MarkdownToBlocksConverter):
+        for level in range(1, 7):
+            prefix = "#" * level
+            md = f"{prefix} Heading\n\nBody.\n"
+            container = converter.convert(md)
+            assert len(container.blocks) == 1
+            assert container.blocks[0].data == f"{prefix} Heading\nBody."
+            assert container.blocks[0].format == DataFormat.MARKDOWN
+
+    def test_heading_before_list_stays_standalone(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("### Items\n\n- one\n- two\n")
+        heading_blocks = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
+        list_blocks = [b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM]
+        assert len(heading_blocks) == 1
+        assert heading_blocks[0].data == "Items"
+        assert len(list_blocks) == 2
+
+    def test_heading_before_table_stays_standalone(self, converter: MarkdownToBlocksConverter):
+        md = "## Data\n\n| A |\n| --- |\n| 1 |\n"
+        container = converter.convert(md)
+        heading_blocks = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
+        assert len(heading_blocks) == 1
+        assert heading_blocks[0].data == "Data"
+
+    def test_heading_before_blockquote_stays_standalone(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("# Title\n\n> quoted\n")
+        heading_blocks = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
+        assert len(heading_blocks) == 1
+        assert heading_blocks[0].data == "Title"
+
+    def test_heading_before_code_stays_standalone(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("## Example\n\n```python\nx = 1\n```\n")
+        heading_blocks = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
+        assert len(heading_blocks) == 1
+        assert heading_blocks[0].data == "Example"
+
+    def test_heading_before_hr_then_paragraph_stays_standalone(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("## Section\n\n---\n\nParagraph.\n")
+        heading_blocks = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
+        para_blocks = [b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH]
+        assert len(heading_blocks) == 1
+        assert heading_blocks[0].data == "Section"
+        assert len(para_blocks) == 1
+        assert para_blocks[0].data == "Paragraph."
+
+    def test_heading_before_another_heading_stays_standalone(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("# H1\n\n## H2\n")
+        heading_blocks = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
+        assert len(heading_blocks) == 2
+        assert heading_blocks[0].data == "H1"
+        assert heading_blocks[1].data == "H2"
+
+    def test_heading_at_end_of_document_stays_standalone(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("# Trailing\n")
+        assert len(container.blocks) == 1
+        assert container.blocks[0].sub_type == BlockSubType.HEADING
+        assert container.blocks[0].data == "Trailing"
+
+    def test_consecutive_heading_para_heading_para(self, converter: MarkdownToBlocksConverter):
+        md = "# First\n\nPara one.\n\n## Second\n\nPara two.\n"
+        container = converter.convert(md)
+        assert len(container.blocks) == 2
+        assert container.blocks[0].data == "# First\nPara one."
+        assert container.blocks[0].sub_type == BlockSubType.PARAGRAPH
+        assert container.blocks[1].data == "## Second\nPara two."
+        assert container.blocks[1].sub_type == BlockSubType.PARAGRAPH
+
+    def test_heading_merges_preserves_inline_formatting(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert("## Title\n\nHello **bold** world.\n")
+        assert len(container.blocks) == 1
+        block = container.blocks[0]
+        assert block.data == "## Title\nHello **bold** world."
+        assert block.format == DataFormat.MARKDOWN
+
+    def test_heading_merge_with_multiple_paragraphs_only_merges_first(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        md = "## Section\n\nFirst para.\n\nSecond para.\n"
+        container = converter.convert(md)
+        assert len(container.blocks) == 2
+        assert container.blocks[0].data == "## Section\nFirst para."
+        assert container.blocks[0].sub_type == BlockSubType.PARAGRAPH
+        assert container.blocks[1].data == "Second para."
+        assert container.blocks[1].sub_type == BlockSubType.PARAGRAPH
+
+
 class TestParagraphs:
     def test_paragraph_produces_text_block(self, converter: MarkdownToBlocksConverter):
         container = converter.convert("Hello **bold** world\n")
@@ -182,7 +279,8 @@ class TestTables:
         assert table_group.table_metadata.num_of_cols == 2
         assert table_group.table_metadata.num_of_cells == 4
         assert table_group.table_metadata.has_header is True
-        assert table_group.table_metadata.column_names == ["A", "B"]
+        assert table_group.table_metadata.column_names is None
+        assert table_group.data["column_headers"] == ["A", "B"]
 
     def test_multiple_tables_create_separate_groups(self, converter: MarkdownToBlocksConverter):
         markdown = (
@@ -242,12 +340,16 @@ class TestLists:
 
 
 class TestImages:
-    def test_image_produces_image_block(self, converter: MarkdownToBlocksConverter):
-        container = converter.convert("![Image_1](https://example.com/a.png)\n")
+    def test_image_produces_image_block_with_caption_map(self, converter: MarkdownToBlocksConverter):
+        container = converter.convert(
+            "![Image_1](https://example.com/a.png)\n",
+            caption_map={"Image_1": "data:image/png;base64,abc"},
+        )
         image_blocks = _blocks_by_type(container, BlockType.IMAGE)
         assert len(image_blocks) == 1
         assert image_blocks[0].image_metadata is not None
         assert image_blocks[0].image_metadata.captions == ["Image_1"]
+        assert image_blocks[0].format == DataFormat.BASE64
 
     def test_image_uses_caption_map(self, converter: MarkdownToBlocksConverter):
         container = converter.convert(
@@ -258,54 +360,46 @@ class TestImages:
         assert image_block.data == {"uri": "data:image/png;base64,abc"}
         assert image_block.format == DataFormat.BASE64
 
-    def test_image_without_caption_map_uses_url(self, converter: MarkdownToBlocksConverter):
+    def test_image_without_caption_map_skips_image_block(self, converter: MarkdownToBlocksConverter):
         container = converter.convert("![alt](https://example.com/a.png)\n")
-        image_block = _blocks_by_type(container, BlockType.IMAGE)[0]
-        assert image_block.data == {"url": "https://example.com/a.png"}
-        assert image_block.format == DataFormat.TXT
+        assert _blocks_by_type(container, BlockType.IMAGE) == []
 
     def test_paragraph_with_text_and_image_splits_blocks(self, converter: MarkdownToBlocksConverter):
-        container = converter.convert("See ![img](https://example.com/a.png) here\n")
+        container = converter.convert(
+            "See ![Image_1](https://example.com/a.png) here\n",
+            caption_map={"Image_1": "data:image/png;base64,abc"},
+        )
         assert len(container.blocks) == 2
         assert container.blocks[0].sub_type == BlockSubType.PARAGRAPH
         assert container.blocks[0].data == "See  here"
         assert container.blocks[1].type == BlockType.IMAGE
+        assert container.blocks[1].format == DataFormat.BASE64
 
     # ------------------------------------------------------------------
     # No alt text
     # ------------------------------------------------------------------
 
-    def test_image_no_alt_text_uses_url(self, converter: MarkdownToBlocksConverter):
-        """![](url) — no alt text → empty captions, data uses URL, TXT format."""
+    def test_image_no_alt_text_skips_without_caption_map(self, converter: MarkdownToBlocksConverter):
+        """![](url) without caption_map → no IMAGE block."""
         container = converter.convert("![](https://example.com/img.png)\n")
-        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
-        assert len(image_blocks) == 1
-        block = image_blocks[0]
-        assert block.data == {"url": "https://example.com/img.png"}
-        assert block.format == DataFormat.TXT
-        assert block.image_metadata is not None
-        assert block.image_metadata.captions == []
+        assert _blocks_by_type(container, BlockType.IMAGE) == []
 
-    def test_image_no_alt_no_src_has_none_data(self, converter: MarkdownToBlocksConverter):
-        """![]() — empty alt and empty src → data is None."""
+    def test_image_no_alt_no_src_skips_image_block(self, converter: MarkdownToBlocksConverter):
+        """![]() — empty alt and empty src → no IMAGE block emitted."""
         container = converter.convert("![]() \n")
-        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
-        assert len(image_blocks) == 1
-        assert image_blocks[0].data is None
+        assert _blocks_by_type(container, BlockType.IMAGE) == []
 
     # ------------------------------------------------------------------
     # caption_map lookup behaviour
     # ------------------------------------------------------------------
 
-    def test_caption_map_miss_falls_back_to_url(self, converter: MarkdownToBlocksConverter):
-        """A caption_map present but key doesn't match → falls back to URL."""
+    def test_caption_map_miss_skips_image_block(self, converter: MarkdownToBlocksConverter):
+        """A caption_map present but key doesn't match → no IMAGE block."""
         container = converter.convert(
             "![Image_1](https://example.com/img.png)\n",
             caption_map={"Image_2": "data:image/png;base64,xyz"},
         )
-        image_block = _blocks_by_type(container, BlockType.IMAGE)[0]
-        assert image_block.data == {"url": "https://example.com/img.png"}
-        assert image_block.format == DataFormat.TXT
+        assert _blocks_by_type(container, BlockType.IMAGE) == []
 
     def test_caption_map_lookup_is_case_sensitive(self, converter: MarkdownToBlocksConverter):
         """caption_map lookup uses the exact alt-text string (case-sensitive)."""
@@ -313,9 +407,7 @@ class TestImages:
             "![Image_1](https://example.com/img.png)\n",
             caption_map={"image_1": "data:image/png;base64,xyz"},
         )
-        image_block = _blocks_by_type(container, BlockType.IMAGE)[0]
-        # Lower-case key must not match title-case alt text
-        assert image_block.data == {"url": "https://example.com/img.png"}
+        assert _blocks_by_type(container, BlockType.IMAGE) == []
 
     # ------------------------------------------------------------------
     # Multiple images
@@ -344,23 +436,24 @@ class TestImages:
     def test_two_images_inline_one_in_map_one_not(
         self, converter: MarkdownToBlocksConverter
     ):
-        """Mixed caption_map: first image resolved via map, second falls back to URL."""
+        """Mixed caption_map: only the resolved image produces an IMAGE block."""
         md = "![Image_1](https://a.com/1.png) and ![Image_2](https://b.com/2.png)\n"
         container = converter.convert(
             md, caption_map={"Image_1": "data:image/png;base64,AAA"}
         )
         image_blocks = _blocks_by_type(container, BlockType.IMAGE)
-        assert len(image_blocks) == 2
+        assert len(image_blocks) == 1
         assert image_blocks[0].data == {"uri": "data:image/png;base64,AAA"}
         assert image_blocks[0].format == DataFormat.BASE64
-        assert image_blocks[1].data == {"url": "https://b.com/2.png"}
-        assert image_blocks[1].format == DataFormat.TXT
 
     def test_image_only_paragraph_produces_no_text_block(
         self, converter: MarkdownToBlocksConverter
     ):
         """A paragraph that is purely an image should not produce a text block."""
-        container = converter.convert("![Image_1](https://example.com/img.png)\n")
+        container = converter.convert(
+            "![Image_1](https://example.com/img.png)\n",
+            caption_map={"Image_1": "data:image/png;base64,abc"},
+        )
         text_blocks = [b for b in container.blocks if b.type == BlockType.TEXT]
         assert text_blocks == []
         assert len(_blocks_by_type(container, BlockType.IMAGE)) == 1
@@ -412,6 +505,18 @@ class TestImages:
             quote_blocks[0].index,
             image_blocks[0].index,
         ]
+
+    def test_image_inside_blockquote_without_matching_uri_skips_image_block(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        """caption_map present but alt not resolved → keep raw markdown only."""
+        container = converter.convert(
+            "> ![Image_1](https://example.com/img.png)\n",
+            caption_map={"Image_2": "data:image/png;base64,OTHER"},
+        )
+        assert _blocks_by_type(container, BlockType.IMAGE) == []
+        quote_block = container.blocks[0]
+        assert quote_block.data == "> ![Image_1](https://example.com/img.png)"
 
     def test_image_inside_list_is_preserved_in_raw_markdown(
         self, converter: MarkdownToBlocksConverter
@@ -536,11 +641,13 @@ class TestImages:
 
         container = converter.convert(modified_md, caption_map=caption_map)
 
-        # Heading block + one image block; no spurious paragraph block
+        # Heading merges with the following image paragraph; image emitted separately
         text_blocks = [b for b in container.blocks if b.type == BlockType.TEXT]
         image_blocks = _blocks_by_type(container, BlockType.IMAGE)
         assert len(text_blocks) == 1
-        assert text_blocks[0].sub_type == BlockSubType.HEADING
+        assert text_blocks[0].sub_type == BlockSubType.PARAGRAPH
+        assert text_blocks[0].data == "# Report"
+        assert text_blocks[0].format == DataFormat.MARKDOWN
         assert len(image_blocks) == 1
         assert image_blocks[0].data == {"uri": fake_base64}
         assert image_blocks[0].format == DataFormat.BASE64
@@ -575,8 +682,7 @@ class TestImages:
     def test_full_pipeline_image_url_not_converted_to_base64(
         self, converter: MarkdownToBlocksConverter
     ):
-        """When base64 conversion fails (None from urls_to_base64), no caption_map
-        entry is added and the image block falls back to the original URL."""
+        """When base64 conversion fails, no caption_map entry → no IMAGE block."""
         from app.modules.parsers.markdown.docling_markdown_parser import (
             _extract_and_replace_images,
         )
@@ -584,15 +690,10 @@ class TestImages:
         original_md = "![photo](https://cdn.example.com/photo.png)\n"
         modified_md, images = _extract_and_replace_images(original_md)
 
-        # Simulate processor skipping None base64 (as it does with `if base64_urls[i]`)
         caption_map: dict[str, str] = {}
 
         container = converter.convert(modified_md, caption_map=caption_map)
-        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
-        assert len(image_blocks) == 1
-        # Falls back to the URL embedded in the modified markdown
-        assert image_blocks[0].data == {"url": "https://cdn.example.com/photo.png"}
-        assert image_blocks[0].format == DataFormat.TXT
+        assert _blocks_by_type(container, BlockType.IMAGE) == []
 
 
 class TestBlockquotes:
@@ -648,13 +749,9 @@ class TestHtmlBlocks:
 
 
 class TestDividers:
-    def test_hr_produces_divider_block(self, converter: MarkdownToBlocksConverter):
+    def test_hr_does_not_emit_block(self, converter: MarkdownToBlocksConverter):
         container = converter.convert("---\n")
-        assert len(container.blocks) == 1
-        block = container.blocks[0]
-        assert block.sub_type == BlockSubType.DIVIDER
-        assert block.data == "---"
-        assert block.parent_index is None
+        assert container.blocks == []
 
 
 class TestEmptyContent:
@@ -692,10 +789,10 @@ class TestMixedContentOrder:
             (block.sub_type, block.type)
             for block in container.blocks
         ]
-        assert block_types[0] == (BlockSubType.HEADING, BlockType.TEXT)
-        assert block_types[1] == (BlockSubType.PARAGRAPH, BlockType.TEXT)
-        assert block_types[2] == (BlockSubType.DIVIDER, BlockType.TEXT)
-        assert block_types[3] == (BlockSubType.LIST_ITEM, BlockType.TEXT)
+        assert block_types[0] == (BlockSubType.PARAGRAPH, BlockType.TEXT)
+        assert container.blocks[0].data == "# Title\nParagraph one."
+        assert container.blocks[0].format == DataFormat.MARKDOWN
+        assert block_types[1] == (BlockSubType.LIST_ITEM, BlockType.TEXT)
         assert container.blocks[0].index == 0
         assert container.blocks[-1].index == len(container.blocks) - 1
 
@@ -824,11 +921,15 @@ class TestInlineRendering:
         assert "`print()`" in block.data
 
     def test_formatted_text_with_image_uses_markdown(self, converter: MarkdownToBlocksConverter):
-        container = converter.convert("**Bold** ![img](https://example.com/a.png)\n")
+        container = converter.convert(
+            "**Bold** ![Image_1](https://example.com/a.png)\n",
+            caption_map={"Image_1": "data:image/png;base64,abc"},
+        )
         text_block = container.blocks[0]
         assert text_block.format == DataFormat.MARKDOWN
         assert text_block.data == "**Bold**"
         assert container.blocks[1].type == BlockType.IMAGE
+        assert container.blocks[1].format == DataFormat.BASE64
 
     def test_hard_line_break_renders_as_newline(self, converter: MarkdownToBlocksConverter):
         container = converter.convert("Line one  \nLine two\n")

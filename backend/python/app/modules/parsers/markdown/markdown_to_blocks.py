@@ -98,12 +98,14 @@ class _TokenWalker:
         self.list_item_depth = 0
         self.blockquote_depth = 0
         self.table_state: _TableState | None = None
+        self._pending_heading: tuple[int, Token] | None = None
 
     def walk(self, tokens: list[Token]) -> BlocksContainer:
         index = 0
         while index < len(tokens):
             index = self._process_token(tokens, index)
             index += 1
+        self._flush_pending_heading()
         return BlocksContainer(blocks=self.blocks, block_groups=self.block_groups)
 
     # ------------------------------------------------------------------ guards
@@ -140,6 +142,30 @@ class _TokenWalker:
             return index + 2
         return index + 1
 
+    _SKIP_FOR_LOOKAHEAD = frozenset({"heading_close", "paragraph_close"})
+
+    def _find_next_content_token(self, tokens: list[Token], start: int) -> int | None:
+        """Return the index of the next content-bearing token after *start*,
+        skipping over close tags and horizontal rules that sit between a heading
+        and the content that follows it. Returns ``None`` when no content token
+        remains."""
+        idx = start
+        while idx < len(tokens):
+            if tokens[idx].type in self._SKIP_FOR_LOOKAHEAD:
+                idx += 1
+                continue
+            return idx
+        return None
+
+    def _flush_pending_heading(self) -> None:
+        """Emit a buffered heading as a standalone block when the next content
+        turned out not to be a paragraph."""
+        if self._pending_heading is None:
+            return
+        _level, inline_token = self._pending_heading
+        self._pending_heading = None
+        self._add_text_blocks_from_inline(inline_token, BlockSubType.HEADING)
+
     # ---------------------------------------------------------- token dispatch
 
     def _process_token(self, tokens: list[Token], index: int) -> int:  # noqa: C901
@@ -147,10 +173,22 @@ class _TokenWalker:
 
         # ---- inline text blocks (headings, paragraphs) --------------------
         if token.type == "heading_open":
+            self._flush_pending_heading()
             if self._skip_structural_emission():
                 return self._skip_inline_block(tokens, index)
             if index + 1 < len(tokens) and tokens[index + 1].type == "inline":
-                self._add_text_blocks_from_inline(tokens[index + 1], BlockSubType.HEADING)
+                heading_level = int(token.tag[1])  # "h1" -> 1, etc.
+                inline_token = tokens[index + 1]
+                # Skip heading_open, inline, heading_close
+                end_idx = index + 2
+                if end_idx < len(tokens) and tokens[end_idx].type == "heading_close":
+                    end_idx += 1
+                # Look ahead for a paragraph to merge into
+                next_idx = self._find_next_content_token(tokens, end_idx)
+                if next_idx is not None and tokens[next_idx].type == "paragraph_open":
+                    self._pending_heading = (heading_level, inline_token)
+                    return end_idx - 1
+                self._add_text_blocks_from_inline(inline_token, BlockSubType.HEADING)
                 return index + 2
             return index + 1
 
@@ -158,7 +196,12 @@ class _TokenWalker:
             if self._skip_structural_emission():
                 return self._skip_inline_block(tokens, index)
             if index + 1 < len(tokens) and tokens[index + 1].type == "inline":
-                self._add_text_blocks_from_inline(tokens[index + 1], BlockSubType.PARAGRAPH)
+                if self._pending_heading is not None:
+                    level, heading_inline = self._pending_heading
+                    self._pending_heading = None
+                    self._add_paragraph_with_heading(level, heading_inline, tokens[index + 1])
+                else:
+                    self._add_text_blocks_from_inline(tokens[index + 1], BlockSubType.PARAGRAPH)
                 return index + 2
             return index + 1
 
@@ -166,6 +209,7 @@ class _TokenWalker:
         # Both produce a GroupType.CODE group containing a single code block.
         # fence carries language info; code_block does not.
         if token.type in {"fence", "code_block"}:
+            self._flush_pending_heading()
             if not self._skip_structural_emission():
                 language = (token.info.strip() or None) if token.type == "fence" else None
                 self._add_code_block(token.content.rstrip("\n"), language)
@@ -173,11 +217,13 @@ class _TokenWalker:
 
         # ---- lists --------------------------------------------------------
         if token.type == "bullet_list_open":
+            self._flush_pending_heading()
             if not self._skip_structural_emission():
                 self._open_group(GroupType.LIST)
             return index
 
         if token.type == "ordered_list_open":
+            self._flush_pending_heading()
             if not self._skip_structural_emission():
                 self._open_group(GroupType.ORDERED_LIST)
             return index
@@ -214,6 +260,7 @@ class _TokenWalker:
 
         # ---- blockquotes --------------------------------------------------
         if token.type == "blockquote_open":
+            self._flush_pending_heading()
             # Blockquotes inside list items are already captured by the list
             # item's raw markdown slice — ignore them here.
             if self._inside_list_item():
@@ -246,6 +293,7 @@ class _TokenWalker:
 
         # ---- tables -------------------------------------------------------
         if token.type == "table_open":
+            self._flush_pending_heading()
             if not self._skip_structural_emission():
                 self._start_table()
             return index
@@ -298,20 +346,11 @@ class _TokenWalker:
 
         # ---- misc top-level tokens ----------------------------------------
         if token.type == "hr":
-            if not self._skip_structural_emission():
-                self._add_block(
-                    Block(
-                        id=str(uuid4()),
-                        type=BlockType.TEXT,
-                        sub_type=BlockSubType.DIVIDER,
-                        format=DataFormat.TXT,
-                        data="---",
-                        parent_index=self._current_parent_index(),
-                    )
-                )
+            self._flush_pending_heading()
             return index
 
         if token.type == "html_block" and token.content.strip():
+            self._flush_pending_heading()
             if not self._skip_structural_emission():
                 self._add_block(
                     Block(
@@ -416,29 +455,76 @@ class _TokenWalker:
         for image_token in image_tokens:
             self._add_image_block(image_token)
 
+    def _add_paragraph_with_heading(
+        self,
+        heading_level: int,
+        heading_inline: Token,
+        paragraph_inline: Token,
+    ) -> None:
+        """Emit a single PARAGRAPH block whose data is the heading prefix
+        followed by the paragraph content.  The result is always MARKDOWN
+        format because the heading syntax (``# …``) is markdown markup."""
+        heading_text, heading_images, _ = self._split_inline_content(heading_inline)
+        para_text, para_images, _ = self._split_inline_content(paragraph_inline)
+
+        prefix = "#" * heading_level + " " + heading_text if heading_text else ""
+        if prefix and para_text:
+            merged = prefix + "\n" + para_text
+        elif prefix:
+            merged = prefix
+        else:
+            merged = para_text
+
+        if merged:
+            self._add_block(
+                Block(
+                    id=str(uuid4()),
+                    type=BlockType.TEXT,
+                    sub_type=BlockSubType.PARAGRAPH,
+                    format=DataFormat.MARKDOWN,
+                    data=merged,
+                    parent_index=self._current_parent_index(),
+                )
+            )
+
+        for img in heading_images:
+            self._add_image_block(img)
+        for img in para_images:
+            self._add_image_block(img)
+
+    def _resolve_image_uri(self, alt_text: str) -> str | None:
+        if alt_text and alt_text in self.caption_map:
+            uri = self.caption_map[alt_text]
+            if uri:
+                return uri
+        return None
+
+    def _build_image_block(self, alt_text: str) -> Block | None:
+        uri = self._resolve_image_uri(alt_text)
+        if not uri:
+            return None
+
+        image_fmt = None
+        header = uri.split(",", 1)[0]
+        mime = header.replace("data:", "").split(";")[0]
+        image_fmt = mime.split("/")[1] if mime else None
+
+        return Block(
+            id=str(uuid4()),
+            type=BlockType.IMAGE,
+            format=DataFormat.BASE64,
+            data={"uri": uri},
+            parent_index=self._current_parent_index(),
+            image_metadata=ImageMetadata(
+                captions=[alt_text] if alt_text else [],
+                image_format=image_fmt,
+            ),
+        )
+
     def _add_image_block(self, image_token: Token) -> None:
         alt_text = image_token.content
-        attrs = image_token.attrs or {}
-        src = str(attrs.get("src", ""))
-
-        data: dict[str, str] | None = None
-        # Lookup by alt_text assumes unique keys (see convert() docstring).
-        # The intended flow is: extract_and_replace_images() → unique Image_N alts.
-        if alt_text and alt_text in self.caption_map:
-            data = {"uri": self.caption_map[alt_text]}
-        elif src:
-            data = {"url": src}
-
-        self._add_block(
-            Block(
-                id=str(uuid4()),
-                type=BlockType.IMAGE,
-                format=DataFormat.BASE64 if data and "uri" in data else DataFormat.TXT,
-                data=data,
-                parent_index=self._current_parent_index(),
-                image_metadata=ImageMetadata(captions=[alt_text] if alt_text else []),
-            )
-        )
+        if block := self._build_image_block(alt_text):
+            self._add_block(block)
 
     def _emit_images_from_raw_markdown(self, raw_markdown: str) -> None:
         """Scan raw markdown text for image references and emit IMAGE blocks.
@@ -454,46 +540,23 @@ class _TokenWalker:
 
         for match in _MD_IMAGE_RE.finditer(raw_markdown):
             alt_text = match.group(1)
-            src = match.group(2)
-            if alt_text in self.caption_map and alt_text not in seen:
-                seen.add(alt_text)
-                self._add_block(
-                    Block(
-                        id=str(uuid4()),
-                        type=BlockType.IMAGE,
-                        format=DataFormat.BASE64,
-                        data={"uri": self.caption_map[alt_text]},
-                        parent_index=self._current_parent_index(),
-                        image_metadata=ImageMetadata(captions=[alt_text]),
-                    )
-                )
-            elif src and alt_text not in seen:
-                seen.add(alt_text or src)
-                self._add_block(
-                    Block(
-                        id=str(uuid4()),
-                        type=BlockType.IMAGE,
-                        format=DataFormat.TXT,
-                        data={"url": src},
-                        parent_index=self._current_parent_index(),
-                        image_metadata=ImageMetadata(captions=[alt_text] if alt_text else []),
-                    )
-                )
+            if alt_text in seen:
+                continue
+            block = self._build_image_block(alt_text)
+            if block is None:
+                continue
+            seen.add(alt_text)
+            self._add_block(block)
 
         for match in _HTML_IMG_ALT_RE.finditer(raw_markdown):
             alt_text = match.group(1)
-            if alt_text in self.caption_map and alt_text not in seen:
-                seen.add(alt_text)
-                self._add_block(
-                    Block(
-                        id=str(uuid4()),
-                        type=BlockType.IMAGE,
-                        format=DataFormat.BASE64,
-                        data={"uri": self.caption_map[alt_text]},
-                        parent_index=self._current_parent_index(),
-                        image_metadata=ImageMetadata(captions=[alt_text]),
-                    )
-                )
+            if alt_text in seen:
+                continue
+            block = self._build_image_block(alt_text)
+            if block is None:
+                continue
+            seen.add(alt_text)
+            self._add_block(block)
 
     # ---------------------------------------------------------- inline render
 
@@ -651,7 +714,6 @@ class _TokenWalker:
                 else sum(len(row) for row in rows)
             ),
             has_header=bool(headers),
-            column_names=header_md or None,
         )
         group.data = {"table_summary": "", "column_headers": header_md}
         group.children = BlockGroupChildren.from_indices(block_indices=row_block_indices)
