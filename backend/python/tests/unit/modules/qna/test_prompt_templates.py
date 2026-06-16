@@ -20,6 +20,7 @@ from app.modules.qna.prompt_templates import (
     qna_prompt_simple,
     qna_prompt_with_retrieval_tool,
     qna_prompt_with_retrieval_tool_second_part,
+    render_fetch_full_record_tool_block,
     table_prompt,
     web_search_system_prompt,
     web_search_user_prompt,
@@ -213,6 +214,21 @@ class TestQnaPromptInstructions1:
 
     def test_references_record_concept(self):
         assert "Record" in qna_prompt_instructions_1
+
+    def test_uses_fetch_full_record_tool_block_placeholder(self):
+        assert "{{ fetch_full_record_tool_block }}" in qna_prompt_instructions_1
+
+
+class TestRenderFetchFullRecordToolBlock:
+    def test_includes_jira_rule_when_flag_true(self):
+        block = render_fetch_full_record_tool_block(has_jira_tickets_in_context=True)
+        assert "Jira tickets" in block
+        assert "story points" in block
+
+    def test_omits_jira_rule_when_flag_false(self):
+        block = render_fetch_full_record_tool_block(has_jira_tickets_in_context=False)
+        assert "Jira tickets" not in block
+        assert "fetch_full_record" in block
 
 
 # ---------------------------------------------------------------------------

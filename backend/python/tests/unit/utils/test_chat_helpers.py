@@ -21,6 +21,7 @@ from app.models.entities import (
     RecordType,
     TicketRecord,
 )
+from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import is_jira_ticket_record
 from app.utils.chat_helpers import (
     TEXT_FRAGMENT_DIRECTIVE_PREFIX,
     _extract_text_content_recursive,
@@ -35,6 +36,7 @@ from app.utils.chat_helpers import (
     count_tokens_text,
     create_block_from_metadata,
     create_record_instance_from_dict,
+    context_includes_jira_tickets,
     enrich_virtual_record_id_to_result_with_fk_children,
     extract_bounding_boxes,
     extract_start_end_text,
@@ -1128,6 +1130,48 @@ class TestGetEnhancedMetadata:
 
 
 # ===================================================================
+# Jira tickets in context detection
+# ===================================================================
+class TestJiraTicketsContextNotice:
+    def test_is_jira_ticket_record_jira_ticket(self):
+        record = {
+            "record_type": RecordType.TICKET.value,
+            "connector_name": Connectors.JIRA.value,
+        }
+        assert is_jira_ticket_record(record) is True
+
+    def test_is_jira_ticket_record_linear_ticket(self):
+        record = {
+            "record_type": RecordType.TICKET.value,
+            "connector_name": Connectors.LINEAR.value,
+        }
+        assert is_jira_ticket_record(record) is False
+
+    def test_is_jira_ticket_record_jira_file(self):
+        record = {
+            "record_type": RecordType.FILE.value,
+            "connector_name": Connectors.JIRA.value,
+        }
+        assert is_jira_ticket_record(record) is False
+
+    def test_context_includes_jira_tickets_true(self):
+        flattened = [_make_flattened_result(virtual_record_id="vr-jira")]
+        vr_map = {
+            "vr-jira": _make_record_blob(
+                virtual_record_id="vr-jira",
+                record_type=RecordType.TICKET.value,
+                connector_name=Connectors.JIRA.value,
+            ),
+        }
+        assert context_includes_jira_tickets(flattened, vr_map) is True
+
+    def test_context_includes_jira_tickets_false(self):
+        flattened = [_make_flattened_result(virtual_record_id="vr-1")]
+        vr_map = {"vr-1": _make_record_blob()}
+        assert context_includes_jira_tickets(flattened, vr_map) is False
+
+
+# ===================================================================
 # get_message_content
 # ===================================================================
 class TestGetMessageContent:
@@ -1194,6 +1238,45 @@ class TestGetMessageContent:
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "First block" in combined
+
+    def test_json_mode_includes_jira_fetch_rule_for_jira_ticket(self):
+        flattened = [_make_flattened_result(block_index=0, content="Ticket body")]
+        vr_map = {
+            "vr-jira": _make_record_blob(
+                virtual_record_id="vr-jira",
+                record_type=RecordType.TICKET.value,
+                connector_name=Connectors.JIRA.value,
+                context_metadata="Record ID: rec-jira",
+            ),
+        }
+        flattened[0]["virtual_record_id"] = "vr-jira"
+        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        instructions = result[0]["text"]
+        assert "story points" in instructions
+        assert "Jira tickets" in instructions
+        assert "<jira_tickets_in_context>" not in instructions
+
+    def test_json_mode_no_jira_fetch_rule_without_jira_ticket(self):
+        flattened = [_make_flattened_result(block_index=0, content="Doc body")]
+        vr_map = {"vr-1": _make_record_blob()}
+        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        instructions = result[0]["text"]
+        assert "Jira tickets" not in instructions
+
+    def test_no_tools_mode_omits_jira_fetch_rule_even_with_jira_ticket(self):
+        flattened = [_make_flattened_result(block_index=0, content="Ticket body")]
+        vr_map = {
+            "vr-jira": _make_record_blob(
+                virtual_record_id="vr-jira",
+                record_type=RecordType.TICKET.value,
+                connector_name=Connectors.JIRA.value,
+            ),
+        }
+        flattened[0]["virtual_record_id"] = "vr-jira"
+        result = get_message_content(flattened, vr_map, "user", "query", mode="no_tools")
+        text = result[0]["text"]
+        assert "Jira tickets" not in text
+        assert "fetch_full_record" not in text
 
     def test_summary_citation_only_when_no_record_blocks_in_context(self):
         record = _make_record_blob(frontend_url="https://app.example.com")
@@ -2292,7 +2375,7 @@ class TestGetRecord:
         assert vr_map["vr-1"]["context_metadata"] == ""
 
     @pytest.mark.asyncio
-    async def test_jira_ticket_uses_live_fields(self):
+    async def test_jira_ticket_uses_graph_context_only(self):
         record_blob = _make_record_blob(
             record_type="TICKET",
             connector_name=Connectors.JIRA.value,
@@ -2327,6 +2410,10 @@ class TestGetRecord:
         vr_map = {}
         with patch.object(
             TicketRecord,
+            "to_llm_context",
+            return_value="graph jira context",
+        ) as mock_graph, patch.object(
+            TicketRecord,
             "to_llm_context_with_live_fields",
             new=AsyncMock(return_value="enriched jira context"),
         ) as mock_live:
@@ -2339,11 +2426,12 @@ class TestGetRecord:
                 graph_provider,
             )
 
-        assert vr_map["vr-jira"]["context_metadata"] == "enriched jira context"
-        mock_live.assert_awaited_once()
+        assert vr_map["vr-jira"]["context_metadata"] == "graph jira context"
+        mock_graph.assert_called_once()
+        mock_live.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_non_jira_ticket_still_calls_live_fields_method(self):
+    async def test_non_jira_ticket_uses_graph_context_only(self):
         record_blob = _make_record_blob(
             record_type="TICKET",
             connector_name=Connectors.LINEAR.value,
@@ -2373,8 +2461,12 @@ class TestGetRecord:
         vr_map = {}
         with patch.object(
             TicketRecord,
+            "to_llm_context",
+            return_value="linear ticket context",
+        ) as mock_graph, patch.object(
+            TicketRecord,
             "to_llm_context_with_live_fields",
-            new=AsyncMock(return_value="linear ticket context"),
+            new=AsyncMock(return_value="live linear context"),
         ) as mock_live:
             await get_record(
                 "vr-linear",
@@ -2386,7 +2478,8 @@ class TestGetRecord:
             )
 
         assert vr_map["vr-linear"]["context_metadata"] == "linear ticket context"
-        mock_live.assert_awaited_once()
+        mock_graph.assert_called_once()
+        mock_live.assert_not_called()
 
 
 # ===================================================================

@@ -1499,7 +1499,10 @@ class TestCreateInternalSearchTool:
                     )
                     out = await tool_fn.ainvoke({"query": "q", "reason": "r"})
 
-        assert out == [{"type": "text", "text": "x"}]
+        assert out["ok"] is True
+        assert out["result_type"] == "content"
+        assert out["content"] == [{"type": "text", "text": "x"}]
+        assert out["has_jira_tickets_in_context"] is False
         assert len(final_results) == 3
         keys = [(r["virtual_record_id"], r["block_index"]) for r in final_results]
         assert keys == [("vr-1", None), ("vr-1", 0), ("vr-1", 1)]

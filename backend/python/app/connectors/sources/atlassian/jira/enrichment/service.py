@@ -1,43 +1,30 @@
 from __future__ import annotations
 
+from typing import Any
+
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
 from app.connectors.sources.atlassian.jira.enrichment.field_discovery import discover_custom_field_ids
+from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import (
+    is_jira_connector,
+)
 from app.connectors.sources.atlassian.jira.enrichment.issue_fetcher import (
     batch_fetch_issues,
     resolve_is_cloud_api,
 )
 from app.connectors.sources.atlassian.jira.enrichment.value_formatter import enrich_from_issue
-from app.models.entities import TicketRecord
+from app.models.entities import RecordType, TicketRecord
 from app.sources.client.jira.jira import JiraClient
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.logger import create_logger
 
 logger = create_logger("jira_ticket_enrichment")
 
-JIRA_CONNECTORS: frozenset[Connectors] = frozenset({
-    Connectors.JIRA,
-    Connectors.JIRA_PERSONAL,
-    Connectors.JIRA_DATA_CENTER,
-    Connectors.JIRA_DATA_CENTER_PERSONAL,
-})
-
 _data_sources: dict[str, JiraDataSource] = {}
 _is_cloud: dict[str, bool] = {}
 _auth_types: dict[str, str] = {}
 
 _CONNECTOR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
-
-
-def is_jira_connector(connector_name: Connectors | str | None) -> bool:
-    if connector_name is None:
-        return False
-    if isinstance(connector_name, Connectors):
-        return connector_name in JIRA_CONNECTORS
-    try:
-        return Connectors(connector_name) in JIRA_CONNECTORS
-    except ValueError:
-        return False
 
 
 async def _sync_oauth_token_if_needed(
