@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, Protocol
+from typing import Dict, List, Protocol, Tuple
 
 from app.models.blocks import BlocksContainer
 
@@ -24,6 +24,12 @@ class HTMLParserProtocol(Protocol):
 
     def replace_relative_image_urls(self, html_content: str) -> str:
         """Absolutize relative ``img`` ``src`` values when a base URL is inferable."""
+        ...
+
+    def extract_and_replace_images(
+        self, html_content: str
+    ) -> Tuple[str, List[Dict[str, str]]]:
+        """Extract image URLs and replace alt-text with sequential ``Image_N`` labels."""
         ...
 
     async def parse(

@@ -12,7 +12,7 @@ parsing), use :class:`DoclingHtmlParser` (or the ``HTMLParser`` alias in
 from __future__ import annotations
 
 import logging
-from typing import Dict
+from typing import Dict, List, Tuple
 
 from bs4 import BeautifulSoup
 
@@ -119,6 +119,60 @@ class SelectolaxHtmlParser:
             base_url=base_url,
             caption_map=caption_map,
         )
+
+    def extract_and_replace_images(
+        self, html_content: str
+    ) -> Tuple[str, List[Dict[str, str]]]:
+        """Extract image URLs and replace alt-text with sequential ``Image_N`` labels.
+
+        Analogous to the Markdown parser's ``extract_and_replace_images``.
+        Call before ``parse`` / ``parse_to_blocks`` to collect image URLs for
+        base-64 conversion; the returned label list lets you build a
+        ``caption_map`` keyed by ``new_alt_text``.
+
+        Args:
+            html_content: HTML source string (should already have relative URLs
+                absolutized via ``replace_relative_image_urls``).
+
+        Returns:
+            A 2-tuple of:
+            - Modified HTML with ``alt`` attributes rewritten to ``Image_N``.
+            - List of dicts describing each image::
+
+                {
+                    "url": "<original src>",
+                    "alt_text": "<original alt>",
+                    "new_alt_text": "Image_N",
+                }
+        """
+        soup = BeautifulSoup(html_content, "html.parser")
+        images: List[Dict[str, str]] = []
+        image_counter = 1
+
+        for img_tag in soup.find_all("img"):
+            src = img_tag.get("src", "").strip()
+            if not src:
+                srcset = img_tag.get("srcset", "")
+                if srcset:
+                    first_part = srcset.split(",")[0].split()
+                    if first_part:
+                        src = first_part[0].strip()
+            if not src:
+                continue
+            if src.startswith("data:"):
+                continue
+
+            original_alt = img_tag.get("alt", "").strip()
+            new_alt = f"Image_{image_counter}"
+            img_tag["alt"] = new_alt
+            images.append({
+                "url": src,
+                "alt_text": original_alt,
+                "new_alt_text": new_alt,
+            })
+            image_counter += 1
+
+        return str(soup), images
 
     def replace_relative_image_urls(self, html_content: str) -> str:
         """Replace relative image URLs with absolute URLs in the HTML string.

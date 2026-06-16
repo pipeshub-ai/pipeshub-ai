@@ -12,7 +12,7 @@ without ML overhead, use :class:`SelectolaxHtmlParser` instead.
 from __future__ import annotations
 
 import logging
-from typing import Dict
+from typing import Dict, List, Tuple
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -115,6 +115,51 @@ class DoclingHtmlParser:
 
         return None
 
+
+    def extract_and_replace_images(
+        self, html_content: str
+    ) -> Tuple[str, List[Dict[str, str]]]:
+        """Extract image URLs and replace alt-text with sequential ``Image_N`` labels.
+
+        Analogous to the Markdown parser's ``extract_and_replace_images``.
+
+        Args:
+            html_content: HTML source string (should already have relative URLs
+                absolutized via ``replace_relative_image_urls``).
+
+        Returns:
+            A 2-tuple of:
+            - Modified HTML with ``alt`` attributes rewritten to ``Image_N``.
+            - List of dicts describing each image.
+        """
+        soup = BeautifulSoup(html_content, "html.parser")
+        images: List[Dict[str, str]] = []
+        image_counter = 1
+
+        for img_tag in soup.find_all("img"):
+            src = img_tag.get("src", "").strip()
+            if not src:
+                srcset = img_tag.get("srcset", "")
+                if srcset:
+                    first_part = srcset.split(",")[0].split()
+                    if first_part:
+                        src = first_part[0].strip()
+            if not src:
+                continue
+            if src.startswith("data:"):
+                continue
+
+            original_alt = img_tag.get("alt", "").strip()
+            new_alt = f"Image_{image_counter}"
+            img_tag["alt"] = new_alt
+            images.append({
+                "url": src,
+                "alt_text": original_alt,
+                "new_alt_text": new_alt,
+            })
+            image_counter += 1
+
+        return str(soup), images
 
     def replace_relative_image_urls(self, html_string: str) -> str:
         """

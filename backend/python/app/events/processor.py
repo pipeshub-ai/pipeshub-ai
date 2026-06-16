@@ -1580,8 +1580,27 @@ class Processor:
             html_parser = self.parsers[ExtensionTypes.HTML.value]
             html_content = html_parser.replace_relative_image_urls(html_content)
 
-            # Parse HTML directly to blocks (cleaning and URL absolutization handled by parser)
-            block_containers = await html_parser.parse(html_content)
+            # Extract image URLs and convert to base64 (mirrors the Markdown flow)
+            caption_map: Dict[str, str] = {}
+            modified_html, images = html_parser.extract_and_replace_images(html_content)
+
+            if images:
+                image_parser = self.parsers[ExtensionTypes.PNG.value]
+                urls_to_convert = [image["url"] for image in images]
+                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+
+                for i, image in enumerate(images):
+                    if base64_urls[i]:
+                        caption_map[image["new_alt_text"]] = base64_urls[i]
+
+                self.logger.debug(
+                    f"📷 Extracted {len(images)} images from HTML, "
+                    f"converted {len([u for u in base64_urls if u])} to base64"
+                )
+
+            block_containers = await html_parser.parse(
+                modified_html, caption_map=caption_map if caption_map else None
+            )
 
             # Signal parsing complete
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))

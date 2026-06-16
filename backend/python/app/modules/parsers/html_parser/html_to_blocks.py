@@ -855,11 +855,15 @@ class _DomWalker:
             else:
                 # <pre> with no <code> children — treat entire content as
                 # a single code block (e.g. <pre>bare text</pre>).
+                for img in node.css("img"):
+                    self._emit_image(img)
                 content = node.text(deep=True, separator="").rstrip("\n")
                 if content:
                     self._emit_code_group(content, _language_from_node(node))
             return
         if tag == "code":
+            for img in node.css("img"):
+                self._emit_image(img)
             self._emit_code_group(_node_text(node), _language_from_node(node))
             return
 
