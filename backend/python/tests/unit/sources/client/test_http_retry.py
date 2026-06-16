@@ -221,7 +221,8 @@ async def test_http_response_503_exhausts_retries_raises_http_status_error(mock_
     assert "Service temporarily unavailable" in str(exc_info.value)
     assert call_count == 3
     assert mock_logger.warning.call_count == 2
-    assert mock_logger.error.call_count == 1
+    # Error logged once when building HTTPStatusError detail, once in final handler
+    assert mock_logger.error.call_count == 2
 
 
 @pytest.mark.asyncio
