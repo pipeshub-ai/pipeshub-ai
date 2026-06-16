@@ -12785,9 +12785,10 @@ class Neo4jProvider(IGraphDBProvider):
             if not connector_keys:
                 return 0
 
-            query = """
+            label = self._get_label(collection)
+            query = f"""
             UNWIND $connector_ids AS connector_id
-            MATCH (app:App {id: connector_id})
+            MATCH (app:{label} {{id: connector_id}})
             SET app.isActive = $is_active, app.isAgentActive = $is_agent_active
             RETURN count(app) as updated_count
             """

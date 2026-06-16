@@ -4085,14 +4085,35 @@ class TestBatchUpdateConnectorStatus:
 
         assert result == 2
         neo4j_provider.client.execute_query.assert_awaited_once()
-        call_kwargs = neo4j_provider.client.execute_query.call_args.kwargs
+        call_args = neo4j_provider.client.execute_query.call_args
+        query = call_args[0][0]
+        call_kwargs = call_args.kwargs
         assert call_kwargs["parameters"] == {
             "connector_ids": ["c1", "c2"],
             "is_active": False,
             "is_agent_active": False,
         }
-        assert "isAgentActive" in call_kwargs["query"]
+        assert "MATCH (app:App" in query
+        assert "isAgentActive" in query
         assert call_kwargs["txn_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_uses_label_from_collection(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"updated_count": 1}]
+        )
+
+        with patch.object(neo4j_provider, "_get_label", return_value="CustomLabel") as mock_get_label:
+            await neo4j_provider.batch_update_connector_status(
+                collection="apps",
+                connector_keys=["c1"],
+                is_active=False,
+                is_agent_active=False,
+            )
+
+        query = neo4j_provider.client.execute_query.call_args[0][0]
+        assert "MATCH (app:CustomLabel" in query
+        mock_get_label.assert_called_once_with("apps")
 
     @pytest.mark.asyncio
     async def test_passes_transaction_id(self, neo4j_provider: Neo4jProvider):
