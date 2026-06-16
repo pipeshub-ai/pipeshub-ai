@@ -197,7 +197,6 @@ class _TokenWalker:
                     self._add_block(
                         Block(
                             id=str(uuid4()),
-                            index=0,
                             type=BlockType.TEXT,
                             sub_type=BlockSubType.LIST_ITEM,
                             format=DataFormat.MARKDOWN,
@@ -226,7 +225,6 @@ class _TokenWalker:
                     self._add_block(
                         Block(
                             id=str(uuid4()),
-                            index=0,
                             type=BlockType.TEXT,
                             sub_type=BlockSubType.QUOTE,
                             format=DataFormat.MARKDOWN,
@@ -304,7 +302,6 @@ class _TokenWalker:
                 self._add_block(
                     Block(
                         id=str(uuid4()),
-                        index=0,
                         type=BlockType.TEXT,
                         sub_type=BlockSubType.DIVIDER,
                         format=DataFormat.TXT,
@@ -319,7 +316,6 @@ class _TokenWalker:
                 self._add_block(
                     Block(
                         id=str(uuid4()),
-                        index=0,
                         type=BlockType.TEXT,
                         sub_type=BlockSubType.PARAGRAPH,
                         format=DataFormat.HTML,
@@ -388,7 +384,6 @@ class _TokenWalker:
         self._add_block(
             Block(
                 id=str(uuid4()),
-                index=0,
                 type=BlockType.TEXT,
                 sub_type=BlockSubType.CODE,
                 format=DataFormat.CODE,
@@ -410,7 +405,6 @@ class _TokenWalker:
             self._add_block(
                 Block(
                     id=str(uuid4()),
-                    index=0,
                     type=BlockType.TEXT,
                     sub_type=sub_type,
                     format=data_format,
@@ -438,7 +432,6 @@ class _TokenWalker:
         self._add_block(
             Block(
                 id=str(uuid4()),
-                index=0,
                 type=BlockType.IMAGE,
                 format=DataFormat.BASE64 if data and "uri" in data else DataFormat.TXT,
                 data=data,
@@ -467,7 +460,6 @@ class _TokenWalker:
                 self._add_block(
                     Block(
                         id=str(uuid4()),
-                        index=0,
                         type=BlockType.IMAGE,
                         format=DataFormat.BASE64,
                         data={"uri": self.caption_map[alt_text]},
@@ -480,7 +472,6 @@ class _TokenWalker:
                 self._add_block(
                     Block(
                         id=str(uuid4()),
-                        index=0,
                         type=BlockType.IMAGE,
                         format=DataFormat.TXT,
                         data={"url": src},
@@ -496,7 +487,6 @@ class _TokenWalker:
                 self._add_block(
                     Block(
                         id=str(uuid4()),
-                        index=0,
                         type=BlockType.IMAGE,
                         format=DataFormat.BASE64,
                         data={"uri": self.caption_map[alt_text]},
@@ -640,7 +630,6 @@ class _TokenWalker:
             block = self._append_block(
                 Block(
                     id=str(uuid4()),
-                    index=0,
                     type=BlockType.TABLE_ROW,
                     format=DataFormat.JSON,
                     parent_index=group.index,
