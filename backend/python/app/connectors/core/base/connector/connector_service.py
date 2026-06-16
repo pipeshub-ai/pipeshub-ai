@@ -22,7 +22,7 @@ from app.services.notification.notification_service import NotificationService
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 DEFAULT_CONNECTOR_NOTIFICATION_LINK = "workspace/connectors/"
-INITIAL_NOTIFICATION_BACKOFF = 15 * 60 * 1000 # 15 mins in ms
+INITIAL_NOTIFICATION_BACKOFF = 3600 * 1000 # 1 hour in ms
 MAX_NOTIFICATION_BACKOFF = 604800 * 1000 # 7 days in ms
 
 
@@ -39,6 +39,7 @@ class BaseConnector(ABC):
     created_by: str
     creator_email: Optional[str]
     _notification_service: NotificationService | None
+    _notification_cache: dict[str, tuple[int, int]] = {}
 
     def __init__(
         self,
@@ -68,7 +69,6 @@ class BaseConnector(ABC):
         self._connector_group_permission: Optional[Permission] = None
         self._notification_service = None
         self._background_tasks: set[asyncio.Task] = set()
-        self._notification_cache: dict[str, tuple[int, int]] = {}
 
     @abstractmethod
     async def init(self) -> bool:
@@ -391,7 +391,7 @@ class BaseConnector(ABC):
             next_allowed_time, backoff = self._notification_cache[key]
             if now < next_allowed_time:
                 self.logger.debug(
-                    "notification suppressed: \"%s\" already sent within backoff period for connector: %s, connector id: %s",
+                    "notification suppressed: \"%s\" already sent recently for connector: %s, connector id: %s",
                     title,
                     self.connector_name,
                     self.connector_id
