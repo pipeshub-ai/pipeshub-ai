@@ -80,7 +80,7 @@ from app.connectors.sources.salesforce.connector import SalesforceConnector
 from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
 from app.connectors.sources.slack.team.connector import SlackConnector
 
-from app.connectors.sources.gitlab.connector import GitLabConnector
+from app.connectors.sources.gitlab1.connector import GitLabConnector
 from app.connectors.sources.gitlab_personal.connector import GitLabPersonalConnector
 
 from app.connectors.sources.snowflake.connector import SnowflakeConnector

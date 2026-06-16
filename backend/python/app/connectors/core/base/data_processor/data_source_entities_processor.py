@@ -891,6 +891,9 @@ class DataSourceEntitiesProcessor:
             #       the new URL on every sync, and
             #   (b) leave a placeholder's empty `weburl=""` in place when
             #       the real parent record arrives to fill it in.
+            if existing_record.indexing_status == ProgressStatus.COMPLETED.value:
+                # If the existing record is completed, set the indexing status to not started so that it can be reindexed
+                record.indexing_status = ProgressStatus.NOT_STARTED.value
             if not record.weburl:
                 record.weburl = existing_record.weburl
             #check if revision Id is same as existing record
@@ -1089,7 +1092,17 @@ class DataSourceEntitiesProcessor:
                     # Reuse the existing DB vertex id so all downstream edges
                     # (permissions, belongs-to, etc.) survive the path change.
                     new_record.id = old_record.id
-
+                    
+                    if old_record.indexing_status == ProgressStatus.COMPLETED.value:
+                        if not content_changed:
+                            # If the old record is completed and content hasn't changed,
+                            # preserve the completed status for the new record
+                            new_record.indexing_status = ProgressStatus.COMPLETED.value
+                        else:
+                            # If the old record is completed and content has changed,
+                            # set the indexing status to not started for the new record
+                            # so that it can be reindexed
+                            new_record.indexing_status = ProgressStatus.NOT_STARTED.value
                     record_group_id = await self._handle_record_group(new_record, tx_store)
                     await tx_store.batch_upsert_records([new_record])
 
