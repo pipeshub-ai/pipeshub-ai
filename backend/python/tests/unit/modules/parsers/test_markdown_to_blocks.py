@@ -742,10 +742,15 @@ class TestHtmlBlocks:
     def test_html_block_uses_html_format(self, converter: MarkdownToBlocksConverter):
         container = converter.convert("<div>hello</div>\n")
         assert len(container.blocks) == 1
+        assert len(container.block_groups) == 1
         block = container.blocks[0]
+        html_group = container.block_groups[0]
+        assert html_group.type == GroupType.TEXT_SECTION
         assert block.format == DataFormat.HTML
         assert block.data == "<div>hello</div>"
         assert block.sub_type == BlockSubType.PARAGRAPH
+        assert block.parent_index == html_group.index
+        assert _child_block_indices(html_group) == [block.index]
 
 
 class TestDividers:

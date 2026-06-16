@@ -352,16 +352,7 @@ class _TokenWalker:
         if token.type == "html_block" and token.content.strip():
             self._flush_pending_heading()
             if not self._skip_structural_emission():
-                self._add_block(
-                    Block(
-                        id=str(uuid4()),
-                        type=BlockType.TEXT,
-                        sub_type=BlockSubType.PARAGRAPH,
-                        format=DataFormat.HTML,
-                        data=token.content.strip(),
-                        parent_index=self._current_parent_index(),
-                    )
-                )
+                self._add_html_block(token.content.strip())
             return index
 
         return index
@@ -429,6 +420,23 @@ class _TokenWalker:
                 data=content,
                 parent_index=self._current_parent_index(),
                 code_metadata=CodeMetadata(language=language),
+            )
+        )
+        self._close_group()
+
+    def _add_html_block(self, content: str) -> None:
+        """Emit a GroupType.TEXT_SECTION group containing a single HTML block."""
+        if not content:
+            return
+        self._open_group(GroupType.TEXT_SECTION)
+        self._add_block(
+            Block(
+                id=str(uuid4()),
+                type=BlockType.TEXT,
+                sub_type=BlockSubType.PARAGRAPH,
+                format=DataFormat.HTML,
+                data=content,
+                parent_index=self._current_parent_index(),
             )
         )
         self._close_group()

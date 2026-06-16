@@ -5,10 +5,10 @@ For each ``fixtures/<name>.md``, runs :class:`MarkdownToBlocksConverter` and
 compares the serialized output against ``fixtures/<name>.expected.json``.
 Block ``id`` fields are stripped before comparison because they are random UUIDs.
 
-No external services required::
+No external services required; runs with the standard integration suite::
 
     cd integration-tests
-    pytest parsers/integration_test_markdown_to_blocks.py -v -o addopts=
+    pytest -m integration parsers/ -v
 """
 
 from __future__ import annotations
@@ -66,6 +66,7 @@ def converter() -> MarkdownToBlocksConverter:
     return MarkdownToBlocksConverter()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize(
     "markdown_path",
     _discover_markdown_fixtures(),
