@@ -104,6 +104,7 @@ _LANGUAGE_CLASS_RE = re.compile(r"language-([\w+#.-]+)", re.IGNORECASE)
 _CELL_SEP = " | "
 _LEVEL_SEP = "\n"
 
+_MAX_DOM_PROBE_DEPTH = 64
 
 # ---------------------------------------------------------------------------
 # Internal data models
@@ -225,7 +226,7 @@ def _has_block_descendant(node: LexborNode, depth: int = 0) -> bool:
     single shallow paragraph block. Depth is capped to avoid runaway traversal
     on pathological markup.
     """
-    if depth > 48:
+    if depth > _MAX_DOM_PROBE_DEPTH:
         return False
     for child in _direct_children(node):
         tag = _tag_name(child)
@@ -258,7 +259,7 @@ def _has_inline_formatting(node: LexborNode, depth: int = 0) -> bool:
     splitting element content. Block/container descendants are skipped because
     they are handled by separate block emitters.
     """
-    if depth > 48:
+    if depth > _MAX_DOM_PROBE_DEPTH:
         return False
     tag = _tag_name(node)
     if tag in _INLINE_FORMAT_TAGS:
@@ -1295,41 +1296,3 @@ class _DomWalker:
             block_group_indices=open_group.child_group_indices,
         )
         self.group_stack.pop()
-
-
-# ---------------------------------------------------------------------------
-# Debug / introspection
-# ---------------------------------------------------------------------------
-
-def get_parsed_tree(html_content: str) -> list[dict]:
-    """Return a JSON-serializable tree of the parsed HTML for debugging and introspection."""
-    parser = LexborHTMLParser(html_content)
-    root = parser.body or parser.root
-    if root is None:
-        return []
-
-    def _extract_node(node) -> dict:
-        """Recursively convert one Lexbor node into a dict with tag, attrs, and children."""
-        if node.tag == "-text":
-            return {
-                "type": "text",
-                "content": (node.text() or "").strip(),
-            }
-
-        children = []
-        for child in node.iter(include_text=True):
-            if child.parent == node:
-                extracted = _extract_node(child)
-                # skip empty text nodes
-                if extracted["type"] == "text" and not extracted["content"]:
-                    continue
-                children.append(extracted)
-
-        return {
-            "type": "element",
-            "tag": node.tag,
-            "attrs": dict(node.attributes) if node.attributes else {},
-            "children": children,
-        }
-
-    return _extract_node(root)
