@@ -951,6 +951,9 @@ class TestProcessHtmlDocument:
 
         mock_html_parser = MagicMock()
         mock_html_parser.replace_relative_image_urls = MagicMock(return_value="<p>Test</p>")
+        mock_html_parser.extract_and_replace_images = MagicMock(
+            return_value=("<p>Test</p>", [])
+        )
         mock_html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers["html"] = mock_html_parser
 
@@ -968,7 +971,7 @@ class TestProcessHtmlDocument:
                 )
             )
 
-        mock_html_parser.parse.assert_awaited_once_with("<p>Test</p>")
+        mock_html_parser.parse.assert_awaited_once_with("<p>Test</p>", caption_map=None)
         mock_pipeline.return_value.apply.assert_awaited_once()
         assert events[0].event == "parsing_complete"
         assert events[1].event == "indexing_complete"
@@ -1834,6 +1837,9 @@ class TestProcessHtmlDocumentExtended:
 
         mock_html_parser = MagicMock()
         mock_html_parser.replace_relative_image_urls.return_value = "<html>clean</html>"
+        mock_html_parser.extract_and_replace_images = MagicMock(
+            return_value=("<html>clean</html>", [])
+        )
         mock_html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers[ExtensionTypes.HTML.value] = mock_html_parser
 
@@ -1857,6 +1863,9 @@ class TestProcessHtmlDocumentExtended:
 
         mock_html_parser = MagicMock()
         mock_html_parser.replace_relative_image_urls.return_value = "<html>test</html>"
+        mock_html_parser.extract_and_replace_images = MagicMock(
+            return_value=("<html>test</html>", [])
+        )
         mock_html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers[ExtensionTypes.HTML.value] = mock_html_parser
 

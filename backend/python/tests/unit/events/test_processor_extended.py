@@ -869,6 +869,7 @@ class TestProcessHtmlInputHandling:
 
         html_parser = MagicMock()
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
+        html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
         html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers = {"html": html_parser}
 
@@ -895,6 +896,7 @@ class TestProcessHtmlInputHandling:
 
         html_parser = MagicMock()
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
+        html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
         html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers = {"html": html_parser}
 
@@ -906,7 +908,7 @@ class TestProcessHtmlInputHandling:
                 proc.process_html_document("test.html", "r1", "1", "src", "o1", html_str, "vr1")
             )
 
-        html_parser.parse.assert_awaited_once_with("<p>Hello</p>")
+        html_parser.parse.assert_awaited_once_with("<p>Hello</p>", caption_map=None)
         assert any(e.event == "indexing_complete" for e in events)
 
 

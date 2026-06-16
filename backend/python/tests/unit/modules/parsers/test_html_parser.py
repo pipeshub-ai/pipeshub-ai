@@ -306,7 +306,7 @@ class TestDoclingHtmlParse:
     async def test_parse_uses_docling_processor(self, parser):
         expected = MagicMock()
         with patch(
-            "app.modules.parsers.pdf.docling.DoclingProcessor"
+            "app.modules.parsers.pdf.docling_processor.DoclingProcessor"
         ) as mock_processor_cls:
             instance = mock_processor_cls.return_value
             instance.parse_document = AsyncMock(return_value=MagicMock())
@@ -323,8 +323,8 @@ class TestDoclingHtmlParse:
         expected = MagicMock()
         with patch.object(parser, "clean_html", return_value="<p>cleaned</p>") as mock_clean, \
              patch.object(parser, "replace_relative_image_urls", return_value="<p>abs</p>") as mock_abs, \
-             patch("app.modules.parsers.html_parser.docling_html_parser.convert", return_value="# markdown") as mock_convert, \
-             patch("app.modules.parsers.pdf.docling.DoclingProcessor") as mock_processor_cls:
+             patch("html_to_markdown.convert", return_value="# markdown") as mock_convert, \
+             patch("app.modules.parsers.pdf.docling_processor.DoclingProcessor") as mock_processor_cls:
             instance = mock_processor_cls.return_value
             instance.parse_document = AsyncMock(return_value=MagicMock())
             instance.create_blocks = AsyncMock(return_value=expected)

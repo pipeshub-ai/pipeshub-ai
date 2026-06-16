@@ -1,7 +1,7 @@
 """Unit tests for Selectolax HTML parsing (converter + parser wrapper)."""
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -117,14 +117,16 @@ class TestCode:
             block for block in container.blocks
             if block.sub_type == BlockSubType.HEADING
         ]
-        assert len(container.block_groups) == 1
-        assert container.block_groups[0].type == GroupType.CODE
-        assert len(code_blocks) == 3
-        assert heading_blocks == []
+        code_groups = [
+            group for group in container.block_groups
+            if group.type == GroupType.CODE
+        ]
+        assert len(code_groups) == 2
+        assert len(code_blocks) == 2
         assert code_blocks[0].data == "A"
         assert code_blocks[1].data == "B"
-        assert code_blocks[2].data == "Hello"
-        assert _child_block_indices(container.block_groups[0]) == [0, 1, 2]
+        assert len(heading_blocks) == 1
+        assert heading_blocks[0].data == "Hello"
 
 
 class TestLists:
@@ -264,10 +266,8 @@ class TestTables:
         assert table_group.table_metadata is not None
         assert table_group.table_metadata.column_names == [
             "Region",
-            "Q1 / Revenue",
-            "Q1 / Units",
-            "Q2 / Revenue",
-            "Q2 / Units",
+            "Q1\nRevenue | Units",
+            "Q2\nRevenue | Units",
             "YTD Total",
         ]
         assert table_group.data is None
@@ -277,15 +277,13 @@ class TestTables:
         ]
         assert row_blocks[0].data["cells"] == [
             "North",
-            "$1.2M",
-            "4,200",
-            "$1.5M",
-            "5,100",
+            "$1.2M | 4,200",
+            "$1.5M | 5,100",
             "$2.7M",
         ]
         assert row_blocks[0].data["row_natural_language_text"] == (
-            "Region: North, Q1 / Revenue: $1.2M, Q1 / Units: 4,200, "
-            "Q2 / Revenue: $1.5M, Q2 / Units: 5,100, YTD Total: $2.7M"
+            "Region: North, Q1\nRevenue | Units: $1.2M | 4,200, "
+            "Q2\nRevenue | Units: $1.5M | 5,100, YTD Total: $2.7M"
         )
 
     def test_table_colspan_footer_row(self, converter: HtmlToBlocksConverter) -> None:

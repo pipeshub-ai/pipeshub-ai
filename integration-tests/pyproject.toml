@@ -40,6 +40,7 @@ dependencies = [
   "trafilatura>=2.0.0",
   "html-to-markdown==2.3.0",
   "markdownify==1.2.2",
+  "selectolax>=0.3.21",
   "httpx==0.28.1",
   "PyGithub==2.8.1",
   "python-gitlab==6.4.0",

@@ -80,6 +80,7 @@ class TestProcessHtmlDocument:
 
         html_parser = MagicMock()
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
+        html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
         html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers = {"html": html_parser}
 
@@ -103,6 +104,7 @@ class TestProcessHtmlDocument:
 
         html_parser = MagicMock()
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
+        html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
         html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers = {"html": html_parser}
 
@@ -112,7 +114,7 @@ class TestProcessHtmlDocument:
                 proc.process_html_document("test.html", "r1", "1", "web", "org1", "<p>Hello</p>", "vr1")
             )
 
-        html_parser.parse.assert_awaited_once_with("<p>Hello</p>")
+        html_parser.parse.assert_awaited_once_with("<p>Hello</p>", caption_map=None)
         assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
@@ -122,6 +124,7 @@ class TestProcessHtmlDocument:
 
         html_parser = MagicMock()
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
+        html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
         html_parser.parse = AsyncMock(side_effect=RuntimeError("parse failure"))
         proc.parsers = {"html": html_parser}
 
@@ -2103,6 +2106,9 @@ class TestProcessHtmlDocumentAdditional:
 
         html_parser = MagicMock()
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x.replace("relative", "absolute"))
+        html_parser.extract_and_replace_images = MagicMock(
+            side_effect=lambda x: (x.replace("relative", "absolute"), [])
+        )
         html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers = {"html": html_parser}
 
@@ -2304,6 +2310,7 @@ class TestEventTypeForwarding:
 
         html_parser = MagicMock()
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
+        html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
         html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers = {"html": html_parser}
 

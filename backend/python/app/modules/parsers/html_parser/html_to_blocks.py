@@ -111,6 +111,13 @@ _LEVEL_SEP = "\n"
 
 @dataclass
 class _OpenGroup:
+    """Tracks an in-progress ``BlockGroup`` while walking the DOM.
+
+    Child block and group indices are collected here and written to
+    ``BlockGroup.children`` only when the group is closed, because nested
+    nodes may arrive before we know the full membership of the group.
+    """
+
     index: int
     child_block_indices: list[int] = field(default_factory=list)
     child_group_indices: list[int] = field(default_factory=list)
@@ -118,7 +125,11 @@ class _OpenGroup:
 
 @dataclass
 class NormalizedCell:
-    """One slot in an expanded HTML table grid."""
+    """One slot in an expanded HTML table grid.
+
+    ``is_origin`` distinguishes the cell that owns content from colspan/rowspan
+    placeholder slots so collapse logic can merge spans without duplicating text.
+    """
 
     text: str
     rowspan: int = 1
@@ -129,7 +140,12 @@ class NormalizedCell:
 
 @dataclass
 class NormalizedTable:
-    """Collapsed table representation for block emission."""
+    """Collapsed table representation ready for block emission.
+
+    Header and body rows are already merged across colspan/rowspan so the DOM
+    walker can emit one ``TABLE_ROW`` block per logical row without re-parsing
+    span attributes at emission time.
+    """
 
     column_headers: list[str]
     body_rows: list[list[str]]
@@ -138,7 +154,11 @@ class NormalizedTable:
     has_header: bool
 
     def to_markdown(self) -> str:
-        """Render this normalized table as a GitHub-flavoured markdown table string."""
+        """Render this table as a GitHub-flavoured markdown pipe table.
+
+        Convenience wrapper used when a normalized table must be embedded inside
+        another cell or exported as markdown alongside block emission.
+        """
         return normalized_table_to_markdown(self)
 
 
@@ -148,7 +168,9 @@ class NormalizedTable:
 
 def _direct_children(node: LexborNode) -> Iterator[LexborNode]:
     """Yield each direct child node of a DOM element in document order.
-    Walks the sibling linked list starting at ``node.child`` until ``next`` is None.
+
+    Selectolax exposes children as a sibling linked list (``child`` → ``next``),
+    so we walk that chain rather than assuming a Python list of children.
     """
     child = node.child
     while child is not None:
@@ -170,7 +192,9 @@ def _node_text(node: LexborNode) -> str:
 
 def _is_hidden(node: LexborNode) -> bool:
     """Detect screen-reader-only or aria-hidden elements that should be skipped.
-    Checks for ``sr-only`` in the class list or ``aria-hidden="true"``.
+
+    Accessibility helper text (``sr-only``) and explicitly hidden nodes would
+    pollute search results if emitted as visible content blocks.
     """
     attrs = node.attributes or {}
     class_attr = attrs.get("class") or ""
@@ -196,7 +220,10 @@ def _language_from_node(node: LexborNode | None) -> str | None:
 
 def _has_block_descendant(node: LexborNode, depth: int = 0) -> bool:
     """Return True if any descendant is a block-level or container element.
-    Recurses into container tags; stops at depth 48 to avoid runaway traversal.
+
+    Used to decide whether a container should recurse into children or emit a
+    single shallow paragraph block. Depth is capped to avoid runaway traversal
+    on pathological markup.
     """
     if depth > 48:
         return False
@@ -212,7 +239,11 @@ def _has_block_descendant(node: LexborNode, depth: int = 0) -> bool:
 
 
 def _is_shallow_text_container(node: LexborNode) -> bool:
-    """True when a container holds text but no nested block-level children."""
+    """True when a container holds text but no nested block-level children.
+
+    Bare ``<div>text</div>`` nodes should become paragraph blocks instead of
+    being silently skipped during container recursion.
+    """
     return not _has_block_descendant(node) and bool(_node_text(node))
 
 
@@ -222,7 +253,10 @@ def _is_shallow_text_container(node: LexborNode) -> bool:
 
 def _has_inline_formatting(node: LexborNode, depth: int = 0) -> bool:
     """Return True if the subtree contains inline formatting tags (bold, links, etc.).
-    Skips block/container descendants; recurses into other inline elements.
+
+    Drives the choice between storing plain TXT vs. preserving MARKDOWN when
+    splitting element content. Block/container descendants are skipped because
+    they are handled by separate block emitters.
     """
     if depth > 48:
         return False
@@ -257,8 +291,11 @@ def _split_element_content(
     *,
     base_url: str = "",
 ) -> tuple[str, list[LexborNode], DataFormat]:
-    """Split a block element into text, embedded ``<img>`` nodes, and TXT vs MARKDOWN format.
-    Uses markdownify when inline formatting is present; otherwise concatenates plain text.
+    """Split a block element into text, embedded ``<img>`` nodes, and storage format.
+
+    Images are peeled off so callers can emit them as standalone ``BlockType.IMAGE``
+    entries (required by downstream indexing). Uses markdownify when inline
+    formatting is present; otherwise concatenates plain text for simpler retrieval.
     """
     image_nodes: list[LexborNode] = []
     for child in _direct_children(node):
@@ -292,7 +329,9 @@ def _split_element_content(
 
 def _html_to_markdown(html: str, *, base_url: str = "") -> str:
     """Convert an HTML fragment to ATX-style markdown via markdownify.
-    Resolves relative anchor hrefs against ``base_url`` before conversion.
+
+    Relative anchor hrefs are resolved first so list items, blockquotes, and
+    other stored markdown slices contain absolute links when ``base_url`` is set.
     """
     if not html:
         return ""
@@ -567,7 +606,11 @@ def _collapse_single_column_cell(
 
 
 def _format_table_row(headers: list[str], cells: list[str]) -> str:
-    """Build a natural-language row string as ``Header: value`` pairs joined by commas."""
+    """Build a compact ``Header: value`` sentence for one table row.
+
+    Gives RAG and search a readable row representation without parsing the JSON
+    cell array at query time.
+    """
     if headers:
         parts = [
             f"{headers[i] if i < len(headers) else f'Column {i + 1}'}: {cell}"
@@ -635,7 +678,11 @@ class HtmlTableNormalizer:
     """
 
     def normalize(self, table_node: LexborNode) -> NormalizedTable:
-        """Expand rowspan/colspan into a grid, then collapse headers and body into logical columns."""
+        """Expand rowspan/colspan into a grid, then collapse into logical columns.
+
+        Produces the same collapsed shape the block walker expects: one header
+        label per logical column and one body row per merged HTML row group.
+        """
         header_row_nodes, body_row_nodes = _table_section_rows(table_node)
         header_grid = self._expand_rows(header_row_nodes, is_header=True)
         body_grid = self._expand_rows(body_row_nodes, is_header=False)
@@ -758,7 +805,11 @@ class HtmlTableNormalizer:
 
 
 def normalize_html_table(table_node: LexborNode) -> NormalizedTable:
-    """Public entry: normalize one ``<table>`` DOM node into collapsed logical-column rows."""
+    """Public entry: normalize one ``<table>`` DOM node into collapsed logical columns.
+
+    Thin wrapper around ``HtmlTableNormalizer`` for callers that need the
+    collapsed grid without walking the full block conversion pipeline.
+    """
     return HtmlTableNormalizer().normalize(table_node)
 
 
@@ -781,7 +832,12 @@ def normalized_table_to_markdown(
 # ---------------------------------------------------------------------------
 
 class HtmlToBlocksConverter:
-    """Convert HTML content directly into BlocksContainer."""
+    """Convert HTML content directly into BlocksContainer without Docling.
+
+    Uses Selectolax (Lexbor) for DOM parsing so we can map HTML structures to
+    the platform's block schema without running the heavier Docling pipeline.
+    Block/group mapping mirrors ``markdown_to_blocks.MarkdownToBlocksConverter``.
+    """
 
     def convert(
         self,
@@ -790,7 +846,19 @@ class HtmlToBlocksConverter:
         base_url: str | None = None,
         caption_map: dict[str, str] | None = None,
     ) -> BlocksContainer:
-        """Parse HTML with Lexbor and walk the DOM tree into a ``BlocksContainer``."""
+        """Parse HTML and walk the DOM tree into a ``BlocksContainer``.
+
+        Args:
+            html_content: HTML source string.
+            base_url: Optional base URL for resolving relative ``<a href>`` and
+                ``<img src>`` values.
+            caption_map: Optional mapping of image alt-text to base-64 data URIs.
+                When present, matching alts produce ``DataFormat.BASE64`` image
+                blocks instead of URL references.
+
+        Returns:
+            Populated BlocksContainer with blocks and block_groups.
+        """
         parser = LexborHTMLParser(html_content)
         root = parser.body or parser.root
         if root is None:
@@ -804,13 +872,25 @@ class HtmlToBlocksConverter:
 # ---------------------------------------------------------------------------
 
 class _DomWalker:
+    """Stateful visitor that turns Lexbor DOM nodes into blocks and groups.
+
+    Maintains a group nesting stack so list, quote, code, and table structures
+    mirror HTML hierarchy. Tag dispatch in ``_process_node`` follows the mapping
+    documented in this module's module-level docstring.
+    """
+
     def __init__(
         self,
         *,
         base_url: str | None = None,
         caption_map: dict[str, str] | None = None,
     ) -> None:
-        """Initialize block/group accumulators and optional URL and image-caption lookup maps."""
+        """Initialize walker state for one conversion pass.
+
+        Args:
+            base_url: Base URL for resolving relative links and image sources.
+            caption_map: Alt-text to base64 URI map for inlined images.
+        """
         self.base_url = base_url or ""
         self.caption_map = caption_map or {}
         self.blocks: list[Block] = []
@@ -820,7 +900,11 @@ class _DomWalker:
     # ------------------------------------------------------------------ traversal
 
     def walk(self, root: LexborNode) -> BlocksContainer:
-        """Traverse the DOM from ``root`` and return the collected blocks and block groups."""
+        """Traverse the DOM from ``root`` and return the assembled container.
+
+        Only direct children are walked from ``root``; callers pass ``body`` or
+        the document root so the full tree is covered in one pass.
+        """
         self._walk_children(root)
         return BlocksContainer(blocks=self.blocks, block_groups=self.block_groups)
 
@@ -831,7 +915,11 @@ class _DomWalker:
 
     def _process_node(self, node: LexborNode) -> None:  # noqa: C901
         """Route one DOM node to the correct block emitter based on its HTML tag.
-        Skips hidden/utility tags; recurses into containers; maps semantic tags to block types.
+
+        Skips utility/hidden tags, recurses into containers, and maps semantic
+        tags to block types per the module docstring. ``<pre>`` with nested
+        ``<code>`` children is special-cased so code blocks and surrounding
+        structure are both preserved.
         """
         tag = _tag_name(node)
         if not tag or tag in _SKIP_TAGS:
@@ -921,7 +1009,7 @@ class _DomWalker:
     # ------------------------------------------------------------------ group management
 
     def _current_parent_index(self) -> int | None:
-        """Return the index of the innermost open block group, or None at the root."""
+        """Index of the innermost open group, or ``None`` at document root."""
         return self.group_stack[-1].index if self.group_stack else None
 
     def _open_group(
@@ -929,7 +1017,11 @@ class _DomWalker:
         group_type: GroupType,
         sub_type: GroupSubType | None = None,
     ) -> None:
-        """Push a new block group onto the stack and link it to the current parent group."""
+        """Create a ``BlockGroup`` and push it onto the nesting stack.
+
+        The new group is linked as a child of the current parent (if any) so
+        the tree mirrors HTML nesting (e.g. list inside blockquote).
+        """
         parent_index = self._current_parent_index()
         group = BlockGroup(
             index=len(self.block_groups),
@@ -943,7 +1035,11 @@ class _DomWalker:
         self.group_stack.append(_OpenGroup(index=group.index))
 
     def _close_group(self) -> None:
-        """Pop the top open group and attach its collected child block/group indices."""
+        """Pop the innermost group and attach collected child indices.
+
+        Child membership is finalized here because blocks and sub-groups may be
+        appended throughout the open group's DOM span.
+        """
         if not self.group_stack:
             return
         open_group = self.group_stack.pop()
@@ -954,7 +1050,7 @@ class _DomWalker:
         )
 
     def _add_block(self, block: Block) -> Block:
-        """Append a block with the next index and register it under the current open group."""
+        """Append a block and record it as a child of the current open group."""
         block.index = len(self.blocks)
         self.blocks.append(block)
         if self.group_stack:
@@ -964,7 +1060,11 @@ class _DomWalker:
     # ------------------------------------------------------------------ lists
 
     def _process_list(self, list_node: LexborNode, *, ordered: bool) -> None:
-        """Open a LIST or ORDERED_LIST group and emit one LIST_ITEM block per ``<li>``."""
+        """Open a LIST or ORDERED_LIST group and emit one LIST_ITEM per ``<li>``.
+
+        Also scans wrapper containers inside the list because malformed HTML
+        sometimes nests ``<li>`` elements inside extra ``<div>`` layers.
+        """
         group_type = GroupType.ORDERED_LIST if ordered else GroupType.LIST
         self._open_group(group_type)
         for child in _direct_children(list_node):
@@ -987,7 +1087,11 @@ class _DomWalker:
                 self._emit_list_items_from_container(child)
 
     def _process_list_item(self, li_node: LexborNode) -> None:
-        """Emit one LIST_ITEM block with the ``<li>`` inner HTML converted to markdown."""
+        """Emit one LIST_ITEM block with the ``<li>`` inner HTML as markdown.
+
+        Stores the full inner HTML (not just text) so nested lists, links, and
+        inline formatting inside the item survive for display and re-export.
+        """
         html = li_node.inner_html.strip()
         if not html:
             return
@@ -1004,7 +1108,11 @@ class _DomWalker:
     # ------------------------------------------------------------------ code
 
     def _emit_code_group(self, content: str, language: str | None) -> None:
-        """Wrap bare ``<code>``/``<pre>`` content in a CODE group with language metadata."""
+        """Wrap bare ``<code>``/``<pre>`` content in a CODE group with language metadata.
+
+        The group exists so code is treated consistently with other structured
+        block types (list, quote, table) and can carry group-level metadata.
+        """
         if not content:
             return
         self._open_group(GroupType.CODE)
@@ -1023,7 +1131,11 @@ class _DomWalker:
     # ------------------------------------------------------------------ quote & details
 
     def _emit_blockquote(self, node: LexborNode) -> None:
-        """Open a QUOTE group and store the blockquote inner HTML as one markdown block."""
+        """Open a QUOTE group and store the blockquote inner HTML as one markdown block.
+
+        The entire inner HTML is kept as a single block (like markdown list
+        items) so nested structure stays faithful to the source.
+        """
         self._open_group(GroupType.TEXT_SECTION, GroupSubType.QUOTE)
         html = node.inner_html.strip()
         if html:
@@ -1039,7 +1151,11 @@ class _DomWalker:
         self._close_group()
 
     def _process_details(self, node: LexborNode) -> None:
-        """Emit ``<summary>`` as a heading, then process all other ``<details>`` children normally."""
+        """Emit ``<summary>`` as a heading, then process sibling children normally.
+
+        ``<details>`` has no direct block-group mapping; the summary is surfaced
+        as a heading so disclosure widgets remain navigable in search.
+        """
         for child in _direct_children(node):
             if _tag_name(child) == "summary":
                 self._emit_text_block(child, BlockSubType.HEADING)
@@ -1052,7 +1168,11 @@ class _DomWalker:
     # ------------------------------------------------------------------ text
 
     def _emit_text_block(self, node: LexborNode, sub_type: BlockSubType) -> None:
-        """Emit a TEXT block (heading, paragraph, etc.) plus any embedded ``<img>`` children."""
+        """Emit a TEXT block (heading, paragraph, etc.) plus embedded ``<img>`` children.
+
+        Text and images are split so images become separate ``BlockType.IMAGE``
+        entries. Format is MARKDOWN when inline markup must be preserved, else TXT.
+        """
         text, image_nodes, data_format = _split_element_content(node, base_url=self.base_url)
         if text:
             self._add_block(Block(
@@ -1068,7 +1188,11 @@ class _DomWalker:
             self._emit_image(img)
 
     def _emit_inline_block(self, node: LexborNode) -> None:
-        """Emit a standalone paragraph for orphaned inline elements (e.g. a bare ``<a>`` tag)."""
+        """Emit a standalone paragraph for orphaned inline elements.
+
+        Handles bare ``<a>``, ``<strong>``, etc. that appear outside a block
+        wrapper in malformed or CMS-generated HTML.
+        """
         html = node.html.strip()
         if not html:
             return
@@ -1088,7 +1212,12 @@ class _DomWalker:
     # ------------------------------------------------------------------ image
 
     def _emit_image(self, node: LexborNode) -> None:
-        """Emit an IMAGE block with resolved src URL and optional caption-map base64 URI."""
+        """Emit an IMAGE block with resolved src URL and optional caption-map URI.
+
+        Prefers ``caption_map`` lookup by alt text (base64 inlined assets) over
+        the resolved ``src`` URL. Falls back to the first ``srcset`` candidate
+        when ``src`` is absent.
+        """
         attrs = node.attributes or {}
         alt_text = (attrs.get("alt") or "").strip()
         src = (attrs.get("src") or "").strip()
@@ -1120,7 +1249,12 @@ class _DomWalker:
     # ------------------------------------------------------------------ table
 
     def _process_table(self, table_node: LexborNode) -> None:
-        """Normalize a ``<table>``, emit JSON TABLE_ROW blocks, and attach ``TableMetadata`` to the group."""
+        """Normalize a ``<table>`` and emit TABLE_ROW blocks with metadata.
+
+        Rows are appended directly to ``self.blocks`` (not via ``_add_block``)
+        because the table group wires row indices in ``group.children`` and
+        then pops itself off the stack without propagating row indices upward.
+        """
         self._open_group(GroupType.TABLE)
         open_group = self.group_stack[-1]
         group = self.block_groups[open_group.index]
