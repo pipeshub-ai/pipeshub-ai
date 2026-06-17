@@ -2,7 +2,7 @@
 Cleaned-up GitLab data source: the authoritative async/sync wrapper over python-gitlab.
 
 This file is the sibling of ``gitlab_.py`` and replaces it after the refactor swap.
-Only methods actively used by the GitLab connector (gitlab1/) or the GitLab agent
+Only methods actively used by the GitLab connector (gitlab/) or the GitLab agent
 action (app/agents/actions/gitlab/gitlab.py) are retained.  Unused CRUD methods
 (branches, tags, pipelines, releases, milestones, labels, member mutations, group
 mutations) have been removed.
@@ -112,9 +112,9 @@ class GitLabDataSource:
     # ------------------------------------------------------------------
 
     # Used by:
-    #   gitlab1/connector.py  - GitLabConnector.init (resolve current user)
-    #   gitlab1/connector.py  - GitLabConnector.test_connection_and_access
-    #   gitlab1/users.py      - UsersSync._resolve_creator_identity
+    #   gitlab/connector.py  - GitLabConnector.init (resolve current user)
+    #   gitlab/connector.py  - GitLabConnector.test_connection_and_access
+    #   gitlab/users.py      - UsersSync._resolve_creator_identity
     def get_user(self, user_id: int | str | None = None) -> GitLabResponse:
         """Return the authenticated user (no args) or any user by numeric/string ID.
 
@@ -135,7 +135,7 @@ class GitLabDataSource:
     # ------------------------------------------------------------------
 
     # Used by:
-    #   gitlab1/projects.py - ProjectsSync._resolve_projects_with_filters (lookup by path)
+    #   gitlab/projects.py - ProjectsSync._resolve_projects_with_filters (lookup by path)
     def get_project(self, project_id: int | str) -> GitLabResponse:
         """Return a single project by numeric ID or full path.
 
@@ -148,10 +148,10 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     # Used by:
-    #   gitlab1/projects.py - ProjectsSync._resolve_projects_with_filters (unscoped)
-    #   gitlab1/users.py    - UsersSync._sync_users_unscoped
-    #   gitlab1/scope.py    - ScopeHelper._paged_list_projects_with_role_fallback
-    #   gitlab1/filters.py  - FiltersOps._gitlab_project_filter_options
+    #   gitlab/projects.py - ProjectsSync._resolve_projects_with_filters (unscoped)
+    #   gitlab/users.py    - UsersSync._sync_users_unscoped
+    #   gitlab/scope.py    - ScopeHelper._paged_list_projects_with_role_fallback
+    #   gitlab/filters.py  - FiltersOps._gitlab_project_filter_options
     def list_projects(
         self,
         search: str | None = None,
@@ -209,8 +209,8 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     # Used by:
-    #   gitlab1/projects.py - ProjectsSync._resolve_projects_with_filters (group-scoped)
-    #   gitlab1/filters.py  - FiltersOps._gitlab_project_filter_options (scoped picker)
+    #   gitlab/projects.py - ProjectsSync._resolve_projects_with_filters (group-scoped)
+    #   gitlab/filters.py  - FiltersOps._gitlab_project_filter_options (scoped picker)
     def list_group_projects(
         self,
         group_id: int | str,
@@ -328,7 +328,7 @@ class GitLabDataSource:
     # ------------------------------------------------------------------
 
     # Used by:
-    #   gitlab1/issues.py - IssuesSync._fetch_issues_batched
+    #   gitlab/issues.py - IssuesSync._fetch_issues_batched
     def list_issues(
         self,
         project_id: int | str,
@@ -366,8 +366,8 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     # Used by:
-    #   gitlab1/issues.py - IssuesSync._build_ticket_blocks
-    #   gitlab1/issues.py - IssuesSync._check_and_fetch_updated_record_for_reindex
+    #   gitlab/issues.py - IssuesSync._build_ticket_blocks
+    #   gitlab/issues.py - IssuesSync._check_and_fetch_updated_record_for_reindex
     def get_issue(self, project_id: int | str, issue_iid: int) -> GitLabResponse:
         """Fetch a single issue by IID.  ``data`` is a ``ProjectIssue``."""
         try:
@@ -444,8 +444,8 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     # Used by:
-    #   gitlab1/issues.py    - IssuesSync._build_ticket_blocks
-    #   gitlab1/attachments.py - AttachmentsHelper.make_files_records_from_notes
+    #   gitlab/issues.py    - IssuesSync._build_ticket_blocks
+    #   gitlab/attachments.py - AttachmentsHelper.make_files_records_from_notes
     def list_issue_notes(
         self, project_id: int | str, issue_iid: int, get_all: bool | None = None
     ) -> GitLabResponse:
@@ -461,7 +461,7 @@ class GitLabDataSource:
     # ------------------------------------------------------------------
 
     # Used by:
-    #   gitlab1/merge_requests.py - MergeRequestsSync._fetch_prs_batched
+    #   gitlab/merge_requests.py - MergeRequestsSync._fetch_prs_batched
     def list_merge_requests(
         self,
         project_id: int | str,
@@ -499,9 +499,9 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     # Used by:
-    #   gitlab1/merge_requests.py - MergeRequestsSync._build_pull_request_blocks
-    #   gitlab1/merge_requests.py - MergeRequestsSync._check_and_fetch_updated_record_for_reindex
-    #   gitlab1/comments.py       - CommentsHelper._build_merge_request_comment_blocks
+    #   gitlab/merge_requests.py - MergeRequestsSync._build_pull_request_blocks
+    #   gitlab/merge_requests.py - MergeRequestsSync._check_and_fetch_updated_record_for_reindex
+    #   gitlab/comments.py       - CommentsHelper._build_merge_request_comment_blocks
     def get_merge_request(self, project_id: int | str, mr_iid: int) -> GitLabResponse:
         """Fetch a single merge request by IID.  ``data`` is a ``ProjectMergeRequest``."""
         try:
@@ -513,8 +513,8 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     # Used by:
-    #   gitlab1/comments.py - CommentsHelper._build_merge_request_comment_blocks
-    #   gitlab1/attachments.py - AttachmentsHelper.make_files_records_from_notes
+    #   gitlab/comments.py - CommentsHelper._build_merge_request_comment_blocks
+    #   gitlab/attachments.py - AttachmentsHelper.make_files_records_from_notes
     def list_merge_request_notes(
         self, project_id: int | str, mr_iid: int, get_all: bool | None = None
     ) -> GitLabResponse:
@@ -527,7 +527,7 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     # Used by:
-    #   gitlab1/comments.py - CommentsHelper._build_merge_request_comment_blocks
+    #   gitlab/comments.py - CommentsHelper._build_merge_request_comment_blocks
     def list_merge_request_changes(
         self, project_id: int | str, mr_iid: int
     ) -> GitLabResponse:
@@ -545,7 +545,7 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     # Used by:
-    #   gitlab1/merge_requests.py - MergeRequestsSync._build_pull_request_blocks
+    #   gitlab/merge_requests.py - MergeRequestsSync._build_pull_request_blocks
     def list_merge_requests_commits(
         self, project_id: int | str, mr_iid: int, get_all: bool | None = None
     ) -> GitLabResponse:
@@ -614,7 +614,7 @@ class GitLabDataSource:
     # ------------------------------------------------------------------
 
     # Used by:
-    #   gitlab1/repos.py - ReposSync._sync_repo_main (get HEAD SHA)
+    #   gitlab/repos.py - ReposSync._sync_repo_main (get HEAD SHA)
     def get_branch(self, project_id: int | str, branch: str) -> GitLabResponse:
         """Fetch a branch object.  ``data`` has a ``commit`` field with the HEAD SHA."""
         try:
@@ -623,7 +623,7 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     # Used by:
-    #   gitlab1/repos.py - ReposSync._sync_repo_incremental
+    #   gitlab/repos.py - ReposSync._sync_repo_incremental
     def compare_commits(
         self,
         project_id: int | str,
@@ -645,7 +645,7 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     # Used by:
-    #   gitlab1/repos.py - ReposSync._code_file_source_timestamps
+    #   gitlab/repos.py - ReposSync._code_file_source_timestamps
     def list_commits_for_path(
         self,
         project_id: int | str,
@@ -712,8 +712,8 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     # Used by:
-    #   gitlab1/repos.py - ReposSync._sync_repo_incremental (incremental diff rename detection)
-    #   gitlab1/repos.py - ReposSync._upsert_code_files_by_paths
+    #   gitlab/repos.py - ReposSync._sync_repo_incremental (incremental diff rename detection)
+    #   gitlab/repos.py - ReposSync._upsert_code_files_by_paths
     def list_repo_tree(
         self,
         project_id: int | str,
@@ -742,8 +742,8 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     # Used by:
-    #   gitlab1/repos.py    - ReposSync._sync_repo_full (file content download)
-    #   gitlab1/comments.py - CommentsHelper._build_merge_request_comment_blocks
+    #   gitlab/repos.py    - ReposSync._sync_repo_full (file content download)
+    #   gitlab/comments.py - CommentsHelper._build_merge_request_comment_blocks
     def get_file_content(
         self, project_id: int | str, file_path: str, ref: str = "HEAD"
     ) -> GitLabResponse:
@@ -762,7 +762,7 @@ class GitLabDataSource:
     # ------------------------------------------------------------------
 
     # Used by:
-    #   gitlab1/repos.py - ReposSync._sync_repo_full (folder tree via GraphQL)
+    #   gitlab/repos.py - ReposSync._sync_repo_full (folder tree via GraphQL)
     async def get_repo_tree_g(
         self, project_id: str, ref: str | None = "HEAD", after_cursor: str = ""
     ) -> GitLabResponse:
@@ -808,7 +808,7 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     # Used by:
-    #   gitlab1/repos.py - ReposSync._fetch_blob_page (file blob tree via GraphQL)
+    #   gitlab/repos.py - ReposSync._fetch_blob_page (file blob tree via GraphQL)
     async def get_file_tree_g(
         self,
         project_id: int | str,
@@ -858,10 +858,10 @@ class GitLabDataSource:
     # ------------------------------------------------------------------
 
     # Used by:
-    #   gitlab1/projects.py - ProjectsSync._sync_project_members_as_pseudo
-    #   gitlab1/projects.py - ProjectsSync._group_permissions_from_child_projects
-    #   gitlab1/users.py    - UsersSync._sync_users_unscoped
-    #   gitlab1/users.py    - UsersSync._sync_users_scoped
+    #   gitlab/projects.py - ProjectsSync._sync_project_members_as_pseudo
+    #   gitlab/projects.py - ProjectsSync._group_permissions_from_child_projects
+    #   gitlab/users.py    - UsersSync._sync_users_unscoped
+    #   gitlab/users.py    - UsersSync._sync_users_scoped
     def list_project_members_all(
         self,
         project_id: str | int,
@@ -883,9 +883,9 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     # Used by:
-    #   gitlab1/users.py    - UsersSync._sync_users_unscoped
-    #   gitlab1/users.py    - UsersSync._sync_users_scoped
-    #   gitlab1/projects.py - ProjectsSync._group_permissions_from_child_projects
+    #   gitlab/users.py    - UsersSync._sync_users_unscoped
+    #   gitlab/users.py    - UsersSync._sync_users_scoped
+    #   gitlab/projects.py - ProjectsSync._group_permissions_from_child_projects
     def list_group_members_all(
         self,
         group_id: int | str,
@@ -910,11 +910,11 @@ class GitLabDataSource:
     # ------------------------------------------------------------------
 
     # Used by:
-    #   gitlab1/users.py    - UsersSync._sync_users_unscoped
-    #   gitlab1/users.py    - UsersSync._sync_users_scoped (NOT_IN path)
-    #   gitlab1/scope.py    - ScopeHelper._paged_list_groups_with_role_fallback
-    #   gitlab1/scope.py    - ScopeHelper._expand_groups_with_descendants
-    #   gitlab1/filters.py  - FiltersOps._gitlab_group_filter_options
+    #   gitlab/users.py    - UsersSync._sync_users_unscoped
+    #   gitlab/users.py    - UsersSync._sync_users_scoped (NOT_IN path)
+    #   gitlab/scope.py    - ScopeHelper._paged_list_groups_with_role_fallback
+    #   gitlab/scope.py    - ScopeHelper._expand_groups_with_descendants
+    #   gitlab/filters.py  - FiltersOps._gitlab_group_filter_options
     def list_groups(
         self,
         search: str | None = None,
@@ -964,7 +964,7 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     # Used by:
-    #   gitlab1/scope.py    - ScopeHelper._expand_groups_with_descendants (auditor fallback)
+    #   gitlab/scope.py    - ScopeHelper._expand_groups_with_descendants (auditor fallback)
     def list_descendant_groups(
         self,
         group_id: int | str,
@@ -1009,8 +1009,8 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
 
     # Used by:
-    #   gitlab1/projects.py   - ProjectsSync._ensure_gitlab_group_record_groups
-    #   gitlab1/users.py      - UsersSync._sync_users_scoped (per-group member walk)
+    #   gitlab/projects.py   - ProjectsSync._ensure_gitlab_group_record_groups
+    #   gitlab/users.py      - UsersSync._sync_users_scoped (per-group member walk)
     def get_group(self, group_id: int | str) -> GitLabResponse:
         """Fetch a group by numeric ID or full path.  ``data`` is a python-gitlab ``Group``."""
         try:
@@ -1023,7 +1023,7 @@ class GitLabDataSource:
     # ------------------------------------------------------------------
 
     # Used by:
-    #   gitlab1/attachments.py - AttachmentsHelper.embed_images_as_base64
+    #   gitlab/attachments.py - AttachmentsHelper.embed_images_as_base64
     async def get_img_bytes(self, image_url: str) -> GitLabResponse:
         """Fetch raw image bytes from a GitLab attachment URL.
 
@@ -1044,7 +1044,7 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=f"Error fetching image from {image_url}: {e}")
 
     # Used by:
-    #   gitlab1/attachments.py - AttachmentsHelper._fetch_attachment_content
+    #   gitlab/attachments.py - AttachmentsHelper._fetch_attachment_content
     async def get_attachment_files_content(
         self, weburl: str
     ) -> AsyncGenerator[bytes, None]:

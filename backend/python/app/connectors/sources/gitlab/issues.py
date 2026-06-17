@@ -31,10 +31,11 @@ from app.models.blocks import (
 )
 from app.utils.time_conversion import parse_timestamp, string_to_datetime
 
+from .common.utils import parse_item_id_from_url
 from .models import GitlabLiterals, RecordUpdate
 
 if TYPE_CHECKING:
-    from app.connectors.sources.gitlab1.connector import GitLabConnector
+    from app.connectors.sources.gitlab.connector import GitLabConnector
 
 
 class IssuesSync:
@@ -241,7 +242,7 @@ class IssuesSync:
         raw_url = getattr(record, "weburl", "") or ""
         if not raw_url:
             raise ValueError("Web URL is required for indexing ticket")
-        issue_number = int(raw_url.split("/")[7])
+        issue_number = parse_item_id_from_url(raw_url)
         external_group_id: str = getattr(record, "external_record_group_id")
         if not external_group_id:
             raise Exception("Project id not found.")

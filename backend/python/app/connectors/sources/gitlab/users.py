@@ -23,7 +23,7 @@ from app.models.entities import AppUser
 from .constants import _GITLAB_USER_ENRICHMENT_CONCURRENCY
 
 if TYPE_CHECKING:
-    from app.connectors.sources.gitlab1.connector import GitLabConnector
+    from app.connectors.sources.gitlab.connector import GitLabConnector
 
 
 def _filter_op_val(f: Any) -> str:

@@ -35,10 +35,11 @@ from app.models.blocks import (
 )
 from app.utils.time_conversion import parse_timestamp, string_to_datetime
 
+from .common.utils import parse_item_id_from_url
 from .models import GitlabLiterals, RecordUpdate
 
 if TYPE_CHECKING:
-    from app.connectors.sources.gitlab1.connector import GitLabConnector
+    from app.connectors.sources.gitlab.connector import GitLabConnector
 
 
 class MergeRequestsSync:
@@ -218,7 +219,7 @@ class MergeRequestsSync:
         raw_url = getattr(record, "weburl", "") or ""
         if not raw_url:
             raise ValueError("Web URL is required for indexing merge request")
-        mr_number = int(raw_url.split("/")[7])
+        mr_number = parse_item_id_from_url(raw_url)
         external_group_id = getattr(record, "external_record_group_id")
         if not external_group_id:
             raise Exception("Project id not found.")
@@ -334,7 +335,7 @@ class MergeRequestsSync:
         if dash_idx + 2 >= len(segments):
             return None
         resource = segments[dash_idx + 1]
-        if resource not in ("issues", "merge_requests"):
+        if resource not in ("issues", "work_items", "merge_requests"):
             return None
         try:
             iid = int(segments[dash_idx + 2])

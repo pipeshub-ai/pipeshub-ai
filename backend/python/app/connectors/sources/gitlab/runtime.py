@@ -33,7 +33,7 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
-    from app.connectors.sources.gitlab1.connector import GitLabConnector
+    from app.connectors.sources.gitlab.connector import GitLabConnector
 
 
 class RuntimeHelper:

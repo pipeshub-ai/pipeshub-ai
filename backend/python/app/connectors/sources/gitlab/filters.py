@@ -26,7 +26,7 @@ from .constants import (
 from .models import GitlabLiterals
 
 if TYPE_CHECKING:
-    from app.connectors.sources.gitlab1.connector import GitLabConnector
+    from app.connectors.sources.gitlab.connector import GitLabConnector
 
 
 class FiltersHelper:
@@ -285,7 +285,7 @@ class FiltersHelper:
             proj_kwargs["order_by"] = "path"
             proj_kwargs["sort"] = "asc"
 
-        from app.connectors.sources.gitlab1.projects import _namespace_full_path, _namespace_under_any_prefix
+        from app.connectors.sources.gitlab.projects import _namespace_full_path, _namespace_under_any_prefix
 
         if search:
             needle = search.casefold()

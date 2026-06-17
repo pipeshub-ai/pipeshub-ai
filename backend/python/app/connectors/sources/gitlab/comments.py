@@ -22,10 +22,11 @@ from app.models.blocks import (
 )
 from app.utils.time_conversion import string_to_datetime
 
+from .common.utils import parse_item_id_from_url
 from .models import GitlabLiterals, RecordUpdate
 
 if TYPE_CHECKING:
-    from app.connectors.sources.gitlab1.connector import GitLabConnector
+    from app.connectors.sources.gitlab.connector import GitLabConnector
 
 
 class CommentsHelper:
@@ -44,7 +45,7 @@ class CommentsHelper:
     ) -> tuple[list[BlockGroup], list[RecordUpdate]]:
         """Build BlockGroups from an issue's notes."""
         c = self.c
-        issue_number = int(issue_url.split("/")[7])
+        issue_number = parse_item_id_from_url(issue_url)
         project_id = record.external_record_group_id.split("-")[0]
 
         comments_res = await c.runtime.ds_call(
@@ -102,7 +103,7 @@ class CommentsHelper:
     ) -> tuple[list[BlockGroup], list[RecordUpdate]]:
         """Build BlockGroups from MR notes and per-file code diffs."""
         c = self.c
-        mr_number = int(mr_url.split("/")[7])
+        mr_number = parse_item_id_from_url(mr_url)
         project_id = record.external_record_group_id.split("-")[0]
 
         comments_res = await c.runtime.ds_call(

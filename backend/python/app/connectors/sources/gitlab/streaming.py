@@ -18,7 +18,7 @@ from app.models.entities import CodeFileRecord, Record, RecordType
 from app.utils.streaming import create_stream_record_response
 
 if TYPE_CHECKING:
-    from app.connectors.sources.gitlab1.connector import GitLabConnector
+    from app.connectors.sources.gitlab.connector import GitLabConnector
 
 
 async def _stream_with_eager_first_chunk(

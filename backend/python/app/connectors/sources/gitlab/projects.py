@@ -22,7 +22,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from .constants import PSEUDO_USER_GROUP_PREFIX
 
 if TYPE_CHECKING:
-    from app.connectors.sources.gitlab1.connector import GitLabConnector
+    from app.connectors.sources.gitlab.connector import GitLabConnector
 
 
 def _filter_op_val(f: Any) -> str:

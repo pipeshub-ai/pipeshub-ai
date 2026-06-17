@@ -41,7 +41,7 @@ from .constants import (
 from .models import GitlabLiterals, RecordUpdate
 
 if TYPE_CHECKING:
-    from app.connectors.sources.gitlab1.connector import GitLabConnector
+    from app.connectors.sources.gitlab.connector import GitLabConnector
 
 
 class ReposSync:

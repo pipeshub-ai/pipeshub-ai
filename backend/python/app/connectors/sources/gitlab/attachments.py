@@ -31,7 +31,7 @@ from .constants import IMAGE_EXTENSIONS, UPLOAD_PATTERN
 from .models import FileAttachment, GitlabLiterals, RecordUpdate
 
 if TYPE_CHECKING:
-    from app.connectors.sources.gitlab1.connector import GitLabConnector
+    from app.connectors.sources.gitlab.connector import GitLabConnector
 
 
 class AttachmentsHelper:

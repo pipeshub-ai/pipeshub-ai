@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 from app.sources.client.gitlab.gitlab import GitLabResponse
 
 if TYPE_CHECKING:
-    from app.connectors.sources.gitlab1.connector import GitLabConnector
+    from app.connectors.sources.gitlab.connector import GitLabConnector
 
 
 class ScopeHelper:

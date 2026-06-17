@@ -4116,11 +4116,13 @@ def _make_old_record(
     *,
     record_id: str = "old-rec-1",
     external_revision_id: str = "sha-old",
+    indexing_status: str = ProgressStatus.NOT_STARTED.value,
 ) -> MagicMock:
     """Build a minimal existing DB record mock returned by get_record_by_external_id."""
     rec = MagicMock()
     rec.id = record_id
     rec.external_revision_id = external_revision_id
+    rec.indexing_status = indexing_status
     return rec
 
 
@@ -4341,3 +4343,73 @@ class TestOnRecordsMovedReindex:
         # Only the content-changed record fires an event
         assert event_types.count("updateRecord") == 1
         assert "newRecord" not in event_types
+
+    async def test_completed_record_pure_rename_preserves_completed_status(self) -> None:
+        """Pure rename of a COMPLETED record keeps indexing_status = COMPLETED.
+
+        When the blob SHA is unchanged the file content did not change, so there
+        is no need to re-index.  Resetting the status would incorrectly trigger
+        a re-index cycle on the next run.
+        """
+        tx_store = _make_tx_store()
+        shared_sha = "sha-same"
+        old_record = _make_old_record(
+            record_id="rec-done",
+            external_revision_id=shared_sha,
+            indexing_status=ProgressStatus.COMPLETED.value,
+        )
+        new_record = _make_code_record(
+            record_id="fresh-uuid",
+            external_revision_id=shared_sha,  # same SHA → pure rename
+        )
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        assert new_record.indexing_status == ProgressStatus.COMPLETED.value
+
+    async def test_completed_record_content_change_resets_to_not_started(self) -> None:
+        """Move of a COMPLETED record whose content changed resets status to NOT_STARTED.
+
+        The new content has not been indexed yet, so the status must be reset so
+        the indexing pipeline picks it up for re-embedding.
+        """
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(
+            record_id="rec-done",
+            external_revision_id="sha-before",
+            indexing_status=ProgressStatus.COMPLETED.value,
+        )
+        new_record = _make_code_record(
+            record_id="fresh-uuid",
+            external_revision_id="sha-after",  # different SHA → content changed
+        )
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        assert new_record.indexing_status == ProgressStatus.NOT_STARTED.value
+
+    async def test_non_completed_record_indexing_status_not_overridden(self) -> None:
+        """When the old record is NOT COMPLETED, the indexing_status block is skipped.
+
+        The new record's status is whatever the caller set (e.g. QUEUED, NOT_STARTED).
+        The move logic must not forcibly override it in this case.
+        """
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(
+            record_id="rec-queued",
+            external_revision_id="sha-x",
+            indexing_status=ProgressStatus.NOT_STARTED.value,  # not COMPLETED
+        )
+        new_record = _make_code_record(
+            record_id="fresh-uuid",
+            external_revision_id="sha-x",  # same SHA
+            indexing_status=ProgressStatus.NOT_STARTED.value,
+        )
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        # Status should remain whatever the new_record was initialised with
+        assert new_record.indexing_status == ProgressStatus.NOT_STARTED.value
