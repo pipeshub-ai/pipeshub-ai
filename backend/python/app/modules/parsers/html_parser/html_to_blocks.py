@@ -854,8 +854,7 @@ class HtmlToBlocksConverter:
             base_url: Optional base URL for resolving relative ``<a href>`` and
                 ``<img src>`` values.
             caption_map: Optional mapping of image alt-text to base-64 data URIs.
-                When present, matching alts produce ``DataFormat.BASE64`` image
-                blocks instead of URL references.
+                When present, matching alts use the mapped URI in the image block.
 
         Returns:
             Populated BlocksContainer with blocks and block_groups.
@@ -1231,18 +1230,23 @@ class _DomWalker:
         if src and self.base_url:
             src = urljoin(self.base_url, src)
 
-        data: dict[str, str] | None = None
+        uri: str | None = None
         if alt_text and alt_text in self.caption_map:
-            data = {"uri": self.caption_map[alt_text]}
+            caption_uri = (self.caption_map[alt_text] or "").strip()
+            if caption_uri:
+                uri = caption_uri
         elif src:
-            data = {"url": src}
+            uri = src
+
+        if not uri:
+            return
 
         self._add_block(Block(
             id=str(uuid4()),
             index=0,
             type=BlockType.IMAGE,
-            format=DataFormat.BASE64 if data and "uri" in data else DataFormat.TXT,
-            data=data,
+            format=DataFormat.BASE64,
+            data={"uri": uri},
             parent_index=self._current_parent_index(),
             image_metadata=ImageMetadata(captions=[alt_text] if alt_text else []),
         ))

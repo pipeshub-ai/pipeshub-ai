@@ -351,7 +351,8 @@ class TestImages:
         )
         images = [block for block in container.blocks if block.type == BlockType.IMAGE]
         assert len(images) == 1
-        assert images[0].data == {"url": "https://example.com/pic.png"}
+        assert images[0].data == {"uri": "https://example.com/pic.png"}
+        assert images[0].format == DataFormat.BASE64
 
     def test_caption_map(self, converter: HtmlToBlocksConverter) -> None:
         container = converter.convert(
@@ -365,8 +366,7 @@ class TestImages:
     def test_malformed_srcset_does_not_crash(self, converter: HtmlToBlocksConverter) -> None:
         container = converter.convert('<img srcset="   " alt="broken">')
         images = [block for block in container.blocks if block.type == BlockType.IMAGE]
-        assert len(images) == 1
-        assert images[0].data is None
+        assert len(images) == 0
 
 
 class TestBlockquote:
