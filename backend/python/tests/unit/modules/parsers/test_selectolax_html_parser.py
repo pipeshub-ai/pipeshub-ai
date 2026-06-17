@@ -222,6 +222,61 @@ class TestLists:
         container = converter.convert("<ol><li>First</li></ol>")
         assert container.block_groups[0].type == GroupType.ORDERED_LIST
 
+    def test_orphan_text_node_emitted_as_paragraph(self, converter: HtmlToBlocksConverter) -> None:
+        html = "<ul><li>Item 1</li> hello world <li>Item 2</li></ul>"
+        container = converter.convert(html)
+        list_items = [b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM]
+        paragraphs = [b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH]
+        assert len(list_items) == 2
+        assert list_items[0].data == "Item 1"
+        assert list_items[1].data == "Item 2"
+        assert len(paragraphs) == 1
+        assert paragraphs[0].data == "hello world"
+        assert paragraphs[0].format == DataFormat.MARKDOWN
+
+    def test_orphan_text_in_wrapper_div_emitted_as_paragraph(self, converter: HtmlToBlocksConverter) -> None:
+        html = "<ul><div>orphan in div</div><li>Real</li></ul>"
+        container = converter.convert(html)
+        list_items = [b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM]
+        paragraphs = [b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH]
+        assert len(list_items) == 1
+        assert list_items[0].data == "Real"
+        assert len(paragraphs) == 1
+        assert paragraphs[0].data == "orphan in div"
+
+    def test_orphan_element_emitted_as_paragraph(self, converter: HtmlToBlocksConverter) -> None:
+        html = '<ol><li>First</li><a href="https://x.com">link</a><li>Second</li></ol>'
+        container = converter.convert(html)
+        list_items = [b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM]
+        paragraphs = [b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH]
+        assert len(list_items) == 2
+        assert list_items[0].data == "First"
+        assert list_items[1].data == "Second"
+        assert len(paragraphs) == 1
+        assert "[link](https://x.com)" in paragraphs[0].data
+
+    def test_whitespace_only_text_nodes_skipped(self, converter: HtmlToBlocksConverter) -> None:
+        container = converter.convert("<ul>  <li>A</li>  <li>B</li>  </ul>")
+        assert len(container.blocks) == 2
+        assert all(b.sub_type == BlockSubType.LIST_ITEM for b in container.blocks)
+
+    def test_orphan_in_deeply_nested_container(self, converter: HtmlToBlocksConverter) -> None:
+        html = (
+            "<ul>"
+            "<div><li>Item 1</li></div>"
+            " hello world "
+            "<section><div><li>Item 2</li></div></section>"
+            "</ul>"
+        )
+        container = converter.convert(html)
+        list_items = [b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM]
+        paragraphs = [b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH]
+        assert len(list_items) == 2
+        assert list_items[0].data == "Item 1"
+        assert list_items[1].data == "Item 2"
+        assert len(paragraphs) == 1
+        assert paragraphs[0].data == "hello world"
+
 
 class TestTables:
     def test_table_produces_rows(self, converter: HtmlToBlocksConverter) -> None:

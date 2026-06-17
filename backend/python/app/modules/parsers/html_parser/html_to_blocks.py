@@ -253,11 +253,13 @@ def _is_shallow_text_container(node: LexborNode) -> bool:
 # ---------------------------------------------------------------------------
 
 def _has_inline_formatting(node: LexborNode, depth: int = 0) -> bool:
-    """Return True if the subtree contains inline formatting tags (bold, links, etc.).
+    """Check whether a DOM subtree contains inline formatting tags (bold, links, etc.).
 
-    Drives the choice between storing plain TXT vs. preserving MARKDOWN when
-    splitting element content. Block/container descendants are skipped because
-    they are handled by separate block emitters.
+    Decides the storage format for block content: ``DataFormat.MARKDOWN`` when
+    formatting is present (to preserve bold, links, inline code), or
+    ``DataFormat.TXT`` when plain text suffices (cheaper for indexing).
+    Block/container descendants are skipped — they have their own emitters.
+    Depth is capped at ``_MAX_DOM_PROBE_DEPTH`` to prevent stack overflows.
     """
     if depth > _MAX_DOM_PROBE_DEPTH:
         return False
@@ -276,7 +278,13 @@ def _has_inline_formatting(node: LexborNode, depth: int = 0) -> bool:
 
 
 def _inline_text(node: LexborNode) -> str:
-    """Render a single inline element as plain text (``<br>`` → newline, ``<img>`` → empty)."""
+    """Render a single inline or text node as plain text.
+
+    Special cases: ``<br>`` → newline, ``<img>`` → empty (images are extracted
+    separately as ``BlockType.IMAGE`` blocks), bare text nodes → verbatim.
+    Used by ``_split_element_content`` on the plain-text path to assemble
+    paragraph text one child at a time.
+    """
     tag = _tag_name(node)
     if tag is None:
         return node.text(deep=False, strip=False)
@@ -292,11 +300,16 @@ def _split_element_content(
     *,
     base_url: str = "",
 ) -> tuple[str, list[LexborNode], DataFormat]:
-    """Split a block element into text, embedded ``<img>`` nodes, and storage format.
+    """Extract text and embedded images from a block element (``<p>``, ``<h1>``, etc.).
 
-    Images are peeled off so callers can emit them as standalone ``BlockType.IMAGE``
-    entries (required by downstream indexing). Uses markdownify when inline
-    formatting is present; otherwise concatenates plain text for simpler retrieval.
+    Images are collected separately so callers can emit standalone
+    ``BlockType.IMAGE`` blocks (required by downstream indexing). Text is
+    rendered as markdown when inline formatting is present, or as plain text
+    otherwise — the chosen ``DataFormat`` is returned so the caller stores it
+    correctly. Relative links are absolutised when ``base_url`` is set.
+
+    Returns:
+        ``(text_content, image_nodes, data_format)`` 3-tuple.
     """
     image_nodes: list[LexborNode] = []
     for child in _direct_children(node):
@@ -329,10 +342,12 @@ def _split_element_content(
 
 
 def _html_to_markdown(html: str, *, base_url: str = "") -> str:
-    """Convert an HTML fragment to ATX-style markdown via markdownify.
+    """Convert an HTML fragment to ATX-style markdown via ``markdownify``.
 
-    Relative anchor hrefs are resolved first so list items, blockquotes, and
-    other stored markdown slices contain absolute links when ``base_url`` is set.
+    Central HTML→markdown bridge for the parser. Called whenever inline
+    formatting must be preserved (paragraphs, list items, blockquotes, etc.).
+    Relative ``<a href>`` values are resolved to absolute URLs first when
+    ``base_url`` is provided, so stored markdown slices remain navigable.
     """
     if not html:
         return ""
@@ -342,8 +357,13 @@ def _html_to_markdown(html: str, *, base_url: str = "") -> str:
 
 
 def _resolve_relative_links(html: str, base_url: str) -> str:
-    """Rewrite relative ``<a href>`` values to absolute URLs using ``urljoin``.
-    Parses the fragment in a wrapper div; leaves absolute, mailto, and hash links unchanged.
+    """Rewrite relative ``<a href>`` values to absolute URLs via ``urljoin``.
+
+    Relative links break once content is stored outside its original page
+    context (RAG prompts, search results). This resolves them *before*
+    markdown conversion. Already-absolute, ``mailto:``, ``#hash``, and
+    ``data:`` URIs are left untouched. The fragment is parsed in a wrapper
+    ``<div>`` to prevent Lexbor from auto-inserting ``<html><body>``.
     """
     parser = LexborHTMLParser(f"<div>{html}</div>")
     wrapper = parser.css_first("div")
@@ -367,7 +387,11 @@ def _resolve_relative_links(html: str, base_url: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _table_caption(table_node: LexborNode) -> str:
-    """Extract the stripped text of the first direct ``<caption>`` child, or empty string."""
+    """Extract the first ``<caption>`` text from a ``<table>``, or empty string.
+
+    Caption text is stored in ``TableMetadata.captions`` so RAG and search can
+    use it for ranking without re-parsing the table structure.
+    """
     for child in _direct_children(table_node):
         if _tag_name(child) == "caption":
             return _node_text(child)
@@ -377,8 +401,12 @@ def _table_caption(table_node: LexborNode) -> str:
 def _table_section_rows(
     table_node: LexborNode,
 ) -> tuple[list[LexborNode], list[LexborNode]]:
-    """Split a ``<table>`` into header and body ``<tr>`` node lists.
-    Uses explicit ``<thead>``/``<tbody>`` when present; otherwise infers headers from leading ``<th>`` rows.
+    """Split a ``<table>`` into (header_rows, body_rows) lists of ``<tr>`` nodes.
+
+    Uses explicit ``<thead>``/``<tbody>`` when present. Otherwise infers headers
+    by counting leading rows with ``<th>`` cells (handles Lexbor auto-inserted
+    ``<tbody>`` transparently). Header rows feed ``TableMetadata.column_names``;
+    body rows become individual ``TABLE_ROW`` blocks.
     """
     thead_rows: list[LexborNode] = []
     body_rows: list[LexborNode] = []
@@ -406,12 +434,21 @@ def _table_section_rows(
 
 
 def _row_children(section_node: LexborNode) -> list[LexborNode]:
-    """Return direct ``<tr>`` children of a table section (``thead``, ``tbody``, etc.)."""
+    """Return direct ``<tr>`` children of a table section (``<thead>``, ``<tbody>``, etc.).
+
+    Filters out stray non-``<tr>`` nodes (whitespace, scripts) to give callers
+    a clean row list for grid expansion.
+    """
     return [child for child in _direct_children(section_node) if _tag_name(child) == "tr"]
 
 
 def _count_leading_header_rows(row_nodes: list[LexborNode]) -> int:
-    """Count consecutive leading rows that contain at least one ``<th>`` cell."""
+    """Count consecutive leading rows that contain at least one ``<th>`` cell.
+
+    Heuristic for tables without explicit ``<thead>``/``<tbody>``: the first
+    all-``<td>`` row ends the header region. Used by ``_table_section_rows``
+    to split rows into header and body segments.
+    """
     count = 0
     for row in row_nodes:
         cells = [child for child in _direct_children(row) if _tag_name(child) in {"th", "td"}]
@@ -425,7 +462,11 @@ def _count_leading_header_rows(row_nodes: list[LexborNode]) -> int:
 
 
 def _span_int(attrs: dict, name: str) -> int:
-    """Parse ``rowspan``/``colspan`` attribute as a positive integer (default 1)."""
+    """Parse a ``rowspan``/``colspan`` attribute as a positive int (min 1).
+
+    Handles missing, empty, non-numeric, or zero values by falling back to 1
+    (the HTML spec default). Used during grid expansion to size cell slots.
+    """
     raw = attrs.get(name, 1)
     try:
         return max(1, int(raw))
@@ -434,7 +475,12 @@ def _span_int(attrs: dict, name: str) -> int:
 
 
 def _pad_grid(grid: list[list[NormalizedCell]]) -> list[list[NormalizedCell]]:
-    """Pad every row in a grid to the widest row's column count with empty cells."""
+    """Pad every row to the widest row's column count with empty cells.
+
+    After colspan/rowspan expansion, rows may differ in length. Downstream
+    collapse logic requires a rectangular grid, so shorter rows are extended
+    with empty ``NormalizedCell`` placeholders. Mutates in place.
+    """
     if not grid:
         return []
     width = max(len(row) for row in grid)
@@ -445,7 +491,13 @@ def _pad_grid_to_width(
     grid: list[list[NormalizedCell]],
     width: int,
 ) -> list[list[NormalizedCell]]:
-    """Extend each grid row with empty origin cells until it reaches ``width`` columns."""
+    """Pad each grid row with empty origin cells to an explicit ``width``.
+
+    Like ``_pad_grid`` but with a caller-specified target width — used when
+    header and body grids must align to a shared column count. Padding cells
+    are ``is_origin=True`` so collapse logic treats them as blank data, not
+    span continuations. Mutates in place.
+    """
     if not grid:
         return []
     for row in grid:
@@ -455,7 +507,11 @@ def _pad_grid_to_width(
 
 
 def _grid_width(*grids: list[list[NormalizedCell]]) -> int:
-    """Return the maximum row length across one or more normalized cell grids."""
+    """Return the maximum row length across one or more cell grids.
+
+    Used to find the shared target width before padding header and body grids
+    to the same column count. Returns 0 if all grids are empty.
+    """
     widths = [len(row) for grid in grids for row in grid]
     return max(widths) if widths else 0
 
@@ -464,8 +520,12 @@ def _column_groups(
     header_grid: list[list[NormalizedCell]],
     width: int,
 ) -> list[tuple[int, int]]:
-    """Derive logical column ranges from the top header row's colspan origins.
-    Each group is ``(start_col, end_col)``; falls back to one column per index when no header grid.
+    """Derive ``(start_col, end_col)`` logical column ranges from the top header row.
+
+    Walks the top header row's origin cells and uses each cell's colspan to
+    define a group range. Collapse functions use these groups to merge multiple
+    physical columns into one logical output column. Falls back to one group
+    per physical column when no header grid exists.
     """
     if not header_grid:
         return [(col, col + 1) for col in range(width)]
@@ -489,7 +549,12 @@ def _collapse_header_row(
     column_groups: list[tuple[int, int]],
 ) -> list[str]:
     """Merge multi-row headers into one label per logical column group.
-    Joins same-row parts with `` | ``, stacks header levels with newlines, and deduplicates repeats.
+
+    For each group, origin-cell texts within the same row are joined with
+    ``" | "``, and levels across rows are stacked with newlines. Consecutive
+    duplicate levels are deduplicated (from rowspan repeats). Produces the
+    flat header list needed by ``TableMetadata.column_names`` and markdown
+    rendering.
     """
     collapsed: list[str] = []
     for col_start, col_end in column_groups:
@@ -522,8 +587,12 @@ def _collapse_body_rows(
     body_grid: list[list[NormalizedCell]],
     column_groups: list[tuple[int, int]],
 ) -> list[list[str]]:
-    """Collapse expanded body grid rows into output rows with merged logical columns.
-    Groups consecutive HTML rows by the first column's rowspan, then formats each column group.
+    """Collapse the expanded body grid into output rows with merged column groups.
+
+    Applies two merges: (1) consecutive HTML rows sharing a first-column
+    rowspan are grouped into one output row, and (2) physical columns within
+    each logical column group are merged per cell. The result is a list of
+    string-valued rows ready for ``TABLE_ROW`` block emission.
     """
     if not body_grid:
         return []
@@ -542,8 +611,10 @@ def _collapse_body_rows(
 
 
 def _body_output_row_span(row: list[NormalizedCell]) -> int:
-    """How many HTML rows merge into one collapsed output row.
-    Only the first column's rowspan drives grouping so middle-column spans do not fold unrelated rows.
+    """Return how many grid rows merge into one output row (first column's rowspan).
+
+    Only the first column drives grouping — middle-column spans must not fold
+    unrelated rows together, which would produce incorrect records.
     """
     if not row:
         return 1
@@ -558,8 +629,11 @@ def _collapse_body_cell(
     col_start: int,
     col_end: int,
 ) -> str:
-    """Format one logical column across one or more HTML body rows.
-    Single-column groups delegate to ``_collapse_single_column_cell``; multi-column groups join parts with `` | ``.
+    """Format one logical column group across one or more grouped HTML rows.
+
+    Single-column groups delegate to ``_collapse_single_column_cell`` (handles
+    rowspan labels and stacked values). Multi-column groups join origin cells
+    within the range with ``" | "`` per row, then stack rows with newlines.
     """
     group_width = col_end - col_start
     if group_width == 1:
@@ -584,8 +658,11 @@ def _collapse_single_column_cell(
     group_rows: list[list[NormalizedCell]],
     col: int,
 ) -> str:
-    """Format a single-column logical group, handling row-spanning labels and stacked values.
-    Rowspanning origin cells win outright; otherwise first-column labels or newline-joined values are returned.
+    """Format a single column across grouped rows, handling rowspan and label semantics.
+
+    Single row → text directly. Rowspan > 1 origin → that cell wins (covers
+    the full group). First column (label) → first non-empty value only. Other
+    columns → all values newline-joined.
     """
     if len(group_rows) == 1:
         return group_rows[0][col].text.strip()
@@ -607,10 +684,11 @@ def _collapse_single_column_cell(
 
 
 def _format_table_row(headers: list[str], cells: list[str]) -> str:
-    """Build a compact ``Header: value`` sentence for one table row.
+    """Build a ``Header: value`` sentence for one table row (for RAG / full-text search).
 
-    Gives RAG and search a readable row representation without parsing the JSON
-    cell array at query time.
+    Pairs each cell with its column header (e.g. ``"Name: Alice, Age: 30"``).
+    Falls back to ``Column N`` labels for ragged tables, or plain comma-join
+    when no headers exist.
     """
     if headers:
         parts = [
@@ -622,13 +700,22 @@ def _format_table_row(headers: list[str], cells: list[str]) -> str:
 
 
 def _escape_markdown_cell(value: str) -> str:
-    """Escape pipe characters and newlines so a cell is safe inside a markdown table."""
+    """Escape pipe characters, newlines, and extra spaces for markdown table cells.
+
+    ``|`` → ``\\|``, ``\\n`` → ``<br>``, consecutive spaces collapsed. Ensures
+    the value won't break GFM pipe table structure.
+    """
     escaped = value.replace("|", "\\|").replace("\n", "<br>")
     return re.sub(r" +", " ", escaped).strip()
 
 
 def _render_table_markdown(table: NormalizedTable) -> str:
-    """Render a normalized table as a GitHub-flavoured markdown pipe table with header separator."""
+    """Render a ``NormalizedTable`` as a GFM pipe table (header + separator + body rows).
+
+    Generates synthetic ``Column N`` headers when none exist. Body rows are
+    padded/truncated to header width. Used by ``NormalizedTable.to_markdown()``
+    and standalone markdown export.
+    """
     headers = list(table.column_headers)
     if not headers and table.body_rows:
         headers = [f"Column {index + 1}" for index in range(len(table.body_rows[0]))]
@@ -650,8 +737,12 @@ def _render_table_markdown(table: NormalizedTable) -> str:
 
 
 def _stringify_nested_table_rows(table: NormalizedTable) -> str:
-    """Serialize a nested table as a JSON array of row cell arrays (headers first, then body).
-    Trims trailing empty cells from each body row before encoding.
+    """Serialize a nested table as a JSON array of row arrays for parent cell embedding.
+
+    Nested ``<table>`` elements can't become their own ``BlockGroup(TABLE)`` —
+    their rows are JSON-stringified and appended to the parent cell's text
+    instead. Format: ``[[header…], [row1…], ...]``. Trailing empty cells in
+    body rows are trimmed to reduce payload size.
     """
     rows: list[list[str]] = []
     if table.column_headers:
@@ -1064,6 +1155,8 @@ class _DomWalker:
 
         Also scans wrapper containers inside the list because malformed HTML
         sometimes nests ``<li>`` elements inside extra ``<div>`` layers.
+        Orphan text nodes and stray elements are emitted as implicit list items
+        so content is not silently dropped.
         """
         group_type = GroupType.ORDERED_LIST if ordered else GroupType.LIST
         self._open_group(group_type)
@@ -1073,6 +1166,8 @@ class _DomWalker:
                 self._process_list_item(child)
             elif tag in _CONTAINER_TAGS:
                 self._emit_list_items_from_container(child)
+            else:
+                self._emit_orphan_as_list_item(child)
         self._close_group()
 
     def _emit_list_items_from_container(self, container: LexborNode) -> None:
@@ -1085,6 +1180,35 @@ class _DomWalker:
                 self._process_list_item(child)
             elif tag in _CONTAINER_TAGS:
                 self._emit_list_items_from_container(child)
+            else:
+                self._emit_orphan_as_list_item(child)
+
+    def _emit_orphan_as_list_item(self, node: LexborNode) -> None:
+        """Emit a stray node inside a list as a plain paragraph block.
+
+        Handles bare text nodes and non-container elements (e.g. ``<p>``,
+        ``<a>``) that appear directly inside ``<ul>``/``<ol>`` or wrapper
+        containers without a surrounding ``<li>``.
+        """
+        tag = _tag_name(node)
+        if tag is None:
+            data = node.text(deep=False, strip=False).strip()
+        else:
+            html = (node.html or "").strip()
+            if not html:
+                return
+            data = _html_to_markdown(html, base_url=self.base_url)
+        if not data:
+            return
+        self._add_block(Block(
+            id=str(uuid4()),
+            index=0,
+            type=BlockType.TEXT,
+            sub_type=BlockSubType.PARAGRAPH,
+            format=DataFormat.MARKDOWN,
+            data=data,
+            parent_index=self._current_parent_index(),
+        ))
 
     def _process_list_item(self, li_node: LexborNode) -> None:
         """Emit one LIST_ITEM block with the ``<li>`` inner HTML as markdown.
