@@ -19,8 +19,11 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin, NotificationRecipientRole
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.services.notification.notification_service import NotificationService
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 DEFAULT_CONNECTOR_NOTIFICATION_LINK = "workspace/connectors/"
+INITIAL_NOTIFICATION_BACKOFF = 3600 * 1000 # 1 hour in ms
+MAX_NOTIFICATION_BACKOFF = 604800 * 1000 # 7 days in ms
 
 
 class BaseConnector(ABC):
@@ -36,6 +39,7 @@ class BaseConnector(ABC):
     created_by: str
     creator_email: Optional[str]
     _notification_service: NotificationService | None
+    _notification_cache: dict[str, tuple[int, int]] = {}
 
     def __init__(
         self,
@@ -339,6 +343,10 @@ class BaseConnector(ABC):
             )
             return
         org_id = getattr(self.data_entities_processor, "org_id", None) or ""
+
+        if self._suppress_notification(title, message, severity):
+            return
+        
         connector_type = self.connector_name.value if isinstance(self.connector_name, Connectors) else self.connector_name
         if payload and "redirect_link" in payload:
             redirect_link = payload["redirect_link"]
@@ -370,3 +378,34 @@ class BaseConnector(ABC):
         except RuntimeError:
             # No running loop (e.g. sync tests) — skip scheduling
             self.logger.debug("notify skipped: no running asyncio loop for connector: %s, connector id: %s", self.connector_name, self.connector_id)
+
+    def _suppress_notification(self, title: str, message: str, severity: NotificationSeverity) -> bool:
+
+        if severity in [NotificationSeverity.INFO, NotificationSeverity.SUCCESS]:
+            return False
+
+        key = f"{self.connector_id}:{title}:{message}"
+        now = get_epoch_timestamp_in_ms()
+
+        if key in self._notification_cache:
+            next_allowed_time, backoff = self._notification_cache[key]
+            if now < next_allowed_time:
+                self.logger.debug(
+                    "notification suppressed: \"%s\" already sent recently for connector: %s, connector id: %s",
+                    title,
+                    self.connector_name,
+                    self.connector_id
+                )
+                return True
+            else:
+                if now - next_allowed_time > MAX_NOTIFICATION_BACKOFF: # Backoff expired, reset to initial backoff
+                    self._notification_cache[key] = (now + INITIAL_NOTIFICATION_BACKOFF, INITIAL_NOTIFICATION_BACKOFF)
+                else:
+                    new_backoff = min(backoff * 2, MAX_NOTIFICATION_BACKOFF) # Double the backoff (max 7 days)
+                    new_next_allowed_time = now + new_backoff
+                    self._notification_cache[key] = (new_next_allowed_time, new_backoff)
+        else:
+            self._notification_cache[key] = (now + INITIAL_NOTIFICATION_BACKOFF, INITIAL_NOTIFICATION_BACKOFF)
+
+        return False
+

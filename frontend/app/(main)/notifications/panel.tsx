@@ -12,12 +12,14 @@ import { SidebarLoadMoreButton } from '@/app/(main)/knowledge-base/sidebar/sideb
 import { createPortal } from 'react-dom';
 import { Theme, Flex, Text, Box, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { Spinner } from '@/app/components/ui/spinner';
 import { NotificationsApi, type NotificationListFilter, type NotificationListItem } from './api';
 import { useNotificationStore, getVisibleNotifications } from './store';
-import { NotificationRow } from './notification-row';
+import { NotificationRow, type NotificationRowAction } from './notification-row';
 import {
   NotificationFilterMenu,
   NOTIFICATIONS_PANEL_TOOLTIP_CLASS,
+  useNotificationFilterLabels,
 } from './notification-filter-menu';
 import { useTranslation } from 'react-i18next';
 import { usePathname, useSearchParams } from 'next/navigation';
@@ -42,6 +44,7 @@ const TRANSITION = '0.25s cubic-bezier(0.4, 0, 0.2, 1)';
  */
 export function NotificationsPanel() {
   const { t } = useTranslation();
+  const filterLabels = useNotificationFilterLabels();
   const isPanelOpen = useNotificationStore((s) => s.isPanelOpen);
   const closePanel = useNotificationStore((s) => s.closePanel);
   const notifications = useNotificationStore((s) => s.notifications);
@@ -200,6 +203,32 @@ export function NotificationsPanel() {
   const [loading, setLoading] = useState(false);
   const [markingAllRead, setMarkingAllRead] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pendingActionsRef = useRef(new Map<string, NotificationRowAction>());
+  const [pendingActions, setPendingActions] = useState<
+    Map<string, NotificationRowAction>
+  >(() => new Map());
+
+  const syncPendingActions = useCallback(() => {
+    setPendingActions(new Map(pendingActionsRef.current));
+  }, []);
+
+  const beginRowAction = useCallback(
+    (id: string, action: NotificationRowAction): boolean => {
+      if (pendingActionsRef.current.has(id)) return false;
+      pendingActionsRef.current.set(id, action);
+      syncPendingActions();
+      return true;
+    },
+    [syncPendingActions],
+  );
+
+  const endRowAction = useCallback(
+    (id: string) => {
+      pendingActionsRef.current.delete(id);
+      syncPendingActions();
+    },
+    [syncPendingActions],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -276,7 +305,7 @@ export function NotificationsPanel() {
   }, [isPanelOpen, closePanel]);
 
   const onMarkRead = async (n: NotificationListItem) => {
-    if (n.status === 'read' || !n._id) return;
+    if (n.status === 'read' || !n._id || !beginRowAction(n._id, 'markRead')) return;
     try {
       await NotificationsApi.markRead(n._id);
       markReadStore(n._id);
@@ -284,11 +313,13 @@ export function NotificationsPanel() {
       setStats(stats);
     } catch {
       setError(t('notifications.updateFailed'));
+    } finally {
+      endRowAction(n._id);
     }
   };
 
   const onMarkUnread = async (n: NotificationListItem) => {
-    if (n.status === 'unread' || !n._id) return;
+    if (n.status === 'unread' || !n._id || !beginRowAction(n._id, 'markUnread')) return;
     try {
       await NotificationsApi.markUnread(n._id);
       markUnreadStore(n._id);
@@ -296,6 +327,8 @@ export function NotificationsPanel() {
       setStats(stats);
     } catch {
       setError(t('notifications.updateFailed'));
+    } finally {
+      endRowAction(n._id);
     }
   };
 
@@ -316,7 +349,7 @@ export function NotificationsPanel() {
   };
 
   const onDismiss = async (n: NotificationListItem) => {
-    if (!n._id) return;
+    if (!n._id || !beginRowAction(n._id, 'dismiss')) return;
     try {
       await NotificationsApi.remove(n._id);
       removeStore(n._id);
@@ -324,11 +357,13 @@ export function NotificationsPanel() {
       setStats(stats);
     } catch {
       setError(t('notifications.removeFailed'));
+    } finally {
+      endRowAction(n._id);
     }
   };
 
   const onArchive = async (n: NotificationListItem) => {
-    if (!n._id || n.status === 'archived') return;
+    if (!n._id || n.status === 'archived' || !beginRowAction(n._id, 'archive')) return;
     try {
       await NotificationsApi.archive(n._id);
       archiveStore(n._id);
@@ -336,16 +371,20 @@ export function NotificationsPanel() {
       setStats(stats);
     } catch {
       setError(t('notifications.updateFailed'));
+    } finally {
+      endRowAction(n._id);
     }
   };
 
   const onUnarchive = async (n: NotificationListItem) => {
-    if (!n._id || n.status !== 'archived') return;
+    if (!n._id || n.status !== 'archived' || !beginRowAction(n._id, 'unarchive')) return;
     try {
       await NotificationsApi.unarchive(n._id);
       unarchiveStore(n._id);
     } catch {
       setError(t('notifications.updateFailed'));
+    } finally {
+      endRowAction(n._id);
     }
   };
 
@@ -419,6 +458,11 @@ export function NotificationsPanel() {
           visibility: visible;
           pointer-events: auto;
         }
+        [data-ph-notification-row][data-action-pending="true"] [data-ph-notification-row-actions] {
+          opacity: 1;
+          visibility: visible;
+          pointer-events: auto;
+        }
         [data-ph-notification-row] [data-ph-notification-row-time] {
           position: absolute;
           right: 0;
@@ -429,6 +473,11 @@ export function NotificationsPanel() {
           white-space: nowrap;
         }
         [data-ph-notification-row]:hover [data-ph-notification-row-time] {
+          opacity: 0;
+          visibility: hidden;
+          pointer-events: none;
+        }
+        [data-ph-notification-row][data-action-pending="true"] [data-ph-notification-row-time] {
           opacity: 0;
           visibility: hidden;
           pointer-events: none;
@@ -506,10 +555,22 @@ export function NotificationsPanel() {
           }}
         >
           <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-            <MaterialIcon name="inbox" size={16} color="var(--slate-11)" />
-            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              {t('nav.inbox')}
-            </Text>
+            <MaterialIcon name="inbox" size={20} color="var(--slate-11)" />
+            <Flex direction="column" gap="0" style={{ minWidth: 0 }}>
+              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                {t('nav.inbox')}
+              </Text>
+              <Text
+                size="1"
+                truncate
+                style={{
+                  color: 'var(--gray-11)',
+                  opacity: 0.5,
+                }}
+              >
+                {filterLabels[listFilter]}
+              </Text>
+            </Flex>
           </Flex>
           <Flex
             align="center"
@@ -530,9 +591,16 @@ export function NotificationsPanel() {
                   disabled={unreadCount === 0 || markingAllRead}
                   aria-label={t('notifications.markAllRead')}
                   onClick={() => void onMarkAllRead()}
-                  style={{ cursor: unreadCount === 0 ? 'not-allowed' : 'pointer' }}
+                  style={{
+                    cursor: unreadCount === 0 || markingAllRead ? 'not-allowed' : 'pointer',
+                    pointerEvents: unreadCount === 0 || markingAllRead ? 'auto' : undefined,
+                  }}
                 >
-                  <MaterialIcon name="done_all" size={18} color="var(--slate-11)" />
+                  {markingAllRead ? (
+                    <Spinner size={18} />
+                  ) : (
+                    <MaterialIcon name="done_all" size={18} color="var(--slate-11)" />
+                  )}
                 </IconButton>
               </Tooltip>
             </Box>
@@ -594,6 +662,7 @@ export function NotificationsPanel() {
                   key={n._id}
                   notification={n}
                   compactTime={layoutPanelWidth < PANEL_COMPACT_TIME_WIDTH}
+                  pendingAction={pendingActions.get(n._id) ?? null}
                   onMarkRead={(item) => void onMarkRead(item)}
                   onMarkUnread={(item) => void onMarkUnread(item)}
                   onArchive={(item) => void onArchive(item)}

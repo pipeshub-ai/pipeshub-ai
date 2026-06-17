@@ -1,12 +1,20 @@
 'use client';
 
-import { useState, useRef, useLayoutEffect, useCallback, type CSSProperties, type RefObject } from 'react';
+import { useState, useRef, useLayoutEffect, useCallback, type CSSProperties } from 'react';
 import Link from 'next/link';
 import { Flex, Text, Box, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { Spinner } from '@/app/components/ui/spinner';
 import { useTranslation } from 'react-i18next';
 import type { NotificationListItem, NotificationSeverity } from './api';
 import { NOTIFICATIONS_PANEL_TOOLTIP_CLASS } from './notification-filter-menu';
+
+export type NotificationRowAction =
+  | 'markRead'
+  | 'markUnread'
+  | 'archive'
+  | 'unarchive'
+  | 'dismiss';
 
 /** App-relative paths from the API may omit a leading slash; Next.js Link needs one. */
 function notificationHref(redirectLink: string): string | null {
@@ -69,12 +77,12 @@ function severityColor(severity: NotificationSeverity): string {
   }
 }
 
-const titleTruncateStyle: CSSProperties = {
+const titleWrapStyle: CSSProperties = {
   minWidth: 0,
   display: 'block',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
+  width: '100%',
+  whiteSpace: 'normal',
+  overflowWrap: 'anywhere',
 };
 
 function NotificationTitle({
@@ -88,66 +96,30 @@ function NotificationTitle({
   style: CSSProperties;
   onNavigate?: () => void;
 }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const textRef = useRef<HTMLElement>(null);
-  const [isTitleTruncated, setIsTitleTruncated] = useState(false);
+  if (!title) return null;
 
-  const measure = useCallback(() => {
-    const el = textRef.current;
-    if (!el) return;
-    setIsTitleTruncated(el.scrollWidth > el.clientWidth + 1);
-  }, []);
-
-  useLayoutEffect(() => {
-    measure();
-    const container = containerRef.current;
-    if (!container) return;
-    const ro = new ResizeObserver(measure);
-    ro.observe(container);
-    return () => ro.disconnect();
-  }, [measure, title, href]);
-
-  const textEl = href ? (
-    <Text size="2" weight="medium" style={style} truncate asChild>
-      <Link
-        ref={textRef as RefObject<HTMLAnchorElement>}
-        href={href}
-        data-ph-notification-row-title-link=""
-        style={{ ...titleTruncateStyle, width: '100%' }}
-        onClick={onNavigate}
-        {...(/^https?:\/\//i.test(href)
-          ? { target: '_blank', rel: 'noopener noreferrer' }
-          : {})}
-      >
-        {title}
-      </Link>
-    </Text>
-  ) : (
-    <Text
-      ref={textRef as RefObject<HTMLSpanElement>}
-      size="2"
-      weight="medium"
-      style={{ ...style, ...titleTruncateStyle, width: '100%' }}
-      truncate
-    >
-      {title}
-    </Text>
-  );
+  if (href) {
+    return (
+      <Text size="2" weight="medium" asChild>
+        <Link
+          href={href}
+          data-ph-notification-row-title-link=""
+          style={{ ...titleWrapStyle, ...style }}
+          onClick={onNavigate}
+          {...(/^https?:\/\//i.test(href)
+            ? { target: '_blank', rel: 'noopener noreferrer' }
+            : {})}
+        >
+          {title}
+        </Link>
+      </Text>
+    );
+  }
 
   return (
-    <Box ref={containerRef} style={{ minWidth: 0, width: '100%' }}>
-      {!title || !isTitleTruncated ? (
-        textEl
-      ) : (
-        <Tooltip
-          className={NOTIFICATIONS_PANEL_TOOLTIP_CLASS}
-          content={title}
-          side="bottom"
-        >
-          {textEl}
-        </Tooltip>
-      )}
-    </Box>
+    <Text size="2" weight="medium" style={{ ...style, ...titleWrapStyle }}>
+      {title}
+    </Text>
   );
 }
 
@@ -156,14 +128,18 @@ function NotificationActionButton({
   icon,
   onClick,
   variant = 'default',
+  disabled = false,
+  loading = false,
 }: {
   label: string;
   icon: string;
   onClick: () => void;
   variant?: 'default' | 'danger';
+  disabled?: boolean;
+  loading?: boolean;
 }) {
   const [isHovered, setIsHovered] = useState(false);
-  const isDangerHover = variant === 'danger' && isHovered;
+  const isDangerHover = variant === 'danger' && isHovered && !disabled && !loading;
 
   return (
     <Box style={{ display: 'inline-flex', flexShrink: 0, position: 'relative' }}>
@@ -178,15 +154,25 @@ function NotificationActionButton({
           size="1"
           onClick={onClick}
           aria-label={label}
+          disabled={disabled || loading}
           onMouseEnter={() => setIsHovered(true)}
           onMouseLeave={() => setIsHovered(false)}
-          style={{ flexShrink: 0 }}
+          style={{
+            flexShrink: 0,
+            cursor: disabled || loading ? 'not-allowed' : 'pointer',
+            opacity: disabled || loading ? 0.5 : 1,
+            pointerEvents: disabled || loading ? 'auto' : undefined,
+          }}
         >
-          <MaterialIcon
-            name={icon}
-            size={16}
-            color={isDangerHover ? 'var(--red-11)' : 'var(--slate-11)'}
-          />
+          {loading ? (
+            <Spinner size={16} />
+          ) : (
+            <MaterialIcon
+              name={icon}
+              size={16}
+              color={isDangerHover ? 'var(--red-11)' : 'var(--slate-11)'}
+            />
+          )}
         </IconButton>
       </Tooltip>
     </Box>
@@ -206,6 +192,7 @@ export function NotificationRow({
   unarchiveLabel,
   dismissLabel,
   compactTime = false,
+  pendingAction = null,
 }: {
   notification: NotificationListItem;
   onMarkRead: (n: NotificationListItem) => void;
@@ -219,6 +206,7 @@ export function NotificationRow({
   unarchiveLabel: string;
   dismissLabel: string;
   compactTime?: boolean;
+  pendingAction?: NotificationRowAction | null;
 }) {
   const { i18n } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(false);
@@ -239,6 +227,7 @@ export function NotificationRow({
   const isRead = n.status === 'read' || n.status === 'archived';
   const readOpacity = isRead ? 0.65 : 1;
   const titleStyle = { color: 'var(--slate-12)' };
+  const isBusy = pendingAction != null;
 
   const measureMessageTruncation = useCallback(() => {
     const el = measureRef.current;
@@ -268,6 +257,7 @@ export function NotificationRow({
     <Box
       data-ph-notification-row=""
       data-read={isRead ? 'true' : 'false'}
+      data-action-pending={isBusy ? 'true' : 'false'}
       style={{
         width: '100%',
         boxSizing: 'border-box',
@@ -402,12 +392,16 @@ export function NotificationRow({
                   label={markReadLabel}
                   icon="done"
                   onClick={() => onMarkRead(n)}
+                  disabled={isBusy}
+                  loading={pendingAction === 'markRead'}
                 />
               ): n.status != 'archived' ? (
                 <NotificationActionButton
                   label={markUnreadLabel}
                   icon="mark_email_unread"
                   onClick={() => onMarkUnread(n)}
+                  disabled={isBusy}
+                  loading={pendingAction === 'markUnread'}
                 />
               ) : null}
               {n.status !== 'archived' ? (
@@ -415,12 +409,16 @@ export function NotificationRow({
                   label={archiveLabel}
                   icon="archive"
                   onClick={() => onArchive(n)}
+                  disabled={isBusy}
+                  loading={pendingAction === 'archive'}
                 />
               ) : (
                 <NotificationActionButton
                   label={unarchiveLabel}
                   icon="unarchive"
                   onClick={() => onUnarchive(n)}
+                  disabled={isBusy}
+                  loading={pendingAction === 'unarchive'}
                 />
               )}
               <NotificationActionButton
@@ -428,6 +426,8 @@ export function NotificationRow({
                 icon="close"
                 variant="danger"
                 onClick={() => onDismiss(n)}
+                disabled={isBusy}
+                loading={pendingAction === 'dismiss'}
               />
             </Flex>
             <Text

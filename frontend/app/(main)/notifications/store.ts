@@ -97,9 +97,15 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   listFilter: 'all',
   isPanelOpen: false,
   setListFilter: (filter) => set({ listFilter: filter, hasMore: false, cursor: null }),
-  openPanel: () => set({ isPanelOpen: true }),
+  openPanel: () =>
+    set({ isPanelOpen: true, listFilter: 'all', hasMore: false, cursor: null }),
   closePanel: () => set({ isPanelOpen: false }),
-  togglePanel: () => set((s) => ({ isPanelOpen: !s.isPanelOpen })),
+  togglePanel: () =>
+    set((s) =>
+      s.isPanelOpen
+        ? { isPanelOpen: false }
+        : { isPanelOpen: true, listFilter: 'all', hasMore: false, cursor: null },
+    ),
 
   setInitialPage: (response) =>
     set({

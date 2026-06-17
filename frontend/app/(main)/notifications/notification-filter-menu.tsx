@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { DropdownMenu, Flex, Text, IconButton, Tooltip, Box } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useTranslation } from 'react-i18next';
@@ -8,6 +8,18 @@ import type { NotificationListFilter } from './api';
 
 /** Raised above the notifications panel (9100) when portaled to document.body. */
 export const NOTIFICATIONS_PANEL_TOOLTIP_CLASS = 'ph-notifications-panel-tooltip';
+
+export function useNotificationFilterLabels(): Record<NotificationListFilter, string> {
+  const { t } = useTranslation();
+  return useMemo(
+    () => ({
+      all: t('notifications.filterAll'),
+      unread: t('notifications.filterOnlyUnread'),
+      archived: t('notifications.filterArchived'),
+    }),
+    [t],
+  );
+}
 
 interface NotificationFilterMenuProps {
   value: NotificationListFilter;
@@ -21,17 +33,12 @@ const FILTER_OPTIONS: { id: NotificationListFilter; icon: string }[] = [
 ];
 
 /**
- * Filter icon + dropdown (All / Only Unread), matching inbox filter popover layout.
+ * Filter icon + dropdown (All / Unread / Archived), matching inbox filter popover layout.
  */
 export function NotificationFilterMenu({ value, onChange }: NotificationFilterMenuProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-
-  const labels: Record<NotificationListFilter, string> = {
-    all: t('notifications.filterAll'),
-    unread: t('notifications.filterOnlyUnread'),
-    archived: t('notifications.filterArchived'),
-  };
+  const labels = useNotificationFilterLabels();
 
   const filterTooltip = t('notifications.filterTooltip', {
     filter: labels[value],

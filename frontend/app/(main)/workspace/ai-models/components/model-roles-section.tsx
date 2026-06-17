@@ -283,7 +283,7 @@ export function ModelRolesSection({
                   flexShrink: 0,
                 }}
               >
-                <MaterialIcon name="manufacturing" size={15} style={{ color: 'var(--gray-11)' }} />
+                <MaterialIcon name="psychology" size={15} style={{ color: 'var(--gray-11)' }} />
               </Flex>
               <Flex direction="column" gap="0">
                 <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
@@ -386,7 +386,7 @@ export function ModelRolesSection({
                 flexShrink: 0,
               }}
             >
-              <MaterialIcon name="manufacturing" size={16} style={{ color: 'var(--gray-11)' }} />
+              <MaterialIcon name="psychology" size={16} style={{ color: 'var(--gray-11)' }} />
             </Flex>
             <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
               <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
@@ -400,7 +400,6 @@ export function ModelRolesSection({
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',
-                  maxWidth: 480,
                 }}
               >
                 {t('workspace.aiModels.roles.indexingRoleDescription')}
