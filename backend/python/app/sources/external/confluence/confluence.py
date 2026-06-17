@@ -106,6 +106,7 @@ class ConfluenceDataSource:
         async with httpx_client.stream(
             "GET",
             download_url,
+            headers=self._client.headers,
             follow_redirects=True,
             timeout=300.0,
         ) as response:
@@ -195,6 +196,7 @@ class ConfluenceDataSource:
             async with httpx_client.stream(
                 "GET",
                 url,
+                headers=self._client.headers,
                 follow_redirects=True,
                 timeout=timeout,
             ) as response:
