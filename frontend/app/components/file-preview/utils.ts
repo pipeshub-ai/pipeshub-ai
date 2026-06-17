@@ -1,6 +1,31 @@
 'use client';
 
 import type { FileType, FilePreviewSource, TabConfig, PaginationVisibility } from './types';
+import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
+import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
+
+/**
+ * Resolve the authoritative file extension to feed the preview header icon.
+ *
+ * The record's display name is NOT a reliable type source — an uploaded
+ * `report.docx.png` is stored with name `report.docx`, extension `png`,
+ * mime `image/png`. So prefer the record's explicit `extension`, then a
+ * confident MIME mapping; never parse the name here. Returns `undefined` when
+ * nothing authoritative is available (FileIcon then falls back to the name).
+ */
+export function resolvePreviewIconExtension(
+  recordDetails?: RecordDetailsResponse | null,
+  mimeType?: string | null,
+): string | undefined {
+  const fromRecord =
+    recordDetails?.record?.fileRecord?.extension ||
+    // some record shapes expose extension at the top level
+    (recordDetails?.record as { extension?: string | null } | undefined)?.extension;
+  if (fromRecord) return normalizeFileExtension(fromRecord);
+
+  const mime = mimeType || recordDetails?.record?.mimeType || '';
+  return (mime && getMimeTypeExtension(mime)) || undefined;
+}
 
 /**
  * Get file type category from file extension or mime type
@@ -224,6 +249,24 @@ export function normalizeFileExtension(ext?: string | null): string {
   return ext.replace(/^\./, '').trim().toLowerCase();
 }
 
+/** Generic MIME types that carry no real type information — treat as "unknown". */
+const GENERIC_MIME_TYPES: ReadonlySet<string> = new Set([
+  'application/octet-stream',
+  'application/binary',
+  'binary/octet-stream',
+]);
+
+/**
+ * Whether a MIME string is specific enough to be trusted over a file name when
+ * resolving the file type. A real `type/subtype` (e.g. `application/pdf`,
+ * `image/png`) is confident; bare extension tokens (no slash) and generic
+ * octet-stream values are not.
+ */
+export function isConfidentMime(mimeType?: string | null): boolean {
+  const mime = (mimeType || '').trim().toLowerCase();
+  return mime.includes('/') && !GENERIC_MIME_TYPES.has(mime);
+}
+
 /**
  * Some APIs put a bare extension where a MIME string is expected (e.g. `"docx"`).
  * Treat those like OOXML Word for routing and blob hand-off.
@@ -238,6 +281,8 @@ function isBareWordOoxmlToken(value: string): boolean {
  */
 export function isLegacyWordDocFile(mimeType?: string, fileName?: string): boolean {
   if (mimeType === 'application/msword') return true;
+  // A confident, specific non-Word MIME is authoritative over a misleading name.
+  if (isConfidentMime(mimeType)) return false;
   if (!fileName) return false;
   const ext = fileName.split('.').pop()?.toLowerCase() || '';
   return ext === 'doc';
@@ -273,6 +318,10 @@ export function resolvePreviewMimeAfterStream(
  */
 export function isPresentationFile(mimeType?: string, fileName?: string): boolean {
   if (mimeType && PPT_MIME_TYPES.includes(mimeType)) return true;
+  // A confident, specific non-PowerPoint MIME is authoritative — don't let a
+  // misleading file name (e.g. "deck.pptx.pdf" stored as name "deck.pptx")
+  // trigger a false positive.
+  if (isConfidentMime(mimeType)) return false;
   if (fileName) {
     const ext = fileName.split('.').pop()?.toLowerCase();
     if (ext === 'ppt' || ext === 'pptx') return true;
@@ -295,6 +344,14 @@ export function isDocxFile(
   const mime = (mimeType || '').trim();
   if (mime && isOoxmlWordMime(mime)) return true;
   if (mime && isBareWordOoxmlToken(mime)) return true;
+
+  // A confident, specific MIME (a real "type/subtype" that isn't generic) is
+  // authoritative: it has already been checked against Word above, so it is NOT
+  // a DOCX. Do not let a misleading file NAME override it — a record's name may
+  // legitimately end in ".docx" while its real extension is something else
+  // (e.g. an uploaded "report.docx.png" is stored as name "report.docx",
+  // extension "png", mime "image/png").
+  if (isConfidentMime(mime)) return false;
 
   const names = [fileName, ...extraExtensionHints];
   for (const raw of names) {

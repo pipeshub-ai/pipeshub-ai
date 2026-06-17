@@ -3220,27 +3220,137 @@ components:
               type: object
               description: Available filter options with counts
 
-    UploadResult:
+    FileRejectionReason:
+      type: string
+      description: |
+        Stable, machine-readable code describing why a file was rejected or
+        skipped. Clients use it to localize/group failures. Absent when the
+        failure originated elsewhere (e.g. a storage-upload error or a
+        downstream indexing error with no specific code).
+
+        - `EXCEEDS_SIZE_LIMIT` / `UNSUPPORTED_TYPE` — rejected up front by the
+          file processor.
+        - `DUPLICATE_NAME` — skipped because a record with the same name already
+          exists in the target KB/folder (or collided with another file in the
+          same upload). The file was not added.
+      enum:
+        - EXCEEDS_SIZE_LIMIT
+        - UNSUPPORTED_TYPE
+        - DUPLICATE_NAME
+
+    UploadFailedFileDetail:
       type: object
-      description: Result of a file upload operation
+      description: |
+        Decoded payload of a `file:failed` stream event. A single file that was
+        rejected up front (size/type), failed the storage upload, or could not be
+        created by the indexing service.
       properties:
-        message:
+        fileName:
           type: string
-          example: "Files uploaded successfully"
-        uploadResults:
+          example: "huge.zip"
+        filePath:
+          type: string
+          example: "reports/huge.zip"
+        extension:
+          type: string
+          description: Lower-cased file extension (no dot), when derivable. Used by clients to render a file-type icon.
+          example: "zip"
+        errors:
           type: array
+          description: Failure message(s) for this file (canonical; there is no singular `error`).
           items:
-            type: object
-            properties:
-              recordId:
-                type: string
-              recordName:
-                type: string
-              status:
-                type: string
-                enum: [success, failed]
-              error:
-                type: string
+            type: string
+          example:
+            - "File exceeds the 30 MB size limit"
+        reason:
+          $ref: '#/components/schemas/FileRejectionReason'
+        recordId:
+          type: string
+          description: Present only if a placeholder record was created before the failure.
+        stage:
+          type: string
+          description: Where the failure occurred.
+          enum:
+            - upload
+            - index
+          example: upload
+
+    UploadSucceededFileDetail:
+      type: object
+      description: Decoded payload of a `file:succeeded` stream event. Content indexing continues asynchronously after this event.
+      properties:
+        recordId:
+          type: string
+          example: "rec_01H..."
+        fileName:
+          type: string
+          example: "report.pdf"
+        filePath:
+          type: string
+          example: "docs/report.pdf"
+        extension:
+          type: string
+          description: Lower-cased file extension (no dot), when derivable.
+          example: "pdf"
+
+    UploadDoneSummary:
+      type: object
+      description: Decoded payload of the terminal `done` stream event.
+      properties:
+        summary:
+          type: object
+          properties:
+            total:
+              type: integer
+              example: 5
+            succeeded:
+              type: integer
+              example: 3
+            failed:
+              type: integer
+              example: 2
+
+    UploadStreamSSEEvent:
+      type: object
+      description: |
+        Server-Sent Event envelope for the KB streaming upload endpoints
+        (`POST /knowledgeBase/{kbId}/upload` and
+        `POST /knowledgeBase/{kbId}/folder/{folderId}/upload`).
+
+        These endpoints respond with `Content-Type: text/event-stream`: the upload
+        and its per-file progress are a single request. The body streams one
+        terminal event per file, then a final `done` summary, then closes. `data`
+        is a JSON-encoded string whose decoded shape depends on `event`:
+
+        - `file:succeeded` — see `UploadSucceededFileDetail`. The file was
+          uploaded and its record created; content indexing then continues
+          asynchronously.
+        - `file:failed` — see `UploadFailedFileDetail`. Covers files rejected up
+          front (oversize / unsupported type — these carry `reason`), files that
+          failed the storage upload (`stage: "upload"`), and files the indexing
+          service could not create (`stage: "index"`).
+        - `done` — see `UploadDoneSummary`. Final event; the stream closes after it.
+        - `error` — `{ "message": string }`. Emitted only on a catastrophic
+          mid-stream failure (after the 200 headers were already sent), then the
+          stream closes. Clients MUST treat any file without a terminal
+          `file:succeeded` / `file:failed` as failed when this is received.
+
+        The stream also emits SSE comment heartbeats (`: keepalive`) roughly every
+        1s during slow work; these carry no `event`/`data` and should be ignored.
+        Authentication, permission, and request-shape failures occur BEFORE the
+        stream starts and are returned as ordinary 4xx JSON errors (not stream
+        events).
+      properties:
+        event:
+          type: string
+          enum:
+            - file:succeeded
+            - file:failed
+            - done
+            - error
+        data:
+          type: string
+          description: JSON-encoded event payload. Shape depends on `event`.
 
     IndexingStatusFilter:
       type: string
@@ -20117,11 +20227,18 @@ paths:
         <li>Use <code>GET /knowledgeBase/limits</code> to check current limits</li>
         </ul>
         <b>Supported File Types:</b><br>
-        Documents (PDF, DOCX, TXT), Images (PNG, JPG), Videos (MP4), and more.<br><br>
+        Documents (PDF, DOCX, DOC, XLS, XLSX, PPT, PPTX, TXT, CSV, MD), Images (PNG, JPG, GIF, SVG, WebP, BMP, HEIC), Web (HTML, HTM), and Google Workspace formats.<br><br>
         <b>File Metadata:</b><br>
         Use <code>files_metadata</code> to provide additional info like file paths and last modified timestamps.<br><br>
         <b>Versioning:</b><br>
-        Set <code>isVersioned: true</code> to enable version tracking for uploaded files.
+        Set <code>isVersioned: true</code> to enable version tracking for uploaded files.<br><br>
+        <b>Streaming response:</b><br>
+        This endpoint responds with <code>Content-Type: text/event-stream</code>.
+        The upload and its per-file progress are a single request: the body streams
+        a <code>file:succeeded</code> or <code>file:failed</code> event per file
+        (including files rejected up front for size/type), followed by a final
+        <code>done</code> summary, then closes. See the
+        <code>UploadStreamSSEEvent</code> schema for the event/payload contract.
       operationId: uploadRecordsToKB
       security:
         - bearerAuth: []
@@ -20163,11 +20280,14 @@ paths:
                 - files
       responses:
         '200':
-          description: Files uploaded successfully
+          description: |
+            SSE stream (`text/event-stream`) of per-file upload outcomes. The
+            stream emits `file:succeeded` / `file:failed` per file and a final
+            `done` summary, then closes. See `UploadStreamSSEEvent`.
           content:
-            application/json:
+            text/event-stream:
               schema:
-                $ref: '#/components/schemas/UploadResult'
+                $ref: '#/components/schemas/UploadStreamSSEEvent'
         '400':
           description: Invalid request - Check file types and sizes
         '401':
@@ -20178,6 +20298,8 @@ paths:
           description: Knowledge base not found
         '413':
           description: File size exceeds maximum allowed
+        '429':
+          description: Too many upload requests, or too many concurrent uploads for this user
         '500':
           description: Failed to verify knowledge base access
 
@@ -20188,7 +20310,13 @@ paths:
       summary: Upload files to folder
       description: |
         Upload files directly to a specific folder within a knowledge base.<br><br>
-        <b>Same as KB upload</b> but files are placed in the specified folder instead of KB root.
+        <b>Same as KB upload</b> but files are placed in the specified folder instead of KB root.<br><br>
+        <b>Streaming response:</b><br>
+        Like <code>POST /knowledgeBase/{kbId}/upload</code>, this endpoint responds
+        with <code>Content-Type: text/event-stream</code> and streams a
+        <code>file:succeeded</code> / <code>file:failed</code> event per file and a
+        final <code>done</code> summary. See the <code>UploadStreamSSEEvent</code>
+        schema for the event/payload contract.
       operationId: uploadRecordsToFolder
       security:
         - bearerAuth: []
@@ -20228,11 +20356,14 @@ paths:
                 - files
       responses:
         '200':
-          description: Files uploaded successfully
+          description: |
+            SSE stream (`text/event-stream`) of per-file upload outcomes. The
+            stream emits `file:succeeded` / `file:failed` per file and a final
+            `done` summary, then closes. See `UploadStreamSSEEvent`.
           content:
-            application/json:
+            text/event-stream:
               schema:
-                $ref: '#/components/schemas/UploadResult'
+                $ref: '#/components/schemas/UploadStreamSSEEvent'
         '400':
           description: Invalid request
         '401':
@@ -20241,6 +20372,8 @@ paths:
           description: Insufficient permissions
         '404':
           description: Folder or knowledge base not found
+        '429':
+          description: Too many upload requests, or too many concurrent uploads for this user
         '500':
           description: Failed to verify knowledge base or folder access
 
@@ -25984,11 +26117,10 @@ paths:
       description: |
         Retrieve agent details by its unique key.
 
-        **Observed gateway behavior (localhost integration tests):**
+        **Gateway not-found behavior:**
         Unknown `agentKey`, lookup after soft-delete, and other AI-backend failures
-        currently return **HTTP 500** with an `ErrorResponse` body (message often
-        mentions the agent or "not found"), not 404. The Python query service may
-        return 404 when called directly; the Node proxy surfaces 500 instead.
+        that return 404 from the Python query service are surfaced by the Node
+        gateway as **HTTP 404** with an `ErrorResponse` body.
       operationId: getAgent
       x-pipeshub-sdk: true
       security:
@@ -26030,11 +26162,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Agent not found, inaccessible, or previously deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Agent not found, post-delete lookup, permission or lookup failure, or other
-            AI-backend error forwarded by the gateway (observed for unknown key and GET
-            after delete on localhost).
+          description: Unexpected AI-backend or gateway failure.
           content:
             application/json:
               schema:
@@ -26126,11 +26261,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Agent not found or inaccessible.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            AI-backend or gateway failure. Returned for unknown `agentKey`,
-            permission errors, and other non-200 responses from the Python agent
-            service via the Node proxy.
+          description: Unexpected AI-backend or gateway failure.
           content:
             application/json:
               schema:
@@ -26154,11 +26292,9 @@ paths:
         **Warning:**
         All conversations with this agent will become inaccessible.
 
-        **Observed gateway behavior (localhost integration tests):**
+        **Gateway not-found behavior:**
         Unknown `agentKey`, deleting an already-deleted agent, and `GET /agents/{agentKey}`
-        after delete currently return **HTTP 500** with an `ErrorResponse` body (message
-        often mentions the agent or "not found"), not 404. The Python backend raises 404
-        for not-found when called directly; the Node proxy may surface 500 instead.
+        after delete return **HTTP 404** with an `ErrorResponse` body.
       operationId: deleteAgent
       x-pipeshub-sdk: true
       security:
@@ -26186,11 +26322,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Agent not found, inaccessible, or already deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Agent not found, already deleted, permission or lookup failure, or other
-            backend error forwarded by the gateway (observed for unknown key, second
-            delete, and GET after delete on localhost).
+          description: Unexpected AI-backend or gateway failure.
           content:
             application/json:
               schema:

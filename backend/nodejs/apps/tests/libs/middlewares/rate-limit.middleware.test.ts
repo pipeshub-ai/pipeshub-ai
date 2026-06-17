@@ -167,6 +167,62 @@ describe('Rate Limit Middleware', () => {
   })
 
   // -----------------------------------------------------------------------
+  // Internal path bypass
+  // -----------------------------------------------------------------------
+  describe('internal path bypass', () => {
+    it('should skip rate limiting for paths containing /internal/', (done) => {
+      const limiter = createGlobalRateLimiter(loggerStub as unknown as Logger, 1)
+      const req = createMockRequest({
+        ip: '10.0.4.1',
+        path: '/api/v1/document/internal/upload',
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      next.callsFake(() => {
+        expect(next.calledOnce).to.be.true
+        done()
+      })
+
+      limiter(req, res, next)
+    })
+
+    it('should skip rate limiting for paths ending with /internal', (done) => {
+      const limiter = createGlobalRateLimiter(loggerStub as unknown as Logger, 1)
+      const req = createMockRequest({
+        ip: '10.0.4.2',
+        path: '/api/v1/users/internal',
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      next.callsFake(() => {
+        expect(next.calledOnce).to.be.true
+        done()
+      })
+
+      limiter(req, res, next)
+    })
+
+    it('should NOT skip rate limiting for non-internal paths', (done) => {
+      const limiter = createGlobalRateLimiter(loggerStub as unknown as Logger, 100)
+      const req = createMockRequest({
+        ip: '10.0.4.3',
+        path: '/api/v1/knowledgeBase/upload',
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      next.callsFake(() => {
+        expect(next.calledOnce).to.be.true
+        done()
+      })
+
+      limiter(req, res, next)
+    })
+  })
+
+  // -----------------------------------------------------------------------
   // Client IP extraction
   // -----------------------------------------------------------------------
   describe('Client IP extraction', () => {

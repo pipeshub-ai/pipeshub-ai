@@ -1,5 +1,15 @@
 import { z } from 'zod';
 import { extensionToMimeType } from '../../storage/mimetypes/mimetypes';
+import { FileRejectionReason } from '../../../libs/middlewares/file_processor/fp.constant';
+
+const rejectedFileSchema = z.object({
+  originalname: z.string(),
+  filePath: z.string(),
+  size: z.number(),
+  mimetype: z.string(),
+  reason: z.nativeEnum(FileRejectionReason),
+  error: z.string(),
+});
 
 
 export const getRecordByIdSchema = z.object({
@@ -97,6 +107,9 @@ export const uploadRecordsSchema = z.object({
     // Processed file buffers (set by file processor middleware)
     fileBuffers: z.array(fileBufferSchema).optional(),
     fileBuffer: fileBufferSchema.optional(),
+    // Set by the file processor for files it rejected (oversize / unsupported).
+    // Declared so validation doesn't strip it before the handler reads it.
+    rejectedFiles: z.array(rejectedFileSchema).optional(),
 
     // Files metadata JSON string - parsed by file processor
     // Format: [{ file_path: string, last_modified: number }, ...]
@@ -150,6 +163,9 @@ export const uploadRecordsToFolderSchema = z.object({
     // Processed file buffers (set by file processor middleware)
     fileBuffers: z.array(fileBufferSchema).optional(),
     fileBuffer: fileBufferSchema.optional(),
+    // Set by the file processor for files it rejected (oversize / unsupported).
+    // Declared so validation doesn't strip it before the handler reads it.
+    rejectedFiles: z.array(rejectedFileSchema).optional(),
 
     // Files metadata JSON string - parsed by file processor
     // Format: [{ file_path: string, last_modified: number }, ...]

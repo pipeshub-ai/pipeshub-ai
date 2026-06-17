@@ -367,11 +367,11 @@ export function Header({
               <DropdownMenu.Root>
                 <DropdownMenu.Trigger>
                   {isMobile ? (
-                    <IconButton variant="solid" size="2" style={{ cursor: 'pointer' }} aria-label={t('action.new')}>
+                    <IconButton variant="solid" size="2" style={{ cursor: 'pointer' }} aria-label={t('action.new')} data-testid="new-dropdown-trigger">
                       <MaterialIcon name="add" size={18} color="white" />
                     </IconButton>
                   ) : (
-                    <Button variant="solid" size="1" style={{ cursor: 'pointer' }}>
+                    <Button variant="solid" size="1" style={{ cursor: 'pointer' }} data-testid="new-dropdown-trigger">
                       <MaterialIcon name="add" size={16} color="white" />
                       {t('action.new')}
                     </Button>

@@ -18,14 +18,10 @@ import {
   processUploadsInBackground,
   FileUploadMetadata,
   PlaceholderResultWithMetadata,
+  UploadStreamPublish,
+  UPLOAD_STORAGE_CONCURRENCY,
 } from '../utils/utils';
-import { IRecordDocument } from '../types/record';
-import { IFileRecordDocument } from '../types/file_record';
-import {
-  INDEXING_STATUS,
-  ORIGIN_TYPE,
-  RECORD_TYPE,
-} from '../constants/record.constants';
+import { mapWithConcurrency } from '../../../libs/utils/concurrency.util';
 import axios from 'axios';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -36,7 +32,6 @@ import {
   handleBackendError,
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
-import { NotificationService } from '../../notification/service/notification.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
 
 /** Shape of the KB detail response used during pre-upload permission checks. */
@@ -47,7 +42,9 @@ import {
   validateNoFormatSpecifiers,
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
-import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
+import { FileBufferInfo, RejectedFileInfo } from '../../../libs/middlewares/file_processor/fp.interface';
+import { getFileExtension } from '../../../libs/utils/file-extension.util';
+import { scopedStorageServiceJwtGenerator } from '../../../libs/utils/createJwt';
 const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
 });
@@ -733,16 +730,302 @@ export const deleteFolder =
     }
   };
 
+/** Best-effort human-readable message from a placeholder-creation failure. */
+const placeholderErrorMessage = (err: unknown): string => {
+  if (axios.isAxiosError(err)) {
+    return (
+      err.response?.data?.error?.message ||
+      err.response?.data?.message ||
+      err.message
+    );
+  }
+  return err instanceof Error ? err.message : 'Failed to create placeholder document';
+};
+
+// SSE headers for the streaming upload response. No global compression is
+// applied (it would buffer SSE), `X-Accel-Buffering: no` disables proxy
+// buffering, and the per-response socket timeout is cleared so a long upload
+// stream is not closed by Node's default 120s timeout.
+const UPLOAD_SSE_HEADERS = {
+  'Content-Type': 'text/event-stream',
+  'Cache-Control': 'no-cache, no-transform',
+  Connection: 'keep-alive',
+  'X-Accel-Buffering': 'no',
+} as const;
+
+// Heartbeat cadence and a bounded per-socket timeout so a stuck/half-open
+// connection is eventually reclaimed. We emit a keepalive every 1s — matching
+// the Python chat-streaming backend's `send_keepalive` (interval=1s) — because
+// Cloudflare aggressively reaps connections that go quiet, and a 1s comment
+// stream is the cheapest reliable way to keep the upload stream warm end to end.
+const UPLOAD_HEARTBEAT_MS = 1_000;
+const UPLOAD_SOCKET_TIMEOUT_MS = 5 * 60 * 1000;
+
+const writeUploadEvent = (
+  res: Response,
+  event: string,
+  data: Record<string, unknown>,
+): void => {
+  // The client can drop mid-stream; writing to a closed socket throws
+  // EPIPE / ERR_STREAM_WRITE_AFTER_END. Skip if the response already ended and
+  // swallow any write error here (debug, not error) so a disconnect is never
+  // surfaced by the caller as a catastrophic upload failure.
+  if (res.writableEnded || res.destroyed) return;
+  try {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    (res as unknown as { flush?: () => void }).flush?.();
+  } catch (err) {
+    logger.debug('Skipped upload event write; socket likely closed', {
+      event,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+};
+
 /**
- * Upload records to Knowledge Base.
- * Files are processed by file processor middleware which attaches
- * filePath and lastModified to each file buffer.
+ * Streams one batch upload as Server-Sent Events: the upload POST response IS
+ * the event stream. It emits a terminal `file:succeeded` / `file:failed` per
+ * file (synchronous rejections first, then storage-upload + indexing outcomes)
+ * and a final `done` summary, then ends the response. Validation/permission
+ * errors are handled by the caller BEFORE this runs (so they can still be a
+ * normal 4xx); once streaming begins, all failures are streamed.
+ */
+const streamKbUpload = async (opts: {
+  req: AuthenticatedUserRequest;
+  res: Response;
+  fileBuffers: FileBufferInfo[];
+  rejectedFiles: RejectedFileInfo[];
+  orgId: string;
+  isVersioned: boolean;
+  keyValueStoreService: KeyValueStoreService;
+  appConfig: AppConfig;
+  pythonServiceUrl: string;
+}): Promise<void> => {
+  const {
+    req,
+    res,
+    fileBuffers,
+    rejectedFiles,
+    orgId,
+    isVersioned,
+    keyValueStoreService,
+    appConfig,
+    pythonServiceUrl,
+  } = opts;
+
+  const userId = req.user?.userId;
+
+  res.writeHead(200, UPLOAD_SSE_HEADERS);
+  // Bounded (not infinite) so a half-open/stuck socket is eventually reclaimed.
+  // Heartbeats below keep a legitimately-slow upload from hitting it.
+  req.socket?.setTimeout?.(UPLOAD_SOCKET_TIMEOUT_MS);
+  res.write(': connected\n\n');
+  (res as unknown as { flush?: () => void }).flush?.();
+
+  // Heartbeat comments keep proxies from killing an idle connection during slow
+  // storage/index work and let the client's idle-watchdog distinguish "slow" from
+  // "dead". Stopped in `finally`. Writes to a closed socket are swallowed.
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': keepalive\n\n');
+      (res as unknown as { flush?: () => void }).flush?.();
+    } catch {
+      // Socket closed — stop firing immediately (final cleanup still runs in
+      // `finally`). Avoids useless writes while background processing finishes.
+      clearInterval(heartbeat);
+    }
+  }, UPLOAD_HEARTBEAT_MS);
+  heartbeat.unref?.();
+
+  const publish: UploadStreamPublish = (event, data) =>
+    writeUploadEvent(res, event, data);
+
+  const total = fileBuffers.length + rejectedFiles.length;
+  let succeeded = 0;
+  let failed = 0;
+
+  try {
+    // One scoped storage-service token for this upload request (valid 1h, reused
+    // for every file's internal storage call). Carries orgId + userId so the
+    // storage service keeps org scoping and initiator attribution, while routing
+    // through the INTERNAL storage route instead of the user-facing /upload
+    // route. Minted inside the try so a config error streams as an `error` event
+    // rather than silently aborting after headers are sent.
+    const storageToken = scopedStorageServiceJwtGenerator(
+      orgId,
+      appConfig.scopedJwtSecret,
+      userId,
+    );
+
+    // 1) Files the processor rejected up front (oversize / unsupported type).
+    for (const rf of rejectedFiles) {
+      publish('file:failed', {
+        fileName: rf.originalname,
+        filePath: rf.filePath,
+        extension:
+          getFileExtension(rf.filePath) ??
+          getFileExtension(rf.originalname) ??
+          undefined,
+        errors: [rf.error],
+        reason: rf.reason,
+        stage: 'upload',
+      });
+      failed += 1;
+    }
+
+    // 2) Create a placeholder (storage) document per accepted file, with
+    //    BOUNDED CONCURRENCY. For local-disk storage the file bytes are sent
+    //    here, and for S3/Azure the signed-URL round-trip happens here, so doing
+    //    this sequentially let one large file stall every other file. Now up to
+    //    UPLOAD_STORAGE_CONCURRENCY run at once; each occupies one slot.
+    const currentTime = Date.now();
+    const placeholderOutcomes = await mapWithConcurrency(
+      fileBuffers,
+      UPLOAD_STORAGE_CONCURRENCY,
+      async (file): Promise<PlaceholderResultWithMetadata | null> => {
+        // If the client has gone away mid-batch, skip the per-file HTTP
+        // round-trip to the storage service — no one is listening for it.
+        if (req.socket?.destroyed) return null;
+
+        const { originalname, mimetype, size, filePath, lastModified } = file;
+        const fileName = filePath.includes('/')
+          ? filePath.split('/').pop() || originalname
+          : filePath;
+        const extension = getFileExtension(fileName);
+        const correctMimeType = (extension && getMimeType(extension)) || mimetype;
+        const key: string = uuidv4();
+        const webUrl = `/record/${key}`;
+        const validLastModified =
+          lastModified && !isNaN(lastModified) && lastModified > 0
+            ? lastModified
+            : currentTime;
+        const metadata: FileUploadMetadata = {
+          file,
+          filePath,
+          fileName,
+          extension,
+          correctMimeType,
+          key,
+          webUrl,
+          validLastModified,
+          size,
+        };
+        try {
+          const placeholderResult = await createPlaceholderDocument(
+            req,
+            file,
+            fileName,
+            isVersioned,
+            keyValueStoreService,
+            appConfig.storage,
+            storageToken,
+          );
+          return { placeholderResult, metadata };
+        } catch (placeholderError: any) {
+          const errorMessage = placeholderErrorMessage(placeholderError);
+          publish('file:failed', {
+            recordId: key,
+            fileName,
+            filePath,
+            extension: extension ?? undefined,
+            errors: [errorMessage],
+            stage: 'upload',
+          });
+          failed += 1;
+          logger.error('Failed to create placeholder document for file', {
+            fileName,
+            filePath,
+            error: errorMessage,
+          });
+          return null;
+        }
+      },
+    );
+    const placeholderResults: PlaceholderResultWithMetadata[] =
+      placeholderOutcomes.filter(
+        (r): r is PlaceholderResultWithMetadata => r !== null,
+      );
+
+    // 3) Upload to storage + create records via indexing, streaming each
+    //    file's terminal outcome as it settles.
+    if (placeholderResults.length > 0) {
+      const counts = await processUploadsInBackground(
+        placeholderResults,
+        orgId,
+        currentTime,
+        pythonServiceUrl,
+        req.headers as Record<string, string>,
+        logger,
+        publish,
+      );
+      succeeded += counts.succeeded;
+      failed += counts.failed;
+    }
+
+    writeUploadEvent(res, 'done', { summary: { total, succeeded, failed } });
+  } catch (error: any) {
+    logger.error('Streaming upload failed', { error: error?.message });
+    try {
+      writeUploadEvent(res, 'error', {
+        message: error?.message || 'Upload failed',
+      });
+    } catch {
+      /* socket already closed */
+    }
+  } finally {
+    clearInterval(heartbeat);
+    try {
+      res.end();
+    } catch {
+      /* socket already closed */
+    }
+  }
+};
+
+/**
+ * Verify the KB exists and the caller has write permission before touching
+ * storage. The GET /kb endpoint returns 200 for ANY role (READER/COMMENTER
+ * included), so a 200 alone is insufficient — we must inspect `userRole` in the
+ * response body. Throws the appropriate HTTP error otherwise.
+ */
+const assertKbWritePermission = async (
+  connectorBackend: string,
+  kbId: string,
+  headers: Record<string, string>,
+): Promise<void> => {
+  const kbCheckResponse = await executeConnectorCommand(
+    `${connectorBackend}/api/v1/kb/${kbId}`,
+    HttpMethod.GET,
+    headers,
+  );
+  if (kbCheckResponse.statusCode === 404) {
+    throw new NotFoundError(`Knowledge base ${kbId} not found`);
+  }
+  if (kbCheckResponse.statusCode === 403) {
+    throw new ForbiddenError(
+      'You do not have permission to upload to this knowledge base',
+    );
+  }
+  if (kbCheckResponse.statusCode !== 200) {
+    throw new InternalServerError('Failed to verify knowledge base access');
+  }
+  const kbUserRole = (kbCheckResponse.data as KbCheckData | undefined)?.userRole;
+  if (!kbUserRole || !['OWNER', 'WRITER'].includes(kbUserRole)) {
+    throw new ForbiddenError(
+      'You do not have permission to upload to this knowledge base',
+    );
+  }
+};
+
+/**
+ * Upload records to a Knowledge Base. The POST response is an SSE stream of
+ * per-file outcomes (see streamKbUpload). Files are processed by the file
+ * processor middleware which attaches filePath/lastModified to each buffer.
  */
 export const uploadRecordsToKB =
   (
     keyValueStoreService: KeyValueStoreService,
     appConfig: AppConfig,
-    notificationService?: NotificationService,
   ) =>
   async (
     req: AuthenticatedUserRequest,
@@ -751,6 +1034,9 @@ export const uploadRecordsToKB =
   ): Promise<void> => {
     try {
       const fileBuffers: FileBufferInfo[] = req.body.fileBuffers || [];
+      // Files dropped by the processor (oversize / unsupported type). Streamed
+      // back as per-file failures rather than failing the whole batch.
+      const rejectedFiles: RejectedFileInfo[] = req.body.rejectedFiles || [];
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const { kbId } = req.params;
@@ -763,35 +1049,19 @@ export const uploadRecordsToKB =
         );
       }
 
-      if (!kbId || fileBuffers.length === 0) {
+      if (!kbId) {
+        throw new BadRequestError('Knowledge Base ID is required');
+      }
+      if (fileBuffers.length === 0 && rejectedFiles.length === 0) {
         throw new BadRequestError('Knowledge Base ID and files are required');
       }
 
-      // Verify KB exists and user has write permission before touching storage.
-      // We must check userRole from the response body: the GET /kb endpoint returns
-      // 200 for ANY role (including READER/COMMENTER), so a 200 alone is insufficient.
-      const kbCheckResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/kb/${kbId}`,
-        HttpMethod.GET,
+      // Verify KB exists and caller has write permission before touching storage.
+      await assertKbWritePermission(
+        appConfig.connectorBackend,
+        kbId,
         req.headers as Record<string, string>,
       );
-      if (kbCheckResponse.statusCode === 404) {
-        throw new NotFoundError(`Knowledge base ${kbId} not found`);
-      }
-      if (kbCheckResponse.statusCode === 403) {
-        throw new ForbiddenError(
-          'You do not have permission to upload to this knowledge base',
-        );
-      }
-      if (kbCheckResponse.statusCode !== 200) {
-        throw new InternalServerError('Failed to verify knowledge base access');
-      }
-      const kbUserRole = (kbCheckResponse.data as KbCheckData | undefined)?.userRole;
-      if (!kbUserRole || !['OWNER', 'WRITER'].includes(kbUserRole)) {
-        throw new ForbiddenError(
-          'You do not have permission to upload to this knowledge base',
-        );
-      }
 
       logger.info('Processing file upload to KB', {
         totalFiles: fileBuffers.length,
@@ -800,295 +1070,26 @@ export const uploadRecordsToKB =
         samplePaths: fileBuffers.slice(0, 3).map((f) => f.filePath),
       });
 
-      const currentTime = Date.now();
-
-      // STEP 1: Create all placeholder documents first (fast operation)
-      // Track successful and failed files separately
-      const placeholderResults: PlaceholderResultWithMetadata[] = [];
-      const failedFiles: Array<{
-        fileName: string;
-        filePath: string;
-        error: string;
-      }> = [];
-
-      for (const file of fileBuffers) {
-        const { originalname, mimetype, size, filePath, lastModified } = file;
-
-        // Extract filename from path
-        const fileName = filePath.includes('/')
-          ? filePath.split('/').pop() || originalname
-          : filePath;
-
-        const extension = fileName.includes('.')
-          ? fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase()
-          : null;
-
-        // Use correct MIME type mapping instead of browser detection
-        const correctMimeType =
-          (extension && getMimeType(extension)) || mimetype;
-
-        // Generate unique ID for the record
-        const key: string = uuidv4();
-        const webUrl = `/record/${key}`;
-
-        const validLastModified =
-          lastModified && !isNaN(lastModified) && lastModified > 0
-            ? lastModified
-            : currentTime;
-
-        // Create file metadata structure
-        const metadata: FileUploadMetadata = {
-          file,
-          filePath,
-          fileName,
-          extension,
-          correctMimeType,
-          key,
-          webUrl,
-          validLastModified,
-          size,
-        };
-
-        // Create placeholder document (fast, doesn't upload file yet)
-        // Wrap in try-catch to handle individual file failures
-        try {
-          const placeholderResult = await createPlaceholderDocument(
-            req,
-            file,
-            fileName,
-            isVersioned,
-            keyValueStoreService,
-            appConfig.storage,
-          );
-
-          placeholderResults.push({
-            placeholderResult,
-            metadata,
-          });
-        } catch (placeholderError: any) {
-          // Track failed file but continue processing others
-          // Handle different error response structures
-          const errorMessage =
-            placeholderError?.response?.data?.error?.message ||
-            placeholderError?.response?.data?.message ||
-            placeholderError?.message ||
-            'Failed to create placeholder document';
-
-          failedFiles.push({
-            fileName,
-            filePath,
-            error: errorMessage,
-          });
-
-          logger.error('Failed to create placeholder document for file', {
-            fileName,
-            filePath,
-            error: errorMessage,
-            stack: placeholderError?.stack,
-          });
-          // Continue with next file
-        }
-      }
-
-      logger.info('✅ Placeholder creation completed', {
-        totalFiles: fileBuffers.length,
-        successful: placeholderResults.length,
-        failed: failedFiles.length,
-        uploadsRequired: placeholderResults.filter(
-          (r) => r.placeholderResult.uploadPromise,
-        ).length,
-      });
-
-      // Send failed files notification immediately if any failed during placeholder creation
-      // Event-driven: Send immediately when failures are detected
-      // NotificationService handles connection state and queuing automatically
-      if (failedFiles.length > 0 && notificationService) {
-        try {
-          const failedFilesWithIds = failedFiles.map((ff) => ({
-            recordId: uuidv4(), // Generate a temporary ID for tracking
-            fileName: ff.fileName,
-            filePath: ff.filePath,
-            error: ff.error,
-          }));
-
-          const eventData = {
-            failedFiles: failedFilesWithIds,
-            orgId,
-            kbId,
-            folderId: undefined,
-            totalFailed: failedFiles.length,
-            timestamp: Date.now(),
-          };
-
-          // Send immediately - service handles connection state and queuing
-          const sentImmediately = notificationService.sendToUser(
-            userId,
-            'records:failed',
-            eventData,
-          );
-
-          logger.info(
-            'Notification sent for failed files (placeholder creation)',
-            {
-              userId,
-              totalFailed: failedFiles.length,
-              kbId,
-              sentImmediately,
-            },
-          );
-        } catch (socketError: unknown) {
-          const error =
-            socketError instanceof Error
-              ? socketError
-              : new Error(String(socketError));
-          logger.error(
-            'Failed to send notification for failed files (placeholder creation)',
-            {
-              error: error.message,
-              stack: error.stack,
-              userId,
-              kbId,
-            },
-          );
-          // Don't fail the upload if notification fails - this is a non-critical notification
-        }
-      }
-
-      // If no files succeeded, return early with error info
-      if (placeholderResults.length === 0) {
-        res.status(200).json({
-          message: 'All files failed to upload',
-          totalFiles: fileBuffers.length,
-          status: 'failed',
-          records: [],
-          failedFiles: failedFiles.map((ff) => ({
-            fileName: ff.fileName,
-            filePath: ff.filePath,
-            error: ff.error,
-          })),
-        });
-        return;
-      }
-
-      // STEP 2: Build placeholder records for optimistic UI update (Google Drive-like experience)
-      const placeholderRecords = placeholderResults.map((result) => {
-        const { placeholderResult, metadata } = result;
-        const {
-          extension,
-          correctMimeType,
-          key,
-          webUrl,
-          validLastModified,
-          size,
-        } = metadata;
-
-        // Create record structure matching the format expected by frontend
-        // Create record structure
-        const connectorId = `knowledgeBase_${orgId}`;
-        const record: IRecordDocument = {
-          _key: key,
-          orgId: orgId,
-          recordName: placeholderResult.documentName,
-          externalRecordId: placeholderResult.documentId,
-          recordType: RECORD_TYPE.FILE,
-          origin: ORIGIN_TYPE.UPLOAD,
-          createdAtTimestamp: currentTime,
-          updatedAtTimestamp: currentTime,
-          sourceCreatedAtTimestamp: validLastModified,
-          sourceLastModifiedTimestamp: validLastModified,
-          isDeleted: false,
-          isArchived: false,
-          indexingStatus: INDEXING_STATUS.QUEUED,
-          version: 1,
-          webUrl: webUrl,
-          mimeType: correctMimeType,
-          connectorId: connectorId,
-          sizeInBytes: size,
-        };
-
-        const fileRecord: IFileRecordDocument = {
-          _key: key,
-          orgId: orgId,
-          name: placeholderResult.documentName,
-          isFile: true,
-          extension: extension,
-          mimeType: correctMimeType,
-          sizeInBytes: size,
-          webUrl: webUrl,
-        };
-
-        return {
-          record,
-          fileRecord,
-          filePath: metadata.filePath,
-          lastModified: validLastModified,
-        };
-      });
-
-      // STEP 3: Return response to frontend immediately with placeholder records (unblock frontend)
-      // Frontend can display these records immediately with a "processing" status
-      res.status(200).json({
-        message:
-          failedFiles.length > 0
-            ? `Upload initiated: ${placeholderResults.length} succeeded, ${failedFiles.length} failed`
-            : 'Upload initiated successfully',
-        totalFiles: fileBuffers.length,
-        successfulFiles: placeholderResults.length,
-        failedFiles: failedFiles.length,
-        status: 'processing',
-        failedFilesDetails: failedFiles.map((ff) => ({
-          fileName: ff.fileName,
-          filePath: ff.filePath,
-          error: ff.error,
-        })),
-        records: placeholderRecords.map((pr) => ({
-          _key: pr.record._key,
-          recordName: pr.record.recordName,
-          externalRecordId: pr.record.externalRecordId,
-          recordType: pr.record.recordType,
-          origin: pr.record.origin,
-          indexingStatus: 'NOT_STARTED', // Special status to indicate background not started
-          createdAtTimestamp: pr.record.createdAtTimestamp,
-          updatedAtTimestamp: pr.record.updatedAtTimestamp,
-          sourceCreatedAtTimestamp: pr.record.sourceCreatedAtTimestamp,
-          sourceLastModifiedTimestamp: pr.record.sourceLastModifiedTimestamp,
-          version: pr.record.version,
-          webUrl: pr.record.webUrl,
-          mimeType: pr.record.mimeType,
-          fileRecord: {
-            _key: pr.fileRecord._key,
-            name: pr.fileRecord.name,
-            extension: pr.fileRecord.extension,
-            mimeType: pr.fileRecord.mimeType,
-            sizeInBytes: pr.fileRecord.sizeInBytes,
-            webUrl: pr.fileRecord.webUrl,
-          },
-        })),
-      });
-
-      // STEP 4: Process uploads and call Python service in background (non-blocking)
-      // This runs after the response is sent - uploads sequentially, then calls Python
-      // For local storage, files are already uploaded, so this will just call Python API
-      processUploadsInBackground(
-        placeholderResults,
+      // Stream every file's outcome (rejections, storage upload, indexing) as
+      // SSE on this response. Validation/permission errors above are still
+      // normal 4xx; from here the response is a stream.
+      await streamKbUpload({
+        req,
+        res,
+        fileBuffers,
+        rejectedFiles,
         orgId,
-        userId,
-        currentTime,
-        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/upload`,
-        req.headers as Record<string, string>,
-        logger,
-        notificationService,
-        kbId,
-        undefined, // folderId is undefined for KB root uploads
-      ).catch((error) => {
-        logger.error('Background processing error (non-fatal)', {
-          error: error.message,
-          stack: error.stack,
-          kbId,
-          userId,
-        });
+        isVersioned,
+        keyValueStoreService,
+        appConfig,
+        pythonServiceUrl: `${appConfig.connectorBackend}/api/v1/kb/${kbId}/upload`,
       });
     } catch (error: any) {
+      // streamKbUpload handles its own errors after headers are sent, so this
+      // only catches pre-stream validation/permission errors.
+      if (res.headersSent) {
+        return;
+      }
       logger.error('Record upload failed', {
         error: error.message,
         userId: req.user?.userId,
@@ -1108,7 +1109,6 @@ export const uploadRecordsToFolder =
   (
     keyValueStoreService: KeyValueStoreService,
     appConfig: AppConfig,
-    notificationService?: NotificationService,
   ) =>
   async (
     req: AuthenticatedUserRequest,
@@ -1117,6 +1117,9 @@ export const uploadRecordsToFolder =
   ): Promise<void> => {
     try {
       const fileBuffers: FileBufferInfo[] = req.body.fileBuffers || [];
+      // Files dropped by the processor (oversize / unsupported type). Reported
+      // back as per-file failures rather than failing the whole batch.
+      const rejectedFiles: RejectedFileInfo[] = req.body.rejectedFiles || [];
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const { kbId, folderId } = req.params;
@@ -1129,37 +1132,23 @@ export const uploadRecordsToFolder =
         );
       }
 
-      if (!kbId || !folderId || fileBuffers.length === 0) {
+      if (!kbId || !folderId) {
+        throw new BadRequestError(
+          'Knowledge Base ID and Folder ID are required',
+        );
+      }
+      if (fileBuffers.length === 0 && rejectedFiles.length === 0) {
         throw new BadRequestError(
           'Knowledge Base ID, Folder ID, and files are required',
         );
       }
 
-      // Verify KB exists and user has WRITE permission before touching storage.
-      // The GET /kb endpoint returns 200 for any role (READER/COMMENTER included),
-      // so we must also inspect userRole in the response body.
-      const kbCheckResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/kb/${kbId}`,
-        HttpMethod.GET,
+      // Verify KB exists and caller has write permission before touching storage.
+      await assertKbWritePermission(
+        appConfig.connectorBackend,
+        kbId,
         req.headers as Record<string, string>,
       );
-      if (kbCheckResponse.statusCode === 404) {
-        throw new NotFoundError(`Knowledge base ${kbId} not found`);
-      }
-      if (kbCheckResponse.statusCode === 403) {
-        throw new ForbiddenError(
-          'You do not have permission to upload to this knowledge base',
-        );
-      }
-      if (kbCheckResponse.statusCode !== 200) {
-        throw new InternalServerError('Failed to verify knowledge base access');
-      }
-      const kbUserRole = (kbCheckResponse.data as KbCheckData | undefined)?.userRole;
-      if (!kbUserRole || !['OWNER', 'WRITER'].includes(kbUserRole)) {
-        throw new ForbiddenError(
-          'You do not have permission to upload to this knowledge base',
-        );
-      }
 
       // Validate folder exists and belongs to the KB before creating any placeholders.
       // This turns the silent background failure (which returned 200) into a proper 404/403.
@@ -1183,297 +1172,24 @@ export const uploadRecordsToFolder =
         samplePaths: fileBuffers.slice(0, 3).map((f) => f.filePath),
       });
 
-      const currentTime = Date.now();
-
-      // STEP 1: Create all placeholder documents first (fast operation)
-      // Track successful and failed files separately
-      const placeholderResults: PlaceholderResultWithMetadata[] = [];
-      const failedFiles: Array<{
-        fileName: string;
-        filePath: string;
-        error: string;
-      }> = [];
-
-      for (const file of fileBuffers) {
-        const { originalname, mimetype, size, filePath, lastModified } = file;
-
-        // Extract filename from path
-        const fileName = filePath.includes('/')
-          ? filePath.split('/').pop() || originalname
-          : filePath;
-
-        const extension = fileName.includes('.')
-          ? fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase()
-          : null;
-
-        // Use correct MIME type mapping instead of browser detection
-        const correctMimeType =
-          (extension && getMimeType(extension)) || mimetype;
-
-        // Generate unique ID for the record
-        const key: string = uuidv4();
-        const webUrl = `/record/${key}`;
-
-        const validLastModified =
-          lastModified && !isNaN(lastModified) && lastModified > 0
-            ? lastModified
-            : currentTime;
-
-        // Create file metadata structure
-        const metadata: FileUploadMetadata = {
-          file,
-          filePath,
-          fileName,
-          extension,
-          correctMimeType,
-          key,
-          webUrl,
-          validLastModified,
-          size,
-        };
-
-        // Create placeholder document (fast, doesn't upload file yet)
-        // Wrap in try-catch to handle individual file failures
-        try {
-          const placeholderResult = await createPlaceholderDocument(
-            req,
-            file,
-            fileName,
-            isVersioned,
-            keyValueStoreService,
-            appConfig.storage,
-          );
-
-          placeholderResults.push({
-            placeholderResult,
-            metadata,
-          });
-        } catch (placeholderError: any) {
-          // Track failed file but continue processing others
-          // Handle different error response structures
-          const errorMessage =
-            placeholderError?.response?.data?.error?.message ||
-            placeholderError?.response?.data?.message ||
-            placeholderError?.message ||
-            'Failed to create placeholder document';
-
-          failedFiles.push({
-            fileName,
-            filePath,
-            error: errorMessage,
-          });
-
-          logger.error('Failed to create placeholder document for file', {
-            fileName,
-            filePath,
-            error: errorMessage,
-            stack: placeholderError?.stack,
-          });
-          // Continue with next file
-        }
-      }
-
-      logger.info('✅ Placeholder creation completed', {
-        totalFiles: fileBuffers.length,
-        successful: placeholderResults.length,
-        failed: failedFiles.length,
-        uploadsRequired: placeholderResults.filter(
-          (r) => r.placeholderResult.uploadPromise,
-        ).length,
-      });
-
-      // Send failed files notification immediately if any failed during placeholder creation
-      // Event-driven: Send immediately when failures are detected
-      // NotificationService handles connection state and queuing automatically
-      if (failedFiles.length > 0 && notificationService) {
-        try {
-          const failedFilesWithIds = failedFiles.map((ff) => ({
-            recordId: uuidv4(), // Generate a temporary ID for tracking
-            fileName: ff.fileName,
-            filePath: ff.filePath,
-            error: ff.error,
-          }));
-
-          const eventData = {
-            failedFiles: failedFilesWithIds,
-            orgId,
-            kbId,
-            folderId,
-            totalFailed: failedFiles.length,
-            timestamp: Date.now(),
-          };
-
-          // Send immediately - service handles connection state and queuing
-          const sentImmediately = notificationService.sendToUser(
-            userId,
-            'records:failed',
-            eventData,
-          );
-
-          logger.info(
-            'Notification sent for failed files (placeholder creation)',
-            {
-              userId,
-              totalFailed: failedFiles.length,
-              kbId,
-              folderId,
-              sentImmediately,
-            },
-          );
-        } catch (socketError: unknown) {
-          const error =
-            socketError instanceof Error
-              ? socketError
-              : new Error(String(socketError));
-          logger.error(
-            'Failed to send notification for failed files (placeholder creation)',
-            {
-              error: error.message,
-              stack: error.stack,
-              userId,
-              kbId,
-              folderId,
-            },
-          );
-          // Don't fail the upload if notification fails - this is a non-critical notification
-        }
-      }
-
-      // If no files succeeded, return early with error info
-      if (placeholderResults.length === 0) {
-        res.status(200).json({
-          message: 'All files failed to upload',
-          totalFiles: fileBuffers.length,
-          status: 'failed',
-          records: [],
-          failedFiles: failedFiles.map((ff) => ({
-            fileName: ff.fileName,
-            filePath: ff.filePath,
-            error: ff.error,
-          })),
-        });
-        return;
-      }
-
-      // STEP 2: Build placeholder records for optimistic UI update (Google Drive-like experience)
-      const placeholderRecords = placeholderResults.map((result) => {
-        const { placeholderResult, metadata } = result;
-        const {
-          extension,
-          correctMimeType,
-          key,
-          webUrl,
-          validLastModified,
-          size,
-        } = metadata;
-
-        // Create record structure matching the format expected by frontend
-        // Create record structure
-        const connectorId = `knowledgeBase_${orgId}`;
-        const record: IRecordDocument = {
-          _key: key,
-          orgId: orgId,
-          recordName: placeholderResult.documentName,
-          externalRecordId: placeholderResult.documentId,
-          recordType: RECORD_TYPE.FILE,
-          origin: ORIGIN_TYPE.UPLOAD,
-          createdAtTimestamp: currentTime,
-          updatedAtTimestamp: currentTime,
-          sourceCreatedAtTimestamp: validLastModified,
-          sourceLastModifiedTimestamp: validLastModified,
-          isDeleted: false,
-          isArchived: false,
-          indexingStatus: INDEXING_STATUS.QUEUED,
-          version: 1,
-          webUrl: webUrl,
-          mimeType: correctMimeType,
-          connectorId: connectorId,
-        };
-
-        const fileRecord: IFileRecordDocument = {
-          _key: key,
-          orgId: orgId,
-          name: placeholderResult.documentName,
-          isFile: true,
-          extension: extension,
-          mimeType: correctMimeType,
-          sizeInBytes: size,
-          webUrl: webUrl,
-        };
-
-        return {
-          record,
-          fileRecord,
-          filePath: metadata.filePath,
-          lastModified: validLastModified,
-        };
-      });
-
-      // STEP 3: Return response to frontend immediately with placeholder records (unblock frontend)
-      // Frontend can display these records immediately with a "processing" status
-      res.status(200).json({
-        message:
-          failedFiles.length > 0
-            ? `Upload initiated: ${placeholderResults.length} succeeded, ${failedFiles.length} failed`
-            : 'Upload initiated successfully',
-        totalFiles: fileBuffers.length,
-        successfulFiles: placeholderResults.length,
-        failedFiles: failedFiles.length,
-        status: 'processing',
-        failedFilesDetails: failedFiles.map((ff) => ({
-          fileName: ff.fileName,
-          filePath: ff.filePath,
-          error: ff.error,
-        })),
-        records: placeholderRecords.map((pr) => ({
-          _key: pr.record._key,
-          recordName: pr.record.recordName,
-          externalRecordId: pr.record.externalRecordId,
-          recordType: pr.record.recordType,
-          origin: pr.record.origin,
-          indexingStatus: 'NOT_STARTED', // Special status to indicate background not started
-          createdAtTimestamp: pr.record.createdAtTimestamp,
-          updatedAtTimestamp: pr.record.updatedAtTimestamp,
-          sourceCreatedAtTimestamp: pr.record.sourceCreatedAtTimestamp,
-          sourceLastModifiedTimestamp: pr.record.sourceLastModifiedTimestamp,
-          version: pr.record.version,
-          webUrl: pr.record.webUrl,
-          mimeType: pr.record.mimeType,
-          fileRecord: {
-            _key: pr.fileRecord._key,
-            name: pr.fileRecord.name,
-            extension: pr.fileRecord.extension,
-            mimeType: pr.fileRecord.mimeType,
-            sizeInBytes: pr.fileRecord.sizeInBytes,
-            webUrl: pr.fileRecord.webUrl,
-          },
-        })),
-      });
-
-      // STEP 4: Process uploads and call Python service in background (non-blocking)
-      // This runs after the response is sent - uploads sequentially, then calls Python
-      // For local storage, files are already uploaded, so this will just call Python API
-      processUploadsInBackground(
-        placeholderResults,
+      // Stream every file's outcome on this response (see uploadRecordsToKB).
+      await streamKbUpload({
+        req,
+        res,
+        fileBuffers,
+        rejectedFiles,
         orgId,
-        userId,
-        currentTime,
-        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/upload`,
-        req.headers as Record<string, string>,
-        logger,
-        notificationService,
-        kbId,
-        folderId,
-      ).catch((error) => {
-        logger.error('Background processing error (non-fatal)', {
-          error: error.message,
-          stack: error.stack,
-          kbId,
-          folderId,
-          userId,
-        });
+        isVersioned,
+        keyValueStoreService,
+        appConfig,
+        pythonServiceUrl: `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/upload`,
       });
     } catch (error: any) {
+      // streamKbUpload handles its own errors after headers are sent, so this
+      // only catches pre-stream validation/permission errors.
+      if (res.headersSent) {
+        return;
+      }
       logger.error('❌ Folder record upload failed', {
         error: error.message,
         userId: req.user?.userId,
@@ -1511,12 +1227,8 @@ export const updateRecord =
       if (hasFileBuffer) {
         ({ originalname, mimetype, size, lastModified } = req.body.fileBuffer);
 
-        // Extract extension from filename
-        extension = originalname.includes('.')
-          ? originalname
-              .substring(originalname.lastIndexOf('.') + 1)
-              .toLowerCase()
-          : null;
+        // Extract extension from filename (canonical last-dot derivation)
+        extension = getFileExtension(originalname);
         // Calculate SHA-256 checksum for security
         const buffer = req.body.fileBuffer.buffer;
         sha256Hash = crypto.createHash('sha256').update(buffer).digest('hex');
@@ -1631,14 +1343,22 @@ export const updateRecord =
         });
 
         try {
-          // Update version through storage service using externalRecordId
+          // Update version through storage service using externalRecordId.
+          // Use the INTERNAL storage route with a scoped service token (carries
+          // orgId + userId) rather than forwarding the user's JWT.
           const fileBuffer = req.body.fileBuffer;
+          const storageToken = scopedStorageServiceJwtGenerator(
+            orgId,
+            appConfig.scopedJwtSecret,
+            userId,
+          );
           await uploadNextVersionToStorage(
             req,
             fileBuffer,
             storageDocumentId,
             keyValueStoreService,
             appConfig.storage, // Fixed: use appConfig.storage instead of defaultConfig
+            storageToken,
           );
 
           logger.info('File uploaded to storage successfully', {

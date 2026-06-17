@@ -42,6 +42,9 @@ function createMockRequest(overrides: Record<string, any> = {}): any {
     query: {},
     user: { userId: 'user-1', orgId: 'org-1', email: 'test@test.com', fullName: 'Test User' },
     context: { requestId: 'req-123' },
+    // Streaming upload clears the per-response socket timeout and listens for close.
+    socket: { setTimeout: sinon.stub() },
+    on: sinon.stub(),
     ...overrides,
   }
 }
@@ -57,11 +60,16 @@ function createMockResponse(): any {
     getHeader: sinon.stub(),
     headersSent: false,
     pipe: sinon.stub(),
+    // Streaming upload (SSE) response surface.
+    writeHead: sinon.stub(),
+    write: sinon.stub(),
+    flush: sinon.stub(),
   }
   res.status.returns(res)
   res.json.returns(res)
   res.end.returns(res)
   res.send.returns(res)
+  res.writeHead.returns(res)
   return res
 }
 

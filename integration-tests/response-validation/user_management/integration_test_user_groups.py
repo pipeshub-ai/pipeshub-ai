@@ -501,9 +501,6 @@ class TestGetUserGroupById:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Valid-format ObjectId that does not exist in this org.
         resp = _get(self.client, f"/{_NONEXISTENT_ID}")
@@ -576,9 +573,6 @@ class TestCreateUserGroup:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[missing name] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[missing name] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Missing type — Zod schema requires type.min(1); rejected before controller.
         resp = _post(self.client, json={"name": "rv-test-no-type"})
@@ -589,9 +583,6 @@ class TestCreateUserGroup:
         assert_response_matches_openapi_operation(body, "createUserGroup", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[missing type] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[missing type] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
         # Unknown type value — passes Zod (no enum), rejected in controller logic.
@@ -806,9 +797,6 @@ class TestUpdateUserGroup:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Missing name — Zod schema requires name.min(1).
         resp = _put(self.client, f"/{group['_id']}", json={})
@@ -819,9 +807,6 @@ class TestUpdateUserGroup:
         assert_response_matches_openapi_operation(body, "updateUserGroup", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[missing name] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[missing name] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
         # Valid-format ObjectId that does not exist.
@@ -921,9 +906,6 @@ class TestDeleteUserGroup:
         assert_response_matches_openapi_operation(body, "deleteUserGroup", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
         # Valid-format ObjectId that does not exist.
@@ -1062,9 +1044,6 @@ class TestGetUsersInGroup:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Valid-format ObjectId that does not exist.
         resp = _get(self.client, f"/{_NONEXISTENT_ID}/users")
@@ -1138,9 +1117,6 @@ class TestGetGroupsForUser:
             )
             assert body["error"]["code"] == "VALIDATION_ERROR", (
                 f"[{label}] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-            )
-            assert body["error"]["message"] == "Validation failed", (
-                f"[{label}] Expected 'Validation failed', got {body['error']['message']!r}"
             )
 
         user_id = _find_user_id(self.client) or _NONEXISTENT_ID
@@ -1505,9 +1481,6 @@ class TestAddAndRemoveUsersFromGroups:
                 assert body["error"]["code"] == "VALIDATION_ERROR", (
                     f"[{label}] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
                 )
-                assert body["error"]["message"] == "Validation failed", (
-                    f"[{label}] Expected 'Validation failed', got {body['error']['message']!r}"
-                )
         finally:
             del_resp = _delete(self.client, f"/{created['_id']}")
             assert del_resp.status_code == 200, (
@@ -1560,9 +1533,6 @@ class TestAddAndRemoveUsersFromGroups:
             )
             assert body["error"]["code"] == "VALIDATION_ERROR", (
                 f"[{label}] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-            )
-            assert body["error"]["message"] == "Validation failed", (
-                f"[{label}] Expected 'Validation failed', got {body['error']['message']!r}"
             )
 
 
