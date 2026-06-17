@@ -3,7 +3,6 @@
 import type { NotificationListItem } from './api';
 import { useBrowserNotificationsStore } from './browser-notifications-store';
 import { notificationHref } from './notification-link';
-import { NotificationSeverity } from './api';
 
 const NOTIFICATION_ICON = '/icon.svg';
 
@@ -23,16 +22,13 @@ export async function requestBrowserNotificationPermission(): Promise<Notificati
 
 /** True when desktop notifications may be shown for a live socket event. */
 export function shouldShowDesktopNotification(): boolean {
-  if (typeof document === 'undefined') return false;
-  if (document.visibilityState !== 'hidden') return false;
   if (!isBrowserNotificationSupported()) return false;
   if (getBrowserNotificationPermission() !== 'granted') return false;
   return useBrowserNotificationsStore.getState().desktopEnabled;
 }
 
 function checkNotificationSeverity(item: NotificationListItem): boolean {
-    if (item.severity && ['success', 'info', 'critical'].includes(item.severity)) return true;
-    return false;
+  return !!item.severity && ['success', 'info', 'critical'].includes(item.severity);
 }
 
 function navigateFromNotification(href: string): void {
@@ -50,9 +46,8 @@ export function showDesktopNotification(item: NotificationListItem): void {
   if (item.status === 'archived') return;
   if (!checkNotificationSeverity(item)) return;
 
-  const title = item.title?.trim() || item.type?.trim() || 'PipesHub';
+  const title = item.title?.trim() || 'PipesHub';
   const body = item.message?.trim() ?? '';
-  if (!title && !body) return;
 
   try {
     const notification = new Notification(title, {
