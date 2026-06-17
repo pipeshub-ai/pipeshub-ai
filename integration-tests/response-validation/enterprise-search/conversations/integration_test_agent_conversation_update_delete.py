@@ -34,6 +34,7 @@ from openapi_search_validator import assert_matches_component_schema
 from openapi_schema_validator import (
     assert_request_body_matches_openapi_operation,
     assert_response_matches_openapi_operation,
+    assert_response_matches_openapi_ref,
 )
 from pipeshub_client import PipeshubClient
 
@@ -216,10 +217,11 @@ class TestAgentConversationTitleUpdate:
     def _assert_validation_error(resp: requests.Response) -> dict[str, Any]:
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
         body = _response_json(resp)
+        assert_response_matches_openapi_ref(body, "#/components/schemas/ErrorResponse")
         error = body.get("error")
         assert isinstance(error, dict), f"Expected error object, got: {body!r}"
-        assert error.get("message") == "Validation failed", (
-            f"Expected 'Validation failed', got {error.get('message')!r}"
+        assert error.get("code") == "VALIDATION_ERROR", (
+            f"Expected VALIDATION_ERROR, got {error.get('code')!r}"
         )
         metadata = error.get("metadata")
         assert isinstance(metadata, dict), f"Expected error.metadata object, got: {body!r}"
@@ -580,10 +582,11 @@ class TestAgentConversationDelete:
     def _assert_validation_error(resp: requests.Response) -> dict[str, Any]:
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
         body = _response_json(resp)
+        assert_response_matches_openapi_ref(body, "#/components/schemas/ErrorResponse")
         error = body.get("error")
         assert isinstance(error, dict), f"Expected error object, got: {body!r}"
-        assert error.get("message") == "Validation failed", (
-            f"Expected 'Validation failed', got {error.get('message')!r}"
+        assert error.get("code") == "VALIDATION_ERROR", (
+            f"Expected VALIDATION_ERROR, got {error.get('code')!r}"
         )
         metadata = error.get("metadata")
         assert isinstance(metadata, dict), f"Expected error.metadata object, got: {body!r}"
@@ -884,10 +887,11 @@ class TestAgentConversationArchive:
     def _assert_validation_error(resp: requests.Response) -> dict[str, Any]:
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
         body = _response_json(resp)
+        assert_response_matches_openapi_ref(body, "#/components/schemas/ErrorResponse")
         error = body.get("error")
         assert isinstance(error, dict), f"Expected error object, got: {body!r}"
-        assert error.get("message") == "Validation failed", (
-            f"Expected 'Validation failed', got {error.get('message')!r}"
+        assert error.get("code") == "VALIDATION_ERROR", (
+            f"Expected VALIDATION_ERROR, got {error.get('code')!r}"
         )
         metadata = error.get("metadata")
         assert isinstance(metadata, dict), f"Expected error.metadata object, got: {body!r}"
@@ -1161,10 +1165,11 @@ class TestAgentConversationUnarchive:
     def _assert_validation_error(resp: requests.Response) -> dict[str, Any]:
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
         body = _response_json(resp)
+        assert_response_matches_openapi_ref(body, "#/components/schemas/ErrorResponse")
         error = body.get("error")
         assert isinstance(error, dict), f"Expected error object, got: {body!r}"
-        assert error.get("message") == "Validation failed", (
-            f"Expected 'Validation failed', got {error.get('message')!r}"
+        assert error.get("code") == "VALIDATION_ERROR", (
+            f"Expected VALIDATION_ERROR, got {error.get('code')!r}"
         )
         metadata = error.get("metadata")
         assert isinstance(metadata, dict), f"Expected error.metadata object, got: {body!r}"
@@ -1418,10 +1423,11 @@ class TestAgentConversationRegenerate:
     def _assert_validation_error(resp: requests.Response) -> dict[str, Any]:
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
         body = _response_json(resp)
+        assert_response_matches_openapi_ref(body, "#/components/schemas/ErrorResponse")
         error = body.get("error")
         assert isinstance(error, dict), f"Expected error object, got: {body!r}"
-        assert error.get("message") == "Validation failed", (
-            f"Expected 'Validation failed', got {error.get('message')!r}"
+        assert error.get("code") == "VALIDATION_ERROR", (
+            f"Expected VALIDATION_ERROR, got {error.get('code')!r}"
         )
         metadata = error.get("metadata")
         assert isinstance(metadata, dict), f"Expected error.metadata object, got: {body!r}"

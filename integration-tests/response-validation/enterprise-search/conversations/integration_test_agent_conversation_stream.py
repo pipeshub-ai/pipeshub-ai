@@ -139,6 +139,31 @@ def _response_json(resp: requests.Response) -> dict[str, Any]:
     return data
 
 
+def _assert_validation_error(
+    resp: requests.Response,
+    *,
+    label: str | None = None,
+) -> dict[str, Any]:
+    prefix = f"[{label}] " if label else ""
+    assert resp.status_code == 400, f"{prefix}{resp.status_code}: {resp.text}"
+    body = _response_json(resp)
+    assert_response_matches_openapi_ref(body, "#/components/schemas/ErrorResponse")
+    error = body.get("error")
+    assert isinstance(error, dict), f"{prefix}Expected error object, got: {body!r}"
+    assert error.get("code") == "VALIDATION_ERROR", (
+        f"{prefix}Expected VALIDATION_ERROR, got {error.get('code')!r}"
+    )
+    metadata = error.get("metadata")
+    assert isinstance(metadata, dict), (
+        f"{prefix}Expected error.metadata object, got: {body!r}"
+    )
+    details = metadata.get("errors")
+    assert isinstance(details, list) and details, (
+        f"{prefix}Expected non-empty error.metadata.errors list, got: {body!r}"
+    )
+    return body
+
+
 class _AgentStreamTestBase:
     @pytest.fixture(autouse=True)
     def _setup(
@@ -444,7 +469,7 @@ class TestAgentConversationStream(_AgentStreamTestBase):
             json=payload,
             timeout=self.timeout,
         )
-        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+        _assert_validation_error(resp)
 
     def test_stream_agent_conversation_missing_auth_returns_401_or_403(self) -> None:
         agent_key = self.agent_session["primary_agent"]
@@ -735,7 +760,7 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
             json={"query": "hi"},
             timeout=self.timeout,
         )
-        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+        _assert_validation_error(resp)
 
     def test_add_message_missing_auth_returns_401_or_403(self) -> None:
         agent_key = self.agent_session["primary_agent"]
@@ -869,13 +894,4 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
             json=payload,
             timeout=self.timeout,
         )
-        assert resp.status_code == 400, (
-            f"[{label}] Expected 400, got {resp.status_code}: {resp.text}"
-        )
-
-        body = _response_json(resp)
-        error = body.get("error")
-        assert isinstance(error, dict), f"[{label}] Expected error envelope, got {body!r}"
-        assert error.get("code") == "VALIDATION_ERROR", (
-            f"[{label}] Expected VALIDATION_ERROR, got {error.get('code')!r}"
-        )
+        _assert_validation_error(resp, label=label)

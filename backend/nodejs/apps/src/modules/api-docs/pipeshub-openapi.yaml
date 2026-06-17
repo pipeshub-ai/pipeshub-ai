@@ -26095,11 +26095,10 @@ paths:
       description: |
         Retrieve agent details by its unique key.
 
-        **Observed gateway behavior (localhost integration tests):**
+        **Gateway not-found behavior:**
         Unknown `agentKey`, lookup after soft-delete, and other AI-backend failures
-        currently return **HTTP 500** with an `ErrorResponse` body (message often
-        mentions the agent or "not found"), not 404. The Python query service may
-        return 404 when called directly; the Node proxy surfaces 500 instead.
+        that return 404 from the Python query service are surfaced by the Node
+        gateway as **HTTP 404** with an `ErrorResponse` body.
       operationId: getAgent
       x-pipeshub-sdk: true
       security:
@@ -26141,11 +26140,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Agent not found, inaccessible, or previously deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Agent not found, post-delete lookup, permission or lookup failure, or other
-            AI-backend error forwarded by the gateway (observed for unknown key and GET
-            after delete on localhost).
+          description: Unexpected AI-backend or gateway failure.
           content:
             application/json:
               schema:
@@ -26237,11 +26239,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Agent not found or inaccessible.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            AI-backend or gateway failure. Returned for unknown `agentKey`,
-            permission errors, and other non-200 responses from the Python agent
-            service via the Node proxy.
+          description: Unexpected AI-backend or gateway failure.
           content:
             application/json:
               schema:
@@ -26265,11 +26270,9 @@ paths:
         **Warning:**
         All conversations with this agent will become inaccessible.
 
-        **Observed gateway behavior (localhost integration tests):**
+        **Gateway not-found behavior:**
         Unknown `agentKey`, deleting an already-deleted agent, and `GET /agents/{agentKey}`
-        after delete currently return **HTTP 500** with an `ErrorResponse` body (message
-        often mentions the agent or "not found"), not 404. The Python backend raises 404
-        for not-found when called directly; the Node proxy may surface 500 instead.
+        after delete return **HTTP 404** with an `ErrorResponse` body.
       operationId: deleteAgent
       x-pipeshub-sdk: true
       security:
@@ -26297,11 +26300,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Agent not found, inaccessible, or already deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Agent not found, already deleted, permission or lookup failure, or other
-            backend error forwarded by the gateway (observed for unknown key, second
-            delete, and GET after delete on localhost).
+          description: Unexpected AI-backend or gateway failure.
           content:
             application/json:
               schema:

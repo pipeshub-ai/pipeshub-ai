@@ -116,7 +116,7 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["helper", "connectors", "connectors.*", "messaging*", "response-validation*", "enterprise_search*", "validation"]
+include = ["helper", "connectors", "connectors.*", "messaging*", "response-validation*", "validation"]
 
 [tool.setuptools.package-data]
 validation = ["schemas/*.yaml", "schemas/edges/*.yaml"]
