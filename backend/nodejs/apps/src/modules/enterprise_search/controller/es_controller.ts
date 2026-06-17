@@ -20,7 +20,6 @@ import * as crypto from 'crypto';
 import sharp from 'sharp';
 import { Response, NextFunction } from 'express';
 import mongoose, { ClientSession, Types } from 'mongoose';
-import { Readable } from 'stream';
 import {
   AuthenticatedUserRequest,
   AuthenticatedServiceRequest,
@@ -36,7 +35,6 @@ import {
   ServiceUnavailableError,
   BadGatewayError,
   GatewayTimeoutError,
-  UnprocessableEntityError,
 } from '../../../libs/errors/http.errors';
 import {
   AICommandOptions,
@@ -501,9 +499,6 @@ const handleBackendError = (error: unknown, operation: string): Error => {
   const errorMessage = backendError?.message;
   const errorCauseCode = backendError?.cause?.code;
 
-    const resolveErrorMessage = (err: any): string =>
-      err?.message || err?.msg || 'Unknown error';
-
   // Network/connection failure handling first
   if (
     errorCauseCode === 'ECONNREFUSED' ||
@@ -516,8 +511,10 @@ const handleBackendError = (error: unknown, operation: string): Error => {
       return error;
     }
 
-    if (error.response) {
-      const { status, data } = error.response;
+    const err = error as any;
+
+    if (err.response) {
+      const { status, data } = err.response;
       const errorDetail =
         data?.detail || data?.reason || data?.message || 'Unknown error';
   
@@ -549,16 +546,16 @@ const handleBackendError = (error: unknown, operation: string): Error => {
       }
     }
   
-    if (error.request) {
+    if (err.request) {
       logger.error(`No response from backend during ${operation}`);
       return new ServiceUnavailableError('Backend service unavailable');
     }
 
-  if (error.detail) {
-      return new BadRequestError(error.detail);
+    if (err.detail) {
+      return new BadRequestError(err.detail);
     }
   
-    return new InternalServerError(`${operation} failed: ${error.message}`);
+    return new InternalServerError(`${operation} failed: ${err.message}`);
   };
   
   // Common helper to start AI streams with consistent error mapping and logging
