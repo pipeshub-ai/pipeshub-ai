@@ -210,7 +210,7 @@ dependencies = [
     "google-genai>=1.72.0",
     "Jinja2==3.1.6",
     "jsonschema==4.23.0",
-    "langchain-anthropic==1.2.0",
+    "langchain-anthropic==1.4.6",
     "langchain-aws==1.1.0",
     "langchain-cohere==0.5.0",
     "langchain-community==0.4.1",
