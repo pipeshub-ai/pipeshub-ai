@@ -3,6 +3,7 @@
 import type { NotificationListItem } from './api';
 import { useBrowserNotificationsStore } from './browser-notifications-store';
 import { notificationHref } from './notification-link';
+import { NotificationSeverity } from './api';
 
 const NOTIFICATION_ICON = '/icon.svg';
 
@@ -29,6 +30,11 @@ export function shouldShowDesktopNotification(): boolean {
   return useBrowserNotificationsStore.getState().desktopEnabled;
 }
 
+function checkNotificationSeverity(item: NotificationListItem): boolean {
+    if (item.severity && ['success', 'info', 'critical'].includes(item.severity)) return true;
+    return false;
+}
+
 function navigateFromNotification(href: string): void {
   if (/^https?:\/\//i.test(href)) {
     window.open(href, '_blank', 'noopener,noreferrer');
@@ -42,6 +48,7 @@ export function showDesktopNotification(item: NotificationListItem): void {
   if (!shouldShowDesktopNotification()) return;
   if (item.isDeleted) return;
   if (item.status === 'archived') return;
+  if (!checkNotificationSeverity(item)) return;
 
   const title = item.title?.trim() || item.type?.trim() || 'PipesHub';
   const body = item.message?.trim() ?? '';
