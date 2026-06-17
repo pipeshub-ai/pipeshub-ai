@@ -92,7 +92,7 @@ class TestConfluenceValidation:
         expected = RecordAssertion(
             external_record_id=page_id,
             record_type=RecordType.CONFLUENCE_PAGE.value,
-            mime_type="text/html",
+            mime_type="application/blocks",
             record_name=page_item.title,
             external_record_group_id=space_id,
         )
@@ -583,7 +583,7 @@ class TestConfluenceStream:
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-CF-052: Stream page HTML content."""
+        """TC-CF-052: Stream page content (blocks format)."""
         connector_id = confluence_connector["connector_id"]
         space_key = confluence_connector["space_key"]
         page_id = confluence_connector.get("test_page_id")
@@ -610,16 +610,17 @@ class TestConfluenceStream:
         
         # Verify response
         assert response.status_code == 200
-        assert "text/html" in response.headers.get("content-type", "").lower()
+        assert "application/blocks" in response.headers.get("content-type", "").lower()
         
         # Read some content
         content_chunk = next(response.iter_content(chunk_size=1024))
         assert len(content_chunk) > 0, "Should have received content"
-        assert b"<" in content_chunk or b"html" in content_chunk.lower(), (
-            "Content should be HTML"
+        # Content is now in blocks format (JSON), not HTML
+        assert b"{" in content_chunk or b"[" in content_chunk, (
+            "Content should be JSON blocks format"
         )
         
-        logger.info("✅ TC-CF-052: Page HTML streamed successfully")
+        logger.info("✅ TC-CF-052: Page content streamed successfully (blocks format)")
 
 
 @pytest.mark.integration
