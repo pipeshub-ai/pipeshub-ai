@@ -19,6 +19,8 @@ from app.sources.client.iclient import IClient
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_MAX_POOL_SIZE = 10
+
 try:
     import mariadb
 except ImportError:
@@ -51,7 +53,6 @@ class MariaDBClient:
         timeout: int = 30,
         ssl_ca: Optional[str] = None,
         charset: str = "utf8mb4",
-        pool_size: int = 5,
         pool_acquire_timeout: float = 60.0,
     ) -> None:
         if mariadb is None:
@@ -60,14 +61,12 @@ class MariaDBClient:
                 "Install with: uv add 'mariadb[binary,pool]>=2.0.0rc2,<3'"
             )
 
-        if pool_size < 1 or pool_size > 64:
-            raise ValueError("pool_size must be between 1 and 64")
         if pool_acquire_timeout <= 0:
             raise ValueError("pool_acquire_timeout must be > 0")
 
         logger.debug(
             f"🔧 [MariaDBClient] Initializing with host={host}, port={port}, "
-            f"database={database}, user={user}, pool_size={pool_size}"
+            f"database={database}, user={user}"
         )
 
         self.host = host
@@ -78,9 +77,9 @@ class MariaDBClient:
         self.timeout = timeout
         self.ssl_ca = ssl_ca
         self.charset = charset
-        self.pool_size = pool_size
+        self._max_pool_size = _DEFAULT_MAX_POOL_SIZE
         self.pool_acquire_timeout = pool_acquire_timeout
-        self._pool: Any = None  # mariadb_pool.AsyncConnectionPool when connected
+        self._pool: Any = None
         self._connect_lock = asyncio.Lock()
 
         db_part = f"/{database}" if database else ""
@@ -104,7 +103,7 @@ class MariaDBClient:
                 db_part = f"/{self.database}" if self.database else ""
                 logger.debug(
                     f"🔧 [MariaDBClient] Initializing async pool to "
-                    f"{self.host}:{self.port}{db_part} (pool_size={self.pool_size})"
+                    f"{self.host}:{self.port}{db_part} (max_size={self._max_pool_size})"
                 )
 
                 connect_kwargs: dict[str, Any] = {
@@ -121,7 +120,7 @@ class MariaDBClient:
 
                 self._pool = await mariadb.create_async_pool(
                     min_size=1,
-                    max_size=self.pool_size,
+                    max_size=self._max_pool_size,
                     acquire_timeout=self.pool_acquire_timeout,
                     reset_connection=True,
                     **connect_kwargs,
@@ -153,13 +152,13 @@ class MariaDBClient:
         """Check if the pool is initialized."""
         return self._pool is not None
 
-    def resize_pool(self, pool_size: int) -> "MariaDBClient":
+    def resize_pool(self, max_size: int) -> "MariaDBClient":
         """Resize the connection pool. Must be called before ``connect()``."""
         if self._pool is not None:
             raise RuntimeError("Cannot resize after pool is initialized")
-        if pool_size < 1 or pool_size > 64:
-            raise ValueError("pool_size must be between 1 and 64")
-        self.pool_size = pool_size
+        if max_size < 1 or max_size > 64:
+            raise ValueError("max_size must be between 1 and 64")
+        self._max_pool_size = max_size
         return self
 
     async def execute_query(
@@ -174,7 +173,7 @@ class MariaDBClient:
             raise RuntimeError("MariaDB pool not initialized")
 
         try:
-            async with self._pool.connection(timeout=self.pool_acquire_timeout) as conn:
+            async with self._pool.connection() as conn:
                 cursor = None
                 try:
                     cursor = conn.cursor(dictionary=True)
@@ -217,7 +216,7 @@ class MariaDBClient:
             raise RuntimeError("MariaDB pool not initialized")
 
         try:
-            async with self._pool.connection(timeout=self.pool_acquire_timeout) as conn:
+            async with self._pool.connection() as conn:
                 cursor = None
                 try:
                     cursor = conn.cursor()
@@ -374,7 +373,6 @@ class MariaDBConfig(BaseModel):
         default=None, description="Path to CA certificate for SSL"
     )
     charset: str = Field(default="utf8mb4", description="Character set")
-    pool_size: int = Field(default=5, description="Connection pool size", ge=1, le=64)
     pool_acquire_timeout: float = Field(
         default=30.0,
         description="Seconds a caller will wait for a free pool connection",
@@ -392,7 +390,6 @@ class MariaDBConfig(BaseModel):
             timeout=self.timeout,
             ssl_ca=self.ssl_ca,
             charset=self.charset,
-            pool_size=self.pool_size,
             pool_acquire_timeout=self.pool_acquire_timeout,
         )
 

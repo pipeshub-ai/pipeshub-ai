@@ -100,28 +100,19 @@ class TestMariaDBClient:
         assert client.database is None
         assert client.charset == "utf8mb4"
         assert client._pool is None
-        assert client.pool_size == 5
+        assert client._max_pool_size == 10
 
     def test_init_with_all_options(self):
         client = MariaDBClient(
             host="db.local", user="u", password="p",
             database="mydb", port=3307, timeout=60,
             ssl_ca="/ca.pem", charset="utf8",
-            pool_size=8, pool_acquire_timeout=12.0,
+            pool_acquire_timeout=12.0,
         )
         assert client.database == "mydb"
         assert client.port == 3307
         assert client.ssl_ca == "/ca.pem"
-        assert client.pool_size == 8
         assert client.pool_acquire_timeout == 12.0
-
-    def test_init_invalid_pool_size_low(self):
-        with pytest.raises(ValueError, match="pool_size"):
-            MariaDBClient(host="h", user="u", password="p", pool_size=0)
-
-    def test_init_invalid_pool_size_high(self):
-        with pytest.raises(ValueError, match="pool_size"):
-            MariaDBClient(host="h", user="u", password="p", pool_size=100)
 
     def test_init_invalid_acquire_timeout(self):
         with pytest.raises(ValueError, match="pool_acquire_timeout"):
@@ -198,20 +189,20 @@ class TestMariaDBClient:
 
     def test_resize_pool_updates_size(self):
         client = MariaDBClient(host="h", user="u", password="p")
-        result = client.resize_pool(pool_size=1)
+        result = client.resize_pool(max_size=1)
         assert result is client
-        assert client.pool_size == 1
+        assert client._max_pool_size == 1
 
     def test_resize_pool_after_connect_raises(self):
         client = MariaDBClient(host="h", user="u", password="p")
         client._pool = _make_pool_mock()
         with pytest.raises(RuntimeError, match="Cannot resize"):
-            client.resize_pool(pool_size=1)
+            client.resize_pool(max_size=1)
 
     def test_resize_pool_invalid_size(self):
         client = MariaDBClient(host="h", user="u", password="p")
-        with pytest.raises(ValueError, match="pool_size"):
-            client.resize_pool(pool_size=0)
+        with pytest.raises(ValueError, match="max_size"):
+            client.resize_pool(max_size=0)
 
     def _make_pooled_client(self, cursor):
         """Build a client whose pool checks out a connection wired to ``cursor``."""
@@ -335,27 +326,18 @@ class TestMariaDBConfig:
         assert cfg.password == ""
         assert cfg.timeout == 30
         assert cfg.charset == "utf8mb4"
-        assert cfg.pool_size == 5
 
     def test_all_options(self):
         cfg = MariaDBConfig(
             host="db.local", user="u", password="p",
             port=3307, database="mydb", timeout=60,
             ssl_ca="/ca.pem", charset="utf8",
-            pool_size=10, pool_acquire_timeout=20.0,
+            pool_acquire_timeout=20.0,
         )
         client = cfg.create_client()
         assert client.port == 3307
         assert client.database == "mydb"
-        assert client.pool_size == 10
         assert client.pool_acquire_timeout == 20.0
-
-    def test_pool_size_validation(self):
-        from pydantic import ValidationError
-        with pytest.raises(ValidationError):
-            MariaDBConfig(host="localhost", user="root", pool_size=0)
-        with pytest.raises(ValidationError):
-            MariaDBConfig(host="localhost", user="root", pool_size=100)
 
 
 # ---------------------------------------------------------------------------

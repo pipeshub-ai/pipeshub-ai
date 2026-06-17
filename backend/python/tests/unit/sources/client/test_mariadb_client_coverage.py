@@ -37,19 +37,17 @@ class TestMariaDBConfig:
         assert config.password == ""
         assert config.timeout == 30
         assert config.charset == "utf8mb4"
-        assert config.pool_size == 5
 
     def test_custom(self):
         config = MariaDBConfig(
             host="db.example.com", port=3307, database="mydb",
             user="admin", password="secret", timeout=60,
             ssl_ca="/path/to/ca.pem", charset="utf8",
-            pool_size=8, pool_acquire_timeout=12.0,
+            pool_acquire_timeout=12.0,
         )
         assert config.host == "db.example.com"
         assert config.port == 3307
         assert config.database == "mydb"
-        assert config.pool_size == 8
         assert config.pool_acquire_timeout == 12.0
 
     def test_create_client(self):

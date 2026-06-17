@@ -497,7 +497,7 @@ async def _execute_mariadb_query(
 
         # Ad-hoc query path: a fresh client is built per call and torn down after.
         # Keep the pool capped at one connection for this one-shot execution.
-        client.resize_pool(pool_size=1)
+        client.resize_pool(max_size=1)
 
         connection_info = client.get_connection_info()
         logger.debug(
