@@ -28,6 +28,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 import requests
@@ -41,6 +42,7 @@ for p in (_ROOT_DIR, _HELPER_DIR):
         sys.path.insert(0, str(p))
 
 from pipeshub_client import PipeshubClient
+from helper.kb_upload_sse import parse_kb_upload_response
 from helper.graph_provider import GraphProviderProtocol
 from helper.graph_provider_utils import async_poll_until
 
@@ -124,15 +126,21 @@ class KBClient:
         kb_id: str,
         file_name: str,
         file_content: bytes,
+        folder_id: str | None = None,
+        mimetype: str = "text/plain",
     ) -> dict[str, Any]:
-        files = [("files", (file_name, io.BytesIO(file_content), "text/plain"))]
-        resp = requests.post(
-            self._url(f"/{kb_id}/upload"),
+        files = [("files", (file_name, io.BytesIO(file_content), mimetype))]
+        upload_path = f"/{kb_id}/upload"
+        if folder_id:
+            upload_path = f"{upload_path}?folderId={quote(folder_id, safe='')}"
+        with requests.post(
+            self._url(upload_path),
             headers=self._headers(content_type=None),
             files=files,
+            stream=True,
             timeout=self._client.timeout_seconds,
-        )
-        return self._client._handle_response(resp)
+        ) as resp:
+            return parse_kb_upload_response(resp)
 
     def get_record(self, record_id: str, retries: int = 3, delay: float = 2.0) -> dict[str, Any]:
         """Fetch a record by ID, retrying on transient 500 errors."""
@@ -172,12 +180,24 @@ class KBClient:
 # ---------------------------------------------------------------------------
 
 def _extract_record_id(upload_response: dict) -> str:
+    if not isinstance(upload_response, dict):
+        raise TypeError(
+            "upload_response must be a dict (parsed SSE or legacy JSON). "
+            f"Got {type(upload_response).__name__}; KB upload now returns "
+            "text/event-stream — use KBClient.upload_file() or parse_kb_upload_response()."
+        )
     records = (
         upload_response.get("records")
         or upload_response.get("data", {}).get("records", [])
     )
     if records:
-        return records[0].get("_key") or records[0].get("id") or records[0].get("recordId")
+        record_id = (
+            records[0].get("recordId")
+            or records[0].get("_key")
+            or records[0].get("id")
+        )
+        if record_id:
+            return record_id
     raise ValueError(f"Cannot extract recordId from: {upload_response}")
 
 

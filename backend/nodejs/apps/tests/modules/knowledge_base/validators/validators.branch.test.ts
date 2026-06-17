@@ -2,7 +2,6 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import {
   uploadRecordsSchema,
-  uploadRecordsToFolderSchema,
   getAllRecordsSchema,
   getAllKBRecordsSchema,
   listKnowledgeBasesSchema,
@@ -519,21 +518,23 @@ describe('Knowledge Base Validators - branch coverage', () => {
   })
 
   // =========================================================================
-  // uploadRecordsToFolderSchema
+  // uploadRecordsSchema — folderId query
   // =========================================================================
-  describe('uploadRecordsToFolderSchema', () => {
-    it('should require folderId in params', () => {
-      const result = uploadRecordsToFolderSchema.safeParse({
+  describe('uploadRecordsSchema - folderId query', () => {
+    it('should reject empty folderId query', () => {
+      const result = uploadRecordsSchema.safeParse({
         body: {},
         params: { kbId: '123e4567-e89b-12d3-a456-426614174000' },
+        query: { folderId: '' },
       })
       expect(result.success).to.be.false
     })
 
-    it('should pass with valid params', () => {
-      const result = uploadRecordsToFolderSchema.safeParse({
+    it('should pass with valid folderId query', () => {
+      const result = uploadRecordsSchema.safeParse({
         body: {},
-        params: { kbId: '123e4567-e89b-12d3-a456-426614174000', folderId: 'folder-1' },
+        params: { kbId: '123e4567-e89b-12d3-a456-426614174000' },
+        query: { folderId: 'folder-1' },
       })
       expect(result.success).to.be.true
     })

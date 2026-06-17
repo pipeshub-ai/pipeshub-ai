@@ -15,8 +15,7 @@ import {
   createNestedFolder,
   updateFolder,
   deleteFolder,
-  uploadRecordsToKB,
-  uploadRecordsToFolder,
+  uploadRecords,
   updateRecord,
   getKBContent,
   getFolderContents,
@@ -144,7 +143,7 @@ function createMockKeyValueStore(): any {
   }
 }
 
-/** Stub KB access check + folder validate calls for uploadRecordsToFolder happy paths. */
+/** Stub KB access check + folder validate calls for uploadRecords happy paths. */
 function stubFolderUploadPreValidationSuccess(userRole = 'OWNER'): sinon.SinonStub {
   const executeStub = sinon.stub(ConnectorServiceCommand.prototype, 'execute')
   executeStub.onFirstCall().resolves({
@@ -158,7 +157,7 @@ function stubFolderUploadPreValidationSuccess(userRole = 'OWNER'): sinon.SinonSt
   return executeStub
 }
 
-/** Stub KB access check success then folder validate failure for uploadRecordsToFolder. */
+/** Stub KB access check success then folder validate failure for uploadRecords. */
 function stubFolderUploadPreValidationFailure(
   validationStatusCode: number,
   validationDetail: string,
@@ -549,9 +548,9 @@ describe('Knowledge Base Controller', () => {
   // -----------------------------------------------------------------------
   // Upload
   // -----------------------------------------------------------------------
-  describe('uploadRecordsToKB', () => {
+  describe('uploadRecords', () => {
     it('should return a handler function', () => {
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -559,7 +558,7 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when user not authenticated', async () => {
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -573,7 +572,7 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when userId is missing', async () => {
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -587,7 +586,7 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when kbId is missing and files are empty', async () => {
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -604,7 +603,7 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when files are empty but kbId is provided', async () => {
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -621,52 +620,11 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should accept notification service as optional parameter', () => {
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       expect(handler).to.be.a('function')
-    })
-  })
-
-  describe('uploadRecordsToFolder', () => {
-    it('should return a handler function', () => {
-      const handler = uploadRecordsToFolder(
-        createMockKeyValueStore(),
-        createMockAppConfig(),
-      )
-      expect(handler).to.be.a('function')
-    })
-
-    it('should call next when user not authenticated', async () => {
-      const handler = uploadRecordsToFolder(
-        createMockKeyValueStore(),
-        createMockAppConfig(),
-      )
-      const req = createMockRequest({ user: undefined })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when kbId, folderId, or files are missing', async () => {
-      const handler = uploadRecordsToFolder(
-        createMockKeyValueStore(),
-        createMockAppConfig(),
-      )
-      const req = createMockRequest({
-        params: { kbId: 'kb-1' },
-        body: { fileBuffers: [] },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
     })
   })
 
@@ -2222,9 +2180,9 @@ describe('Knowledge Base Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // uploadRecordsToKB (deep coverage with utils stubbing)
+  // uploadRecords (deep coverage with utils stubbing)
   // -----------------------------------------------------------------------
-  describe('uploadRecordsToKB (deep happy paths)', () => {
+  describe('uploadRecords (deep happy paths)', () => {
     it('should upload records successfully with placeholder creation', async () => {
       const createPlaceholderStub = sinon.stub(kbUtils, 'createPlaceholderDocument').resolves({
         documentId: 'doc-123',
@@ -2232,7 +2190,7 @@ describe('Knowledge Base Controller', () => {
       })
       const processUploadsStub = sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2279,7 +2237,7 @@ describe('Knowledge Base Controller', () => {
       createPlaceholderStub.onSecondCall().rejects(new Error('Storage full'))
       sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2324,7 +2282,7 @@ describe('Knowledge Base Controller', () => {
     it('should handle all files failing placeholder creation', async () => {
       sinon.stub(kbUtils, 'createPlaceholderDocument').rejects(new Error('Storage error'))
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2364,7 +2322,7 @@ describe('Knowledge Base Controller', () => {
       })
       sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2404,7 +2362,7 @@ describe('Knowledge Base Controller', () => {
       })
       sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2442,7 +2400,7 @@ describe('Knowledge Base Controller', () => {
       })
       sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2476,7 +2434,7 @@ describe('Knowledge Base Controller', () => {
       err.response = { data: { error: { message: 'Quota exceeded' } } }
       sinon.stub(kbUtils, 'createPlaceholderDocument').rejects(err)
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2512,7 +2470,7 @@ describe('Knowledge Base Controller', () => {
       err.response = { data: { message: 'File too large' } }
       sinon.stub(kbUtils, 'createPlaceholderDocument').rejects(err)
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2552,7 +2510,7 @@ describe('Knowledge Base Controller', () => {
       // No accepted buffers, so the indexing path is never reached.
       const processStub = sinon.stub(kbUtils, 'processUploadsInBackground')
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2603,9 +2561,9 @@ describe('Knowledge Base Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // uploadRecordsToFolder (deep coverage)
+  // uploadRecords (deep coverage)
   // -----------------------------------------------------------------------
-  describe('uploadRecordsToFolder (deep happy paths)', () => {
+  describe('uploadRecords (deep happy paths — folder)', () => {
     it('should upload records to folder successfully', async () => {
       stubFolderUploadPreValidationSuccess()
       sinon.stub(kbUtils, 'createPlaceholderDocument').resolves({
@@ -2614,12 +2572,13 @@ describe('Knowledge Base Controller', () => {
       })
       sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'folder-1' },
         body: {
           fileBuffers: [
             {
@@ -2652,12 +2611,13 @@ describe('Knowledge Base Controller', () => {
       createStub.onSecondCall().rejects(new Error('Failed'))
       sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'folder-1' },
         body: {
           fileBuffers: [
             { originalname: 'f1.pdf', mimetype: 'application/pdf', size: 100, filePath: 'f1.pdf', lastModified: Date.now(), buffer: Buffer.from('d1') },
@@ -2681,12 +2641,13 @@ describe('Knowledge Base Controller', () => {
       stubFolderUploadPreValidationSuccess()
       sinon.stub(kbUtils, 'createPlaceholderDocument').rejects(new Error('All fail'))
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'folder-1' },
         body: {
           fileBuffers: [
             { originalname: 'f1.pdf', mimetype: 'application/pdf', size: 100, filePath: 'f1.pdf', lastModified: Date.now(), buffer: Buffer.from('d') },
@@ -2705,8 +2666,15 @@ describe('Knowledge Base Controller', () => {
       expect(done!.data.summary).to.deep.equal({ total: 1, succeeded: 0, failed: 1 })
     })
 
-    it('should handle missing folderId in folder upload', async () => {
-      const handler = uploadRecordsToFolder(
+    it('should upload to KB root when folderId query is omitted', async () => {
+      stubFolderUploadPreValidationSuccess()
+      sinon.stub(kbUtils, 'createPlaceholderDocument').resolves({
+        documentId: 'doc-root',
+        documentName: 'root-file',
+      })
+      sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
+
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2723,8 +2691,9 @@ describe('Knowledge Base Controller', () => {
 
       await handler(req, res, next)
 
-      // Rejected before the validation call — next called with BadRequestError
-      expect(next.calledOnce).to.be.true
+      expect(next.called).to.be.false
+      expect(res.writeHead.calledWith(200)).to.be.true
+      expect(getStreamedEvents(res).some((e) => e.event === 'done')).to.be.true
     })
 
     it('should handle file with nested path in folder upload', async () => {
@@ -2735,12 +2704,13 @@ describe('Knowledge Base Controller', () => {
       })
       sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'folder-1' },
         body: {
           fileBuffers: [
             {
@@ -2769,12 +2739,13 @@ describe('Knowledge Base Controller', () => {
       const createStub = sinon.stub(kbUtils, 'createPlaceholderDocument')
       createStub.rejects(new Error('Storage fail'))
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'folder-1' },
         body: {
           fileBuffers: [
             { originalname: 'f1.pdf', mimetype: 'application/pdf', size: 100, filePath: 'f1.pdf', lastModified: Date.now(), buffer: Buffer.from('d') },
@@ -2797,9 +2768,9 @@ describe('Knowledge Base Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // uploadRecordsToFolder — folder validation failures
+  // uploadRecords — folder validation failures
   // -----------------------------------------------------------------------
-  describe('uploadRecordsToFolder (folder validation)', () => {
+  describe('uploadRecords (folder validation)', () => {
     const fileBuffers = [
       { originalname: 'f.pdf', mimetype: 'application/pdf', size: 100, filePath: 'f.pdf', lastModified: Date.now(), buffer: Buffer.from('d') },
     ]
@@ -2807,12 +2778,13 @@ describe('Knowledge Base Controller', () => {
     it('should return 404 when folder does not exist', async () => {
       stubFolderUploadPreValidationFailure(404, 'Folder ghost not found in KB kb-1')
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'ghost' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'ghost' },
         body: { fileBuffers },
       })
       const res = createMockResponse()
@@ -2828,12 +2800,13 @@ describe('Knowledge Base Controller', () => {
     it('should return 404 when folder exists but belongs to a different KB', async () => {
       stubFolderUploadPreValidationFailure(404, 'Folder f1 not found in KB kb-1')
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'f1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'f1' },
         body: { fileBuffers },
       })
       const res = createMockResponse()
@@ -2848,12 +2821,13 @@ describe('Knowledge Base Controller', () => {
     it('should return 403 when user lacks write permission on the KB', async () => {
       stubFolderUploadPreValidationFailure(403, 'Insufficient permissions. Role: READER')
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'f1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'f1' },
         body: { fileBuffers },
       })
       const res = createMockResponse()
@@ -2872,12 +2846,13 @@ describe('Knowledge Base Controller', () => {
         documentName: 'should-not-be-called',
       })
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'ghost' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'ghost' },
         body: { fileBuffers },
       })
       const res = createMockResponse()
