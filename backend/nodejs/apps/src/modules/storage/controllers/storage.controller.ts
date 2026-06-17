@@ -383,7 +383,9 @@ export class StorageController {
       );
 
       if (document.storageVendor === StorageVendor.Local) {
-        serveFileFromLocalStorage(document, res);
+        // For local storage, return a signed URL just like cloud storage
+        // to maintain consistent JSON response format for downstream consumers
+        res.status(200).json({ signedUrl: signedUrlResult.data });
       } else {
         res.status(200).json({ signedUrl: signedUrlResult.data });
       }
