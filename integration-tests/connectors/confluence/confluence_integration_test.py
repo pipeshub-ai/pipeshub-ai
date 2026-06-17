@@ -616,7 +616,7 @@ class TestConfluenceStream:
         content_chunk = next(response.iter_content(chunk_size=1024))
         assert len(content_chunk) > 0, "Should have received content"
         # Content is now in blocks format (JSON), not HTML
-        assert b"{" in content_chunk or b"[" in content_chunk, (
+        assert content_chunk.lstrip().startswith(b"{") or content_chunk.lstrip().startswith(b"["), (
             "Content should be JSON blocks format"
         )
         
