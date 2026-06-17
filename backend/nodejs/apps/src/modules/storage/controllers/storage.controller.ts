@@ -43,7 +43,6 @@ import {
   hasExtension,
   isValidStorageVendor,
   normalizeExtension,
-  serveFileFromLocalStorage,
 } from '../utils/utils';
 import { UploadDocumentService } from './storage.upload.service';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
