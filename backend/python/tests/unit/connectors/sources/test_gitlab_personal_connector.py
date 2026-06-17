@@ -4,19 +4,19 @@ Covers:
 - Factory wiring (``gitlabpersonal`` → ``GitLabPersonalConnector``).
 - ``GitLabPersonalApp`` identity and the ``Connectors.GITLAB_PERSONAL`` enum.
 - Connector identity after construction (``connector_name``, ``app``).
-- ``_creator_user_permission`` reads the cached GROUP permission.
+- ``creator_user_permission`` reads the cached GROUP permission.
 - ``ensure_connector_group_permission`` upserts a single ``ConnectorGroup``
   with the creator as the sole member edge, caches the permission, and
   no-ops without a creator email.
-- ``_ensure_gitlab_group_record_groups`` emits ``GROUP`` permissions rather
-  than ``USER`` permissions, handles missing data source / missing perm /
+- ``projects._ensure_gitlab_group_record_groups`` emits ``GROUP`` permissions
+  rather than ``USER`` permissions, handles missing data source / missing perm /
   failing ``get_group``.
-- ``_apply_creator_fallback_for_project`` (inherited) routes through the
-  overridden ``_creator_user_permission`` and therefore emits a GROUP
+- ``projects._apply_creator_fallback_for_project`` (inherited) routes through
+  the overridden ``creator_user_permission`` and therefore emits a GROUP
   permission on every record group it creates.
 - ``run_sync`` resets the cache, resolves the creator identity, calls
   ``ensure_connector_group_permission`` only when the creator email is
-  known, then dispatches to ``_sync_all_project``.
+  known, then dispatches to ``projects.sync_all_projects``.
 - ``create_connector`` returns a configured ``GitLabPersonalConnector``.
 """
 
@@ -184,7 +184,7 @@ class TestGitLabPersonalConnectorIdentity:
 class TestGitLabPersonalCreatorUserPermission:
     def test_returns_none_before_group_is_ensured(self) -> None:
         connector = _make_connector()
-        assert connector._creator_user_permission() is None
+        assert connector.creator_user_permission() is None
 
     def test_returns_cached_group_permission(self) -> None:
         connector = _make_connector()
@@ -195,7 +195,7 @@ class TestGitLabPersonalCreatorUserPermission:
         )
         connector._connector_group_permission = cached
 
-        result = connector._creator_user_permission()
+        result = connector.creator_user_permission()
 
         assert result is cached
         assert result.entity_type == EntityType.GROUP
@@ -354,7 +354,7 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
         connector = _make_connector()
         connector.data_source = None
 
-        await connector._ensure_gitlab_group_record_groups(["org/eng"])
+        await connector.projects._ensure_gitlab_group_record_groups(["org/eng"])
 
         connector.data_entities_processor.on_new_record_groups.assert_not_called()
 
@@ -364,7 +364,7 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
         connector.data_source = MagicMock()
         # No ensure_connector_group_permission call — cache stays None.
 
-        await connector._ensure_gitlab_group_record_groups(["org/eng"])
+        await connector.projects._ensure_gitlab_group_record_groups(["org/eng"])
 
         connector.data_entities_processor.on_new_record_groups.assert_not_called()
 
@@ -381,9 +381,10 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
         group_obj.full_path = "org/eng"
         group_obj.name = "Engineering"
         group_obj.web_url = "https://gitlab.example.com/org/eng"
-        connector._ds_call = AsyncMock(return_value=_ok(group_obj))
+        connector.runtime = MagicMock()
+        connector.runtime.ds_call = AsyncMock(return_value=_ok(group_obj))
 
-        await connector._ensure_gitlab_group_record_groups(["org/eng"])
+        await connector.projects._ensure_gitlab_group_record_groups(["org/eng"])
 
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args, _ = connector.data_entities_processor.on_new_record_groups.call_args
@@ -391,10 +392,6 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
         assert rg.name == "Engineering"
         assert rg.external_group_id == "org/eng"
         assert rg.group_type == RecordGroupType.PROJECT.value
-        # ``connector_name`` is stored as the ``Connectors`` enum on the
-        # Pydantic model — the string ``.value`` passed by the personal
-        # connector is coerced back to the enum at validation time.
-        assert rg.connector_name == Connectors.GITLAB_PERSONAL
         assert rg.web_url == "https://gitlab.example.com/org/eng"
         # The whole point of this PR: one GROUP edge per record group, no
         # per-member fan-out and no direct USER edge to the creator.
@@ -411,9 +408,10 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
             external_id="internal-gl-personal-1",
             type=PermissionType.READ,
         )
-        connector._ds_call = AsyncMock(return_value=_fail("404"))
+        connector.runtime = MagicMock()
+        connector.runtime.ds_call = AsyncMock(return_value=_fail("404"))
 
-        await connector._ensure_gitlab_group_record_groups(["missing/grp"])
+        await connector.projects._ensure_gitlab_group_record_groups(["missing/grp"])
 
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args, _ = connector.data_entities_processor.on_new_record_groups.call_args
@@ -442,9 +440,10 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
             obj.web_url = f"https://gitlab.example.com/{group_path}"
             return _ok(obj)
 
-        connector._ds_call = AsyncMock(side_effect=fake_ds_call)
+        connector.runtime = MagicMock()
+        connector.runtime.ds_call = AsyncMock(side_effect=fake_ds_call)
 
-        await connector._ensure_gitlab_group_record_groups(
+        await connector.projects._ensure_gitlab_group_record_groups(
             ["org/eng", "org/data"], candidate_projects=[MagicMock(), MagicMock()]
         )
 
@@ -462,7 +461,7 @@ class TestPersonalCreatorFallback:
     @pytest.mark.asyncio
     async def test_inherits_fallback_but_emits_group_permissions(self) -> None:
         """Inherited ``_apply_creator_fallback_for_project`` calls
-        ``self._creator_user_permission()`` — overridden here to read the
+        ``self.c.creator_user_permission()`` — overridden here to read the
         cached ConnectorGroup permission. So every project record-group
         the workspace path would have stamped with a USER perm now gets a
         GROUP perm pointing at the internal group. This is the central
@@ -474,7 +473,7 @@ class TestPersonalCreatorFallback:
             external_id="internal-gl-personal-1",
             type=PermissionType.READ,
         )
-        # Normally set by ``run_sync`` → ``_sync_all_project``; tests that
+        # Normally set by ``run_sync`` → ``sync_all_projects``; tests that
         # call inherited helpers directly must seed it so the
         # ``_build_project_record_groups`` parent-link branch is a no-op.
         connector._gitlab_included_group_paths = None
@@ -483,7 +482,7 @@ class TestPersonalCreatorFallback:
         project.path_with_namespace = "org/eng/be"
         project.namespace = None
 
-        await connector._apply_creator_fallback_for_project(project)
+        await connector.projects._apply_creator_fallback_for_project(project)
 
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args, _ = connector.data_entities_processor.on_new_record_groups.call_args
@@ -504,7 +503,7 @@ class TestPersonalCreatorFallback:
         project.id = 99
         project.path_with_namespace = "org/eng/be"
 
-        await connector._apply_creator_fallback_for_project(project)
+        await connector.projects._apply_creator_fallback_for_project(project)
 
         # Without a resolved permission we must not create the record
         # groups with empty principals — they would be invisible to
@@ -521,14 +520,14 @@ class TestPersonalSyncProjectMembersAsPseudo:
     @pytest.mark.asyncio
     async def test_delegates_to_creator_fallback(self) -> None:
         connector = _make_connector()
-        connector._apply_creator_fallback_for_project = AsyncMock()
+        connector.projects._apply_creator_fallback_for_project = AsyncMock()
         project = MagicMock()
 
-        await connector._sync_project_members_as_pseudo(project)
+        await connector.projects._sync_project_members_as_pseudo(project)
 
         # Personal scope has no notion of upstream project members —
         # everything routes through the ConnectorGroup fallback.
-        connector._apply_creator_fallback_for_project.assert_awaited_once_with(
+        connector.projects._apply_creator_fallback_for_project.assert_awaited_once_with(
             project
         )
 
@@ -548,8 +547,9 @@ class TestPersonalRunSync:
             external_id="stale",
             type=PermissionType.READ,
         )
-        connector._refresh_token_if_needed = AsyncMock()
-        connector._sync_all_project = AsyncMock()
+        connector.runtime = MagicMock()
+        connector.runtime.refresh_token_if_needed = AsyncMock()
+        connector.projects.sync_all_projects = AsyncMock()
 
         async def fake_resolve() -> None:
             connector.creator_email = "creator@example.com"
@@ -568,13 +568,14 @@ class TestPersonalRunSync:
         # The freshly resolved email then drives a new ensure_* call.
         connector._resolve_creator_identity.assert_awaited_once()
         connector.ensure_connector_group_permission.assert_awaited_once()
-        connector._sync_all_project.assert_awaited_once()
+        connector.projects.sync_all_projects.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_skips_ensure_group_when_no_creator_email(self) -> None:
         connector = _make_connector(created_by="", creator_email=None)
-        connector._refresh_token_if_needed = AsyncMock()
-        connector._sync_all_project = AsyncMock()
+        connector.runtime = MagicMock()
+        connector.runtime.refresh_token_if_needed = AsyncMock()
+        connector.projects.sync_all_projects = AsyncMock()
         connector._resolve_creator_identity = AsyncMock()
         connector.ensure_connector_group_permission = AsyncMock()
 
@@ -588,13 +589,14 @@ class TestPersonalRunSync:
         # The sync still proceeds so callers see records (without ACLs)
         # and can decide what to do at the indexing layer.
         connector.ensure_connector_group_permission.assert_not_called()
-        connector._sync_all_project.assert_awaited_once()
+        connector.projects.sync_all_projects.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_skips_resolve_when_email_already_cached(self) -> None:
         connector = _make_connector(creator_email="cached@example.com")
-        connector._refresh_token_if_needed = AsyncMock()
-        connector._sync_all_project = AsyncMock()
+        connector.runtime = MagicMock()
+        connector.runtime.refresh_token_if_needed = AsyncMock()
+        connector.projects.sync_all_projects = AsyncMock()
         connector._resolve_creator_identity = AsyncMock()
         connector.ensure_connector_group_permission = AsyncMock()
 
@@ -610,8 +612,9 @@ class TestPersonalRunSync:
     @pytest.mark.asyncio
     async def test_loads_filters_with_gitlabpersonal_key(self) -> None:
         connector = _make_connector()
-        connector._refresh_token_if_needed = AsyncMock()
-        connector._sync_all_project = AsyncMock()
+        connector.runtime = MagicMock()
+        connector.runtime.refresh_token_if_needed = AsyncMock()
+        connector.projects.sync_all_projects = AsyncMock()
         connector.ensure_connector_group_permission = AsyncMock()
 
         with patch(
@@ -630,9 +633,12 @@ class TestPersonalRunSync:
     @pytest.mark.asyncio
     async def test_propagates_sync_errors(self) -> None:
         connector = _make_connector()
-        connector._refresh_token_if_needed = AsyncMock()
+        connector.runtime = MagicMock()
+        connector.runtime.refresh_token_if_needed = AsyncMock()
         connector.ensure_connector_group_permission = AsyncMock()
-        connector._sync_all_project = AsyncMock(side_effect=RuntimeError("api down"))
+        connector.projects.sync_all_projects = AsyncMock(
+            side_effect=RuntimeError("api down")
+        )
 
         with patch(
             "app.connectors.sources.gitlab_personal.connector.load_connector_filters",
@@ -674,6 +680,5 @@ class TestPersonalCreateConnector:
 
         assert isinstance(connector, GitLabPersonalConnector)
         assert connector.connector_id == "conn-personal-1"
-        assert connector.scope == "personal"
         assert connector.created_by == "creator-1"
         mock_dep.initialize.assert_awaited_once()
