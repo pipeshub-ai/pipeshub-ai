@@ -33,9 +33,45 @@ _mariadb_mod.mariadb = _mock_mariadb_module
 # ---------------------------------------------------------------------------
 
 
+class _AsyncContextManager:
+    def __init__(self, value):
+        self._value = value
+
+    async def __aenter__(self):
+        return self._value
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        return None
+
+
 def _make_pool_mock():
-    """Build a mock mariadb.ConnectionPool."""
-    return MagicMock()
+    """Build a mock mariadb async connection pool."""
+    pool = MagicMock()
+    pool.close = AsyncMock()
+    return pool
+
+
+def _wire_pool_connection(pool, conn):
+    pool.connection.return_value = _AsyncContextManager(conn)
+    return pool
+
+
+def _make_async_conn(cursor):
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+    conn.commit = AsyncMock()
+    conn.rollback = AsyncMock()
+    return conn
+
+
+def _make_async_cursor(*, description=None, fetchall=None, rowcount=0, execute_side_effect=None):
+    cursor = MagicMock()
+    cursor.description = description
+    cursor.rowcount = rowcount
+    cursor.execute = AsyncMock(side_effect=execute_side_effect)
+    cursor.fetchall = AsyncMock(return_value=[] if fetchall is None else fetchall)
+    cursor.close = AsyncMock()
+    return cursor
 
 
 @pytest.fixture
@@ -53,8 +89,7 @@ def mariadb_module():
     """Return the mock mariadb module and reset state between tests."""
     _mock_mariadb_module.reset_mock()
     _mock_mariadb_module.Error = type("MariaDBError", (Exception,), {})
-    _mock_mariadb_module.ConnectionPool.side_effect = None
-    _mock_mariadb_module.ConnectionPool.return_value = _make_pool_mock()
+    _mock_mariadb_module.create_async_pool = AsyncMock(return_value=_make_pool_mock())
     return _mock_mariadb_module
 
 
@@ -120,62 +155,70 @@ class TestMariaDBClient:
                 host="h", user="u", password="p", pool_acquire_timeout=0
             )
 
-    def test_connect_already_connected(self):
+    @pytest.mark.asyncio
+    async def test_connect_already_connected(self):
         client = MariaDBClient(host="localhost", user="root", password="pass")
         client._pool = _make_pool_mock()
-        result = client.connect()
+        result = await client.connect()
         assert result is client
 
-    def test_connect_success(self, mariadb_module):
+    @pytest.mark.asyncio
+    async def test_connect_success(self, mariadb_module):
         mock_pool = _make_pool_mock()
-        mariadb_module.ConnectionPool.return_value = mock_pool
+        mariadb_module.create_async_pool = AsyncMock(return_value=mock_pool)
         client = MariaDBClient(host="localhost", user="root", password="pass")
-        result = client.connect()
+        result = await client.connect()
         assert result is client
         assert client._pool is mock_pool
 
-    def test_connect_with_database(self, mariadb_module):
+    @pytest.mark.asyncio
+    async def test_connect_with_database(self, mariadb_module):
         mock_pool = _make_pool_mock()
-        mariadb_module.ConnectionPool.return_value = mock_pool
+        mariadb_module.create_async_pool = AsyncMock(return_value=mock_pool)
         client = MariaDBClient(host="localhost", user="root", password="pass", database="mydb")
-        client.connect()
-        call_kwargs = mariadb_module.ConnectionPool.call_args[1]
+        await client.connect()
+        call_kwargs = mariadb_module.create_async_pool.call_args.kwargs
         assert call_kwargs["database"] == "mydb"
 
-    def test_connect_with_ssl_ca(self, mariadb_module):
+    @pytest.mark.asyncio
+    async def test_connect_with_ssl_ca(self, mariadb_module):
         mock_pool = _make_pool_mock()
-        mariadb_module.ConnectionPool.return_value = mock_pool
+        mariadb_module.create_async_pool = AsyncMock(return_value=mock_pool)
         client = MariaDBClient(host="localhost", user="root", password="pass", ssl_ca="/ca.pem")
-        client.connect()
-        call_kwargs = mariadb_module.ConnectionPool.call_args[1]
+        await client.connect()
+        call_kwargs = mariadb_module.create_async_pool.call_args.kwargs
         assert call_kwargs["ssl_ca"] == "/ca.pem"
 
-    def test_connect_failure(self, mariadb_module):
-        mariadb_module.ConnectionPool.side_effect = mariadb_module.Error(
-            "connection refused"
+    @pytest.mark.asyncio
+    async def test_connect_failure(self, mariadb_module):
+        mariadb_module.create_async_pool = AsyncMock(
+            side_effect=mariadb_module.Error("connection refused")
         )
         client = MariaDBClient(host="localhost", user="root", password="pass")
         with pytest.raises(ConnectionError, match="Failed to connect"):
-            client.connect()
+            await client.connect()
 
-    def test_close(self):
+    @pytest.mark.asyncio
+    async def test_close(self):
         client = MariaDBClient(host="localhost", user="root", password="pass")
         mock_pool = _make_pool_mock()
         client._pool = mock_pool
-        client.close()
-        mock_pool.close.assert_called_once()
+        await client.close()
+        mock_pool.close.assert_awaited_once()
         assert client._pool is None
 
-    def test_close_no_pool(self):
+    @pytest.mark.asyncio
+    async def test_close_no_pool(self):
         client = MariaDBClient(host="localhost", user="root", password="pass")
-        client.close()  # Should not raise
+        await client.close()  # Should not raise
 
-    def test_close_error_handled(self, mariadb_module):
+    @pytest.mark.asyncio
+    async def test_close_error_handled(self, mariadb_module):
         client = MariaDBClient(host="localhost", user="root", password="pass")
         mock_pool = _make_pool_mock()
-        mock_pool.close.side_effect = mariadb_module.Error("close fail")
+        mock_pool.close = AsyncMock(side_effect=mariadb_module.Error("close fail"))
         client._pool = mock_pool
-        client.close()
+        await client.close()
         assert client._pool is None
 
     def test_is_connected_true(self):
@@ -207,85 +250,88 @@ class TestMariaDBClient:
     def _make_pooled_client(self, cursor):
         """Build a client whose pool checks out a connection wired to ``cursor``."""
         client = MariaDBClient(host="localhost", user="root", password="pass")
-        mock_pool = _make_pool_mock()
-        mock_conn = MagicMock()
-        mock_conn.cursor.return_value = cursor
-        mock_pool.get_connection.return_value = mock_conn
+        mock_conn = _make_async_conn(cursor)
+        mock_pool = _wire_pool_connection(_make_pool_mock(), mock_conn)
         client._pool = mock_pool
         return client, mock_pool, mock_conn
 
-    def test_execute_query_with_results(self):
-        cursor = MagicMock()
-        cursor.description = [("id",), ("name",)]
-        cursor.fetchall.return_value = [{"id": 1, "name": "test"}]
+    @pytest.mark.asyncio
+    async def test_execute_query_with_results(self):
+        cursor = _make_async_cursor(
+            description=[("id",), ("name",)],
+            fetchall=[{"id": 1, "name": "test"}],
+        )
         client, _, conn = self._make_pooled_client(cursor)
 
-        results = client.execute_query("SELECT * FROM t")
+        results = await client.execute_query("SELECT * FROM t")
         assert results == [{"id": 1, "name": "test"}]
-        conn.commit.assert_called_once()
+        conn.commit.assert_awaited_once()
 
-    def test_execute_query_no_results(self):
-        cursor = MagicMock()
-        cursor.description = None
-        cursor.rowcount = 5
+    @pytest.mark.asyncio
+    async def test_execute_query_no_results(self):
+        cursor = _make_async_cursor(description=None, rowcount=5)
         client, _, _ = self._make_pooled_client(cursor)
 
-        results = client.execute_query("DELETE FROM t")
+        results = await client.execute_query("DELETE FROM t")
         assert results == [{"affected_rows": 5}]
 
-    def test_execute_query_error(self, mariadb_module):
-        cursor = MagicMock()
-        cursor.execute.side_effect = mariadb_module.Error("query fail")
+    @pytest.mark.asyncio
+    async def test_execute_query_error(self, mariadb_module):
+        cursor = _make_async_cursor(
+            execute_side_effect=mariadb_module.Error("query fail"),
+        )
         client, _, conn = self._make_pooled_client(cursor)
 
         with pytest.raises(RuntimeError, match="Query execution failed"):
-            client.execute_query("BAD SQL")
-        conn.rollback.assert_called_once()
+            await client.execute_query("BAD SQL")
+        conn.rollback.assert_awaited_once()
 
-    def test_execute_query_auto_connect(self, mariadb_module):
+    @pytest.mark.asyncio
+    async def test_execute_query_auto_connect(self, mariadb_module):
         """Should auto-connect if pool not initialized."""
         mock_pool = _make_pool_mock()
-        cursor = MagicMock()
-        cursor.description = None
-        cursor.rowcount = 0
-        mock_conn = MagicMock()
-        mock_conn.cursor.return_value = cursor
-        mock_pool.get_connection.return_value = mock_conn
-        mariadb_module.ConnectionPool.return_value = mock_pool
+        cursor = _make_async_cursor(description=None, rowcount=0)
+        mock_conn = _make_async_conn(cursor)
+        _wire_pool_connection(mock_pool, mock_conn)
+        mariadb_module.create_async_pool = AsyncMock(return_value=mock_pool)
 
         client = MariaDBClient(host="localhost", user="root", password="pass")
         assert client._pool is None
 
-        results = client.execute_query("SELECT 1")
+        results = await client.execute_query("SELECT 1")
         assert results == [{"affected_rows": 0}]
-        mariadb_module.ConnectionPool.assert_called_once()
+        mariadb_module.create_async_pool.assert_awaited_once()
 
-    def test_execute_query_raw_with_results(self):
-        cursor = MagicMock()
-        cursor.description = [("id",), ("name",)]
-        cursor.fetchall.return_value = [(1, "test")]
+    @pytest.mark.asyncio
+    async def test_execute_query_raw_with_results(self):
+        cursor = _make_async_cursor(
+            description=[("id",), ("name",)],
+            fetchall=[(1, "test")],
+        )
         client, _, _ = self._make_pooled_client(cursor)
 
-        columns, rows = client.execute_query_raw("SELECT * FROM t")
+        columns, rows = await client.execute_query_raw("SELECT * FROM t")
         assert columns == ["id", "name"]
         assert rows == [(1, "test")]
 
-    def test_execute_query_raw_no_results(self):
-        cursor = MagicMock()
-        cursor.description = None
+    @pytest.mark.asyncio
+    async def test_execute_query_raw_no_results(self):
+        cursor = _make_async_cursor(description=None)
         client, _, _ = self._make_pooled_client(cursor)
 
-        columns, rows = client.execute_query_raw("INSERT INTO t VALUES (1)")
+        columns, rows = await client.execute_query_raw("INSERT INTO t VALUES (1)")
         assert columns == []
         assert rows == []
 
-    def test_execute_query_raw_error(self, mariadb_module):
-        cursor = MagicMock()
-        cursor.execute.side_effect = mariadb_module.Error("fail")
+    @pytest.mark.asyncio
+    async def test_execute_query_raw_error(self, mariadb_module):
+        cursor = _make_async_cursor(
+            execute_side_effect=mariadb_module.Error("fail"),
+        )
         client, _, _ = self._make_pooled_client(cursor)
 
         with pytest.raises(RuntimeError, match="Query execution failed"):
-            client.execute_query_raw("BAD SQL")
+            await client.execute_query_raw("BAD SQL")
 
     def test_get_connection_info(self):
         client = MariaDBClient(host="localhost", user="root", password="pass", database="mydb")
@@ -295,17 +341,16 @@ class TestMariaDBClient:
         assert info["user"] == "root"
         assert "password" not in info
 
-    def test_context_manager(self, mariadb_module):
+    @pytest.mark.asyncio
+    async def test_context_manager(self, mariadb_module):
         mock_pool = _make_pool_mock()
-        mariadb_module.ConnectionPool.side_effect = None
-        mariadb_module.ConnectionPool.return_value = mock_pool
+        mariadb_module.create_async_pool = AsyncMock(return_value=mock_pool)
 
         client = MariaDBClient(host="localhost", user="root", password="pass")
 
-        with client as c:
+        async with client as c:
             assert c is client
-        # close() was called on the pool
-        mock_pool.close.assert_called_once()
+        mock_pool.close.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

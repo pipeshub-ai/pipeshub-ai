@@ -614,12 +614,12 @@ class TestExecuteMariadbQuery:
         from app.utils.execute_query import _execute_mariadb_query
 
         mock_client = MagicMock()
-        mock_client.execute_query_raw.return_value = (["col"], [(1,)])
+        mock_client.execute_query_raw = AsyncMock(return_value=(["col"], [(1,)]))
         mock_client.get_connection_info.return_value = {
             "host": "localhost", "port": 3306, "database": "mydb", "user": "root"
         }
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
 
         mock_builder = MagicMock()
         mock_builder.get_client.return_value = mock_client
