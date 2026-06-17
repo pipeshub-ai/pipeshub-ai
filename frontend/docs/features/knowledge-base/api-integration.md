@@ -251,8 +251,11 @@ DELETE {{esbackend}}/api/v1/knowledgeBase/a77fbf1c-abf2-486d-beac-62459952f001/f
 Authorization: Bearer {{authToken}}
 ```
 
-#### 14. Upload Records (Root)
+#### 14. Upload Records
 **POST** `/api/v1/knowledgebase/:kbId/upload`
+
+**Query Parameters:**
+- `folderId` (optional): Target folder ID. Omit to upload to the KB root.
 
 **Form Data:**
 - `kb_id`: string (required)
@@ -264,11 +267,19 @@ Authorization: Bearer {{authToken}}
 - The endpoint uses lowercase `knowledgebase` (not `knowledgeBase`)
 - Each file must have corresponding entries in `file_paths` and `last_modified` arrays
 - Arrays are created by appending multiple values with the same key name
+- For folder uploads, pass `folderId` as a query parameter (not in the path)
+- `file_paths` can include relative folder structure (e.g., "subfolder/file.pdf")
 - Do NOT manually set `Content-Type: multipart/form-data` header - let the HTTP client set it automatically with proper boundary
 
-**Example:**
+**Example (KB root):**
 ```bash
 POST {{esbackend}}/api/v1/knowledgebase/a77fbf1c-abf2-486d-beac-62459952f001/upload
+Content-Type: multipart/form-data
+```
+
+**Example (folder):**
+```bash
+POST {{esbackend}}/api/v1/knowledgebase/a77fbf1c-abf2-486d-beac-62459952f001/upload?folderId=77d2cc72
 Content-Type: multipart/form-data
 ```
 
@@ -285,32 +296,15 @@ files.forEach((file) => formData.append('files', file));
 files.forEach((file) => formData.append('file_paths', file.name));
 files.forEach((file) => formData.append('last_modified', file.lastModified.toString()));
 
+const endpoint = folderId
+  ? `/api/v1/knowledgebase/${knowledgeBaseId}/upload?folderId=${encodeURIComponent(folderId)}`
+  : `/api/v1/knowledgebase/${knowledgeBaseId}/upload`;
+
 // Let axios/fetch set Content-Type automatically
 await apiClient.post(endpoint, formData);
 ```
 
-#### 15. Upload Records (Folder)
-**POST** `/api/v1/knowledgebase/:kbId/folder/:folderId/upload`
-
-**Form Data:**
-- `kb_id`: string (required)
-- `files`: file[] (max 1000) - Append each file separately with key "files"
-- `file_paths`: string[] - Append each filename/path separately with key "file_paths"
-- `last_modified`: number[] - Append each timestamp separately with key "last_modified"
-
-**Important Notes:**
-- The endpoint uses lowercase `knowledgebase` (not `knowledgeBase`)
-- Same array handling as root upload endpoint
-- `file_paths` can include relative folder structure (e.g., "subfolder/file.pdf")
-- Do NOT manually set `Content-Type: multipart/form-data` header
-
-**Example:**
-```bash
-POST {{esbackend}}/api/v1/knowledgebase/a77fbf1c-abf2-486d-beac-62459952f001/folder/77d2cc72/upload
-Content-Type: multipart/form-data
-```
-
-#### 16. Get Record
+#### 15. Get Record
 **GET** `/api/v1/knowledgeBase/:recordId`
 
 **Example:**
@@ -319,7 +313,7 @@ GET {{esbackend}}/api/v1/knowledgeBase/cf3d64bd-fc23-443e-a89a-70c5139f6b11
 Authorization: Bearer {{authToken}}
 ```
 
-#### 17. Update Record
+#### 16. Update Record
 **PUT** `/api/v1/knowledgeBase/:recordId`
 
 **Form Data:**
@@ -333,7 +327,7 @@ Authorization: Bearer {{authToken}}
 Content-Type: multipart/form-data
 ```
 
-#### 18. Delete Record
+#### 17. Delete Record
 **DELETE** `/api/v1/knowledgeBase/:recordId`
 
 **Example:**
@@ -342,7 +336,7 @@ DELETE {{esbackend}}/api/v1/knowledgeBase/263984c4-104b-4b59-96e8-d20f2f4ecabe
 Authorization: Bearer {{authToken}}
 ```
 
-#### 19. Download Record
+#### 18. Download Record
 **GET** `/api/v1/document/:recordId/download`
 
 **Example:**
