@@ -7036,6 +7036,28 @@ components:
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the whole organization
+        orchestrationMode:
+          type: string
+          description: Execution mode for the agent. `single` runs one agent, `linear` runs a saved sequential flow, and `conditional` routes through saved condition blocks.
+          enum: [single, linear, conditional]
+        flowSchemaVersion:
+          type: integer
+          description: Version of the persisted orchestration flow schema.
+        flow:
+          type: object
+          nullable: true
+          description: Saved orchestration canvas definition used for linear and conditional multi-agent execution.
+          properties:
+            nodes:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            edges:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
         webSearch:
           type: object
           additionalProperties: false
@@ -26561,7 +26583,9 @@ paths:
         Start a new conversation with the specified agent and stream the AI
         response as Server-Sent Events (SSE). The first user message is saved
         and forwarded to the upstream agent backend; subsequent tokens, tool
-        calls, and lifecycle events are emitted on the open SSE connection.
+    calls, and lifecycle events are emitted on the open SSE connection.
+    If the agent has a saved orchestration flow, events reflect multi-agent
+    execution through that flow.
       operationId: streamAgentConversation
       x-pipeshub-sdk: true
       security:

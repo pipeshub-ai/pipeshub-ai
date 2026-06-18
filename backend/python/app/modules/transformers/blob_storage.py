@@ -202,7 +202,12 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Unknown record format in S3")
             raise Exception("Unknown record format")
 
-    async def _get_content_length(self, session: aiohttp.ClientSession, url: str) -> int:
+    async def _get_content_length(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        request_headers: dict[str, str] | None = None,
+    ) -> int:
         """
         Get content length of S3 object using Range GET request to fetch only headers.
 
@@ -215,7 +220,8 @@ class BlobStorage(Transformer):
         """
         try:
             # Use Range header to request only the first byte to avoid downloading entire file
-            headers = {'Range': 'bytes=0-0'}
+            headers = dict(request_headers or {})
+            headers['Range'] = 'bytes=0-0'
 
             async with session.get(URL(url, encoded=True), headers=headers) as response:
                 # For Range requests, Content-Range header contains the total size
@@ -240,6 +246,7 @@ class BlobStorage(Transformer):
         start: int,
         end: int,
         chunk_index: int,
+        request_headers: dict[str, str] | None = None,
         max_retries: int = 3
     ) -> tuple[int, bytes]:
         """
@@ -259,7 +266,8 @@ class BlobStorage(Transformer):
         chunk_start_time = time.time()
         for attempt in range(max_retries):
             try:
-                headers = {'Range': f'bytes={start}-{end}'}
+                headers = dict(request_headers or {})
+                headers['Range'] = f'bytes={start}-{end}'
 
                 async with session.get(URL(url, encoded=True), headers=headers) as response:
                     if response.status in (HttpStatusCode.SUCCESS.value, HttpStatusCode.PARTIAL_CONTENT.value):  # 200 for full content, 206 for partial
@@ -296,6 +304,7 @@ class BlobStorage(Transformer):
         self,
         session: aiohttp.ClientSession,
         signed_url: str,
+        request_headers: dict[str, str] | None = None,
         chunk_size_mb: int = 2,
         max_connections: int = 6
     ) -> bytes:
@@ -318,7 +327,11 @@ class BlobStorage(Transformer):
 
         # Get total file size
         size_check_start = time.time()
-        total_size = await self._get_content_length(session, signed_url)
+        total_size = await self._get_content_length(
+            session,
+            signed_url,
+            request_headers=request_headers,
+        )
         size_check_duration_ms = (time.time() - size_check_start) * 1000
         self.logger.debug("⏱️ File size check completed in %.0fms: %.2f MB",
                         size_check_duration_ms, total_size / (1024 * 1024))
@@ -347,7 +360,12 @@ class BlobStorage(Transformer):
         async def download_with_semaphore(chunk_index: int, start: int, end: int) -> tuple[int, bytes]:
             async with semaphore:
                 return await self._download_chunk_with_retry(
-                    session, signed_url, start, end, chunk_index
+                    session,
+                    signed_url,
+                    start,
+                    end,
+                    chunk_index,
+                    request_headers=request_headers,
                 )
 
         # Create tasks for all chunks
@@ -1075,6 +1093,7 @@ class BlobStorage(Transformer):
                                         file_bytes = await self._download_with_range_requests(
                                             session,
                                             signed_url,
+                                            request_headers=headers,
                                             chunk_size_mb=2,
                                             max_connections=6
                                         )
@@ -1084,7 +1103,7 @@ class BlobStorage(Transformer):
                                         self.logger.debug("⏱️ JSON parsing completed in %.0fms", json_parse_duration_ms)
                                     else:
                                         signed_url_http_start_time = time.time()
-                                        async with session.get(URL(signed_url, encoded=True)) as res:
+                                        async with session.get(URL(signed_url, encoded=True), headers=headers) as res:
                                             signed_url_http_duration_ms = (time.time() - signed_url_http_start_time) * 1000
                                             self.logger.debug("⏱️ Signed URL HTTP request completed in %.0fms", signed_url_http_duration_ms)
                                             if res.status == HttpStatusCode.SUCCESS.value:
@@ -1099,7 +1118,7 @@ class BlobStorage(Transformer):
                                         self.logger.warning("⚠️ Parallel download failed: %s. Falling back to single download...", str(e))
                                         try:
                                             fallback_start = time.time()
-                                            async with session.get(URL(signed_url, encoded=True)) as res:
+                                            async with session.get(URL(signed_url, encoded=True), headers=headers) as res:
                                                 if res.status == HttpStatusCode.SUCCESS.value:
                                                     data = await res.json(content_type=None)
                                                     fallback_duration_ms = (time.time() - fallback_start) * 1000

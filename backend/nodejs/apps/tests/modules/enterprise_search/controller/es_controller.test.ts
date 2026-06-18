@@ -15,6 +15,7 @@ import {
   archiveConversation,
   unarchiveConversation,
   listAllArchivesConversation,
+  searchArchivedConversations,
   search,
   searchHistory,
   getSearchById,
@@ -1701,6 +1702,39 @@ describe('Enterprise Search Controller', () => {
     })
   })
 
+  describe('searchArchivedConversations', () => {
+    it('should exclude soft-deleted agent keys from the agent archive count filter', async () => {
+      const handler = searchArchivedConversations(createMockAppConfig())
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {
+          agents: [{ _key: 'deleted-agent-1' }],
+          pagination: { hasNext: false },
+        },
+      } as any)
+
+      sinon.stub(Conversation, 'aggregate').resolves([] as any)
+      sinon.stub(Conversation, 'countDocuments').resolves(0)
+      const agentCountStub = sinon.stub(AgentConversation, 'countDocuments').resolves(0)
+
+      const req = createMockRequest({
+        query: { search: 'archived roadmap' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(agentCountStub.calledOnce).to.be.true
+      expect(agentCountStub.firstCall.args[0]).to.have.nested.property('agentKey.$nin')
+      expect(agentCountStub.firstCall.args[0].agentKey.$nin).to.deep.equal(['deleted-agent-1'])
+      expect(res.status.calledWith(200)).to.be.true
+    })
+  })
+
   describe('regenerateAnswers', () => {
     it('should return a handler function', () => {
       const handler = regenerateAnswers(createMockAppConfig())
@@ -1790,6 +1824,53 @@ describe('Enterprise Search Controller', () => {
         expect(response).to.have.property('searchId')
         expect(response).to.have.property('searchResponse')
       }
+    })
+
+    it('should strip graph id fields from search response records and metadata', async () => {
+      const handler = search(createMockAppConfig())
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {
+          searchResults: [
+            {
+              content: 'result1',
+              chunkIndex: 0,
+              citationType: 'text',
+              metadata: { id: 'meta-id', _key: 'meta-key', source: 'doc' },
+            },
+          ],
+          records: [{ id: 'record-id', _key: 'record-key', title: 'Doc' }],
+          virtual_to_record_map: {
+            virtual1: { id: 'virtual-id', _key: 'virtual-key', title: 'Virtual doc' },
+          },
+        },
+      } as any)
+
+      const mockCitation = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
+      mockCitation.save.resolves(mockCitation)
+      sinon.stub(Citation.prototype, 'save').resolves(mockCitation as any)
+
+      const mockSearch = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
+      mockSearch.save.resolves(mockSearch)
+      sinon.stub(EnterpriseSemanticSearch.prototype, 'save').resolves(mockSearch as any)
+
+      const req = createMockRequest({
+        body: { query: 'test search', limit: 10 },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      const response = res.json.firstCall.args[0]
+      expect(response.searchResponse.records[0]).to.not.have.property('id')
+      expect(response.searchResponse.records[0]._key).to.equal('record-key')
+      expect(response.searchResponse.virtual_to_record_map.virtual1).to.not.have.property('id')
+      expect(response.searchResponse.searchResults[0].metadata).to.not.have.property('id')
+      expect(response.searchResponse.searchResults[0].metadata._key).to.equal('meta-key')
     })
 
     it('should call next when AI service returns no data', async () => {
@@ -2333,6 +2414,58 @@ describe('Enterprise Search Controller', () => {
       expect(handler).to.be.a('function')
     })
 
+    it('should sync schedules when the created agent key is returned', async () => {
+      const agentScheduleService = {
+        syncAgentScheduleFromFlow: sinon.stub().resolves(),
+      }
+      const handler = createAgent(createMockAppConfig(), agentScheduleService as any)
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { agent: { _key: 'agent-1' } },
+      } as any)
+
+      const flow = { nodes: [], edges: [] }
+      const req = createMockRequest({
+        body: { name: 'My Agent', flow },
+        user: { userId: VALID_OID, orgId: VALID_OID2, email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(agentScheduleService.syncAgentScheduleFromFlow.calledOnceWithExactly(
+        'agent-1',
+        flow,
+        { orgId: VALID_OID2, userId: VALID_OID, email: 'test@test.com' },
+      )).to.be.true
+    })
+
+    it('should use the agent id fallback when syncing schedules', async () => {
+      const agentScheduleService = {
+        syncAgentScheduleFromFlow: sinon.stub().resolves(),
+      }
+      const handler = createAgent(createMockAppConfig(), agentScheduleService as any)
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { agent: { id: 'agent-2' } },
+      } as any)
+
+      const req = createMockRequest({
+        body: { name: 'My Agent', flow: { nodes: [] } },
+        user: { userId: VALID_OID, orgId: VALID_OID2, email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(agentScheduleService.syncAgentScheduleFromFlow.calledOnce).to.be.true
+      expect(agentScheduleService.syncAgentScheduleFromFlow.firstCall.args[0]).to.equal('agent-2')
+    })
+
     it('should create agent successfully', async () => {
       const handler = createAgent(createMockAppConfig())
 
@@ -2563,6 +2696,35 @@ describe('Enterprise Search Controller', () => {
       expect(handler).to.be.a('function')
     })
 
+    it('should sync schedules after updating an agent', async () => {
+      const agentScheduleService = {
+        syncAgentScheduleFromFlow: sinon.stub().resolves(),
+      }
+      const handler = updateAgent(createMockAppConfig(), agentScheduleService as any)
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { agentKey: 'agent-1', name: 'Updated' },
+      } as any)
+
+      const flow = { nodes: [{ id: 'node-1' }] }
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1' },
+        body: { name: 'Updated', flow },
+        user: { userId: VALID_OID, orgId: VALID_OID2, email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(agentScheduleService.syncAgentScheduleFromFlow.calledOnceWithExactly(
+        'agent-1',
+        flow,
+        { orgId: VALID_OID2, userId: VALID_OID, email: 'test@test.com' },
+      )).to.be.true
+    })
+
     it('should update agent successfully', async () => {
       const handler = updateAgent(createMockAppConfig())
 
@@ -2609,6 +2771,29 @@ describe('Enterprise Search Controller', () => {
     it('should return a handler function', () => {
       const handler = deleteAgent(createMockAppConfig())
       expect(handler).to.be.a('function')
+    })
+
+    it('should remove schedules after deleting an agent', async () => {
+      const agentScheduleService = {
+        removeSchedulesForAgent: sinon.stub().resolves(),
+      }
+      const handler = deleteAgent(createMockAppConfig(), agentScheduleService as any)
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { deleted: true },
+      } as any)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(agentScheduleService.removeSchedulesForAgent.calledOnceWithExactly('agent-1')).to.be.true
     })
 
     it('should delete agent successfully', async () => {

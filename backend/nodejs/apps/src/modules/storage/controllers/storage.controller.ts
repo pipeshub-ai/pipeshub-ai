@@ -43,7 +43,6 @@ import {
   hasExtension,
   isValidStorageVendor,
   normalizeExtension,
-  serveFileFromLocalStorage,
 } from '../utils/utils';
 import { UploadDocumentService } from './storage.upload.service';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
@@ -383,7 +382,9 @@ export class StorageController {
       );
 
       if (document.storageVendor === StorageVendor.Local) {
-        serveFileFromLocalStorage(document, res);
+        // For local storage, return a signed URL just like cloud storage
+        // to maintain consistent JSON response format for downstream consumers
+        res.status(200).json({ signedUrl: signedUrlResult.data });
       } else {
         res.status(200).json({ signedUrl: signedUrlResult.data });
       }

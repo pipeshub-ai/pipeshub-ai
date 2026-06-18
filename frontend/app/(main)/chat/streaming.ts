@@ -41,11 +41,27 @@ import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 
 /** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
 function createPendingAssistantId(): string {
-  const cryptoApi = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
-  if (cryptoApi && typeof cryptoApi.randomUUID === 'function') {
-    return cryptoApi.randomUUID();
+  const c = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
+  if (c && typeof c.randomUUID === 'function') {
+    return c.randomUUID();
   }
-  return `asst-pending-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+
+  const nodeEnv = (process.env.NODE_ENV ?? '').toLowerCase();
+  const allowDevFallback = nodeEnv === 'development';
+  if (!allowDevFallback) {
+    throw new Error('crypto.randomUUID is unavailable outside development mode');
+  }
+
+  const bytes = new Uint8Array(16);
+  if (c && typeof c.getRandomValues === 'function') {
+    c.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i += 1) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `asst-pending-${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 /**

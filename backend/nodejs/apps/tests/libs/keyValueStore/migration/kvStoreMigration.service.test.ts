@@ -136,7 +136,7 @@ describe('libs/keyValueStore/migration/kvStoreMigration.service', () => {
     describe('isEtcdAvailable', () => {
       it('should return false when etcd is not available', async () => {
         const service = new KVStoreMigrationService({
-          etcd: { host: 'non-existent', port: 1, dialTimeout: 100 },
+          etcd: { host: '127.0.0.1', port: 1, dialTimeout: 100 },
           redis: { host: 'localhost', port: 6379 },
         })
 
@@ -160,7 +160,7 @@ describe('libs/keyValueStore/migration/kvStoreMigration.service', () => {
     describe('migrate', () => {
       it('should return failure when etcd is not available', async () => {
         const service = new KVStoreMigrationService({
-          etcd: { host: 'non-existent', port: 1, dialTimeout: 100 },
+          etcd: { host: '127.0.0.1', port: 1, dialTimeout: 100 },
           redis: { host: 'localhost', port: 6379 },
         })
 

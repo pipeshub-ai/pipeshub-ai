@@ -124,7 +124,7 @@ class ResponseTransformer:
                 if self._keep_fields:
                     should_keep = False
                     for keep_path in self._keep_fields:
-                        if self._path_matches(current_path, keep_path):
+                        if self._keep_path_matches(current_path, keep_path):
                             should_keep = True
                             break
 
@@ -171,6 +171,9 @@ class ResponseTransformer:
         if current_path == pattern:
             return True
 
+        if "*" in pattern:
+            return self._wildcard_path_matches(current_path, pattern)
+
         # Pattern ends with wildcard (e.g., "assignee.*" matches "assignee.avatarUrls" or "fields.assignee.avatarUrls")
         if pattern.endswith(".*"):
             prefix = pattern[:-2]
@@ -210,4 +213,70 @@ class ResponseTransformer:
             return True
 
         return False
+
+    def _keep_path_matches(self, current_path: str, pattern: str) -> bool:
+        """Check keep semantics for the current path.
+
+        Keep matching is narrower than remove matching:
+        - exact matches keep the field itself
+        - ancestors of explicit keep paths are preserved as scaffolding
+        - descendants are preserved only for explicit nested/wildcard subtree keeps
+        - simple leaf names still match nested leaf fields anywhere
+        """
+        if current_path == pattern:
+            return True
+
+        if self._is_ancestor_path(current_path, pattern):
+            return True
+
+        if self._should_keep_descendant(current_path, pattern):
+            return True
+
+        if pattern.startswith("*."):
+            suffix = pattern[2:]
+            if current_path == suffix or current_path.endswith("." + suffix):
+                return True
+
+        if "." not in pattern and "*" not in pattern and current_path.endswith("." + pattern):
+            return True
+
+        return False
+
+    def _should_keep_descendant(self, current_path: str, pattern: str) -> bool:
+        if not self._is_ancestor_path(pattern, current_path):
+            return False
+
+        return "." in pattern or "*" in pattern
+
+    @staticmethod
+    def _is_ancestor_path(ancestor_path: str, descendant_path: str) -> bool:
+        return descendant_path.startswith(ancestor_path + ".")
+
+    def _wildcard_path_matches(self, current_path: str, pattern: str) -> bool:
+        current_parts = current_path.split(".") if current_path else []
+        pattern_parts = pattern.split(".") if pattern else []
+        return self._match_parts(current_parts, pattern_parts)
+
+    def _match_parts(self, current_parts: list[str], pattern_parts: list[str]) -> bool:
+        if not pattern_parts:
+            return not current_parts
+
+        head = pattern_parts[0]
+
+        if head == "*":
+            if len(pattern_parts) == 1:
+                return True
+
+            if not current_parts:
+                return False
+
+            for index in range(len(current_parts) + 1):
+                if self._match_parts(current_parts[index:], pattern_parts[1:]):
+                    return True
+            return False
+
+        if not current_parts or current_parts[0] != head:
+            return False
+
+        return self._match_parts(current_parts[1:], pattern_parts[1:])
 

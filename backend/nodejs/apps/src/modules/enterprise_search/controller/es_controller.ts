@@ -35,7 +35,6 @@ import {
   ServiceUnavailableError,
   BadGatewayError,
   GatewayTimeoutError,
-  UnprocessableEntityError,
 } from '../../../libs/errors/http.errors';
 import {
   AICommandOptions,
@@ -45,6 +44,9 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import {
   AIServiceResponse,
   IAgentConversation,
+  IAppliedFilterNode,
+  IChatAttachmentRef,
+  IFeedback,
   IAIModel,
   IAIResponse,
   IConversationDocument,
@@ -95,31 +97,40 @@ import {
 import { getSlackBotStore } from '../../configuration_manager/controller/cm_controller';
 import { Org } from '../../user_management/schema/org.schema';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
+import { AgentScheduleService } from '../services/agent_schedule.service';
+
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
 
 /** Remove `id` from graph document clones (Neo4j vs Arango shape) before returning search to the client. */
 function omitId<T>(doc: T): T {
-  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return doc;
+  if (doc === null || doc === undefined || typeof doc !== 'object' || Array.isArray(doc)) {
+    return doc;
+  }
   const o = { ...(doc as Record<string, unknown>) };
   delete o.id;
   return o as T;
 }
 
-function buildSearchResponseForClient(data: AiSearchResponse & Record<string, unknown>): Record<string, unknown> {
+function buildSearchResponseForClient(
+  data: AiSearchResponse & Record<string, unknown>,
+): Record<string, unknown> {
   const out: Record<string, unknown> = { ...data };
   if (Array.isArray(data.records)) out.records = data.records.map(omitId);
-  const vmap = data.virtual_to_record_map;
-  if (vmap && typeof vmap === 'object' && !Array.isArray(vmap)) {
+  const vmap: unknown = data.virtual_to_record_map;
+  if (typeof vmap === 'object' && vmap !== null && !Array.isArray(vmap)) {
     out.virtual_to_record_map = Object.fromEntries(
-      Object.entries(vmap as Record<string, unknown>).map(([k, v]) => [k, omitId(v)]),
+      Object.entries(vmap as Record<string, unknown>).map(([k, v]) => [
+        k,
+        omitId(v),
+      ]),
     );
   }
   if (Array.isArray(data.searchResults)) {
     out.searchResults = data.searchResults.map((item) => {
       const row = item as unknown as Record<string, unknown>;
       const meta = row.metadata;
-      if (meta && typeof meta === 'object' && !Array.isArray(meta)) {
+      if (typeof meta === 'object' && meta !== null && !Array.isArray(meta)) {
         return { ...row, metadata: omitId({ ...meta }) };
       }
       return item;
@@ -145,7 +156,7 @@ async function fetchDeletedAgentKeysForUser(
   const keys: string[] = [];
   let page = 1;
   try {
-    while (true) {
+    for (;;) {
       const queryParams = new URLSearchParams();
       queryParams.set('page', String(page));
       queryParams.set('limit', String(AGENT_LIST_PAGE_LIMIT));
@@ -160,10 +171,14 @@ async function fetchDeletedAgentKeysForUser(
         },
       });
       const aiResponse = await aiCommand.execute();
-      if (!aiResponse || aiResponse.statusCode !== 200) {
+      if (aiResponse === null || aiResponse === undefined || aiResponse.statusCode !== 200) {
+        const statusCode =
+          aiResponse === null || aiResponse === undefined
+            ? undefined
+            : aiResponse.statusCode;
         logger.warn(
           'fetchDeletedAgentKeysForUser: AI backend returned non-200; skipping agent soft-delete filter',
-          { statusCode: aiResponse?.statusCode },
+          { statusCode },
         );
         return null;
       }
@@ -203,16 +218,22 @@ async function fetchDeletedAgentKeysForUser(
 /**
  * Parses the chatMode from request body and determines if agent mode is enabled.
  * Supports formats: 'agent:auto', 'agent:quick', 'agent' (defaults to 'auto'), or regular modes like 'quick'.
- * 
+ *
  * @param requestChatMode - The chatMode value from request body
  * @returns Object containing the parsed chatMode and agentMode flag
  */
-const parseChatMode = (requestChatMode?: string): { chatMode: string; agentMode: boolean } => {
-  let chatMode: string = requestChatMode || 'quick';
-  let agentMode: boolean = false;
+const parseChatMode = (
+  requestChatMode?: string,
+): { chatMode: string; agentMode: boolean } => {
+  let chatMode = requestChatMode ?? 'quick';
+  let agentMode = false;
 
   if (chatMode.includes('agent')) {
-    chatMode = chatMode.split(':')[1] || 'auto';
+    const requestedAgentMode = chatMode.split(':')[1];
+    chatMode =
+      requestedAgentMode !== undefined && requestedAgentMode !== ''
+        ? requestedAgentMode
+        : 'auto';
     agentMode = true;
   }
 
@@ -241,15 +262,16 @@ const assignCallerContextToAiPayload = (
   body: Record<string, unknown>,
 ): void => {
   const rawName = body.callerDisplayName;
-  if (typeof rawName === 'string' && rawName.trim()) {
-    payload.callerDisplayName = rawName.trim();
+  const trimmedName = typeof rawName === 'string' ? rawName.trim() : null;
+  if (trimmedName !== null && trimmedName !== '') {
+    payload.callerDisplayName = trimmedName;
   }
   const rawEmail = body.callerEmail;
-  if (typeof rawEmail === 'string' && rawEmail.trim()) {
-    payload.callerEmail = rawEmail.trim();
+  const trimmedEmail = typeof rawEmail === 'string' ? rawEmail.trim() : null;
+  if (trimmedEmail !== null && trimmedEmail !== '') {
+    payload.callerEmail = trimmedEmail;
   }
 };
-
 
 /** 24-char hex suitable for Mongo ObjectId; stable per email for Slack/service-account callers without a User row. */
 const stableObjectIdHexForExternalEmail = (email: string): string =>
@@ -261,20 +283,134 @@ const stableObjectIdHexForExternalEmail = (email: string): string =>
 const AI_SERVICE_UNAVAILABLE_MESSAGE =
   'AI Service is currently unavailable. Please check your network connection or try again later.';
 
+type ScopedRequestUser = {
+  userId?: unknown;
+  orgId?: unknown;
+};
+
+type ScopedTokenPayload = {
+  email?: unknown;
+};
+
+type RequestWithScopedUser = AuthenticatedServiceRequest & {
+  user?: Record<string, unknown>;
+};
+
+type ControllerRequestUser = {
+  userId?: Types.ObjectId;
+  orgId?: Types.ObjectId;
+};
+
+type StreamChatRequestBody = {
+  query?: string;
+  appliedFilters?: { apps?: IAppliedFilterNode[]; kb?: IAppliedFilterNode[] };
+  chatMode?: string;
+  previousConversations?: unknown[];
+  recordIds?: unknown[];
+  filters?: Record<string, unknown>;
+  attachments?: IChatAttachmentRef[];
+  modelKey?: string | null;
+  modelName?: string | null;
+  modelFriendlyName?: string | null;
+  timezone?: string | null;
+  currentTime?: string | null;
+  tools?: unknown;
+};
+
+type FlushableResponse = Response & {
+  flush?: () => void;
+};
+
+type BackendErrorPayload = {
+  detail?: string;
+  reason?: string;
+  message?: string;
+};
+
+type BackendErrorShape = {
+  cause?: { code?: string };
+  message?: string;
+  response?: {
+    status?: number;
+    data?: BackendErrorPayload;
+  };
+  request?: unknown;
+  detail?: string;
+};
+
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : 'Unknown error';
+
+const getErrorStack = (error: unknown): string | undefined =>
+  error instanceof Error ? error.stack : undefined;
+
+const getScopedRequestUser = (
+  req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
+): ScopedRequestUser | undefined => {
+  if (!('user' in req)) {
+    return undefined;
+  }
+
+  const { user } = req;
+  return user as ScopedRequestUser | undefined;
+};
+
+const getScopedTokenEmail = (
+  req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
+): string | undefined => {
+  if (!('tokenPayload' in req)) {
+    return undefined;
+  }
+
+  const { tokenPayload } = req;
+  if (tokenPayload === undefined) {
+    return undefined;
+  }
+
+  const email = (tokenPayload as ScopedTokenPayload).email;
+  return typeof email === 'string' && email !== '' ? email : undefined;
+};
+
+const getAuthenticatedRequestUser = (
+  req: AuthenticatedUserRequest,
+): ControllerRequestUser | undefined =>
+  req.user as ControllerRequestUser | undefined;
+
+const hasIdentityValue = (value: unknown): boolean =>
+  value instanceof Types.ObjectId ||
+  (typeof value === 'string' && value.trim() !== '');
+
+const toIdentityString = (value: unknown): string | undefined => {
+  if (value instanceof Types.ObjectId) {
+    return value.toString();
+  }
+
+  if (typeof value === 'string' && value.trim() !== '') {
+    return value;
+  }
+
+  return undefined;
+};
+
+const flushResponse = (res: Response): void => {
+  (res as FlushableResponse).flush?.();
+};
+
 const hydrateScopedRequestAsUser = async (
   req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
   appConfig: AppConfig,
   keyValueStoreService?: KeyValueStoreService,
 ): Promise<void> => {
-  const existingUser = (req as AuthenticatedUserRequest).user as
-    | Record<string, any>
-    | undefined;
-  if (existingUser?.userId && existingUser?.orgId) {
+  const existingUser = getScopedRequestUser(req);
+  if (
+    hasIdentityValue(existingUser?.userId) &&
+    hasIdentityValue(existingUser?.orgId)
+  ) {
     return;
   }
 
-  const email = (req as AuthenticatedServiceRequest).tokenPayload?.email;
-  if (!email) {
+  const email = getScopedTokenEmail(req);
+  if (email === undefined) {
     throw new UnauthorizedError('Email not found in scoped token');
   }
 
@@ -282,39 +418,45 @@ const hydrateScopedRequestAsUser = async (
     email,
     isDeleted: false,
   });
-  
+
   const authTokenService = new AuthTokenService(
     appConfig.jwtSecret,
     appConfig.scopedJwtSecret,
   );
 
-
   if (!user) {
     const { agentKey } = req.params;
-    if (agentKey && keyValueStoreService) {
+    if (agentKey !== undefined && agentKey !== '' && keyValueStoreService) {
       const store = await getSlackBotStore(keyValueStoreService);
       const configs = store.configs;
       for (const config of configs) {
         if (config.agentId === agentKey) {
-          const isServiceAccount = await checkServiceAccountAccess(req, appConfig);
+          const isServiceAccount = await checkServiceAccountAccess(
+            req,
+            appConfig,
+          );
           if (isServiceAccount) {
             const org = await Org.findOne({ isDeleted: false });
-            if (!org?._id) {
+            if (org?._id == null) {
               throw new NotFoundError('Organization not found');
             }
             const stableUserIdHex = stableObjectIdHexForExternalEmail(email);
-            const scopedJwtToken = authTokenService.generateScopedToken({
-              userId: stableUserIdHex,
-              orgId: org._id,
-              email: email,
-              scopes: [TokenScopes.CONVERSATION_CREATE],
-              isServiceAccount: true,
-            }, '1h');
-            (req as AuthenticatedServiceRequest).headers.authorization = `Bearer ${scopedJwtToken}`;
-            (req as AuthenticatedServiceRequest).user = {
+            const scopedJwtToken = authTokenService.generateScopedToken(
+              {
+                userId: stableUserIdHex,
+                orgId: org._id,
+                email: email,
+                scopes: [TokenScopes.CONVERSATION_CREATE],
+                isServiceAccount: true,
+              },
+              '1h',
+            );
+            (req as AuthenticatedServiceRequest).headers.authorization =
+              `Bearer ${scopedJwtToken}`;
+            (req as RequestWithScopedUser).user = {
               userId: new Types.ObjectId(stableUserIdHex),
               orgId: org._id,
-              email: email,
+              email,
               scopes: [TokenScopes.CONVERSATION_CREATE],
               isServiceAccount: true,
             };
@@ -323,7 +465,9 @@ const hydrateScopedRequestAsUser = async (
         }
       }
     }
-    throw new NotFoundError('User not found, create an account on the Pipeshub platform first.');
+    throw new NotFoundError(
+      'User not found, create an account on the Pipeshub platform first.',
+    );
   }
 
   const jwtToken = authTokenService.generateToken({
@@ -347,27 +491,32 @@ const hydrateScopedRequestAsUser = async (
   };
 };
 
-  const handleBackendError = (error: any, operation: string): Error => {
-    const resolveErrorMessage = (err: any): string =>
-      err?.message || err?.msg || 'Unknown error';
+const handleBackendError = (error: unknown, operation: string): Error => {
+  const backendError =
+    typeof error === 'object' && error !== null
+      ? (error as BackendErrorShape)
+      : null;
+  const errorMessage = backendError?.message;
+  const errorCauseCode = backendError?.cause?.code;
 
-    // Network/connection failure handling first
-    if (
-      (error?.cause && error.cause.code === 'ECONNREFUSED') ||
-    (typeof error?.message === 'string' &&
-      error.message.includes('fetch failed'))
-    ) {
-      return new ServiceUnavailableError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
-    }
+  // Network/connection failure handling first
+  if (
+    errorCauseCode === 'ECONNREFUSED' ||
+    (typeof errorMessage === 'string' && errorMessage.includes('fetch failed'))
+  ) {
+    return new ServiceUnavailableError(AI_SERVICE_UNAVAILABLE_MESSAGE);
+  }
 
     if (error instanceof HttpError) {
       return error;
     }
 
-    if (error.response) {
-      const { status, data } = error.response;
+    const err = error as any;
+
+    if (err.response) {
+      const { status, data } = err.response;
       const errorDetail =
-        data?.detail || data?.reason || data?.message || error.msg || 'Unknown error';
+        data?.detail || data?.reason || data?.message || 'Unknown error';
   
       logger.error(`Backend error during ${operation}`, {
         status,
@@ -384,8 +533,6 @@ const hydrateScopedRequestAsUser = async (
           return new ForbiddenError(errorDetail);
         case 404:
           return new NotFoundError(errorDetail);
-        case 422:
-          return new UnprocessableEntityError(errorDetail);
         case 500:
           return new InternalServerError(errorDetail);
         case 502:
@@ -399,44 +546,16 @@ const hydrateScopedRequestAsUser = async (
       }
     }
   
-    if (error.request) {
+    if (err.request) {
       logger.error(`No response from backend during ${operation}`);
       return new ServiceUnavailableError('Backend service unavailable');
     }
 
-    // Handle AIServiceResponse format { statusCode, data, msg } from AIServiceCommand.execute()
-    if (typeof error.statusCode === 'number' && error.statusCode >= 400) {
-      const data = error.data as Record<string, unknown> | undefined;
-      const errorDetail = String(data?.detail || data?.reason || data?.message || error.msg || 'Unknown error');
-      switch (error.statusCode) {
-        case 400:
-          return new BadRequestError(errorDetail);
-        case 401:
-          return new UnauthorizedError(errorDetail);
-        case 403:
-          return new ForbiddenError(errorDetail);
-        case 404:
-          return new NotFoundError(errorDetail);
-        case 422:
-          return new UnprocessableEntityError(errorDetail);
-        case 500:
-          return new InternalServerError(errorDetail);
-        case 502:
-          return new BadGatewayError(errorDetail);
-        case 503:
-          return new ServiceUnavailableError(errorDetail);
-        case 504:
-          return new GatewayTimeoutError(errorDetail);
-        default:
-          return new InternalServerError(`Backend error: ${errorDetail}`);
-      }
+    if (err.detail) {
+      return new BadRequestError(err.detail);
     }
-
-    if (error.detail) {
-      return new BadRequestError(error.detail);
-    }
-
-    return new InternalServerError(`${operation} failed: ${resolveErrorMessage(error)}`);
+  
+    return new InternalServerError(`${operation} failed: ${err.message}`);
   };
   
   // Common helper to start AI streams with consistent error mapping and logging
@@ -487,13 +606,13 @@ const formatBytes = (bytes: number): string => {
   if (bytes >= 1024) {
     return `${(bytes / 1024).toFixed(1)} KB`;
   }
-  return `${bytes} B`;
+  return `${String(bytes)} B`;
 };
 
 const compressImageIfNeeded = async (
   file: Express.Multer.File,
 ): Promise<NormalizedAttachmentFile> => {
-  const mime = (file.mimetype || '').toLowerCase();
+  const mime = (file.mimetype ?? '').toLowerCase();
   const passthrough: NormalizedAttachmentFile = {
     fileName: file.originalname,
     mimeType: file.mimetype,
@@ -521,11 +640,19 @@ const compressImageIfNeeded = async (
 
   try {
     const metadata = await sharp(file.buffer).metadata();
-    const longestSide = Math.max(metadata.width || 0, metadata.height || 0);
+    const width =
+      typeof metadata.width === 'number' && Number.isFinite(metadata.width)
+        ? metadata.width
+        : 0;
+    const height =
+      typeof metadata.height === 'number' && Number.isFinite(metadata.height)
+        ? metadata.height
+        : 0;
+    const longestSide = Math.max(width, height);
     const needsResize = longestSide > IMAGE_MAX_LONGEST_SIDE_PX;
     const hasAlpha = mime === 'image/png' && Boolean(metadata.hasAlpha);
 
-    const buildBase = () => {
+    const buildBase = (): sharp.Sharp => {
       const base = sharp(file.buffer).rotate();
       if (needsResize) {
         base.resize({
@@ -549,7 +676,9 @@ const compressImageIfNeeded = async (
     } else {
       outMime = 'image/jpeg';
       for (const quality of IMAGE_QUALITY_LADDER) {
-        outBuffer = await buildBase().jpeg({ quality, mozjpeg: true }).toBuffer();
+        outBuffer = await buildBase()
+          .jpeg({ quality, mozjpeg: true })
+          .toBuffer();
         if (outBuffer.length <= IMAGE_COMPRESS_TARGET_BYTES) {
           break;
         }
@@ -568,7 +697,10 @@ const compressImageIfNeeded = async (
       newFileName = newFileName.replace(/\.[^.]+$/, '') + '.jpg';
     }
 
-    const reduction = (((file.size - outBuffer.length) / file.size) * 100).toFixed(1);
+    const reduction = (
+      ((file.size - outBuffer.length) / file.size) *
+      100
+    ).toFixed(1);
     logger.info(
       `[image-compress] done ${file.originalname}: before=${formatBytes(file.size)} (${file.mimetype}), after=${formatBytes(outBuffer.length)} (${outMime}), reduction=${reduction}%`,
     );
@@ -596,15 +728,24 @@ const SUPPORTED_CHAT_ATTACHMENT_MIMETYPES = new Set([
 
 export const uploadChatAttachments =
   (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
     try {
-      const files = (req.files as Express.Multer.File[]) || [];
+      const files = Array.isArray(req.files)
+        ? (req.files as Express.Multer.File[])
+        : [];
       if (!Array.isArray(files) || files.length === 0) {
         throw new BadRequestError('At least one file is required');
       }
 
       const invalidFile = files.find(
-        (file) => !SUPPORTED_CHAT_ATTACHMENT_MIMETYPES.has((file.mimetype || '').toLowerCase()),
+        (file) =>
+          !SUPPORTED_CHAT_ATTACHMENT_MIMETYPES.has(
+            (file.mimetype ?? '').toLowerCase(),
+          ),
       );
       if (invalidFile) {
         throw new BadRequestError(
@@ -745,18 +886,20 @@ export const uploadChatAttachmentsInternal =
 
 export const streamChat =
   (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response) => {
+  async (req: AuthenticatedUserRequest, res: Response): Promise<void> => {
     const requestId = req.context?.requestId;
     const startTime = Date.now();
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
+    const requestUser = getAuthenticatedRequestUser(req);
+    const userId = requestUser?.userId;
+    const orgId = requestUser?.orgId;
 
     let session: ClientSession | null = null;
     let savedConversation: IConversationDocument | null = null;
+    const requestBody = req.body as StreamChatRequestBody;
 
-    const modelInfo = extractModelInfo(req.body);
+    const modelInfo = extractModelInfo(requestBody);
 
-    if (!req.body.query) {
+    if (requestBody.query === undefined || requestBody.query === '') {
       throw new BadRequestError('Query is required');
     }
 
@@ -773,17 +916,17 @@ export const streamChat =
       // Create initial conversation record (before `connected` so the client
       // can link the stream to a real conversationId for URL/sidebar/parallel tabs)
       const userQueryMessage = buildUserQueryMessage(
-        req.body.query,
-        req.body.appliedFilters,
-        req.body.chatMode,
-        req.body.attachments,
+        requestBody.query,
+        requestBody.appliedFilters,
+        requestBody.chatMode,
+        requestBody.attachments,
       );
 
       const userConversationData: Partial<IConversation> = {
         orgId,
         userId,
         initiator: userId,
-        title: req.body.query.slice(0, 100),
+        title: requestBody.query.slice(0, 100),
         messages: [userQueryMessage] as IMessageDocument[],
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
@@ -822,34 +965,36 @@ export const streamChat =
         `event: connected\ndata: ${JSON.stringify({
           message: 'SSE connection established',
           conversationId: newConversationId,
-          title: savedConversation.title || undefined,
+          title: savedConversation.title ?? undefined,
         })}\n\n`,
       );
-      (res as any).flush?.();
+      flushResponse(res);
 
-      const { chatMode, agentMode } = parseChatMode(req.body.chatMode);
+      const { chatMode, agentMode } = parseChatMode(requestBody.chatMode);
       // Prepare AI payload
       const aiPayload: Record<string, unknown> = {
-        query: req.body.query,
-        previousConversations: req.body.previousConversations || [],
-        recordIds: req.body.recordIds || [],
-        filters: req.body.filters || {},
-        attachments: req.body.attachments || [],
+        query: requestBody.query,
+        previousConversations: requestBody.previousConversations ?? [],
+        recordIds: requestBody.recordIds ?? [],
+        filters: requestBody.filters ?? {},
+        attachments: requestBody.attachments ?? [],
         // New fields for multi-model support
-        modelKey: req.body.modelKey || null,
-        modelName: req.body.modelName || null,
-        modelFriendlyName: req.body.modelFriendlyName || null,
+        modelKey: requestBody.modelKey ?? null,
+        modelName: requestBody.modelName ?? null,
+        modelFriendlyName: requestBody.modelFriendlyName ?? null,
         chatMode: chatMode,
-        conversationId: newConversationId || null,
-        timezone: req.body.timezone || null,
-        currentTime: req.body.currentTime || null,
+        conversationId: newConversationId !== '' ? newConversationId : null,
+        timezone: requestBody.timezone ?? null,
+        currentTime: requestBody.currentTime ?? null,
       };
       if (agentMode) {
-        assignToolsToPayload(aiPayload, req.body.tools);
+        assignToolsToPayload(aiPayload, requestBody.tools);
       }
 
       const aiCommandOptions: AICommandOptions = {
-        uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream` : `${appConfig.aiBackend}/api/v1/chat/stream`,
+        uri: agentMode
+          ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream`
+          : `${appConfig.aiBackend}/api/v1/chat/stream`,
         method: HttpMethod.POST,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -861,10 +1006,6 @@ export const streamChat =
       const stream = await startAIStream(aiCommandOptions, 'Chat Stream', {
         requestId,
       });
-
-      if (!stream) {
-        throw new Error('Failed to get stream from AI service');
-      }
 
       // Variables to collect complete response data
       let completeData: IAIResponse | null = null;
@@ -885,12 +1026,12 @@ export const streamChat =
 
         // Look for complete events in the buffer
         const events = buffer.split('\n\n');
-        buffer = events.pop() || ''; // Keep incomplete event in buffer
+        buffer = events.pop() ?? ''; // Keep incomplete event in buffer
 
         let filteredChunk = '';
 
         for (const event of events) {
-          if (event.trim()) {
+          if (event.trim() !== '') {
             // Check if this is a complete event
             const lines = event.split('\n');
             const eventType = lines
@@ -902,74 +1043,95 @@ export const streamChat =
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
 
-            if (eventType === 'complete' && dataLine) {
+            if (eventType === 'complete' && dataLine !== '') {
               try {
-                completeData = JSON.parse(dataLine);
+                completeData = JSON.parse(dataLine) as IAIResponse;
                 logger.debug('Captured complete event data from AI backend', {
                   requestId,
                   conversationId: savedConversation?._id,
                   answer: completeData?.answer,
-                  citationsCount: completeData?.citations?.length || 0,
+                  citationsCount: completeData?.citations?.length ?? 0,
                 });
                 // DO NOT forward the complete event from AI backend
                 // We'll send our own complete event after processing
-              } catch (parseError: any) {
+              } catch (parseError: unknown) {
                 logger.error('Failed to parse complete event data', {
                   requestId,
-                  parseError: parseError.message,
+                  parseError: getErrorMessage(parseError),
                   dataLine,
                 });
                 // Forward the event if we can't parse it
                 filteredChunk += event + '\n\n';
               }
-            } else if (eventType === 'error' && dataLine) {
+            } else if (eventType === 'error' && dataLine !== '') {
               try {
-                const errorData = JSON.parse(dataLine) as Record<string, unknown>;
+                const errorData = JSON.parse(dataLine) as Record<
+                  string,
+                  unknown
+                >;
                 const errorMessage =
-                  (typeof errorData.message === 'string' && errorData.message) ||
+                  (typeof errorData.message === 'string' &&
+                    errorData.message) ||
                   (typeof errorData.error === 'string' && errorData.error) ||
                   'Unknown error occurred';
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
                   const meta =
-                    errorData.metadata && typeof errorData.metadata === 'object'
-                      ? new Map(Object.entries(errorData.metadata as Record<string, unknown>))
+                    errorData.metadata !== undefined &&
+                    errorData.metadata !== null &&
+                    typeof errorData.metadata === 'object'
+                      ? new Map(
+                          Object.entries(
+                            errorData.metadata as Record<string, unknown>,
+                          ),
+                        )
                       : undefined;
                   void markConversationFailed(
-                    savedConversation as IConversationDocument,
+                    savedConversation,
                     errorMessage,
                     session,
                     'streaming_error',
-                    typeof errorData.stack === 'string' ? errorData.stack : undefined,
+                    typeof errorData.stack === 'string'
+                      ? errorData.stack
+                      : undefined,
                     meta,
-                  ).catch((markErr: any) => {
-                    logger.error('Failed to mark conversation from AI error SSE', {
-                      requestId,
-                      error: markErr?.message,
-                    });
+                  ).catch((markErr: unknown) => {
+                    logger.error(
+                      'Failed to mark conversation from AI error SSE',
+                      {
+                        requestId,
+                        error: getErrorMessage(markErr),
+                      },
+                    );
                   });
                 }
                 filteredChunk += event + '\n\n';
-              } catch (parseError: any) {
-                logger.error('Failed to parse error event data from AI stream', {
-                  requestId,
-                  parseError: parseError.message,
-                  dataLine,
-                });
+              } catch (parseError: unknown) {
+                logger.error(
+                  'Failed to parse error event data from AI stream',
+                  {
+                    requestId,
+                    parseError: getErrorMessage(parseError),
+                    dataLine,
+                  },
+                );
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
-                  const parseFailMsg = `Failed to parse error event: ${parseError.message}`;
+                  const parseFailMsg = `Failed to parse error event: ${getErrorMessage(parseError)}`;
                   void markConversationFailed(
-                    savedConversation as IConversationDocument,
+                    savedConversation,
                     parseFailMsg,
                     session,
                     'parse_error',
-                    parseError.stack,
-                  ).catch((markErr: any) => {
-                    logger.error('Failed to mark conversation after SSE parse error', {
-                      requestId,
-                      error: markErr?.message,
-                    });
+                    getErrorStack(parseError),
+                  ).catch((markErr: unknown) => {
+                    logger.error(
+                      'Failed to mark conversation after SSE parse error',
+                      {
+                        requestId,
+                        error: getErrorMessage(markErr),
+                      },
+                    );
                   });
                 }
                 filteredChunk += event + '\n\n';
@@ -993,10 +1155,16 @@ export const streamChat =
         try {
           // Save the complete conversation data to database
           if (completeData && savedConversation) {
+            const orgIdForSave =
+              orgId instanceof Types.ObjectId ? orgId.toString() : undefined;
+            if (orgIdForSave === undefined || orgIdForSave === '') {
+              throw new UnauthorizedError('Organization ID is required');
+            }
+
             const conversation = await saveCompleteConversation(
               savedConversation,
               completeData,
-              orgId,
+              orgIdForSave,
               session,
               modelInfo,
             );
@@ -1049,7 +1217,7 @@ export const streamChat =
 
           if (savedConversation) {
             await markConversationFailed(
-              savedConversation as IConversationDocument,
+              savedConversation,
               `Failed to save conversation: ${dbError.message}`,
               session,
               'database_error',
@@ -1075,7 +1243,7 @@ export const streamChat =
           // Mark conversation as failed
           if (savedConversation) {
             await markConversationFailed(
-              savedConversation as IConversationDocument,
+              savedConversation,
               `Stream error: ${error.message}`,
               session,
               'stream_error',
@@ -1104,7 +1272,7 @@ export const streamChat =
         // Mark conversation as failed if it was created
         if (savedConversation) {
           await markConversationFailed(
-            savedConversation as IConversationDocument,
+            savedConversation,
             error.message || 'Internal server error',
             session,
             'internal_error',
@@ -1241,7 +1409,6 @@ export const createConversation =
     if (req.body.query && typeof req.body.query === 'string') {
       validateNoXSS(req.body.query, 'query');
       validateNoFormatSpecifiers(req.body.query, 'query');
-
     } else if (!req.body.query) {
       throw new BadRequestError('Query is required');
     }
@@ -1358,7 +1525,7 @@ export const createConversation =
           throw new InternalServerError('Failed to update conversation');
         }
         const responseConversation = await attachPopulatedCitations(
-          updatedConversation._id as mongoose.Types.ObjectId,
+          updatedConversation._id,
           updatedConversation.toObject() as IConversation,
           citations,
           false,
@@ -1398,7 +1565,7 @@ export const createConversation =
             error: error.message,
           });
         }
-        if (error.cause && error.cause.code === 'ECONNREFUSED') {
+        if (error.cause?.code === 'ECONNREFUSED') {
           throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
         }
         throw error;
@@ -1531,7 +1698,6 @@ export const addMessage =
       if (req.body.query && typeof req.body.query === 'string') {
         validateNoXSS(req.body.query, 'query');
         validateNoFormatSpecifiers(req.body.query, 'query');
-        
       } else if (!req.body.query) {
         throw new BadRequestError('Query is required');
       }
@@ -1643,7 +1809,7 @@ export const addMessage =
                 conversationId: conversation._id,
               });
             }
-            if (error.cause && error.cause.code === 'ECONNREFUSED') {
+            if (error.cause?.code === 'ECONNREFUSED') {
               throw new InternalServerError(
                 AI_SERVICE_UNAVAILABLE_MESSAGE,
                 error,
@@ -1714,7 +1880,7 @@ export const addMessage =
 
           // Return the updated conversation with new messages.
           const responseConversation = await attachPopulatedCitations(
-            updatedConversation._id as mongoose.Types.ObjectId,
+            updatedConversation._id,
             updatedConversation.toObject() as IConversation,
             savedCitations,
             false,
@@ -1747,7 +1913,7 @@ export const addMessage =
               conversationId: conversation._id,
             });
           }
-          if (error.cause && error.cause.code === 'ECONNREFUSED') {
+          if (error.cause?.code === 'ECONNREFUSED') {
             throw new InternalServerError(
               AI_SERVICE_UNAVAILABLE_MESSAGE,
               error,
@@ -1796,7 +1962,8 @@ export const addMessage =
       if (session?.inTransaction()) {
         await session.abortTransaction();
       }
-      return next(error);
+      next(error);
+      return;
     } finally {
       if (session) {
         session.endSession();
@@ -1954,7 +2121,9 @@ export const addMessageStream =
       }
 
       const aiCommandOptions: AICommandOptions = {
-        uri: agentMode ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream` : `${appConfig.aiBackend}/api/v1/chat/stream`,
+        uri: agentMode
+          ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream`
+          : `${appConfig.aiBackend}/api/v1/chat/stream`,
         method: HttpMethod.POST,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -2057,7 +2226,7 @@ export const addMessageStream =
                 const errorMessage = `Failed to parse error event: ${parseError.message}`;
                 if (existingConversation) {
                   markConversationFailed(
-                    existingConversation as IConversationDocument,
+                    existingConversation,
                     errorMessage,
                     session,
                     'parse_error',
@@ -2187,7 +2356,7 @@ export const addMessageStream =
                 }
               }
 
-              if (error.cause && error.cause.code === 'ECONNREFUSED') {
+              if (error.cause?.code === 'ECONNREFUSED') {
                 throw new InternalServerError(
                   AI_SERVICE_UNAVAILABLE_MESSAGE,
                   error,
@@ -2196,32 +2365,32 @@ export const addMessageStream =
               throw error;
             }
           } else if (!upstreamAiErrorEventForwarded) {
-          // Mark as failed if no complete data received (and AI did not already send error SSE)
-          if (existingConversation) {
-            existingConversation.status = CONVERSATION_STATUS.FAILED;
-            existingConversation.failReason =
-              'No complete response received from AI service';
-            existingConversation.lastActivityAt = Date.now();
+            // Mark as failed if no complete data received (and AI did not already send error SSE)
+            if (existingConversation) {
+              existingConversation.status = CONVERSATION_STATUS.FAILED;
+              existingConversation.failReason =
+                'No complete response received from AI service';
+              existingConversation.lastActivityAt = Date.now();
 
-            const savedWithError = session
-              ? await existingConversation.save({ session })
-              : await existingConversation.save();
+              const savedWithError = session
+                ? await existingConversation.save({ session })
+                : await existingConversation.save();
 
-            if (!savedWithError) {
-              logger.error('Failed to save conversation error state', {
-                requestId,
-                conversationId: existingConversation._id,
-              });
+              if (!savedWithError) {
+                logger.error('Failed to save conversation error state', {
+                  requestId,
+                  conversationId: existingConversation._id,
+                });
+              }
             }
-          }
 
-          // Send error event
-          res.write(
-            `event: error\ndata: ${JSON.stringify({
-              error: 'No complete response received from AI service',
-            })}\n\n`,
-          );
-        }
+            // Send error event
+            res.write(
+              `event: error\ndata: ${JSON.stringify({
+                error: 'No complete response received from AI service',
+              })}\n\n`,
+            );
+          }
         } catch (dbError: any) {
           logger.error('Failed to save AI response to conversation', {
             requestId,
@@ -2246,7 +2415,7 @@ export const addMessageStream =
         try {
           if (existingConversation) {
             await markConversationFailed(
-              existingConversation as IConversationDocument,
+              existingConversation,
               error.message,
               session,
               'stream_error',
@@ -2498,7 +2667,7 @@ export const getConversationById = async (
         sharedWith: 1,
         status: 1,
         failReason: 1,
-        modelInfo:1,
+        modelInfo: 1,
       })
       .populate({
         path: 'messages.citations.citationId',
@@ -2633,7 +2802,7 @@ export const deleteConversationById = async (
 
       // Extract all citation IDs from messages
       const citationIds = conversation.messages
-        .filter((msg: IMessage) => msg.citations && msg.citations.length)
+        .filter((msg: IMessage) => msg.citations?.length)
         .flatMap((msg: IMessage) =>
           msg.citations?.map(
             (citation: IMessageCitation) => citation.citationId,
@@ -2722,7 +2891,7 @@ export const shareConversationById =
     const startTime = Date.now();
     let session: ClientSession | null = null;
     const { conversationId } = req.params;
-    let { userIds, accessLevel } = req.body;
+    const { userIds, accessLevel } = req.body;
     try {
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
@@ -3243,7 +3412,9 @@ async function regenerateAnswersInternal(
 
     // For the assistant (non-agent-key) path, detect universal agent mode from chatMode
     // so the regenerate request is routed to the correct backend endpoint and carries tools.
-    const { chatMode: parsedRegenChatMode, agentMode: regenIsAgentMode } = parseChatMode(req.body.chatMode);
+    const { chatMode: parsedRegenChatMode, agentMode: regenIsAgentMode } =
+      parseChatMode(req.body.chatMode);
+    const isUniversalAgentRegen = regenIsAgentMode && !agentKey;
 
     // Prepare AI payload
     const aiPayload: Record<string, unknown> = {
@@ -3260,11 +3431,11 @@ async function regenerateAnswersInternal(
       timezone: req.body.timezone || null,
       currentTime: req.body.currentTime || null,
     };
-    if (agentKey || regenIsAgentMode) {
+    if (regenIsAgentMode) {
       assignToolsToPayload(aiPayload, req.body.tools);
     }
 
-    const regenEndpoint = regenIsAgentMode
+    const regenEndpoint = isUniversalAgentRegen
       ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream`
       : config.buildAIEndpoint(appConfig, agentKey);
 
@@ -3369,7 +3540,7 @@ async function regenerateAnswersInternal(
               );
             }
 
-            if (error.cause && error.cause.code === 'ECONNREFUSED') {
+            if (error.cause?.code === 'ECONNREFUSED') {
               throw new InternalServerError(
                 AI_SERVICE_UNAVAILABLE_MESSAGE,
                 error,
@@ -3391,9 +3562,9 @@ async function regenerateAnswersInternal(
             );
 
             // Reload conversation to get updated state
-            const updatedConversation = await (config.conversationModel as any).findById(
-              conversationId || '',
-            );
+            const updatedConversation = await (
+              config.conversationModel as any
+            ).findById(conversationId || '');
             if (updatedConversation) {
               const plainConversation = updatedConversation.toObject();
               await sendSSEErrorEvent(
@@ -3413,14 +3584,11 @@ async function regenerateAnswersInternal(
           }
         }
       } catch (dbError: any) {
-        logger.error(
-          'Failed to save regenerated AI response to conversation',
-          {
-            requestId,
-            conversationId: existingConversation?._id,
-            error: dbError.message,
-          },
-        );
+        logger.error('Failed to save regenerated AI response to conversation', {
+          requestId,
+          conversationId: existingConversation?._id,
+          error: dbError.message,
+        });
 
         // Try to replace message with error if we have the index
         if (existingConversation && messageIndex >= 0) {
@@ -3436,9 +3604,9 @@ async function regenerateAnswersInternal(
             );
 
             // Reload conversation to get updated state
-            const updatedConversation = await (config.conversationModel as any).findById(
-              conversationId || '',
-            );
+            const updatedConversation = await (
+              config.conversationModel as any
+            ).findById(conversationId || '');
             if (updatedConversation) {
               const plainConversation = updatedConversation.toObject();
               await sendSSEErrorEvent(
@@ -3659,16 +3827,43 @@ export const updateTitle = async (
 };
 
 async function performFeedbackUpdate(params: {
-  model: mongoose.Model<any>;
-  query: Record<string, any>;
+  model: {
+    findOne: (
+      query: Record<string, unknown>,
+    ) => Promise<IConversationDocument | IAgentConversationDocument | null>;
+    findByIdAndUpdate: (
+      id: string,
+      update: mongoose.UpdateQuery<
+        IConversationDocument | IAgentConversationDocument
+      >,
+      options: {
+        new: true;
+        session?: ClientSession | null;
+        runValidators: true;
+      },
+    ) => Promise<IConversationDocument | IAgentConversationDocument | null>;
+  };
+  query: Record<string, unknown>;
   conversationId: string;
   messageId: string;
   userId: string;
-  body: any;
+  body: IFeedback;
   userAgent: string | undefined;
   session?: ClientSession | null;
-}): Promise<{ updatedConversation: any; feedbackEntry: any }> {
-  const { model, query, conversationId, messageId, userId, body, userAgent, session } = params;
+}): Promise<{
+  updatedConversation: IConversationDocument | IAgentConversationDocument;
+  feedbackEntry: IFeedback;
+}> {
+  const {
+    model,
+    query,
+    conversationId,
+    messageId,
+    userId,
+    body,
+    userAgent,
+    session,
+  } = params;
 
   const conversation = await model.findOne(query);
   if (!conversation) {
@@ -3686,10 +3881,12 @@ async function performFeedbackUpdate(params: {
     throw new BadRequestError('Feedback is only allowed for bot responses');
   }
 
-  const feedbackEntry = {
+  const feedbackEntry: IFeedback = {
     ...body,
-    feedbackProvider: userId,
-    timestamp: Date.now(),
+    feedbackProvider: Types.ObjectId.isValid(userId)
+      ? new Types.ObjectId(userId)
+      : undefined,
+    timestamp: new Date(),
     metrics: {
       timeToFeedback:
         Date.now() - Number(conversation.messages[messageIndex]?.createdAt),
@@ -3700,9 +3897,12 @@ async function performFeedbackUpdate(params: {
   };
 
   const updatePath = `messages.${messageIndex}.feedback`;
+  const conversationUpdate = {
+    $push: { [updatePath]: feedbackEntry },
+  } as mongoose.UpdateQuery<IConversationDocument | IAgentConversationDocument>;
   const updatedConversation = await model.findByIdAndUpdate(
     conversationId,
-    { $push: { [updatePath]: feedbackEntry } },
+    conversationUpdate,
     { new: true, session, runValidators: true },
   );
   if (!updatedConversation) {
@@ -3749,15 +3949,27 @@ export const updateFeedback = async (
     if (rsAvailable) {
       session = await mongoose.startSession();
       ({ updatedConversation, feedbackEntry } = await session.withTransaction(
-        () => performFeedbackUpdate({
-          model: Conversation, query, conversationId: conversationId!, messageId: messageId!,
-          userId: userId!, body: req.body, userAgent: req.headers['user-agent'], session,
-        }),
+        () =>
+          performFeedbackUpdate({
+            model: Conversation,
+            query,
+            conversationId: conversationId!,
+            messageId: messageId!,
+            userId: userId!,
+            body: req.body,
+            userAgent: req.headers['user-agent'],
+            session,
+          }),
       ));
     } else {
       ({ updatedConversation, feedbackEntry } = await performFeedbackUpdate({
-        model: Conversation, query, conversationId: conversationId!, messageId: messageId!,
-        userId: userId!, body: req.body, userAgent: req.headers['user-agent'],
+        model: Conversation,
+        query,
+        conversationId: conversationId!,
+        messageId: messageId!,
+        userId: userId!,
+        body: req.body,
+        userAgent: req.headers['user-agent'],
       }));
     }
 
@@ -4115,157 +4327,161 @@ export const listAllArchivesConversation = async (
 export const searchArchivedConversations =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-  const requestId = req.context?.requestId;
-  const startTime = Date.now();
-  try {
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
+    const requestId = req.context?.requestId;
+    const startTime = Date.now();
+    try {
+      const userId = req.user?.userId;
+      const orgId = req.user?.orgId;
 
-    if (!userId || !orgId) {
-      throw new BadRequestError('User ID and Organization ID are required');
-    }
+      if (!userId || !orgId) {
+        throw new BadRequestError('User ID and Organization ID are required');
+      }
 
-    const deletedAgentKeys = await fetchDeletedAgentKeysForUser(appConfig, req);
+      const deletedAgentKeys = await fetchDeletedAgentKeysForUser(
+        appConfig,
+        req,
+      );
 
-    // ── Search parameter (required) ────────────────────────────────
-    const rawSearch = req.query.search;
-    if (!rawSearch || typeof rawSearch !== 'string' || !rawSearch.trim()) {
-      throw new BadRequestError('search query parameter is required');
-    }
-    if (Array.isArray(rawSearch)) {
-      throw new BadRequestError('Search parameter must be a string, not an array');
-    }
-    const searchValue = rawSearch.trim();
-    validateNoXSS(searchValue, 'search parameter');
-    validateNoFormatSpecifiers(searchValue, 'search parameter');
-    if (searchValue.length > 1000) {
-      throw new BadRequestError('Search parameter too long (max 1000 characters)');
-    }
-    const escapedSearch = searchValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // ── Search parameter (required) ────────────────────────────────
+      const rawSearch = req.query.search;
+      if (!rawSearch || typeof rawSearch !== 'string' || !rawSearch.trim()) {
+        throw new BadRequestError('search query parameter is required');
+      }
+      if (Array.isArray(rawSearch)) {
+        throw new BadRequestError(
+          'Search parameter must be a string, not an array',
+        );
+      }
+      const searchValue = rawSearch.trim();
+      validateNoXSS(searchValue, 'search parameter');
+      validateNoFormatSpecifiers(searchValue, 'search parameter');
+      if (searchValue.length > 1000) {
+        throw new BadRequestError(
+          'Search parameter too long (max 1000 characters)',
+        );
+      }
+      const escapedSearch = searchValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-    // ── Pagination ─────────────────────────────────────────────────
-    const { skip, limit, page } = getPaginationParams(req);
+      // ── Pagination ─────────────────────────────────────────────────
+      const { skip, limit, page } = getPaginationParams(req);
 
-    logger.debug('Searching archived conversations (assistant + agent)', {
-      requestId,
-      userId,
-      search: searchValue,
-      page,
-      limit,
-    });
+      logger.debug('Searching archived conversations (assistant + agent)', {
+        requestId,
+        userId,
+        search: searchValue,
+        page,
+        limit,
+      });
 
-    // ── Shared base filter pieces ──────────────────────────────────
-    const orgOid = new mongoose.Types.ObjectId(`${orgId}`);
-    const userOid = new mongoose.Types.ObjectId(`${userId}`);
+      // ── Shared base filter pieces ──────────────────────────────────
+      const orgOid = new mongoose.Types.ObjectId(`${orgId}`);
+      const userOid = new mongoose.Types.ObjectId(`${userId}`);
 
-    const searchCondition = {
-      $or: [
-        { title: { $regex: escapedSearch, $options: 'i' } },
-        { 'messages.content': { $regex: escapedSearch, $options: 'i' } },
-      ],
-    };
+      const searchCondition = {
+        $or: [
+          { title: { $regex: escapedSearch, $options: 'i' } },
+          { 'messages.content': { $regex: escapedSearch, $options: 'i' } },
+        ],
+      };
 
-    // ── Assistant (Conversation) filter ─────────────────────────────
-    const assistantFilter: any = {
-      orgId: orgOid,
-      isDeleted: false,
-      isArchived: true,
-      archivedBy: { $exists: true },
-      $or: [
-        { userId: userOid },
-        {
-          $and: [
-            { 'sharedWith.userId': userOid },
-            { isShared: true },
-          ],
-        },
-      ],
-      $and: [searchCondition],
-    };
-
-    // ── Agent (AgentConversation) filter ─────────────────────────────
-    const agentFilter: any = {
-      orgId: orgOid,
-      isDeleted: false,
-      isArchived: true,
-      archivedBy: { $exists: true },
-      userId: userOid,
-      $and: [searchCondition],
-    };
-    if (deletedAgentKeys !== null) {
-      agentFilter.agentKey = { $nin: deletedAgentKeys };
-    }
-
-    // ── Execute queries: $unionWith aggregation + per-source counts ──
-    // $unionWith (Mongo 4.4+) merges both collections server-side so that
-    // sort, skip, and limit are pushed to MongoDB — avoiding unbounded
-    // in-memory loads when the search matches many documents.
-    const [aggregateResult, assistantCount, agentCount] = await Promise.all([
-      Conversation.aggregate([
-        { $match: assistantFilter },
-        { $addFields: { source: 'assistant' } },
-        {
-          $unionWith: {
-            coll: AgentConversation.collection.name,
-            pipeline: [
-              { $match: agentFilter },
-              { $addFields: { source: 'agent' } },
-            ],
+      // ── Assistant (Conversation) filter ─────────────────────────────
+      const assistantFilter: any = {
+        orgId: orgOid,
+        isDeleted: false,
+        isArchived: true,
+        archivedBy: { $exists: true },
+        $or: [
+          { userId: userOid },
+          {
+            $and: [{ 'sharedWith.userId': userOid }, { isShared: true }],
           },
+        ],
+        $and: [searchCondition],
+      };
+
+      // ── Agent (AgentConversation) filter ─────────────────────────────
+      const agentFilter: any = {
+        orgId: orgOid,
+        isDeleted: false,
+        isArchived: true,
+        archivedBy: { $exists: true },
+        userId: userOid,
+        $and: [searchCondition],
+      };
+      if (deletedAgentKeys !== null) {
+        agentFilter.agentKey = { $nin: deletedAgentKeys };
+      }
+
+      // ── Execute queries: $unionWith aggregation + per-source counts ──
+      // $unionWith (Mongo 4.4+) merges both collections server-side so that
+      // sort, skip, and limit are pushed to MongoDB — avoiding unbounded
+      // in-memory loads when the search matches many documents.
+      const [aggregateResult, assistantCount, agentCount] = await Promise.all([
+        Conversation.aggregate([
+          { $match: assistantFilter },
+          { $addFields: { source: 'assistant' } },
+          {
+            $unionWith: {
+              coll: AgentConversation.collection.name,
+              pipeline: [
+                { $match: agentFilter },
+                { $addFields: { source: 'agent' } },
+              ],
+            },
+          },
+          { $sort: { lastActivityAt: -1 } },
+          { $skip: skip },
+          { $limit: limit },
+          { $project: { messages: 0, __v: 0 } },
+        ]),
+        Conversation.countDocuments(assistantFilter),
+        AgentConversation.countDocuments(agentFilter),
+      ]);
+
+      const totalCount = assistantCount + agentCount;
+
+      // ── Tag and apply computed fields (bounded to `limit` docs) ──────
+      const paginatedResults = aggregateResult.map((c: any) => ({
+        ...addComputedFields(c as IConversation, userId),
+        archivedAt: c.updatedAt,
+        archivedBy: c.archivedBy,
+        source: c.source as 'assistant' | 'agent',
+        ...(c.source === 'agent' ? { agentKey: c.agentKey } : {}),
+      }));
+
+      const response = {
+        conversations: paginatedResults,
+        pagination: buildPaginationMetadata(totalCount, page, limit),
+        summary: {
+          totalMatches: totalCount,
+          assistantMatches: assistantCount,
+          agentMatches: agentCount,
+          searchQuery: searchValue,
         },
-        { $sort: { lastActivityAt: -1 } },
-        { $skip: skip },
-        { $limit: limit },
-        { $project: { messages: 0, __v: 0 } },
-      ]),
-      Conversation.countDocuments(assistantFilter),
-      AgentConversation.countDocuments(agentFilter),
-    ]);
+        meta: {
+          requestId,
+          timestamp: new Date().toISOString(),
+          duration: Date.now() - startTime,
+        },
+      };
 
-    const totalCount = assistantCount + agentCount;
-
-    // ── Tag and apply computed fields (bounded to `limit` docs) ──────
-    const paginatedResults = aggregateResult.map((c: any) => ({
-      ...addComputedFields(c as IConversation, userId),
-      archivedAt: c.updatedAt,
-      archivedBy: c.archivedBy,
-      source: c.source as 'assistant' | 'agent',
-      ...(c.source === 'agent' ? { agentKey: c.agentKey } : {}),
-    }));
-
-    const response = {
-      conversations: paginatedResults,
-      pagination: buildPaginationMetadata(totalCount, page, limit),
-      summary: {
+      logger.debug('Successfully searched archived conversations', {
+        requestId,
         totalMatches: totalCount,
         assistantMatches: assistantCount,
         agentMatches: agentCount,
-        searchQuery: searchValue,
-      },
-      meta: {
-        requestId,
-        timestamp: new Date().toISOString(),
         duration: Date.now() - startTime,
-      },
-    };
+      });
 
-    logger.debug('Successfully searched archived conversations', {
-      requestId,
-      totalMatches: totalCount,
-      assistantMatches: assistantCount,
-      agentMatches: agentCount,
-      duration: Date.now() - startTime,
-    });
-
-    res.status(HTTP_STATUS.OK).json(response);
-  } catch (error: any) {
-    logger.error('Error searching archived conversations', {
-      requestId,
-      message: 'Error searching archived conversations',
-      error: error.message,
-    });
-    next(error);
-  }
+      res.status(HTTP_STATUS.OK).json(response);
+    } catch (error: any) {
+      logger.error('Error searching archived conversations', {
+        requestId,
+        message: 'Error searching archived conversations',
+        error: error.message,
+      });
+      next(error);
+    }
   };
 
 export const search =
@@ -4304,14 +4520,14 @@ export const search =
         aiResponse =
           (await aiCommand.execute()) as AIServiceResponse<AiSearchResponse>;
       } catch (error: any) {
-        if (error.cause && error.cause.code === 'ECONNREFUSED') {
+        if (error.cause?.code === 'ECONNREFUSED') {
           throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
         }
         logger.error(' Failed error ', error);
         throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
       }
-      
-      if (!aiResponse || !aiResponse.data) {
+
+      if (!aiResponse?.data) {
         throw new InternalServerError('Failed to get response from AI service');
       }
       if (aiResponse.statusCode !== 200) {
@@ -4644,7 +4860,9 @@ export const unshareSearch =
     const { userIds } = req.body;
     try {
       if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-        throw new BadRequestError('userIds is required and must be a non-empty array');
+        throw new BadRequestError(
+          'userIds is required and must be a non-empty array',
+        );
       }
 
       const orgId = req.user?.orgId;
@@ -4933,7 +5151,7 @@ export const deleteSearchHistory = async (
 /////////////////////// AGENT ///////////////////////
 
 export const createAgent =
-  (appConfig: AppConfig) =>
+  (appConfig: AppConfig, agentScheduleService?: AgentScheduleService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     const requestId = req.context?.requestId;
     try {
@@ -4964,6 +5182,27 @@ export const createAgent =
       if (aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse, 'Create Agent');
       }
+      const createData = (aiResponse?.data ?? {}) as {
+        agent?: { _key?: string; id?: string };
+      };
+      const createdAgentKey = createData.agent?._key || createData.agent?.id;
+      if (
+        agentScheduleService &&
+        createdAgentKey &&
+        req.user?.orgId &&
+        req.user?.userId &&
+        req.user?.email
+      ) {
+        await agentScheduleService.syncAgentScheduleFromFlow(
+          createdAgentKey,
+          req.body?.flow,
+          {
+            orgId: String(req.user.orgId),
+            userId: String(req.user.userId),
+            email: String(req.user.email),
+          },
+        );
+      }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.CREATED).json(agent);
     } catch (error: any) {
@@ -4990,6 +5229,9 @@ export const getAgent =
       }
       if (!userId) {
         throw new BadRequestError('User ID is required');
+      }
+      if (!agentKey) {
+        throw new BadRequestError('Agent key is required');
       }
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}`,
@@ -5056,7 +5298,7 @@ export const checkServiceAccountAccess =
         return false;
       }
       if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse, 'Check Service Account Access');
+        throw handleBackendError(aiResponse.data, 'Check Service Account Access');
       }
       const response = aiResponse.data as { isServiceAccount: boolean };
       const serviceAccountResponse = response.isServiceAccount;
@@ -5105,7 +5347,10 @@ export const getWebSearchProviderUsage =
         message: 'Error checking web search provider usage',
         error: error.message,
       });
-      const backendError = handleBackendError(error, 'Web Search Provider Usage');
+      const backendError = handleBackendError(
+        error,
+        'Web Search Provider Usage',
+      );
       next(backendError);
     }
   };
@@ -5167,7 +5412,10 @@ export const listAgents =
         throw new BadRequestError('User ID is required');
       }
       // Forward pagination/search params
-      const { page, limit, search, sort_by, sort_order } = req.query as Record<string, string | undefined>;
+      const { page, limit, search, sort_by, sort_order } = req.query as Record<
+        string,
+        string | undefined
+      >;
       const queryParams = new URLSearchParams();
       if (page) queryParams.set('page', page);
       if (limit) queryParams.set('limit', limit);
@@ -5186,7 +5434,18 @@ export const listAgents =
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (!aiResponse || aiResponse.statusCode !== 200) {
-        res.status(HTTP_STATUS.OK).json({ success: true, agents: [], pagination: { currentPage: Number(page ?? 1), limit: Number(limit ?? 20), totalItems: 0, totalPages: 0, hasNext: false, hasPrev: false } });
+        res.status(HTTP_STATUS.OK).json({
+          success: true,
+          agents: [],
+          pagination: {
+            currentPage: Number(page ?? 1),
+            limit: Number(limit ?? 20),
+            totalItems: 0,
+            totalPages: 0,
+            hasNext: false,
+            hasPrev: false,
+          },
+        });
         return;
       }
       const responsePayload = aiResponse.data as Record<string, unknown>;
@@ -5217,7 +5476,7 @@ export const listAgents =
   };
 
 export const updateAgent =
-  (appConfig: AppConfig) =>
+  (appConfig: AppConfig, agentScheduleService?: AgentScheduleService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     const requestId = req.context?.requestId;
     try {
@@ -5229,6 +5488,9 @@ export const updateAgent =
       }
       if (!userId) {
         throw new BadRequestError('User ID is required');
+      }
+      if (!agentKey) {
+        throw new BadRequestError('Agent key is required');
       }
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}`,
@@ -5247,6 +5509,22 @@ export const updateAgent =
       if (aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse, 'Update Agent');
       }
+      if (
+        agentScheduleService &&
+        req.user?.orgId &&
+        req.user?.userId &&
+        req.user?.email
+      ) {
+        await agentScheduleService.syncAgentScheduleFromFlow(
+          agentKey,
+          req.body?.flow,
+          {
+            orgId: String(req.user.orgId),
+            userId: String(req.user.userId),
+            email: String(req.user.email),
+          },
+        );
+      }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agent);
     } catch (error: any) {
@@ -5261,7 +5539,7 @@ export const updateAgent =
   };
 
 export const deleteAgent =
-  (appConfig: AppConfig) =>
+  (appConfig: AppConfig, agentScheduleService?: AgentScheduleService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     const requestId = req.context?.requestId;
     try {
@@ -5273,6 +5551,9 @@ export const deleteAgent =
       }
       if (!userId) {
         throw new BadRequestError('User ID is required');
+      }
+      if (!agentKey) {
+        throw new BadRequestError('Agent key is required');
       }
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}`,
@@ -5290,6 +5571,9 @@ export const deleteAgent =
       if (aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse, 'Delete Agent');
       }
+      if (agentScheduleService) {
+        await agentScheduleService.removeSchedulesForAgent(agentKey);
+      }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agent);
     } catch (error: any) {
@@ -5303,14 +5587,152 @@ export const deleteAgent =
     }
   };
 
-  export const streamAgentConversation =
+  export const shareAgent =
   (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest | AuthenticatedServiceRequest, res: Response) => {
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const requestId = req.context?.requestId;
+    try {
+      const orgId = req.user?.orgId;
+      const userId = req.user?.userId;
+      const agentKey = req.params.agentKey;
+      if (!orgId) {
+        throw new BadRequestError('Organization ID is required');
+      }
+      if (!userId) {
+        throw new BadRequestError('User ID is required');
+      }
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/share`,
+        method: HttpMethod.POST,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+        body: req.body,
+      };
+      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponse = await aiCommand.execute();
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
+        throw handleBackendError(aiResponse.data, 'Share Agent');
+      }
+      const agent = aiResponse.data;
+      res.status(HTTP_STATUS.OK).json(agent);
+    } catch (error: any) {
+      logger.error('Error sharing agent', {
+        requestId,
+        message: 'Error sharing agent',
+        error: error.message,
+      });
+      const backendError = handleBackendError(error, 'Share Agent');
+      next(backendError);
+    }
+  };
+
+export const unshareAgent =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const requestId = req.context?.requestId;
+    try {
+      const orgId = req.user?.orgId;
+      const userId = req.user?.userId;
+      const agentKey = req.params.agentKey;
+      if (!orgId) {
+        throw new BadRequestError('Organization ID is required');
+      }
+      if (!userId) {
+        throw new BadRequestError('User ID is required');
+      }
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/unshare`,
+        method: HttpMethod.POST,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+        body: req.body,
+      };
+      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponse = await aiCommand.execute();
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
+        throw handleBackendError(aiResponse.data, 'Unshare Agent');
+      }
+      const agent = aiResponse.data;
+      res.status(HTTP_STATUS.OK).json(agent);
+    } catch (error: any) {
+      logger.error('Error unsharing agent', {
+        requestId,
+        message: 'Error unsharing agent',
+        error: error.message,
+      });
+      const backendError = handleBackendError(error, 'Unshare Agent');
+      next(backendError);
+    }
+  };
+
+  export const updateAgentPermissions =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const requestId = req.context?.requestId;
+    try {
+      const orgId = req.user?.orgId;
+      const userId = req.user?.userId;
+      const agentKey = req.params.agentKey;
+      if (!orgId) {
+        throw new BadRequestError('Organization ID is required');
+      }
+      if (!userId) {
+        throw new BadRequestError('User ID is required');
+      }
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/permissions`,
+        method: HttpMethod.PUT,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+        body: req.body,
+      };
+      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponse = await aiCommand.execute();
+      if (!aiResponse) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
+        throw handleBackendError(aiResponse.data, 'Update Agent Permissions');
+      }
+      const agent = aiResponse.data;
+      res.status(HTTP_STATUS.OK).json(agent);
+    } catch (error: any) {
+      logger.error('Error updating agent permissions', {
+        requestId,
+        message: 'Error updating agent permissions',
+        error: error.message,
+      });
+      const backendError = handleBackendError(
+        error,
+        'Update Agent Permissions',
+      );
+      next(backendError);
+    }
+  };
+
+export const streamAgentConversation =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+  ) => {
     const requestId = req.context?.requestId;
     const startTime = Date.now();
     let userId: Types.ObjectId | undefined;
     let orgId: Types.ObjectId | undefined;
-    if('user' in req) {
+    if ('user' in req) {
       const auth_req = req as AuthenticatedUserRequest;
       userId = auth_req.user?.userId;
       orgId = auth_req.user?.orgId;
@@ -5426,7 +5848,10 @@ export const deleteAgent =
       };
 
       assignToolsToPayload(aiPayload, req.body.tools);
-      assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
+      assignCallerContextToAiPayload(
+        aiPayload,
+        req.body as Record<string, unknown>,
+      );
 
       logger.info('aiPayload', aiPayload);
 
@@ -5509,52 +5934,71 @@ export const deleteAgent =
               }
             } else if (eventType === 'error' && dataLine) {
               try {
-                const errorData = JSON.parse(dataLine) as Record<string, unknown>;
+                const errorData = JSON.parse(dataLine) as Record<
+                  string,
+                  unknown
+                >;
                 const errorMessage =
-                  (typeof errorData.message === 'string' && errorData.message) ||
+                  (typeof errorData.message === 'string' &&
+                    errorData.message) ||
                   (typeof errorData.error === 'string' && errorData.error) ||
                   'Unknown error occurred';
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
                   const meta =
                     errorData.metadata && typeof errorData.metadata === 'object'
-                      ? new Map(Object.entries(errorData.metadata as Record<string, unknown>))
+                      ? new Map(
+                          Object.entries(
+                            errorData.metadata as Record<string, unknown>,
+                          ),
+                        )
                       : undefined;
                   void markAgentConversationFailed(
-                    savedConversation as IAgentConversationDocument,
+                    savedConversation,
                     errorMessage,
                     session,
                     'streaming_error',
-                    typeof errorData.stack === 'string' ? errorData.stack : undefined,
+                    typeof errorData.stack === 'string'
+                      ? errorData.stack
+                      : undefined,
                     meta,
                   ).catch((markErr: any) => {
-                    logger.error('Failed to mark agent conversation from AI error SSE', {
-                      requestId,
-                      error: markErr?.message,
-                    });
+                    logger.error(
+                      'Failed to mark agent conversation from AI error SSE',
+                      {
+                        requestId,
+                        error: markErr?.message,
+                      },
+                    );
                   });
                 }
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
-                logger.error('Failed to parse error event data from AI stream', {
-                  requestId,
-                  parseError: parseError.message,
-                  dataLine,
-                });
+                logger.error(
+                  'Failed to parse error event data from AI stream',
+                  {
+                    requestId,
+                    parseError: parseError.message,
+                    dataLine,
+                  },
+                );
                 upstreamAiErrorEventForwarded = true;
                 if (savedConversation) {
                   const parseFailMsg = `Failed to parse error event: ${parseError.message}`;
                   void markAgentConversationFailed(
-                    savedConversation as IAgentConversationDocument,
+                    savedConversation,
                     parseFailMsg,
                     session,
                     'parse_error',
                     parseError.stack,
                   ).catch((markErr: any) => {
-                    logger.error('Failed to mark agent conversation after SSE parse error', {
-                      requestId,
-                      error: markErr?.message,
-                    });
+                    logger.error(
+                      'Failed to mark agent conversation after SSE parse error',
+                      {
+                        requestId,
+                        error: markErr?.message,
+                      },
+                    );
                   });
                 }
                 filteredChunk += event + '\n\n';
@@ -5651,7 +6095,7 @@ export const deleteAgent =
           // Mark conversation as failed
           if (savedConversation) {
             await markAgentConversationFailed(
-              savedConversation as IAgentConversationDocument,
+              savedConversation,
               `Stream error: ${error.message}`,
               session,
             );
@@ -5679,7 +6123,7 @@ export const deleteAgent =
         // Mark conversation as failed if it was created
         if (savedConversation) {
           await markAgentConversationFailed(
-            savedConversation as IAgentConversationDocument,
+            savedConversation,
             error.message || 'Internal server error',
             session,
           );
@@ -5743,7 +6187,6 @@ export const createAgentConversation =
     if (req.body.query && typeof req.body.query === 'string') {
       validateNoXSS(req.body.query, 'query');
       validateNoFormatSpecifiers(req.body.query, 'query');
-
     } else if (!req.body.query) {
       throw new BadRequestError('Query is required');
     }
@@ -5792,7 +6235,10 @@ export const createAgentConversation =
         currentTime: req.body.currentTime || null,
         attachments: req.body.attachments || [],
       };
-      assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
+      assignCallerContextToAiPayload(
+        aiPayload,
+        req.body as Record<string, unknown>,
+      );
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
@@ -5905,7 +6351,7 @@ export const createAgentConversation =
             error: error.message,
           });
         }
-        if (error.cause && error.cause.code === 'ECONNREFUSED') {
+        if (error.cause?.code === 'ECONNREFUSED') {
           throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
         }
         throw error;
@@ -5968,7 +6414,7 @@ export const createAgentConversation =
     }
   };
 
-  export const addMessageToAgentConversation =
+export const addMessageToAgentConversation =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     const requestId = req.context?.requestId;
@@ -5986,7 +6432,6 @@ export const createAgentConversation =
       if (req.body.query && typeof req.body.query === 'string') {
         validateNoXSS(req.body.query, 'query');
         validateNoFormatSpecifiers(req.body.query, 'query');
-        
       } else if (!req.body.query) {
         throw new BadRequestError('Query is required');
       }
@@ -6071,27 +6516,30 @@ export const createAgentConversation =
             filters: req.body.filters,
           },
         });
-        
+
         const aiPayload: Record<string, unknown> = {
           query: req.body.query,
-            previousConversations: previousConversations,
-            filters: req.body.filters || {},
-            attachments: req.body.attachments || [],
-            // New fields for multi-model support
-            modelKey: req.body.modelKey || null,
-            modelName: req.body.modelName || null,
-            chatMode: req.body.chatMode || 'auto',
-            timezone: req.body.timezone || null,
-            currentTime: req.body.currentTime || null,
+          previousConversations: previousConversations,
+          filters: req.body.filters || {},
+          attachments: req.body.attachments || [],
+          // New fields for multi-model support
+          modelKey: req.body.modelKey || null,
+          modelName: req.body.modelName || null,
+          chatMode: req.body.chatMode || 'auto',
+          timezone: req.body.timezone || null,
+          currentTime: req.body.currentTime || null,
         };
         assignToolsToPayload(aiPayload, req.body.tools);
-        assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
+        assignCallerContextToAiPayload(
+          aiPayload,
+          req.body as Record<string, unknown>,
+        );
 
         const aiCommandOptions: AICommandOptions = {
           uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat`,
           method: HttpMethod.POST,
           headers: req.headers as Record<string, string>,
-          body: aiPayload
+          body: aiPayload,
         };
         try {
           const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
@@ -6119,7 +6567,7 @@ export const createAgentConversation =
                 conversationId: conversation._id,
               });
             }
-            if (error.cause && error.cause.code === 'ECONNREFUSED') {
+            if (error.cause?.code === 'ECONNREFUSED') {
               throw new InternalServerError(
                 AI_SERVICE_UNAVAILABLE_MESSAGE,
                 error,
@@ -6223,7 +6671,7 @@ export const createAgentConversation =
               conversationId: conversation._id,
             });
           }
-          if (error.cause && error.cause.code === 'ECONNREFUSED') {
+          if (error.cause?.code === 'ECONNREFUSED') {
             throw new InternalServerError(
               AI_SERVICE_UNAVAILABLE_MESSAGE,
               error,
@@ -6272,7 +6720,8 @@ export const createAgentConversation =
       if (session?.inTransaction()) {
         await session.abortTransaction();
       }
-      return next(error);
+      next(error);
+      return;
     } finally {
       if (session) {
         session.endSession();
@@ -6282,12 +6731,15 @@ export const createAgentConversation =
 
 export const addMessageStreamToAgentConversation =
   (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest | AuthenticatedServiceRequest, res: Response) => {
+  async (
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+  ) => {
     const requestId = req.context?.requestId;
     const startTime = Date.now();
     let userId: Types.ObjectId | undefined;
     let orgId: Types.ObjectId | undefined;
-    if('user' in req) {
+    if ('user' in req) {
       const auth_req = req as AuthenticatedUserRequest;
       userId = auth_req.user?.userId;
       orgId = auth_req.user?.orgId;
@@ -6443,7 +6895,10 @@ export const addMessageStreamToAgentConversation =
         conversationId: conversationId || null,
       };
       assignToolsToPayload(aiPayload, req.body.tools);
-      assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
+      assignCallerContextToAiPayload(
+        aiPayload,
+        req.body as Record<string, unknown>,
+      );
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat/stream`,
@@ -6548,7 +7003,7 @@ export const addMessageStreamToAgentConversation =
                 upstreamAiErrorEventForwarded = true;
                 if (existingConversation) {
                   markAgentConversationFailed(
-                    existingConversation as IAgentConversationDocument,
+                    existingConversation,
                     `Failed to parse error event: ${parseError.message}`,
                     session,
                     'parse_error',
@@ -6608,7 +7063,7 @@ export const addMessageStreamToAgentConversation =
               // Save the updated conversation with AI response
               const updatedConversation = session
                 ? await existingConversation.save({ session })
-                : ((await existingConversation.save()) as IAgentConversationDocument);
+                : await existingConversation.save();
 
               if (!updatedConversation) {
                 throw new InternalServerError(
@@ -6678,7 +7133,7 @@ export const addMessageStreamToAgentConversation =
                 }
               }
 
-              if (error.cause && error.cause.code === 'ECONNREFUSED') {
+              if (error.cause?.code === 'ECONNREFUSED') {
                 throw new InternalServerError(
                   AI_SERVICE_UNAVAILABLE_MESSAGE,
                   error,
@@ -6696,7 +7151,7 @@ export const addMessageStreamToAgentConversation =
 
               const savedWithError = session
                 ? await existingConversation.save({ session })
-                : ((await existingConversation.save()) as IAgentConversationDocument);
+                : await existingConversation.save();
 
               if (!savedWithError) {
                 logger.error('Failed to save conversation error state', {
@@ -6737,7 +7192,7 @@ export const addMessageStreamToAgentConversation =
         try {
           if (existingConversation) {
             markAgentConversationFailed(
-              existingConversation as IAgentConversationDocument,
+              existingConversation,
               error.message,
               session,
             );
@@ -7146,7 +7601,7 @@ export const deleteAgentConversationById = async (
       conversation,
     });
   } catch (error: any) {
-      logger.error('Error deleting conversation', {
+    logger.error('Error deleting conversation', {
       requestId,
       conversationId,
       error: error.message,
@@ -7359,79 +7814,82 @@ export const unarchiveAgentConversation = async (
   }
 };
 
-export const listAllArchivesAgentConversation = () =>
+export const listAllArchivesAgentConversation =
+  () =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-  const requestId = req.context?.requestId;
-  const startTime = Date.now();
-  try {
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
-    const { agentKey } = req.params;
+    const requestId = req.context?.requestId;
+    const startTime = Date.now();
+    try {
+      const userId = req.user?.userId;
+      const orgId = req.user?.orgId;
+      const { agentKey } = req.params;
 
-    logger.debug('Fetching all archived agent conversations', {
-      requestId,
-      userId,
-      agentKey,
-    });
-
-    const { skip, limit, page } = getPaginationParams(req);
-    const filter = {
-      ...buildAgentConversationFilter(req, orgId, userId, agentKey as string),
-      isArchived: true,
-      archivedBy: { $exists: true },
-    };
-    const sortOptions = buildSortOptions(req);
-
-    const [conversations, totalCount] = await Promise.all([
-      AgentConversation.find(filter)
-        .sort(sortOptions as any)
-        .skip(skip)
-        .limit(limit)
-        .select('-__v')
-        .select('-messages')
-        .lean()
-        .exec(),
-      AgentConversation.countDocuments(filter),
-    ]);
-
-    const processedConversations = conversations.map((conversation: any) => ({
-      ...addComputedFields(conversation as IAgentConversation, userId),
-      archivedAt: conversation.updatedAt,
-      archivedBy: conversation.archivedBy,
-    }));
-
-    logger.debug('Successfully fetched archived agent conversations', {
-      requestId,
-      count: conversations.length,
-      totalCount,
-      duration: Date.now() - startTime,
-    });
-
-    res.status(HTTP_STATUS.OK).json({
-      conversations: processedConversations,
-      pagination: buildPaginationMetadata(totalCount, page, limit),
-      filters: buildFiltersMetadata(filter, req.query),
-      summary: {
-        totalArchived: totalCount,
-        oldestArchive: processedConversations[0]?.archivedAt,
-        newestArchive: processedConversations[processedConversations.length - 1]?.archivedAt,
-      },
-      meta: {
+      logger.debug('Fetching all archived agent conversations', {
         requestId,
-        timestamp: new Date().toISOString(),
+        userId,
+        agentKey,
+      });
+
+      const { skip, limit, page } = getPaginationParams(req);
+      const filter = {
+        ...buildAgentConversationFilter(req, orgId, userId, agentKey as string),
+        isArchived: true,
+        archivedBy: { $exists: true },
+      };
+      const sortOptions = buildSortOptions(req);
+
+      const [conversations, totalCount] = await Promise.all([
+        AgentConversation.find(filter)
+          .sort(sortOptions as any)
+          .skip(skip)
+          .limit(limit)
+          .select('-__v')
+          .select('-messages')
+          .lean()
+          .exec(),
+        AgentConversation.countDocuments(filter),
+      ]);
+
+      const processedConversations = conversations.map((conversation: any) => ({
+        ...addComputedFields(conversation as IAgentConversation, userId),
+        archivedAt: conversation.updatedAt,
+        archivedBy: conversation.archivedBy,
+      }));
+
+      logger.debug('Successfully fetched archived agent conversations', {
+        requestId,
+        count: conversations.length,
+        totalCount,
         duration: Date.now() - startTime,
-      },
-    });
-  } catch (error: any) {
-    logger.error('Error fetching archived agent conversations', {
-      requestId,
-      message: 'Error fetching archived agent conversations',
-      error: error.message,
-      stack: error.stack,
-      duration: Date.now() - startTime,
-    });
-    next(error);
-  }
+      });
+
+      res.status(HTTP_STATUS.OK).json({
+        conversations: processedConversations,
+        pagination: buildPaginationMetadata(totalCount, page, limit),
+        filters: buildFiltersMetadata(filter, req.query),
+        summary: {
+          totalArchived: totalCount,
+          oldestArchive: processedConversations[0]?.archivedAt,
+          newestArchive:
+            processedConversations[processedConversations.length - 1]
+              ?.archivedAt,
+        },
+        meta: {
+          requestId,
+          timestamp: new Date().toISOString(),
+          duration: Date.now() - startTime,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Error fetching archived agent conversations', {
+        requestId,
+        message: 'Error fetching archived agent conversations',
+        error: error.message,
+        stack: error.stack,
+        duration: Date.now() - startTime,
+      });
+      next(error);
+    }
   };
 
 export const updateAgentConversationTitle = async (
@@ -7516,8 +7974,18 @@ export const updateAgentFeedback = async (
   let session: ClientSession | null = null;
   try {
     const { agentKey, conversationId, messageId } = req.params;
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
+    const userId = toIdentityString(req.user?.userId);
+    const orgId = toIdentityString(req.user?.orgId);
+    const feedbackBody: IFeedback =
+      typeof req.body === 'object' && req.body !== null
+        ? (req.body as IFeedback)
+        : {};
+
+    if (!conversationId || !messageId || !agentKey || !userId || !orgId) {
+      throw new BadRequestError(
+        'Conversation ID, message ID, agent key, user ID, and Organization ID are required',
+      );
+    }
 
     logger.debug('Attempting to update agent conversation feedback', {
       requestId,
@@ -7536,19 +8004,32 @@ export const updateAgentFeedback = async (
       isDeleted: false,
     };
 
-    let updatedConversation, feedbackEntry;
+    let updatedConversation: IConversationDocument | IAgentConversationDocument;
+    let feedbackEntry: IFeedback;
     if (rsAvailable) {
       session = await mongoose.startSession();
       ({ updatedConversation, feedbackEntry } = await session.withTransaction(
-        () => performFeedbackUpdate({
-          model: AgentConversation, query, conversationId: conversationId!, messageId: messageId!,
-          userId: userId!, body: req.body, userAgent: req.headers['user-agent'], session,
-        }),
+        () =>
+          performFeedbackUpdate({
+            model: AgentConversation,
+            query,
+            conversationId,
+            messageId,
+            userId,
+            body: feedbackBody,
+            userAgent: req.headers['user-agent'],
+            session,
+          }),
       ));
     } else {
       ({ updatedConversation, feedbackEntry } = await performFeedbackUpdate({
-        model: AgentConversation, query, conversationId: conversationId!, messageId: messageId!,
-        userId: userId!, body: req.body, userAgent: req.headers['user-agent'],
+        model: AgentConversation,
+        query,
+        conversationId,
+        messageId,
+        userId,
+        body: feedbackBody,
+        userAgent: req.headers['user-agent'],
       }));
     }
 
@@ -7571,12 +8052,15 @@ export const updateAgentFeedback = async (
     };
 
     res.status(200).json(response);
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const errorMessage =
+      error instanceof Error ? error.message : 'Unknown error';
+    const errorStack = error instanceof Error ? error.stack : undefined;
     logger.error('Error updating agent conversation feedback', {
       requestId,
       message: 'Error updating agent conversation feedback',
-      error: error.message,
-      stack: error.stack,
+      error: errorMessage,
+      stack: errorStack,
       duration: Date.now() - startTime,
     });
     next(error);
@@ -7586,6 +8070,77 @@ export const updateAgentFeedback = async (
     }
   }
 };
+
+export const getAvailableTools =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  const requestId = req.context?.requestId;
+  try {
+    const aiCommandOptions: AICommandOptions = {
+      uri: `${appConfig.aiBackend}/api/v1/tools/`,
+      method: HttpMethod.GET,
+      headers: {
+        ...(req.headers as Record<string, string>),
+        'Content-Type': 'application/json',
+      },
+    };
+    const aiCommand = new AIServiceCommand(aiCommandOptions);
+    const aiResponse = await aiCommand.execute();
+    if (!aiResponse) {
+      throw new InternalServerError('Failed to get response from AI service');
+    }
+    if (aiResponse.statusCode !== 200) {
+      throw handleBackendError(aiResponse.data, 'Get Available Tools');
+    }
+    const tools = aiResponse.data;
+    res.status(HTTP_STATUS.OK).json(tools);
+  } catch (error: any) {
+    logger.error('Error getting available tools', {
+      requestId,
+      message: 'Error getting available tools',
+      error: error.message,
+    });
+    const backendError = handleBackendError(error, 'Get Available Tools');
+    next(backendError);
+  }
+};
+
+export const getAgentPermissions =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  const requestId = req.context?.requestId;
+  const { agentKey } = req.params;
+
+  try {
+    const aiCommandOptions: AICommandOptions = {
+      uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/permissions`,
+      method: HttpMethod.GET,
+      headers: {
+        ...(req.headers as Record<string, string>),
+        'Content-Type': 'application/json',
+      },
+    };
+    const aiCommand = new AIServiceCommand(aiCommandOptions);
+    const aiResponse = await aiCommand.execute();
+    if (!aiResponse) {
+      throw new InternalServerError('Failed to get response from AI service');
+    }
+    if (aiResponse.statusCode !== 200) {
+      throw handleBackendError(aiResponse.data, 'Get Agent Permissions');
+    }
+    const permissions = aiResponse.data;
+    res.status(200).json(permissions);    
+  } catch (error: any) {
+    logger.error('Error getting agent permissions', {
+      requestId,
+      message: 'Error getting agent permissions',
+      error: error.message,
+    });
+    const backendError = handleBackendError(error, 'Get Agent Permissions');
+    next(backendError);
+  }
+};
+
 
 /**
  * GET /api/v1/agents/conversations/show/archives
@@ -7602,125 +8157,170 @@ export const updateAgentFeedback = async (
  */
 export const listAllAgentsArchivedConversationsGrouped =
   (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-  const requestId = req.context?.requestId;
-  const startTime = Date.now();
-  try {
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const requestId = req.context?.requestId;
+    const startTime = Date.now();
+    try {
+      const userId =
+        typeof req.user?.userId === 'string' ? req.user.userId : undefined;
+      const orgId =
+        typeof req.user?.orgId === 'string' ? req.user.orgId : undefined;
 
-    if (!userId || !orgId) {
-      throw new BadRequestError('User ID and Organization ID are required');
-    }
+      if (!userId || !orgId) {
+        throw new BadRequestError('User ID and Organization ID are required');
+      }
 
-    const deletedAgentKeys = await fetchDeletedAgentKeysForUser(appConfig, req);
+      const deletedAgentKeys = await fetchDeletedAgentKeysForUser(
+        appConfig,
+        req,
+      );
 
-    // Agent-level pagination params
-    const agentPage = Math.max(1, parseInt(req.query.agentPage as string, 10) || 1);
-    const agentLimit = Math.min(
-      100,
-      Math.max(1, parseInt(req.query.agentLimit as string, 10) || AGENT_ARCHIVES_INITIAL_AGENT_LIMIT),
-    );
-    const agentSkip = (agentPage - 1) * agentLimit;
+      const agentPageParam = req.query.agentPage;
+      const agentLimitParam = req.query.agentLimit;
+      const rawAgentPage =
+        typeof agentPageParam === 'string'
+          ? agentPageParam
+          : Array.isArray(agentPageParam)
+            ? (typeof agentPageParam[0] === 'string' ? agentPageParam[0] : '1')
+            : '1';
+      const rawAgentLimit =
+        typeof agentLimitParam === 'string'
+          ? agentLimitParam
+          : Array.isArray(agentLimitParam)
+            ? (typeof agentLimitParam[0] === 'string'
+                ? agentLimitParam[0]
+                : String(AGENT_ARCHIVES_INITIAL_AGENT_LIMIT))
+            : String(AGENT_ARCHIVES_INITIAL_AGENT_LIMIT);
 
-    logger.debug('Fetching all agents archived conversations (grouped)', {
-      requestId,
-      userId,
-      agentPage,
-      agentLimit,
-    });
+      // Agent-level pagination params
+      const agentPage = Math.max(1, parseInt(rawAgentPage, 10) || 1);
+      const agentLimit = Math.min(
+        100,
+        Math.max(
+          1,
+          parseInt(rawAgentLimit, 10) || AGENT_ARCHIVES_INITIAL_AGENT_LIMIT,
+        ),
+      );
+      const agentSkip = (agentPage - 1) * agentLimit;
 
-    const filter: Record<string, unknown> = {
-      orgId: new mongoose.Types.ObjectId(`${orgId}`),
-      $or: [{ userId: new mongoose.Types.ObjectId(`${userId}`) }],
-      isArchived: true,
-      archivedBy: { $exists: true },
-      isDeleted: false,
-    };
-    if (deletedAgentKeys !== null) {
-      filter.agentKey = { $nin: deletedAgentKeys };
-    }
-
-    // Amazon DocumentDB does not support the $facet stage (see AWS aggregation compatibility).
-    // Use a cheap count pipeline + the full data pipeline instead of $facet.
-    const [countRows, rawGroups] = await Promise.all([
-      AgentConversation.aggregate<{ totalAgentCount: number }>([
-        { $match: filter },
-        { $group: { _id: '$agentKey' } },
-        { $count: 'totalAgentCount' },
-      ]),
-      AgentConversation.aggregate([
-        { $match: filter },
-        // Sort by lastActivityAt desc — must match the per-agent archive endpoint's default sort
-        // so that the initial 5 chats here align with page 1 of the per-agent pagination
-        { $sort: { lastActivityAt: -1 as const } },
-        // Exclude heavy fields before grouping
-        { $project: { __v: 0, messages: 0 } },
-        {
-          $group: {
-            _id: '$agentKey',
-            conversations: { $push: '$$ROOT' },
-            totalCount: { $sum: 1 },
-            latestActivity: { $first: '$lastActivityAt' },
-          },
-        },
-        // Sort agent groups by most recent activity
-        { $sort: { latestActivity: -1 as const } },
-        { $skip: agentSkip },
-        { $limit: agentLimit },
-        {
-          $project: {
-            agentKey: '$_id',
-            conversations: { $slice: ['$conversations', AGENT_ARCHIVES_INITIAL_CHAT_LIMIT] },
-            totalCount: 1,
-          },
-        },
-      ]),
-    ]);
-
-    const totalAgentCount = countRows[0]?.totalAgentCount ?? 0;
-
-    // Apply computed fields (isOwner, accessLevel) to sliced conversations
-    const groups = rawGroups.map((g: any) => ({
-      agentKey: g.agentKey,
-      conversations: g.conversations.map((c: any) => ({
-        ...addComputedFields(c as IAgentConversation, userId),
-        archivedAt: c.updatedAt,
-        archivedBy: c.archivedBy,
-      })),
-      pagination: buildPaginationMetadata(g.totalCount, 1, AGENT_ARCHIVES_INITIAL_CHAT_LIMIT),
-    }));
-
-    logger.debug('Successfully fetched grouped archived agent conversations', {
-      requestId,
-      agentGroupCount: groups.length,
-      totalAgentCount,
-      duration: Date.now() - startTime,
-    });
-
-    res.status(HTTP_STATUS.OK).json({
-      groups,
-      agentPagination: {
-        page: agentPage,
-        limit: agentLimit,
-        totalCount: totalAgentCount,
-        totalPages: Math.ceil(totalAgentCount / agentLimit),
-        hasNextPage: agentPage * agentLimit < totalAgentCount,
-        hasPrevPage: agentPage > 1,
-      },
-      meta: {
+      logger.debug('Fetching all agents archived conversations (grouped)', {
         requestId,
-        timestamp: new Date().toISOString(),
+        userId,
+        agentPage,
+        agentLimit,
+      });
+
+      const filter: Record<string, unknown> = {
+        orgId: new mongoose.Types.ObjectId(orgId),
+        $or: [{ userId: new mongoose.Types.ObjectId(userId) }],
+        isArchived: true,
+        archivedBy: { $exists: true },
+        isDeleted: false,
+      };
+      if (deletedAgentKeys !== null) {
+        filter.agentKey = { $nin: deletedAgentKeys };
+      }
+
+      // Amazon DocumentDB does not support the $facet stage (see AWS aggregation compatibility).
+      // Use a cheap count pipeline + the full data pipeline instead of $facet.
+      const [countRows, rawGroups] = await Promise.all([
+        AgentConversation.aggregate<{ totalAgentCount: number }>([
+          { $match: filter },
+          { $group: { _id: '$agentKey' } },
+          { $count: 'totalAgentCount' },
+        ]),
+        AgentConversation.aggregate<{
+          agentKey: string;
+          conversations: IConversation[];
+          totalCount: number;
+        }>([
+          { $match: filter },
+          // Sort by lastActivityAt desc — must match the per-agent archive endpoint's default sort
+          // so that the initial 5 chats here align with page 1 of the per-agent pagination
+          { $sort: { lastActivityAt: -1 as const } },
+          // Exclude heavy fields before grouping
+          { $project: { __v: 0, messages: 0 } },
+          {
+            $group: {
+              _id: '$agentKey',
+              conversations: { $push: '$$ROOT' },
+              totalCount: { $sum: 1 },
+              latestActivity: { $first: '$lastActivityAt' },
+            },
+          },
+          // Sort agent groups by most recent activity
+          { $sort: { latestActivity: -1 as const } },
+          { $skip: agentSkip },
+          { $limit: agentLimit },
+          {
+            $project: {
+              agentKey: '$_id',
+              conversations: {
+                $slice: ['$conversations', AGENT_ARCHIVES_INITIAL_CHAT_LIMIT],
+              },
+              totalCount: 1,
+            },
+          },
+        ]),
+      ]);
+
+      const totalAgentCount = countRows[0]?.totalAgentCount ?? 0;
+
+      // Apply computed fields (isOwner, accessLevel) to sliced conversations
+      const groups = rawGroups.map((group) => ({
+        agentKey: group.agentKey,
+        conversations: group.conversations.map((conversation) => ({
+          ...addComputedFields(conversation, userId),
+          archivedAt: conversation.updatedAt,
+          archivedBy: conversation.archivedBy,
+        })),
+        pagination: buildPaginationMetadata(
+          group.totalCount,
+          1,
+          AGENT_ARCHIVES_INITIAL_CHAT_LIMIT,
+        ),
+      }));
+
+      logger.debug(
+        'Successfully fetched grouped archived agent conversations',
+        {
+          requestId,
+          agentGroupCount: groups.length,
+          totalAgentCount,
+          duration: Date.now() - startTime,
+        },
+      );
+
+      res.status(HTTP_STATUS.OK).json({
+        groups,
+        agentPagination: {
+          page: agentPage,
+          limit: agentLimit,
+          totalCount: totalAgentCount,
+          totalPages: Math.ceil(totalAgentCount / agentLimit),
+          hasNextPage: agentPage * agentLimit < totalAgentCount,
+          hasPrevPage: agentPage > 1,
+        },
+        meta: {
+          requestId,
+          timestamp: new Date().toISOString(),
+          duration: Date.now() - startTime,
+        },
+      });
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      logger.error('Error fetching grouped archived agent conversations', {
+        requestId,
+        error: errorMessage,
+        stack: errorStack,
         duration: Date.now() - startTime,
-      },
-    });
-  } catch (error: any) {
-    logger.error('Error fetching grouped archived agent conversations', {
-      requestId,
-      error: error.message,
-      stack: error.stack,
-      duration: Date.now() - startTime,
-    });
-    next(error);
-  }
-};
+      });
+      next(error);
+    }
+  };

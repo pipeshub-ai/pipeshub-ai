@@ -255,14 +255,17 @@ function clampedTextareaRows(text: string, min: number, max: number): number {
 }
 
 export function AgentCoreNode({
+  id,
   data,
   selected,
   readOnly,
+  onDelete,
 }: {
   id?: string;
   data: FlowNodeData;
   selected: boolean;
   readOnly?: boolean;
+  onDelete?: (nodeId: string) => void;
 }) {
   const { t } = useTranslation();
   const { setNodes } = useReactFlow();
@@ -298,6 +301,12 @@ export function AgentCoreNode({
     });
     return map;
   }, [data.id, storeEdges, storeNodes]);
+
+  const canDelete = useMemo(() => {
+    if (!id || readOnly || !onDelete) return false;
+    const agentCoreCount = storeNodes.filter((node) => node.data?.type === 'agent-core').length;
+    return agentCoreCount > 1;
+  }, [id, onDelete, readOnly, storeNodes]);
 
   const savePrompts = useCallback(() => {
     setNodes((nodes) =>
@@ -385,11 +394,26 @@ export function AgentCoreNode({
               </Text>
             </Flex>
           </Flex>
-          {!readOnly ? (
-            <IconButton size="2" variant="soft" color="gray" onClick={openPrompts} aria-label={t('agentBuilder.editPrompts')}>
-              <MaterialIcon name="edit" size={18} color="var(--agent-flow-text)" />
-            </IconButton>
-          ) : null}
+          <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+            {!readOnly ? (
+              <IconButton size="2" variant="soft" color="gray" onClick={openPrompts} aria-label={t('agentBuilder.editPrompts')}>
+                <MaterialIcon name="edit" size={18} color="var(--agent-flow-text)" />
+              </IconButton>
+            ) : null}
+            {canDelete ? (
+              <span className="flow-node-delete" style={{ flexShrink: 0 }}>
+                <IconButton
+                  size="2"
+                  variant="ghost"
+                  color="gray"
+                  onClick={() => onDelete?.(id)}
+                  aria-label={t('agentBuilder.removeNodeAriaLabel')}
+                >
+                  <MaterialIcon name="close" size={18} color="var(--agent-flow-text)" />
+                </IconButton>
+              </span>
+            ) : null}
+          </Flex>
         </Flex>
 
         <Box

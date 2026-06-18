@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import nock from 'nock'
 import {
   processUploadsInBackground,
   PlaceholderResultWithMetadata,
@@ -12,6 +13,8 @@ import { ConnectorServiceCommand } from '../../../../src/libs/commands/connector
 describe('Knowledge Base Utils - coverage', () => {
   afterEach(() => {
     sinon.restore()
+    nock.cleanAll()
+    nock.enableNetConnect()
   })
 
   describe('UPLOAD_STORAGE_CONCURRENCY constant', () => {
@@ -136,6 +139,7 @@ describe('Knowledge Base Utils - coverage', () => {
     const PY_URL = 'http://python/api/v1/kb/kb1/upload'
 
     beforeEach(() => {
+      nock.disableNetConnect()
       mockLogger = {
         info: sinon.stub(),
         debug: sinon.stub(),

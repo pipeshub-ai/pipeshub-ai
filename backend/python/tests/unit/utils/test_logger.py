@@ -3,6 +3,7 @@
 import logging
 import os
 import sys
+import tempfile
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -240,8 +241,9 @@ class TestCreateLogger:
         logger.handlers.clear()
 
     def test_logger_has_handlers(self):
-        with patch.dict(os.environ, {}, clear=False):
-            logger = create_logger("test_service_handlers")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("app.utils.logger.log_dir", tmpdir):
+                logger = create_logger("test_service_handlers")
         assert len(logger.handlers) >= 2  # file + console
         handler_types = [type(h) for h in logger.handlers]
         assert logging.FileHandler in handler_types
@@ -299,8 +301,9 @@ class TestCreateLogger:
         logger1.handlers.clear()
 
     def test_file_handler_uses_utf8(self):
-        with patch.dict(os.environ, {}, clear=False):
-            logger = create_logger("test_service_utf8")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("app.utils.logger.log_dir", tmpdir):
+                logger = create_logger("test_service_utf8")
         file_handlers = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
         assert len(file_handlers) >= 1
         assert file_handlers[0].encoding == "utf-8"
@@ -318,8 +321,9 @@ class TestCreateLogger:
         logger.handlers.clear()
 
     def test_file_handler_path(self):
-        with patch.dict(os.environ, {}, clear=False):
-            logger = create_logger("test_service_path")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("app.utils.logger.log_dir", tmpdir):
+                logger = create_logger("test_service_path")
         file_handlers = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
         assert len(file_handlers) >= 1
         assert "test_service_path.log" in file_handlers[0].baseFilename
@@ -361,6 +365,34 @@ class TestModuleLevelNeo4jBranch:
 
         # The level should remain INFO since it was not changed by the module
         assert neo4j_logger.level == logging.INFO
+
+
+class TestModuleLevelLogDirFallback:
+    """Cover log directory fallback when the configured path is not writable."""
+
+    def test_log_dir_falls_back_to_tmp_when_primary_creation_fails(self):
+        import importlib
+        import app.utils.logger as logger_mod
+
+        primary_dir = "/root/locked-logs"
+        fallback_dir = os.path.join("/tmp", "pipeshub-ai-logs")
+        real_makedirs = os.makedirs
+
+        def fake_makedirs(path, exist_ok=False):
+            if path == primary_dir:
+                raise OSError("permission denied")
+            return real_makedirs(path, exist_ok=exist_ok)
+
+        with patch.dict(os.environ, {"LOG_DIR": primary_dir}, clear=False), patch(
+            "os.makedirs",
+            side_effect=fake_makedirs,
+        ):
+            importlib.reload(logger_mod)
+
+        assert logger_mod.log_dir == fallback_dir
+
+        with patch.dict(os.environ, {"LOG_DIR": "logs"}, clear=False):
+            importlib.reload(logger_mod)
 
 
 # ---------------------------------------------------------------------------

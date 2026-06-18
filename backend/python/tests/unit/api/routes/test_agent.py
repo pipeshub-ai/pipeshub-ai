@@ -2309,7 +2309,7 @@ class TestAskAI:
     async def test_askAI_exception_raises_400(self) -> None:
         from fastapi import HTTPException
 
-        from app.api.routes.agent import ChatQuery, askAI
+        from app.api.routes.agent import AGENT_REQUEST_ERROR_DETAIL, ChatQuery, askAI
 
         services = self._make_services()
         query = ChatQuery(query="fail")
@@ -2321,6 +2321,7 @@ class TestAskAI:
             with pytest.raises(HTTPException) as exc:
                 await askAI(request, query)
             assert exc.value.status_code == 400
+            assert exc.value.detail == AGENT_REQUEST_ERROR_DETAIL
 
     @pytest.mark.asyncio
     async def test_askAI_http_exception_reraises(self) -> None:
@@ -2464,7 +2465,7 @@ class TestAskAIStream:
     async def test_generic_exception_raises_400(self) -> None:
         from fastapi import HTTPException
 
-        from app.api.routes.agent import ChatQuery, askAIStream
+        from app.api.routes.agent import AGENT_REQUEST_ERROR_DETAIL, ChatQuery, askAIStream
 
         services = {
             "retrieval_service": MagicMock(),
@@ -2484,6 +2485,7 @@ class TestAskAIStream:
             with pytest.raises(HTTPException) as exc:
                 await askAIStream(request, query)
             assert exc.value.status_code == 400
+            assert exc.value.detail == AGENT_REQUEST_ERROR_DETAIL
 
 
 # ===========================================================================
@@ -2526,7 +2528,7 @@ class TestStreamResponse:
 
     @pytest.mark.asyncio
     async def test_yields_error_on_exception(self) -> None:
-        from app.api.routes.agent import stream_response
+        from app.api.routes.agent import AGENT_STREAM_ERROR_MESSAGE, stream_response
 
         with patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock, side_effect=RuntimeError("graph error")):
 
@@ -2545,6 +2547,8 @@ class TestStreamResponse:
 
             assert len(chunks) == 1
             assert "event: error" in chunks[0]
+            assert AGENT_STREAM_ERROR_MESSAGE in chunks[0]
+            assert "graph error" not in chunks[0]
 
     @pytest.mark.asyncio
     async def test_unexpected_chunk_format(self) -> None:
@@ -3592,6 +3596,37 @@ class TestUpdateAgent:
             with pytest.raises(InvalidRequestError, match="At least one AI model"):
                 await update_agent(request, "a1")
 
+    @pytest.mark.asyncio
+    async def test_update_passes_orchestration_fields(self) -> None:
+        from app.api.routes.agent import update_agent
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
+        services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_edit": True})
+        services["graph_provider"].update_agent = AsyncMock(return_value=True)
+
+        request = MagicMock()
+        request.body = AsyncMock(return_value=json.dumps({
+            "orchestrationMode": "conditional",
+            "flowSchemaVersion": 3,
+            "flow": {
+                "nodes": [{"id": "cond-1", "data": {"type": "conditional-check"}}],
+                "edges": [],
+            },
+        }).encode())
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
+
+            result = await update_agent(request, "a1")
+
+        assert result.status_code == 200
+        update_body = services["graph_provider"].update_agent.await_args.args[1]
+        assert update_body["orchestrationMode"] == "conditional"
+        assert update_body["flowSchemaVersion"] == 3
+        assert update_body["flow"]["nodes"][0]["id"] == "cond-1"
+
 
 # ===========================================================================
 # Agent Chat endpoint tests
@@ -3782,6 +3817,48 @@ class TestAgentChat:
             result = await chat(request, "a1", query)
             assert result.status_code == 500
 
+    @pytest.mark.asyncio
+    async def test_chat_uses_conditional_orchestration_route(self) -> None:
+        from app.api.routes.agent import ChatQuery, chat
+
+        services = {
+            "graph_provider": AsyncMock(),
+            "retrieval_service": MagicMock(),
+            "reranker_service": MagicMock(),
+            "config_service": AsyncMock(),
+            "logger": MagicMock(),
+            "llm": MagicMock(),
+        }
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
+        services["graph_provider"].get_agent = AsyncMock(return_value={
+            "name": "A1",
+            "knowledge": [],
+            "toolsets": [],
+            "orchestrationMode": "conditional",
+            "flow": {
+                "nodes": [
+                    {"id": "agent-1", "data": {"type": "agent-core"}},
+                    {"id": "cond-1", "data": {"type": "conditional-check"}},
+                ],
+                "edges": [],
+            },
+        })
+
+        request = MagicMock()
+        query = ChatQuery(query="hello")
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
+             patch("app.api.routes.agent._run_conditional_agent_chain", new_callable=AsyncMock, return_value={"status": "success", "message": "conditional"}) as mock_run:
+
+            result = await chat(request, "a1", query)
+
+        assert result == {"status": "success", "message": "conditional"}
+        mock_run.assert_awaited_once()
+
 
 # ===========================================================================
 # Create agent with toolsets and knowledge
@@ -3843,6 +3920,41 @@ class TestCreateAgentWithToolsetsAndKnowledge:
                 await create_agent(request)
             assert exc.value.status_code == 500
             services["graph_provider"].rollback_transaction.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_persists_orchestration_fields(self) -> None:
+        from app.api.routes.agent import create_agent
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
+        services["graph_provider"].batch_upsert_nodes = AsyncMock(return_value=True)
+        services["graph_provider"].batch_create_edges = AsyncMock(return_value=True)
+        services["graph_provider"].commit_transaction = AsyncMock()
+
+        request = MagicMock()
+        body = json.dumps({
+            "name": "Orchestrated Agent",
+            "models": [{"modelKey": "mk1", "modelName": "mn1", "isReasoning": True}],
+            "orchestrationMode": "linear",
+            "flowSchemaVersion": 2,
+            "flow": {
+                "nodes": [{"id": "agent-1", "data": {"type": "agent-core"}}],
+                "edges": [],
+            },
+        })
+        request.body = AsyncMock(return_value=body.encode())
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
+
+            result = await create_agent(request)
+
+        assert result.status_code == 200
+        agent_nodes = services["graph_provider"].batch_upsert_nodes.await_args_list[0].args[0]
+        assert agent_nodes[0]["orchestrationMode"] == "linear"
+        assert agent_nodes[0]["flowSchemaVersion"] == 2
+        assert agent_nodes[0]["flow"]["nodes"][0]["id"] == "agent-1"
 
 
 # ===========================================================================
@@ -3956,6 +4068,51 @@ class TestChatStream:
 
             result = await chat_stream(request, "a1")
             assert isinstance(result, StreamingResponse)
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_uses_linear_orchestration_route(self) -> None:
+        from fastapi.responses import StreamingResponse
+
+        from app.api.routes.agent import chat_stream
+
+        services = {
+            "graph_provider": AsyncMock(),
+            "retrieval_service": MagicMock(),
+            "reranker_service": MagicMock(),
+            "config_service": AsyncMock(),
+            "logger": MagicMock(),
+            "llm": MagicMock(),
+        }
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
+        services["graph_provider"].get_agent = AsyncMock(return_value={
+            "name": "A1",
+            "knowledge": [],
+            "toolsets": [],
+            "models": ["mk1_mn1"],
+            "orchestrationMode": "linear",
+            "flow": {
+                "nodes": [{"id": "agent-1", "data": {"type": "agent-core"}}],
+                "edges": [],
+            },
+        })
+
+        async def fake_stream():
+            yield "event: token\ndata: {}\n\n"
+
+        request = MagicMock()
+        request.body = AsyncMock(return_value=b'{"query":"hello"}')
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
+             patch("app.api.routes.agent._stream_linear_agent_chain", return_value=fake_stream()) as mock_stream:
+
+            result = await chat_stream(request, "a1")
+
+        assert isinstance(result, StreamingResponse)
+        mock_stream.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_chat_stream_with_toolsets(self) -> None:

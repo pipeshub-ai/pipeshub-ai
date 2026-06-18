@@ -4,7 +4,12 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from bs4 import BeautifulSoup
-from html_to_markdown import convert
+from html_to_markdown import convert as _html_convert
+
+def convert(html: str) -> str:
+    """Wrap html_to_markdown.convert to return a plain string."""
+    result = _html_convert(html)
+    return result.content if hasattr(result, 'content') else str(result)
 
 from app.config.constants.ai_models import AzureDocIntelligenceModel, OCRProvider
 from app.config.constants.arangodb import (
