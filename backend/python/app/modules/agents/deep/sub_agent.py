@@ -55,6 +55,15 @@ _MAX_TOOL_CALLS_RETRIEVAL = 10
 # Constants — complex tasks (higher budgets for data-heavy work)
 _MAX_TOOL_CALLS_COMPLEX = 35
 
+# Wall-clock timeouts (seconds) — prevents indefinite hangs when the LLM API
+# stalls mid-response (e.g. overloaded API, massive context, network issues).
+# Tool call budgets limit the number of calls but NOT the time spent waiting
+# for any single LLM response, so a hard timeout is the safety net.
+_SIMPLE_AGENT_TIMEOUT_S = 120
+_RETRIEVAL_AGENT_TIMEOUT_S = 120
+_COMPLEX_AGENT_TIMEOUT_S = 300
+_MULTI_STEP_PER_STEP_TIMEOUT_S = 90
+
 # Display / truncation constants
 _TASK_DESC_DISPLAY_LEN = 80
 _TOOL_DESC_TRUNCATE_LEN = 300
@@ -532,15 +541,70 @@ async def _execute_simple_sub_agent(
 
         _rebind_tool_state(tools, state)
 
-        # Execute — no wall-clock timeout for deep agent; tool call budget
-        # (_ToolCallBudget) stops the agent after _MAX_TOOL_CALLS_PER_AGENT calls.
-        # Keepalive prevents proxy/nginx from closing the SSE connection during
-        # long-running API calls.
+        # Wall-clock timeout prevents indefinite hangs when the LLM API
+        # stalls. On timeout, we recover partial results from the streaming
+        # callback (tool calls that completed before the hang).
+        is_retrieval = any(d in ("retrieval", "knowledge") for d in task.get("domains", []))
+        timeout_s = _RETRIEVAL_AGENT_TIMEOUT_S if is_retrieval else _SIMPLE_AGENT_TIMEOUT_S
+
         keepalive_task = asyncio.create_task(
             send_keepalive(writer, config, task_display)
         )
         try:
-            result = await agent.ainvoke({"messages": messages}, config=agent_config)
+            result = await asyncio.wait_for(
+                agent.ainvoke({"messages": messages}, config=agent_config),
+                timeout=timeout_s,
+            )
+        except asyncio.TimeoutError:
+            log.warning(
+                "Sub-agent %s timed out after %ds — recovering partial results",
+                task_id, timeout_s,
+            )
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            partial_results = streaming_cb.collected_results
+            success_count = sum(1 for r in partial_results if r.get("status") == "success")
+            error_count = sum(1 for r in partial_results if r.get("status") == "error")
+
+            # Process buffered retrieval data so citations are still available
+            deep_buffer = state.pop("_deep_retrieval_buffer", None)
+            if deep_buffer:
+                for full_result in deep_buffer:
+                    try:
+                        from app.modules.agents.qna.nodes import _process_retrieval_output
+                        if isinstance(full_result, str):
+                            try:
+                                parsed = json.loads(full_result)
+                                _process_retrieval_output(parsed, state, log)
+                            except json.JSONDecodeError:
+                                _process_retrieval_output(full_result, state, log)
+                        elif isinstance(full_result, dict):
+                            _process_retrieval_output(full_result, state, log)
+                    except Exception as e:
+                        log.warning("Failed to process buffered retrieval on timeout: %s", e)
+
+            tool_results = [
+                {"tool_name": r["tool_name"], "status": r["status"], "result": r["output"]}
+                for r in partial_results
+            ]
+            task_status = "success" if success_count > 0 else "error"
+
+            log.info(
+                "Sub-agent %s: timeout recovery — %s (%d tools: %d ok, %d err) in %.0fms",
+                task_id, task_status, len(tool_results), success_count, error_count, duration_ms,
+            )
+            return {
+                **task,
+                "status": task_status,
+                "result": {
+                    "response": f"Task timed out after {timeout_s}s but collected partial results.",
+                    "tool_results": tool_results,
+                    "tool_count": len(tool_results),
+                    "success_count": success_count,
+                    "error_count": error_count,
+                },
+                "error": None if task_status == "success" else f"Timed out after {timeout_s}s with no successful tool calls",
+                "duration_ms": duration_ms,
+            }
         finally:
             keepalive_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -741,15 +805,42 @@ async def _execute_complex_sub_agent(
 
     _rebind_tool_state(tools, state)
 
-    # Execute — no wall-clock timeout for deep agent; tool call budget
-    # (_ToolCallBudget) stops the agent after _MAX_TOOL_CALLS_COMPLEX calls.
-    # Keepalive prevents proxy/nginx from closing the SSE connection during
-    # long-running API calls (Phase 1 can run 60-180+ seconds).
+    # Wall-clock timeout for Phase 1 fetch — prevents indefinite hangs.
     keepalive_task = asyncio.create_task(
         send_keepalive(writer, config, f"Fetching {domain_name} data...")
     )
     try:
-        result = await agent.ainvoke({"messages": messages}, config=agent_config)
+        result = await asyncio.wait_for(
+            agent.ainvoke({"messages": messages}, config=agent_config),
+            timeout=_COMPLEX_AGENT_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        log.warning(
+            "Complex sub-agent %s Phase 1 timed out after %ds — recovering partial results",
+            task_id, _COMPLEX_AGENT_TIMEOUT_S,
+        )
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        partial_results = streaming_cb.collected_results
+        success_count = sum(1 for r in partial_results if r.get("status") == "success")
+        error_count = sum(1 for r in partial_results if r.get("status") == "error")
+        tool_results = [
+            {"tool_name": r["tool_name"], "status": r["status"], "result": r["output"]}
+            for r in partial_results
+        ]
+        task_status = "success" if success_count > 0 else "error"
+        return {
+            **task,
+            "status": task_status,
+            "result": {
+                "response": f"Phase 1 fetch timed out after {_COMPLEX_AGENT_TIMEOUT_S}s but collected partial results.",
+                "tool_results": tool_results,
+                "tool_count": len(tool_results),
+                "success_count": success_count,
+                "error_count": error_count,
+            },
+            "error": None if task_status == "success" else f"Timed out after {_COMPLEX_AGENT_TIMEOUT_S}s",
+            "duration_ms": duration_ms,
+        }
     finally:
         keepalive_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -1080,8 +1171,7 @@ async def _execute_multi_step_sub_agent(
 
             _rebind_tool_state(tools, state)
 
-            # No wall-clock timeout — budget per step limits tool calls.
-            # Keepalive prevents proxy timeout during each step's execution.
+            # Wall-clock timeout per step prevents indefinite hangs.
             keepalive_task = asyncio.create_task(
                 send_keepalive(
                     writer, config,
@@ -1089,7 +1179,24 @@ async def _execute_multi_step_sub_agent(
                 )
             )
             try:
-                result = await agent.ainvoke({"messages": messages}, config=agent_config)
+                result = await asyncio.wait_for(
+                    agent.ainvoke({"messages": messages}, config=agent_config),
+                    timeout=_MULTI_STEP_PER_STEP_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                log.warning(
+                    "Multi-step %s step %d timed out after %ds",
+                    task_id, step_num, _MULTI_STEP_PER_STEP_TIMEOUT_S,
+                )
+                step_results.append(
+                    f"Step {step_num} timed out after {_MULTI_STEP_PER_STEP_TIMEOUT_S}s"
+                )
+                partial = streaming_cb.collected_results
+                all_tool_results.extend([
+                    {"tool_name": r["tool_name"], "status": r["status"], "result": r["output"]}
+                    for r in partial
+                ])
+                continue
             finally:
                 keepalive_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):

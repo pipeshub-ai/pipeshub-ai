@@ -76,6 +76,10 @@ _TOOL_LOG_LIMIT = 5
 _PARAM_DESC_TRUNCATE = 60
 _REASONING_DISPLAY_LEN = 200
 
+# Wall-clock timeout (seconds) for the ReAct agent's ainvoke call.
+# Prevents indefinite hangs when the LLM API stalls mid-response.
+_REACT_AGENT_TIMEOUT_S = 180
+
 # Orchestration status taxonomy (metadata fields on tool result dicts)
 ORCHESTRATION_STATUS_RESOLVED = "resolved"
 ORCHESTRATION_STATUS_PARTIAL = "partial_failure"
@@ -7894,6 +7898,7 @@ class _ToolStreamingCallback(AsyncCallbackHandler):
         self.config = config
         self.log = log
         self._tool_names: dict[str, str] = {}  # run_id -> tool_name
+        self.collected_results: list[dict[str, Any]] = []
 
     def _write_event(self, event_data: dict[str, Any]) -> bool:
         """Write event to the outer graph's stream with context restoration."""
@@ -7924,6 +7929,12 @@ class _ToolStreamingCallback(AsyncCallbackHandler):
         tool_status = _detect_tool_result_status(output)
         result_preview = str(output)[:MAX_TOOL_RESULT_PREVIEW_LENGTH]
         self.log.info(f"Streaming tool end: {tool_name} -> {tool_status}")
+
+        self.collected_results.append({
+            "tool_name": tool_name,
+            "status": tool_status,
+            "result": output,
+        })
 
         if tool_status == "error":
             action_readable = tool_name.split(".", 1)[-1].replace("_", " ")
@@ -8044,10 +8055,75 @@ async def react_agent_node(
             send_keepalive(writer, config, "Processing with tools...")
         )
         try:
-            result = await agent.ainvoke(
-                {"messages": messages},
-                config=agent_config,
+            result = await asyncio.wait_for(
+                agent.ainvoke(
+                    {"messages": messages},
+                    config=agent_config,
+                ),
+                timeout=_REACT_AGENT_TIMEOUT_S,
             )
+        except asyncio.TimeoutError:
+            log.warning(
+                "ReAct agent timed out after %ds — recovering partial results from %d tool calls",
+                _REACT_AGENT_TIMEOUT_S, len(streaming_cb.collected_results),
+            )
+            # Build tool_results from the streaming callback's collected data
+            for r in streaming_cb.collected_results:
+                tool_name = r["tool_name"]
+                result_content = r["result"]
+
+                if isinstance(result_content, str):
+                    try:
+                        result_content = json.loads(result_content)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+
+                if "retrieval" in tool_name.lower():
+                    _process_retrieval_output(result_content, state, log)
+
+                tool_results.append({
+                    "tool_name": tool_name,
+                    "status": r["status"],
+                    "result": result_content,
+                    "tool_call_id": None,
+                })
+
+            # Set state for respond_node with partial results
+            success_count = sum(1 for r in tool_results if r.get("status") == "success")
+            error_count = sum(1 for r in tool_results if r.get("status") == "error")
+            total_tools = len(tool_results)
+
+            if success_count > 0:
+                reflection_decision = "respond_success"
+                reflection_reasoning = (
+                    f"ReAct agent timed out after {_REACT_AGENT_TIMEOUT_S}s but "
+                    f"{success_count}/{total_tools} tool calls had already succeeded."
+                )
+            else:
+                reflection_decision = "respond_error"
+                reflection_reasoning = f"ReAct agent timed out after {_REACT_AGENT_TIMEOUT_S}s with no successful tool calls."
+
+            state["response"] = ""
+            state["tool_results"] = tool_results
+            state["all_tool_results"] = tool_results
+            state["reflection_decision"] = reflection_decision
+            state["reflection"] = {
+                "decision": reflection_decision,
+                "confidence": "Medium",
+                "reasoning": reflection_reasoning,
+            }
+
+            execution_plan = state.get("execution_plan") or {}
+            execution_plan["can_answer_directly"] = False
+            state["execution_plan"] = execution_plan
+
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            log.info(
+                "⚡ ReAct Agent (timeout recovery): %.0fms, %d tool calls "
+                "(%d success, %d errors)",
+                duration_ms, total_tools, success_count, error_count,
+            )
+            return state
         finally:
             keepalive_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
