@@ -240,6 +240,16 @@ class GetMeetingsInput(BaseModel):
         "Allowed values: 'recurring' or 'one_time'. "
         "Only include this field if the user explicitly asks for recurring meetings or one-time meetings. "
         "Otherwise omit this field.")
+    timezone: Optional[str] = Field(
+        default=None,
+        description=(
+            "User's timezone for returned meeting datetimes. "
+            "Accepts IANA names (e.g. 'Asia/Kolkata', 'America/New_York') or "
+            "Windows names (e.g. 'India Standard Time'). "
+            "Always pass the user's timezone from the system prompt so meeting "
+            "times are returned in the user's local time, not UTC."
+        ),
+    )
     top: Optional[int] = Field(
         default=100,
         description="Maximum number of meetings to return (default 100, max 1000).",
@@ -274,6 +284,38 @@ class GetMeetingTranscriptsInput(BaseModel):
             "The calendar event ID. Used as fallback when join_url is not available. "
             "The tool will fetch the event to extract joinUrl automatically."
         ),
+    )
+
+
+class FindMeetingByNameInput(BaseModel):
+    """Schema for finding a meeting by its name/subject.
+
+    Searches calendar events by partial subject match. Defaults to a
+    180-day lookback so the user does not need to provide exact dates.
+    """
+    meeting_name: str = Field(
+        description=(
+            "The meeting name or keyword to search for in the subject. "
+            "Case-insensitive partial match."
+        ),
+    )
+    start_datetime: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional start of the search window (ISO 8601). "
+            "Defaults to 180 days ago if not provided."
+        ),
+    )
+    end_datetime: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional end of the search window (ISO 8601). "
+            "Defaults to now if not provided."
+        ),
+    )
+    top: Optional[int] = Field(
+        default=20,
+        description="Maximum number of matching meetings to return (default 20).",
     )
 
 class GetPeopleAttendedInput(BaseModel):
@@ -314,7 +356,7 @@ class CreateEventInput(BaseModel):
     body: Optional[str] = Field(default=None, description="Body/description of the event")
     location: Optional[str] = Field(default=None, description="Location of the event")
     attendees: Optional[List[str]] = Field(default=None, description="List of attendee email addresses")
-    is_online_meeting: Optional[bool] = Field(default=False, description="Whether to create an online meeting link")
+    is_online_meeting: Optional[bool] = Field(default=True, description="Whether to create an online meeting link (defaults to True for Teams meetings)")
     recurrence: Optional[Dict[str, Any]] = Field(
         default=None,
         description=(
@@ -1338,6 +1380,7 @@ class Teams:
         is_deleted: Optional[bool] = None,
         is_cancelled: Optional[bool] = None,
         meeting_type: Optional[str] = None,
+        timezone: Optional[str] = None,
         top: Optional[int] = 100,
     ) -> tuple[bool, str]:
         try:
@@ -1349,6 +1392,7 @@ class Teams:
             logger.info(f"is_deleted: {is_deleted} | type: {type(is_deleted)}")
             logger.info(f"is_cancelled: {is_cancelled} | type: {type(is_cancelled)}")
             logger.info(f"meeting_type: {meeting_type} | type: {type(meeting_type)}")
+            logger.info(f"timezone: {timezone} | type: {type(timezone)}")
             logger.info(f"top: {top} | type: {type(top)}")
 
             logger.info("===============================================")
@@ -1358,6 +1402,7 @@ class Teams:
                 is_deleted=is_deleted,
                 is_cancelled=is_cancelled,
                 meeting_type=meeting_type,
+                timezone=timezone,
                 top=top or 100,
             )
             if response.success:
@@ -1375,6 +1420,8 @@ class Teams:
                         continue
                     meeting_id = meeting.get("meeting_id") or meeting.get("online_meeting_id") 
                     meeting["meeting_id"] = meeting_id
+                    join_url = meeting.get("teams_join_url") or meeting.get("join_url") or ""
+                    meeting["join_url"] = join_url
                     normalized_meetings.append(meeting)
 
                 return True, json.dumps({
@@ -1603,8 +1650,100 @@ class Teams:
             print(f"[search_calendar_events_in_range] exception: {e!r}")
             return self._handle_error(e, "search calendar events in range")
 
+    @tool(
+        app_name="teams",
+        tool_name="find_meeting_by_name",
+        description=(
+            "Find a Teams meeting by its name/subject. Searches calendar events "
+            "by partial subject match over a wide date range (default 180 days). "
+            "Returns matching meetings with their IDs, join URLs, and dates — "
+            "ready for transcript or attendance lookups."
+        ),
+        args_schema=FindMeetingByNameInput,
+        when_to_use=[
+            "User provides a meeting name and wants to find it",
+            "User wants transcript/details of a meeting identified by name",
+            "User asks 'find the sprint planning meeting'",
+        ],
+        when_not_to_use=[
+            "User already has the meeting ID or join URL",
+            "User wants to list all meetings in a date range (use get_meetings)",
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Find the sprint planning meeting",
+            "Get me the quarterly review meeting from last month",
+            "Look up the onboarding session meeting",
+        ],
+        category=ToolCategory.SEARCH,
+    )
+    async def find_meeting_by_name(
+        self,
+        meeting_name: str,
+        start_datetime: Optional[str] = None,
+        end_datetime: Optional[str] = None,
+        top: Optional[int] = 20,
+    ) -> tuple[bool, str]:
+        """Find meetings by partial subject match over a wide lookback window."""
+        from datetime import datetime, timedelta, timezone
 
+        try:
+            meeting_name = meeting_name.strip()
+            if not meeting_name:
+                return False, json.dumps({"error": "meeting_name cannot be empty."})
 
+            now = datetime.now(timezone.utc)
+            if not end_datetime:
+                end_datetime = now.strftime("%Y-%m-%dT%H:%M:%S")
+            if not start_datetime:
+                start_datetime = (now - timedelta(days=180)).strftime("%Y-%m-%dT%H:%M:%S")
+
+            resp = await self.client.me_search_events_in_range(
+                keyword=meeting_name.replace("'", "''"),
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+                top=top or 20,
+            )
+
+            if not resp.success:
+                return False, json.dumps({
+                    "error": resp.error or "Failed to search for meeting by name",
+                })
+
+            data = self._serialize_response(resp.data)
+            events = (
+                data.get("value", []) if isinstance(data, dict)
+                else (data if isinstance(data, list) else [])
+            )
+
+            results = []
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                join_url = event.get("teams_join_url") or event.get("join_url") or ""
+                results.append({
+                    "event_id": event.get("id"),
+                    "meeting_id": event.get("meeting_id") or event.get("online_meeting_id"),
+                    "subject": event.get("subject"),
+                    "start": event.get("start"),
+                    "end": event.get("end"),
+                    "join_url": join_url,
+                    "is_online_meeting": event.get("is_online_meeting"),
+                    "organizer": event.get("organizer"),
+                })
+
+            return True, json.dumps({
+                "results": results,
+                "count": len(results),
+                "search_term": meeting_name,
+                "search_window": {
+                    "start": start_datetime,
+                    "end": end_datetime,
+                },
+            })
+
+        except Exception as e:
+            return self._handle_error(e, "find meeting by name")
 
     @tool(
         app_name="teams",
@@ -1680,7 +1819,9 @@ class Teams:
 
             
 
-            # Step 3: Fetch metadataContent for each transcript
+            # Step 3: Fetch transcript content for each transcript
+            # Strategy: try VTT /content first (actual transcript text),
+            # fall back to metadataContent (speaker diarization JSON).
             all_transcripts = []
             for t_obj in transcript_items:
                 t_id = (
@@ -1695,25 +1836,50 @@ class Teams:
                     else (t_obj.get("createdDateTime") if isinstance(t_obj, dict) else None)
                 )
 
-                parsed_entries = []
-                meta_resp = await self.client.me_get_online_meeting_transcript_metadata(
-                    onlineMeeting_id=resolved_meeting_id,
-                    callTranscript_id=t_id,
-                )
-                if meta_resp.success:
-                    meta_data = self._serialize_response(meta_resp.data) if meta_resp.data else {}
-                    meta_text = meta_data.get("content", "") if isinstance(meta_data, dict) else ""
-                    if meta_text:
-                        parsed_entries = self._parse_metadata_json(meta_text)
+                parsed_entries: List[Dict[str, str]] = []
+                content_format = "none"
+
+                # Primary: VTT content — the actual transcript text
+                try:
+                    vtt_resp = await self.client.me_get_online_meeting_transcript_content(
+                        onlineMeeting_id=resolved_meeting_id,
+                        callTranscript_id=t_id,
+                    )
+                    if vtt_resp.success:
+                        vtt_data = self._serialize_response(vtt_resp.data) if vtt_resp.data else {}
+                        vtt_text = vtt_data.get("content", "") if isinstance(vtt_data, dict) else ""
+                        if vtt_text and vtt_text.strip().startswith("WEBVTT"):
+                            parsed_entries = self._parse_vtt(vtt_text)
+                            if parsed_entries:
+                                content_format = "vtt"
+                except Exception:
+                    pass
+
+                # Fallback: metadataContent — speaker diarization JSON
+                if not parsed_entries:
+                    try:
+                        meta_resp = await self.client.me_get_online_meeting_transcript_metadata(
+                            onlineMeeting_id=resolved_meeting_id,
+                            callTranscript_id=t_id,
+                        )
+                        if meta_resp.success:
+                            meta_data = self._serialize_response(meta_resp.data) if meta_resp.data else {}
+                            meta_text = meta_data.get("content", "") if isinstance(meta_data, dict) else ""
+                            if meta_text:
+                                parsed_entries = self._parse_metadata_json(meta_text)
+                                if parsed_entries:
+                                    content_format = "metadata_json"
+                    except Exception:
+                        pass
 
                 all_transcripts.append({
                     "transcript_id": t_id,
                     "created": created,
                     "entries": parsed_entries,
                     "entry_count": len(parsed_entries),
+                    "format": content_format,
                 })
-            
-            
+
             return True, json.dumps({
                 "meeting_id": resolved_meeting_id,
                 "transcripts": all_transcripts,
@@ -1831,6 +1997,64 @@ class Teams:
                         entries.append({"timestamp": "", "speaker": speaker, "text": text})
                 except json.JSONDecodeError:
                     pass
+        return entries
+
+    @staticmethod
+    def _parse_vtt(vtt_text: str) -> List[Dict[str, str]]:
+        """Parse WebVTT transcript into speaker-attributed entries.
+
+        Teams VTT cues use the format:
+            HH:MM:SS.mmm --> HH:MM:SS.mmm
+            Speaker Name: Spoken text here.
+
+        Also handles JSON metadata lines (spokenText/speakerName) that some
+        Teams transcripts embed.
+        """
+        import re
+        lines = vtt_text.strip().splitlines()
+        entries: List[Dict[str, str]] = []
+        i = 0
+        timestamp_re = re.compile(
+            r"(\d{2}:\d{2}:\d{2}[\.,]\d{3})\s+-->\s+(\d{2}:\d{2}:\d{2}[\.,]\d{3})"
+        )
+
+        while i < len(lines):
+            line = lines[i].strip()
+
+            if line.startswith("{"):
+                try:
+                    entry = json.loads(line)
+                    speaker = entry.get("speakerName", "Unknown")
+                    text = entry.get("spokenText", "")
+                    if text:
+                        entries.append({"timestamp": "", "speaker": speaker, "text": text})
+                except json.JSONDecodeError:
+                    pass
+                i += 1
+                continue
+
+            m = timestamp_re.match(line)
+            if m:
+                timestamp = f"{m.group(1)} --> {m.group(2)}"
+                i += 1
+                cue_lines: List[str] = []
+                while i < len(lines) and lines[i].strip():
+                    cue_lines.append(lines[i].strip())
+                    i += 1
+                cue_text = " ".join(cue_lines)
+
+                speaker = "Unknown"
+                if ": " in cue_text:
+                    parts = cue_text.split(": ", 1)
+                    speaker = parts[0].strip()
+                    cue_text = parts[1].strip()
+
+                if cue_text:
+                    entries.append({"timestamp": timestamp, "speaker": speaker, "text": cue_text})
+                continue
+
+            i += 1
+
         return entries
 
 
@@ -1975,7 +2199,7 @@ class Teams:
         location: Optional[str] = None,
         attendees: Optional[List[str]] = None,
         recurrence: Optional[Dict[str, Any]] = None,
-        is_online_meeting: Optional[bool] = False,
+        is_online_meeting: Optional[bool] = True,
     ) -> tuple[bool, str]:
         try:
             tz = timezone or "UTC"

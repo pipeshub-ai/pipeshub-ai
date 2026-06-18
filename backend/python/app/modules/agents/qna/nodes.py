@@ -1863,13 +1863,14 @@ TEAMS_GUIDANCE = r"""
 | Get chat details | `teams.get_chat` | `chat_id` |
 | Add team member | `teams.add_member` | `team_id`, `user_id`, `role` |
 | Remove team member | `teams.remove_member` | `team_id`, `membership_id` |
-| List meetings for a period | `teams.get_my_meetings_for_given_period` | `start_datetime`, `end_datetime` |
-| List recurring meetings | `teams.get_my_recurring_meetings` | `top` (optional) |
+| List meetings for a period | `teams.get_meetings` | `start_datetime`, `end_datetime`, `meeting_type` (optional), `top` (optional) |
+| Find meeting by name | `teams.find_meeting_by_name` | `meeting_name`, `start_datetime` (optional), `end_datetime` (optional) |
+| Search calendar events by keyword + dates | `teams.search_calendar_events_in_range` | `keyword`, `start_datetime`, `end_datetime` |
 | Create a meeting/event | `teams.create_event` | `subject`, `start_datetime`, `end_datetime` |
 | Schedule a channel meeting | `teams.create_channel_meeting` | `team_id`, `channel_name`, `subject`, `start_datetime`, `end_datetime`, `timezone` (optional) |
 | Edit a meeting/event | `teams.edit_event` | `event_id`, fields to update |
 | Delete a meeting/event | `teams.delete_event` | `event_id` |
-| Get meeting transcript | `teams.get_my_meetings_transcript` | `meeting_id` |
+| Get meeting transcript | `teams.get_my_meeting_transcripts` | `meeting_id` or `join_url` or `event_id` |
 | Get people invited | `teams.get_people_invited` | `meeting_id` |
 | Get people who attended | `teams.get_people_attended` | `meeting_id` |
 | Search messages | `teams.search_messages` | `query`, `top_per_channel` (optional) |
@@ -1910,10 +1911,10 @@ Always check conversation history before making a redundant API call.
 
 **Tier 4 — Fetchable via an existing tool**
 The value doesn't exist yet but a tool can retrieve it right now.
-→ Need meeting_id? → call `teams.get_my_meetings_for_given_period` first
+→ Need meeting_id? → call `teams.get_meetings` (by date) or `teams.find_meeting_by_name` (by name) first
 → Need team_id? → call `teams.get_teams` first
 → Need channel_id? → call `teams.get_channels` first
-→ Need a transcript? → call `teams.get_my_meetings_transcript`
+→ Need a transcript? → call `teams.get_my_meeting_transcripts` with `meeting_id`, `join_url`, or `event_id`
 This is the fetch-before-ask rule. If a tool can get it, USE the tool.
 
 **Tier 5 — Ask the user (last resort only)**
@@ -1931,11 +1932,11 @@ at a time across multiple turns.
 
 | Missing value | Wrong (jump to Tier 5) | Correct tier |
 |---|---|---|
-| meeting_id for "yesterday's meeting" | Ask user for meeting ID | Tier 4: `get_my_meetings_for_given_period` with yesterday's dates |
-| meeting_id for "the sprint planning" | Ask user which meeting | Tier 4: `get_my_meetings_for_given_period` + filter by subject |
+| meeting_id for "yesterday's meeting" | Ask user for meeting ID | Tier 4: `get_meetings` with yesterday's dates |
+| meeting_id for "the sprint planning" | Ask user which meeting | Tier 4: `find_meeting_by_name` with meeting_name="sprint planning" |
 | team_id for "the Engineering team" | Ask user for team ID | Tier 4: `get_teams` then match by name |
 | channel_id for "#general" | Ask user for channel ID | Tier 4: `get_channels` then match by name |
-| transcript for a meeting | Ask user if they want it | Tier 4: `get_my_meetings_transcript` with meeting_id |
+| transcript for a meeting | Ask user if they want it | Tier 4: `get_my_meeting_transcripts` with meeting_id or join_url |
 | date for "yesterday's meetings" | Ask user for dates | Tier 2: compute yesterday = current date - 1 day |
 | Slack channel for "send to slack test" | Ask user which channel | Tier 2: interpret "slack test" = `#test` |
 | Slack channel for "send to Slack" (nothing else) | — | Tier 5: genuinely missing, ask |
@@ -1964,11 +1965,11 @@ is always wrong, regardless of which workflow is active.
 - ❌ "Show my Teams channels" → Do NOT use retrieval → ✅ Use `teams.get_channels`
 - ❌ "Post message in Teams" → Do NOT use retrieval → ✅ Use `teams.send_message`
 - ❌ "Create Teams workspace" → Do NOT use retrieval → ✅ Use `teams.create_team`
-- ❌ "Get my meetings" → Do NOT use retrieval → ✅ Use `teams.get_my_meetings_for_given_period`
+- ❌ "Get my meetings" → Do NOT use retrieval → ✅ Use `teams.get_meetings` or `teams.find_meeting_by_name`
 
 **R-TEAMS-2: Resolve IDs before action tools.**
 Action tools need exact IDs (`team_id`, `channel_id`, `chat_id`, `meeting_id`, `membership_id`).
-- If the user gives names only, first fetch IDs with lookup tools (`teams.get_teams`, `teams.get_channels`, `teams.get_my_meetings_for_given_period`)
+- If the user gives names only, first fetch IDs with lookup tools (`teams.get_teams`, `teams.get_channels`, `teams.get_meetings` or `teams.find_meeting_by_name`)
 - Use placeholders only in multi-tool cascades
 - NEVER ask the user for internal IDs — they don't know them
 
@@ -1993,14 +1994,15 @@ For `teams.remove_member`, pass a conversation membership identifier. Do not pas
 - Use `group` when multiple members or a topic is required
 
 **R-TEAMS-6: Meeting fetching — choose the right tool based on query type.**
-- **Date-based** ("get my meetings for yesterday") → `teams.get_my_meetings_for_given_period` with date range
-- **Keyword-based** ("get the sprint planning meeting") → `teams.get_my_meetings_for_given_period` with date range, then filter results by subject match
-- **Recurring meetings** ("show my recurring meetings") → `teams.get_my_recurring_meetings`
+- **Date-based** ("get my meetings for yesterday") → `teams.get_meetings` with date range
+- **Name/keyword-based** ("get the sprint planning meeting") → `teams.find_meeting_by_name` with meeting_name (searches 180 days by default)
+- **Keyword + date range** ("sprint planning last week") → `teams.search_calendar_events_in_range` with keyword + dates
 - **Ambiguous** ("get my meetings" with no date or keyword) → Ask ONLY for the date range
 - **With attendee filter** ("meetings with alice@company.com") → Fetch by date, filter results by attendee
 
 **R-TEAMS-7: Transcript handling.**
-- `teams.get_my_meetings_transcript` requires `meeting_id` — get this from meeting fetch results
+- `teams.get_my_meeting_transcripts` accepts `meeting_id`, `join_url`, or `event_id`. Prefer `join_url` when available (from meeting results) — it's more reliable than `meeting_id` from calendar events.
+- When the user asks for a transcript by meeting name: first call `teams.find_meeting_by_name` to get the meeting, then call `teams.get_my_meeting_transcripts` with the `join_url` from the result.
 - If the transcript tool returns empty or an error → report: "No transcript available for [Meeting Name]." Do NOT fabricate.
 - If the meeting wasn't a Teams online meeting → no transcript is possible. Report it.
 - When processing multiple meetings, attempt ALL transcripts. Report which succeeded and which didn't. Do NOT ask the user to pick — process everything, report exceptions.
@@ -2084,7 +2086,7 @@ When the user asks about multiple meetings ("yesterday's meetings", "this week's
 ```json
 {
   "tools": [
-    {"name": "teams.get_my_recurring_meetings", "args": {"top": 25}}
+    {"name": "teams.get_meetings", "args": {"meeting_type": "recurring", "top": 25}}
   ]
 }
 ```
@@ -2093,10 +2095,22 @@ When the user asks about multiple meetings ("yesterday's meetings", "this week's
 ```json
 {
   "tools": [
-    {"name": "teams.get_my_meetings_for_given_period", "args": {
+    {"name": "teams.get_meetings", "args": {
       "start_datetime": "2026-03-01T00:00:00",
       "end_datetime": "2026-03-07T23:59:59",
       "top": 100
+    }}
+  ]
+}
+```
+
+**Pattern: Find a meeting by name and get its transcript**
+```json
+{
+  "tools": [
+    {"name": "teams.find_meeting_by_name", "args": {"meeting_name": "sprint planning"}},
+    {"name": "teams.get_my_meeting_transcripts", "args": {
+      "join_url": "{{teams.find_meeting_by_name.data.results[0].join_url}}"
     }}
   ]
 }
@@ -2106,12 +2120,12 @@ When the user asks about multiple meetings ("yesterday's meetings", "this week's
 ```json
 {
   "tools": [
-    {"name": "teams.get_my_meetings_for_given_period", "args": {
+    {"name": "teams.get_meetings", "args": {
       "start_datetime": "2026-03-01T00:00:00",
       "end_datetime": "2026-03-07T23:59:59"
     }},
     {"name": "teams.edit_event", "args": {
-      "event_id": "{{teams.get_my_meetings_for_given_period.data.results[0].id}}",
+      "event_id": "{{teams.get_meetings.data.results[0].id}}",
       "start_datetime": "2026-03-04T15:00:00",
       "end_datetime": "2026-03-04T16:00:00",
       "timezone": "India Standard Time"
@@ -2120,16 +2134,16 @@ When the user asks about multiple meetings ("yesterday's meetings", "this week's
 }
 ```
 
-**Pattern: Get transcript for a meeting**
+**Pattern: Get transcript for a meeting by date**
 ```json
 {
   "tools": [
-    {"name": "teams.get_my_meetings_for_given_period", "args": {
+    {"name": "teams.get_meetings", "args": {
       "start_datetime": "2026-03-04T00:00:00",
       "end_datetime": "2026-03-04T23:59:59"
     }},
-    {"name": "teams.get_my_meetings_transcript", "args": {
-      "meeting_id": "{{teams.get_my_meetings_for_given_period.data.results[0].id}}"
+    {"name": "teams.get_my_meeting_transcripts", "args": {
+      "join_url": "{{teams.get_meetings.data.results[0].join_url}}"
     }}
   ]
 }
@@ -2139,19 +2153,19 @@ When the user asks about multiple meetings ("yesterday's meetings", "this week's
 ```json
 {
   "tools": [
-    {"name": "teams.get_my_meetings_for_given_period", "args": {
+    {"name": "teams.get_meetings", "args": {
       "start_datetime": "2026-03-03T00:00:00",
       "end_datetime": "2026-03-03T23:59:59"
     }},
-    {"name": "teams.get_people_invited", "args": {"meeting_id": "{{teams.get_my_meetings_for_given_period.data.results[0].id}}"}},
-    {"name": "teams.get_people_attended", "args": {"meeting_id": "{{teams.get_my_meetings_for_given_period.data.results[0].id}}"}}
+    {"name": "teams.get_people_invited", "args": {"meeting_id": "{{teams.get_meetings.data.results[0].meeting_id}}"}},
+    {"name": "teams.get_people_attended", "args": {"meeting_id": "{{teams.get_meetings.data.results[0].meeting_id}}"}}
   ]
 }
 ```
 
 **Pattern: Full workflow — meeting → transcript → summary → Slack**
-1. Fetch meetings: `teams.get_my_meetings_for_given_period`
-2. Get transcript: `teams.get_my_meetings_transcript` for each meeting
+1. Fetch meetings: `teams.get_meetings` (by date) or `teams.find_meeting_by_name` (by name)
+2. Get transcript: `teams.get_my_meeting_transcripts` with `join_url` for each meeting
 3. YOU (the LLM) generate the summary — this is NOT a tool call
 4. Send to Slack: `slack.send_message(channel="...", message="<your summary>")`
 NEVER pass raw transcript to Slack — always your generated summary.
@@ -8332,11 +8346,11 @@ Ensure you have:
 If anything is missing, ask for ALL missing items in one message.
 
 **Step 2 — Fetch meetings:**
-Use `teams.get_meetings` (by date) or `teams.search_calendar_events_in_range` (by keyword).
-Extract `id` and `joinUrl` from each result.
+Use `teams.get_meetings` (by date) or `teams.find_meeting_by_name` (by name/keyword).
+Extract `meeting_id` and `join_url` from each result.
 
 **Step 3 — Fetch transcripts:**
-For each meeting, call `teams.get_meeting_transcript(event_id=..., joinUrl=...)`.
+For each meeting, call `teams.get_my_meeting_transcripts(join_url=...)` (preferred) or `teams.get_my_meeting_transcripts(meeting_id=...)`.
 If a meeting has no transcript, note it — do NOT skip silently.
 
 **Step 4 — Generate summary (LLM task, not a tool call):**
