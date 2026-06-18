@@ -1699,7 +1699,7 @@ class Teams:
                 start_datetime = (now - timedelta(days=180)).strftime("%Y-%m-%dT%H:%M:%S")
 
             resp = await self.client.me_search_events_in_range(
-                keyword=meeting_name.replace("'", "''"),
+                keyword=meeting_name,
                 start_datetime=start_datetime,
                 end_datetime=end_datetime,
                 top=top or 20,

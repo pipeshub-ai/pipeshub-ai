@@ -1913,9 +1913,19 @@ class TeamsDataSource:
             raw_events = list(getattr(response, "value", None) or [])
 
             next_link = getattr(response, "odata_next_link", None)
+            # Build a headers-only config for paginated calls so the Prefer
+            # timezone header is preserved without re-appending query params
+            # that are already encoded in the next_link URL.
+            page_config = CalendarViewRequestBuilder.CalendarViewRequestBuilderGetRequestConfiguration()
+            if isinstance(timezone, str) and timezone.strip():
+                page_config.headers.try_add(
+                    "Prefer", f'outlook.timezone="{timezone.strip()}"'
+                )
             while next_link:
                 try:
-                    next_response = await self.client.me.calendar_view.with_url(next_link).get()
+                    next_response = await self.client.me.calendar_view.with_url(next_link).get(
+                        request_configuration=page_config
+                    )
                     next_value = getattr(next_response, "value", None)
                     if isinstance(next_value, list):
                         raw_events.extend(next_value)
@@ -2322,7 +2332,7 @@ class TeamsDataSource:
             next_link = getattr(response, "odata_next_link", None)
             while next_link:
                 try:
-                    next_response = await self.client.me.calendar.calendar_view.with_url(next_link).get()
+                    next_response = await self.client.me.calendar.calendar_view.with_url(next_link).get(request_configuration=config)
                     next_value = getattr(next_response, "value", None)
                     if isinstance(next_value, list):
                         raw_events.extend(next_value)
