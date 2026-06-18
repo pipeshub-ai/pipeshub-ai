@@ -52,11 +52,25 @@ class QdrantService(IVectorDBService):
             if self.client is not None:
                 return
             logger.warning("Qdrant client is None — attempting reconnection")
-            await self.connect()
+            try:
+                await self.connect()
+            except Exception as e:
+                raise RuntimeError("Client not connected. Call connect() first.") from e
+            if self.client is None:
+                raise RuntimeError("Client not connected. Call connect() first.")
 
-    async def _reconnect_on_failure(self) -> None:
-        """Close stale client and reconnect."""
+    async def _reconnect_on_failure(
+        self,
+        failed_client: Optional[Union[QdrantClient, AsyncQdrantClient]],
+    ) -> None:
+        """Close stale client and reconnect.
+
+        Only acts when self.client is the exact same instance as failed_client,
+        preventing a concurrent coroutine from tearing down a freshly created client.
+        """
         async with self._reconnect_lock:
+            if self.client is not failed_client:
+                return
             if self.client is not None:
                 try:
                     if isinstance(self.client, AsyncQdrantClient):
@@ -442,15 +456,16 @@ class QdrantService(IVectorDBService):
     ) -> List[List[PointStruct]]:
         """Query batch points with automatic reconnection on transient failures."""
         await self._ensure_connected()
+        current_client = self.client  # snapshot before try — used for both query and reconnect identity check
         try:
-            if isinstance(self.client, AsyncQdrantClient):
-                return await self.client.query_batch_points(collection_name, requests)
-            return await asyncio.to_thread(self.client.query_batch_points, collection_name, requests)
+            if isinstance(current_client, AsyncQdrantClient):
+                return await current_client.query_batch_points(collection_name, requests)
+            return await asyncio.to_thread(current_client.query_batch_points, collection_name, requests)
         except Exception as e:
             err_str = str(e).lower()
             if any(k in err_str for k in ("unavailable", "connection", "refused", "reset", "closed", "eof", "transport")):
                 logger.warning("Qdrant query failed with connection error: %s — retrying after reconnect", e)
-                await self._reconnect_on_failure()
+                await self._reconnect_on_failure(current_client)
                 if isinstance(self.client, AsyncQdrantClient):
                     return await self.client.query_batch_points(collection_name, requests)
                 return await asyncio.to_thread(self.client.query_batch_points, collection_name, requests)

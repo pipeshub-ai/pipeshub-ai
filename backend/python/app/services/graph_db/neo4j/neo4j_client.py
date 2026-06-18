@@ -46,6 +46,7 @@ class Neo4jClient:
         self.driver: Any | None = None
         self._active_sessions: dict[str, Any] = {}  # Track active transaction sessions
         self._session_locks: dict[str, asyncio.Lock] = {}  # Lock per transaction to prevent concurrent access
+        self._connect_lock = asyncio.Lock()  # Serialize connect/reconnect attempts
 
         # Log connection details
         self.logger.info(f"🔌 Connecting to Neo4j at {uri}")
@@ -60,6 +61,17 @@ class Neo4jClient:
 
         Returns:
             bool: True if connection successful
+        """
+        async with self._connect_lock:
+            # Double-checked: another coroutine may have connected while we waited
+            if self.driver is not None:
+                return True
+            return await self._connect_inner()
+
+    async def _connect_inner(self) -> bool:
+        """Create driver and verify connectivity.
+
+        Must be called with _connect_lock already held to avoid deadlocks.
         """
         try:
             self.driver = AsyncGraphDatabase.driver(
@@ -84,22 +96,28 @@ class Neo4jClient:
 
         except ServiceUnavailable as e:
             self.logger.error(f"❌ Failed to connect to Neo4j: {str(e)}")
-            await self._close_driver_safely()
+            await self._close_driver_safely(self.driver)
             return False
         except ClientError as e:
             self.logger.error(f"❌ Failed to connect to Neo4j: {str(e)}")
-            await self._close_driver_safely()
+            await self._close_driver_safely(self.driver)
             return False
         except Exception as e:
             self.logger.error(f"❌ Unexpected error connecting to Neo4j: {str(e)}")
-            await self._close_driver_safely()
+            await self._close_driver_safely(self.driver)
             return False
 
-    async def _close_driver_safely(self) -> None:
-        """Close the driver if it exists and reset to None."""
-        if self.driver:
+    async def _close_driver_safely(self, failed_driver: Any = None) -> None:
+        """Close the driver if it exists and reset to None.
+
+        If failed_driver is provided, only close self.driver when it is the
+        exact same instance — prevents a concurrent coroutine from closing a
+        freshly created driver after reconnection.
+        """
+        target = failed_driver if failed_driver is not None else self.driver
+        if target is not None and self.driver is target:
             try:
-                await self.driver.close()
+                await target.close()
             except Exception:
                 pass
             self.driver = None
@@ -265,14 +283,21 @@ class Neo4jClient:
                     result = await session.run(query, parameters)
                     return await result.data()
             except (ServiceUnavailable, SessionExpired) as e:
+                stale_driver = self.driver  # capture identity before acquiring lock
                 self.logger.warning(
                     "Neo4j connection lost during query — reconnecting: %s", e
                 )
-                # Close the stale driver and reconnect
-                await self._close_driver_safely()
-                connected = await self.connect()
-                if not connected:
-                    raise RuntimeError("Neo4j reconnection failed") from e
+                # Serialize reconnection so concurrent failures don't spawn duplicate drivers.
+                # Using _connect_inner() directly to avoid deadlocking on _connect_lock.
+                async with self._connect_lock:
+                    if self.driver is not stale_driver:
+                        # Another coroutine already replaced the driver; skip reconnect.
+                        pass
+                    else:
+                        await self._close_driver_safely(stale_driver)
+                        connected = await self._connect_inner()
+                        if not connected:
+                            raise RuntimeError("Neo4j reconnection failed") from e
                 # Retry the query once after reconnecting
                 async with self.driver.session(database=self.database) as session:
                     result = await session.run(query, parameters)
