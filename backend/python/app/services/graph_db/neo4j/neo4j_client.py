@@ -10,7 +10,7 @@ from logging import Logger
 from typing import TYPE_CHECKING, Any
 
 from neo4j import AsyncGraphDatabase
-from neo4j.exceptions import ClientError, ServiceUnavailable
+from neo4j.exceptions import ClientError, ServiceUnavailable, SessionExpired
 
 if TYPE_CHECKING:
     from neo4j import AsyncSession
@@ -64,7 +64,12 @@ class Neo4jClient:
         try:
             self.driver = AsyncGraphDatabase.driver(
                 self.uri,
-                auth=(self.username, self.password)
+                auth=(self.username, self.password),
+                keep_alive=True,
+                max_connection_lifetime=30 * 60,  # 30 min — recycle before going stale
+                max_connection_pool_size=100,
+                connection_acquisition_timeout=60,  # wait up to 60s for pool slot under pressure
+                liveness_check_timeout=30,  # verify connection health before reuse from pool
             )
 
             # Test connection
@@ -79,10 +84,25 @@ class Neo4jClient:
 
         except ServiceUnavailable as e:
             self.logger.error(f"❌ Failed to connect to Neo4j: {str(e)}")
+            await self._close_driver_safely()
             return False
         except ClientError as e:
             self.logger.error(f"❌ Failed to connect to Neo4j: {str(e)}")
+            await self._close_driver_safely()
             return False
+        except Exception as e:
+            self.logger.error(f"❌ Unexpected error connecting to Neo4j: {str(e)}")
+            await self._close_driver_safely()
+            return False
+
+    async def _close_driver_safely(self) -> None:
+        """Close the driver if it exists and reset to None."""
+        if self.driver:
+            try:
+                await self.driver.close()
+            except Exception:
+                pass
+            self.driver = None
 
     async def _ensure_database_exists(self) -> None:
         """
@@ -202,7 +222,7 @@ class Neo4jClient:
         txn_id: str | None = None
     ) -> list[dict[str, Any]]:
         """
-        Execute a Cypher query.
+        Execute a Cypher query with automatic reconnection on transient failures.
 
         Args:
             query: Cypher query string
@@ -237,10 +257,26 @@ class Neo4jClient:
                 result = await session.run(query, parameters)
                 return await result.data()
         else:
-            # Auto-commit transaction
-            async with self.driver.session(database=self.database) as session:
-                result = await session.run(query, parameters)
-                return await result.data()
+            # Auto-commit transaction with reconnection on transient failure.
+            # The driver's liveness_check_timeout catches most stale connections,
+            # but a race (connection dies between check and use) can still occur.
+            try:
+                async with self.driver.session(database=self.database) as session:
+                    result = await session.run(query, parameters)
+                    return await result.data()
+            except (ServiceUnavailable, SessionExpired) as e:
+                self.logger.warning(
+                    "Neo4j connection lost during query — reconnecting: %s", e
+                )
+                # Close the stale driver and reconnect
+                await self._close_driver_safely()
+                connected = await self.connect()
+                if not connected:
+                    raise RuntimeError("Neo4j reconnection failed") from e
+                # Retry the query once after reconnecting
+                async with self.driver.session(database=self.database) as session:
+                    result = await session.run(query, parameters)
+                    return await result.data()
 
     def get_session(self, txn_id: str) -> "AsyncSession":
         """

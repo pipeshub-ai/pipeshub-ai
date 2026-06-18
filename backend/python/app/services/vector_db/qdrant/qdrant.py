@@ -42,6 +42,32 @@ class QdrantService(IVectorDBService):
         self.config_service = config_service
         self.client: Optional[QdrantClient | AsyncQdrantClient] = None
         self.is_async = is_async
+        self._reconnect_lock = asyncio.Lock()
+
+    async def _ensure_connected(self) -> None:
+        """Reconnect if client is None or unreachable."""
+        if self.client is not None:
+            return
+        async with self._reconnect_lock:
+            if self.client is not None:
+                return
+            logger.warning("Qdrant client is None — attempting reconnection")
+            await self.connect()
+
+    async def _reconnect_on_failure(self) -> None:
+        """Close stale client and reconnect."""
+        async with self._reconnect_lock:
+            if self.client is not None:
+                try:
+                    if isinstance(self.client, AsyncQdrantClient):
+                        await self.client.close()
+                    else:
+                        self.client.close()
+                except Exception:
+                    pass
+                self.client = None
+            logger.warning("Qdrant connection lost — reconnecting")
+            await self.connect()
 
     @classmethod
     async def create_sync(
@@ -414,12 +440,21 @@ class QdrantService(IVectorDBService):
         collection_name: str,
         requests: List[QueryRequest],
     ) -> List[List[PointStruct]]:
-        """Query batch points"""
-        if self.client is None:
-            raise RuntimeError("Client not connected. Call connect() first.")
-        if isinstance(self.client, AsyncQdrantClient):
-            return await self.client.query_batch_points(collection_name, requests)
-        return await asyncio.to_thread(self.client.query_batch_points, collection_name, requests)
+        """Query batch points with automatic reconnection on transient failures."""
+        await self._ensure_connected()
+        try:
+            if isinstance(self.client, AsyncQdrantClient):
+                return await self.client.query_batch_points(collection_name, requests)
+            return await asyncio.to_thread(self.client.query_batch_points, collection_name, requests)
+        except Exception as e:
+            err_str = str(e).lower()
+            if any(k in err_str for k in ("unavailable", "connection", "refused", "reset", "closed", "eof", "transport")):
+                logger.warning("Qdrant query failed with connection error: %s — retrying after reconnect", e)
+                await self._reconnect_on_failure()
+                if isinstance(self.client, AsyncQdrantClient):
+                    return await self.client.query_batch_points(collection_name, requests)
+                return await asyncio.to_thread(self.client.query_batch_points, collection_name, requests)
+            raise
 
     async def count_points(self, collection_name: str) -> int:
         """Return the number of points in a collection."""
@@ -439,8 +474,7 @@ class QdrantService(IVectorDBService):
         max_workers: int = 5,
     ) -> None:
         """Upsert points with parallel batching for better performance"""
-        if self.client is None:
-            raise RuntimeError("Client not connected. Call connect() first.")
+        await self._ensure_connected()
 
         start_time = time.perf_counter()
         total_points = len(points)
