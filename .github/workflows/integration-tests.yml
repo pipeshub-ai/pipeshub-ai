@@ -55,6 +55,25 @@ on:
         options:
           - kafka
           - redis
+      sdk_ref:
+        description: 'Git ref (branch/tag) of the pipeshub-sdk-{go,python,typescript} repos to test'
+        required: false
+        default: 'main'
+      run_sdk_tests:
+        description: 'Run SDK test suites (Go, Python, TypeScript)'
+        required: false
+        default: false
+        type: boolean
+      run_integration_tests:
+        description: 'Run backend integration tests (pytest). Uncheck to skip.'
+        required: false
+        default: true
+        type: boolean
+      run_playwright_tests:
+        description: 'Run frontend Playwright e2e tests. Uncheck to skip.'
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -70,13 +89,13 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
     timeout-minutes: 120
 
-    # Schedule uses a separate environment so daily runs are not blocked by
-    # deployment protection on `integration-test-dev`. Create
+    # pull_request_target uses `integration-test-dev`; everything else (schedule
+    # and manual workflow_dispatch) uses `integration-test-daily`. Create
     # `integration-test-daily` in repo Settings → Environments with the same
     # environment secrets as `integration-test-dev`, but leave required
-    # reviewers / wait timer disabled.
+    # reviewers / wait timer disabled so runs are not blocked.
     environment:
-      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
+      name: ${{ github.event_name == 'pull_request_target' && 'integration-test-dev' || 'integration-test-daily' }}
 
     env:
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
@@ -160,6 +179,41 @@ jobs:
           uv venv
           uv pip install -e .
 
+      # SDK test suites run on the daily scheduled run, or on manual dispatch
+      # when run_sdk_tests is enabled. Node is already set up above (for the
+      # frontend); Go is set up here; Python uses the integration-tests venv.
+      - name: Set up Go
+        if: github.event_name == 'schedule' || github.event.inputs.run_sdk_tests == 'true'
+        uses: actions/setup-go@v5
+        with:
+          # The SDK's go.mod declares go 1.22 but its code uses slices.Sorted /
+          # maps.Keys (Go 1.23+), so we build with a 1.23 toolchain.
+          go-version: '1.23'
+
+      - name: Checkout Go SDK repo
+        if: github.event_name == 'schedule' || github.event.inputs.run_sdk_tests == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: pipeshub-ai/pipeshub-sdk-go
+          path: pipeshub-sdk-go
+          ref: ${{ github.event.inputs.sdk_ref || 'main' }}
+
+      - name: Checkout Python SDK repo
+        if: github.event_name == 'schedule' || github.event.inputs.run_sdk_tests == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: pipeshub-ai/pipeshub-sdk-python
+          path: pipeshub-sdk-python
+          ref: ${{ github.event.inputs.sdk_ref || 'main' }}
+
+      - name: Checkout TypeScript SDK repo
+        if: github.event_name == 'schedule' || github.event.inputs.run_sdk_tests == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: pipeshub-ai/pipeshub-sdk-typescript
+          path: pipeshub-sdk-typescript
+          ref: ${{ github.event.inputs.sdk_ref || 'main' }}
+
       - name: 'Neo4j: Start services'
         if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
         working-directory: deployment/docker-compose
@@ -238,7 +292,7 @@ jobs:
           echo "Onboarding marked as configured!"
 
       - name: 'Neo4j: Run integration tests'
-        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
+        if: (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both') && github.event.inputs.run_integration_tests != 'false'
         working-directory: integration-tests
         run: |
           source .venv/bin/activate
@@ -246,7 +300,7 @@ jobs:
           pytest -m "$MARKERS" -v --tb=short --junitxml=reports/neo4j-results.xml 2>&1
 
       - name: 'Neo4j: Run Playwright e2e tests'
-        if: always() && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
+        if: always() && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both') && github.event.inputs.run_playwright_tests != 'false'
         working-directory: frontend
         env:
           CI: 'true'
@@ -257,16 +311,64 @@ jobs:
           TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
         run: npm run test:e2e 2>&1
 
+      # Mint one OAuth app (all scopes) + LLM + KB and export PIPESHUB_API_URL /
+      # PIPESHUB_CLIENT_ID / PIPESHUB_CLIENT_SECRET / PIPESHUB_TOKEN_URL to
+      # $GITHUB_ENV; the three SDK test steps below inherit them.
+      - name: 'Neo4j: Provision SDK test env'
+        if: always() && (github.event_name == 'schedule' || github.event.inputs.run_sdk_tests == 'true') && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          mkdir -p reports
+          python sdk_tests/provision_sdk_test_env.py
+
+      - name: 'Neo4j: Run Go SDK tests'
+        if: always() && (github.event_name == 'schedule' || github.event.inputs.run_sdk_tests == 'true') && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
+        working-directory: pipeshub-sdk-go
+        run: |
+          go install github.com/jstemmer/go-junit-report/v2@latest
+          mkdir -p "$GITHUB_WORKSPACE/integration-tests/reports"
+          set -o pipefail
+          go test -v ./tests/... 2>&1 \
+            | "$(go env GOPATH)/bin/go-junit-report" -set-exit-code -iocopy \
+                -out "$GITHUB_WORKSPACE/integration-tests/reports/gosdk-results.xml"
+
+      - name: 'Neo4j: Run Python SDK tests'
+        if: always() && (github.event_name == 'schedule' || github.event.inputs.run_sdk_tests == 'true') && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
+        working-directory: pipeshub-sdk-python
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install --quiet --upgrade pip
+          pip install --quiet -e . pytest pytest-asyncio pytest-xdist
+          mkdir -p "$GITHUB_WORKSPACE/integration-tests/reports"
+          pytest tests/ -v --junitxml="$GITHUB_WORKSPACE/integration-tests/reports/pysdk-results.xml"
+
+      - name: 'Neo4j: Run TypeScript SDK tests'
+        if: always() && (github.event_name == 'schedule' || github.event.inputs.run_sdk_tests == 'true') && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
+        working-directory: pipeshub-sdk-typescript
+        run: |
+          npm ci || npm install
+          mkdir -p "$GITHUB_WORKSPACE/integration-tests/reports"
+          set +e
+          npm test
+          code=$?
+          cp .speakeasy/reports/tests.xml "$GITHUB_WORKSPACE/integration-tests/reports/tssdk-results.xml" || true
+          exit $code
+
       - name: 'Neo4j: Dump docker logs'
         if: always() && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/neo4j
-          docker compose -f docker-compose.integration.neo4j.yml ps -a \
-            > ../../integration-tests/reports/docker-logs/neo4j/_containers.txt 2>&1 || true
+          # Strip ANSI escape sequences and C0 control bytes (keep tab/newline/CR)
+          # so the dumped logs open as plain text in editors instead of "binary".
+          sanitize() { sed -r 's/\x1B\[[0-9;?]*[a-zA-Z]//g' | tr -d '\000-\010\013-\037'; }
+          docker compose -f docker-compose.integration.neo4j.yml ps -a 2>&1 \
+            | sanitize > ../../integration-tests/reports/docker-logs/neo4j/_containers.txt || true
           for svc in $(docker compose -f docker-compose.integration.neo4j.yml config --services); do
-            docker compose -f docker-compose.integration.neo4j.yml logs --no-color --timestamps "$svc" \
-              > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" 2>&1 || true
+            docker compose -f docker-compose.integration.neo4j.yml logs --no-color --timestamps "$svc" 2>&1 \
+              | sanitize > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" || true
           done
 
       - name: 'Neo4j: Tear down services (preserve images)'
@@ -352,7 +454,7 @@ jobs:
           echo "Onboarding marked as configured!"
 
       - name: 'ArangoDB: Run integration tests'
-        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both') && github.event.inputs.run_integration_tests != 'false'
         working-directory: integration-tests
         run: |
           source .venv/bin/activate
@@ -360,7 +462,7 @@ jobs:
           pytest -m "$MARKERS" -v --tb=short --junitxml=reports/arango-results.xml 2>&1
 
       - name: 'ArangoDB: Run Playwright e2e tests'
-        if: always() && env.GRAPH_DB == 'arango'
+        if: always() && env.GRAPH_DB == 'arango' && github.event.inputs.run_playwright_tests != 'false'
         working-directory: frontend
         env:
           CI: 'true'
@@ -371,16 +473,64 @@ jobs:
           TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
         run: npm run test:e2e 2>&1
 
+      # Mint one OAuth app (all scopes) + LLM + KB and export PIPESHUB_API_URL /
+      # PIPESHUB_CLIENT_ID / PIPESHUB_CLIENT_SECRET / PIPESHUB_TOKEN_URL to
+      # $GITHUB_ENV; the three SDK test steps below inherit them.
+      - name: 'ArangoDB: Provision SDK test env'
+        if: always() && (github.event_name == 'schedule' || github.event.inputs.run_sdk_tests == 'true') && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          mkdir -p reports
+          python sdk_tests/provision_sdk_test_env.py
+
+      - name: 'ArangoDB: Run Go SDK tests'
+        if: always() && (github.event_name == 'schedule' || github.event.inputs.run_sdk_tests == 'true') && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        working-directory: pipeshub-sdk-go
+        run: |
+          go install github.com/jstemmer/go-junit-report/v2@latest
+          mkdir -p "$GITHUB_WORKSPACE/integration-tests/reports"
+          set -o pipefail
+          go test -v ./tests/... 2>&1 \
+            | "$(go env GOPATH)/bin/go-junit-report" -set-exit-code -iocopy \
+                -out "$GITHUB_WORKSPACE/integration-tests/reports/gosdk-results.xml"
+
+      - name: 'ArangoDB: Run Python SDK tests'
+        if: always() && (github.event_name == 'schedule' || github.event.inputs.run_sdk_tests == 'true') && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        working-directory: pipeshub-sdk-python
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install --quiet --upgrade pip
+          pip install --quiet -e . pytest pytest-asyncio pytest-xdist
+          mkdir -p "$GITHUB_WORKSPACE/integration-tests/reports"
+          pytest tests/ -v --junitxml="$GITHUB_WORKSPACE/integration-tests/reports/pysdk-results.xml"
+
+      - name: 'ArangoDB: Run TypeScript SDK tests'
+        if: always() && (github.event_name == 'schedule' || github.event.inputs.run_sdk_tests == 'true') && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        working-directory: pipeshub-sdk-typescript
+        run: |
+          npm ci || npm install
+          mkdir -p "$GITHUB_WORKSPACE/integration-tests/reports"
+          set +e
+          npm test
+          code=$?
+          cp .speakeasy/reports/tests.xml "$GITHUB_WORKSPACE/integration-tests/reports/tssdk-results.xml" || true
+          exit $code
+
       - name: 'ArangoDB: Dump docker logs'
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/arango
-          docker compose -f docker-compose.integration.arango.yml ps -a \
-            > ../../integration-tests/reports/docker-logs/arango/_containers.txt 2>&1 || true
+          # Strip ANSI escape sequences and C0 control bytes (keep tab/newline/CR)
+          # so the dumped logs open as plain text in editors instead of "binary".
+          sanitize() { sed -r 's/\x1B\[[0-9;?]*[a-zA-Z]//g' | tr -d '\000-\010\013-\037'; }
+          docker compose -f docker-compose.integration.arango.yml ps -a 2>&1 \
+            | sanitize > ../../integration-tests/reports/docker-logs/arango/_containers.txt || true
           for svc in $(docker compose -f docker-compose.integration.arango.yml config --services); do
-            docker compose -f docker-compose.integration.arango.yml logs --no-color --timestamps "$svc" \
-              > "../../integration-tests/reports/docker-logs/arango/${svc}.log" 2>&1 || true
+            docker compose -f docker-compose.integration.arango.yml logs --no-color --timestamps "$svc" 2>&1 \
+              | sanitize > "../../integration-tests/reports/docker-logs/arango/${svc}.log" || true
           done
 
       - name: 'ArangoDB: Tear down services (preserve images)'
@@ -471,9 +621,37 @@ jobs:
             PW_PASS_RATE=0
           fi
 
-          # Overall health: green only when both suites are fully passing
+          # Parse each SDK suite's JUnit XML and emit its <PREFIX>_* outputs.
+          # Tracks SDK_ANY_FAILED for the overall-health gate below.
+          SDK_ANY_FAILED=0
+          parse_sdk() {
+            prefix="$1"; file="$2"
+            tests=0; failures=0; errors=0; skipped=0; passed=0; rate=0
+            if [ -f "$file" ]; then
+              tests=$(grep -oP 'tests="\K[0-9]+' "$file" | head -1); tests=${tests:-0}
+              failures=$(grep -oP 'failures="\K[0-9]+' "$file" | head -1); failures=${failures:-0}
+              errors=$(grep -oP 'errors="\K[0-9]+' "$file" | head -1); errors=${errors:-0}
+              skipped=$(grep -oP 'skipped="\K[0-9]+' "$file" | head -1); skipped=${skipped:-0}
+              passed=$((tests - failures - errors - skipped))
+            fi
+            if [ "$tests" -gt 0 ]; then rate=$(( (passed * 100) / tests )); fi
+            if [ "$failures" -gt 0 ] || [ "$errors" -gt 0 ]; then SDK_ANY_FAILED=1; fi
+            {
+              echo "${prefix}_TESTS=$tests"
+              echo "${prefix}_PASSED=$passed"
+              echo "${prefix}_FAILED=$failures"
+              echo "${prefix}_ERRORS=$errors"
+              echo "${prefix}_SKIPPED=$skipped"
+              echo "${prefix}_PASS_RATE=$rate"
+            } >> "$GITHUB_OUTPUT"
+          }
+          parse_sdk GOSDK reports/gosdk-results.xml
+          parse_sdk PYSDK reports/pysdk-results.xml
+          parse_sdk TSSDK reports/tssdk-results.xml
+
+          # Overall health: green only when all suites are fully passing
           OVERALL_OK=true
-          if [ "$TOTAL_FAILED" -gt 0 ] || [ "$TOTAL_ERRORS" -gt 0 ] || [ "$PW_FAILED" -gt 0 ] || [ "$PW_ERRORS" -gt 0 ]; then
+          if [ "$TOTAL_FAILED" -gt 0 ] || [ "$TOTAL_ERRORS" -gt 0 ] || [ "$PW_FAILED" -gt 0 ] || [ "$PW_ERRORS" -gt 0 ] || [ "$SDK_ANY_FAILED" -ne 0 ]; then
             OVERALL_OK=false
           fi
 
@@ -583,6 +761,33 @@ jobs:
                       { "type": "raw_text", "text": "${{ steps.test-results.outputs.PW_ERRORS }}"                  },
                       { "type": "raw_text", "text": "${{ steps.test-results.outputs.PW_SKIPPED }}"                 },
                       { "type": "raw_text", "text": "${{ steps.test-results.outputs.PW_PASS_RATE }}%"              }
+                    ],
+                    [
+                      { "type": "raw_text", "text": "Go SDK"                                                        },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.GOSDK_TESTS }}"                },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.GOSDK_PASSED }}"               },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.GOSDK_FAILED }}"               },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.GOSDK_ERRORS }}"               },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.GOSDK_SKIPPED }}"              },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.GOSDK_PASS_RATE }}%"           }
+                    ],
+                    [
+                      { "type": "raw_text", "text": "Python SDK"                                                    },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.PYSDK_TESTS }}"                },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.PYSDK_PASSED }}"               },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.PYSDK_FAILED }}"               },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.PYSDK_ERRORS }}"               },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.PYSDK_SKIPPED }}"              },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.PYSDK_PASS_RATE }}%"           }
+                    ],
+                    [
+                      { "type": "raw_text", "text": "TypeScript SDK"                                                },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.TSSDK_TESTS }}"                },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.TSSDK_PASSED }}"               },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.TSSDK_FAILED }}"               },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.TSSDK_ERRORS }}"               },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.TSSDK_SKIPPED }}"              },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.TSSDK_PASS_RATE }}%"           }
                     ]
                   ]
                 },
@@ -652,7 +857,7 @@ jobs:
             -d "$COMPLETE_PAYLOAD"
 
       - name: Send failed tests list to Slack thread
-        if: always() && (steps.test-results.outputs.TOTAL_FAILED != '0' || steps.test-results.outputs.TOTAL_ERRORS != '0' || steps.test-results.outputs.PW_FAILED != '0' || steps.test-results.outputs.PW_ERRORS != '0')
+        if: always() && (steps.test-results.outputs.TOTAL_FAILED != '0' || steps.test-results.outputs.TOTAL_ERRORS != '0' || steps.test-results.outputs.PW_FAILED != '0' || steps.test-results.outputs.PW_ERRORS != '0' || steps.test-results.outputs.GOSDK_FAILED != '0' || steps.test-results.outputs.GOSDK_ERRORS != '0' || steps.test-results.outputs.PYSDK_FAILED != '0' || steps.test-results.outputs.PYSDK_ERRORS != '0' || steps.test-results.outputs.TSSDK_FAILED != '0' || steps.test-results.outputs.TSSDK_ERRORS != '0')
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
@@ -676,7 +881,7 @@ jobs:
               sys.exit(0)
 
           names = []
-          for xml_path in ['reports/neo4j-results.xml', 'reports/arango-results.xml', 'reports/playwright/playwright-junit.xml']:
+          for xml_path in ['reports/neo4j-results.xml', 'reports/arango-results.xml', 'reports/playwright/playwright-junit.xml', 'reports/gosdk-results.xml', 'reports/pysdk-results.xml', 'reports/tssdk-results.xml']:
               if not os.path.exists(xml_path):
                   continue
               backend = os.path.basename(xml_path).replace('-results.xml', '')
