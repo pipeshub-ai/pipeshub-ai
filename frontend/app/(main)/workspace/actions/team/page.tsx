@@ -320,7 +320,6 @@ function TeamActionsPageContent() {
   const handleCardClick = useCallback(
     (item: ActionCatalogItem) => {
       if (item.rowKind !== 'byToolsetType' || !item.hasOrgInstance) return;
-      console.log('pushTypeDetail', item);
       router.push(`/workspace/actions/team/?toolsetType=${encodeURIComponent(item.toolsetType)}`);
     },
     [router]
