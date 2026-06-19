@@ -4169,21 +4169,13 @@ class ConfluenceConnector(BaseConnector):
             )
 
         # 3. Collect all unique author IDs from both inline and footer comments for batch fetching
-        author_ids_to_fetch: set[str] = set()
-        
-        if inline_comments:
-            for comment in inline_comments:
-                version = comment.get("version", {})
-                author_id = version.get("authorId")
-                if author_id and author_id != "Unknown":
-                    author_ids_to_fetch.add(author_id)
-        
-        if footer_comments:
-            for comment in footer_comments:
-                version = comment.get("version", {})
-                author_id = version.get("authorId")
-                if author_id and author_id != "Unknown":
-                    author_ids_to_fetch.add(author_id)
+        # Collect unique author IDs from both inline and footer comments
+        author_ids_to_fetch = {
+            comment.get("version", {}).get("authorId")
+            for comment in (inline_comments or []) + (footer_comments or [])
+        }
+        author_ids_to_fetch.discard(None)
+        author_ids_to_fetch.discard("Unknown")
 
         # Batch fetch user display names
         user_display_names: dict[str, str] = await self._batch_fetch_user_display_names(
@@ -4261,18 +4253,24 @@ class ConfluenceConnector(BaseConnector):
 
                     # Add comment blocks to main container (adjusting indices)
                     block_start_index = len(blocks)
+                    block_group_index_offset = len(block_groups)
+                    
                     for i, comment_block in enumerate(comment_blocks):
                         comment_block.index = block_start_index + i  # Update block index
-                        comment_block.parent_index = None  # Will set to COMMENT group later
+                        
+                        # Shift parent_index if it points to a BlockGroup
+                        if comment_block.parent_index is not None:
+                            comment_block.parent_index += block_group_index_offset
+                        # else: Will be set to COMMENT group later
+                        
                         blocks.append(comment_block)
                     block_end_index = len(blocks) - 1
 
                     # Add any block groups from comment (tables, etc.)
-                    block_group_index_offset = len(block_groups)
                     for comment_bg in comment_block_groups:
-                        # Shift parent_index to account for existing blocks
+                        # Shift parent_index to account for existing block groups
                         if comment_bg.parent_index is not None:
-                            comment_bg.parent_index += block_start_index
+                            comment_bg.parent_index += block_group_index_offset
                         
                         # Shift all indices in children
                         if comment_bg.children:
@@ -4339,9 +4337,17 @@ class ConfluenceConnector(BaseConnector):
                     )
                     block_groups.append(comment_group)
 
-                    # Set parent_index on all comment blocks
+                    # Set parent_index on top-level comment blocks (those without a parent yet)
+                    # Blocks belonging to nested BlockGroups already have their parent set
                     for i in range(block_start_index, block_end_index + 1):
-                        blocks[i].parent_index = comment_group_index
+                        if blocks[i].parent_index is None:
+                            blocks[i].parent_index = comment_group_index
+
+                    # Set parent_index on top-level comment BlockGroups (tables, panels, etc.)
+                    # that don't already have a parent (nested structures already have parent set)
+                    for i in range(block_group_index_offset, comment_group_index):
+                        if block_groups[i].parent_index is None:
+                            block_groups[i].parent_index = comment_group_index
 
         # 5. Track attachments used in inline comments
         for block in blocks:
@@ -5288,9 +5294,13 @@ class ConfluenceConnector(BaseConnector):
                 continue
             
             try:
-                user_data = result.json()
-                display_name = user_data.get("displayName", "Unknown")
-                user_map[author_id] = display_name
+                if result.status == HttpStatusCode.SUCCESS.value:
+                    user_data = result.json()
+                    display_name = user_data.get("displayName", "Unknown")
+                    user_map[author_id] = display_name
+                else:
+                    self.logger.warning(f"Failed to fetch user {author_id}: HTTP {result.status}")
+                    user_map[author_id] = "Unknown"
             except Exception as e:
                 self.logger.warning(f"Failed to parse user data for {author_id}: {e}")
                 user_map[author_id] = "Unknown"
