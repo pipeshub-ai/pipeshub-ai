@@ -480,6 +480,7 @@ async def execute_tool_calls(
     initial_web_records: list[dict[str, Any]] | None = None,
     defer_tool_until_called_name: str | None = None,
     deferred_tool: Any | None = None,
+    is_small_model: bool = False,
 ) -> AsyncGenerator[dict[str, Any], tuple[list[dict], bool]]:
     """
     Execute tool calls if present in the LLM response.
@@ -759,42 +760,20 @@ async def execute_tool_calls(
             len(tool_msgs),
         )
 
-        messages.extend(tool_msgs)
-        if has_content_handler_this_hop and not tool_instructions_added:
+        if has_content_handler_this_hop and not tool_instructions_added and tool_msgs:
             has_sql_connector = tool_runtime_kwargs.get("has_sql_connector", False)
-            instructions = ContentHandler.build_tool_instructions(has_sql_connector)
-            ai_idx = len(messages) - len(tool_msgs) - 1
-            inserted = False
-            for i in range(ai_idx - 1, -1, -1):
-                if isinstance(messages[i], HumanMessage):
-                    existing = messages[i].content
-                    if isinstance(existing, str):
-                        messages[i] = HumanMessage(content=existing + "\n\n" + instructions)
-                        inserted = True
-                        tool_instructions_added = True
-                        break
-                    elif isinstance(existing, list):
-                        messages[i] = HumanMessage(content=existing + [{"type": "text", "text": "\n\n" + instructions}])
-                        inserted = True
-                        tool_instructions_added = True
-                        break
-                elif isinstance(messages[i], dict):
-                    role = messages[i].get("role")
-                    if role == "user":
-                        content = messages[i].get("content")
-                        if isinstance(content, str):
-                            messages[i] = {"role": "user", "content": content + "\n\n" + instructions}
-                            inserted = True
-                            tool_instructions_added = True
-                            break
-                        elif isinstance(content, list):
-                            messages[i] = {"role": "user", "content": content + [{"type": "text", "text": "\n\n" + instructions}]}
-                            inserted = True
-                            tool_instructions_added = True
-                            break
-            if not inserted and supports_human_message_after_tool(llm):
-                messages.append(HumanMessage(content=instructions))
-                tool_instructions_added = True
+            instructions = ContentHandler.build_tool_instructions(has_sql_connector, is_small_model=is_small_model)
+            last_tool_msg = tool_msgs[-1]
+            existing = last_tool_msg.content
+            if isinstance(existing, list):
+                last_tool_msg.content = existing + [{"type": "text", "text": "\n\n" + instructions}]
+            elif isinstance(existing, str):
+                last_tool_msg.content = existing + "\n\n" + instructions
+            else:
+                last_tool_msg.content = str(existing) + "\n\n" + instructions
+            tool_instructions_added = True
+
+        messages.extend(tool_msgs)
         
         hops += 1
 
@@ -1249,6 +1228,7 @@ async def stream_llm_response_with_tools(
     initial_web_records: list[dict[str, Any]] | None = None,
     defer_tool_until_called_name: str | None = None,
     deferred_tool: Any | None = None,
+    is_small_model: bool = False,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -1290,6 +1270,7 @@ async def stream_llm_response_with_tools(
                 initial_web_records=initial_web_records,
                 defer_tool_until_called_name=defer_tool_until_called_name,
                 deferred_tool=deferred_tool,
+                is_small_model=is_small_model,
             ):
 
                 if tool_event.get("event") == "tool_execution_complete":

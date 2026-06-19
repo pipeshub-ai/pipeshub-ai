@@ -8,7 +8,7 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
 
 
@@ -527,7 +527,7 @@ class TestExecuteToolCallsBranches:
 
         rs.search_with_filters.assert_awaited()
 
-    async def test_content_handler_appends_instructions_to_human_string(self):
+    async def test_content_handler_appends_instructions_to_last_tool_message(self):
         from app.utils.tool_handlers import ContentHandler
         from app.utils.streaming import execute_tool_calls
 
@@ -579,10 +579,18 @@ class TestExecuteToolCallsBranches:
             ):
                 pass
 
-        patched = msgs[0].content
-        assert isinstance(patched, str)
+        tool_msgs = [m for m in msgs if isinstance(m, ToolMessage)]
+        assert tool_msgs, "expected at least one ToolMessage"
+        last_tool_content = tool_msgs[-1].content
+        if isinstance(last_tool_content, list):
+            tool_text = " ".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in last_tool_content
+            )
+        else:
+            tool_text = str(last_tool_content)
         instructions = ContentHandler.build_tool_instructions(True)
-        assert instructions in patched
+        assert instructions in tool_text
 
 
 # ---------------------------------------------------------------------------

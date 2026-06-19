@@ -32,7 +32,6 @@ from app.modules.qna.prompt_templates import (
     qna_prompt_context,
     qna_prompt_context_header,
     qna_prompt_instructions_1,
-    qna_prompt_instructions_1_compact,
     qna_prompt_instructions_2,
     qna_prompt_simple,
     table_prompt,
@@ -1965,13 +1964,14 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
 
         return content, ref_mapper
     else:
-        instructions_template = qna_prompt_instructions_1_compact if compact_mode else qna_prompt_instructions_1
+        instructions_template = qna_prompt_instructions_1
         template = Template(instructions_template)
         rendered_form = template.render(
                     user_data=user_data,
                     query=query,
                     mode=mode,
                     has_sql_connector=has_sql_connector,
+                    is_small_model=compact_mode,
                     )
 
         content.append({
@@ -2012,7 +2012,7 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
 
         content.extend(message_content_array)
         template_instructions_2 = Template(qna_prompt_instructions_2)
-        rendered_instructions_2 = template_instructions_2.render(mode=mode, compact_mode=compact_mode)
+        rendered_instructions_2 = template_instructions_2.render(mode=mode)
 
         content.append({
             "type": "text",

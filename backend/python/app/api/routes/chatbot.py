@@ -29,7 +29,6 @@ from app.models.blocks import Block, BlockType, BlocksContainer, CitationMetadat
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.qna.prompt_templates import (
     qna_prompt_with_retrieval_tool,
-    qna_prompt_instructions_2,
     qna_prompt_with_retrieval_tool_second_part,
     web_search_system_prompt,
     web_search_user_prompt,
@@ -78,7 +77,7 @@ _SMALL_MODEL_NAME_MARKERS = frozenset({
     "mini", "haiku", "flash", "nano",
     "phi", "tinyllama", "gemma", "smollm",
     # Parameter-count indicators
-    "0.5b", "1b", "1.5b", "3b", "7b", "8b", "13b",
+    "0.5b", "1b", "1.5b", "3b", "7b", "8b", "13b", "9b"
     # Quantization file formats
     "gguf", "ggml",
     # GGUF quantization levels (trailing "_" prevents matching unrelated tokens)
@@ -98,7 +97,7 @@ def _is_small_model(model_config: dict[str, Any]) -> bool:
         return True
     context_length = model_config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
     # Very short context windows also correlate with lightweight models.
-    return 0 < context_length < 8192
+    return 0 < context_length < 17000
 
 router = APIRouter()
 
@@ -301,19 +300,29 @@ async def _build_llm_user_context_string(
     user_info, org_info = await get_cached_user_info(graph_provider, user_id, org_id)
     user_info = user_info or {}
     org_name = (org_info or {}).get("name")
+
+    name = user_info.get("fullName") or "a user"
+    identity_extras: list[str] = []
+    if user_info.get("designation"):
+        identity_extras.append(user_info["designation"])
+    email = user_info.get("userEmail") or user_info.get("email")
+    if email:
+        identity_extras.append(email)
+    identity = f"{name} ({', '.join(identity_extras)})" if identity_extras else name
+
+    suffix = (
+        "Please provide accurate and relevant information based on the available context."
+    )
     if org_name:
         return (
             "I am the user of the organization. "
-            f"My name is {user_info.get('fullName', 'a user')} "
-            f"({user_info.get('designation', '')}) "
-            f"from {org_name}. "
-            "Please provide accurate and relevant information based on the available context."
+            f"My name is {identity} from {org_name}. "
+            f"{suffix}"
         )
     return (
         "I am the user. "
-        f"My name is {user_info.get('fullName', 'a user')} "
-        f"({user_info.get('designation', '')}) "
-        "Please provide accurate and relevant information based on the available context."
+        f"My name is {identity}. "
+        f"{suffix}"
     )
 
 
@@ -350,11 +359,10 @@ def get_model_config_for_mode(chat_mode: str) -> dict[str, Any]:
             "max_tokens": 4096,
             "system_prompt": (
                 "You are an assistant. Answer queries in a professional, enterprise-appropriate format. "
-                "Answer based on the provided internal knowledge base documents/attachments. "
+                "You MUST ONLY answer based on the provided internal knowledge base documents/attachments. "
                 "Do NOT use your own training knowledge. "
-                "When the provided context blocks are insufficient to fully answer a query, "
-                "use the fetch_full_record tool to retrieve the complete record content "
-                "before concluding that information is unavailable."
+                "If the answer is not present in the provided context blocks, respond with: "
+                "'This information is not available in the internal knowledge base.'"
             )
         },
         "web_search": {
@@ -823,7 +831,7 @@ async def _generate_internal_search_stream(
             )
             is_multimodal_llm = config.get("isMultimodal")
             context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
-            use_compact_prompt = _is_small_model(config)
+            is_small_model = _is_small_model(config)
 
             if llm is None:
                 raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
@@ -959,7 +967,7 @@ async def _generate_internal_search_stream(
                     has_sql_connector=has_sql_connector,
                     blob_store=blob_store,
                     org_id=org_id,
-                    compact_mode=use_compact_prompt,
+                    compact_mode=is_small_model,
                 )
 
                 fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
@@ -1013,6 +1021,7 @@ async def _generate_internal_search_stream(
                 conversation_id=query_info.conversationId,
                 defer_tool_until_called_name="search_internal_knowledge" if deferred_tools else None,
                 deferred_tool=deferred_tools if deferred_tools else None,
+                is_small_model=is_small_model,
             ):
                 yield create_sse_event(stream_event["event"], stream_event["data"])
         except Exception as stream_error:
