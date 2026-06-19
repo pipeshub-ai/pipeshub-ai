@@ -11689,7 +11689,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             event_data = None
             try:
                 # Get file record for event payload
-                file_record = await self.get_document(record_id, CollectionNames.FILES.value)
+                file_record = await self.get_document(
+                    record_id, CollectionNames.FILES.value, transaction=transaction
+                )
 
                 # Determine if content changed (if file metadata provided, content likely changed)
                 content_changed = file_metadata is not None

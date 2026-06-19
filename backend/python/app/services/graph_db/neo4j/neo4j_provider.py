@@ -13396,7 +13396,9 @@ class Neo4jProvider(IGraphDBProvider):
             # Create event payload for router to publish (after successful update)
             event_data = None
             try:
-                file_record = await self.get_document(record_id, CollectionNames.FILES.value)
+                file_record = await self.get_document(
+                    record_id, CollectionNames.FILES.value, transaction=transaction
+                )
                 content_changed = file_metadata is not None
 
                 update_payload = await self._create_update_record_event_payload(
