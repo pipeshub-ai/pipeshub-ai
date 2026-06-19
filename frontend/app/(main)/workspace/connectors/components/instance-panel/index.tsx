@@ -142,14 +142,9 @@ export function InstanceManagementPanel() {
       return;
     }
 
-    if (instanceStats[instanceId]) {
-      setStatsLoading(false);
-      return;
-    }
-
     let cancelled = false;
     setStatsLoading(true);
-    void fetchInstanceStats(instanceId)
+    void fetchInstanceStats(instanceId, { force: true })
       .catch(() => {
         if (!cancelled) {
           addToast({
@@ -167,7 +162,7 @@ export function InstanceManagementPanel() {
     return () => {
       cancelled = true;
     };
-  }, [isInstancePanelOpen, instanceId, instanceId ? instanceStats[instanceId] : undefined, addToast, t]);
+  }, [isInstancePanelOpen, instanceId, addToast, t]);
 
   if (!selectedInstance) return null;
   const instanceConfig = instanceId ? instanceConfigs[instanceId] : undefined;

@@ -4,6 +4,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { Spinner } from '@/app/components/ui/spinner';
 import {
   deriveInstanceSetupStatus,
   deriveInstanceSyncOperation,
@@ -12,20 +13,21 @@ import {
 } from './instance-status';
 import type { ConnectorConfig, ConnectorInstance } from '../../types';
 
-const SYNC_ACCENT: Record<
+const SYNC_VALUE_COLOR: Record<
   NonNullable<ReturnType<typeof deriveInstanceSyncOperation>>['badgeColor'],
-  { bg: string; border: string; value: string }
+  string
 > = {
-  blue: {
-    bg: 'var(--blue-a3)',
-    border: 'var(--blue-a6)',
-    value: 'var(--blue-11)',
-  },
-  red: {
-    bg: 'var(--red-a3)',
-    border: 'var(--red-a6)',
-    value: 'var(--red-11)',
-  },
+  blue: 'var(--blue-11)',
+  red: 'var(--red-11)',
+};
+
+const ROW_LABEL_STYLE: React.CSSProperties = {
+  color: 'var(--gray-10)',
+  width: 164,
+  flexShrink: 0,
+  textTransform: 'uppercase',
+  letterSpacing: '0.04px',
+  lineHeight: '16px',
 };
 
 const SETUP_VALUE_COLOR: Record<
@@ -49,45 +51,43 @@ const SETUP_TOOLTIP_I18N: Record<InstanceSetupStatusKey, string> = {
   ready: 'workspace.connectors.instanceStatus.setup.readyTooltip',
 };
 
-const SYNC_I18N: Record<InstanceSyncOperationKey, string> = {
-  syncing: 'workspace.connectors.instanceStatus.sync.syncing',
-  full_syncing: 'workspace.connectors.instanceStatus.sync.fullSyncing',
-  deleting: 'workspace.connectors.instanceStatus.sync.removing',
+const SYNC_LABEL_DEFAULTS: Record<InstanceSyncOperationKey, string> = {
+  syncing: 'Sync in progress',
+  full_syncing: 'Full sync in progress',
+  deleting: 'Removing',
 };
 
-const SYNC_TOOLTIP_I18N: Record<InstanceSyncOperationKey, string> = {
-  syncing: 'workspace.connectors.instanceStatus.sync.syncingTooltip',
-  full_syncing: 'workspace.connectors.instanceStatus.sync.fullSyncingTooltip',
-  deleting: 'workspace.connectors.instanceStatus.sync.removingTooltip',
+const SYNC_TOOLTIP_DEFAULTS: Record<InstanceSyncOperationKey, string> = {
+  syncing: 'This connector is syncing new and updated content.',
+  full_syncing: 'This connector is running a full re-sync from the source.',
+  deleting: 'This connector instance is being removed.',
 };
 
-/** Compact sync pill in the card header (no "Sync" caption). Hidden when idle. */
-export function InstanceSyncOperationPill({ instance }: { instance: ConnectorInstance }) {
-  const { t } = useTranslation();
+/** Sync-in-progress indicator for the instance card action row. Hidden when idle. */
+export function InstanceSyncOperationIndicator({ instance }: { instance: ConnectorInstance }) {
   const syncOp = deriveInstanceSyncOperation(instance);
   if (!syncOp) return null;
 
-  const accent = SYNC_ACCENT[syncOp.badgeColor];
-  const label = t(SYNC_I18N[syncOp.key]);
+  const valueColor = SYNC_VALUE_COLOR[syncOp.badgeColor];
+  const label = SYNC_LABEL_DEFAULTS[syncOp.key];
+  const isInProgress = syncOp.key === 'syncing' || syncOp.key === 'full_syncing';
 
   return (
-    <Tooltip content={t(SYNC_TOOLTIP_I18N[syncOp.key])}>
+    <Tooltip content={SYNC_TOOLTIP_DEFAULTS[syncOp.key]}>
       <Flex
-        align="center"
-        gap="1"
+        role="status"
+        aria-live="polite"
         aria-label={label}
-        style={{
-          height: 32,
-          padding: '0 var(--space-3)',
-          borderRadius: 'var(--radius-2)',
-          backgroundColor: accent.bg,
-          border: `1px solid ${accent.border}`,
-          flexShrink: 0,
-          cursor: 'default',
-        }}
+        align="center"
+        gap="2"
+        style={{ flexShrink: 0, marginLeft: 'var(--space-2)' }}
       >
-        <MaterialIcon name={syncOp.icon} size={14} color={accent.value} />
-        <Text size="2" weight="medium" style={{ color: accent.value, whiteSpace: 'nowrap' }}>
+        {isInProgress ? (
+          <Spinner size={14} color={valueColor} ariaLabel={label} />
+        ) : (
+          <MaterialIcon name={syncOp.icon} size={14} color={valueColor} />
+        )}
+        <Text size="2" weight="medium" style={{ color: valueColor, whiteSpace: 'nowrap', lineHeight: '20px' }}>
           {label}
         </Text>
       </Flex>
@@ -114,14 +114,7 @@ export function InstanceSetupStatusRow({
         <Text
           size="1"
           weight="medium"
-          style={{
-            color: 'var(--gray-10)',
-            width: 164,
-            flexShrink: 0,
-            textTransform: 'uppercase',
-            letterSpacing: '0.04px',
-            lineHeight: '16px',
-          }}
+          style={ROW_LABEL_STYLE}
         >
           {t('workspace.connectors.instanceStatus.setup.rowLabel')}
         </Text>
