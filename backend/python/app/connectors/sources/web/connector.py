@@ -841,6 +841,10 @@ class WebConnector(BaseConnector):
                     pair: Tuple[Record, List[Permission]] = (record_update.record, record_update.new_permissions)
                     await self.data_entities_processor.on_new_records([pair])
                     self.processed_urls += 1
+                elif self.full_sync and record_update.record is not None:
+                    self.logger.debug("Reconstructing permissions for record: %s (id: %s)", record_update.record.record_name, record_update.record.id)
+                    await self.data_entities_processor.on_updated_record_permissions(record_update.record, record_update.new_permissions)
+                    self.processed_urls += 1
                 self.logger.info(f"✅ Indexed single page: {url}")
 
         except Exception as e:
