@@ -3,6 +3,10 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import axios from 'axios'
 import { ConnectorServiceCommand } from '../../../../src/libs/commands/connector_service/connector.service.command'
+import {
+  BadRequestError,
+  InternalServerError,
+} from '../../../../src/libs/errors/http.errors'
 import * as kbUtils from '../../../../src/modules/knowledge_base/utils/utils'
 import {
   getKnowledgeHubNodes,
@@ -173,6 +177,59 @@ function stubFolderUploadPreValidationFailure(
     statusCode: validationStatusCode,
     data: { detail: validationDetail },
   })
+  return executeStub
+}
+
+/** Sample file buffer body for updateRecord file-replace tests. */
+const UPDATE_RECORD_FILE_BUFFER = {
+  fileBuffer: {
+    originalname: 'report.pdf',
+    mimetype: 'application/pdf',
+    size: 4096,
+    lastModified: Date.now(),
+    buffer: Buffer.from('new file content'),
+  },
+}
+
+/**
+ * Stub connector calls for updateRecord file-replace flow:
+ *   1. GET existing record (for externalRecordId)
+ *   2. PUT update record (after storage upload)
+ */
+function stubUpdateRecordFileUploadConnectorCalls(options: {
+  existingExternalRecordId?: string | null
+  updatedRecord?: Record<string, any>
+  getRecordStatus?: number
+  updateRecordStatus?: number
+} = {}): sinon.SinonStub {
+  const executeStub = sinon.stub(ConnectorServiceCommand.prototype, 'execute')
+  const externalRecordId =
+    options.existingExternalRecordId === undefined
+      ? 'ext-doc-123'
+      : options.existingExternalRecordId
+
+  executeStub.onFirstCall().resolves({
+    statusCode: options.getRecordStatus ?? 200,
+    data: {
+      record:
+        externalRecordId != null
+          ? { externalRecordId }
+          : { externalRecordId: null },
+    },
+  })
+
+  executeStub.onSecondCall().resolves({
+    statusCode: options.updateRecordStatus ?? 200,
+    data: {
+      updatedRecord: options.updatedRecord ?? {
+        _key: 'r1',
+        recordName: 'report',
+        externalRecordId: externalRecordId ?? undefined,
+        version: 2,
+      },
+    },
+  })
+
   return executeStub
 }
 
@@ -2973,18 +3030,8 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should update record with file upload', async () => {
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: {
-          updatedRecord: {
-            _key: 'r1',
-            recordName: 'report',
-            externalRecordId: 'ext-doc-123',
-            version: 2,
-          },
-        },
-      })
-      sinon.stub(kbUtils, 'uploadNextVersionToStorage').resolves()
+      const connectorStub = stubUpdateRecordFileUploadConnectorCalls()
+      const uploadStub = sinon.stub(kbUtils, 'uploadNextVersionToStorage').resolves()
 
       const handler = updateRecord(
         createMockKeyValueStore(),
@@ -2994,13 +3041,7 @@ describe('Knowledge Base Controller', () => {
         params: { recordId: 'r1' },
         body: {
           recordName: 'report',
-          fileBuffer: {
-            originalname: 'report.pdf',
-            mimetype: 'application/pdf',
-            size: 4096,
-            lastModified: Date.now(),
-            buffer: Buffer.from('new file content'),
-          },
+          ...UPDATE_RECORD_FILE_BUFFER,
         },
       })
       const res = createMockResponse()
@@ -3008,12 +3049,14 @@ describe('Knowledge Base Controller', () => {
 
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-        const response = res.json.firstCall.args[0]
-        expect(response.message).to.equal('Record updated with new file version')
-        expect(response.fileUploaded).to.be.true
-      }
+      expect(next.called).to.be.false
+      expect(connectorStub.callCount).to.equal(2)
+      expect(uploadStub.calledOnce).to.be.true
+      expect(uploadStub.firstCall.args[2]).to.equal('ext-doc-123')
+      expect(res.status.calledWith(200)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.message).to.equal('Record updated with new file version')
+      expect(response.fileUploaded).to.be.true
     })
 
     it('should use originalname when recordName is not provided', async () => {
@@ -3047,17 +3090,7 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when storage upload fails with 404', async () => {
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: {
-          updatedRecord: {
-            _key: 'r1',
-            recordName: 'report',
-            externalRecordId: 'ext-doc-123',
-            version: 2,
-          },
-        },
-      })
+      const connectorStub = stubUpdateRecordFileUploadConnectorCalls()
       const storageError: any = new Error('Not found in storage')
       storageError.response = { status: 404 }
       sinon.stub(kbUtils, 'uploadNextVersionToStorage').rejects(storageError)
@@ -3068,15 +3101,7 @@ describe('Knowledge Base Controller', () => {
       )
       const req = createMockRequest({
         params: { recordId: 'r1' },
-        body: {
-          fileBuffer: {
-            originalname: 'report.pdf',
-            mimetype: 'application/pdf',
-            size: 4096,
-            lastModified: Date.now(),
-            buffer: Buffer.from('new content'),
-          },
-        },
+        body: UPDATE_RECORD_FILE_BUFFER,
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -3084,20 +3109,12 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
+      expect(connectorStub.callCount).to.equal(1)
     })
 
     it('should call next when storage upload fails with non-404 error', async () => {
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: {
-          updatedRecord: {
-            _key: 'r1',
-            recordName: 'report',
-            externalRecordId: 'ext-doc-123',
-            version: 2,
-          },
-        },
-      })
+      const connectorStub = stubUpdateRecordFileUploadConnectorCalls()
       sinon.stub(kbUtils, 'uploadNextVersionToStorage').rejects(new Error('Storage timeout'))
 
       const handler = updateRecord(
@@ -3106,15 +3123,7 @@ describe('Knowledge Base Controller', () => {
       )
       const req = createMockRequest({
         params: { recordId: 'r1' },
-        body: {
-          fileBuffer: {
-            originalname: 'report.pdf',
-            mimetype: 'application/pdf',
-            size: 4096,
-            lastModified: Date.now(),
-            buffer: Buffer.from('new content'),
-          },
-        },
+        body: UPDATE_RECORD_FILE_BUFFER,
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -3122,20 +3131,16 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
+      expect(next.firstCall.args[0].message).to.include('File upload failed')
+      expect(connectorStub.callCount).to.equal(1)
     })
 
-    it('should call next when updated record has no externalRecordId for file upload', async () => {
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: {
-          updatedRecord: {
-            _key: 'r1',
-            recordName: 'report',
-            externalRecordId: null, // no external ID
-            version: 2,
-          },
-        },
+    it('should call next when existing record has no externalRecordId for file upload', async () => {
+      const connectorStub = stubUpdateRecordFileUploadConnectorCalls({
+        existingExternalRecordId: null,
       })
+      const uploadStub = sinon.stub(kbUtils, 'uploadNextVersionToStorage').resolves()
 
       const handler = updateRecord(
         createMockKeyValueStore(),
@@ -3143,15 +3148,7 @@ describe('Knowledge Base Controller', () => {
       )
       const req = createMockRequest({
         params: { recordId: 'r1' },
-        body: {
-          fileBuffer: {
-            originalname: 'report.pdf',
-            mimetype: 'application/pdf',
-            size: 4096,
-            lastModified: Date.now(),
-            buffer: Buffer.from('new content'),
-          },
-        },
+        body: UPDATE_RECORD_FILE_BUFFER,
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -3159,18 +3156,18 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(connectorStub.callCount).to.equal(1)
+      expect(uploadStub.called).to.be.false
     })
 
     it('should handle file with no extension in filename', async () => {
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: {
-          updatedRecord: {
-            _key: 'r1',
-            recordName: 'Dockerfile',
-            externalRecordId: 'ext-123',
-            version: 2,
-          },
+      const connectorStub = stubUpdateRecordFileUploadConnectorCalls({
+        updatedRecord: {
+          _key: 'r1',
+          recordName: 'Dockerfile',
+          externalRecordId: 'ext-123',
+          version: 2,
         },
       })
       sinon.stub(kbUtils, 'uploadNextVersionToStorage').resolves()
@@ -3196,9 +3193,33 @@ describe('Knowledge Base Controller', () => {
 
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
+      expect(next.called).to.be.false
+      expect(connectorStub.callCount).to.equal(2)
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('should call next when GET existing record fails before file upload', async () => {
+      const connectorStub = stubUpdateRecordFileUploadConnectorCalls({
+        getRecordStatus: 404,
+      })
+      const uploadStub = sinon.stub(kbUtils, 'uploadNextVersionToStorage').resolves()
+
+      const handler = updateRecord(
+        createMockKeyValueStore(),
+        createMockAppConfig(),
+      )
+      const req = createMockRequest({
+        params: { recordId: 'r1' },
+        body: UPDATE_RECORD_FILE_BUFFER,
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(connectorStub.callCount).to.equal(1)
+      expect(uploadStub.called).to.be.false
     })
 
     it('should call next when connector command throws', async () => {

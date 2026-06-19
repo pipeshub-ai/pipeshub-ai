@@ -10550,9 +10550,13 @@ class Neo4jProvider(IGraphDBProvider):
                 "origin": record_doc.get("origin"),
                 "extension": file_doc.get("extension", ""),
                 "mimeType": file_doc.get("mimeType", ""),
-                "createdAtTimestamp": str(record_doc.get("createdAtTimestamp", timestamp)),
-                "updatedAtTimestamp": str(record_doc.get("updatedAtTimestamp", timestamp)),
-                "sourceCreatedAtTimestamp": str(record_doc.get("sourceCreatedAtTimestamp", record_doc.get("createdAtTimestamp", timestamp))),
+                "createdAtTimestamp": str(record_doc.get("createdAtTimestamp") or timestamp),
+                "updatedAtTimestamp": str(record_doc.get("updatedAtTimestamp") or timestamp),
+                "sourceCreatedAtTimestamp": str(
+                    record_doc.get("sourceCreatedAtTimestamp")
+                    or record_doc.get("createdAtTimestamp")
+                    or timestamp
+                ),
             }
 
         except Exception:
@@ -10574,7 +10578,7 @@ class Neo4jProvider(IGraphDBProvider):
             endpoints = await self.config_service.get_config(
                 config_node_constants.ENDPOINTS.value
             )
-            storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+            storage_url = (endpoints or {}).get("storage", {}).get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
 
             record_id = record.get("_key") or record.get("id")
             signed_url_route = f"{storage_url}/api/v1/document/internal/{record.get('externalRecordId')}/download"
@@ -10592,8 +10596,12 @@ class Neo4jProvider(IGraphDBProvider):
                 "extension": extension,
                 "mimeType": mime_type,
                 "signedUrlRoute": signed_url_route,
-                "updatedAtTimestamp": str(record.get("updatedAtTimestamp", get_epoch_timestamp_in_ms())),
-                "sourceLastModifiedTimestamp": str(record.get("sourceLastModifiedTimestamp", record.get("updatedAtTimestamp", get_epoch_timestamp_in_ms()))),
+                "updatedAtTimestamp": str(record.get("updatedAtTimestamp") or get_epoch_timestamp_in_ms()),
+                "sourceLastModifiedTimestamp": str(
+                    record.get("sourceLastModifiedTimestamp")
+                    or record.get("updatedAtTimestamp")
+                    or get_epoch_timestamp_in_ms()
+                ),
                 "contentChanged": content_changed,
             }
         except Exception as e:
@@ -10669,10 +10677,10 @@ class Neo4jProvider(IGraphDBProvider):
             file_content = ""
 
             if record.get("origin") == OriginTypes.UPLOAD.value:
-                storage_url = endpoints.get("storage", {}).get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+                storage_url = (endpoints or {}).get("storage", {}).get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
                 signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
             else:
-                connector_url = endpoints.get("connectors", {}).get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+                connector_url = (endpoints or {}).get("connectors", {}).get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
                 signed_url_route = f"{connector_url}/api/v1/{record.get('orgId')}/{user_id}/{record.get('connectorName', '').lower()}/record/{record_key}/signedUrl"
 
                 if record.get("recordType") == "MAIL":
@@ -10690,9 +10698,13 @@ class Neo4jProvider(IGraphDBProvider):
                             "mimeType": mime_type,
                             "body": file_content,
                             "connectorId": record.get("connectorId", ""),
-                            "createdAtTimestamp": str(record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())),
+                            "createdAtTimestamp": str(record.get("createdAtTimestamp") or get_epoch_timestamp_in_ms()),
                             "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
-                            "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())))
+                            "sourceCreatedAtTimestamp": str(
+                                record.get("sourceCreatedAtTimestamp")
+                                or record.get("createdAtTimestamp")
+                                or get_epoch_timestamp_in_ms()
+                            )
                         }
                     except Exception as decode_error:
                         self.logger.warning(f"Failed to decode file content as UTF-8: {str(decode_error)}")
@@ -10710,9 +10722,13 @@ class Neo4jProvider(IGraphDBProvider):
                 "mimeType": mime_type,
                 "body": file_content,
                 "connectorId": record.get("connectorId", ""),
-                "createdAtTimestamp": str(record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())),
+                "createdAtTimestamp": str(record.get("createdAtTimestamp") or get_epoch_timestamp_in_ms()),
                 "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
-                "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())))
+                "sourceCreatedAtTimestamp": str(
+                    record.get("sourceCreatedAtTimestamp")
+                    or record.get("createdAtTimestamp")
+                    or get_epoch_timestamp_in_ms()
+                )
             }
 
         except Exception as e:
