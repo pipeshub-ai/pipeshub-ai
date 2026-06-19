@@ -278,7 +278,7 @@ class TestParentChildLinkage:
 
     def test_group_direct_self_reference_cycle(self):
         container = _container(block_groups=[_block_group(0, parent_index=0)])
-        _assert_raises_with_codes(container, "PARENT_INDEX_CYCLE")
+        _assert_raises_with_codes(container, "PARENT_INDEX_SELF_REFERENCE")
 
     def test_group_two_hop_cycle(self):
         container = _container(

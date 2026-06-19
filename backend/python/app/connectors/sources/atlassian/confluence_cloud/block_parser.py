@@ -524,6 +524,19 @@ class ConfluenceBlockParser:
         """Parse blockquote node into TEXT block with QUOTE sub_type."""
         content = node.get("content", [])
 
+        # Create wrapper BlockGroup for quote first and append before processing children
+        group_index = len(block_groups)
+        group = BlockGroup(
+            id=str(uuid4()),
+            index=group_index,
+            parent_index=parent_group_index,
+            type=GroupType.TEXT_SECTION,
+            sub_type=GroupSubType.QUOTE,
+            source_group_id=node.get("attrs", {}).get("localId"),
+            weburl=self._normalize_url(parent_page_url),
+        )
+        block_groups.append(group)
+
         # Process child nodes recursively
         child_indices: list[BlockContainerIndex] = []
         for child_node in content:
@@ -531,7 +544,7 @@ class ConfluenceBlockParser:
                 node=child_node,
                 blocks=blocks,
                 block_groups=block_groups,
-                parent_group_index=parent_group_index,
+                parent_group_index=group_index,
                 media_fetcher=media_fetcher,
                 parent_page_url=parent_page_url,
                 page_id=page_id,
@@ -540,24 +553,12 @@ class ConfluenceBlockParser:
             )
             child_indices.extend(child_result)
 
-        # Create wrapper BlockGroup for quote
+        # Update children after processing
         if child_indices:
-            group_index = len(block_groups)
-            group = BlockGroup(
-                id=str(uuid4()),
-                index=group_index,
-                parent_index=parent_group_index,
-                type=GroupType.TEXT_SECTION,
-                sub_type=GroupSubType.QUOTE,
-                children=BlockGroupChildren.from_indices(
-                    block_indices=[idx.block_index for idx in child_indices if idx.block_index is not None],
-                    block_group_indices=[idx.block_group_index for idx in child_indices if idx.block_group_index is not None],
-                ),
-                source_group_id=node.get("attrs", {}).get("localId"),
-                weburl=self._normalize_url(parent_page_url),
+            group.children = BlockGroupChildren.from_indices(
+                block_indices=[idx.block_index for idx in child_indices if idx.block_index is not None],
+                block_group_indices=[idx.block_group_index for idx in child_indices if idx.block_group_index is not None],
             )
-            block_groups.append(group)
-
             # Update child blocks/groups to point to this group
             for idx in child_indices:
                 if idx.block_index is not None and idx.block_index < len(blocks):
@@ -565,9 +566,7 @@ class ConfluenceBlockParser:
                 if idx.block_group_index is not None and idx.block_group_index < len(block_groups):
                     block_groups[idx.block_group_index].parent_index = group_index
 
-            return [BlockContainerIndex(block_group_index=group_index)]
-
-        return []
+        return [BlockContainerIndex(block_group_index=group_index)]
 
     async def _parse_codeBlock(
         self,
@@ -1317,8 +1316,20 @@ class ConfluenceBlockParser:
         panel_type = attrs.get("panelType", "info")
         content = node.get("content", [])
 
-        # Create panel group
+        # Create panel group first and append before processing children
         group_index = len(block_groups)
+        panel_group = BlockGroup(
+            id=str(uuid4()),
+            index=group_index,
+            parent_index=parent_group_index,
+            type=GroupType.TEXT_SECTION,
+            sub_type=GroupSubType.CALLOUT,
+            name=panel_type.upper(),
+            description=f"{panel_type} panel",
+            source_group_id=attrs.get("localId"),
+            weburl=self._normalize_url(parent_page_url),
+        )
+        block_groups.append(panel_group)
 
         # Process child nodes
         child_indices: list[BlockContainerIndex] = []
@@ -1336,32 +1347,18 @@ class ConfluenceBlockParser:
             )
             child_indices.extend(child_result)
 
-        if not child_indices:
-            return []
-
-        panel_group = BlockGroup(
-            id=str(uuid4()),
-            index=group_index,
-            parent_index=parent_group_index,
-            type=GroupType.TEXT_SECTION,
-            sub_type=GroupSubType.CALLOUT,
-            name=panel_type.upper(),
-            description=f"{panel_type} panel",
-            children=BlockGroupChildren.from_indices(
+        # Update children after processing
+        if child_indices:
+            panel_group.children = BlockGroupChildren.from_indices(
                 block_indices=[idx.block_index for idx in child_indices if idx.block_index is not None],
                 block_group_indices=[idx.block_group_index for idx in child_indices if idx.block_group_index is not None],
-            ),
-            source_group_id=attrs.get("localId"),
-            weburl=self._normalize_url(parent_page_url),
-        )
-        block_groups.append(panel_group)
-
-        # Update children to point to this group
-        for idx in child_indices:
-            if idx.block_index is not None and idx.block_index < len(blocks):
-                blocks[idx.block_index].parent_index = group_index
-            if idx.block_group_index is not None and idx.block_group_index < len(block_groups):
-                block_groups[idx.block_group_index].parent_index = group_index
+            )
+            # Update children to point to this group
+            for idx in child_indices:
+                if idx.block_index is not None and idx.block_index < len(blocks):
+                    blocks[idx.block_index].parent_index = group_index
+                if idx.block_group_index is not None and idx.block_group_index < len(block_groups):
+                    block_groups[idx.block_group_index].parent_index = group_index
 
         return [BlockContainerIndex(block_group_index=group_index)]
 
@@ -1382,8 +1379,20 @@ class ConfluenceBlockParser:
         title = attrs.get("title", "Details")
         content = node.get("content", [])
 
-        # Create expand group
+        # Create expand group first and append before processing children
         group_index = len(block_groups)
+        expand_group = BlockGroup(
+            id=str(uuid4()),
+            index=group_index,
+            parent_index=parent_group_index,
+            type=GroupType.TEXT_SECTION,
+            sub_type=GroupSubType.TOGGLE,
+            name=title,
+            description=f"Expandable section: {title}",
+            source_group_id=attrs.get("localId"),
+            weburl=self._normalize_url(parent_page_url),
+        )
+        block_groups.append(expand_group)
 
         # Process child nodes
         child_indices: list[BlockContainerIndex] = []
@@ -1401,32 +1410,18 @@ class ConfluenceBlockParser:
             )
             child_indices.extend(child_result)
 
-        if not child_indices:
-            return []
-
-        expand_group = BlockGroup(
-            id=str(uuid4()),
-            index=group_index,
-            parent_index=parent_group_index,
-            type=GroupType.TEXT_SECTION,
-            sub_type=GroupSubType.TOGGLE,
-            name=title,
-            description=f"Expandable section: {title}",
-            children=BlockGroupChildren.from_indices(
+        # Update children after processing
+        if child_indices:
+            expand_group.children = BlockGroupChildren.from_indices(
                 block_indices=[idx.block_index for idx in child_indices if idx.block_index is not None],
                 block_group_indices=[idx.block_group_index for idx in child_indices if idx.block_group_index is not None],
-            ),
-            source_group_id=attrs.get("localId"),
-            weburl=self._normalize_url(parent_page_url),
-        )
-        block_groups.append(expand_group)
-
-        # Update children to point to this group
-        for idx in child_indices:
-            if idx.block_index is not None and idx.block_index < len(blocks):
-                blocks[idx.block_index].parent_index = group_index
-            if idx.block_group_index is not None and idx.block_group_index < len(block_groups):
-                block_groups[idx.block_group_index].parent_index = group_index
+            )
+            # Update children to point to this group
+            for idx in child_indices:
+                if idx.block_index is not None and idx.block_index < len(blocks):
+                    blocks[idx.block_index].parent_index = group_index
+                if idx.block_group_index is not None and idx.block_group_index < len(block_groups):
+                    block_groups[idx.block_group_index].parent_index = group_index
 
         return [BlockContainerIndex(block_group_index=group_index)]
 
