@@ -1829,10 +1829,10 @@
         },
         "sync": {
           "kind": "Sync",
-          "syncing": "Sincronizando",
-          "syncingTooltip": "Hay un trabajo de sincronización en curso para esta instancia.",
-          "fullSyncing": "Sync completo",
-          "fullSyncingTooltip": "Hay una sincronización completa en curso para esta instancia.",
+          "syncing": "Sincronización en curso",
+          "syncingTooltip": "Este conector está sincronizando contenido nuevo y actualizado.",
+          "fullSyncing": "Sincronización completa en curso",
+          "fullSyncingTooltip": "Este conector está ejecutando una resincronización completa desde el origen.",
           "removing": "Eliminando",
           "removingTooltip": "Esta instancia se está eliminando."
         }

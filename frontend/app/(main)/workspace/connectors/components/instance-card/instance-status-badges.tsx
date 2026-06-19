@@ -51,6 +51,18 @@ const SETUP_TOOLTIP_I18N: Record<InstanceSetupStatusKey, string> = {
   ready: 'workspace.connectors.instanceStatus.setup.readyTooltip',
 };
 
+const SYNC_I18N: Record<InstanceSyncOperationKey, string> = {
+  syncing: 'workspace.connectors.instanceStatus.sync.syncing',
+  full_syncing: 'workspace.connectors.instanceStatus.sync.fullSyncing',
+  deleting: 'workspace.connectors.instanceStatus.sync.removing',
+};
+
+const SYNC_TOOLTIP_I18N: Record<InstanceSyncOperationKey, string> = {
+  syncing: 'workspace.connectors.instanceStatus.sync.syncingTooltip',
+  full_syncing: 'workspace.connectors.instanceStatus.sync.fullSyncingTooltip',
+  deleting: 'workspace.connectors.instanceStatus.sync.removingTooltip',
+};
+
 const SYNC_LABEL_DEFAULTS: Record<InstanceSyncOperationKey, string> = {
   syncing: 'Sync in progress',
   full_syncing: 'Full sync in progress',
@@ -65,15 +77,19 @@ const SYNC_TOOLTIP_DEFAULTS: Record<InstanceSyncOperationKey, string> = {
 
 /** Sync-in-progress indicator for the instance card action row. Hidden when idle. */
 export function InstanceSyncOperationIndicator({ instance }: { instance: ConnectorInstance }) {
+  const { t } = useTranslation();
   const syncOp = deriveInstanceSyncOperation(instance);
   if (!syncOp) return null;
 
   const valueColor = SYNC_VALUE_COLOR[syncOp.badgeColor];
-  const label = SYNC_LABEL_DEFAULTS[syncOp.key];
+  const label = t(SYNC_I18N[syncOp.key], { defaultValue: SYNC_LABEL_DEFAULTS[syncOp.key] });
+  const tooltipContent = t(SYNC_TOOLTIP_I18N[syncOp.key], {
+    defaultValue: SYNC_TOOLTIP_DEFAULTS[syncOp.key],
+  });
   const isInProgress = syncOp.key === 'syncing' || syncOp.key === 'full_syncing';
 
   return (
-    <Tooltip content={SYNC_TOOLTIP_DEFAULTS[syncOp.key]}>
+    <Tooltip content={tooltipContent}>
       <Flex
         role="status"
         aria-live="polite"

@@ -25,8 +25,18 @@ function isIdleSyncStatus(status?: string | null): boolean {
 }
 
 function persistConnectorSyncStatus(connectorId: string, status: string): void {
-  useConnectorsStore.getState().upsertConnectorInstance({
-    _key: connectorId,
+  const state = useConnectorsStore.getState();
+  const existing =
+    state.activeConnectors.find((c) => c._key === connectorId) ??
+    state.instances.find((c) => c._key === connectorId) ??
+    (state.selectedInstance?._key === connectorId ? state.selectedInstance : undefined);
+
+  if (!existing) {
+    return;
+  }
+
+  state.upsertConnectorInstance({
+    ...existing,
     status,
   } as ConnectorInstance);
 }
