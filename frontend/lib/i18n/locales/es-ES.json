@@ -2673,5 +2673,26 @@
     "title": "No se puede conectar al servidor",
     "description": "El servidor no está disponible en este momento. Es posible que se esté iniciando o en mantenimiento. Estamos intentando reconectar.",
     "contactAdmin": "Si el problema persiste, comuníquese con su administrador de PipesHub."
+  },
+  "askUserQuestion": {
+    "questionsHeadingSingular": "Pregunta :",
+    "questionsHeadingPlural": "Preguntas :",
+    "answered": "Respondido",
+    "showLess": "Mostrar menos",
+    "showMore": "Mostrar más",
+    "noPreference": "[Sin preferencia]",
+    "somethingElse": "Otra cosa",
+    "questionAskedSingular": "Pregunta realizada:",
+    "questionAskedPlural": "Preguntas realizadas:",
+    "quickQuestionSingular": "Pregunta rápida :",
+    "quickQuestionPlural": "Preguntas rápidas :",
+    "stepOf": "Paso {{step}} de {{total}}",
+    "selectedCount": "{{count}} seleccionados",
+    "describeYourAnswer": "Describe tu respuesta…",
+    "typeYourAnswer": "Escribe tu respuesta…",
+    "back": "Atrás",
+    "skip": "Omitir",
+    "next": "Siguiente",
+    "submit": "Enviar"
   }
 }

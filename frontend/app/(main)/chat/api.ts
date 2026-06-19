@@ -19,6 +19,7 @@ import {
   SSECompleteEvent,
   SSEErrorEvent,
   SSEArtifactEvent,
+  SSEAskUserQuestionEvent,
   AvailableLlmModel,
   SearchRequest,
   SearchResponse,
@@ -44,6 +45,7 @@ export interface StreamMessageCallbacks {
   onArtifact?: (data: SSEArtifactEvent) => void;
   /** Backend is discarding partial output (citation verify / re-parse) — clear UI buffer */
   onRestreaming?: () => void;
+  onAskUserQuestion?: (data: SSEAskUserQuestionEvent) => void;
   onError?: (error: Error) => void;
   signal?: AbortSignal;
 }
@@ -312,6 +314,9 @@ export const ChatApi = {
             case 'restreaming':
               callbacks.onRestreaming?.();
               break;
+            case 'ask_user_question':
+              callbacks.onAskUserQuestion?.(event.data as SSEAskUserQuestionEvent);
+              break;
             case 'tool_call':
             case 'tool_success':
             case 'tool_error':
@@ -416,6 +421,9 @@ export const ChatApi = {
             case 'restreaming':
               callbacks.onRestreaming?.();
               break;
+            case 'ask_user_question':
+              callbacks.onAskUserQuestion?.(event.data as SSEAskUserQuestionEvent);
+              break;
             case 'tool_call':
             case 'tool_success':
             case 'tool_error':
@@ -503,6 +511,9 @@ export const ChatApi = {
               break;
             case 'restreaming':
               callbacks.onRestreaming?.();
+              break;
+            case 'ask_user_question':
+              callbacks.onAskUserQuestion?.(event.data as SSEAskUserQuestionEvent);
               break;
             case 'tool_call':
             case 'tool_success':

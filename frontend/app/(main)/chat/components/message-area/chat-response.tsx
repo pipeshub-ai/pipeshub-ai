@@ -13,13 +13,16 @@ import { MessageActions } from './message-actions';
 import { SourcesTab } from './response-tabs/citations/sources-tab';
 import { CitationsTab } from './response-tabs/citations/citations-tab';
 import { ArtifactsPanel } from './artifacts-panel';
+import { AskUserQuestionCard } from './ask-user-question-card';
+import { streamMessageForSlot } from '../../streaming';
+import { buildStreamChatRequestForSlot } from '../../runtime';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData } from '../../types';
+import type { AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData } from '../../types';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
@@ -60,6 +63,16 @@ function formatMessageTime(isoString: string): string {
   });
 }
 
+function buildQuestionCardReadAloudText(payload: AskUserQuestionPayload): string {
+  const parts: string[] = [];
+  if (payload.userIntent) parts.push(payload.userIntent);
+  payload.questions.forEach((q, i) => {
+    parts.push(`Question ${i + 1}: ${q.question}`);
+    q.options.forEach((opt) => parts.push(`Option: ${opt.label}`));
+  });
+  return parts.join('. ');
+}
+
 interface FeedbackInfo {
   value?: 'like' | 'dislike';
 }
@@ -96,6 +109,10 @@ interface ChatResponseProps {
   createdAt?: string;
   /** Attachments uploaded with this user query (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
+  /** Persisted ask_user_question payload from a historical tool_call — renders read-only question card */
+  persistedAskUserQuestion?: AskUserQuestionPayload;
+  /** Persisted feedback value from the backend — initialises the like/dislike button state */
+  feedbackInfo?: { value?: 'like' | 'dislike' };
 }
 
 export const ChatResponse = React.memo(function ChatResponse({
@@ -117,6 +134,8 @@ export const ChatResponse = React.memo(function ChatResponse({
   streamingArtifacts,
   citationMessageRowKey,
   createdAt,
+  persistedAskUserQuestion,
+  feedbackInfo,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
@@ -139,7 +158,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     question, answer, citationMaps, citationCallbacks, confidence,
     isStreaming, modelInfo, collections, appliedFilters, messageId,
     isLastMessage, streamingContent, currentStatusMessage: currentStatusMessageProp,
-    streamingCitationMaps, createdAt,
+    streamingCitationMaps, createdAt, persistedAskUserQuestion,
   };
   const crReasons: string[] = [];
   for (const [k, v] of Object.entries(currentCRVals)) {
@@ -221,6 +240,16 @@ export const ChatResponse = React.memo(function ChatResponse({
     },
     [setPreviewFile, setPreviewMode],
   );
+  const pendingAskUserQuestion = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.pendingAskUserQuestion ?? null : null
+  );
+
+  const askQuestionMatchesRow =
+    Boolean(
+      pendingAskUserQuestion &&
+      citationMessageRowKey &&
+      pendingAskUserQuestion.assistantMessageId === citationMessageRowKey
+    );
 
   // If another message was expanded (or expansion was cleared), reset to 'answer'.
   // We only react when our localTab is non-answer — avoids unnecessary effects.
@@ -342,8 +371,11 @@ export const ChatResponse = React.memo(function ChatResponse({
             {/* Show confidence only when not streaming and has answer */}
             {!isStreaming && confidence && <ConfidenceIndicator confidence={confidence} />}
 
-            {/* Show content - either streaming or final */}
-            {displayContent && (
+            {/* Show content - either streaming or final.
+                Suppressed when an ask_user_question card (streaming or persisted)
+                owns this row so partial/final answer chunks are not shown
+                above the question card. */}
+            {displayContent && !askQuestionMatchesRow && !persistedAskUserQuestion && (
               <AnswerContent
                 content={displayContent}
                 citationMaps={effectiveCitationMaps}
@@ -351,25 +383,19 @@ export const ChatResponse = React.memo(function ChatResponse({
               />
             )}
 
-            {/* Legacy download buttons for ::download_conversation_task markers
-                (e.g. "CSV of full query results"). Works for both S3 presigned
-                URLs and local storage endpoints — see DownloadTasks for the
-                auth-handling split. */}
-            {downloadTasks.length > 0 && <DownloadTasks tasks={downloadTasks} />}
+            {/* Legacy download buttons */}
+            {downloadTasks.length > 0 && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+              <DownloadTasks tasks={downloadTasks} />
+            )}
 
-            {/* Artifacts generated by sandbox tools — streamed live via SSE
-                during generation, then persisted as markers in the saved
-                answer content so they keep rendering on historical loads. */}
-            {effectiveArtifacts.length > 0 && (
+            {/* Artifacts generated by sandbox tools */}
+            {effectiveArtifacts.length > 0 && !askQuestionMatchesRow && !persistedAskUserQuestion && (
               <ArtifactsPanel
                 artifacts={effectiveArtifacts}
                 onPreview={async (artifact) => {
                   if (artifact.recordId) {
                     try {
                       const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
-                      // PPT/PPTX and legacy Word (.doc) need server-side PDF
-                      // conversion — mirror the citation preview flow so the
-                      // browser actually has a renderer for the returned blob.
                       const streamAsPdf =
                         isPresentationFile(artifact.mimeType, artifact.fileName) ||
                         isLegacyWordDocFile(artifact.mimeType, artifact.fileName);
@@ -386,9 +412,6 @@ export const ChatResponse = React.memo(function ChatResponse({
                         blob,
                         !!streamOptions,
                       );
-                      // DOCX is rendered client-side directly from the Blob;
-                      // everything else uses an object URL (consistent with
-                      // the citation preview path).
                       const isDocx = isDocxFile(artifact.mimeType, artifact.fileName);
                       const objectUrl = isDocx ? '' : URL.createObjectURL(blob);
                       useChatStore.getState().setPreviewFile({
@@ -418,6 +441,42 @@ export const ChatResponse = React.memo(function ChatResponse({
                 }}
               />
             )}
+
+            {/* Persisted ask_user_question from historical tool_call — read-only display */}
+            {persistedAskUserQuestion && !askQuestionMatchesRow ? (
+              <AskUserQuestionCard
+                payload={persistedAskUserQuestion}
+                initialAnswers={{}}
+                status="persisted"
+              />
+            ) : null}
+
+            {/* Active (streaming/pending) ask_user_question card */}
+            {askQuestionMatchesRow && pendingAskUserQuestion ? (
+              <AskUserQuestionCard
+                payload={pendingAskUserQuestion.payload}
+                initialAnswers={pendingAskUserQuestion.answers}
+                status={pendingAskUserQuestion.status}
+                onAnswersChange={(nextAnswers) => {
+                  const sid = useChatStore.getState().activeSlotId;
+                  const p = sid ? useChatStore.getState().slots[sid]?.pendingAskUserQuestion : null;
+                  if (!sid || !p) return;
+                  useChatStore.getState().updateSlot(sid, {
+                    pendingAskUserQuestion: { ...p, answers: nextAnswers },
+                  });
+                }}
+                onSubmit={(message, nextAnswers) => {
+                  const sid = useChatStore.getState().activeSlotId;
+                  const p = sid ? useChatStore.getState().slots[sid]?.pendingAskUserQuestion : null;
+                  if (!sid || !p) return;
+                  useChatStore.getState().updateSlot(sid, {
+                    pendingAskUserQuestion: { ...p, answers: nextAnswers, status: 'submitted' },
+                  });
+                  const request = buildStreamChatRequestForSlot(sid, message);
+                  if (request) void streamMessageForSlot(sid, message, request);
+                }}
+              />
+            ) : null}
           </Box>
         );
       case 'sources':
@@ -456,6 +515,12 @@ export const ChatResponse = React.memo(function ChatResponse({
     });
   }, [messageId, question, isStreaming]);
 
+  // When the active question card owns this row, read aloud the question text
+  // and its options instead of the hidden bot response.
+  const speakContent = askQuestionMatchesRow && pendingAskUserQuestion
+    ? buildQuestionCardReadAloudText(pendingAskUserQuestion?.payload)
+    : displayContent;
+
   const shell = (
     <Box style={{ width: '100%' }}>
       {/* Question Header with hover edit icon */}
@@ -468,7 +533,7 @@ export const ChatResponse = React.memo(function ChatResponse({
       >
         <Flex align="start" gap="2">
           <Heading
-            size={isMobile ? '5' : '6'}
+            size={isMobile ? '5' : isQuestionExpanded ? '3' : '5'}
             weight="medium"
             style={{
               color: 'var(--slate-12)',
@@ -611,11 +676,14 @@ export const ChatResponse = React.memo(function ChatResponse({
       )}
 
       {/* Tabs */}
+      {/* Tabs — hide Sources/Citations counts when the ask_user_question card
+          (streaming or persisted) owns this row; those tabs reflect answer
+          chunks that are suppressed. */}
       <ResponseTabs
         activeTab={activeTab}
         onTabChange={setActiveTab}
-        sourcesCount={sourcesCount}
-        citationCount={citationCount}
+        sourcesCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : sourcesCount}
+        citationCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : citationCount}
       />
 
       {/* Tab Content */}
@@ -624,14 +692,15 @@ export const ChatResponse = React.memo(function ChatResponse({
       {/* Message Actions (feedback, copy, regenerate, model info) */}
       {activeTab === 'answer' && (
         <MessageActions
-          content={displayContent}
+          content={speakContent}
           citationMaps={effectiveCitationMaps}
           modelInfo={modelInfo}
           isStreaming={isStreaming}
           messageId={messageId}
           question={question}
-          isLastMessage={isLastMessage}
+          isLastMessage={isLastMessage && !askQuestionMatchesRow}
           appliedFilters={appliedFilters}
+          feedbackInfo={feedbackInfo}
         />
       )}
     </Box>

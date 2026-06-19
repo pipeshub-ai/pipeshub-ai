@@ -262,7 +262,7 @@ export const buildAIResponseMessage = (
 
 export const formatPreviousConversations = (messages: IMessage[]) => {
   return messages
-    .filter((msg) => msg.messageType !== 'error')
+    .filter((msg) => msg.messageType !== 'error' && msg.messageType !== 'tool_call')
     .map((msg) => ({
       content: msg.content,
       role: msg.messageType,
@@ -674,6 +674,7 @@ export const buildMessageFilter = (req: AuthenticatedUserRequest) => {
       'error',
       'feedback',
       'system',
+      'tool_call',
     ];
     if (!validTypes.includes(messageType as string)) {
       throw new BadRequestError(
@@ -1616,7 +1617,7 @@ export const sendSSECompleteEvent = (
 export const handleRegenerationStreamData = (
   chunk: Buffer,
   buffer: string,
-  existingConversation: IConversationDocument | null,
+  existingConversation: IConversationDocument | IAgentConversationDocument | null,
   messageIndex: number,
   session: ClientSession | null,
   requestId: string,
@@ -1703,6 +1704,40 @@ export const handleRegenerationStreamData = (
           }
           filteredChunk += event + '\n\n';
         }
+      } else if (eventType === 'ask_user_question' && dataLine && existingConversation) {
+        try {
+          const eventData = JSON.parse(dataLine);
+          if (eventData && typeof eventData === 'object' && eventData.status === 'success') {
+            const toolCallMessage = {
+              messageType: 'tool_call' as const,
+              content: '',
+              tools: [{
+                toolName: 'ask_user_question',
+                toolResult: eventData.toolData ?? eventData,
+              }],
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            };
+            if ('agentKey' in existingConversation) {
+              void AgentConversation.findByIdAndUpdate(
+                existingConversation._id,
+                { $push: { messages: toolCallMessage } },
+              ).catch((saveErr: any) => {
+                logger.error('Failed to persist ask_user_question tool_call message during regenerate', {
+                  requestId,
+                  conversationId: existingConversation._id,
+                  error: saveErr?.message,
+                });
+              });
+            }
+          }
+        } catch (parseErr: any) {
+          logger.warn('Failed to parse ask_user_question event data during regenerate', {
+            requestId,
+            error: parseErr?.message,
+          });
+        }
+        filteredChunk += event + '\n\n';
       } else {
         filteredChunk += event + '\n\n';
       }
