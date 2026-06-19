@@ -853,18 +853,55 @@ class ConfluenceBlockParser:
     ) -> list[BlockContainerIndex]:
         """Parse taskItem node into TEXT block with LIST_ITEM sub_type and checkbox."""
         content = node.get("content", [])
-        text_parts = []
+        
+        # Separate inline content from nested blocks
+        inline_content: list[dict[str, Any]] = []
+        nested_list_indices: list[BlockContainerIndex] = []
 
         for child_node in content:
-            if "content" in child_node:
-                child_text = self._extract_text_from_content(child_node["content"])
-                if child_text:
-                    text_parts.append(child_text)
+            child_type = child_node.get("type", "")
 
-        text = " ".join(text_parts).strip()
+            # Process nested lists separately (generic like listItem)
+            if child_type in ["bulletList", "orderedList", "taskList"]:
+                nested_result = await self._process_node_recursive(
+                    node=child_node,
+                    blocks=blocks,
+                    block_groups=block_groups,
+                    parent_group_index=parent_group_index,
+                    media_fetcher=media_fetcher,
+                    parent_page_url=parent_page_url,
+                    page_id=page_id,
+                    list_depth=list_depth,
+                    parent_list_style="checkbox",
+                )
+                nested_list_indices.extend(nested_result)
+            elif child_type in ["media", "mediaSingle"]:
+                # Process media separately
+                media_result = await self._process_node_recursive(
+                    node=child_node,
+                    blocks=blocks,
+                    block_groups=block_groups,
+                    parent_group_index=parent_group_index,
+                    media_fetcher=media_fetcher,
+                    parent_page_url=parent_page_url,
+                    page_id=page_id,
+                    list_depth=list_depth,
+                    parent_list_style="checkbox",
+                )
+                nested_list_indices.extend(media_result)
+            elif child_type == "paragraph":
+                # Paragraph wraps inline content - extract from its content array
+                if "content" in child_node:
+                    inline_content.extend(child_node["content"])
+            else:
+                # Direct inline node (text, mention, emoji, etc.) - add to inline content
+                inline_content.append(child_node)
+
+        # Extract text from all collected inline content
+        text = self._extract_text_from_content(inline_content).strip()
 
         if not text:
-            return []
+            return nested_list_indices
 
         attrs = node.get("attrs", {})
         state = attrs.get("state", "TODO")
@@ -888,7 +925,10 @@ class ConfluenceBlockParser:
         )
         blocks.append(block)
 
-        return [BlockContainerIndex(block_index=block_index)]
+        result = [BlockContainerIndex(block_index=block_index)]
+        result.extend(nested_list_indices)
+
+        return result
 
     # ============================================================================
     # Media Parsers
@@ -1919,17 +1959,54 @@ class ConfluenceBlockParser:
         state = attrs.get("state", "DECIDED")
         content = node.get("content", [])
 
-        text_parts = []
-        for child_node in content:
-            if "content" in child_node:
-                child_text = self._extract_text_from_content(child_node["content"])
-                if child_text:
-                    text_parts.append(child_text)
+        # Separate inline content from nested blocks
+        inline_content: list[dict[str, Any]] = []
+        nested_list_indices: list[BlockContainerIndex] = []
 
-        text = " ".join(text_parts).strip()
+        for child_node in content:
+            child_type = child_node.get("type", "")
+
+            # Process nested lists separately (generic like listItem)
+            if child_type in ["bulletList", "orderedList", "taskList", "decisionList"]:
+                nested_result = await self._process_node_recursive(
+                    node=child_node,
+                    blocks=blocks,
+                    block_groups=block_groups,
+                    parent_group_index=parent_group_index,
+                    media_fetcher=media_fetcher,
+                    parent_page_url=parent_page_url,
+                    page_id=page_id,
+                    list_depth=list_depth,
+                    parent_list_style="decision",
+                )
+                nested_list_indices.extend(nested_result)
+            elif child_type in ["media", "mediaSingle"]:
+                # Process media separately
+                media_result = await self._process_node_recursive(
+                    node=child_node,
+                    blocks=blocks,
+                    block_groups=block_groups,
+                    parent_group_index=parent_group_index,
+                    media_fetcher=media_fetcher,
+                    parent_page_url=parent_page_url,
+                    page_id=page_id,
+                    list_depth=list_depth,
+                    parent_list_style="decision",
+                )
+                nested_list_indices.extend(media_result)
+            elif child_type == "paragraph":
+                # Paragraph wraps inline content - extract from its content array
+                if "content" in child_node:
+                    inline_content.extend(child_node["content"])
+            else:
+                # Direct inline node (text, mention, emoji, etc.) - add to inline content
+                inline_content.append(child_node)
+
+        # Extract text from all collected inline content
+        text = self._extract_text_from_content(inline_content).strip()
 
         if not text:
-            return []
+            return nested_list_indices
 
         marker = "✓" if state == "DECIDED" else "◇"
 
@@ -1951,7 +2028,10 @@ class ConfluenceBlockParser:
         )
         blocks.append(block)
 
-        return [BlockContainerIndex(block_index=block_index)]
+        result = [BlockContainerIndex(block_index=block_index)]
+        result.extend(nested_list_indices)
+
+        return result
 
     # ============================================================================
     # Fallback Parser
@@ -2008,6 +2088,7 @@ class ConfluenceBlockParser:
         inline_comments: list[dict[str, Any]],
         media_fetcher: Callable[[str, str], Awaitable[str | None]] | None = None,
         parent_page_url: str | None = None,
+        user_display_names: dict[str, str] | None = None,
     ) -> None:
         """
         Attach inline comments to their target blocks based on quoted text.
@@ -2017,6 +2098,7 @@ class ConfluenceBlockParser:
             inline_comments: List of inline comment dictionaries from API
             media_fetcher: Optional media fetcher for comment attachments
             parent_page_url: Absolute page/blog URL for resolving relative comment webui paths
+            user_display_names: Optional mapping of author_id to display_name
         """
         if not inline_comments:
             return
@@ -2059,6 +2141,7 @@ class ConfluenceBlockParser:
                         quoted_text=quoted_text if comment == first_comment else None,
                         media_fetcher=media_fetcher,
                         parent_page_url=parent_page_url,
+                        user_display_names=user_display_names,
                     )
                     if block_comment:
                         thread_block_comments.append(block_comment)
@@ -2136,6 +2219,7 @@ class ConfluenceBlockParser:
         quoted_text: str | None = None,
         media_fetcher: Callable | None = None,
         parent_page_url: str | None = None,
+        user_display_names: dict[str, str] | None = None,
     ) -> BlockComment | None:
         """
         Parse Confluence comment data into BlockComment object.
@@ -2145,6 +2229,7 @@ class ConfluenceBlockParser:
             quoted_text: The text that was commented on (for inline comments)
             media_fetcher: Optional media fetcher for attachments
             parent_page_url: Absolute page/blog URL for resolving relative comment webui paths
+            user_display_names: Optional mapping of author_id to display_name
 
         Returns:
             BlockComment object or None if parsing fails
@@ -2185,10 +2270,16 @@ class ConfluenceBlockParser:
             # Resolution status
             resolution_status = comment.get("resolutionStatus", "open")
 
+            # Get author display name from cache if available
+            author_name = None
+            if user_display_names and author_id:
+                author_name = user_display_names.get(author_id, "Unknown")
+
             return BlockComment(
                 text=comment_text or "",
                 format=DataFormat.MARKDOWN,
                 author_id=author_id,
+                author_name=author_name,
                 thread_id=comment_id,
                 resolution_status=resolution_status,
                 weburl=self._normalize_url(comment_weburl),
@@ -2648,23 +2739,23 @@ class ConfluenceBlockParser:
         parent_group_index: int | None,
         source_id: str,
         children_records: list[ChildRecord] | None = None,
+        block_indices: tuple[int, int] | None = None,
     ) -> BlockGroup:
         """
         Create a COMMENT BlockGroup from a BlockComment object.
 
         Args:
-            block_comment: BlockComment object with comment data
+            block_comment: BlockComment object with comment metadata
             group_index: Index for the new BlockGroup
             parent_group_index: Index of parent BlockGroup (COMMENT_THREAD)
             source_id: Confluence comment ID
             children_records: Optional list of ChildRecord for attachments
+            block_indices: Optional (start, end) indices of parsed comment blocks
 
         Returns:
             BlockGroup object with type TEXT_SECTION and sub_type COMMENT
         """
-        comment_data = block_comment.text
-
-        return BlockGroup(
+        block_group = BlockGroup(
             id=str(uuid4()),
             index=group_index,
             parent_index=parent_group_index,
@@ -2672,12 +2763,19 @@ class ConfluenceBlockParser:
             sub_type=GroupSubType.COMMENT,
             source_group_id=source_id,
             name=block_comment.author_name or "Comment",
-            data=comment_data,
-            format=block_comment.format,
             description=f"Comment by {block_comment.author_name or 'Unknown'}",
             children_records=children_records,
             weburl=block_comment.weburl,
         )
+
+        # Add block children if provided
+        if block_indices:
+            block_group.children = BlockGroupChildren.from_indices(
+                block_indices=[*range(block_indices[0], block_indices[1] + 1)],
+                block_group_indices=[]
+            )
+
+        return block_group
 
     def create_comment_thread_group(
         self,
