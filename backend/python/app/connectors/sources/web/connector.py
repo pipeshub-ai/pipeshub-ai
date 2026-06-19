@@ -57,6 +57,7 @@ from app.models.entities import (
     RecordType,
     User,
 )
+from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint, generate_record_sync_point_key
 from app.services.notification.types import NotificationRecipientRole, NotificationSeverity, NotificationType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
@@ -333,6 +334,16 @@ class WebConnector(BaseConnector):
         self.connector_name = Connectors.WEB
         self.connector_id = connector_id
 
+        def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
+            return SyncPoint(
+                connector_id=self.connector_id,
+                org_id=self.data_entities_processor.org_id,
+                sync_data_point_type=sync_data_point_type,
+                data_store_provider=self.data_store_provider
+            )
+
+        self.record_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
+
         # Configuration
         self.url: Optional[str] = None
         self.crawl_type: str = "single"
@@ -349,6 +360,7 @@ class WebConnector(BaseConnector):
         self.processed_urls: int = 0
         self.base_domain: Optional[str] = None
         self.session: Optional[aiohttp.ClientSession] = None
+        self.full_sync: bool = False
 
         # Batch processing
         self.batch_size: int = 50
@@ -416,50 +428,6 @@ class WebConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize web connector: {e}", exc_info=True)
             return False
-
-    def _create_web_permissions(self, url: str) -> list[Permission]:
-        """Create permissions for a web page based on connector scope."""
-        try:
-            permissions = []
-
-            if self.scope == ConnectorScope.TEAM.value:
-                permissions.append(
-                    Permission(
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                        external_id=self.data_entities_processor.org_id
-                    )
-                )
-            else:
-                if self.creator_email:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.OWNER,
-                            entity_type=EntityType.USER,
-                            email=self.creator_email,
-                            external_id=self.created_by
-                        )
-                    )
-
-                if not permissions:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.READ,
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id
-                        )
-                    )
-
-            return permissions
-        except Exception as e:
-            self.logger.warning(f"Error creating permissions for {url}: {e}")
-            return [
-                Permission(
-                    type=PermissionType.READ,
-                    entity_type=EntityType.ORG,
-                    external_id=self.data_entities_processor.org_id
-                )
-            ]
 
     async def _fetch_and_parse_config(self, use_cache: bool = False) -> Dict:
         """
@@ -761,6 +729,17 @@ class WebConnector(BaseConnector):
 
             self.logger.info(f"🚀 Starting web crawl: {self.url}")
 
+            sync_point_key = generate_record_sync_point_key(
+                RecordType.WEBPAGE.value,
+                "webpages",
+                self.url
+            )
+
+            sync_point = await self.record_sync_point.read_sync_point(sync_point_key)
+            if not sync_point:
+                self.full_sync = True
+                self.logger.debug(f"Running full sync for connector: {self.connector_id}")
+
             if self.scope == ConnectorScope.TEAM.value:
                 async with self.data_store_provider.transaction() as tx_store:
                     await tx_store.ensure_team_app_edge(
@@ -806,6 +785,15 @@ class WebConnector(BaseConnector):
 
             #fetch urls with retryable errors
             await self.process_retry_urls()
+
+            #update sync point
+            await self.record_sync_point.update_sync_point(
+                sync_point_key,
+                {
+                    "timestamp": get_epoch_timestamp_in_ms()
+                }
+            )
+            self.full_sync = False
 
             self.logger.info(
                 f"✅ Web crawl completed: {len(self.visited_urls)} pages crawled, {self.processed_urls} pages processed, {len(self.retry_urls)} pages failed"
@@ -953,7 +941,7 @@ class WebConnector(BaseConnector):
                     indexing_status=ProgressStatus.NOT_STARTED.value,
                 )
 
-                permissions = self._create_web_permissions(ancestor_url)
+                permissions = []
 
                 placeholder_records.append((file_record, permissions))
                 self.logger.info(
@@ -993,7 +981,7 @@ class WebConnector(BaseConnector):
 
                 if record_update.is_updated:
                     await self._handle_record_updates(record_update)
-                    continue
+                    self.processed_urls += 1
                 elif record_update.is_new and record_update.record is not None and record_update.new_permissions is not None:
                     entry: Tuple[Record, List[Permission]] = (record_update.record, record_update.new_permissions)
                     batch_records.append(entry)
@@ -1004,6 +992,10 @@ class WebConnector(BaseConnector):
                         self.logger.info(f"✅ Batch processed: {len(batch_records)} records")
                         self.processed_urls += len(batch_records)
                         batch_records.clear()
+                elif self.full_sync:
+                    self.logger.debug("Reconstructing permissions for record: %s (id: %s)", record_update.record.record_name, record_update.record.id)
+                    await self.data_entities_processor.on_updated_record_permissions(record_update.record, record_update.new_permissions)
+                    self.processed_urls += 1
 
             # Process remaining batch
             if batch_records:
@@ -1340,7 +1332,7 @@ class WebConnector(BaseConnector):
                 file_record.indexing_status = existing_record.indexing_status
                 file_record.extraction_status = existing_record.extraction_status
 
-            permissions = self._create_web_permissions(url)
+            permissions = []
 
             record_update = RecordUpdate(
                 record=file_record,
@@ -1373,10 +1365,13 @@ class WebConnector(BaseConnector):
         if not record_update.record:
             return
         if record_update.is_deleted:
+            self.logger.debug(f"Deleting record: {record_update.record.record_name} (id: {record_update.record.id})")
             await self.data_entities_processor.on_record_deleted(record_update.record.id)
         if record_update.metadata_changed:
+            self.logger.debug(f"Metadata changed for record: {record_update.record.record_name} (id: {record_update.record.id})")
             await self.data_entities_processor.on_record_metadata_update(record_update.record)
         if record_update.content_changed:
+            self.logger.debug(f"Content changed for record: {record_update.record.record_name} (id: {record_update.record.id})")
             await self.data_entities_processor.on_record_content_update(record_update.record)
 
     async def _extract_links_from_content(
@@ -1499,7 +1494,7 @@ class WebConnector(BaseConnector):
             reason=f"Failed to process URL, status code: {status_code}",
         )
 
-        permissions = self._create_web_permissions(url)
+        permissions = []
 
         return placeholder_record, permissions
 
@@ -1941,7 +1936,7 @@ class WebConnector(BaseConnector):
                     indexing_status=ProgressStatus.NOT_STARTED.value,
                 )
 
-                permissions = self._create_web_permissions(segment_url)
+                permissions = []
 
                 batch_parent_records.append((file_record, permissions))
                 self.logger.debug(f"📁 Queued missing ancestor placeholder: {record_name}")
