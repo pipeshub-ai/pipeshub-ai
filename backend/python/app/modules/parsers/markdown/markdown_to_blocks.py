@@ -513,9 +513,11 @@ class _TokenWalker:
             return None
 
         image_fmt = None
-        header = uri.split(",", 1)[0]
-        mime = header.replace("data:", "").split(";")[0]
-        image_fmt = mime.split("/")[1] if mime else None
+        if uri.startswith("data:"):
+            header = uri.split(",", 1)[0]
+            mime = header.replace("data:", "").split(";")[0]
+            parts = mime.split("/")
+            image_fmt = parts[1] if len(parts) > 1 else None
 
         return Block(
             id=str(uuid4()),
