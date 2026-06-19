@@ -45,7 +45,6 @@ logger = logging.getLogger("gcs-lifecycle-test")
 @pytest.mark.integration
 @pytest.mark.gcs
 @pytest.mark.asyncio(loop_scope="session")
-@pytest.mark.skip(reason="GCS sync/toggle/cleanup instability causing timeout cascades; see CI stability ticket")
 class TestGCSConnector:
     """Integration tests for the GCS connector (constructor/destructor in conftest)."""
 
