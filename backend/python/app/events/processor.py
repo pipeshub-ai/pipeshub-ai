@@ -30,7 +30,6 @@ from app.models.blocks import (
     Point,
 )
 from app.models.entities import Record, RecordType
-from app.modules.parsers.markdown.docling_markdown_parser import DoclingMarkdownParser
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
@@ -823,8 +822,9 @@ class Processor:
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process BlocksContainer and attach to record for indexing, yielding phase completion events.
 
-        For BlockGroups with requires_processing=True, processes their data through docling
-        and merges the resulting blocks back into the container.
+        For BlockGroups with requires_processing=True, processes their markdown data
+        through the configured markdown parser and merges the resulting blocks back
+        into the container.
 
         Args:
             recordName (str): Name of the record
@@ -854,8 +854,8 @@ class Processor:
             # Convert dict to BlocksContainer
             block_containers = BlocksContainer(**blocks_dict)
 
-            # Process BlockGroups with requires_processing=True through docling
-            block_containers = await self._process_blockgroups_through_docling(
+            # Process BlockGroups with requires_processing=True via markdown parser
+            block_containers = await self._process_blockgroups(
                 block_containers, recordName
             )
 
@@ -962,59 +962,25 @@ class Processor:
 
         return modified_markdown, caption_map
 
-    def _map_base64_images_to_blocks(
-        self, blocks: List[Block], caption_map: Dict[str, str], block_group_index: int
-    ) -> None:
-        """
-        Map base64 images to image blocks using captions.
-
-        Args:
-            blocks: List of blocks to process
-            caption_map: Map of alt text to base64 URIs
-            block_group_index: Index of the block group (for logging)
-        """
-        if not caption_map:
-            return
-
-        for block in blocks:
-            if block.type == BlockType.IMAGE.value and block.image_metadata:
-                caption = block.image_metadata.captions
-                if caption:
-                    caption = caption[0] if isinstance(caption, list) else caption
-                    if caption_map.get(caption):
-                        if block.data is None:
-                            block.data = {}
-                        if isinstance(block.data, dict):
-                            block.data["uri"] = caption_map[caption]
-                        else:
-                            # If data is not a dict, create a new dict with the uri
-                            block.data = {"uri": caption_map[caption]}
-                    else:
-                        self.logger.warning(
-                            f"⚠️ Skipping image with caption '{caption}' in BlockGroup {block_group_index} - no valid base64 data available"
-                        )
-
-    async def _process_single_blockgroup_through_docling(
+    async def _process_single_blockgroup(
         self,
         block_group: BlockGroup,
         record_name: str,
-        processor: DoclingProcessor,
-        md_parser: Optional[MarkdownParser]
+        md_parser: MarkdownParser,
     ) -> Tuple[List[BlockGroup], List[Block]]:
         """
-        Process a single block group through docling.
+        Process a single block group's markdown into blocks.
 
         Args:
             block_group: Block group to process
             record_name: Name of the record (for filename generation)
-            processor: DoclingProcessor instance
             md_parser: Markdown parser instance
 
         Returns:
             Tuple of (new_block_groups, new_blocks) from processing
 
         Raises:
-            ValueError: If block group has no valid markdown data or docling returns empty result
+            ValueError: If block group has no valid markdown data
         """
         # Extract markdown data from BlockGroup
         markdown_data = block_group.data
@@ -1028,33 +994,13 @@ class Processor:
             markdown_data, block_group.index
         )
 
-        # Block-group Docling ingestion always needs MD→HTML bytes via Docling parser.
-        if md_parser:
-            md_bytes = DoclingMarkdownParser(
-                logger=self.logger, config_service=self.config_service
-            ).parse_string(modified_markdown)
-        else:
-            md_bytes = modified_markdown.encode('utf-8')
-
-        # Create filename from BlockGroup name or use default
-        filename = block_group.name or f"{Path(record_name).stem}_blockgroup_{block_group.index}.md"
-        if not filename.endswith('.md'):
-            filename = f"{filename}.md"
-
-        # Process through docling
         self.logger.debug(
-            f"📄 Processing BlockGroup {block_group.index} ({block_group.name}) through docling"
+            f"📄 Processing BlockGroup {block_group.index} ({block_group.name})"
         )
-        processed_blocks_container = await processor.load_document(filename, md_bytes)
-
-        if not processed_blocks_container:
-            raise ValueError(
-                f"Docling returned empty result for BlockGroup {block_group.index}"
-            )
-
-        # Map base64 images to image blocks using captions
-        self._map_base64_images_to_blocks(
-            processed_blocks_container.blocks, caption_map, block_group.index
+        processed_blocks_container = await md_parser.parse(
+            modified_markdown,
+            caption_map=caption_map or None,
+            name=block_group.name or record_name,
         )
 
         self.logger.debug(
@@ -1292,11 +1238,11 @@ class Processor:
             blocks=sorted_blocks
         )
 
-    async def _process_blockgroups_through_docling(
+    async def _process_blockgroups(
         self, block_containers: BlocksContainer, record_name: str
     ) -> BlocksContainer:
         """
-        Process BlockGroups with requires_processing=True through docling.
+        Process BlockGroups with requires_processing=True via the markdown parser.
 
         Uses a functional approach:
         1. Process all BlockGroups that need processing, collecting results
@@ -1305,7 +1251,7 @@ class Processor:
 
         Args:
             block_containers: BlocksContainer to process
-            record_name: Name of the record (for docling processing)
+            record_name: Name of the record (for parser context)
 
         Returns:
             BlocksContainer with processed blocks merged in
@@ -1329,22 +1275,22 @@ class Processor:
             return block_containers
 
         self.logger.info(
-            f"🔄 Processing {len(block_groups_to_process)} BlockGroups through docling"
+            f"🔄 Processing {len(block_groups_to_process)} BlockGroups with markdown parser"
         )
 
         # ========== PHASE 1: Process all BlockGroups and collect results ==========
         # Map: parent_index -> (new_block_groups, new_blocks)
         processing_results: Dict[int, Tuple[List[BlockGroup], List[Block]]] = {}
-        processor = DoclingProcessor(logger=self.logger, config=self.config_service)
         initial_block_count = len(block_containers.blocks)
 
-        # Get markdown parser for processing
         md_parser = self.parsers.get(ExtensionTypes.MD.value)
+        if md_parser is None:
+            raise ValueError("Markdown parser is not configured")
 
         for block_group in block_groups_to_process:
             try:
-                new_block_groups, new_blocks = await self._process_single_blockgroup_through_docling(
-                    block_group, record_name, processor, md_parser
+                new_block_groups, new_blocks = await self._process_single_blockgroup(
+                    block_group, record_name, md_parser
                 )
 
                 # Store results for later merging
@@ -1352,7 +1298,7 @@ class Processor:
 
             except Exception as e:
                 self.logger.error(
-                    f"❌ Error processing BlockGroup {block_group.index} through docling: {e}",
+                    f"❌ Error processing BlockGroup {block_group.index}: {e}",
                     exc_info=True
                 )
                 # Stop processing if any BlockGroup fails

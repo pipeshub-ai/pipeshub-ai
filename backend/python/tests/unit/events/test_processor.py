@@ -698,7 +698,7 @@ class TestProcessBlocks:
 
         with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
             mock_pipeline.return_value = AsyncMock()
-            with patch.object(proc, "_process_blockgroups_through_docling", new_callable=AsyncMock) as mock_bg:
+            with patch.object(proc, "_process_blockgroups", new_callable=AsyncMock) as mock_bg:
                 from app.models.blocks import BlocksContainer
                 mock_bg.return_value = BlocksContainer(blocks=[], block_groups=[])
                 with patch.object(proc, "_enhance_tables_with_llm", new_callable=AsyncMock):
@@ -727,7 +727,7 @@ class TestProcessBlocks:
 
         with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
             mock_pipeline.return_value = AsyncMock()
-            with patch.object(proc, "_process_blockgroups_through_docling", new_callable=AsyncMock) as mock_bg:
+            with patch.object(proc, "_process_blockgroups", new_callable=AsyncMock) as mock_bg:
                 from app.models.blocks import BlocksContainer
                 mock_bg.return_value = BlocksContainer(blocks=[], block_groups=[])
                 with patch.object(proc, "_enhance_tables_with_llm", new_callable=AsyncMock):
@@ -771,7 +771,7 @@ class TestProcessBlocks:
 
         blocks_data = {"blocks": [], "block_groups": []}
 
-        with patch.object(proc, "_process_blockgroups_through_docling", new_callable=AsyncMock) as mock_bg:
+        with patch.object(proc, "_process_blockgroups", new_callable=AsyncMock) as mock_bg:
             from app.models.blocks import BlocksContainer
             mock_bg.return_value = BlocksContainer(blocks=[], block_groups=[])
             with patch.object(proc, "_enhance_tables_with_llm", new_callable=AsyncMock):
@@ -2168,7 +2168,7 @@ class TestProcessBlocks:
         """Should handle bytes input."""
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict()
-        proc._process_blockgroups_through_docling = AsyncMock(return_value=MagicMock(block_groups=[], blocks=[]))
+        proc._process_blockgroups = AsyncMock(return_value=MagicMock(block_groups=[], blocks=[]))
         proc._enhance_tables_with_llm = AsyncMock()
 
         blocks_dict = '{"blocks": [], "block_groups": []}'
@@ -2188,7 +2188,7 @@ class TestProcessBlocks:
         """Should handle dict input."""
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict()
-        proc._process_blockgroups_through_docling = AsyncMock(return_value=MagicMock(block_groups=[], blocks=[]))
+        proc._process_blockgroups = AsyncMock(return_value=MagicMock(block_groups=[], blocks=[]))
         proc._enhance_tables_with_llm = AsyncMock()
 
         with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
@@ -2217,7 +2217,7 @@ class TestProcessBlocks:
         """Should yield indexing_complete when record not found."""
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = None
-        proc._process_blockgroups_through_docling = AsyncMock(return_value=MagicMock(block_groups=[], blocks=[]))
+        proc._process_blockgroups = AsyncMock(return_value=MagicMock(block_groups=[], blocks=[]))
         proc._enhance_tables_with_llm = AsyncMock()
 
         events = await _collect(proc.process_blocks(
@@ -2453,84 +2453,12 @@ class TestProcessBlockgroupImages:
 
 
 # ===========================================================================
-# Processor._map_base64_images_to_blocks (lines 952-982)
+# Processor._process_single_blockgroup
 # ===========================================================================
 
 
-class TestMapBase64ImagesToBlocks:
-    """Tests for Processor._map_base64_images_to_blocks."""
-
-    def test_empty_caption_map_noop(self):
-        """Empty caption map does nothing."""
-        proc, _, _, _ = _make_processor()
-        blocks = [MagicMock()]
-        proc._map_base64_images_to_blocks(blocks, {}, 0)
-        # No error should occur
-
-    def test_image_block_gets_uri(self):
-        """Image block with matching caption gets base64 uri."""
-        from app.models.blocks import BlockType
-        proc, _, _, _ = _make_processor()
-
-        block = MagicMock()
-        block.type = BlockType.IMAGE.value
-        block.image_metadata = MagicMock()
-        block.image_metadata.captions = "my_image"
-        block.data = {}
-
-        proc._map_base64_images_to_blocks([block], {"my_image": "base64uri"}, 0)
-        assert block.data["uri"] == "base64uri"
-
-    def test_image_block_caption_list(self):
-        """Image block with list of captions uses first."""
-        from app.models.blocks import BlockType
-        proc, _, _, _ = _make_processor()
-
-        block = MagicMock()
-        block.type = BlockType.IMAGE.value
-        block.image_metadata = MagicMock()
-        block.image_metadata.captions = ["img1", "img2"]
-        block.data = None
-
-        proc._map_base64_images_to_blocks([block], {"img1": "data1"}, 0)
-        assert block.data == {"uri": "data1"}
-
-    def test_image_block_no_matching_caption_warns(self):
-        """Image block with non-matching caption logs warning."""
-        from app.models.blocks import BlockType
-        proc, _, _, _ = _make_processor()
-
-        block = MagicMock()
-        block.type = BlockType.IMAGE.value
-        block.image_metadata = MagicMock()
-        block.image_metadata.captions = "unknown_img"
-        block.data = {}
-
-        proc._map_base64_images_to_blocks([block], {"other_img": "data"}, 0)
-        proc.logger.warning.assert_called()
-
-    def test_image_block_data_not_dict_replaced(self):
-        """Image block with non-dict data gets replaced."""
-        from app.models.blocks import BlockType
-        proc, _, _, _ = _make_processor()
-
-        block = MagicMock()
-        block.type = BlockType.IMAGE.value
-        block.image_metadata = MagicMock()
-        block.image_metadata.captions = "img"
-        block.data = "some_string"
-
-        proc._map_base64_images_to_blocks([block], {"img": "base64"}, 0)
-        assert block.data == {"uri": "base64"}
-
-
-# ===========================================================================
-# Processor._process_single_blockgroup_through_docling (lines 1007-1051)
-# ===========================================================================
-
-
-class TestProcessSingleBlockgroupThroughDocling:
-    """Tests for Processor._process_single_blockgroup_through_docling."""
+class TestProcessSingleBlockgroup:
+    """Tests for Processor._process_single_blockgroup."""
 
     @pytest.mark.asyncio
     async def test_no_markdown_data_raises(self):
@@ -2542,8 +2470,8 @@ class TestProcessSingleBlockgroupThroughDocling:
         bg.index = 0
 
         with pytest.raises(ValueError, match="no valid markdown data"):
-            await proc._process_single_blockgroup_through_docling(
-                bg, "test.md", MagicMock(), None
+            await proc._process_single_blockgroup(
+                bg, "test.md", MagicMock()
             )
 
     @pytest.mark.asyncio
@@ -2556,41 +2484,17 @@ class TestProcessSingleBlockgroupThroughDocling:
         bg.index = 0
 
         with pytest.raises(ValueError, match="no valid markdown data"):
-            await proc._process_single_blockgroup_through_docling(
-                bg, "test.md", MagicMock(), None
+            await proc._process_single_blockgroup(
+                bg, "test.md", MagicMock()
             )
 
     @pytest.mark.asyncio
-    async def test_empty_parse_result_raises(self):
-        """Empty result from docling raises ValueError."""
+    async def test_success_delegates_to_md_parser(self):
+        """Successful processing delegates to md_parser.parse with caption map."""
         proc, _, _, _ = _make_processor()
-        proc._process_blockgroup_images = AsyncMock(return_value=("# Hello", {}))
-
-        bg = MagicMock()
-        bg.data = "# Hello World"
-        bg.index = 0
-        bg.name = "test_bg"
-
-        mock_md_parser = MagicMock()
-
-        mock_processor = MagicMock()
-        mock_processor.load_document = AsyncMock(return_value=None)
-
-        with patch(
-            "app.events.processor.DoclingMarkdownParser"
-        ) as mock_docling_parser_cls:
-            mock_docling_parser_cls.return_value.parse_string.return_value = b"<html></html>"
-            with pytest.raises(ValueError, match="Docling returned empty result"):
-                await proc._process_single_blockgroup_through_docling(
-                    bg, "test.md", mock_processor, mock_md_parser
-                )
-
-    @pytest.mark.asyncio
-    async def test_success_with_md_parser(self):
-        """Successful processing with markdown parser converting to bytes for docling."""
-        proc, _, _, _ = _make_processor()
-        proc._process_blockgroup_images = AsyncMock(return_value=("# Hello", {}))
-        proc._map_base64_images_to_blocks = MagicMock()
+        proc._process_blockgroup_images = AsyncMock(
+            return_value=("# Hello", {"Image_1": "data:image/png;base64,abc"})
+        )
 
         bg = MagicMock()
         bg.data = "# Hello World"
@@ -2602,31 +2506,25 @@ class TestProcessSingleBlockgroupThroughDocling:
         result_container.block_groups = [MagicMock()]
 
         mock_md_parser = MagicMock()
+        mock_md_parser.parse = AsyncMock(return_value=result_container)
 
-        mock_processor = MagicMock()
-        mock_processor.load_document = AsyncMock(return_value=result_container)
-
-        with patch(
-            "app.events.processor.DoclingMarkdownParser"
-        ) as mock_docling_parser_cls:
-            mock_docling_parser_cls.return_value.parse_string.return_value = (
-                b"<html><h1>Hello</h1></html>"
-            )
-            new_bgs, new_blocks = await proc._process_single_blockgroup_through_docling(
-                bg, "test.md", mock_processor, mock_md_parser
-            )
+        new_bgs, new_blocks = await proc._process_single_blockgroup(
+            bg, "test.md", mock_md_parser
+        )
 
         assert len(new_blocks) == 1
         assert len(new_bgs) == 1
-        mock_docling_parser_cls.return_value.parse_string.assert_called_once_with("# Hello")
-        mock_processor.load_document.assert_called_once()
+        mock_md_parser.parse.assert_awaited_once_with(
+            "# Hello",
+            caption_map={"Image_1": "data:image/png;base64,abc"},
+            name="test.md",
+        )
 
     @pytest.mark.asyncio
-    async def test_success_without_md_parser(self):
-        """Successful processing without markdown parser uses raw UTF-8 bytes."""
+    async def test_success_uses_record_name_when_block_group_name_missing(self):
+        """Block group without name falls back to record_name for parser context."""
         proc, _, _, _ = _make_processor()
         proc._process_blockgroup_images = AsyncMock(return_value=("# Hello", {}))
-        proc._map_base64_images_to_blocks = MagicMock()
 
         bg = MagicMock()
         bg.data = "# Hello World"
@@ -2637,15 +2535,20 @@ class TestProcessSingleBlockgroupThroughDocling:
         result_container.blocks = [MagicMock()]
         result_container.block_groups = []
 
-        mock_processor = MagicMock()
-        mock_processor.load_document = AsyncMock(return_value=result_container)
+        mock_md_parser = MagicMock()
+        mock_md_parser.parse = AsyncMock(return_value=result_container)
 
-        new_bgs, new_blocks = await proc._process_single_blockgroup_through_docling(
-            bg, "test_record", mock_processor, None
+        new_bgs, new_blocks = await proc._process_single_blockgroup(
+            bg, "test_record", mock_md_parser
         )
 
         assert len(new_blocks) == 1
         assert new_bgs == []
+        mock_md_parser.parse.assert_awaited_once_with(
+            "# Hello",
+            caption_map=None,
+            name="test_record",
+        )
 
 
 # ===========================================================================
@@ -2774,12 +2677,12 @@ class TestBuildUpdatedBlocksContainer:
 
 
 # ===========================================================================
-# Processor._process_blockgroups_through_docling (lines 1302-1371)
+# Processor._process_blockgroups (lines 1302-1371)
 # ===========================================================================
 
 
-class TestProcessBlockgroupsThroughDocling:
-    """Tests for Processor._process_blockgroups_through_docling."""
+class TestProcessBlockgroups:
+    """Tests for Processor._process_blockgroups."""
 
     @pytest.mark.asyncio
     async def test_empty_block_groups_returns_original(self):
@@ -2788,7 +2691,7 @@ class TestProcessBlockgroupsThroughDocling:
         proc, _, _, _ = _make_processor()
 
         container = BlocksContainer(blocks=[], block_groups=[])
-        result = await proc._process_blockgroups_through_docling(container, "test")
+        result = await proc._process_blockgroups(container, "test")
         assert result is container
 
     @pytest.mark.asyncio
@@ -2800,25 +2703,38 @@ class TestProcessBlockgroupsThroughDocling:
         bg = BlockGroup(index=0, type=GroupType.TABLE, requires_processing=False)
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        result = await proc._process_blockgroups_through_docling(container, "test")
+        result = await proc._process_blockgroups(container, "test")
         assert result is container
 
     @pytest.mark.asyncio
     async def test_processing_error_raises(self):
         """Error in blockgroup processing propagates."""
         from app.models.blocks import BlockGroup, BlocksContainer, GroupType
+        from app.config.constants.arangodb import ExtensionTypes
+        proc, _, _, _ = _make_processor()
+
+        bg = BlockGroup(index=0, type=GroupType.TABLE, requires_processing=True, data="# markdown")
+        container = BlocksContainer(blocks=[], block_groups=[bg])
+        proc.parsers = {ExtensionTypes.MD.value: MagicMock()}
+
+        proc._process_single_blockgroup = AsyncMock(
+            side_effect=RuntimeError("parser error")
+        )
+
+        with pytest.raises(RuntimeError, match="parser error"):
+            await proc._process_blockgroups(container, "test")
+
+    @pytest.mark.asyncio
+    async def test_missing_md_parser_raises(self):
+        """Missing markdown parser configuration raises ValueError."""
+        from app.models.blocks import BlockGroup, BlocksContainer, GroupType
         proc, _, _, _ = _make_processor()
 
         bg = BlockGroup(index=0, type=GroupType.TABLE, requires_processing=True, data="# markdown")
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        proc._process_single_blockgroup_through_docling = AsyncMock(
-            side_effect=RuntimeError("docling error")
-        )
-
-        with patch("app.events.processor.DoclingProcessor"):
-            with pytest.raises(RuntimeError, match="docling error"):
-                await proc._process_blockgroups_through_docling(container, "test")
+        with pytest.raises(ValueError, match="Markdown parser is not configured"):
+            await proc._process_blockgroups(container, "test")
 
     @pytest.mark.asyncio
     async def test_successful_processing(self):
@@ -2829,18 +2745,18 @@ class TestProcessBlockgroupsThroughDocling:
 
         bg = BlockGroup(index=0, type=GroupType.TABLE, requires_processing=True, data="# markdown")
         container = BlocksContainer(blocks=[], block_groups=[bg])
+        proc.parsers = {ExtensionTypes.MD.value: MagicMock()}
 
         new_block = Block(index=0, type="text", format=DataFormat.TXT, data="result", parent_index=None)
         new_bg = BlockGroup(index=0, type=GroupType.TABLE)
         new_bg.parent_index = None
         new_bg.children = None
 
-        proc._process_single_blockgroup_through_docling = AsyncMock(
+        proc._process_single_blockgroup = AsyncMock(
             return_value=([new_bg], [new_block])
         )
 
-        with patch("app.events.processor.DoclingProcessor"):
-            result = await proc._process_blockgroups_through_docling(container, "test")
+        result = await proc._process_blockgroups(container, "test")
 
         assert len(result.blocks) >= 1
         assert len(result.block_groups) >= 1
@@ -3418,76 +3334,6 @@ class TestSeparateBlockGroupsByIndexCoverage:
 
 
 # ===================================================================
-# _map_base64_images_to_blocks
-# ===================================================================
-
-
-class TestMapBase64ImagesToBlocksCoverage:
-    def test_empty_caption_map(self):
-        proc = _make_processor_cov()
-        blocks = [MagicMock()]
-        proc._map_base64_images_to_blocks(blocks, {}, 0)
-        # Should be a no-op
-
-    def test_image_block_with_matching_caption(self):
-        from app.models.blocks import BlockType
-        proc = _make_processor_cov()
-
-        block = MagicMock()
-        block.type = BlockType.IMAGE.value
-        block.image_metadata = MagicMock()
-        block.image_metadata.captions = "test_caption"
-        block.data = {}
-
-        caption_map = {"test_caption": "data:image/png;base64,abc123"}
-        proc._map_base64_images_to_blocks([block], caption_map, 0)
-        assert block.data["uri"] == "data:image/png;base64,abc123"
-
-    def test_image_block_with_list_captions(self):
-        from app.models.blocks import BlockType
-        proc = _make_processor_cov()
-
-        block = MagicMock()
-        block.type = BlockType.IMAGE.value
-        block.image_metadata = MagicMock()
-        block.image_metadata.captions = ["test_caption"]
-        block.data = None
-
-        caption_map = {"test_caption": "data:image/png;base64,xyz"}
-        proc._map_base64_images_to_blocks([block], caption_map, 0)
-        assert block.data["uri"] == "data:image/png;base64,xyz"
-
-    def test_image_block_caption_not_in_map(self):
-        from app.models.blocks import BlockType
-        proc = _make_processor_cov()
-
-        block = MagicMock()
-        block.type = BlockType.IMAGE.value
-        block.image_metadata = MagicMock()
-        block.image_metadata.captions = "missing_caption"
-        block.data = {}
-
-        caption_map = {"other_caption": "data:image/png;base64,abc"}
-        proc._map_base64_images_to_blocks([block], caption_map, 0)
-        assert "uri" not in block.data
-
-    def test_image_block_data_is_non_dict_string(self):
-        """When block.data is not a dict, creates new dict."""
-        from app.models.blocks import BlockType
-        proc = _make_processor_cov()
-
-        block = MagicMock()
-        block.type = BlockType.IMAGE.value
-        block.image_metadata = MagicMock()
-        block.image_metadata.captions = "cap"
-        block.data = "some string"  # Not a dict
-
-        caption_map = {"cap": "data:image/png;base64,xyz"}
-        proc._map_base64_images_to_blocks([block], caption_map, 0)
-        assert block.data == {"uri": "data:image/png;base64,xyz"}
-
-
-# ===================================================================
 # process_blocks
 # ===================================================================
 
@@ -3503,7 +3349,7 @@ class TestProcessBlocksCoverage:
 
         with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
             mock_pipeline.return_value.apply = AsyncMock()
-            with patch.object(proc, "_process_blockgroups_through_docling", new_callable=AsyncMock) as mock_pd:
+            with patch.object(proc, "_process_blockgroups", new_callable=AsyncMock) as mock_pd:
                 from app.models.blocks import BlocksContainer
                 mock_pd.return_value = BlocksContainer(blocks=[], block_groups=[])
                 with patch.object(proc, "_enhance_tables_with_llm", new_callable=AsyncMock):
@@ -3523,7 +3369,7 @@ class TestProcessBlocksCoverage:
 
         with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
             mock_pipeline.return_value.apply = AsyncMock()
-            with patch.object(proc, "_process_blockgroups_through_docling", new_callable=AsyncMock) as mock_pd:
+            with patch.object(proc, "_process_blockgroups", new_callable=AsyncMock) as mock_pd:
                 from app.models.blocks import BlocksContainer
                 mock_pd.return_value = BlocksContainer(blocks=[], block_groups=[])
                 with patch.object(proc, "_enhance_tables_with_llm", new_callable=AsyncMock):
@@ -3547,7 +3393,7 @@ class TestProcessBlocksCoverage:
 
         blocks_dict = {"blocks": [], "block_groups": []}
 
-        with patch.object(proc, "_process_blockgroups_through_docling", new_callable=AsyncMock) as mock_pd:
+        with patch.object(proc, "_process_blockgroups", new_callable=AsyncMock) as mock_pd:
             from app.models.blocks import BlocksContainer
             mock_pd.return_value = BlocksContainer(blocks=[], block_groups=[])
             with patch.object(proc, "_enhance_tables_with_llm", new_callable=AsyncMock):

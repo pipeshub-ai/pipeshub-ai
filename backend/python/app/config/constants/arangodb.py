@@ -420,6 +420,7 @@ RECONCILIATION_ENABLED_MIME_TYPES = {
     MimeTypes.DOC.value,
     MimeTypes.PLAIN_TEXT.value,
     MimeTypes.HTML.value,
+    MimeTypes.BLOCKS.value,
 }
 
 RECONCILIATION_ENABLED_EXTENSIONS = {

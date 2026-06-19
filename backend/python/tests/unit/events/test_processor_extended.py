@@ -10,7 +10,7 @@ Targets remaining uncovered lines:
 - 1148, 1152-1160: _build_updated_blocks_container parent_index shift, children block_group_ranges shift
 - 1195, 1215: _build_updated_blocks_container new_block.parent_index offset, new_bg.parent_index offset
 - 1221-1228: _build_updated_blocks_container new_bg.children block/block_group ranges shift
-- 1347-1348: _process_blockgroups_through_docling: empty processing_results
+- 1347-1348: _process_blockgroups: empty processing_results
 - 1497-1502: process_delimited_document: non-UnicodeDecodeError exception during CSV parsing
 - 1549-1551: process_delimited_document: outer exception handler
 - 1601, 1612: process_html_document: element.decompose loop, html_binary is not bytes fallback
@@ -740,11 +740,11 @@ class TestBuildUpdatedBlocksContainerParentOffsets:
 
 
 # ===================================================================
-# Lines 1347-1348: _process_blockgroups_through_docling - empty processing_results
+# Lines 1347-1348: _process_blockgroups - empty processing_results
 # ===================================================================
 
 
-class TestProcessBlockgroupsThroughDoclingEmpty:
+class TestProcessBlockgroupsEmpty:
     @pytest.mark.asyncio
     async def test_all_processing_raises_returns_original(self):
         """When all block groups raise during processing, error propagates."""
@@ -760,16 +760,16 @@ class TestProcessBlockgroupsThroughDoclingEmpty:
         )
         bc = BlocksContainer(blocks=[], block_groups=[bg])
 
-        mock_processor = AsyncMock()
-        # _process_single_blockgroup_through_docling raises
+        # _process_single_blockgroup raises
         with patch.object(
             proc,
-            "_process_single_blockgroup_through_docling",
+            "_process_single_blockgroup",
             new_callable=AsyncMock,
-            side_effect=RuntimeError("docling failed"),
-        ), patch("app.events.processor.DoclingProcessor", return_value=mock_processor):
-            with pytest.raises(RuntimeError, match="docling failed"):
-                await proc._process_blockgroups_through_docling(bc, "test.md")
+            side_effect=RuntimeError("parser failed"),
+        ):
+            proc.parsers = {"md": MagicMock()}
+            with pytest.raises(RuntimeError, match="parser failed"):
+                await proc._process_blockgroups(bc, "test.md")
 
     @pytest.mark.asyncio
     async def test_no_blockgroups_to_process(self):
@@ -785,7 +785,7 @@ class TestProcessBlockgroupsThroughDoclingEmpty:
         )
         bc = BlocksContainer(blocks=[], block_groups=[bg])
 
-        result = await proc._process_blockgroups_through_docling(bc, "test.md")
+        result = await proc._process_blockgroups(bc, "test.md")
         assert result is bc
 
 
@@ -1553,10 +1553,8 @@ class TestProcessorCoverageBranchesTo95:
         assert blk.data and blk.data.get("uri", "").startswith("data:")
 
     @pytest.mark.asyncio
-    async def test_process_blockgroup_images_and_map_base64(self):
-        """_process_blockgroup_images + _map_base64_images_to_blocks."""
-        from app.models.blocks import Block, BlockType, DataFormat, ImageMetadata
-
+    async def test_process_blockgroup_images(self):
+        """_process_blockgroup_images extracts images and builds caption map."""
         proc = _make_processor()
         md_parser = MagicMock()
         md_parser.extract_and_replace_images.return_value = (
@@ -1571,18 +1569,6 @@ class TestProcessorCoverageBranchesTo95:
         mod_md, cmap = await proc._process_blockgroup_images("# x", block_group_index=3)
         assert mod_md == "text"
         assert cmap.get("cap1") == "data:x"
-
-        blocks = [
-            Block(
-                index=0,
-                type=BlockType.IMAGE,
-                format=DataFormat.BIN,
-                data=None,
-                image_metadata=ImageMetadata(captions=["cap1"]),
-            )
-        ]
-        proc._map_base64_images_to_blocks(blocks, cmap, block_group_index=3)
-        assert blocks[0].data["uri"] == "data:x"
 
     @pytest.mark.asyncio
     async def test_ocr_azure_di_after_unknown_provider_iteration(self):
