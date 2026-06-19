@@ -992,7 +992,7 @@ class WebConnector(BaseConnector):
                         self.logger.info(f"✅ Batch processed: {len(batch_records)} records")
                         self.processed_urls += len(batch_records)
                         batch_records.clear()
-                elif self.full_sync:
+                elif self.full_sync and record_update.record is not None:
                     self.logger.debug("Reconstructing permissions for record: %s (id: %s)", record_update.record.record_name, record_update.record.id)
                     await self.data_entities_processor.on_updated_record_permissions(record_update.record, record_update.new_permissions)
                     self.processed_urls += 1
