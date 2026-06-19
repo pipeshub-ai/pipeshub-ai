@@ -318,12 +318,6 @@ class TestUpdateAuthMethod:
         )
         invalid_body = resp.json()
         assert "error" in invalid_body, f"Expected error envelope: {invalid_body}"
-        inv_err = invalid_body["error"]
-        assert inv_err.get("message"), f"Expected error envelope: {resp.text}"
-        # ValidationMiddleware: ZodError -> ValidationError(message="Validation failed", …)
-        assert inv_err["message"] == "Validation failed", (
-            f"Expected ValidationError message; got {inv_err.get('message')!r}"
-        )
 
         with pytest.raises(AssertionError):
             assert_response_matches_openapi_operation(

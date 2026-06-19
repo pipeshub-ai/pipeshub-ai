@@ -240,19 +240,10 @@ export function useConnectorOAuthPopup(options?: ConnectorOAuthPopupOptions) {
       }
 
       if (type === CONNECTOR_OAUTH_POST_MESSAGE.ERROR) {
-        // Provider rejected or user cancelled — abort any in-flight verification.
         oauthVerifyAbortRef.current = true;
         oauthCompletionHandledRef.current = false;
         clearOAuthPoll();
-        const p = oauthPopupRef.current;
         oauthPopupRef.current = null;
-        if (p && !p.closed) {
-          try {
-            p.close();
-          } catch {
-            /* ignore */
-          }
-        }
         setIsAuthenticating(false);
         setAuthState('failed');
       }

@@ -21,7 +21,10 @@ import {
 } from '../validators/validators';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
+import { FileProcessorService } from '../../../libs/middlewares/file_processor/fp.service';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
+import { getPlatformSettingsFromStore } from '../../configuration_manager/utils/util';
+import { KB_UPLOAD_LIMITS } from '../../knowledge_base/constants/kb.constants';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { StorageController } from '../controllers/storage.controller';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
@@ -39,6 +42,17 @@ export function createStorageRouter(container: Container): Router {
   let storageController = container.get<StorageController>('StorageController');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   storageController.watchStorageType(keyValueStoreService);
+
+  // Resolve the platform-configured per-file upload cap so internal routes
+  // honour the same limit as the user-facing KB upload route.
+  const resolveMaxUploadSize = async (): Promise<number> => {
+    try {
+      const settings = await getPlatformSettingsFromStore(keyValueStoreService);
+      return settings.fileUploadMaxSizeBytes;
+    } catch {
+      return KB_UPLOAD_LIMITS.defaultMaxFileSizeBytes;
+    }
+  };
 
   router.post(
     '/upload',
@@ -72,15 +86,27 @@ export function createStorageRouter(container: Container): Router {
     '/internal/upload',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
     metricsMiddleware(container),
-    ...FileProcessorFactory.createBufferUploadProcessor({
-      fieldName: 'file',
-      allowedMimeTypes: Object.values(extensionToMimeType),
-      maxFilesAllowed: 1,
-      isMultipleFilesAllowed: false,
-      processingType: FileProcessingType.BUFFER,
-      maxFileSize: 1024 * 1024 * 300,
-      strictFileUpload: true,
-    }).getMiddleware,
+    async (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+      try {
+        const maxFileSize = await resolveMaxUploadSize();
+        const service = new FileProcessorService({
+          fieldName: 'file',
+          allowedMimeTypes: Object.values(extensionToMimeType),
+          maxFilesAllowed: 1,
+          isMultipleFilesAllowed: false,
+          processingType: FileProcessingType.BUFFER,
+          maxFileSize,
+          strictFileUpload: true,
+        });
+        const upload = service.upload();
+        upload(req, res, (err: any) => {
+          if (err) return next(err);
+          service.processFiles()(req, res, next);
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
     ValidationMiddleware.validate(UploadNewSchema),
     async (
       req: AuthenticatedServiceRequest,
@@ -380,15 +406,27 @@ export function createStorageRouter(container: Container): Router {
   router.post(
     '/internal/:documentId/uploadNextVersion',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
-    ...FileProcessorFactory.createBufferUploadProcessor({
-      fieldName: 'file',
-      allowedMimeTypes: Object.values(extensionToMimeType),
-      maxFilesAllowed: 1,
-      isMultipleFilesAllowed: false,
-      processingType: FileProcessingType.BUFFER,
-      maxFileSize: 1024 * 1024 * 100,
-      strictFileUpload: true,
-    }).getMiddleware,
+    async (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+      try {
+        const maxFileSize = await resolveMaxUploadSize();
+        const service = new FileProcessorService({
+          fieldName: 'file',
+          allowedMimeTypes: Object.values(extensionToMimeType),
+          maxFilesAllowed: 1,
+          isMultipleFilesAllowed: false,
+          processingType: FileProcessingType.BUFFER,
+          maxFileSize,
+          strictFileUpload: true,
+        });
+        const upload = service.upload();
+        upload(req, res, (err: any) => {
+          if (err) return next(err);
+          service.processFiles()(req, res, next);
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
     metricsMiddleware(container),
     ValidationMiddleware.validate(UploadNextVersionSchema),
     async (

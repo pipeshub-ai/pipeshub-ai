@@ -208,35 +208,47 @@ export function ConnectorOAuthCallbackClient() {
               flexShrink: 0,
             }}
           >
-            <MaterialIcon name="warning" size={21} color="var(--red-11)" />
+            <MaterialIcon name="error_outline" size={21} color="var(--red-11)" />
           </Box>
-          <Text
-            as="p"
-            size="4"
-            weight="medium"
-            style={{
-              margin: 0,
-              color: 'var(--red-10)',
-              letterSpacing: '-0.04px',
-              lineHeight: '26px',
-            }}
-          >
-            Authentication failed
-          </Text>
-          <Text
-            as="p"
-            size="3"
-            style={{
-              margin: 0,
-              color: 'var(--gray-10)',
-              lineHeight: '24px',
-              wordBreak: 'break-word',
-            }}
-          >
-            {error}
-          </Text>
+          <Flex direction="column" align="center" gap="1">
+            <Text
+              as="p"
+              size="4"
+              weight="medium"
+              style={{
+                margin: 0,
+                color: 'var(--red-10)',
+                letterSpacing: '-0.04px',
+                lineHeight: '26px',
+              }}
+            >
+              Authentication failed
+            </Text>
+            <Text
+              as="p"
+              size="3"
+              style={{
+                margin: 0,
+                color: 'var(--gray-10)',
+                lineHeight: '24px',
+                wordBreak: 'break-word',
+              }}
+            >
+              {error}
+            </Text>
+          </Flex>
           <Button size="2" variant="outline" color="gray" onClick={closeWindow}>
-            Close
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 'var(--space-2)',
+              }}
+            >
+              <MaterialIcon name="close" size={16} color="var(--gray-11)" />
+              Close
+            </span>
           </Button>
         </Flex>
       );

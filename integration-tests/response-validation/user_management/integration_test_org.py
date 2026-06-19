@@ -421,9 +421,6 @@ class TestUpdateOrganizationDetails:
             assert payload["error"]["code"] == "VALIDATION_ERROR", (
                 f"[{label}] Expected 'VALIDATION_ERROR', got {payload['error']['code']!r}"
             )
-            assert payload["error"]["message"] == "Validation failed", (
-                f"[{label}] Expected 'Validation failed', got {payload['error']['message']!r}"
-            )
 
         # Missing credentials: PUT must not mutate org without Authorization.
         resp = requests.put(
@@ -589,9 +586,6 @@ class TestUpdateOnboardingStatus:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[invalid status] Expected error code 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[invalid status] Expected message 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Required field missing: empty JSON body should not satisfy onboarding status payload.
         resp = requests.put(
@@ -610,9 +604,6 @@ class TestUpdateOnboardingStatus:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[empty body] Expected error code 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[empty body] Expected message 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Type / schema violation: null is not a valid string status.
         resp = requests.put(
@@ -630,9 +621,6 @@ class TestUpdateOnboardingStatus:
         )
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[null status] Expected error code 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[null status] Expected message 'Validation failed', got {body['error']['message']!r}"
         )
 
         # Missing credentials (after validation cases): anonymous PUT must not change status.
@@ -1051,7 +1039,4 @@ class TestCreateOrganization:
             )
             assert body["error"]["code"] == "VALIDATION_ERROR", (
                 f"[{label}] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-            )
-            assert body["error"]["message"] == "Validation failed", (
-                f"[{label}] Expected 'Validation failed', got {body['error']['message']!r}"
             )

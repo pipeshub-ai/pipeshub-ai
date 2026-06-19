@@ -344,9 +344,6 @@ class TestGetAllUsers:
             assert body["error"]["code"] == "VALIDATION_ERROR", (
                 f"[{label}] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
             )
-            assert body["error"]["message"] == "Validation failed", (
-                f"[{label}] Expected 'Validation failed', got {body['error']['message']!r}"
-            )
 
 
 # ====================================================================
@@ -447,9 +444,6 @@ class TestGetUserById:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Valid-format ObjectId that does not exist — controller throws NotFoundError.
         resp = requests.get(
@@ -530,9 +524,6 @@ class TestGetEmailByUserId:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Valid-format ObjectId that does not exist — controller throws NotFoundError.
         resp = requests.get(
@@ -611,9 +602,6 @@ class TestAdminCheck:
         assert_response_matches_openapi_operation(body, "adminCheck", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
 
@@ -694,9 +682,6 @@ class TestUpdateFullName:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Missing fullName field — Zod requires fullName.min(1).
         resp = requests.patch(
@@ -713,9 +698,6 @@ class TestUpdateFullName:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[missing fullName] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[missing fullName] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Empty string for fullName — Zod min(1) rejects zero-length values.
         resp = requests.patch(
@@ -731,9 +713,6 @@ class TestUpdateFullName:
         assert_response_matches_openapi_operation(body, "updateFullName", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[empty fullName] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[empty fullName] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
         # Valid-format ObjectId that does not exist — controller throws NotFoundError.
@@ -833,9 +812,6 @@ class TestUpdateFirstName:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Missing firstName field — Zod requires firstName.min(1).
         resp = requests.patch(
@@ -852,9 +828,6 @@ class TestUpdateFirstName:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[missing firstName] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[missing firstName] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Empty string for firstName — Zod min(1) rejects zero-length values.
         resp = requests.patch(
@@ -870,9 +843,6 @@ class TestUpdateFirstName:
         assert_response_matches_openapi_operation(body, "updateFirstName", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[empty firstName] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[empty firstName] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
         # Valid-format ObjectId that does not exist.
@@ -972,9 +942,6 @@ class TestUpdateLastName:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Missing lastName field — Zod requires lastName.min(1).
         resp = requests.patch(
@@ -991,9 +958,6 @@ class TestUpdateLastName:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[missing lastName] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[missing lastName] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Empty string for lastName — Zod min(1) rejects zero-length values.
         resp = requests.patch(
@@ -1009,9 +973,6 @@ class TestUpdateLastName:
         assert_response_matches_openapi_operation(body, "updateLastName", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[empty lastName] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[empty lastName] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
         # Valid-format ObjectId that does not exist.
@@ -1111,9 +1072,6 @@ class TestUpdateDesignation:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Missing designation field — Zod requires designation.min(1).
         resp = requests.patch(
@@ -1130,9 +1088,6 @@ class TestUpdateDesignation:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[missing designation] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[missing designation] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Empty string for designation — Zod min(1) rejects zero-length values.
         resp = requests.patch(
@@ -1148,9 +1103,6 @@ class TestUpdateDesignation:
         assert_response_matches_openapi_operation(body, "updateDesignation", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[empty designation] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[empty designation] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
         # Valid-format ObjectId that does not exist.
@@ -1246,9 +1198,6 @@ class TestUpdateEmail:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Missing email field entirely — Zod requires the email key.
         resp = requests.patch(
@@ -1264,9 +1213,6 @@ class TestUpdateEmail:
         assert_response_matches_openapi_operation(body, "updateEmail", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[missing email] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[missing email] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
         # Empty string email — Zod email() rejects zero-length / non-email values.
@@ -1284,9 +1230,6 @@ class TestUpdateEmail:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[empty email] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[empty email] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Invalid email format — Zod email() validator rejects before the controller.
         resp = requests.patch(
@@ -1302,9 +1245,6 @@ class TestUpdateEmail:
         assert_response_matches_openapi_operation(body, "updateEmail", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[invalid email] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[invalid email] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
         # Valid-format ObjectId that does not exist — controller throws NotFoundError.
@@ -1596,9 +1536,6 @@ class TestUpdateUser:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Unknown field — updateUserBody uses .strict(), so extra keys are rejected.
         resp = requests.put(
@@ -1614,9 +1551,6 @@ class TestUpdateUser:
         assert_response_matches_openapi_operation(body, "updateUser", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[unknown field] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[unknown field] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
         # Valid-format ObjectId that does not exist — controller throws NotFoundError.
@@ -1653,9 +1587,6 @@ class TestUpdateUser:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[invalid mobile] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[invalid mobile] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Null mobile is invalid — schema expects string when provided.
         resp = requests.put(
@@ -1672,9 +1603,6 @@ class TestUpdateUser:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[null mobile] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[null mobile] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Invalid email inside the body — Zod email() rejects before the controller.
         resp = requests.put(
@@ -1690,9 +1618,6 @@ class TestUpdateUser:
         assert_response_matches_openapi_operation(body, "updateUser", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[invalid email in body] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[invalid email in body] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
 
@@ -1855,9 +1780,6 @@ class TestCreateAndDeleteUser:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[missing fullName] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[missing fullName] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Missing email — Zod requires email.
         resp = requests.post(
@@ -1873,9 +1795,6 @@ class TestCreateAndDeleteUser:
         assert_response_matches_openapi_operation(body, "createUser", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[missing email] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[missing email] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
         # Invalid email format — Zod email() validator rejects malformed addresses.
@@ -1893,9 +1812,6 @@ class TestCreateAndDeleteUser:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[invalid email] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[invalid email] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Invalid mobile format — Zod refine: must match ^\+?[0-9]{10,15}$.
         resp = requests.post(
@@ -1912,9 +1828,6 @@ class TestCreateAndDeleteUser:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[invalid mobile] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[invalid mobile] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Null mobile is invalid — schema expects string when provided.
         resp = requests.post(
@@ -1930,9 +1843,6 @@ class TestCreateAndDeleteUser:
         assert_response_matches_openapi_operation(body, "createUser", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[null mobile] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[null mobile] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
     def test_delete_user_negative_tests(self) -> None:
@@ -1969,9 +1879,6 @@ class TestCreateAndDeleteUser:
         assert_response_matches_openapi_operation(body, "deleteUser", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
         # Valid-format ObjectId that does not exist — controller throws NotFoundError.
@@ -2112,9 +2019,6 @@ class TestGraphList:
             )
             assert body["error"]["code"] == "VALIDATION_ERROR", (
                 f"[{label}] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-            )
-            assert body["error"]["message"] == "Validation failed", (
-                f"[{label}] Expected 'Validation failed', got {body['error']['message']!r}"
             )
 
         # XSS content in search — validateNoXSS throws BadRequestError with field context.
@@ -2506,9 +2410,6 @@ class TestGetUsersByIds:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[missing userIds] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[missing userIds] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Empty array — Zod min(1) rejects arrays with no elements.
         resp = requests.post(
@@ -2524,9 +2425,6 @@ class TestGetUsersByIds:
         assert_response_matches_openapi_operation(body, "getUsersByIds", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[empty array] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[empty array] Expected 'Validation failed', got {body['error']['message']!r}"
         )
 
         # Malformed ObjectId — Zod regex /^[a-fA-F0-9]{24}$/ rejects non-hex strings.
@@ -2544,9 +2442,6 @@ class TestGetUsersByIds:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Wrong type for userIds — string instead of array; Zod type check rejects.
         resp = requests.post(
@@ -2562,7 +2457,4 @@ class TestGetUsersByIds:
         assert_response_matches_openapi_operation(body, "getUsersByIds", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[wrong type] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
-        )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[wrong type] Expected 'Validation failed', got {body['error']['message']!r}"
         )

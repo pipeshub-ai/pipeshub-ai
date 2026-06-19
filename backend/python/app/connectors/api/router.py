@@ -83,7 +83,7 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
-from app.utils.oauth_config import fetch_oauth_config_by_id, get_oauth_config
+from app.utils.oauth_config import extract_oauth_error_message, fetch_oauth_config_by_id, get_oauth_config
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -4257,6 +4257,7 @@ async def update_connector_instance_name(
 # Common Helper Functions
 # ============================================================================
 
+
 def _get_user_context(request: Request) -> dict[str, Any]:
     """
     Extract and validate user authentication context from request.
@@ -5098,9 +5099,11 @@ async def handle_oauth_callback(
             except Exception:
                 pass
 
+        error_message = extract_oauth_error_message(e)
         return {
             "success": False,
             "error": "server_error",
+            "error_message": error_message,
             "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=server_error"
         }
 

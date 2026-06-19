@@ -14,6 +14,7 @@ import type { ExternalStoreAdapter } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel } from './store';
 import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
+import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import {
   buildAssistantApiFilters,
   buildStreamRequestModeFields,
@@ -254,12 +255,21 @@ export function buildExternalStoreConfig(
 
       // Resolve the model for the CURRENT context (agent or assistant) so the
       // submitted payload matches exactly what the chat input pill shows.
+      // If neither selectedModels nor defaultModels are populated yet (race
+      // with model fetch at page load), fetch them now before proceeding.
       const modelCtxKey = ctxKeyFromAgent(effectiveAgentId ?? null);
-      const effectiveModel = getEffectiveModel(modelCtxKey) ?? {
-        modelKey: '',
-        modelName: '',
-        modelFriendlyName: '',
-      };
+      let effectiveModel = getEffectiveModel(modelCtxKey);
+      if (!effectiveModel) {
+        try {
+          await fetchModelsForContext(modelCtxKey);
+          effectiveModel = getEffectiveModel(modelCtxKey);
+        } catch (error) {
+          console.warn('[runtime] Failed to fetch models for context, proceeding with defaults:', error);
+        }
+      }
+      if (!effectiveModel) {
+        effectiveModel = { modelKey: '', modelName: '', modelFriendlyName: '' };
+      }
 
       const isAgent = Boolean(effectiveAgentId);
       const knowledgeScope = currentState.agentKnowledgeScope;

@@ -152,9 +152,13 @@ export const fetchConfigJwtGenerator = (
 export const scopedStorageServiceJwtGenerator = (
   orgId: string,
   scopedJwtSecret: string,
+  userId?: string,
 ) => {
   return jwt.sign(
-    { orgId, scopes: [TokenScopes.STORAGE_TOKEN] },
+    // Carry userId so the storage service can still attribute the document to
+    // its initiator (extractUserId reads it) when the request is made with this
+    // service token instead of the user's JWT.
+    { orgId, ...(userId ? { userId } : {}), scopes: [TokenScopes.STORAGE_TOKEN] },
     scopedJwtSecret,
     {
       expiresIn: '1h',

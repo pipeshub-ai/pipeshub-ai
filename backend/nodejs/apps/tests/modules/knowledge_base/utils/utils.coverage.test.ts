@@ -5,37 +5,62 @@ import {
   processUploadsInBackground,
   PlaceholderResultWithMetadata,
   uploadFileToSignedUrl,
+  UPLOAD_STORAGE_CONCURRENCY,
 } from '../../../../src/modules/knowledge_base/utils/utils'
+import { ConnectorServiceCommand } from '../../../../src/libs/commands/connector_service/connector.service.command'
 
 describe('Knowledge Base Utils - coverage', () => {
   afterEach(() => {
     sinon.restore()
   })
 
-  describe('uploadFileToSignedUrl', () => {
-    it('should handle successful upload', async () => {
-      const axiosModule = require('axios')
-      sinon.stub(axiosModule, 'default').resolves({ status: 200 })
+  describe('UPLOAD_STORAGE_CONCURRENCY constant', () => {
+    it('should be a positive integer', () => {
+      expect(UPLOAD_STORAGE_CONCURRENCY).to.be.a('number')
+      expect(UPLOAD_STORAGE_CONCURRENCY).to.be.greaterThan(0)
+      expect(Number.isInteger(UPLOAD_STORAGE_CONCURRENCY)).to.be.true
+    })
+  })
 
-      // The function uses axios directly, not axios.default
-      // We need to stub the actual axios function
-      try {
-        await uploadFileToSignedUrl(
-          Buffer.from('test'),
-          'application/pdf',
-          'https://storage.example.com/upload',
-          'doc-1',
-          'test.pdf',
-        )
-      } catch {
-        // axios stub may not work perfectly, but the function paths are exercised
-      }
+  describe('uploadFileToSignedUrl', () => {
+    let originalFetch: typeof globalThis.fetch
+
+    beforeEach(() => {
+      originalFetch = globalThis.fetch
     })
 
-    it('should throw on upload failure', async () => {
-      const axiosModule = require('axios')
-      sinon.stub(axiosModule, 'default').rejects(new Error('Upload failed'))
+    afterEach(() => {
+      globalThis.fetch = originalFetch
+    })
 
+    it('should resolve on a successful upload (2xx response)', async () => {
+      globalThis.fetch = sinon.stub().resolves({
+        ok: true,
+        status: 200,
+      } as any)
+
+      await uploadFileToSignedUrl(
+        Buffer.from('test'),
+        'application/pdf',
+        'https://storage.example.com/upload',
+        'doc-1',
+        'test.pdf',
+      )
+
+      expect((globalThis.fetch as sinon.SinonStub).calledOnce).to.be.true
+      const [url, opts] = (globalThis.fetch as sinon.SinonStub).firstCall.args
+      expect(url).to.equal('https://storage.example.com/upload')
+      expect(opts.method).to.equal('PUT')
+    })
+
+    it('should throw when the storage server returns a non-ok status', async () => {
+      globalThis.fetch = sinon.stub().resolves({
+        ok: false,
+        status: 403,
+        text: sinon.stub().resolves('Forbidden'),
+      } as any)
+
+      let err: Error | undefined
       try {
         await uploadFileToSignedUrl(
           Buffer.from('test'),
@@ -44,33 +69,59 @@ describe('Knowledge Base Utils - coverage', () => {
           'doc-1',
           'test.pdf',
         )
-        // May or may not throw depending on how axios is stubbed
-      } catch (error) {
-        expect(error).to.be.instanceOf(Error)
+      } catch (e) {
+        err = e as Error
       }
+      expect(err).to.be.instanceOf(Error)
+      expect(err?.message).to.include('403')
+    })
+
+    it('should throw when fetch itself rejects (network error)', async () => {
+      globalThis.fetch = sinon.stub().rejects(new Error('ECONNREFUSED'))
+
+      let err: Error | undefined
+      try {
+        await uploadFileToSignedUrl(
+          Buffer.from('test'),
+          'application/pdf',
+          'https://storage.example.com/upload',
+          'doc-1',
+          'test.pdf',
+        )
+      } catch (e) {
+        err = e as Error
+      }
+      expect(err).to.be.instanceOf(Error)
+      expect(err?.message).to.equal('ECONNREFUSED')
     })
   })
 
   describe('processUploadsInBackground', () => {
     let mockLogger: any
-    let mockNotificationService: any
+    let publish: sinon.SinonStub
+
+    const failedEvents = () =>
+      publish.getCalls().filter((c) => c.args[0] === 'file:failed').map((c) => c.args[1])
+    const successEvents = () =>
+      publish.getCalls().filter((c) => c.args[0] === 'file:succeeded').map((c) => c.args[1])
 
     function createPlaceholderResult(options: {
-      uploadPromise?: Promise<void>
+      upload?: () => Promise<void>
       documentId?: string
       documentName?: string
       fileName?: string
       key?: string
+      filePath?: string
     } = {}): PlaceholderResultWithMetadata {
       return {
         placeholderResult: {
           documentId: options.documentId || 'doc-1',
           documentName: options.documentName || 'test.pdf',
-          uploadPromise: options.uploadPromise,
+          upload: options.upload,
         },
         metadata: {
           file: { buffer: Buffer.from('test'), mimetype: 'application/pdf', originalname: 'test.pdf', size: 4 } as any,
-          filePath: '/path/to/test.pdf',
+          filePath: options.filePath || '/path/to/test.pdf',
           fileName: options.fileName || 'test.pdf',
           extension: '.pdf',
           correctMimeType: 'application/pdf',
@@ -82,6 +133,8 @@ describe('Knowledge Base Utils - coverage', () => {
       }
     }
 
+    const PY_URL = 'http://python/api/v1/kb/kb1/upload'
+
     beforeEach(() => {
       mockLogger = {
         info: sinon.stub(),
@@ -89,221 +142,388 @@ describe('Knowledge Base Utils - coverage', () => {
         warn: sinon.stub(),
         error: sinon.stub(),
       }
-      mockNotificationService = {
-        sendToUser: sinon.stub().returns(true),
-      }
+      publish = sinon.stub()
     })
 
-    it('should handle all uploads failing and send notification', async () => {
+    it('streams a file:failed (stage upload) for each storage-upload failure and returns counts', async () => {
       const results = [
         createPlaceholderResult({
-          uploadPromise: Promise.reject(new Error('Upload failed')),
+          upload: () => Promise.reject(new Error('Upload failed')),
           key: 'failed-key',
         }),
       ]
 
-      await processUploadsInBackground(
+      const counts = await processUploadsInBackground(
         results,
-        'org-1', 'user-1', Date.now(),
-        'http://python/api/v1/kb/kb1/records',
+        'org-1', Date.now(),
+        PY_URL,
         { Authorization: 'Bearer test' },
         mockLogger,
-        mockNotificationService,
-        'kb1',
-        'folder1',
+        publish,
       )
 
-      expect(mockLogger.error.called).to.be.true
-      expect(mockNotificationService.sendToUser.calledWith('user-1', 'records:failed')).to.be.true
+      const fe = failedEvents()
+      expect(fe).to.have.length(1)
+      expect(fe[0].stage).to.equal('upload')
+      expect(counts).to.deep.equal({ succeeded: 0, failed: 1 })
     })
 
-    it('should warn when zero successful uploads', async () => {
+    it('warns and returns failed counts when zero uploads succeed', async () => {
       const results = [
-        createPlaceholderResult({
-          uploadPromise: Promise.reject(new Error('fail')),
-        }),
+        createPlaceholderResult({ upload: () => Promise.reject(new Error('fail')) }),
       ]
 
-      await processUploadsInBackground(
+      const counts = await processUploadsInBackground(
         results,
-        'org-1', 'user-1', Date.now(),
-        'http://python/api/v1/kb/kb1/records',
+        'org-1', Date.now(),
+        PY_URL,
         {},
         mockLogger,
-        mockNotificationService,
+        publish,
       )
 
       expect(mockLogger.warn.called).to.be.true
+      expect(counts).to.deep.equal({ succeeded: 0, failed: 1 })
     })
 
-    it('should handle notification failure on failed uploads gracefully', async () => {
-      const results = [
-        createPlaceholderResult({
-          uploadPromise: Promise.reject(new Error('fail')),
-        }),
-      ]
+    describe('with the indexing service mocked', () => {
+      it('streams file:succeeded for each indexed file on a clean 200', async () => {
+        sinon
+          .stub(ConnectorServiceCommand.prototype, 'execute')
+          .resolves({ statusCode: 200, data: {} } as any)
 
-      const failingNotification = {
-        sendToUser: sinon.stub().throws(new Error('Socket broken')),
-      }
+        const results = [
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'ok-1' }),
+        ]
 
-      await processUploadsInBackground(
-        results,
-        'org-1', 'user-1', Date.now(),
-        'http://python/api/v1/kb/kb1/records',
-        {},
-        mockLogger,
-        failingNotification as any,
-      )
-
-      expect(mockLogger.error.called).to.be.true
-    })
-
-    it('should extract kbId and folderId from URL when not provided explicitly', async () => {
-      const results = [
-        createPlaceholderResult({
-          uploadPromise: Promise.reject(new Error('fail')),
-        }),
-      ]
-
-      await processUploadsInBackground(
-        results,
-        'org-1', 'user-1', Date.now(),
-        'http://python/api/v1/kb/kb123/folder/folder456/records',
-        {},
-        mockLogger,
-        mockNotificationService,
-        undefined, // no explicit kbId
-        undefined, // no explicit folderId
-      )
-
-      // Check notification was sent with extracted IDs
-      if (mockNotificationService.sendToUser.called) {
-        const eventData = mockNotificationService.sendToUser.firstCall.args[2]
-        if (eventData) {
-          expect(eventData.kbId).to.equal('kb123')
-          expect(eventData.folderId).to.equal('folder456')
-        }
-      }
-    })
-
-    it('should not send notification when notificationService is undefined', async () => {
-      const results = [
-        createPlaceholderResult({
-          uploadPromise: Promise.reject(new Error('fail')),
-        }),
-      ]
-
-      await processUploadsInBackground(
-        results,
-        'org-1', 'user-1', Date.now(),
-        'http://python/api/v1/kb/kb1/records',
-        {},
-        mockLogger,
-        undefined, // no notification service
-      )
-
-      // Should still log the warning
-      expect(mockLogger.warn.called).to.be.true
-    })
-
-    it('should handle notification failure with non-Error object', async () => {
-      const results = [
-        createPlaceholderResult({
-          uploadPromise: Promise.reject(new Error('fail')),
-        }),
-      ]
-
-      const failingNotification = {
-        sendToUser: sinon.stub().throws('string error'),
-      }
-
-      await processUploadsInBackground(
-        results,
-        'org-1', 'user-1', Date.now(),
-        'http://python/api/v1/kb/kb1/records',
-        {},
-        mockLogger,
-        failingNotification as any,
-      )
-
-      expect(mockLogger.error.called).to.be.true
-    })
-
-    it('should handle successful direct upload (no uploadPromise)', async () => {
-      // The direct upload path: uploadPromise is undefined, so file was uploaded directly
-      const results = [
-        createPlaceholderResult(), // no uploadPromise
-      ]
-
-      // This test will try to create ConnectorServiceCommand which may fail,
-      // but the "else" branch (no uploadPromise) for the upload loop is covered
-      try {
-        await processUploadsInBackground(
+        const counts = await processUploadsInBackground(
           results,
-          'org-1', 'user-1', Date.now(),
-          'http://python/api/v1/kb/kb1/records',
+          'org-1', Date.now(),
+          PY_URL,
           {},
           mockLogger,
-          mockNotificationService,
-          'kb1',
+          publish,
         )
-      } catch {
-        // ConnectorServiceCommand may throw due to network, but upload logic is covered
-      }
 
-      // The file was counted as successful since no uploadPromise
-      expect(mockLogger.info.called).to.be.true
-    })
+        expect(failedEvents()).to.have.length(0)
+        expect(successEvents()).to.have.length(1)
+        expect(successEvents()[0].filePath).to.equal('/path/to/test.pdf')
+        expect(counts).to.deep.equal({ succeeded: 1, failed: 0 })
+      })
 
-    it('should handle successful upload promise', async () => {
-      const results = [
-        createPlaceholderResult({
-          uploadPromise: Promise.resolve(),
-        }),
-      ]
+      it('streams file:failed (stage index) for python-reported failedFiles', async () => {
+        sinon
+          .stub(ConnectorServiceCommand.prototype, 'execute')
+          .resolves({ statusCode: 200, data: { failedFiles: ['/path/to/test.pdf'] } } as any)
 
-      try {
-        await processUploadsInBackground(
+        const results = [
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'ok-1' }),
+        ]
+
+        const counts = await processUploadsInBackground(
           results,
-          'org-1', 'user-1', Date.now(),
-          'http://python/api/v1/kb/kb1/records',
+          'org-1', Date.now(),
+          PY_URL,
           {},
           mockLogger,
-          mockNotificationService,
+          publish,
         )
-      } catch {
-        // ConnectorServiceCommand may throw
-      }
 
-      expect(mockLogger.debug.called).to.be.true
-    })
+        expect(failedEvents()).to.have.length(1)
+        expect(failedEvents()[0].stage).to.equal('index')
+        expect(counts).to.deep.equal({ succeeded: 0, failed: 1 })
+      })
 
-    it('should handle mixed successful and failed uploads', async () => {
-      const results = [
-        createPlaceholderResult({ uploadPromise: Promise.resolve(), key: 'ok-1' }),
-        createPlaceholderResult({ uploadPromise: Promise.reject(new Error('fail')), key: 'fail-1' }),
-        createPlaceholderResult({ key: 'direct-1' }), // direct upload, no promise
-      ]
+      it('marks all uploaded files failed (stage index) on a non-200', async () => {
+        sinon
+          .stub(ConnectorServiceCommand.prototype, 'execute')
+          .resolves({ statusCode: 500, msg: 'boom' } as any)
 
-      try {
-        await processUploadsInBackground(
+        const results = [
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'ok-1' }),
+        ]
+
+        const counts = await processUploadsInBackground(
           results,
-          'org-1', 'user-1', Date.now(),
-          'http://python/api/v1/kb/kb1/records',
+          'org-1', Date.now(),
+          PY_URL,
           {},
           mockLogger,
-          mockNotificationService,
-          'kb1',
-          'folder1',
+          publish,
         )
-      } catch {
-        // Connector may throw
-      }
 
-      // Should have logged both success and failure
-      expect(mockLogger.info.called).to.be.true
-      expect(mockLogger.error.called).to.be.true
+        expect(failedEvents()).to.have.length(1)
+        expect(failedEvents()[0].stage).to.equal('index')
+        expect(counts).to.deep.equal({ succeeded: 0, failed: 1 })
+      })
+
+      it('returns failed counts even when the indexing call throws', async () => {
+        sinon
+          .stub(ConnectorServiceCommand.prototype, 'execute')
+          .rejects(new Error('network down'))
+
+        const results = [
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'ok-1' }),
+        ]
+
+        const counts = await processUploadsInBackground(
+          results,
+          'org-1', Date.now(),
+          PY_URL,
+          {},
+          mockLogger,
+          publish,
+        )
+
+        expect(counts.failed).to.be.greaterThan(0)
+        expect(mockLogger.error.called).to.be.true
+      })
+
+      it('handles a mix of upload-failed, indexed, and python-failed files', async () => {
+        sinon
+          .stub(ConnectorServiceCommand.prototype, 'execute')
+          .resolves({ statusCode: 200, data: { failedFiles: ['/path/py-failed.pdf'] } } as any)
+
+        const results = [
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'ok-1', filePath: '/path/ok.pdf' }),
+          createPlaceholderResult({ upload: () => Promise.reject(new Error('fail')), key: 'fail-1', filePath: '/path/upload-failed.pdf' }),
+          createPlaceholderResult({ key: 'direct-1', filePath: '/path/py-failed.pdf' }), // direct upload, python fails it
+        ]
+
+        const counts = await processUploadsInBackground(
+          results,
+          'org-1', Date.now(),
+          PY_URL,
+          {},
+          mockLogger,
+          publish,
+        )
+
+        const stages = failedEvents().map((e: any) => e.stage)
+        expect(stages).to.include('upload')
+        expect(stages).to.include('index')
+        expect(successEvents()).to.have.length(1) // ok-1
+        expect(counts).to.deep.equal({ succeeded: 1, failed: 2 })
+      })
+
+      // Regression: the indexing service may return a 200 that still reports
+      // files it SKIPPED because a record with that name already exists in the
+      // target location. These must surface as file:failed with a stable
+      // DUPLICATE_NAME reason (not silently counted as succeeded).
+      it('streams file:failed with reason DUPLICATE_NAME for python-reported skippedFiles', async () => {
+        sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
+          statusCode: 200,
+          data: {
+            skippedFiles: [
+              { filePath: '/path/dup.pdf', name: 'dup.pdf', reason: 'DUPLICATE_NAME' },
+            ],
+          },
+        } as any)
+
+        const results = [
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'dup-1', filePath: '/path/dup.pdf' }),
+        ]
+
+        const counts = await processUploadsInBackground(
+          results,
+          'org-1', Date.now(),
+          PY_URL,
+          {},
+          mockLogger,
+          publish,
+        )
+
+        const fe = failedEvents()
+        expect(fe).to.have.length(1)
+        expect(fe[0].stage).to.equal('index')
+        expect(fe[0].reason).to.equal('DUPLICATE_NAME')
+        expect(successEvents()).to.have.length(0)
+        expect(counts).to.deep.equal({ succeeded: 0, failed: 1 })
+      })
+
+      it('handles skippedFiles and failedFiles nested under data wrapper', async () => {
+        sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
+          statusCode: 200,
+          data: {
+            data: {
+              failedFiles: ['/path/py-failed.pdf'],
+              skippedFiles: [
+                { filePath: '/path/dup.pdf', name: 'dup.pdf', reason: 'DUPLICATE_NAME' },
+              ],
+            },
+          },
+        } as any)
+
+        const results = [
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'ok-1', filePath: '/path/ok.pdf' }),
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'pyfail-1', filePath: '/path/py-failed.pdf' }),
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'dup-1', filePath: '/path/dup.pdf' }),
+        ]
+
+        const counts = await processUploadsInBackground(
+          results,
+          'org-1', Date.now(),
+          PY_URL,
+          {},
+          mockLogger,
+          publish,
+        )
+
+        expect(successEvents()).to.have.length(1)
+        expect(successEvents()[0].filePath).to.equal('/path/ok.pdf')
+        expect(counts).to.deep.equal({ succeeded: 1, failed: 2 })
+      })
+
+      it('includes file extension in succeeded and failed events', async () => {
+        sinon
+          .stub(ConnectorServiceCommand.prototype, 'execute')
+          .resolves({ statusCode: 200, data: {} } as any)
+
+        const results = [
+          createPlaceholderResult({
+            upload: () => Promise.resolve(),
+            key: 'ok-1',
+            filePath: '/docs/report.pdf',
+            fileName: 'report.pdf',
+          }),
+        ]
+
+        const counts = await processUploadsInBackground(
+          results,
+          'org-1', Date.now(),
+          PY_URL,
+          {},
+          mockLogger,
+          publish,
+        )
+
+        const se = successEvents()
+        expect(se).to.have.length(1)
+        expect(se[0].extension).to.equal('pdf')
+        expect(counts.succeeded).to.equal(1)
+      })
+
+      it('derives extension from documentName when filePath has no extension', async () => {
+        sinon
+          .stub(ConnectorServiceCommand.prototype, 'execute')
+          .resolves({ statusCode: 200, data: {} } as any)
+
+        const results = [
+          createPlaceholderResult({
+            upload: () => Promise.resolve(),
+            key: 'ok-1',
+            filePath: '/docs/noext',
+            documentName: 'report.docx',
+          }),
+        ]
+
+        const counts = await processUploadsInBackground(
+          results,
+          'org-1', Date.now(),
+          PY_URL,
+          {},
+          mockLogger,
+          publish,
+        )
+
+        const se = successEvents()
+        expect(se).to.have.length(1)
+        expect(se[0].extension).to.equal('docx')
+        expect(counts.succeeded).to.equal(1)
+      })
+
+      it('includes extension in file:failed events for upload failures', async () => {
+        const results = [
+          createPlaceholderResult({
+            upload: () => Promise.reject(new Error('Upload failed')),
+            key: 'fail-1',
+            filePath: '/docs/bad.xlsx',
+            fileName: 'bad.xlsx',
+          }),
+        ]
+
+        const counts = await processUploadsInBackground(
+          results,
+          'org-1', Date.now(),
+          PY_URL,
+          {},
+          mockLogger,
+          publish,
+        )
+
+        const fe = failedEvents()
+        expect(fe).to.have.length(1)
+        expect(fe[0].extension).to.equal('xlsx')
+        expect(counts.failed).to.equal(1)
+      })
+
+      it('handles files with no upload function (direct upload path)', async () => {
+        sinon
+          .stub(ConnectorServiceCommand.prototype, 'execute')
+          .resolves({ statusCode: 200, data: {} } as any)
+
+        const results = [
+          createPlaceholderResult({ key: 'direct-1', filePath: '/path/direct.pdf' }),
+        ]
+
+        const counts = await processUploadsInBackground(
+          results,
+          'org-1', Date.now(),
+          PY_URL,
+          {},
+          mockLogger,
+          publish,
+        )
+
+        expect(successEvents()).to.have.length(1)
+        expect(counts).to.deep.equal({ succeeded: 1, failed: 0 })
+      })
+
+      it('handles empty placeholderResults array', async () => {
+        const counts = await processUploadsInBackground(
+          [],
+          'org-1', Date.now(),
+          PY_URL,
+          {},
+          mockLogger,
+          publish,
+        )
+
+        expect(counts).to.deep.equal({ succeeded: 0, failed: 0 })
+      })
+
+      it('separates succeeded, python-failed, and skipped(duplicate) files in one batch', async () => {
+        sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
+          statusCode: 200,
+          data: {
+            failedFiles: ['/path/py-failed.pdf'],
+            skippedFiles: [
+              { filePath: '/path/dup.pdf', name: 'dup.pdf', reason: 'DUPLICATE_NAME' },
+            ],
+          },
+        } as any)
+
+        const results = [
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'ok-1', filePath: '/path/ok.pdf' }),
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'pyfail-1', filePath: '/path/py-failed.pdf' }),
+          createPlaceholderResult({ upload: () => Promise.resolve(), key: 'dup-1', filePath: '/path/dup.pdf' }),
+        ]
+
+        const counts = await processUploadsInBackground(
+          results,
+          'org-1', Date.now(),
+          PY_URL,
+          {},
+          mockLogger,
+          publish,
+        )
+
+        const reasons = failedEvents().map((e: any) => e.reason)
+        expect(reasons).to.include('DUPLICATE_NAME')
+        expect(successEvents()).to.have.length(1)
+        expect(successEvents()[0].filePath).to.equal('/path/ok.pdf')
+        expect(counts).to.deep.equal({ succeeded: 1, failed: 2 })
+      })
     })
   })
 })

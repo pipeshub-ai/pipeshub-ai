@@ -3,6 +3,8 @@ export type ConnectorOAuthCallbackRaw = {
   success?: boolean;
   redirectUrl?: string;
   redirect_url?: string;
+  error?: string;
+  errorMessage?: string;
 };
 
 /**
@@ -20,6 +22,19 @@ export function parseConnectorOAuthCallbackPayload(data: unknown): ParsedConnect
     throw new Error('The server did not confirm OAuth completion.');
   }
   const o = data as Record<string, unknown>;
+
+  if (o.success === false) {
+    const friendlyMessage = o.errorMessage;
+    const errorCode = o.error;
+    throw new Error(
+      (typeof friendlyMessage === 'string' && (friendlyMessage as string).trim())
+        ? (friendlyMessage as string)
+        : (typeof errorCode === 'string' && errorCode.trim())
+          ? 'Authentication failed. Please try again or contact your administrator.'
+          : 'The server rejected the OAuth authentication.'
+    );
+  }
+
   const fromCamel = o.redirectUrl;
   const fromSnake = o.redirect_url;
   const redirectUrl =

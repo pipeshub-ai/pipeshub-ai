@@ -184,6 +184,7 @@ export const extensionToMimeType: Record<string, string> = {
   key: 'application/x-iwork-keynote-sffkey',
 };
 
+
 // Helper function to get mimetype
 export const getMimeType = (extension: string): string => {
   if (!extension) {

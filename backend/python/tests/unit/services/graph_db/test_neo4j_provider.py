@@ -3896,3 +3896,164 @@ class TestValidateFolderForUpload:
 
         assert result["valid"] is False
         assert result["code"] == 500
+
+
+class TestCreateRecordsDuplicateName:
+    """Regression tests for in-batch duplicate-name dedup in ``_create_records``.
+
+    The dedup key is scoped by destination parent folder, so the same file name
+    in DIFFERENT folders within a single upload batch must NOT be skipped, while a
+    true same-folder repeat IS skipped. This mirrors the per-folder scoping the
+    Arango provider gets for free by calling ``_create_files_batch`` once per
+    folder; Neo4j processes the whole batch in one loop, so the folder dimension
+    must live in the key. Guards against a regression where two files named e.g.
+    ``README.md`` in different subfolders were silently dropped as duplicates.
+    """
+
+    @staticmethod
+    def _file(key: str, name: str, path: str, mime: str = "text/markdown") -> dict:
+        return {
+            "filePath": path,
+            "record": {"_key": key, "recordName": name},
+            "fileRecord": {
+                "_key": f"f-{key}",
+                "name": name,
+                "mimeType": mime,
+                "isFile": True,
+            },
+        }
+
+    @pytest.fixture
+    def provider_no_db_conflict(
+        self, neo4j_provider: Neo4jProvider
+    ) -> Neo4jProvider:
+        # Isolate the in-batch dedup: the DB has no existing conflicts (empty
+        # pre-fetched set), and node/edge writes are stubbed.
+        neo4j_provider._fetch_existing_file_names_in_parent = AsyncMock(
+            return_value=set()
+        )
+        neo4j_provider.batch_upsert_nodes = AsyncMock()
+        neo4j_provider.batch_create_edges = AsyncMock()
+        return neo4j_provider
+
+    @pytest.mark.asyncio
+    async def test_same_name_different_folders_both_created(
+        self, provider_no_db_conflict: Neo4jProvider
+    ):
+        provider = provider_no_db_conflict
+        files = [
+            self._file("r1", "README.md", "folderA/README.md"),
+            self._file("r2", "README.md", "folderB/README.md"),
+        ]
+        folder_analysis = {
+            "file_destinations": {
+                0: {"type": "folder", "folder_id": "folderA-id"},
+                1: {"type": "folder", "folder_id": "folderB-id"},
+            },
+            "parent_folder_id": None,
+        }
+
+        result = await provider._create_records(
+            kb_id="kb1",
+            org_id="org1",
+            files=files,
+            folder_analysis=folder_analysis,
+            transaction="txn1",
+            timestamp=1000,
+        )
+
+        assert result["total_created"] == 2
+        assert result["skipped_files"] == []
+        assert result["failed_files"] == []
+
+    @pytest.mark.asyncio
+    async def test_same_name_same_folder_second_skipped(
+        self, provider_no_db_conflict: Neo4jProvider
+    ):
+        provider = provider_no_db_conflict
+        files = [
+            self._file("r1", "README.md", "folderA/README.md"),
+            self._file("r2", "README.md", "folderA/README.md"),
+        ]
+        folder_analysis = {
+            "file_destinations": {
+                0: {"type": "folder", "folder_id": "folderA-id"},
+                1: {"type": "folder", "folder_id": "folderA-id"},
+            },
+            "parent_folder_id": None,
+        }
+
+        result = await provider._create_records(
+            kb_id="kb1",
+            org_id="org1",
+            files=files,
+            folder_analysis=folder_analysis,
+            transaction="txn1",
+            timestamp=1000,
+        )
+
+        assert result["total_created"] == 1
+        assert len(result["skipped_files"]) == 1
+        assert result["skipped_files"][0]["reason"] == "DUPLICATE_NAME"
+        assert result["skipped_files"][0]["filePath"] == "folderA/README.md"
+
+    @pytest.mark.asyncio
+    async def test_same_name_root_and_folder_both_created(
+        self, provider_no_db_conflict: Neo4jProvider
+    ):
+        # KB root and a folder are different parents, so the same name in each is
+        # allowed (root parent resolves to "" via parent_folder_id).
+        provider = provider_no_db_conflict
+        files = [
+            self._file("r1", "data.csv", "data.csv", mime="text/csv"),
+            self._file("r2", "data.csv", "sub/data.csv", mime="text/csv"),
+        ]
+        folder_analysis = {
+            "file_destinations": {
+                0: {"type": "root"},
+                1: {"type": "folder", "folder_id": "sub-id"},
+            },
+            "parent_folder_id": None,
+        }
+
+        result = await provider._create_records(
+            kb_id="kb1",
+            org_id="org1",
+            files=files,
+            folder_analysis=folder_analysis,
+            transaction="txn1",
+            timestamp=1000,
+        )
+
+        assert result["total_created"] == 2
+        assert result["skipped_files"] == []
+
+    @pytest.mark.asyncio
+    async def test_existing_db_conflict_skips_file(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        # A name that already exists in the DB (pre-fetched name set) is
+        # skipped even when it is the only file in the batch.
+        neo4j_provider._fetch_existing_file_names_in_parent = AsyncMock(
+            return_value={("readme.md", "text/markdown")}
+        )
+        neo4j_provider.batch_upsert_nodes = AsyncMock()
+        neo4j_provider.batch_create_edges = AsyncMock()
+        files = [self._file("r1", "README.md", "README.md")]
+        folder_analysis = {
+            "file_destinations": {0: {"type": "root"}},
+            "parent_folder_id": None,
+        }
+
+        result = await neo4j_provider._create_records(
+            kb_id="kb1",
+            org_id="org1",
+            files=files,
+            folder_analysis=folder_analysis,
+            transaction="txn1",
+            timestamp=1000,
+        )
+
+        assert result["total_created"] == 0
+        assert len(result["skipped_files"]) == 1
+        assert result["skipped_files"][0]["reason"] == "DUPLICATE_NAME"

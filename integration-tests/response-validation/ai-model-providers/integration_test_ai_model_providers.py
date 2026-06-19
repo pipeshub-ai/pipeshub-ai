@@ -139,13 +139,12 @@ def _delete_provider_url(
 
 
 def _assert_validation_error(body: dict, *, label: str) -> None:
-    err = body.get("error") or {}
-    assert err.get("code") == "VALIDATION_ERROR", (
-        f"[{label}] Expected VALIDATION_ERROR, got {err.get('code')!r}: {body}"
+    error = body.get("error")
+    assert isinstance(error, dict), f"[{label}] Expected error envelope, got: {body!r}"
+    assert error.get("code") == "VALIDATION_ERROR", (
+        f"[{label}] Expected VALIDATION_ERROR, got {error.get('code')!r}"
     )
-    assert err.get("message") == "Validation failed", (
-        f"[{label}] Expected 'Validation failed', got {err.get('message')!r}"
-    )
+    assert_response_matches_openapi_ref(body, "#/components/schemas/ErrorResponse")
 
 
 def _assert_error_envelope_matches_spec(body: dict) -> None:

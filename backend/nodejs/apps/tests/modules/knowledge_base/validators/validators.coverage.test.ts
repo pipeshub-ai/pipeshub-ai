@@ -28,6 +28,7 @@ import {
   deletePermissionsSchema,
   moveRecordSchema,
 } from '../../../../src/modules/knowledge_base/validators/validators'
+import { FileRejectionReason } from '../../../../src/libs/middlewares/file_processor/fp.constant'
 
 describe('Knowledge Base Validators - coverage', () => {
   // -----------------------------------------------------------------------
@@ -508,6 +509,204 @@ describe('Knowledge Base Validators - coverage', () => {
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
       })
       expect(result.success).to.be.true
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // rejectedFiles schema validation (new in this PR)
+  // -----------------------------------------------------------------------
+  describe('rejectedFiles schema in uploadRecordsSchema', () => {
+    it('should accept valid rejectedFiles with proper FileRejectionReason', () => {
+      const result = uploadRecordsSchema.safeParse({
+        body: {
+          rejectedFiles: [
+            {
+              originalname: 'bad.exe',
+              filePath: 'KB/bad.exe',
+              size: 1024,
+              mimetype: 'application/octet-stream',
+              reason: FileRejectionReason.UNSUPPORTED_TYPE,
+              error: 'Unsupported file type ".exe"',
+            },
+          ],
+        },
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept rejectedFiles with EXCEEDS_SIZE_LIMIT reason', () => {
+      const result = uploadRecordsSchema.safeParse({
+        body: {
+          rejectedFiles: [
+            {
+              originalname: 'huge.pdf',
+              filePath: 'KB/huge.pdf',
+              size: 200_000_000,
+              mimetype: 'application/pdf',
+              reason: FileRejectionReason.EXCEEDS_SIZE_LIMIT,
+              error: 'File exceeds the 100 MB size limit',
+            },
+          ],
+        },
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept rejectedFiles with DUPLICATE_NAME reason', () => {
+      const result = uploadRecordsSchema.safeParse({
+        body: {
+          rejectedFiles: [
+            {
+              originalname: 'dup.pdf',
+              filePath: 'KB/dup.pdf',
+              size: 500,
+              mimetype: 'application/pdf',
+              reason: FileRejectionReason.DUPLICATE_NAME,
+              error: 'A file with this name already exists',
+            },
+          ],
+        },
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject rejectedFiles with an invalid reason string', () => {
+      const result = uploadRecordsSchema.safeParse({
+        body: {
+          rejectedFiles: [
+            {
+              originalname: 'bad.pdf',
+              filePath: 'KB/bad.pdf',
+              size: 500,
+              mimetype: 'application/pdf',
+              reason: 'INVALID_REASON',
+              error: 'some error',
+            },
+          ],
+        },
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject rejectedFiles missing required fields', () => {
+      const result = uploadRecordsSchema.safeParse({
+        body: {
+          rejectedFiles: [
+            {
+              originalname: 'bad.pdf',
+              // missing filePath, size, mimetype, reason, error
+            },
+          ],
+        },
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should accept empty rejectedFiles array', () => {
+      const result = uploadRecordsSchema.safeParse({
+        body: { rejectedFiles: [] },
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept omitted rejectedFiles (optional)', () => {
+      const result = uploadRecordsSchema.safeParse({
+        body: {},
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+      })
+      expect(result.success).to.be.true
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // rejectedFiles in uploadRecordsToFolderSchema
+  // -----------------------------------------------------------------------
+  describe('rejectedFiles schema in uploadRecordsToFolderSchema', () => {
+    it('should accept valid rejectedFiles', () => {
+      const result = uploadRecordsToFolderSchema.safeParse({
+        body: {
+          rejectedFiles: [
+            {
+              originalname: 'bad.exe',
+              filePath: 'KB/folder/bad.exe',
+              size: 1024,
+              mimetype: 'application/octet-stream',
+              reason: FileRejectionReason.UNSUPPORTED_TYPE,
+              error: 'Unsupported file type ".exe"',
+            },
+          ],
+        },
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000', folderId: 'folder-1' },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject invalid reason in rejectedFiles', () => {
+      const result = uploadRecordsToFolderSchema.safeParse({
+        body: {
+          rejectedFiles: [
+            {
+              originalname: 'bad.pdf',
+              filePath: 'KB/bad.pdf',
+              size: 500,
+              mimetype: 'application/pdf',
+              reason: 'NOT_A_VALID_REASON',
+              error: 'error',
+            },
+          ],
+        },
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000', folderId: 'folder-1' },
+      })
+      expect(result.success).to.be.false
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // fileBufferSchema MIME type validation
+  // -----------------------------------------------------------------------
+  describe('fileBufferSchema MIME type validation in uploadRecordsSchema', () => {
+    it('should accept a fileBuffer with a valid MIME type from the registry', () => {
+      const result = uploadRecordsSchema.safeParse({
+        body: {
+          fileBuffers: [
+            {
+              buffer: Buffer.from('test'),
+              mimetype: 'application/pdf',
+              originalname: 'test.pdf',
+              size: 4,
+              lastModified: Date.now(),
+              filePath: '/path/to/test.pdf',
+            },
+          ],
+        },
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject a fileBuffer with an unknown MIME type', () => {
+      const result = uploadRecordsSchema.safeParse({
+        body: {
+          fileBuffers: [
+            {
+              buffer: Buffer.from('test'),
+              mimetype: 'application/x-totally-unknown',
+              originalname: 'test.xyz',
+              size: 4,
+              lastModified: Date.now(),
+              filePath: '/path/to/test.xyz',
+            },
+          ],
+        },
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+      })
+      expect(result.success).to.be.false
     })
   })
 })

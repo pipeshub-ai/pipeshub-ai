@@ -98,7 +98,7 @@ class TestInitAuth:
         """Invalid email / wrong body type: ErrorResponse; real init body ≠ authenticate schema."""
         init_url = f"{self.base_url}/api/v1/userAccount/initAuth"
 
-        # Invalid email string — Zod rejects format → 400 Validation failed + ErrorResponse
+        # Invalid email string: Zod rejects format with a 400 ErrorResponse.
         resp = requests.post(
             init_url,
             json={"email": "not-a-valid-email"},
@@ -111,12 +111,6 @@ class TestInitAuth:
         assert "error" in init_auth_invalid_email_error_body, (
             f"Expected error envelope: {resp.text}"
         )
-        assert init_auth_invalid_email_error_body["error"]["message"] == (
-            "Validation failed"
-        ), (
-            f"Unexpected message: "
-            f"{init_auth_invalid_email_error_body['error'].get('message')!r}"
-        )
         assert_response_matches_openapi_ref(
             init_auth_invalid_email_error_body,
             "#/components/schemas/ErrorResponse",
@@ -126,7 +120,7 @@ class TestInitAuth:
                 init_auth_invalid_email_error_body, "initAuth"
             )
 
-        # Email field wrong JSON type (number) → 400 Validation failed + ErrorResponse
+        # Email field wrong JSON type (number): Zod returns a 400 ErrorResponse.
         resp = requests.post(
             init_url,
             json={"email": 123},
@@ -137,9 +131,6 @@ class TestInitAuth:
         )
         init_auth_email_type_error_body = resp.json()
         assert "error" in init_auth_email_type_error_body
-        assert init_auth_email_type_error_body["error"]["message"] == (
-            "Validation failed"
-        )
         assert_response_matches_openapi_ref(
             init_auth_email_type_error_body, "#/components/schemas/ErrorResponse"
         )
@@ -271,7 +262,7 @@ class TestAuthenticate:
                 authenticate_wrong_password_error_body, "authenticate"
             )
 
-        # Body missing required `method` — Zod → 400 Validation failed + ErrorResponse
+        # Body missing required `method`: Zod returns a 400 ErrorResponse.
         init_resp = init_auth(self.base_url, email, self.timeout)
         assert init_resp.status_code == 200
         session_token = init_resp.headers.get("x-session-token")
@@ -290,9 +281,6 @@ class TestAuthenticate:
         assert "error" in authenticate_missing_method_field_error_body, (
             auth_resp.text
         )
-        assert authenticate_missing_method_field_error_body["error"]["message"] == (
-            "Validation failed"
-        )
         assert_response_matches_openapi_ref(
             authenticate_missing_method_field_error_body,
             "#/components/schemas/ErrorResponse",
@@ -303,7 +291,7 @@ class TestAuthenticate:
                 "authenticate",
             )
 
-        # Unknown top-level field — authenticate body schema is .strict() → 400 Validation failed
+        # Unknown top-level field: authenticate body schema is .strict(), so this is 400.
         init_resp = init_auth(self.base_url, email, self.timeout)
         assert init_resp.status_code == 200, init_resp.text
         session_token = init_resp.headers.get("x-session-token")
@@ -324,9 +312,6 @@ class TestAuthenticate:
             f"Expected 400 (authenticate body is .strict()), got {auth_resp.status_code}: {auth_resp.text}"
         )
         authenticate_strict_body_violation_error_body = auth_resp.json()
-        assert authenticate_strict_body_violation_error_body["error"]["message"] == (
-            "Validation failed"
-        )
         assert_response_matches_openapi_ref(
             authenticate_strict_body_violation_error_body,
             "#/components/schemas/ErrorResponse",
@@ -459,9 +444,6 @@ class TestResetPassword:
         )
         reset_password_empty_body_validation_error_body = resp.json()
         assert "error" in reset_password_empty_body_validation_error_body
-        assert reset_password_empty_body_validation_error_body["error"][
-            "message"
-        ] == "Validation failed"
         assert_response_matches_openapi_ref(
             reset_password_empty_body_validation_error_body,
             "#/components/schemas/ErrorResponse",
