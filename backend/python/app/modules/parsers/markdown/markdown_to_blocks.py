@@ -37,6 +37,7 @@ class _OpenGroup:
 class _TableCell:
     plain: str
     markdown: str
+    images: list[Token] = field(default_factory=list)
 
 
 @dataclass
@@ -318,12 +319,15 @@ class _TokenWalker:
                 inline_tok = tokens[index + 1]
                 plain = self._render_inline(inline_tok).strip()
                 md_text = inline_tok.content.strip()
+                image_tokens = [
+                    child
+                    for child in (inline_tok.children or [])
+                    if child.type == "image"
+                ]
                 if self.table_state is not None:
-                    self.table_state.current_row.append(_TableCell(plain=plain, markdown=md_text))
-                if inline_tok.children:
-                    for child in inline_tok.children:
-                        if child.type == "image":
-                            self._add_image_block(child)
+                    self.table_state.current_row.append(
+                        _TableCell(plain=plain, markdown=md_text, images=image_tokens)
+                    )
                 return index + 2
             if self.table_state is not None:
                 self.table_state.current_row.append(_TableCell(plain="", markdown=""))
@@ -649,7 +653,10 @@ class _TokenWalker:
                 inner = self._render_inline_markdown_from_children(inner_tokens)
                 if child.type == "link_open":
                     href = dict(child.attrs or {}).get("href", "")
-                    parts.append(f"[{inner}]({href})")
+                    if child.markup == "autolink":
+                        parts.append(f"<{href}>")
+                    else:
+                        parts.append(f"[{inner}]({href})")
                 elif child.markup:
                     parts.append(f"{child.markup}{inner}{child.markup}")
                 else:
@@ -697,7 +704,7 @@ class _TokenWalker:
 
         header_md = [h.markdown for h in headers]
 
-        row_block_indices: list[int] = []
+        child_block_indices: list[int] = []
         for row_number, row_cells in enumerate(rows, start=1):
             row_text = self._format_table_row(header_md, [c.markdown for c in row_cells])
             block = self._append_block(
@@ -713,7 +720,13 @@ class _TokenWalker:
                     },
                 )
             )
-            row_block_indices.append(block.index)
+            child_block_indices.append(block.index)
+            for cell in row_cells:
+                for image_token in cell.images:
+                    if image_block := self._build_image_block(image_token.content):
+                        image_block.parent_index = group.index
+                        self._append_block(image_block)
+                        child_block_indices.append(image_block.index)
 
         group.table_metadata = TableMetadata(
             num_of_rows=len(rows),
@@ -726,7 +739,7 @@ class _TokenWalker:
             has_header=bool(headers),
         )
         group.data = {"table_summary": "", "column_headers": header_md}
-        group.children = BlockGroupChildren.from_indices(block_indices=row_block_indices)
+        group.children = BlockGroupChildren.from_indices(block_indices=child_block_indices)
 
         # Pop the table group off the stack. Rows use _append_block (not
         # _add_block) so the _OpenGroup carries no child indices to propagate

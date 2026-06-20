@@ -581,7 +581,36 @@ class TestImages:
         assert image_blocks[0].data == {"uri": "data:image/png;base64,TABLEIMG"}
         assert image_blocks[0].format == DataFormat.BASE64
         assert image_blocks[0].parent_index == table_group.index
-        assert _child_block_indices(table_group) == [row_blocks[0].index]
+        assert container.blocks[0].type == BlockType.TABLE_ROW
+        assert container.blocks[1].type == BlockType.IMAGE
+        assert _child_block_indices(table_group) == [
+            row_blocks[0].index,
+            image_blocks[0].index,
+        ]
+
+    def test_table_row_images_follow_their_row_in_block_order(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        markdown = (
+            "| Name | Icon |\n"
+            "| --- | --- |\n"
+            "| Row1 | ![Image_1](https://example.com/1.png) |\n"
+            "| Row2 | ![Image_2](https://example.com/2.png) |\n"
+        )
+        caption_map = {
+            "Image_1": "data:image/png;base64,IMG1",
+            "Image_2": "data:image/png;base64,IMG2",
+        }
+        container = converter.convert(markdown, caption_map=caption_map)
+
+        assert [block.type for block in container.blocks] == [
+            BlockType.TABLE_ROW,
+            BlockType.IMAGE,
+            BlockType.TABLE_ROW,
+            BlockType.IMAGE,
+        ]
+        assert container.blocks[1].data == {"uri": "data:image/png;base64,IMG1"}
+        assert container.blocks[3].data == {"uri": "data:image/png;base64,IMG2"}
 
     def test_image_inside_code_block_is_not_emitted(
         self, converter: MarkdownToBlocksConverter
