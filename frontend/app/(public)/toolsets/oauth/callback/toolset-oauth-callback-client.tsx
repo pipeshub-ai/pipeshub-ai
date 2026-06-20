@@ -83,10 +83,19 @@ export function ToolsetOAuthCallbackClient() {
           baseUrl: window.location.origin,
         });
 
-        const ok =
-          Boolean(data?.success) ||
-          Boolean(data?.redirectUrl) ||
-          Boolean(data?.redirect_url);
+        if (data?.success === false) {
+          const friendlyMessage = data.errorMessage;
+          const errorCode = data.error;
+          throw new Error(
+            (typeof friendlyMessage === 'string' && friendlyMessage.trim())
+              ? friendlyMessage
+              : (typeof errorCode === 'string' && errorCode.trim())
+                ? t('agentBuilder.toolsetOAuthServerError', { defaultValue: 'Authentication failed. Please try again or contact your administrator.' })
+                : t('agentBuilder.toolsetOAuthBackendRejected')
+          );
+        }
+
+        const ok = Boolean(data?.success) || Boolean(data?.redirectUrl) || Boolean(data?.redirect_url);
 
         if (!ok) {
           throw new Error(t('agentBuilder.toolsetOAuthBackendRejected'));
@@ -121,9 +130,6 @@ export function ToolsetOAuthCallbackClient() {
     maxWidth: 432,
     textAlign: 'center' as const,
   };
-
-  const errorRetryHint = t('agentBuilder.toolsetOAuthErrorRetryHint');
-  const showErrorDetail = error.trim() !== errorRetryHint.trim();
 
   let statusPanel: ReactNode;
   switch (status) {
@@ -219,9 +225,9 @@ export function ToolsetOAuthCallbackClient() {
               flexShrink: 0,
             }}
           >
-            <MaterialIcon name="warning" size={21} color="var(--red-11)" />
+            <MaterialIcon name="error_outline" size={21} color="var(--red-11)" />
           </Box>
-          <Flex key="toolset-oauth-error-copy" direction="column" align="center" gap="1" style={{ width: '100%' }}>
+          <Flex key="toolset-oauth-error-copy" direction="column" align="center" gap="1">
             <Text
               key="toolset-oauth-error-title"
               as="p"
@@ -236,44 +242,21 @@ export function ToolsetOAuthCallbackClient() {
             >
               {t('agentBuilder.toolsetOAuthFailedTitle')}
             </Text>
-            <Flex
-              key="toolset-oauth-error-messages"
-              direction="column"
-              align="center"
-              gap="1"
-              style={{ width: '100%', maxWidth: 432 }}
+            <Text
+              key="toolset-oauth-error-body"
+              as="p"
+              size="3"
+              style={{
+                margin: 0,
+                color: 'var(--gray-10)',
+                lineHeight: '24px',
+                wordBreak: 'break-word',
+              }}
             >
-              <Text
-                key="toolset-oauth-error-hint"
-                as="p"
-                size="3"
-                style={{
-                  margin: 0,
-                  color: 'var(--gray-10)',
-                  lineHeight: '24px',
-                  wordBreak: 'break-word',
-                }}
-              >
-                {errorRetryHint}
-              </Text>
-              {showErrorDetail ? (
-                <Text
-                  key="toolset-oauth-error-detail"
-                  as="p"
-                  size="2"
-                  style={{
-                    margin: 0,
-                    color: 'var(--gray-11)',
-                    lineHeight: '20px',
-                    wordBreak: 'break-word',
-                  }}
-                >
-                  {error}
-                </Text>
-              ) : null}
-            </Flex>
+              {error}
+            </Text>
           </Flex>
-          <Button key="toolset-oauth-error-retry" size="2" variant="outline" color="gray" onClick={closeWindow}>
+          <Button key="toolset-oauth-error-close" size="2" variant="outline" color="gray" onClick={closeWindow}>
             <span
               style={{
                 display: 'inline-flex',
@@ -282,8 +265,8 @@ export function ToolsetOAuthCallbackClient() {
                 gap: 'var(--space-2)',
               }}
             >
-              <MaterialIcon name="replay" size={16} color="var(--gray-11)" />
-              {t('agentBuilder.toolsetOAuthTryAgain')}
+              <MaterialIcon name="close" size={16} color="var(--gray-11)" />
+              Close
             </span>
           </Button>
         </Flex>

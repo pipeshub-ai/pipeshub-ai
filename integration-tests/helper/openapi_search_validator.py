@@ -1,5 +1,5 @@
 """
-Spec-driven response validator for the enterprise_search integration tests.
+Spec-driven response validator for enterprise-search integration tests.
 
 Loads `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml` once,
 normalizes OpenAPI 3.0 `nullable: true` into valid JSON Schema **in place**,

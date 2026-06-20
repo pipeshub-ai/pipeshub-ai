@@ -3458,7 +3458,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         if chat_query.tools is not None and len(chat_query.tools) > _MAX_TOOLS:
             raise HTTPException(
                 status_code=400,
-                detail=f"Too many tools: maximum {_MAX_TOOLS} tools are allowed per request.",
+                detail=f"Too many actions: maximum {_MAX_TOOLS} actions are allowed per request.",
             )
 
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
@@ -3646,20 +3646,20 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
                 if is_service_account:
                     error_message = (
-                        f"This service account agent requires the following toolset(s) to be configured — "
+                        f"This service account agent requires the following actions to be configured — "
                         f"{'; '.join(problem_parts)}. "
-                        "Please configure the agent's toolset credentials in the Agent Builder → Manage Credentials."
+                        "Please configure the agent's action credentials in Agent Builder (key icon next to each action)."
                     )
                 else:
                     error_message = (
-                        f"This agent requires the following toolset(s) to be set up — "
+                        f"This agent requires the following actions to be set up — "
                         f"{'; '.join(problem_parts)}. "
-                        "Please connect your account(s) in Settings → Toolsets before using this agent."
+                        "Please connect your actions in Workspace → Actions before using this agent."
                     )
                 logger.info(
                     f"Blocking agent {agent_id} execution "
                     f"({'service account' if is_service_account else f'user {executing_user_id!r}'}): "
-                    f"toolset issue(s) — {'; '.join(problem_parts)}"
+                    f"action issue(s) — {'; '.join(problem_parts)}"
                 )
 
                 async def _toolset_config_error_stream() -> AsyncGenerator[str, None]:

@@ -31,6 +31,8 @@
   "uploadProgress": {
     "uploadFailedDefault": "Error al subir",
     "uploadIncomplete": "Subida incompleta",
+    "serverError": "Error al subir en el servidor",
+    "skippedFolderFailed": "Omitido: error al crear la carpeta",
     "genericFailureHint": "Error al subir. Inténtelo de nuevo o use un tipo de archivo admitido.",
     "ariaFailed": "{{name}}, error al subir",
     "ariaFailedWithDetail": "{{name}}, error al subir. {{detail}}",
@@ -38,6 +40,12 @@
     "sizeWithFailed": "{{size}} · error",
     "headerCompletedAndFailed": "{{completed}} completados · {{failed}} con error",
     "headerFailuresOnly": "{{count}} con error",
+    "failedSectionTitle": "Con errores ({{count}})",
+    "tab_all": "Todos",
+    "tab_completed": "Completados",
+    "tab_failed": "Con errores",
+    "emptyTab": "Nada aquí todavía",
+    "uploadedAndFailedSize": "{{uploaded}} subidos · {{failed}} con error",
     "headerAllComplete": "{{completed}}/{{total}} subidas completadas",
     "sessionFilesAndSize": "{{count}} archivos · {{size}}",
     "totalSizeLabel": "Total: {{size}}",
@@ -46,6 +54,34 @@
       "uploading": "subiendo",
       "completed": "completado",
       "failed": "error"
+    },
+    "rejectionToast": {
+      "title_one": "{{count}} archivo no se puede subir",
+      "title_other": "{{count}} archivos no se pueden subir",
+      "sizeLimitTitle_one": "{{count}} archivo supera el límite de tamaño",
+      "sizeLimitTitle_other": "{{count}} archivos superan el límite de tamaño",
+      "sizeLimitDescription": "Límite de {{maxMb}} MB por archivo. Contacte a su administrador para solicitar un límite mayor.",
+      "sizeLimitDescriptionAdmin": "Límite de {{maxMb}} MB por archivo. Puede aumentarlo en Workspace Labs.",
+      "unsupportedDescription": "Tipo de archivo no admitido.",
+      "duplicateDescription": "Ya existe un archivo con este nombre aquí.",
+      "trackerHint": "Los detalles están en el panel de subida abajo.",
+      "openLabs": "Abrir Labs"
+    },
+    "rejectionSummary": {
+      "tooLarge_one": "{{count}} supera {{maxMb}} MB",
+      "tooLarge_other": "{{count}} superan {{maxMb}} MB",
+      "unsupported_one": "{{count}} tipo no admitido",
+      "unsupported_other": "{{count}} tipos no admitidos",
+      "duplicate_one": "{{count}} nombre duplicado",
+      "duplicate_other": "{{count}} nombres duplicados",
+      "other_one": "{{count}} otro error",
+      "other_other": "{{count}} otros errores"
+    },
+    "reasons": {
+      "tooLarge": "Supera el límite de {{maxMb}} MB",
+      "unsupportedType": "Tipo de archivo no admitido",
+      "duplicateName": "Ya existe un archivo con este nombre",
+      "rejected": "Archivo rechazado"
     }
   },
   "onboarding": {
@@ -176,7 +212,7 @@
     "dismiss": "Descartar",
     "filter": "Filtrar notificaciones",
     "filterAll": "Todas",
-    "filterOnlyUnread": "Solo no leídas",
+    "filterOnlyUnread": "No leídas",
     "filterArchived": "Archivadas",
     "filterTooltip": "Filtro: {{filter}}",
     "loadFailed": "No se pudieron cargar las notificaciones",
@@ -473,6 +509,9 @@
     "micTooltip": "Entrada de voz",
     "uploadYourFile": "Sube tu archivo",
     "supportsFileTypes": "Admite: {{types}}.",
+    "uploadFilesLimit": "Hasta {{count}} archivos por mensaje",
+    "uploadFilesRemaining": "{{remaining}} de {{total}} archivos restantes",
+    "dropFilesHere": "Soltar archivos aquí",
     "loadingConversation": "Cargando conversación...",
     "recents": "Recientes",
     "sharedChats": "Chats compartidos",
@@ -1790,10 +1829,10 @@
         },
         "sync": {
           "kind": "Sync",
-          "syncing": "Sincronizando",
-          "syncingTooltip": "Hay un trabajo de sincronización en curso para esta instancia.",
-          "fullSyncing": "Sync completo",
-          "fullSyncingTooltip": "Hay una sincronización completa en curso para esta instancia.",
+          "syncing": "Sincronización en curso",
+          "syncingTooltip": "Este conector está sincronizando contenido nuevo y actualizado.",
+          "fullSyncing": "Sincronización completa en curso",
+          "fullSyncingTooltip": "Este conector está ejecutando una resincronización completa desde el origen.",
           "removing": "Eliminando",
           "removingTooltip": "Esta instancia se está eliminando."
         }

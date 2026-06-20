@@ -9,7 +9,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useToastStore } from '@/lib/store/toast-store';
-import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { primaryHttpDocumentationUrl } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
 import {
   ToolsetsApi,
@@ -34,6 +34,7 @@ import {
 } from '../types';
 import type { ActionCardCta } from '../components/action-card';
 import { isToolsetOAuthSuccessMessageType } from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
+import { useActionsStore } from '../store';
 
 const TEAM_TABS = [
   { value: 'all', labelKey: 'workspace.actions.tabs.all' },
@@ -57,18 +58,30 @@ function TeamActionsPageContent() {
     return 'all';
   }, [instanceTabParam]);
 
+  const [activeTab, setActiveTab] = useState(() => {
+    const tab = searchParams.get('tab');
+    const valid = TEAM_TABS.map((x) => x.value);
+    return tab && valid.includes(tab) ? tab : 'all';
+  });
+
   /** Fallback for type detail when catalog was never loaded (e.g. deep link). */
   const [registryRows, setRegistryRows] = useState<RegistryToolsetRow[]>([]);
   const [catalogRows, setCatalogRows] = useState<BuilderSidebarToolset[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedCatalogSearch, setDebouncedCatalogSearch] = useState('');
-  const [activeTab, setActiveTab] = useState('all');
   const [isLoading, setIsLoading] = useState(true);
-  const [createFor, setCreateFor] = useState<RegistryToolsetRow | null>(null);
   const [configureToolset, setConfigureToolset] = useState<BuilderSidebarToolset | null>(null);
   const [manageInstance, setManageInstance] = useState<BuilderSidebarToolset | null>(null);
-  const [postCreateNoticeOpen, setPostCreateNoticeOpen] = useState(false);
   const { refreshKey, bumpRefreshKey, refreshToolsetLists } = useWorkspaceToolsetListRefresh();
+  const openSetupPanel = useActionsStore((s) => s.openSetupPanel);
+
+  /** Reset panel state when the page unmounts so stale `createFor` never leaks on re-navigate. */
+  useEffect(() => () => { useActionsStore.getState().reset(); }, []);
+
+  const handleNotify = useCallback(
+    (msg: string) => addToast({ variant: 'success', title: msg }),
+    [addToast]
+  );
 
   const {
     instanceSearch,
@@ -107,12 +120,6 @@ function TeamActionsPageContent() {
     refreshToolsetLists,
     toolsetTypeParam,
   ]);
-
-  useEffect(() => {
-    if (!isAdmin) {
-      router.replace('/workspace/actions/personal/');
-    }
-  }, [isAdmin, router]);
 
   useEffect(() => {
     const tab = searchParams.get('tab');
@@ -286,6 +293,7 @@ function TeamActionsPageContent() {
 
   const handleTabChange = useCallback(
     (val: string) => {
+      setActiveTab(val);
       const params = new URLSearchParams(searchParams.toString());
       params.delete('toolsetType');
       params.delete('instanceTab');
@@ -306,23 +314,15 @@ function TeamActionsPageContent() {
   );
 
   const handleCta = useCallback((item: ActionCatalogItem) => {
-    setCreateFor(actionCatalogItemToRegistryRow(item));
-  }, []);
+    openSetupPanel(actionCatalogItemToRegistryRow(item));
+  }, [openSetupPanel]);
 
   const handleCardClick = useCallback(
     (item: ActionCatalogItem) => {
-      if (item.rowKind !== 'byToolsetType') return;
-      if (item.hasOrgInstance) {
-        const params = new URLSearchParams(searchParams.toString());
-        params.set('toolsetType', item.toolsetType);
-        params.delete('instanceTab');
-        const q = params.toString();
-        router.push(`/workspace/actions/team/?${q}`);
-        return;
-      }
-      setCreateFor(actionCatalogItemToRegistryRow(item));
+      if (item.rowKind !== 'byToolsetType' || !item.hasOrgInstance) return;
+      router.push(`/workspace/actions/team/?toolsetType=${encodeURIComponent(item.toolsetType)}`);
     },
-    [router, searchParams]
+    [router]
   );
 
   const handleBackFromType = useCallback(() => {
@@ -334,10 +334,8 @@ function TeamActionsPageContent() {
   }, [router, searchParams]);
 
   const handleAddFromType = useCallback(() => {
-    if (typeRegistryRow) setCreateFor(typeRegistryRow);
-  }, [typeRegistryRow]);
-
-  if (!isAdmin) return null;
+    if (typeRegistryRow) openSetupPanel(typeRegistryRow);
+  }, [typeRegistryRow, openSetupPanel]);
 
   if (toolsetTypeParam) {
     return (
@@ -365,29 +363,7 @@ function TeamActionsPageContent() {
           instanceFilter={typeInstanceFilter}
           pagination={typeDetailPagination}
         />
-        <ActionSetupPanel
-          open={Boolean(createFor)}
-          registryRow={createFor}
-          onOpenChange={(o) => {
-            if (!o) setCreateFor(null);
-          }}
-          onCreated={bumpRefreshKey}
-          onCreatedUserAuthNotice={() => setPostCreateNoticeOpen(true)}
-          onNotify={(msg) => addToast({ variant: 'success', title: msg })}
-        />
-        <Dialog.Root open={postCreateNoticeOpen} onOpenChange={setPostCreateNoticeOpen}>
-          <Dialog.Content style={{ maxWidth: 440 }}>
-            <Dialog.Title>{t('workspace.actions.postCreateAuth.title')}</Dialog.Title>
-            <Dialog.Description size="2" mb="3">
-              {t('workspace.actions.postCreateAuth.body')}
-            </Dialog.Description>
-            <Flex justify="end">
-              <Button color="jade" onClick={() => setPostCreateNoticeOpen(false)}>
-                {t('workspace.actions.postCreateAuth.gotIt')}
-              </Button>
-            </Flex>
-          </Dialog.Content>
-        </Dialog.Root>
+        <TeamActionSetupPanelRoot onCreated={bumpRefreshKey} onNotify={handleNotify} />
         {configureToolset?.instanceId ? (
           <WorkspaceRightPanel
             open
@@ -503,15 +479,41 @@ function TeamActionsPageContent() {
         loadingLabel={t('workspace.actions.loading')}
         emptyLabel={t('workspace.actions.empty')}
       />
+      <TeamActionSetupPanelRoot onCreated={bumpRefreshKey} onNotify={handleNotify} />
+    </>
+  );
+}
+
+/**
+ * Isolated panel component that reads `createFor` from the actions Zustand store.
+ * Because it subscribes to the store directly, clicking "Setup" on an action card
+ * re-renders only this component — the catalog grid is never touched.
+ * This mirrors how `ConnectorPanel` in connectors reads `isPanelOpen` from its own store.
+ */
+function TeamActionSetupPanelRoot({
+  onCreated,
+  onNotify,
+}: {
+  onCreated: () => void;
+  onNotify: (msg: string) => void;
+}) {
+  const { t } = useTranslation();
+  const createFor = useActionsStore((s) => s.createFor);
+  const postCreateNoticeOpen = useActionsStore((s) => s.postCreateNoticeOpen);
+  const closeSetupPanel = useActionsStore((s) => s.closeSetupPanel);
+  const setPostCreateNoticeOpen = useActionsStore((s) => s.setPostCreateNoticeOpen);
+
+  return (
+    <>
       <ActionSetupPanel
         open={Boolean(createFor)}
         registryRow={createFor}
         onOpenChange={(o) => {
-          if (!o) setCreateFor(null);
+          if (!o) closeSetupPanel();
         }}
-        onCreated={() => void load()}
+        onCreated={onCreated}
         onCreatedUserAuthNotice={() => setPostCreateNoticeOpen(true)}
-        onNotify={(msg) => addToast({ variant: 'success', title: msg })}
+        onNotify={onNotify}
       />
       <Dialog.Root open={postCreateNoticeOpen} onOpenChange={setPostCreateNoticeOpen}>
         <Dialog.Content style={{ maxWidth: 440 }}>
@@ -571,11 +573,30 @@ function NavigateButton({ label, onClick }: { label: string; onClick: () => void
   );
 }
 
+function TeamActionsAccessGate() {
+  const router = useRouter();
+  const isAdmin = useUserStore(selectIsAdmin);
+  const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+
+  useEffect(() => {
+    if (!isProfileInitialized) return;
+    if (isAdmin !== true) {
+      router.replace('/workspace/actions/personal/');
+    }
+  }, [isProfileInitialized, isAdmin, router]);
+
+  if (!isProfileInitialized || isAdmin !== true) {
+    return null;
+  }
+
+  return <TeamActionsPageContent />;
+}
+
 export default function TeamActionsPage() {
   return (
     <ServiceGate services={['connector']}>
       <Suspense>
-        <TeamActionsPageContent />
+        <TeamActionsAccessGate />
       </Suspense>
     </ServiceGate>
   );

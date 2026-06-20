@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
+from app.models.entities import TicketRecord
+
 
 class TestFetchFullRecordArgs:
     def test_valid_args(self):
@@ -156,199 +158,83 @@ class TestEnrichSqlTableWithFkRelations:
 
 
 # ===========================================================================
-# _fetch_record_by_id
+# _apply_live_ticket_context_metadata
 # ===========================================================================
 
 
-class TestFetchRecordById:
+class TestApplyLiveTicketContextMetadata:
     @pytest.mark.asyncio
-    async def test_returns_none_without_graph_provider(self):
-        from app.utils.fetch_full_record import _fetch_record_by_id
+    async def test_skips_non_ticket(self):
+        from app.utils.fetch_full_record import _apply_live_ticket_context_metadata
 
-        result = await _fetch_record_by_id(
-            "rec-1", None, AsyncMock(), "org-1", {}
-        )
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_without_blob_store(self):
-        from app.utils.fetch_full_record import _fetch_record_by_id
-
-        result = await _fetch_record_by_id(
-            "rec-1", AsyncMock(), None, "org-1", {}
-        )
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_without_org_id(self):
-        from app.utils.fetch_full_record import _fetch_record_by_id
-
-        result = await _fetch_record_by_id(
-            "rec-1", AsyncMock(), AsyncMock(), None, {}
-        )
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_resolves_via_vrid_and_fetches_from_blob(self):
-        from app.utils.fetch_full_record import _fetch_record_by_id
-
+        record = {"id": "r1", "record_type": "FILE", "context_metadata": "original"}
+        config_service = MagicMock()
         graph_provider = AsyncMock()
-        graph_provider.get_record_by_id = AsyncMock(return_value={
-            "id": "rec-1",
-            "virtual_record_id": "vrid-1",
-            "record_name": "users",
-            "record_type": "SQL_TABLE",
-        })
 
-        blob_store = AsyncMock()
-        vrid_map = {}
-
-        async def fake_get_record(vrid, map_, *args, **kwargs):
-            map_[vrid] = {"content": "table data"}
-
-        with patch(
-            "app.utils.fetch_full_record.get_record",
-            side_effect=fake_get_record,
-        ), patch("app.utils.chat_helpers.get_record", side_effect=fake_get_record):
-            result = await _fetch_record_by_id(
-                "rec-1", graph_provider, blob_store, "org-1", vrid_map
+        with patch.object(
+            TicketRecord,
+            "to_llm_context_with_live_fields",
+            new=AsyncMock(),
+        ) as mock_live:
+            await _apply_live_ticket_context_metadata(
+                record,
+                config_service=config_service,
+                graph_provider=graph_provider,
+                frontend_url=None,
             )
 
-        assert result is not None
-        assert result["id"] == "rec-1"
-        assert result["virtual_record_id"] == "vrid-1"
-        assert "vrid-1" in vrid_map
+        mock_live.assert_not_called()
+        assert record["context_metadata"] == "original"
 
     @pytest.mark.asyncio
-    async def test_returns_cached_from_map_by_vrid(self):
-        from app.utils.fetch_full_record import _fetch_record_by_id
+    async def test_skips_without_config_service(self):
+        from app.utils.fetch_full_record import _apply_live_ticket_context_metadata
 
-        cached_record = {"id": "rec-1", "content": "cached"}
-        graph_provider = AsyncMock()
-        graph_provider.get_record_by_id = AsyncMock(return_value={
-            "id": "rec-1", "virtual_record_id": "vrid-1",
-        })
+        record = {"id": "r1", "record_type": "TICKET", "context_metadata": "original"}
 
-        vrid_map = {"vrid-1": cached_record}
-        result = await _fetch_record_by_id(
-            "rec-1", graph_provider, AsyncMock(), "org-1", vrid_map
-        )
-
-        assert result is cached_record
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_graph_record_missing(self):
-        from app.utils.fetch_full_record import _fetch_record_by_id
-
-        graph_provider = AsyncMock()
-        graph_provider.get_record_by_id = AsyncMock(return_value=None)
-
-        result = await _fetch_record_by_id(
-            "rec-1", graph_provider, AsyncMock(), "org-1", {}
-        )
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_no_vrid_in_meta(self):
-        from app.utils.fetch_full_record import _fetch_record_by_id
-
-        graph_provider = AsyncMock()
-        graph_provider.get_record_by_id = AsyncMock(return_value={"id": "rec-1"})
-
-        result = await _fetch_record_by_id(
-            "rec-1", graph_provider, AsyncMock(), "org-1", {}
-        )
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_blob_returns_nothing(self):
-        from app.utils.fetch_full_record import _fetch_record_by_id
-
-        graph_provider = AsyncMock()
-        graph_provider.get_record_by_id = AsyncMock(return_value={
-            "id": "rec-1", "virtual_record_id": "vrid-1",
-        })
-        blob_store = AsyncMock()
-        vrid_map = {}
-
-        async def noop_get_record(vrid, map_, *args, **kwargs):
-            return None
-
-        with patch(
-            "app.utils.fetch_full_record.get_record",
-            side_effect=noop_get_record,
-        ), patch("app.utils.chat_helpers.get_record", side_effect=noop_get_record):
-            result = await _fetch_record_by_id(
-                "rec-1", graph_provider, blob_store, "org-1", vrid_map
+        with patch.object(
+            TicketRecord,
+            "to_llm_context_with_live_fields",
+            new=AsyncMock(),
+        ) as mock_live:
+            await _apply_live_ticket_context_metadata(
+                record,
+                config_service=None,
+                graph_provider=AsyncMock(),
+                frontend_url=None,
             )
 
-        assert result is None
+        mock_live.assert_not_called()
+        assert record["context_metadata"] == "original"
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
-        from app.utils.fetch_full_record import _fetch_record_by_id
+    async def test_upgrades_ticket_with_live_fields(self):
+        from app.utils.fetch_full_record import _apply_live_ticket_context_metadata
 
+        record = {"id": "ticket-1", "record_type": "TICKET"}
+        config_service = MagicMock()
         graph_provider = AsyncMock()
-        graph_provider.get_record_by_id = AsyncMock(
-            side_effect=RuntimeError("network error")
-        )
+        graph_provider.get_document = AsyncMock(return_value={"status": "OPEN"})
 
-        result = await _fetch_record_by_id(
-            "rec-1", graph_provider, AsyncMock(), "org-1", {}
-        )
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_graph_metadata_enrichment_with_pydantic_model(self):
-        from app.utils.fetch_full_record import _fetch_record_by_id
-
-        pydantic_record = MagicMock()
-        pydantic_record.model_dump.return_value = {
-            "id": "rec-1",
-            "virtual_record_id": "vrid-1",
-            "record_name": "orders",
-            "record_type": "SQL_TABLE",
-            "version": "2",
-            "origin": "pg",
-            "connector_name": "main-pg",
-            "weburl": "http://example.com",
-        }
-
-        graph_provider = AsyncMock()
-        graph_provider.get_record_by_id = AsyncMock(return_value=pydantic_record)
-
-        blob_store = AsyncMock()
-        vrid_map = {}
-
-        async def fake_get_record(vrid, map_, *args, **kwargs):
-            map_[vrid] = {"content": "data"}
+        ticket = MagicMock(spec=TicketRecord)
+        ticket.to_llm_context_with_live_fields = AsyncMock(return_value="live context")
 
         with patch(
-            "app.utils.fetch_full_record.get_record",
-            side_effect=fake_get_record,
-        ), patch("app.utils.chat_helpers.get_record", side_effect=fake_get_record):
-            result = await _fetch_record_by_id(
-                "rec-1", graph_provider, blob_store, "org-1", vrid_map
+            "app.utils.fetch_full_record.create_record_instance_from_dict",
+            return_value=ticket,
+        ):
+            await _apply_live_ticket_context_metadata(
+                record,
+                config_service=config_service,
+                graph_provider=graph_provider,
+                frontend_url="http://frontend",
             )
 
-        assert result is not None
-        assert result["id"] == "rec-1"
-        assert result["virtual_record_id"] == "vrid-1"
-
-    @pytest.mark.asyncio
-    async def test_graph_metadata_exception_returns_none(self):
-        from app.utils.fetch_full_record import _fetch_record_by_id
-
-        graph_provider = AsyncMock()
-        graph_provider.get_record_by_id = AsyncMock(
-            side_effect=RuntimeError("graph error")
+        assert record["context_metadata"] == "live context"
+        ticket.to_llm_context_with_live_fields.assert_awaited_once_with(
+            frontend_url="http://frontend",
+            config_service=config_service,
         )
-
-        result = await _fetch_record_by_id(
-            "rec-1", graph_provider, AsyncMock(), "org-1", {}
-        )
-
-        assert result is None
 
 
 # ===========================================================================
@@ -368,6 +254,80 @@ class TestFetchMultipleRecordsImpl:
         result = await _fetch_multiple_records_impl(["r1", "r2"], records_map)
         assert result["ok"] is True
         assert len(result["records"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_map_hit_ticket_upgrades_live_context_metadata(self):
+        from app.utils.fetch_full_record import _fetch_multiple_records_impl
+
+        records_map = {
+            "vr1": {
+                "id": "r1",
+                "record_type": "TICKET",
+                "context_metadata": "graph-only",
+            },
+        }
+        graph_provider = AsyncMock()
+        graph_provider.config_service = MagicMock()
+
+        with patch(
+            "app.utils.fetch_full_record._apply_live_ticket_context_metadata",
+            new=AsyncMock(),
+        ) as mock_upgrade:
+            result = await _fetch_multiple_records_impl(
+                ["r1"],
+                records_map,
+                graph_provider=graph_provider,
+            )
+
+        assert result["ok"] is True
+        mock_upgrade.assert_awaited_once()
+        assert mock_upgrade.call_args[0][0]["id"] == "r1"
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_ticket_upgrades_live_context_metadata(self):
+        from app.config.constants.arangodb import ProgressStatus
+        from app.utils.fetch_full_record import _fetch_multiple_records_impl
+
+        records_map = {}
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "virtualRecordId": "vrid-1",
+            "recordType": "TICKET",
+        })
+        graph_provider.config_service = MagicMock()
+
+        async def fake_get_record(vrid, map_, *args, **kwargs):
+            map_[vrid] = {
+                "id": "r1",
+                "record_type": "TICKET",
+                "context_metadata": "graph-only",
+            }
+
+        mock_blob_instance = MagicMock()
+        mock_blob_instance.config_service = MagicMock()
+        mock_blob_instance.config_service.get_config = AsyncMock(return_value={})
+
+        with patch(
+            "app.utils.fetch_full_record.BlobStorage",
+            return_value=mock_blob_instance,
+        ), patch(
+            "app.utils.fetch_full_record.get_record",
+            side_effect=fake_get_record,
+        ), patch(
+            "app.utils.fetch_full_record._apply_live_ticket_context_metadata",
+            new=AsyncMock(),
+        ) as mock_upgrade:
+            result = await _fetch_multiple_records_impl(
+                ["r1"],
+                records_map,
+                graph_provider=graph_provider,
+                org_id="org-1",
+            )
+
+        assert result["ok"] is True
+        mock_upgrade.assert_awaited_once()
+        assert mock_upgrade.call_args[0][0]["id"] == "r1"
 
     @pytest.mark.asyncio
     async def test_partial_found(self):

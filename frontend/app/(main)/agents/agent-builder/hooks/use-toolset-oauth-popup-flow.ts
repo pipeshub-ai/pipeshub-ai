@@ -169,15 +169,7 @@ export function useToolsetOauthPopupFlow({
           typeof event.data?.error === 'string' && event.data.error.trim()
             ? event.data.error
             : t('agentBuilder.oauthSignInIncomplete');
-        const p = oauthPopupRef.current;
         oauthPopupRef.current = null;
-        if (p && !p.closed) {
-          try {
-            p.close();
-          } catch {
-            /* ignore */
-          }
-        }
         setAuthenticating(false);
         onOAuthPopupError?.(msg);
       }

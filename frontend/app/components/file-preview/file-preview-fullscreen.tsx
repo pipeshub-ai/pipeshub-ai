@@ -10,7 +10,7 @@ import { FilePreviewRenderer } from './renderers/file-preview-renderer';
 import { CitationsPanel } from './citations-panel';
 import { useCitationSync } from './use-citation-sync';
 import { usePdfZoom } from './use-pdf-zoom';
-import { downloadPreviewFile, shouldShowPagination } from './utils';
+import { downloadPreviewFile, shouldShowPagination, resolvePreviewIconExtension } from './utils';
 import {
   PDF_ZOOM_MAX,
   PDF_ZOOM_MIN,
@@ -83,6 +83,7 @@ export function FilePreviewFullscreen({
   // Bidirectional citation ↔ page sync
   const {
     activeCitationId,
+    citationClickVersion,
     highlightBox: syncHighlightBox,
     highlightPage: syncHighlightPage,
     handleCitationClick,
@@ -139,6 +140,7 @@ export function FilePreviewFullscreen({
       >
         <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
           <FileIcon
+            extension={resolvePreviewIconExtension(_recordDetails, file.type)}
             filename={file.name}
             mimeType={file.type}
             size={16}
@@ -257,6 +259,7 @@ export function FilePreviewFullscreen({
                 highlightPage={hasCitations ? syncHighlightPage : undefined}
                 citations={hasCitations ? citations : undefined}
                 activeCitationId={hasCitations ? activeCitationId : undefined}
+                citationClickVersion={hasCitations ? citationClickVersion : undefined}
                 onHighlightClick={hasCitations ? handleHighlightClick : undefined}
               />
             </Box>

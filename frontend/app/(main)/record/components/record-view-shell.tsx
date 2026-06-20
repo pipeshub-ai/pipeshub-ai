@@ -9,7 +9,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { FilePreviewRenderer } from '@/app/components/file-preview/renderers/file-preview-renderer';
-import { isPresentationFile, isDocxFile, shouldShowPagination } from '@/app/components/file-preview/utils';
+import { isPresentationFile, isDocxFile, shouldShowPagination, resolvePreviewIconExtension } from '@/app/components/file-preview/utils';
 import type { PaginationControls } from '@/app/components/file-preview/types';
 import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
 import {
@@ -363,7 +363,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
         }}
       >
         <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
-          <FileIcon filename={fileName} mimeType={fileType} size={18} fallbackIcon="description" />
+          <FileIcon extension={resolvePreviewIconExtension(recordDetails, fileType)} filename={fileName} mimeType={fileType} size={18} fallbackIcon="description" />
           <Text
             size="2"
             weight="medium"
@@ -464,6 +464,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
                 >
                   {recordDetails?.record.recordType === 'FILE' ? (
                     <FileIcon
+                      extension={resolvePreviewIconExtension(recordDetails, fileType)}
                       filename={fileName}
                       mimeType={fileType}
                       size={36}

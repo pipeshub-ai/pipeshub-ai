@@ -1,6 +1,7 @@
 // Knowledge Base API - Action Operations (CRUD)
 
 import { apiClient } from '@/lib/api';
+import { streamSSEUpload, type SSEEvent } from '@/lib/api/streaming';
 import type {
   KnowledgeHubApiResponse,
   NodeType,
@@ -431,102 +432,48 @@ export const KnowledgeBaseApi = {
     return data;
   },
 
-  // Upload files to knowledge base root
-  async uploadToRoot(
+  /**
+   * Upload a batch of files to a KB (root when `folderId` is null) and consume
+   * the streaming SSE response: the POST itself emits a per-file
+   * `file:succeeded` / `file:failed` and a final `done`. Resolves when the
+   * stream ends. Uses native fetch (axios cannot read streaming responses), so
+   * the upload byte-% is not surfaced — per-file events drive the UI instead.
+   */
+  async streamUpload(
     knowledgeBaseId: string,
+    folderId: string | null,
     files: File[],
-    filesMetadata?: FileMetadata[],
-    onProgress?: (progress: number) => void
-  ) {
+    filesMetadata: FileMetadata[] | undefined,
+    options: {
+      onEvent: (event: SSEEvent) => void;
+      onError: (error: Error) => void;
+      signal?: AbortSignal;
+    }
+  ): Promise<void> {
     const formData = new FormData();
+    files.forEach((file) => formData.append('files', file));
 
-    // Add files array - append each file separately with key "files"
-    files.forEach((file) => {
-      formData.append('files', file);
-    });
-
-    // Check if this is a folder upload (metadata provided)
     if (filesMetadata && filesMetadata.length === files.length) {
-      // Folder upload: use files_metadata JSON format
+      // Folder upload: per-file path + last-modified metadata.
       formData.append('files_metadata', JSON.stringify(filesMetadata));
     } else {
-      // File upload: use existing format
-      files.forEach((file) => {
-        formData.append('file_paths', file.name);
-      });
-      files.forEach((file) => {
-        formData.append('last_modified', file.lastModified.toString());
-      });
+      files.forEach((file) => formData.append('file_paths', file.name));
+      files.forEach((file) =>
+        formData.append('last_modified', file.lastModified.toString())
+      );
     }
 
-    // Note: lowercase 'knowledgebase' in URL (not 'knowledgeBase')
-    const { data } = await apiClient.post(
-      `/api/v1/knowledgebase/${knowledgeBaseId}/upload`,
-      formData,
-      {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-        // Placeholder creation + storage can exceed the default API client timeout after bytes are sent
-        timeout: 0,
-        onUploadProgress: (progressEvent) => {
-          if (progressEvent.total && onProgress) {
-            const progress = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-            onProgress(progress);
-          }
-        },
-      }
-    );
-    return data;
-  },
+    // Note: lowercase 'knowledgebase' in URL (Express routing is case-insensitive).
+    const url = folderId
+      ? `/api/v1/knowledgebase/${knowledgeBaseId}/folder/${folderId}/upload`
+      : `/api/v1/knowledgebase/${knowledgeBaseId}/upload`;
 
-  // Upload files to knowledge base folder
-  async uploadToFolder(
-    knowledgeBaseId: string,
-    folderId: string,
-    files: File[],
-    filesMetadata?: FileMetadata[],
-    onProgress?: (progress: number) => void
-  ) {
-    const formData = new FormData();
-
-    // Add files array - append each file separately with key "files"
-    files.forEach((file) => {
-      formData.append('files', file);
-    });
-
-    // Check if this is a folder upload (metadata provided)
-    if (filesMetadata && filesMetadata.length === files.length) {
-      // Folder upload: use files_metadata JSON format
-      formData.append('files_metadata', JSON.stringify(filesMetadata));
-    } else {
-      // File upload: use existing format
-      files.forEach((file) => {
-        formData.append('file_paths', file.name);
-      });
-      files.forEach((file) => {
-        formData.append('last_modified', file.lastModified.toString());
-      });
-    }
-
-    // Note: lowercase 'knowledgebase' in URL (not 'knowledgeBase')
-    const { data } = await apiClient.post(
-      `/api/v1/knowledgebase/${knowledgeBaseId}/folder/${folderId}/upload`,
-      formData,
-      {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-        timeout: 0,
-        onUploadProgress: (progressEvent) => {
-          if (progressEvent.total && onProgress) {
-            const progress = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-            onProgress(progress);
-          }
-        },
-      }
-    );
-    return data;
+    // Errors (rate limit, payload-too-large, 5xx, transport) surface through
+    // `streamSSEUpload`, which reads the server's structured error body and
+    // reports the EXACT message via `onError` — the caller fails the affected
+    // rows with that reason. No automatic retry: the user decides whether to
+    // re-upload, so a rate limit (or any failure) is reported, not hidden.
+    await streamSSEUpload(url, formData, options);
   },
 
   // Rename knowledge base

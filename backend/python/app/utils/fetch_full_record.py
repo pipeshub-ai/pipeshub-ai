@@ -5,14 +5,18 @@ from typing import Any
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.config.constants.service import config_node_constants
+from app.models.entities import RecordType, TicketRecord
 from app.modules.transformers.blob_storage import BlobStorage
-from app.utils.chat_helpers import get_record
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.chat_helpers import collection_map, create_record_instance_from_dict, get_record
 from app.utils.logger import create_logger
 
 logger = create_logger(__name__)
+
 
 class FetchFullRecordArgs(BaseModel):
     """
@@ -30,6 +34,51 @@ class FetchFullRecordArgs(BaseModel):
     reason: str = Field(
         default="Fetching full record content for comprehensive answer",
         description="Brief explanation of why the full records are needed (e.g., 'query asks for complete details')."
+    )
+
+
+async def _apply_live_ticket_context_metadata(
+    record: dict[str, Any],
+    *,
+    config_service: ConfigurationService | None,
+    graph_provider: IGraphDBProvider | None,
+    frontend_url: str | None,
+) -> None:
+    """Upgrade ticket context_metadata with live Jira fields (fetch_full_record only)."""
+    if not config_service:
+        return
+
+    record_type = record.get("record_type") or record.get("recordType")
+    if record_type != RecordType.TICKET.value:
+        return
+
+    record_key = record.get("id") or record.get("_key")
+    if not record_key:
+        return
+
+    graph_doc = None
+    if graph_provider:
+        collection = collection_map.get(record_type)
+        if collection:
+            try:
+                graph_doc = await graph_provider.get_document(
+                    document_key=record_key,
+                    collection=collection,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Could not fetch ticket graph doc for live context on %s: %s",
+                    record_key,
+                    str(e),
+                )
+
+    record_instance = create_record_instance_from_dict(record, graph_doc)
+    if not isinstance(record_instance, TicketRecord):
+        return
+
+    record["context_metadata"] = await record_instance.to_llm_context_with_live_fields(
+        frontend_url=frontend_url,
+        config_service=config_service,
     )
 
 
@@ -95,7 +144,6 @@ async def _enrich_sql_table_with_fk_relations(
     
     return enriched_record
 
-
 async def _fetch_multiple_records_impl(
     record_ids: list[str],
     virtual_record_id_to_result: dict[str, Any],
@@ -131,6 +179,8 @@ async def _fetch_multiple_records_impl(
         None,
     )
 
+    config_service = graph_provider.config_service if graph_provider else None
+
     for record_id in record_ids:
         virtual_record_id = None
         found_record = None
@@ -143,6 +193,12 @@ async def _fetch_multiple_records_impl(
 
         if found_record:
             found_record["virtual_record_id"] = virtual_record_id
+            await _apply_live_ticket_context_metadata(
+                found_record,
+                config_service=config_service,
+                graph_provider=graph_provider,
+                frontend_url=frontend_url,
+            )
             # Enrich SQL_TABLE records with FK relations
             record_type = found_record.get("record_type") or found_record.get("recordType")
             if record_type == "SQL_TABLE" and graph_provider:
@@ -177,6 +233,12 @@ async def _fetch_multiple_records_impl(
                         blob_record = virtual_record_id_to_result.get(vrid)
                         if blob_record:
                             blob_record["virtual_record_id"] = vrid
+                            await _apply_live_ticket_context_metadata(
+                                blob_record,
+                                config_service=config_service,
+                                graph_provider=graph_provider,
+                                frontend_url=frontend_url,
+                            )
                             # Enrich SQL_TABLE records with FK relations
                             record_type = blob_record.get("record_type") or blob_record.get("recordType")
                             if record_type == "SQL_TABLE" and graph_provider:

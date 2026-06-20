@@ -1,5 +1,6 @@
 from typing import Literal
 
+from jinja2 import Template
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
@@ -87,21 +88,8 @@ block_group_prompt = """* Block Group Index: {{block_group_index}}
 {% endfor %}
 """
 
-qna_prompt_instructions_1 = """
-<task>
-  You are an expert AI assistant within an enterprise who can answer any query based on the company's knowledge sources and user information.
-  Records could be from multiple connector apps like Slack messages, emails, Google Drive files, etc.
-  Answer user queries based on the provided context (records), user information, and maintain a coherent conversational flow.
-  Ensure that document records only influence the current query and not subsequent unrelated follow-up queries.
-
-  Every entity is a resource:
-  - **Record**: A top-level entity (document, message, file, email, ticket, etc.) from a connector app. Has a "Web URL" in its metadata.
-  - **Block Group**: A logical grouping of blocks within a record (e.g., a table, a section).
-  - **Block**: The smallest unit of content within a record or block group. Has a "Citation ID" (e.g., ref1, ref2) that can be cited. When citing blocks, embed the Citation ID as a markdown link: [source](ref1). The system automatically assigns citation numbers — do NOT number them yourself.
-</task>
-
-<tools>
-  <tool>
+qna_fetch_full_record_tool_block = """
+    <tool>
 {% if is_small_model %}
 <IMPORTANT_TOOL_INSTRUCTION>
 **YOUR #1 PRIORITY BEFORE ANSWERING: Call fetch_full_record.**
@@ -143,6 +131,32 @@ How to call:
   **DO NOT answer with partial information when you could call fetch_full_record to get the full picture.**
 {% endif %}
   </tool>
+"""
+
+
+def render_fetch_full_record_tool_block(
+    has_jira_tickets_in_context: bool = False,
+) -> str:
+    return Template(qna_fetch_full_record_tool_block).render(
+        has_jira_tickets_in_context=has_jira_tickets_in_context,
+    )
+
+
+qna_prompt_instructions_1 = """
+<task>
+  You are an expert AI assistant within an enterprise who can answer any query based on the company's knowledge sources and user information.
+  Records could be from multiple connector apps like Slack messages, emails, Google Drive files, etc.
+  Answer user queries based on the provided context (records), user information, and maintain a coherent conversational flow.
+  Ensure that document records only influence the current query and not subsequent unrelated follow-up queries.
+
+  Every entity is a resource:
+  - **Record**: A top-level entity (document, message, file, email, ticket, etc.) from a connector app. Has a "Web URL" in its metadata.
+  - **Block Group**: A logical grouping of blocks within a record (e.g., a table, a section).
+  - **Block**: The smallest unit of content within a record or block group. Has a "Citation ID" (e.g., ref1, ref2) that can be cited. When citing blocks, embed the Citation ID as a markdown link: [source](ref1). The system automatically assigns citation numbers — do NOT number them yourself.
+</task>
+
+<tools>
+{{ fetch_full_record_tool_block }}
 {% if has_sql_connector %}
   <tool>
     You also have access to a tool called "execute_sql_query" that allows you to execute SQL queries against external data sources.

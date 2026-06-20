@@ -34,8 +34,10 @@ from app.modules.qna.prompt_templates import (
     qna_prompt_instructions_1,
     qna_prompt_instructions_2,
     qna_prompt_simple,
+    render_fetch_full_record_tool_block,
     table_prompt,
 )
+from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import is_jira_ticket_record
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
@@ -329,6 +331,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "reporter_email": graph_doc.get("reporterEmail"),
                 "creator_name": graph_doc.get("creatorName"),
                 "creator_email": graph_doc.get("creatorEmail"),
+                "labels": graph_doc.get("labels"),
             }
             return TicketRecord(**base_args, **specific_args)
 
@@ -1291,6 +1294,9 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                 record["mime_type"] = graphDb_record.get("mimeType")
                 record["source_created_at"] = graphDb_record.get("sourceCreatedAtTimestamp")
                 record["source_updated_at"] = graphDb_record.get("sourceLastModifiedTimestamp")
+                graph_external_id = graphDb_record.get("externalRecordId")
+                if graph_external_id:
+                    record["external_record_id"] = graph_external_id
 
                 # Fetch type-specific metadata and generate formatted string
                 graph_doc = None
@@ -1890,7 +1896,18 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
         raise Exception(f"Error in record_to_message_content: {e}") from e
 
 
-def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, has_sql_connector: bool=False, image_blocks: list[dict[str, Any]] | None = None, compact_mode: bool = False) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+def context_includes_jira_tickets(
+    flattened_results: list[dict[str, Any]],
+    virtual_record_id_to_result: dict[str, Any],
+) -> bool:
+    vrids = {r.get("virtual_record_id") for r in flattened_results if r.get("virtual_record_id")}
+    return any(
+        is_jira_ticket_record(virtual_record_id_to_result.get(vrid))
+        for vrid in vrids
+    )
+
+
+def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, has_sql_connector: bool=False, image_blocks: list[dict[str, Any]] | None = None,compact_mode:bool=False) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
     content = []
@@ -1964,14 +1981,15 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
 
         return content, ref_mapper
     else:
-        instructions_template = qna_prompt_instructions_1
-        template = Template(instructions_template)
+        has_jira = context_includes_jira_tickets(flattened_results, virtual_record_id_to_result)
+        fetch_block = render_fetch_full_record_tool_block(has_jira,is_small_model=compact_mode)
+        template = Template(qna_prompt_instructions_1)
         rendered_form = template.render(
                     user_data=user_data,
                     query=query,
                     mode=mode,
                     has_sql_connector=has_sql_connector,
-                    is_small_model=compact_mode,
+                    fetch_full_record_tool_block=fetch_block,
                     )
 
         content.append({

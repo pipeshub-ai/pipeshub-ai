@@ -22,7 +22,7 @@ export function mapAgentModelToAvailable(model: AgentConfiguredModel): Available
   return {
     modelKey: model.modelKey,
     modelName: model.modelName,
-    modelFriendlyName: model.modelFriendlyName,
+    modelFriendlyName: model.modelFriendlyName || model.modelName,
     provider: model.provider,
     isDefault: model.isDefault,
     isReasoning: model.isReasoning,

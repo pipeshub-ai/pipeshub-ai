@@ -762,7 +762,12 @@ async def execute_tool_calls(
 
         if has_content_handler_this_hop and not tool_instructions_added and tool_msgs:
             has_sql_connector = tool_runtime_kwargs.get("has_sql_connector", False)
-            instructions = ContentHandler.build_tool_instructions(has_sql_connector, is_small_model=is_small_model)
+            has_jira = any(
+                tr.get("has_jira_tickets_in_context")
+                for tr in tool_results_inner
+                if tr.get("ok")
+            )
+            instructions = ContentHandler.build_tool_instructions(has_sql_connector, is_small_model=is_small_model,has_jira_tickets_in_context=has_jira)
             last_tool_msg = tool_msgs[-1]
             existing = last_tool_msg.content
             if isinstance(existing, list):

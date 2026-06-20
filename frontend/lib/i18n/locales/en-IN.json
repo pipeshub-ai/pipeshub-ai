@@ -32,6 +32,8 @@
   "uploadProgress": {
     "uploadFailedDefault": "Upload failed",
     "uploadIncomplete": "Upload incomplete",
+    "serverError": "Upload failed on the server",
+    "skippedFolderFailed": "Skipped: folder creation failed",
     "genericFailureHint": "Upload failed. Try again or use a supported file type.",
     "ariaFailed": "{{name}}, upload failed",
     "ariaFailedWithDetail": "{{name}}, upload failed. {{detail}}",
@@ -39,6 +41,12 @@
     "sizeWithFailed": "{{size}} · failed",
     "headerCompletedAndFailed": "{{completed}} completed · {{failed}} failed",
     "headerFailuresOnly": "{{count}} failed",
+    "failedSectionTitle": "Failed ({{count}})",
+    "tab_all": "All",
+    "tab_completed": "Completed",
+    "tab_failed": "Failed",
+    "emptyTab": "Nothing here yet",
+    "uploadedAndFailedSize": "{{uploaded}} uploaded · {{failed}} failed",
     "headerAllComplete": "{{completed}}/{{total}} uploads complete",
     "sessionFilesAndSize": "{{count}} files · {{size}}",
     "totalSizeLabel": "Total: {{size}}",
@@ -47,6 +55,34 @@
       "uploading": "uploading",
       "completed": "completed",
       "failed": "failed"
+    },
+    "rejectionToast": {
+      "title_one": "{{count}} file can't be uploaded",
+      "title_other": "{{count}} files can't be uploaded",
+      "sizeLimitTitle_one": "{{count}} file exceeds the size limit",
+      "sizeLimitTitle_other": "{{count}} files exceed the size limit",
+      "sizeLimitDescription": "Limit is {{maxMb}} MB per file. Contact your administrator to request a higher upload limit.",
+      "sizeLimitDescriptionAdmin": "Limit is {{maxMb}} MB per file. You can increase it in Workspace Labs.",
+      "unsupportedDescription": "Unsupported file type.",
+      "duplicateDescription": "A file with this name already exists here.",
+      "trackerHint": "Details are in the upload panel below.",
+      "openLabs": "Open Labs"
+    },
+    "rejectionSummary": {
+      "tooLarge_one": "{{count}} over {{maxMb}} MB",
+      "tooLarge_other": "{{count}} over {{maxMb}} MB",
+      "unsupported_one": "{{count}} unsupported type",
+      "unsupported_other": "{{count}} unsupported types",
+      "duplicate_one": "{{count}} duplicate name",
+      "duplicate_other": "{{count}} duplicate names",
+      "other_one": "{{count}} other error",
+      "other_other": "{{count}} other errors"
+    },
+    "reasons": {
+      "tooLarge": "Exceeds the {{maxMb}} MB size limit",
+      "unsupportedType": "Unsupported file type",
+      "duplicateName": "A file with this name already exists",
+      "rejected": "File rejected"
     }
   },
   "onboarding": {
@@ -177,7 +213,7 @@
     "dismiss": "Dismiss",
     "filter": "Filter notifications",
     "filterAll": "All",
-    "filterOnlyUnread": "Only Unread",
+    "filterOnlyUnread": "Unread",
     "filterArchived": "Archived",
     "filterTooltip": "Filter: {{filter}}",
     "loadFailed": "Failed to load notifications",
@@ -474,6 +510,9 @@
     "micTooltip": "Voice input",
     "uploadYourFile": "Upload your File",
     "supportsFileTypes": "Supports: {{types}}.",
+    "uploadFilesLimit": "Up to {{count}} files per message",
+    "uploadFilesRemaining": "{{remaining}} of {{total}} files remaining",
+    "dropFilesHere": "Drop files here",
     "loadingConversation": "Loading conversation...",
     "recents": "Recents",
     "sharedChats": "Shared Chats",
@@ -1778,10 +1817,10 @@
         },
         "sync": {
           "kind": "Sync",
-          "syncing": "Syncing",
-          "syncingTooltip": "A sync job is running for this instance.",
-          "fullSyncing": "Full sync",
-          "fullSyncingTooltip": "A full sync is running for this instance.",
+          "syncing": "Sync in progress",
+          "syncingTooltip": "This connector is syncing new and updated content.",
+          "fullSyncing": "Full sync in progress",
+          "fullSyncingTooltip": "This connector is running a full re-sync from the source.",
           "removing": "Removing",
           "removingTooltip": "This instance is being deleted."
         }

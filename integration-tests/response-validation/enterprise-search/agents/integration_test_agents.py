@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 _AGENTS_CREATE_PATH = "/api/v1/agents/create"
 _AGENTS_LIST_PATH = "/api/v1/agents"
 _AGENTS_DETAIL_PATH = "/api/v1/agents/{agent_key}"
+_AGENT_NOT_FOUND_MESSAGE = "Agent not found or you don't have access to it"
 
 
 def _valid_toolset_entry(
@@ -196,6 +197,20 @@ def _response_text_fragments(resp: requests.Response) -> str:
                     fragments.append(value)
 
     return " ".join(fragments).lower()
+
+
+def _assert_agent_not_found_error(body: dict[str, Any], *, label: str) -> None:
+    assert isinstance(body, dict) and "error" in body, (
+        f"[{label}] Expected error envelope, got {body!r}"
+    )
+    error = body["error"]
+    assert isinstance(error, dict), f"[{label}] Expected error object, got {body!r}"
+    assert error.get("code") == "HTTP_NOT_FOUND", (
+        f"[{label}] Expected HTTP_NOT_FOUND, got {error.get('code')!r}"
+    )
+    assert error.get("message") == _AGENT_NOT_FOUND_MESSAGE, (
+        f"[{label}] Unexpected not-found message: {error.get('message')!r}"
+    )
 
 
 @pytest.mark.integration
@@ -694,15 +709,11 @@ class TestListAgents:
         )
 
         body = _response_json(resp)
-        assert isinstance(body, dict) and "error" in body, (
-            f"[{label}] Expected error envelope, got {body!r}"
+        assert_response_matches_openapi_operation(
+            body, "listAgents", status_code="400"
         )
-        error = body["error"]
-        assert error["code"] == "VALIDATION_ERROR", (
-            f"[{label}] Expected VALIDATION_ERROR, got {error['code']!r}"
-        )
-        assert error["message"] == "Validation failed", (
-            f"[{label}] Expected 'Validation failed', got {error['message']!r}"
+        assert body["error"]["code"] == "VALIDATION_ERROR", (
+            f"[{label}] Expected VALIDATION_ERROR, got {body['error']['code']!r}"
         )
 
     def test_list_agents_requires_auth(self) -> None:
@@ -960,17 +971,13 @@ class TestGetAgent:
         missing_agent_key = f"missing-agent-{uuid4().hex[:12]}"
 
         resp = self._get_agent_raw(missing_agent_key)
-        assert resp.status_code == 500, (
-            f"Expected current 500 error for unknown agent key, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 404, (
+            f"Expected 404 for unknown agent key, got {resp.status_code}: {resp.text}"
         )
 
         body = _response_json(resp)
-        assert_response_matches_openapi_operation(body, "getAgent", status_code="500")
-
-        error_text = _response_text_fragments(resp)
-        assert "not found" in error_text or "agent" in error_text, (
-            f"unexpected error payload: {resp.text}"
-        )
+        assert_response_matches_openapi_operation(body, "getAgent", status_code="404")
+        _assert_agent_not_found_error(body, label="unknown get")
 
     def test_get_agent_requires_auth(self, agent_session: dict[str, Any]) -> None:
         resp = self._get_agent_raw(agent_session["primary_agent"], headers={})
@@ -1413,14 +1420,13 @@ class TestUpdateAgent:
             missing_agent_key,
             json_body={"name": f"ghost-{uuid4().hex[:8]}"},
         )
-        assert resp.status_code == 500, (
-            f"Expected current 500 error for unknown agent key, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 404, (
+            f"Expected 404 for unknown agent key, got {resp.status_code}: {resp.text}"
         )
 
-        error_text = _response_text_fragments(resp)
-        assert "not found" in error_text or "agent" in error_text, (
-            f"unexpected error payload: {resp.text}"
-        )
+        body = _response_json(resp)
+        assert_response_matches_openapi_operation(body, "updateAgent", status_code="404")
+        _assert_agent_not_found_error(body, label="unknown update")
 
     def test_update_agent_rejects_malformed_json_body(
         self,
@@ -1567,14 +1573,13 @@ class TestDeleteAgent:
     @staticmethod
     def _assert_get_agent_not_available_after_delete(resp: requests.Response) -> None:
         """Document current gateway behavior for soft-deleted / missing agents."""
-        assert resp.status_code == 500, (
-            f"Expected current 500 after delete (same as unknown GET), "
+        assert resp.status_code == 404, (
+            f"Expected 404 after delete (same as unknown GET), "
             f"got {resp.status_code}: {resp.text}"
         )
-        error_text = _response_text_fragments(resp)
-        assert "not found" in error_text or "agent" in error_text, (
-            f"unexpected error payload: {resp.text}"
-        )
+        body = _response_json(resp)
+        assert_response_matches_openapi_operation(body, "getAgent", status_code="404")
+        _assert_agent_not_found_error(body, label="get after delete")
 
     def test_delete_agent_lifecycle(
         self,
@@ -1652,17 +1657,13 @@ class TestDeleteAgent:
         missing_agent_key = f"missing-agent-{uuid4().hex[:12]}"
 
         resp = self._delete_agent_raw(missing_agent_key)
-        assert resp.status_code == 500, (
-            f"Expected current 500 error for unknown agent key, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 404, (
+            f"Expected 404 for unknown agent key, got {resp.status_code}: {resp.text}"
         )
 
         body = _response_json(resp)
-        assert_response_matches_openapi_operation(body, "deleteAgent", status_code="500")
-
-        error_text = _response_text_fragments(resp)
-        assert "not found" in error_text or "agent" in error_text, (
-            f"unexpected error payload: {resp.text}"
-        )
+        assert_response_matches_openapi_operation(body, "deleteAgent", status_code="404")
+        _assert_agent_not_found_error(body, label="unknown delete")
 
     def test_delete_agent_twice(
         self,
@@ -1684,15 +1685,12 @@ class TestDeleteAgent:
             created_agent_keys.remove(agent_key)
 
         second = self._delete_agent_raw(agent_key)
-        assert second.status_code == 500, (
-            f"Expected current 500 on second delete, got {second.status_code}: {second.text}"
+        assert second.status_code == 404, (
+            f"Expected 404 on second delete, got {second.status_code}: {second.text}"
         )
         second_body = _response_json(second)
-        assert_response_matches_openapi_operation(second_body, "deleteAgent", status_code="500")
-        error_text = _response_text_fragments(second)
-        assert "not found" in error_text or "agent" in error_text, (
-            f"unexpected error payload: {second.text}"
-        )
+        assert_response_matches_openapi_operation(second_body, "deleteAgent", status_code="404")
+        _assert_agent_not_found_error(second_body, label="second delete")
 
     def test_delete_agent_empty_key_returns_404(self) -> None:
         """Express routing catches missing path segments before Zod runs.

@@ -42,61 +42,6 @@ export function groupConnectorInstances(connectors: Connector[]): Record<
   return grouped;
 }
 
-export interface GroupedToolsByConnectorType {
-  [displayName: string]: {
-    connectorType: string;
-    connectorIcon: string;
-    tools: NodeTemplate[];
-    activeAgentInstances: Connector[];
-    isConfigured: boolean;
-    isAgentActive: boolean;
-  };
-}
-
-export function groupToolsByConnectorType(
-  toolsByAppName: Record<string, NodeTemplate[]>,
-  configuredConnectors: Connector[],
-  connectorRegistry: Connector[]
-): GroupedToolsByConnectorType {
-  const registryMap = new Map<string, Connector>();
-  connectorRegistry.forEach((reg) => {
-    if (reg.type) registryMap.set(reg.type.toLowerCase(), reg);
-  });
-
-  const grouped: GroupedToolsByConnectorType = {};
-
-  Object.entries(toolsByAppName).forEach(([appName, tools]) => {
-    const normalizedAppName = appName.toLowerCase();
-    const registryEntry = registryMap.get(normalizedAppName);
-    const displayName = normalizeDisplayName(appName);
-    if (displayName === 'Calculator') return;
-    if (!grouped[displayName]) {
-      grouped[displayName] = {
-        connectorType: appName,
-        connectorIcon: registryEntry?.iconPath || '',
-        tools: [],
-        activeAgentInstances: [],
-        isConfigured: false,
-        isAgentActive: false,
-      };
-    }
-    grouped[displayName].tools = tools;
-  });
-
-  configuredConnectors.forEach((connector) => {
-    const connectorType = connector.type || connector.appGroup || '';
-    const displayName = normalizeDisplayName(connectorType);
-    const group = grouped[displayName];
-    if (group) {
-      group.activeAgentInstances.push(connector);
-      if (connector.isConfigured) group.isConfigured = true;
-      if (connector.isAgentActive) group.isAgentActive = true;
-    }
-  });
-
-  return grouped;
-}
-
 export function prepareDragData(
   template: NodeTemplate,
   sectionType?: 'tools' | 'apps' | 'kbs' | 'connectors',

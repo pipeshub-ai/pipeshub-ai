@@ -673,7 +673,7 @@ export const ToolsetsApi = {
     state: string;
     oauthError: string | null;
     baseUrl: string;
-  }): Promise<{ success?: boolean; redirectUrl?: string; redirect_url?: string }> {
+  }): Promise<{ success?: boolean; redirectUrl?: string; redirect_url?: string; error?: string; errorMessage?: string }> {
     const query: Record<string, string> = {
       code: params.code,
       state: params.state,
@@ -686,6 +686,8 @@ export const ToolsetsApi = {
       success?: boolean;
       redirectUrl?: string;
       redirect_url?: string;
+      error?: string;
+      errorMessage?: string;
     }>('/api/v1/toolsets/oauth/callback', {
       params: query,
       suppressErrorToast: true,

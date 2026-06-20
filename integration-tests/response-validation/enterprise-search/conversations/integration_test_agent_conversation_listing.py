@@ -33,7 +33,10 @@ for _p in (_ROOT, _HELPER, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
-from openapi_schema_validator import assert_response_matches_openapi_operation
+from openapi_schema_validator import (
+    assert_response_matches_openapi_operation,
+    assert_response_matches_openapi_ref,
+)
 from pipeshub_client import PipeshubClient
 
 logger = logging.getLogger(__name__)
@@ -374,10 +377,11 @@ class TestAgentConversationListing:
     def _assert_validation_error(resp: requests.Response) -> dict[str, Any]:
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
         body = _response_json(resp)
+        assert_response_matches_openapi_ref(body, "#/components/schemas/ErrorResponse")
         error = body.get("error")
         assert isinstance(error, dict), f"Expected error object, got: {body!r}"
-        assert error.get("message") == "Validation failed", (
-            f"Expected 'Validation failed', got {error.get('message')!r}"
+        assert error.get("code") == "VALIDATION_ERROR", (
+            f"Expected VALIDATION_ERROR, got {error.get('code')!r}"
         )
         metadata = error.get("metadata")
         assert isinstance(metadata, dict), f"Expected error.metadata object, got: {body!r}"

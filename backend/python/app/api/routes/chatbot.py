@@ -44,6 +44,7 @@ from app.utils.cache_helpers import get_cached_user_info
 from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
+    context_includes_jira_tickets,
     enrich_virtual_record_id_to_result_with_fk_children,
     flattened_result_sort_key,
     get_flattened_results,
@@ -211,7 +212,15 @@ def create_internal_search_tool(
             message_content_array, _ = build_message_content_array(temp_final_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=True)
 
             message_content_array = [item for sublist in message_content_array for item in sublist]
-            return message_content_array
+            return {
+                "ok": True,
+                "content": message_content_array,
+                "result_type": "content",
+                "has_jira_tickets_in_context": context_includes_jira_tickets(
+                    temp_final_results,
+                    virtual_record_id_to_result,
+                ),
+            }
         except Exception as e:
             return {"ok": False, "error": f"Internal search failed: {str(e)}", "result_type": "internal_search"}
 

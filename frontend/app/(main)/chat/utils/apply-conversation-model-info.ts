@@ -92,7 +92,7 @@ function buildModelOverrideFromInfoAndCatalog(
       return {
         modelKey: k,
         modelName: n,
-        modelFriendlyName: found.modelFriendlyName,
+        modelFriendlyName: found.modelFriendlyName || n,
         modelProvider: found.provider,
       };
     }
