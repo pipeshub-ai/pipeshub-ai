@@ -237,6 +237,7 @@ ARCH="$(uname -m)"
 IS_WSL=false
 IS_LINUX=false
 IS_MACOS=false
+IS_WINDOWS=false
 
 case "$OS_TYPE" in
   Linux*)
@@ -253,6 +254,7 @@ case "$OS_TYPE" in
     info "Detected macOS ($ARCH)"
     ;;
   MINGW*|MSYS*|CYGWIN*)
+    IS_WINDOWS=true
     info "Detected Windows / Git Bash"
     warn "Git Bash has limited feature parity; WSL is recommended for Windows."
     ;;
@@ -357,9 +359,20 @@ if ! $FLAG_UPGRADE; then
     TOTAL_RAM_MB=$(( _mem_bytes / 1024 / 1024 ))
   fi
 
-  if (( TOTAL_RAM_MB > 0 && TOTAL_RAM_MB < 16384 )); then
-    die "Insufficient RAM: ${TOTAL_RAM_MB} MB detected. PipesHub requires at least 16 GB of RAM."
-  elif (( TOTAL_RAM_MB >= 16384 )); then
+  # WSL caps its VM at whatever the user sets in .wslconfig (default ≈ 50–80% of
+  # host RAM). 10 GB in the VM is sufficient; requiring 16 GB would block most
+  # WSL users even on well-resourced Windows machines.
+  if $IS_WSL; then
+    _RAM_MIN_MB=10240
+    _RAM_MIN_LABEL="10 GB"
+  else
+    _RAM_MIN_MB=16384
+    _RAM_MIN_LABEL="16 GB"
+  fi
+
+  if (( TOTAL_RAM_MB > 0 && TOTAL_RAM_MB < _RAM_MIN_MB )); then
+    die "Insufficient RAM: ${TOTAL_RAM_MB} MB detected. PipesHub requires at least ${_RAM_MIN_LABEL} of RAM."
+  elif (( TOTAL_RAM_MB >= _RAM_MIN_MB )); then
     success "System RAM: ${TOTAL_RAM_MB} MB"
   fi
 
@@ -371,6 +384,18 @@ if ! $FLAG_UPGRADE; then
     _docker_mem_mb=$(( _docker_mem / 1024 / 1024 ))
     if (( _docker_mem_mb > 0 && _docker_mem_mb < 8192 )); then
       warn "Docker Desktop has only ${_docker_mem_mb} MB allocated to its VM. Recommend at least 8 GB in Docker Desktop → Settings → Resources → Memory."
+    fi
+  fi
+
+  # Docker Desktop on Windows (Git Bash) — host RAM is not readable from Git Bash,
+  # so probe the Docker Desktop VM allocation directly (same approach as macOS).
+  if $IS_WINDOWS; then
+    _docker_mem="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
+    _docker_mem_mb=$(( _docker_mem / 1024 / 1024 ))
+    if (( _docker_mem_mb > 0 && _docker_mem_mb < 8192 )); then
+      warn "Docker Desktop has only ${_docker_mem_mb} MB allocated to its VM. Recommend at least 8 GB in Docker Desktop → Settings → Resources → Memory."
+    elif (( _docker_mem_mb >= 8192 )); then
+      success "Docker Desktop memory: ${_docker_mem_mb} MB"
     fi
   fi
 
