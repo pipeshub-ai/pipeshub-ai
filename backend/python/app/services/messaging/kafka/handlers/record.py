@@ -364,6 +364,21 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.TSV.value,
                 MimeTypes.SQL_TABLE.value,
                 MimeTypes.SQL_VIEW.value,
+                MimeTypes.PYTHON.value,
+                MimeTypes.JAVA_SOURCE.value,
+                MimeTypes.C_SOURCE.value,
+                MimeTypes.CPP.value,
+                MimeTypes.PHP.value,
+                MimeTypes.JAVASCRIPT.value,
+                MimeTypes.TYPESCRIPT.value,
+                MimeTypes.CSHARP.value,
+                MimeTypes.GO.value,
+                MimeTypes.RUST.value,
+                MimeTypes.RUBY.value,
+                MimeTypes.SWIFT.value,
+                MimeTypes.KOTLIN.value,
+                MimeTypes.DART.value,
+                MimeTypes.SHELL.value,
             ]
 
             supported_extensions = [

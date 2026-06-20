@@ -25,6 +25,7 @@ from app.config.constants.arangodb import (
     ExtensionTypes,
     MimeTypes,
     ProgressStatus,
+    CODE_FILE_MIME_TYPE_VALUES,
 )
 from app.events.processor import Processor
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
@@ -778,6 +779,17 @@ class EventProcessor:
                     recordType=record_type,
                     connectorName=connector,
                     origin=origin,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+
+            elif mime_type in CODE_FILE_MIME_TYPE_VALUES:
+                async for event in self.processor.process_md_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    md_binary=file_content,
+                    virtual_record_id=virtual_record_id,
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):

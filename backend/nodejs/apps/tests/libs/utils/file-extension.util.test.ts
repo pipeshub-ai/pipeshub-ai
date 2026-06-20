@@ -58,5 +58,13 @@ describe('file-extension.util', () => {
       expect(getMimeType('')).to.equal('')
       expect(getMimeType('totallyunknownext')).to.equal('')
     })
+
+    it('resolves code file extensions', () => {
+      expect(getMimeType('py')).to.equal('text/x-python')
+      expect(getMimeType('ts')).to.equal('application/typescript')
+      expect(getMimeType('go')).to.equal('text/x-go')
+      expect(getMimeType('rs')).to.equal('text/x-rust')
+      expect(getMimeType('sh')).to.equal('application/x-sh')
+    })
   })
 })

@@ -310,8 +310,41 @@ class MimeTypes(Enum):
     HEIF = "image/heif"
     ZIP = "application/zip"
     GIF = "image/gif"
+    PYTHON = "text/x-python"
+    JAVA_SOURCE = "text/x-java-source"
+    C_SOURCE = "text/x-c"
+    CPP = "text/x-c++"
+    PHP = "text/x-php"
+    JAVASCRIPT = "application/javascript"
+    TYPESCRIPT = "application/typescript"
+    CSHARP = "text/x-csharp"
+    GO = "text/x-go"
+    RUST = "text/x-rust"
+    RUBY = "text/x-ruby"
+    SWIFT = "text/x-swift"
+    KOTLIN = "text/x-kotlin"
+    DART = "application/dart"
+    SHELL = "application/x-sh"
     SQL_TABLE = "application/vnd.sql.table"  
     SQL_VIEW = "application/vnd.sql.view"  
+
+CODE_FILE_MIME_TYPE_VALUES = frozenset({
+    MimeTypes.PYTHON.value,
+    MimeTypes.JAVA_SOURCE.value,
+    MimeTypes.C_SOURCE.value,
+    MimeTypes.CPP.value,
+    MimeTypes.PHP.value,
+    MimeTypes.JAVASCRIPT.value,
+    MimeTypes.TYPESCRIPT.value,
+    MimeTypes.CSHARP.value,
+    MimeTypes.GO.value,
+    MimeTypes.RUST.value,
+    MimeTypes.RUBY.value,
+    MimeTypes.SWIFT.value,
+    MimeTypes.KOTLIN.value,
+    MimeTypes.DART.value,
+    MimeTypes.SHELL.value,
+})
 
 RECONCILIATION_ENABLED_MIME_TYPES = {
     MimeTypes.SQL_TABLE.value,
