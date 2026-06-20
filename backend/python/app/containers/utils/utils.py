@@ -12,6 +12,7 @@ from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.xls_parser import XLSParser
 from app.modules.parsers.html_parser.html_parser import HTMLParser
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.modules.parsers.json.json_parser import JSONParser
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.pptx.ppt_parser import PPTParser
@@ -121,6 +122,7 @@ class ContainerUtils:
             ExtensionTypes.MDX.value: MDXParser(),
             ExtensionTypes.CSV.value: CSVParser(),
             ExtensionTypes.TSV.value: CSVParser(delimiter="\t"),
+            ExtensionTypes.JSON.value: JSONParser(),
             ExtensionTypes.XLSX.value: ExcelParser(logger),
             ExtensionTypes.XLS.value: XLSParser(),
             ExtensionTypes.PNG.value: image_parser,

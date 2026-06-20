@@ -1784,6 +1784,67 @@ class Processor:
             self.logger.error(f"❌ Error processing Markdown document: {str(e)}")
             raise
 
+    async def process_json_document(
+        self,
+        recordName: str,
+        recordId: str,
+        json_binary: bytes | str,
+        virtual_record_id: str,
+        event_type: Optional[str] = None,
+        prev_virtual_record_id: Optional[str] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process JSON document, yielding phase completion events.
+
+        Flattens the JSON into readable text blocks via JSONParser, then runs
+        the standard indexing pipeline (no Docling/LLM needed).
+        """
+        self.logger.info(
+            f"🚀 Starting JSON document processing for record: {recordName}"
+        )
+
+        try:
+            if isinstance(json_binary, bytes):
+                json_content = json_binary.decode("utf-8")
+            else:
+                json_content = json_binary
+
+            if not json_content or json_content.strip() == "":
+                await self._mark_record(recordId, ProgressStatus.EMPTY)
+                self.logger.info("✅ JSON processing completed (empty document).")
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                return
+
+            parser = self.parsers[ExtensionTypes.JSON.value]
+            block_containers = parser.parse(json_content)
+
+            # Phase 1: Parsing complete (pure, no LLM)
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+
+            record = await self.graph_provider.get_document(
+                recordId, CollectionNames.RECORDS.value
+            )
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                return
+            record = convert_record_dict_to_record(record)
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+
+            # Phase 2: Index
+            ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
+
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+
+            self.logger.info("✅ JSON processing completed successfully")
+            return
+        except Exception as e:
+            self.logger.error(f"❌ Error processing JSON document: {str(e)}")
+            raise
+
     async def process_txt_document(
         self, recordName, recordId, version, source, orgId, txt_binary, virtual_record_id, recordType, connectorName, origin, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
