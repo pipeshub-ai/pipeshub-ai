@@ -12,7 +12,10 @@ from app.models.blocks import (
     GroupSubType,
     GroupType,
 )
-from app.modules.parsers.html_parser.html_to_blocks import HtmlToBlocksConverter
+from app.modules.parsers.html_parser.html_to_blocks import (
+    HtmlToBlocksConverter,
+    _MAX_DOM_PROBE_DEPTH,
+)
 from app.modules.parsers.html_parser.selectolax_html_parser import SelectolaxHtmlParser
 
 _COMPLEX_HTML = Path(__file__).resolve().parents[6] / "complex-html.html"
@@ -84,6 +87,22 @@ class TestParagraphs:
         block = container.blocks[0]
         assert block.data == "Plain paragraph."
         assert block.format == DataFormat.TXT
+
+    def test_relative_link_resolved_with_base_url(self, converter: HtmlToBlocksConverter) -> None:
+        container = converter.convert(
+            '<p>See <a href="/docs/guide">the guide</a>.</p>',
+            base_url="https://example.com",
+        )
+        block = container.blocks[0]
+        assert block.format == DataFormat.MARKDOWN
+        assert block.data == "See [the guide](https://example.com/docs/guide)."
+
+    def test_relative_link_left_unchanged_without_base_url(
+        self, converter: HtmlToBlocksConverter,
+    ) -> None:
+        container = converter.convert('<p><a href="/docs">docs</a></p>')
+        block = container.blocks[0]
+        assert block.data == "[docs](/docs)"
 
 
 class TestCode:
@@ -295,6 +314,20 @@ class TestTables:
         ]
         assert len(row_blocks) == 1
         assert row_blocks[0].data["cells"] == ["Ada", "36"]
+
+    def test_table_cell_relative_link_resolved_with_base_url(
+        self, converter: HtmlToBlocksConverter,
+    ) -> None:
+        container = converter.convert(
+            '<table><tr><td><a href="/docs">guide</a></td></tr></table>',
+            base_url="https://example.com",
+        )
+        row_blocks = [
+            block for block in container.blocks
+            if block.type == BlockType.TABLE_ROW
+        ]
+        assert len(row_blocks) == 1
+        assert row_blocks[0].data["cells"] == ["[guide](https://example.com/docs)"]
 
     def test_table_colspan_rowspan_headers_and_rows(
         self,
@@ -519,22 +552,46 @@ class TestSelectolaxHtmlParser:
         assert 'src="https://example.com/pic.png"' in result
 
     @pytest.mark.asyncio
-    async def test_parse_cleans_absolutizes_and_delegates(
+    async def test_parse_delegates_to_parse_to_blocks(
         self,
         parser: SelectolaxHtmlParser,
     ) -> None:
-        with patch.object(parser, "clean_html", return_value="<h1>Cleaned</h1>") as mock_clean, \
-             patch.object(parser, "replace_relative_image_urls", return_value="<h1>AbsURLs</h1>") as mock_abs, \
-             patch.object(parser, "parse_to_blocks", return_value=MagicMock()) as mock_parse:
-            await parser.parse("<script>x</script><h1>Title</h1>", caption_map={"a": "b"}, base_url="https://x.com")
+        with patch.object(parser, "parse_to_blocks", return_value=MagicMock()) as mock_parse:
+            await parser.parse("<h1>Ready</h1>", caption_map={"a": "b"}, base_url="https://x.com")
 
-            mock_clean.assert_called_once_with("<script>x</script><h1>Title</h1>")
-            mock_abs.assert_called_once_with("<h1>Cleaned</h1>")
-            mock_parse.assert_called_once_with(
-                "<h1>AbsURLs</h1>",
-                base_url="https://x.com",
-                caption_map={"a": "b"},
-            )
+        mock_parse.assert_called_once_with(
+            "<h1>Ready</h1>",
+            base_url="https://x.com",
+            caption_map={"a": "b"},
+        )
+
+    def test_clean_before_extract_skips_header_images(
+        self,
+        parser: SelectolaxHtmlParser,
+    ) -> None:
+        html = (
+            '<header><img src="/logo.png" alt="logo"></header>'
+            '<main><img src="/doc.png" alt="doc"></main>'
+        )
+        cleaned = parser.clean_html(html)
+        _, images = parser.extract_and_replace_images(cleaned)
+        assert len(images) == 1
+        assert images[0]["url"] == "/doc.png"
+
+
+class TestDomWalkDepth:
+    def test_deeply_nested_containers_do_not_recursion_error(
+        self, converter: HtmlToBlocksConverter,
+    ) -> None:
+        depth = _MAX_DOM_PROBE_DEPTH + 10
+        html = "<div>" * depth + "deep content" + "</div>" * depth
+        container = converter.convert(html)
+        paragraphs = [
+            block for block in container.blocks
+            if block.sub_type == BlockSubType.PARAGRAPH
+        ]
+        assert paragraphs
+        assert any("deep content" in (block.data or "") for block in paragraphs)
 
 
 class TestSelectolaxHtmlParserCleanHtml:

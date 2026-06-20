@@ -1578,6 +1578,7 @@ class Processor:
             # Use the unified HTML parser interface
             self.logger.debug("📄 Processing HTML content")
             html_parser = self.parsers[ExtensionTypes.HTML.value]
+            html_content = html_parser.clean_html(html_content)
             html_content = html_parser.replace_relative_image_urls(html_content)
 
             # Extract image URLs and convert to base64 (mirrors the Markdown flow)
@@ -1599,7 +1600,8 @@ class Processor:
                 )
 
             block_containers = await html_parser.parse(
-                modified_html, caption_map=caption_map if caption_map else None
+                modified_html,
+                caption_map=caption_map if caption_map else None,
             )
 
             # Signal parsing complete

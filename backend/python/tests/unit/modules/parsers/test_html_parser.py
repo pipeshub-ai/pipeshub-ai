@@ -319,21 +319,17 @@ class TestDoclingHtmlParse:
         instance.create_blocks.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_parse_cleans_absolutizes_and_converts_to_markdown(self, parser):
+    async def test_parse_converts_to_markdown(self, parser):
         expected = MagicMock()
-        with patch.object(parser, "clean_html", return_value="<p>cleaned</p>") as mock_clean, \
-             patch.object(parser, "replace_relative_image_urls", return_value="<p>abs</p>") as mock_abs, \
-             patch("html_to_markdown.convert", return_value="# markdown") as mock_convert, \
+        with patch("html_to_markdown.convert", return_value="# markdown") as mock_convert, \
              patch("app.modules.parsers.pdf.docling_processor.DoclingProcessor") as mock_processor_cls:
             instance = mock_processor_cls.return_value
             instance.parse_document = AsyncMock(return_value=MagicMock())
             instance.create_blocks = AsyncMock(return_value=expected)
 
-            await parser.parse("<script>x</script><p>Hello</p>")
+            await parser.parse("<p>Hello</p>")
 
-        mock_clean.assert_called_once_with("<script>x</script><p>Hello</p>")
-        mock_abs.assert_called_once_with("<p>cleaned</p>")
-        mock_convert.assert_called_once_with("<p>abs</p>")
+        mock_convert.assert_called_once_with("<p>Hello</p>")
         instance.parse_document.assert_awaited_once()
         call_args = instance.parse_document.call_args
         assert call_args[0][0] == "document.md"

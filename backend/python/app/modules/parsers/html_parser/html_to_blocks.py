@@ -318,8 +318,6 @@ def _inline_text(node: LexborNode) -> str:
 
 def _split_element_content(
     node: LexborNode,
-    *,
-    base_url: str = "",
 ) -> tuple[str, list[LexborNode], DataFormat]:
     """Extract text and embedded images from a block element (``<p>``, ``<h1>``, etc.).
 
@@ -327,7 +325,7 @@ def _split_element_content(
     ``BlockType.IMAGE`` blocks (required by downstream indexing). Text is
     rendered as markdown when inline formatting is present, or as plain text
     otherwise — the chosen ``DataFormat`` is returned so the caller stores it
-    correctly. Relative links are absolutised when ``base_url`` is set.
+    correctly.
 
     Returns:
         ``(text_content, image_nodes, data_format)`` 3-tuple.
@@ -339,7 +337,7 @@ def _split_element_content(
 
     if _has_inline_formatting(node):
         return (
-            _html_to_markdown(node.inner_html.strip(), base_url=base_url),
+            _html_to_markdown(node.inner_html.strip()),
             image_nodes,
             DataFormat.MARKDOWN,
         )
@@ -362,36 +360,30 @@ def _split_element_content(
     return "".join(text_parts).strip(), image_nodes, DataFormat.TXT
 
 
-def _html_to_markdown(html: str, *, base_url: str = "") -> str:
+def _html_to_markdown(html: str) -> str:
     """Convert an HTML fragment to ATX-style markdown via ``markdownify``.
 
     Central HTML→markdown bridge for the parser. Called whenever inline
     formatting must be preserved (paragraphs, list items, blockquotes, etc.).
-    Relative ``<a href>`` values are resolved to absolute URLs first when
-    ``base_url`` is provided, so stored markdown slices remain navigable.
+    Relative ``<a href>`` values must already be absolutised on the main DOM
+    tree (see ``_resolve_relative_links_on_tree``) before this runs.
     """
     if not html:
         return ""
-    if base_url:
-        html = _resolve_relative_links(html, base_url)
     return markdownify(html, heading_style="ATX").strip()
 
 
-def _resolve_relative_links(html: str, base_url: str) -> str:
-    """Rewrite relative ``<a href>`` values to absolute URLs via ``urljoin``.
+def _resolve_relative_links_on_tree(root: LexborNode, base_url: str) -> None:
+    """Rewrite relative ``<a href>`` values to absolute URLs on the live DOM tree.
 
     Relative links break once content is stored outside its original page
-    context (RAG prompts, search results). This resolves them *before*
-    markdown conversion. Already-absolute, ``mailto:``, ``#hash``, and
-    ``data:`` URIs are left untouched. The fragment is parsed in a wrapper
-    ``<div>`` to prevent Lexbor from auto-inserting ``<html><body>``.
+    context (RAG prompts, search results). Resolving once on the main parse
+    avoids re-parsing every HTML fragment during the block walk. Already-
+    absolute, ``mailto:``, ``#hash``, and ``data:`` URIs are left untouched.
     """
-    parser = LexborHTMLParser(f"<div>{html}</div>")
-    wrapper = parser.css_first("div")
-    if wrapper is None:
-        return html
-
-    for anchor in wrapper.css("a"):
+    if not base_url:
+        return
+    for anchor in root.css("a"):
         attrs = anchor.attributes or {}
         href = (attrs.get("href") or "").strip()
         if not href:
@@ -399,8 +391,6 @@ def _resolve_relative_links(html: str, base_url: str) -> str:
         if href.startswith(("http://", "https://", "mailto:", "#", "data:")):
             continue
         anchor.attrs["href"] = urljoin(base_url, href)
-
-    return wrapper.inner_html
 
 
 # ---------------------------------------------------------------------------
@@ -975,7 +965,9 @@ class HtmlToBlocksConverter:
         root = parser.body or parser.root
         if root is None:
             return BlocksContainer()
-        walker = _DomWalker(base_url=base_url, caption_map=caption_map)
+        if base_url:
+            _resolve_relative_links_on_tree(root, base_url)
+        walker = _DomWalker(caption_map=caption_map)
         return walker.walk(root)
 
 
@@ -994,16 +986,13 @@ class _DomWalker:
     def __init__(
         self,
         *,
-        base_url: str | None = None,
         caption_map: dict[str, str] | None = None,
     ) -> None:
         """Initialize walker state for one conversion pass.
 
         Args:
-            base_url: Base URL for resolving relative links and image sources.
             caption_map: Alt-text to base64 URI map for inlined images.
         """
-        self.base_url = base_url or ""
         self.caption_map = caption_map or {}
         self.blocks: list[Block] = []
         self.block_groups: list[BlockGroup] = []
@@ -1017,17 +1006,26 @@ class _DomWalker:
         Only direct children are walked from ``root``; callers pass ``body`` or
         the document root so the full tree is covered in one pass.
         """
-        self._walk_children(root)
+        self._walk_children(root, depth=0)
         return BlocksContainer(blocks=self.blocks, block_groups=self.block_groups)
 
-    def _walk_children(self, parent: LexborNode) -> None:
+    def _walk_children(self, parent: LexborNode, depth: int = 0) -> None:
         """Dispatch each direct child of ``parent`` through ``_process_node``.
 
         Performs lookahead when a heading is encountered: if the next element
         sibling is paragraph-like, the heading text is merged into the
         paragraph block as a markdown heading prefix instead of emitting a
         separate heading block.
+
+        Depth is capped at ``_MAX_DOM_PROBE_DEPTH``; deeper containers are
+        emitted as a flat paragraph so pathological nesting cannot overflow
+        the Python stack.
         """
+        if depth > _MAX_DOM_PROBE_DEPTH:
+            if _node_text(parent) or parent.css("img"):
+                self._emit_text_block(parent, BlockSubType.PARAGRAPH)
+            return
+
         children = list(_direct_children(parent))
         i = 0
         while i < len(children):
@@ -1042,7 +1040,7 @@ class _DomWalker:
                     i = next_idx + 1
                     continue
 
-            self._process_node(node)
+            self._process_node(node, depth)
             i += 1
 
     @staticmethod
@@ -1079,9 +1077,7 @@ class _DomWalker:
         """
         level = int(heading_tag[1])
 
-        heading_text, heading_images, _ = _split_element_content(
-            heading_node, base_url=self.base_url,
-        )
+        heading_text, heading_images, _ = _split_element_content(heading_node)
         for img in heading_images:
             self._emit_image(img)
 
@@ -1091,9 +1087,7 @@ class _DomWalker:
 
         md_heading = "#" * level + " " + heading_text
 
-        content_text, content_images, _ = _split_element_content(
-            content_node, base_url=self.base_url,
-        )
+        content_text, content_images, _ = _split_element_content(content_node)
 
         merged = md_heading + "\n" + content_text if content_text else md_heading
 
@@ -1108,7 +1102,7 @@ class _DomWalker:
         for img in content_images:
             self._emit_image(img)
 
-    def _process_node(self, node: LexborNode) -> None:  # noqa: C901
+    def _process_node(self, node: LexborNode, depth: int = 0) -> None:  # noqa: C901
         """Route one DOM node to the correct block emitter based on its HTML tag.
 
         Skips utility/hidden tags, recurses into containers, and maps semantic
@@ -1134,7 +1128,7 @@ class _DomWalker:
                 # Each <code> child gets its own BlockGroup(CODE) + Block.
                 # Other elements (lists, tables, blockquotes) inside <pre>
                 # are processed exactly as if they appeared at the top level.
-                self._walk_children(node)
+                self._walk_children(node, depth + 1)
             else:
                 # <pre> with no <code> children — treat entire content as
                 # a single code block (e.g. <pre>bare text</pre>).
@@ -1166,7 +1160,7 @@ class _DomWalker:
             return
 
         if tag == "details":
-            self._process_details(node)
+            self._process_details(node, depth)
             return
 
         if tag == "summary":
@@ -1188,10 +1182,10 @@ class _DomWalker:
             if _is_shallow_text_container(node):
                 self._emit_text_block(node, BlockSubType.PARAGRAPH)
             else:
-                self._walk_children(node)
+                self._walk_children(node, depth + 1)
             return
 
-        self._walk_children(node)
+        self._walk_children(node, depth + 1)
 
     # ------------------------------------------------------------------ group management
 
@@ -1293,7 +1287,7 @@ class _DomWalker:
             html = (node.html or "").strip()
             if not html:
                 return
-            data = _html_to_markdown(html, base_url=self.base_url)
+            data = _html_to_markdown(html)
         if not data:
             return
         self._add_block(Block(
@@ -1319,7 +1313,7 @@ class _DomWalker:
             type=BlockType.TEXT,
             sub_type=BlockSubType.LIST_ITEM,
             format=DataFormat.MARKDOWN,
-            data=_html_to_markdown(html, base_url=self.base_url),
+            data=_html_to_markdown(html),
             parent_index=self._current_parent_index(),
         ))
 
@@ -1361,12 +1355,12 @@ class _DomWalker:
                 type=BlockType.TEXT,
                 sub_type=BlockSubType.QUOTE,
                 format=DataFormat.MARKDOWN,
-                data=_html_to_markdown(html, base_url=self.base_url),
+                data=_html_to_markdown(html),
                 parent_index=self._current_parent_index(),
             ))
         self._close_group()
 
-    def _process_details(self, node: LexborNode) -> None:
+    def _process_details(self, node: LexborNode, depth: int) -> None:
         """Emit ``<summary>`` as a heading, then process sibling children normally.
 
         ``<details>`` has no direct block-group mapping; the summary is surfaced
@@ -1379,7 +1373,7 @@ class _DomWalker:
 
         for child in _direct_children(node):
             if _tag_name(child) != "summary":
-                self._process_node(child)
+                self._process_node(child, depth + 1)
 
     # ------------------------------------------------------------------ text
 
@@ -1389,7 +1383,7 @@ class _DomWalker:
         Text and images are split so images become separate ``BlockType.IMAGE``
         entries. Format is MARKDOWN when inline markup must be preserved, else TXT.
         """
-        text, image_nodes, data_format = _split_element_content(node, base_url=self.base_url)
+        text, image_nodes, data_format = _split_element_content(node)
         if text:
             self._add_block(Block(
                 id=str(uuid4()),
@@ -1411,7 +1405,7 @@ class _DomWalker:
         html = node.html.strip()
         if not html:
             return
-        text = _html_to_markdown(html, base_url=self.base_url)
+        text = _html_to_markdown(html)
         if not text:
             return
         self._add_block(Block(

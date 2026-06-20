@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import logging
 from typing import Dict, List, Tuple
-from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
 
 from app.models.blocks import BlockType, BlocksContainer
+from app.modules.parsers.html_parser import url_utils
 
 
 class DoclingHtmlParser:
@@ -92,29 +92,7 @@ class DoclingHtmlParser:
         Returns:
             Base URL as string, or None if not found
         """
-        # Strategy 1: Look for <base> tag
-        base_tag = soup.find("base", href=True)
-        if base_tag:
-            return base_tag["href"]
-
-        # Strategy 2: Look for canonical link
-        canonical = soup.find('link', rel='canonical', href=True)
-        if canonical:
-            canonical_url = canonical['href']
-            parsed = urlparse(canonical_url)
-            return f"{parsed.scheme}://{parsed.netloc}"
-
-        # Strategy 3: Look for any absolute URL in the document
-        for tag_name, attr in [('link', 'href'), ('script', 'src'), ('img', 'src'), ('a', 'href')]:
-            for tag in soup.find_all(tag_name):
-                if tag.get(attr):
-                    url = tag[attr]
-                    parsed = urlparse(url)
-                    if parsed.scheme and parsed.netloc:
-                        return f"{parsed.scheme}://{parsed.netloc}"
-
-        return None
-
+        return url_utils.get_base_url_from_html(soup)
 
     def extract_and_replace_images(
         self, html_content: str
@@ -173,31 +151,7 @@ class DoclingHtmlParser:
         Returns:
             Modified HTML string with absolute image URLs
         """
-        # Parse HTML
-        soup = BeautifulSoup(html_string, 'html.parser')
-        # Get base URL from HTML
-        base_url = self.get_base_url_from_html(soup)
-
-        if not base_url:
-            return html_string
-
-
-
-        # Find all img tags
-        images = soup.find_all('img')
-
-        # Replace relative URLs with absolute URLs
-        for img in images:
-            if img.get('src'):
-                original_url = img['src']
-                parsed = urlparse(original_url)
-
-                # Only replace if it's a relative URL (no scheme)
-                if not parsed.scheme:
-                    absolute_url = urljoin(base_url, original_url)
-                    img['src'] = absolute_url
-
-        return str(soup)
+        return url_utils.replace_relative_image_urls(html_string)
 
     def clean_html(self, html_content: str) -> str:
         """Remove non-content elements from HTML.
@@ -227,13 +181,12 @@ class DoclingHtmlParser:
         caption_map: Dict[str, str] | None = None,
         base_url: str | None = None,
     ) -> BlocksContainer:
-        """Parse HTML to ``BlocksContainer`` via the Docling pipeline.
+        """Parse preprocessed HTML to ``BlocksContainer`` via the Docling pipeline.
 
-        Cleans HTML (removes script/style/nav/etc.), absolutizes image URLs,
-        converts to Markdown, then processes through Docling's Markdown pipeline.
+        Caller must run ``clean_html`` and ``replace_relative_image_urls`` first.
 
         Args:
-            html_content: HTML source string.
+            html_content: Preprocessed HTML source string.
             caption_map: Optional mapping of image alt-text to base-64 data URIs.
             base_url: Unused; kept for protocol signature compatibility.
 
@@ -244,10 +197,7 @@ class DoclingHtmlParser:
 
         from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 
-        # self._logger.info("docling_html_parser.parse starting")
-        cleaned = self.clean_html(html_content)
-        cleaned = self.replace_relative_image_urls(cleaned)
-        markdown = convert(cleaned)
+        markdown = convert(html_content)
         md_bytes = markdown.encode("utf-8")
 
         processor = DoclingProcessor(logger=self._logger, config=self._config_service)

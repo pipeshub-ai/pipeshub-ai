@@ -17,8 +17,8 @@ from typing import Dict, List, Tuple
 from bs4 import BeautifulSoup
 
 from app.models.blocks import BlocksContainer
-from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
 from app.modules.parsers.html_parser.html_to_blocks import HtmlToBlocksConverter
+from app.modules.parsers.html_parser.url_utils import replace_relative_image_urls
 
 
 class SelectolaxHtmlParser:
@@ -37,7 +37,6 @@ class SelectolaxHtmlParser:
 
     def __init__(self, **kwargs: object) -> None:
         self._converter = HtmlToBlocksConverter()
-        self._docling_html_parser = DoclingHtmlParser()
         self._logger = kwargs.get("logger") or logging.getLogger(__name__)
 
     # ------------------------------------------------------------------
@@ -98,24 +97,20 @@ class SelectolaxHtmlParser:
         caption_map: Dict[str, str] | None = None,
         base_url: str | None = None,
     ) -> BlocksContainer:
-        """Parse HTML to ``BlocksContainer``.
+        """Parse preprocessed HTML to ``BlocksContainer``.
 
-        Cleans HTML (removes script/style/nav/etc.), absolutizes image URLs,
-        then converts to blocks via Selectolax.
+        Caller must run ``clean_html`` and ``replace_relative_image_urls`` first.
 
         Args:
-            html_content: HTML source string.
+            html_content: Preprocessed HTML source string.
             caption_map: Optional mapping of image alt-text to base-64 data URIs.
             base_url: Optional base URL for resolving relative image URLs.
 
         Returns:
             Populated ``BlocksContainer``.
         """
-        # self._logger.info(f"selectolax_html_parser.parse starting")
-        cleaned = self.clean_html(html_content)
-        cleaned = self.replace_relative_image_urls(cleaned)
         return self.parse_to_blocks(
-            cleaned,
+            html_content,
             base_url=base_url,
             caption_map=caption_map,
         )
@@ -188,4 +183,4 @@ class SelectolaxHtmlParser:
             HTML with relative ``img`` ``src`` values rewritten when a base
             URL can be inferred from the document.
         """
-        return self._docling_html_parser.replace_relative_image_urls(html_content)
+        return replace_relative_image_urls(html_content)

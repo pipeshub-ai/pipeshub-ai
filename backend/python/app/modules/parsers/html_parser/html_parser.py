@@ -38,9 +38,9 @@ class HTMLParserProtocol(Protocol):
         caption_map: Dict[str, str] | None = None,
         base_url: str | None = None,
     ) -> BlocksContainer:
-        """Parse HTML content into a ``BlocksContainer``.
+        """Parse preprocessed HTML into a ``BlocksContainer``.
 
-        Automatically cleans HTML and absolutizes image URLs before parsing.
+        Caller must run ``clean_html`` and ``replace_relative_image_urls`` first.
         """
         ...
 
