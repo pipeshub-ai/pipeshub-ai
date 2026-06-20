@@ -373,26 +373,13 @@ if $FLAG_UPGRADE; then
   set -a; . "$ENV_FILE"; set +a
   SKIP_WIZARD=true
 elif $ENV_EXISTS && ! $FLAG_RECONFIGURE; then
-  if $FLAG_YES; then
-    info "Existing .env found — reusing (pass --reconfigure to overwrite)."
-  else
-    printf "\n  ${BOLD}An existing .env file was found.${RESET}\n"
-    printf "  [1] Reuse it (keep all current settings)\n"
-    printf "  [2] Reconfigure (re-run wizard and overwrite .env)\n"
-    printf "  Choice [1]: "
-    read -r _env_reply
-    [[ "${_env_reply}" == "2" ]] && FLAG_RECONFIGURE=true
-  fi
-fi
-
-if $ENV_EXISTS && ! $FLAG_RECONFIGURE && ! $FLAG_UPGRADE; then
-  info "Reusing existing .env — skipping configuration wizard."
+  # .env exists and --reconfigure was not requested: always reuse without prompting.
+  # Use --reconfigure to overwrite.
+  info "Existing .env found — reusing. Pass --reconfigure to overwrite."
   set -a; . "$ENV_FILE"; set +a
   SKIP_WIZARD=true
 else
-  if ! $FLAG_UPGRADE; then
-    SKIP_WIZARD=false
-  fi
+  SKIP_WIZARD=false
 fi
 
 # ==============================================================================
