@@ -840,6 +840,25 @@ class TestOnEventExtensionDispatch:
         processor.process_md_document.assert_called_once()
         processor.process_txt_document.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_code_extension_routes_to_md_processor_when_mime_unknown(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_md_document = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_txt_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(
+                extension="py",
+                mime_type="application/octet-stream",
+                record_name="main.py",
+            )
+            events = await _drain(ep.on_event(event_data))
+
+        assert len(events) == 2
+        processor.process_md_document.assert_called_once()
+        processor.process_txt_document.assert_not_called()
+
 
 # ===========================================================================
 # _check_duplicate_by_md5 - string content path

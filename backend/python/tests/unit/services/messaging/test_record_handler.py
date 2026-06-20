@@ -1853,8 +1853,8 @@ class TestKbUploadedCodeFileHandling:
         mock_dl.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_unsupported_mime_rejected_even_with_code_extension(self):
-        """Unsupported MIME is rejected even when extension looks like code."""
+    async def test_code_extension_passes_with_unsupported_mime(self):
+        """Supported code extension passes the gate even when MIME is unrecognized."""
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         record = {
@@ -1866,20 +1866,30 @@ class TestKbUploadedCodeFileHandling:
             "recordName": "main.py",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.batch_upsert_nodes = AsyncMock()
         gp.update_queued_duplicates_status = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+            {"event": "indexing_complete", "data": {"record_id": "r1"}},
+        ]))
 
         payload = {
             "recordId": "r1",
+            "orgId": "org-1",
             "mimeType": "application/x-msdownload",
             "extension": "py",
             "recordName": "main.py",
+            "signedUrl": "https://example.com/main.py",
         }
-        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"print('hello')"
+            events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
         assert len(events) == 2
-        doc = gp.batch_upsert_nodes.call_args[0][0][0]
-        assert doc["indexingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+        mock_dl.assert_awaited_once()
+        gp.batch_upsert_nodes.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_non_code_mime_still_rejected(self):

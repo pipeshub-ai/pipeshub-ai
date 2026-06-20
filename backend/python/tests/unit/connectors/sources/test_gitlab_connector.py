@@ -3926,7 +3926,7 @@ class TestGitlabConnectorBuildCodeFileRecords:
         assert code_file.record_group_type == RecordGroupType.PROJECT.value
         assert code_file.external_record_group_id == "456-code-repository"
         assert code_file.external_revision_id == "abc123def456"
-        assert code_file.preview_renderable is False
+        assert code_file.preview_renderable is True
         assert code_file.file_path == "src/main.py"
         assert code_file.file_hash == "abc123def456"
         assert code_file.inherit_permissions is True

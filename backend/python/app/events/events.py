@@ -25,7 +25,9 @@ from app.config.constants.arangodb import (
     ExtensionTypes,
     MimeTypes,
     ProgressStatus,
+    CODE_FILE_EXTENSION_VALUES,
     CODE_FILE_MIME_TYPE_VALUES,
+    normalize_file_extension,
 )
 from app.events.processor import Processor
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
@@ -784,7 +786,7 @@ class EventProcessor:
                 ):
                     yield event
 
-            elif mime_type in CODE_FILE_MIME_TYPE_VALUES:
+            elif mime_type in CODE_FILE_MIME_TYPE_VALUES or normalize_file_extension(extension) in CODE_FILE_EXTENSION_VALUES:
                 async for event in self.processor.process_md_document(
                     recordName=record_name,
                     recordId=record_id,
