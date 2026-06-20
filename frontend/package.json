@@ -50,7 +50,7 @@
     "chokidar": "^3.6.0",
     "dayjs": "^1.11.20",
     "docx-preview": "^0.3.7",
-    "dompurify": "^3.4.0",
+    "dompurify": "^3.4.11",
     "i18next": "^25.8.0",
     "i18next-browser-languagedetector": "^8.2.0",
     "immer": "^11.1.3",

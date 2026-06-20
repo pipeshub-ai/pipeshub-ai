@@ -1832,10 +1832,10 @@
         },
         "sync": {
           "kind": "Sync",
-          "syncing": "Synchronisiert",
-          "syncingTooltip": "Ein Sync-Job läuft für diese Instanz.",
-          "fullSyncing": "Vollsync",
-          "fullSyncingTooltip": "Ein vollständiger Sync läuft für diese Instanz.",
+          "syncing": "Synchronisierung läuft",
+          "syncingTooltip": "Dieser Connector synchronisiert neue und aktualisierte Inhalte.",
+          "fullSyncing": "Vollständiger Sync läuft",
+          "fullSyncingTooltip": "Dieser Connector führt eine vollständige Neusynchronisierung von der Quelle durch.",
           "removing": "Entfernen",
           "removingTooltip": "Diese Instanz wird gelöscht."
         }

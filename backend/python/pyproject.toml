@@ -281,7 +281,7 @@ dependencies = [
     "uuid==1.30",
     "uvicorn==0.35",
     "zstandard==0.25.0",
-    "mariadb>=1.1.0",
+    "mariadb[binary,pool]>=2.0.0rc2,<3",
     "asyncpg>=0.31.0",
 ]
 

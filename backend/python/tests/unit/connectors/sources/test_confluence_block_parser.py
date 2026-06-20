@@ -799,3 +799,237 @@ class TestInlineCommentBlockMatching:
         )
 
         assert parser._find_block_by_text([item], "bullet item") == item
+
+
+@pytest.mark.asyncio
+class TestPanelExpandTableNesting:
+    """Regression tests for parent_index cycle bug (panel/expand containing tables)."""
+
+    async def test_panel_with_nested_table_no_self_reference(self):
+        """Panel containing table should not create self-referencing parent_index."""
+        parser = _parser()
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "panel",
+                    "attrs": {"panelType": "info"},
+                    "content": [
+                        {
+                            "type": "table",
+                            "content": [
+                                {
+                                    "type": "tableRow",
+                                    "content": [
+                                        {
+                                            "type": "tableCell",
+                                            "content": [
+                                                {
+                                                    "type": "paragraph",
+                                                    "content": [
+                                                        {"type": "text", "text": "Cell"}
+                                                    ],
+                                                }
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+
+        blocks, block_groups = await parser.parse_adf(
+            adf, page_title="Test", page_id="123"
+        )
+
+        # Verify no self-references
+        for i, group in enumerate(block_groups):
+            assert group.parent_index != i, (
+                f"block_group[{i}] has self-referencing parent_index={group.parent_index}"
+            )
+
+        # Verify panel group exists
+        panel_groups = [g for g in block_groups if g.sub_type == GroupSubType.CALLOUT]
+        assert len(panel_groups) == 1
+
+        # Verify table group exists and has correct parent
+        table_groups = [g for g in block_groups if g.type == GroupType.TABLE]
+        assert len(table_groups) == 1
+        assert table_groups[0].parent_index == panel_groups[0].index
+
+    async def test_expand_with_nested_layout_no_self_reference(self):
+        """Expand containing layoutSection should not create self-referencing parent_index."""
+        parser = _parser()
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "expand",
+                    "attrs": {"title": "Details"},
+                    "content": [
+                        {
+                            "type": "layoutSection",
+                            "content": [
+                                {
+                                    "type": "layoutColumn",
+                                    "attrs": {"width": 50.0},
+                                    "content": [
+                                        {
+                                            "type": "paragraph",
+                                            "content": [
+                                                {"type": "text", "text": "Column 1"}
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+
+        blocks, block_groups = await parser.parse_adf(
+            adf, page_title="Test", page_id="123"
+        )
+
+        # Verify no self-references
+        for i, group in enumerate(block_groups):
+            assert group.parent_index != i, (
+                f"block_group[{i}] has self-referencing parent_index={group.parent_index}"
+            )
+
+        # Verify expand group exists
+        expand_groups = [g for g in block_groups if g.sub_type == GroupSubType.TOGGLE]
+        assert len(expand_groups) == 1
+
+        # Verify column list exists and has correct parent
+        column_list_groups = [g for g in block_groups if g.type == GroupType.COLUMN_LIST]
+        assert len(column_list_groups) == 1
+        assert column_list_groups[0].parent_index == expand_groups[0].index
+
+    async def test_blockquote_with_nested_table_no_self_reference(self):
+        """Blockquote containing table should not create self-referencing parent_index."""
+        parser = _parser()
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "blockquote",
+                    "content": [
+                        {
+                            "type": "table",
+                            "content": [
+                                {
+                                    "type": "tableRow",
+                                    "content": [
+                                        {
+                                            "type": "tableCell",
+                                            "content": [
+                                                {
+                                                    "type": "paragraph",
+                                                    "content": [
+                                                        {"type": "text", "text": "Quote table"}
+                                                    ],
+                                                }
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+
+        blocks, block_groups = await parser.parse_adf(
+            adf, page_title="Test", page_id="123"
+        )
+
+        # Verify no self-references
+        for i, group in enumerate(block_groups):
+            assert group.parent_index != i, (
+                f"block_group[{i}] has self-referencing parent_index={group.parent_index}"
+            )
+
+        # Verify quote group exists
+        quote_groups = [g for g in block_groups if g.sub_type == GroupSubType.QUOTE]
+        assert len(quote_groups) == 1
+
+        # Verify table group exists and has correct parent
+        table_groups = [g for g in block_groups if g.type == GroupType.TABLE]
+        assert len(table_groups) == 1
+        assert table_groups[0].parent_index == quote_groups[0].index
+
+    async def test_nested_panel_in_expand_no_self_reference(self):
+        """Complex nesting: expand containing panel containing table."""
+        parser = _parser()
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "expand",
+                    "attrs": {"title": "More Details"},
+                    "content": [
+                        {
+                            "type": "panel",
+                            "attrs": {"panelType": "warning"},
+                            "content": [
+                                {
+                                    "type": "table",
+                                    "content": [
+                                        {
+                                            "type": "tableRow",
+                                            "content": [
+                                                {
+                                                    "type": "tableCell",
+                                                    "content": [
+                                                        {
+                                                            "type": "paragraph",
+                                                            "content": [
+                                                                {"type": "text", "text": "Nested"}
+                                                            ],
+                                                        }
+                                                    ],
+                                                }
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+
+        blocks, block_groups = await parser.parse_adf(
+            adf, page_title="Test", page_id="123"
+        )
+
+        # Verify no self-references in any group
+        for i, group in enumerate(block_groups):
+            assert group.parent_index != i, (
+                f"block_group[{i}] has self-referencing parent_index={group.parent_index}"
+            )
+
+        # Verify hierarchy: expand -> panel -> table
+        expand_groups = [g for g in block_groups if g.sub_type == GroupSubType.TOGGLE]
+        panel_groups = [g for g in block_groups if g.sub_type == GroupSubType.CALLOUT]
+        table_groups = [g for g in block_groups if g.type == GroupType.TABLE]
+
+        assert len(expand_groups) == 1
+        assert len(panel_groups) == 1
+        assert len(table_groups) == 1
+
+        # Verify parent chain
+        assert panel_groups[0].parent_index == expand_groups[0].index
+        assert table_groups[0].parent_index == panel_groups[0].index

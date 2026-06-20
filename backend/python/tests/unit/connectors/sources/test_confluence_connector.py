@@ -5962,28 +5962,56 @@ class TestGetSignedUrl:
 
 class TestStreamRecordAdditional:
     @pytest.mark.asyncio
-    async def test_comment_streaming_raises_400(self):
+    async def test_comment_streaming_raises_404_when_not_found(self):
         c = _mk_connector()
+        ds = MagicMock()
+        ds.get_footer_comment_by_id = AsyncMock(return_value=_mk_resp(404))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
         record = MagicMock(
             record_type=RecordType.COMMENT,
             record_name="comment",
-            external_record_id="c1",
+            external_record_id="321748993",
         )
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 404
+        assert "321748993" in exc_info.value.detail
 
     @pytest.mark.asyncio
-    async def test_inline_comment_streaming_raises_400(self):
+    async def test_comment_streaming_returns_html(self):
         c = _mk_connector()
+        ds = MagicMock()
+        ds.get_footer_comment_by_id = AsyncMock(
+            return_value=_mk_resp(
+                200,
+                {"body": {"storage": {"value": "<p>Comment body</p>"}}},
+            )
+        )
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        record = MagicMock(
+            record_type=RecordType.COMMENT,
+            record_name="comment",
+            external_record_id="321748993",
+        )
+        result = await c.stream_record(record)
+        assert result is not None
+        assert result.media_type == MimeTypes.HTML.value
+
+    @pytest.mark.asyncio
+    async def test_inline_comment_streaming_raises_404_when_not_found(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_inline_comment_by_id = AsyncMock(return_value=_mk_resp(404))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
         record = MagicMock(
             record_type=RecordType.INLINE_COMMENT,
             record_name="inline comment",
-            external_record_id="ic1",
+            external_record_id="321814529",
         )
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 404
+        assert "321814529" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_unsupported_type_raises_http_exception(self):
@@ -7028,16 +7056,40 @@ class TestStreamRecord:
         assert result is not None  # StreamingResponse
 
     @pytest.mark.asyncio
-    async def test_stream_comment_raises_400(self):
+    async def test_stream_comment_raises_404_when_not_found(self):
         c = _mk_connector()
+        ds = MagicMock()
+        ds.get_footer_comment_by_id = AsyncMock(return_value=_mk_resp(404))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
         record = MagicMock(
             record_type=RecordType.COMMENT,
             record_name="Comment1",
-            external_record_id="c1",
+            external_record_id="321748993",
         )
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 404
+        assert "321748993" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_stream_comment_returns_html(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_footer_comment_by_id = AsyncMock(
+            return_value=_mk_resp(
+                200,
+                {"body": {"storage": {"value": "<p>Footer comment</p>"}}},
+            )
+        )
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        record = MagicMock(
+            record_type=RecordType.COMMENT,
+            record_name="Comment1",
+            external_record_id="321748993",
+        )
+        result = await c.stream_record(record)
+        assert result is not None
+        assert result.media_type == MimeTypes.HTML.value
 
     @pytest.mark.asyncio
     async def test_stream_file(self):
