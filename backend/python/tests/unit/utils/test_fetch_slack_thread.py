@@ -149,6 +149,141 @@ class TestModelToDict:
 
 
 @pytest.mark.asyncio
+class TestFetchRecordById:
+    async def test_missing_dependencies_returns_none(self):
+        vmap: dict = {}
+        assert await fst._fetch_record_by_id("rid", None, MagicMock(), "org", vmap) is None
+        assert await fst._fetch_record_by_id("rid", AsyncMock(), None, "org", vmap) is None
+        assert await fst._fetch_record_by_id("rid", AsyncMock(), MagicMock(), None, vmap) is None
+
+    async def test_graph_record_not_found(self):
+        graph = AsyncMock()
+        graph.get_record_by_id = AsyncMock(return_value=None)
+        out = await fst._fetch_record_by_id(
+            "missing",
+            graph,
+            MagicMock(),
+            "org",
+            {},
+        )
+        assert out is None
+
+    async def test_missing_virtual_record_id(self):
+        graph = AsyncMock()
+        graph.get_record_by_id = AsyncMock(return_value={"id": "r1"})
+        out = await fst._fetch_record_by_id(
+            "r1",
+            graph,
+            MagicMock(),
+            "org",
+            {},
+        )
+        assert out is None
+
+    @patch("app.utils.chat_helpers.get_record", new_callable=AsyncMock)
+    async def test_cache_hit_returns_existing(self, mock_get_record):
+        graph = AsyncMock()
+        graph.get_record_by_id = AsyncMock(
+            return_value={"virtual_record_id": "vr1", "id": "r1"}
+        )
+        cached = {"id": "r1", "content": "cached"}
+        vmap = {"vr1": cached}
+        out = await fst._fetch_record_by_id(
+            "r1",
+            graph,
+            MagicMock(),
+            "org",
+            vmap,
+        )
+        assert out is cached
+        mock_get_record.assert_not_awaited()
+
+    @patch("app.utils.chat_helpers.get_record", new_callable=AsyncMock)
+    async def test_fetches_via_get_record_and_enriches(self, mock_get_record):
+        graph = AsyncMock()
+        graph.get_record_by_id = AsyncMock(
+            return_value={
+                "virtual_record_id": "vr-new",
+                "id": "graph-id",
+                "record_name": "Thread msg",
+                "record_type": "MESSAGE",
+                "connector_name": "Slack",
+            }
+        )
+        blob = MagicMock()
+        vmap: dict = {}
+
+        async def populate_map(vrid, result_map, *args, **kwargs):
+            result_map[vrid] = {"recordName": "Thread msg"}
+
+        mock_get_record.side_effect = populate_map
+        out = await fst._fetch_record_by_id(
+            "graph-id",
+            graph,
+            blob,
+            "org-1",
+            vmap,
+        )
+        assert out is not None
+        assert out["id"] == "graph-id"
+        assert out["virtual_record_id"] == "vr-new"
+        assert vmap["vr-new"] is out
+        mock_get_record.assert_awaited_once()
+        call_kwargs = mock_get_record.await_args.kwargs
+        assert call_kwargs["virtual_to_record_map"]["vr-new"]["recordName"] == "Thread msg"
+        assert call_kwargs["graph_provider"] is graph
+
+    @patch("app.utils.chat_helpers.get_record", new_callable=AsyncMock)
+    async def test_sets_id_when_blob_record_missing_id(self, mock_get_record):
+        graph = AsyncMock()
+        graph.get_record_by_id = AsyncMock(
+            return_value={"virtual_record_id": "vr2", "_key": "key-only"}
+        )
+        vmap: dict = {}
+
+        async def populate_map(vrid, result_map, *args, **kwargs):
+            result_map[vrid] = {"recordName": "no id field"}
+
+        mock_get_record.side_effect = populate_map
+        out = await fst._fetch_record_by_id(
+            "requested-id",
+            graph,
+            MagicMock(),
+            "org",
+            vmap,
+        )
+        assert out["id"] == "requested-id"
+
+    @patch("app.utils.chat_helpers.get_record", new_callable=AsyncMock)
+    async def test_blob_fetch_empty_returns_none(self, mock_get_record):
+        graph = AsyncMock()
+        graph.get_record_by_id = AsyncMock(
+            return_value={"virtual_record_id": "vr-miss", "id": "r1"}
+        )
+        mock_get_record.return_value = None
+        out = await fst._fetch_record_by_id(
+            "r1",
+            graph,
+            MagicMock(),
+            "org",
+            {},
+        )
+        assert out is None
+
+    async def test_exception_returns_none(self):
+        graph = AsyncMock()
+        graph.get_record_by_id = AsyncMock(side_effect=RuntimeError("graph down"))
+        out = await fst._fetch_record_by_id(
+            "r1",
+            graph,
+            MagicMock(),
+            "org",
+            {},
+        )
+        assert out is None
+
+
+@pytest.mark.asyncio
 class TestResolveThreadRecordGroup:
     async def test_get_record_raises(self):
         graph = AsyncMock()

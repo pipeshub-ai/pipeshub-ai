@@ -18,7 +18,6 @@ from pydantic import BaseModel, Field
 
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.registry.connector_builder import ConnectorScope
-from app.utils.fetch_full_record import _fetch_record_by_id
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
@@ -102,6 +101,97 @@ def _model_to_dict(record: Any) -> Dict[str, Any]:
         except Exception:
             return record.model_dump()
     return dict(record)
+
+
+async def _fetch_record_by_id(
+    record_id: str,
+    graph_provider: Optional["IGraphDBProvider"],
+    blob_store: Optional["BlobStorage"],
+    org_id: Optional[str],
+    virtual_record_id_to_result: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """
+    Fetch a record by its graph record id.
+
+    1. Fetch the Record from graph_provider to get virtual_record_id and metadata
+    2. Check if already in map (by vrid)
+    3. If not, fetch from blob_store via chat_helpers.get_record
+    4. Add to map for future lookups
+    """
+    if not graph_provider or not blob_store or not org_id:
+        logger.debug(
+            "Cannot fetch record %s: missing graph_provider=%s, blob_store=%s, org_id=%s",
+            record_id, graph_provider is not None, blob_store is not None, org_id is not None
+        )
+        return None
+
+    try:
+        graph_record = await graph_provider.get_record_by_id(record_id)
+        if not graph_record:
+            logger.debug("Record %s not found in graph", record_id)
+            return None
+
+        meta = _model_to_dict(graph_record)
+
+        vrid = meta.get("virtual_record_id")
+        if not vrid:
+            logger.debug("Record %s exists in graph but has no virtual_record_id", record_id)
+            return None
+
+        if vrid in virtual_record_id_to_result:
+            return virtual_record_id_to_result.get(vrid)
+
+        record_id_value = meta.get("id") or meta.get("_key") or record_id
+        virtual_to_record_map: Dict[str, Dict[str, Any]] = {
+            vrid: {
+                "id": record_id_value,
+                "_key": record_id_value,
+                "recordName": meta.get("record_name"),
+                "recordType": meta.get("record_type"),
+                "version": meta.get("version"),
+                "origin": meta.get("origin"),
+                "connectorName": meta.get("connector_name"),
+                "connectorId": meta.get("connector_id"),
+                "webUrl": meta.get("weburl"),
+                "previewRenderable": meta.get("preview_renderable", True),
+                "hideWeburl": meta.get("hide_weburl", False),
+                "mimeType": meta.get("mime_type"),
+                "sourceCreatedAtTimestamp": meta.get("source_created_at"),
+                "sourceLastModifiedTimestamp": meta.get("source_updated_at"),
+            }
+        }
+
+        from app.utils.chat_helpers import get_record
+
+        await get_record(
+            vrid,
+            virtual_record_id_to_result,
+            blob_store,
+            org_id,
+            virtual_to_record_map=virtual_to_record_map,
+            graph_provider=graph_provider,
+        )
+
+        record = virtual_record_id_to_result.get(vrid)
+        if not record:
+            logger.debug("Could not fetch record from blob for vrid %s", vrid)
+            return None
+
+        if not record.get("id"):
+            record["id"] = record_id
+        record["virtual_record_id"] = vrid
+        virtual_record_id_to_result[vrid] = record
+
+        logger.info(
+            "Fetched record %s (vrid=%s, name=%s) from blob storage",
+            record_id, vrid, record.get("record_name") or record.get("recordName") or ""
+        )
+
+        return record
+
+    except Exception as e:
+        logger.warning("Error fetching record %s: %s", record_id, str(e))
+        return None
 
 
 async def _resolve_thread_record_group(
