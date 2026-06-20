@@ -909,14 +909,17 @@ while (( ELAPSED < HEALTH_WAIT_SECS )); do
 import json, sys
 d = json.load(open('/tmp/pipeshub_hc.json'))
 s = d.get('services', {}) or {}
+# embedding is intentionally excluded: on first run it downloads its model
+# and may remain 'unhealthy' for several minutes; it is not required for
+# the core application to be usable.
 required = ('query', 'connector', 'indexing', 'docling')
-ok = all(s.get(k) == 'healthy' for k in required) and s.get('embedding') in ('healthy', 'starting')
+ok = all(s.get(k) == 'healthy' for k in required)
 sys.exit(0 if ok else 1)
 " 2>/dev/null; then
     HEALTHY=true
     break
   fi
-  printf "\r  Waiting... %ds elapsed" "$ELAPSED"
+  printf "  Waiting... %ds elapsed\n" "$ELAPSED"
   sleep "$INTERVAL"
   ELAPSED=$(( ELAPSED + INTERVAL ))
 done
