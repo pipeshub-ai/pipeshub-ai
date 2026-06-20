@@ -950,6 +950,7 @@ class TestProcessHtmlDocument:
         gp.get_document.return_value = _base_record_dict()
 
         mock_html_parser = MagicMock()
+        mock_html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         mock_html_parser.replace_relative_image_urls = MagicMock(return_value="<p>Test</p>")
         mock_html_parser.extract_and_replace_images = MagicMock(
             return_value=("<p>Test</p>", [])
@@ -1836,6 +1837,7 @@ class TestProcessHtmlDocumentExtended:
         gp.get_document.return_value = _base_record_dict()
 
         mock_html_parser = MagicMock()
+        mock_html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         mock_html_parser.replace_relative_image_urls.return_value = "<html>clean</html>"
         mock_html_parser.extract_and_replace_images = MagicMock(
             return_value=("<html>clean</html>", [])
@@ -1862,6 +1864,7 @@ class TestProcessHtmlDocumentExtended:
         gp.get_document.return_value = None
 
         mock_html_parser = MagicMock()
+        mock_html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         mock_html_parser.replace_relative_image_urls.return_value = "<html>test</html>"
         mock_html_parser.extract_and_replace_images = MagicMock(
             return_value=("<html>test</html>", [])

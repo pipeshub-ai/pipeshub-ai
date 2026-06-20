@@ -868,6 +868,7 @@ class TestProcessHtmlInputHandling:
         )
 
         html_parser = MagicMock()
+        html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
         html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
         html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
@@ -895,6 +896,7 @@ class TestProcessHtmlInputHandling:
         )
 
         html_parser = MagicMock()
+        html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
         html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
         html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))

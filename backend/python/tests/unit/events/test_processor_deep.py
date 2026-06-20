@@ -79,6 +79,7 @@ class TestProcessHtmlDocument:
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="test.html"))
 
         html_parser = MagicMock()
+        html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
         html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
         html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
@@ -103,6 +104,7 @@ class TestProcessHtmlDocument:
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="test.html"))
 
         html_parser = MagicMock()
+        html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
         html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
         html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
@@ -123,6 +125,7 @@ class TestProcessHtmlDocument:
         proc = _make_processor()
 
         html_parser = MagicMock()
+        html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
         html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
         html_parser.parse = AsyncMock(side_effect=RuntimeError("parse failure"))
@@ -2105,6 +2108,7 @@ class TestProcessHtmlDocumentAdditional:
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="test.html"))
 
         html_parser = MagicMock()
+        html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x.replace("relative", "absolute"))
         html_parser.extract_and_replace_images = MagicMock(
             side_effect=lambda x: (x.replace("relative", "absolute"), [])
@@ -2309,6 +2313,7 @@ class TestEventTypeForwarding:
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="test.html"))
 
         html_parser = MagicMock()
+        html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
         html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
         html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
