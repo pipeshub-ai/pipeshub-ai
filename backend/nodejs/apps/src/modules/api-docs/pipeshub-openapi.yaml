@@ -20209,7 +20209,7 @@ paths:
 
         **Supported File Types**
 
-        Documents (PDF, DOCX, DOC, XLS, XLSX, PPT, PPTX, TXT, CSV, MD), Images (PNG, JPG, GIF, SVG, WebP, BMP, HEIC), Web (HTML, HTM), and Google Workspace formats.
+        Documents (PDF, DOCX, DOC, XLS, XLSX, PPT, PPTX, TXT, CSV, MD), Images (PNG, JPG, JPEG, SVG, WebP), Web (HTML, HTM), and Google Workspace formats.
 
         **File Metadata**
 
