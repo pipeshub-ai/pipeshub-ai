@@ -399,14 +399,23 @@ class TestDetails:
 
 
 class TestImages:
-    def test_image_block(self, converter: HtmlToBlocksConverter) -> None:
+    def test_image_block_without_caption_map_skipped(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
         container = converter.convert(
             '<p>Text <img src="/pic.png" alt="diagram"></p>',
             base_url="https://example.com",
         )
         images = [block for block in container.blocks if block.type == BlockType.IMAGE]
+        assert len(images) == 0
+
+    def test_image_block_inline_data_uri(self, converter: HtmlToBlocksConverter) -> None:
+        container = converter.convert(
+            '<img src="data:image/png;base64,abc" alt="diagram">',
+        )
+        images = [block for block in container.blocks if block.type == BlockType.IMAGE]
         assert len(images) == 1
-        assert images[0].data == {"uri": "https://example.com/pic.png"}
+        assert images[0].data == {"uri": "data:image/png;base64,abc"}
         assert images[0].format == DataFormat.BASE64
 
     def test_caption_map(self, converter: HtmlToBlocksConverter) -> None:

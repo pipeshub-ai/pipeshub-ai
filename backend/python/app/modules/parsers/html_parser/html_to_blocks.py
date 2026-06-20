@@ -4,6 +4,12 @@ Block / group mapping (mirrors markdown_to_blocks.MarkdownToBlocksConverter):
 
     h1-h6            → Block(TEXT, HEADING, TXT|MARKDOWN)
                          (skipped when sr-only / aria-hidden)
+                         When followed by a paragraph-like sibling (p, address,
+                         dt, dd, figcaption, shallow div) the heading is merged
+                         into the paragraph block as a markdown heading prefix
+                         (e.g. "## Title\nParagraph text").
+                         NOT merged when followed by table, list, quote, code,
+                         or other group-producing elements.
 
     p / address /
     dt / dd /
@@ -34,8 +40,8 @@ Block / group mapping (mirrors markdown_to_blocks.MarkdownToBlocksConverter):
     details          → <summary> → Block(TEXT, HEADING); other children processed normally
 
     hr               → Block(TEXT, DIVIDER, TXT)  data="---"
-    img              → Block(IMAGE)  (relative src resolved via base_url;
-                         caption_map alt → base64 uri)
+    img              → Block(IMAGE)  (uri from caption_map alt → base64, or inline
+                         data:image src; HTTP src alone does not emit a block)
 
     div / section /… → recurse into children, or emit Block(TEXT, PARAGRAPH) when
                        the node has text but no block-level descendants
@@ -105,6 +111,8 @@ _CELL_SEP = " | "
 _LEVEL_SEP = "\n"
 
 _MAX_DOM_PROBE_DEPTH = 64
+
+_PARAGRAPH_LIKE_TAGS = frozenset({"p", "address", "dt", "dd", "figcaption"})
 
 # ---------------------------------------------------------------------------
 # Internal data models
@@ -246,6 +254,19 @@ def _is_shallow_text_container(node: LexborNode) -> bool:
     being silently skipped during container recursion.
     """
     return not _has_block_descendant(node) and bool(_node_text(node))
+
+
+def _is_paragraph_like(tag: str | None, node: LexborNode) -> bool:
+    """True when the node would produce a standalone paragraph block.
+
+    Used by heading-merge lookahead: headings are only merged into
+    paragraph-like siblings, never into tables, lists, quotes, or code.
+    """
+    if tag in _PARAGRAPH_LIKE_TAGS:
+        return True
+    if tag in _CONTAINER_TAGS and _is_shallow_text_container(node):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1000,9 +1021,92 @@ class _DomWalker:
         return BlocksContainer(blocks=self.blocks, block_groups=self.block_groups)
 
     def _walk_children(self, parent: LexborNode) -> None:
-        """Dispatch each direct child of ``parent`` through ``_process_node``."""
-        for child in _direct_children(parent):
-            self._process_node(child)
+        """Dispatch each direct child of ``parent`` through ``_process_node``.
+
+        Performs lookahead when a heading is encountered: if the next element
+        sibling is paragraph-like, the heading text is merged into the
+        paragraph block as a markdown heading prefix instead of emitting a
+        separate heading block.
+        """
+        children = list(_direct_children(parent))
+        i = 0
+        while i < len(children):
+            node = children[i]
+            tag = _tag_name(node)
+
+            if tag in _HEADING_TAGS and not _is_hidden(node):
+                next_node, next_idx = self._find_next_element_sibling(children, i + 1)
+                next_tag = _tag_name(next_node) if next_node is not None else None
+                if next_node is not None and _is_paragraph_like(next_tag, next_node):
+                    self._emit_heading_with_content(node, next_node, tag)
+                    i = next_idx + 1
+                    continue
+
+            self._process_node(node)
+            i += 1
+
+    @staticmethod
+    def _find_next_element_sibling(
+        children: list[LexborNode],
+        start: int,
+    ) -> tuple[LexborNode | None, int]:
+        """Return the next element sibling after ``start``, skipping text nodes and skip tags.
+
+        Text nodes between block elements are whitespace in practice and are
+        already dropped by ``_process_node``, so they are safely skipped here.
+        Returns ``(None, -1)`` when no element sibling remains.
+        """
+        for idx in range(start, len(children)):
+            child = children[idx]
+            tag = _tag_name(child)
+            if tag is None or tag in _SKIP_TAGS:
+                continue
+            return child, idx
+        return None, -1
+
+    def _emit_heading_with_content(
+        self,
+        heading_node: LexborNode,
+        content_node: LexborNode,
+        heading_tag: str,
+    ) -> None:
+        """Merge a heading into the following paragraph-like block.
+
+        The heading text is prepended as a markdown heading prefix
+        (``## Title\\nParagraph text``) so the content block carries its
+        section context. Heading-level images are emitted separately before
+        the merged block; content-level images after.
+        """
+        level = int(heading_tag[1])
+
+        heading_text, heading_images, _ = _split_element_content(
+            heading_node, base_url=self.base_url,
+        )
+        for img in heading_images:
+            self._emit_image(img)
+
+        if not heading_text:
+            self._emit_text_block(content_node, BlockSubType.PARAGRAPH)
+            return
+
+        md_heading = "#" * level + " " + heading_text
+
+        content_text, content_images, _ = _split_element_content(
+            content_node, base_url=self.base_url,
+        )
+
+        merged = md_heading + "\n" + content_text if content_text else md_heading
+
+        self._add_block(Block(
+            id=str(uuid4()),
+            type=BlockType.TEXT,
+            sub_type=BlockSubType.PARAGRAPH,
+            format=DataFormat.MARKDOWN,
+            data=merged,
+            parent_index=self._current_parent_index(),
+        ))
+        for img in content_images:
+            self._emit_image(img)
 
     def _process_node(self, node: LexborNode) -> None:  # noqa: C901
         """Route one DOM node to the correct block emitter based on its HTML tag.
@@ -1070,16 +1174,8 @@ class _DomWalker:
             return
 
         if tag == "hr":
-            self._add_block(Block(
-                id=str(uuid4()),
-                index=0,
-                type=BlockType.TEXT,
-                sub_type=BlockSubType.DIVIDER,
-                format=DataFormat.TXT,
-                data="---",
-                parent_index=self._current_parent_index(),
-            ))
             return
+
         if tag == "img":
             self._emit_image(node)
             return
@@ -1202,7 +1298,6 @@ class _DomWalker:
             return
         self._add_block(Block(
             id=str(uuid4()),
-            index=0,
             type=BlockType.TEXT,
             sub_type=BlockSubType.PARAGRAPH,
             format=DataFormat.MARKDOWN,
@@ -1221,7 +1316,6 @@ class _DomWalker:
             return
         self._add_block(Block(
             id=str(uuid4()),
-            index=0,
             type=BlockType.TEXT,
             sub_type=BlockSubType.LIST_ITEM,
             format=DataFormat.MARKDOWN,
@@ -1242,7 +1336,6 @@ class _DomWalker:
         self._open_group(GroupType.CODE)
         self._add_block(Block(
             id=str(uuid4()),
-            index=0,
             type=BlockType.TEXT,
             sub_type=BlockSubType.CODE,
             format=DataFormat.CODE,
@@ -1265,7 +1358,6 @@ class _DomWalker:
         if html:
             self._add_block(Block(
                 id=str(uuid4()),
-                index=0,
                 type=BlockType.TEXT,
                 sub_type=BlockSubType.QUOTE,
                 format=DataFormat.MARKDOWN,
@@ -1301,7 +1393,6 @@ class _DomWalker:
         if text:
             self._add_block(Block(
                 id=str(uuid4()),
-                index=0,
                 type=BlockType.TEXT,
                 sub_type=sub_type,
                 format=data_format,
@@ -1325,7 +1416,6 @@ class _DomWalker:
             return
         self._add_block(Block(
             id=str(uuid4()),
-            index=0,
             type=BlockType.TEXT,
             sub_type=BlockSubType.PARAGRAPH,
             format=DataFormat.MARKDOWN,
@@ -1336,38 +1426,36 @@ class _DomWalker:
     # ------------------------------------------------------------------ image
 
     def _emit_image(self, node: LexborNode) -> None:
-        """Emit an IMAGE block with resolved src URL and optional caption-map URI.
+        """Emit an IMAGE block when a base64 ``data:image`` URI is available.
 
-        Prefers ``caption_map`` lookup by alt text (base64 inlined assets) over
-        the resolved ``src`` URL. Falls back to the first ``srcset`` candidate
-        when ``src`` is absent.
+        Prefers ``caption_map`` lookup by alt text (pre-fetched base64 assets).
+        Otherwise accepts an inline ``src``/``srcset`` value that already starts
+        with ``data:image``. HTTP(S) URLs are not stored on the block.
         """
         attrs = node.attributes or {}
         alt_text = (attrs.get("alt") or "").strip()
-        src = (attrs.get("src") or "").strip()
-        if not src and attrs.get("srcset"):
-            srcset_parts = attrs["srcset"].split(",")
-            if srcset_parts:
-                first_part = srcset_parts[0].split()
-                if first_part:
-                    src = first_part[0].strip()
-        if src and self.base_url:
-            src = urljoin(self.base_url, src)
 
         uri: str | None = None
         if alt_text and alt_text in self.caption_map:
             caption_uri = (self.caption_map[alt_text] or "").strip()
-            if caption_uri:
+            if caption_uri.startswith("data:image"):
                 uri = caption_uri
-        elif src:
-            uri = src
+        if uri is None:
+            src = (attrs.get("src") or "").strip()
+            if not src and attrs.get("srcset"):
+                srcset_parts = attrs["srcset"].split(",")
+                if srcset_parts:
+                    first_part = srcset_parts[0].split()
+                    if first_part:
+                        src = first_part[0].strip()
+            if src.startswith("data:image"):
+                uri = src
 
         if not uri:
             return
 
         self._add_block(Block(
             id=str(uuid4()),
-            index=0,
             type=BlockType.IMAGE,
             format=DataFormat.BASE64,
             data={"uri": uri},
