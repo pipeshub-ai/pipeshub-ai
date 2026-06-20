@@ -39,7 +39,7 @@ Block / group mapping (mirrors markdown_to_blocks.MarkdownToBlocksConverter):
 
     details          → <summary> → Block(TEXT, HEADING); other children processed normally
 
-    hr               → Block(TEXT, DIVIDER, TXT)  data="---"
+    hr               → skipped (no block emitted)
     img              → Block(IMAGE)  (uri from caption_map alt → base64, or inline
                          data:image src; HTTP src alone does not emit a block)
 

@@ -444,9 +444,10 @@ class TestBlockquote:
 
 
 class TestDivider:
-    def test_hr_produces_divider(self, converter: HtmlToBlocksConverter) -> None:
+    def test_hr_produces_no_block(self, converter: HtmlToBlocksConverter) -> None:
         container = converter.convert("<hr>")
-        assert container.blocks[0].sub_type == BlockSubType.DIVIDER
+        assert container.blocks == []
+        assert container.block_groups == []
 
 
 class TestComplexHtmlFixture:
