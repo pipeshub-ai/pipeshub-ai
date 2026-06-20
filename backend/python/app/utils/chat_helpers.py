@@ -1907,7 +1907,7 @@ def context_includes_jira_tickets(
     )
 
 
-def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, has_sql_connector: bool=False, image_blocks: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, has_sql_connector: bool=False, image_blocks: list[dict[str, Any]] | None = None,compact_mode:bool=False) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
     content = []
@@ -1982,7 +1982,7 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
         return content, ref_mapper
     else:
         has_jira = context_includes_jira_tickets(flattened_results, virtual_record_id_to_result)
-        fetch_block = render_fetch_full_record_tool_block(has_jira)
+        fetch_block = render_fetch_full_record_tool_block(has_jira,is_small_model=compact_mode)
         template = Template(qna_prompt_instructions_1)
         rendered_form = template.render(
                     user_data=user_data,
@@ -2029,7 +2029,6 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
                     message_content_array.extend(record_content)
 
         content.extend(message_content_array)
-        # Render instructions_2 with mode parameter
         template_instructions_2 = Template(qna_prompt_instructions_2)
         rendered_instructions_2 = template_instructions_2.render(mode=mode)
 

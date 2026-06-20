@@ -89,7 +89,24 @@ block_group_prompt = """* Block Group Index: {{block_group_index}}
 """
 
 qna_fetch_full_record_tool_block = """
-  <tool>
+    <tool>
+{% if is_small_model %}
+<IMPORTANT_TOOL_INSTRUCTION>
+**YOUR #1 PRIORITY BEFORE ANSWERING: Call fetch_full_record.**
+
+You MUST call fetch_full_record FIRST unless the answer is a simple, obvious fact fully contained in the provided blocks.
+
+**Default action = call the tool. Skipping the tool = only when 100% certain.**
+
+How to call:
+- Find the Record ID in each `<record>` section (the `Record ID :` line).
+- Call: fetch_full_record(record_ids=["id1", "id2", ...], reason="...")
+- Pass ALL record IDs in ONE call. Use the EXACT IDs from the context.
+- After receiving the full records, answer the query completely.
+
+**If you are about to answer without calling fetch_full_record, STOP and ask yourself: "Do I have EVERY detail needed?" If there is ANY doubt, call the tool.**
+</IMPORTANT_TOOL_INSTRUCTION>
+{% else %}
   **YOU MUST USE the "fetch_full_record" tool to retrieve full record content when the provided blocks are not enough to fully answer the query.**
 
   This is a critical tool. Do NOT skip it when you need more information. Calling this tool is ALWAYS better than giving an incomplete or uncertain answer.
@@ -102,9 +119,6 @@ qna_fetch_full_record_tool_block = """
   3. You are not confident you can give a thorough answer from the blocks alone
   4. The user asks about a specific document and you only have a few blocks from it
   5. **DEFAULT BEHAVIOR: When in doubt, CALL THE TOOL. An incomplete answer is worse than making a tool call.**
-{% if has_jira_tickets_in_context %}
-  6. For **Jira tickets** in context, call fetch_full_record when the query needs live fields (e.g. story points, sprint, current status) that may not be current in record metadata.
-{% endif %}
 
   **How to call fetch_full_record:**
   - The Record ID for each record is shown in the `Record ID :` line at the top of each `<record>` section in the context above.
@@ -115,6 +129,7 @@ qna_fetch_full_record_tool_block = """
   - The tool returns the complete content of all requested records
 
   **DO NOT answer with partial information when you could call fetch_full_record to get the full picture.**
+{% endif %}
   </tool>
 """
 
@@ -331,8 +346,6 @@ Answer the query clearly and comprehensively using relevant context.
 - Place citations immediately after the claim (not at paragraph end)
 - If you are unsure which block a fact came from, omit the citation rather than guessing
 - Limit to the most relevant citations. Do NOT cite every sentence.
-
-
 
 ### Tool Usage Strategy (CRITICAL — READ CAREFULLY)
 - **You MUST call fetch_full_record** when the provided blocks are insufficient, or when the query asks for full/comprehensive details

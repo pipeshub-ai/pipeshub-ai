@@ -29,7 +29,6 @@ from app.models.blocks import Block, BlockType, BlocksContainer, CitationMetadat
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.qna.prompt_templates import (
     qna_prompt_with_retrieval_tool,
-    qna_prompt_instructions_2,
     qna_prompt_with_retrieval_tool_second_part,
     web_search_system_prompt,
     web_search_user_prompt,
@@ -66,6 +65,40 @@ from app.utils.web_search_tool import create_web_search_tool
 DEFAULT_CONTEXT_LENGTH = 128000
 logger = logging.getLogger(__name__)
 OCR_IMAGE_PAGE_CAP = 30
+
+# Substrings that identify models benefiting from the compact, procedural prompt
+# variant. Three categories:
+#   1. Known small/fast model families by name
+#   2. Parameter-count suffixes (e.g. "7b" in "llama3-7b-instruct")
+#   3. Quantization indicators — GGUF/GGML formats and common quantization
+#      methods (q2..q8 with trailing underscore to avoid false positives like
+#      "seq4"; awq / gptq / gguf / ggml are always local/quantised deployments).
+_SMALL_MODEL_NAME_MARKERS = frozenset({
+    # Small / fast model families
+    "mini", "haiku", "flash", "nano",
+    "phi", "tinyllama", "gemma", "smollm",
+    # Parameter-count indicators
+    "0.5b", "1b", "1.5b", "3b", "7b", "8b", "13b", "9b"
+    # Quantization file formats
+    "gguf", "ggml",
+    # GGUF quantization levels (trailing "_" prevents matching unrelated tokens)
+    "q2_", "q3_", "q4_", "q5_", "q6_", "q8_",
+    # Weight-quantization methods
+    "int4", "awq", "gptq",
+})
+
+
+def _is_small_model(model_config: dict[str, Any]) -> bool:
+    """Return True when the selected model is likely too small for verbose conditional prompts."""
+    if (model_config.get("provider") or "").lower() == "ollama":
+        return True
+    model_string = (model_config.get("configuration") or {}).get("model") or ""
+    model_name_lower = model_string.lower()
+    if any(marker in model_name_lower for marker in _SMALL_MODEL_NAME_MARKERS):
+        return True
+    context_length = model_config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
+    # Very short context windows also correlate with lightweight models.
+    return 0 < context_length < 17000
 
 router = APIRouter()
 
@@ -276,19 +309,29 @@ async def _build_llm_user_context_string(
     user_info, org_info = await get_cached_user_info(graph_provider, user_id, org_id)
     user_info = user_info or {}
     org_name = (org_info or {}).get("name")
+
+    name = user_info.get("fullName") or "a user"
+    identity_extras: list[str] = []
+    if user_info.get("designation"):
+        identity_extras.append(user_info["designation"])
+    email = user_info.get("userEmail") or user_info.get("email")
+    if email:
+        identity_extras.append(email)
+    identity = f"{name} ({', '.join(identity_extras)})" if identity_extras else name
+
+    suffix = (
+        "Please provide accurate and relevant information based on the available context."
+    )
     if org_name:
         return (
             "I am the user of the organization. "
-            f"My name is {user_info.get('fullName', 'a user')} "
-            f"({user_info.get('designation', '')}) "
-            f"from {org_name}. "
-            "Please provide accurate and relevant information based on the available context."
+            f"My name is {identity} from {org_name}. "
+            f"{suffix}"
         )
     return (
         "I am the user. "
-        f"My name is {user_info.get('fullName', 'a user')} "
-        f"({user_info.get('designation', '')}) "
-        "Please provide accurate and relevant information based on the available context."
+        f"My name is {identity}. "
+        f"{suffix}"
     )
 
 
@@ -490,6 +533,7 @@ async def _build_chat_llm_messages(
     has_sql_connector: bool=False,
     blob_store: Any = None,
     org_id: str = "",
+    compact_mode: bool = False,
 ) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """System prompt (with optional custom override), prior turns, then user message with retrieval context."""
     system_prompt = _build_system_prompt(
@@ -528,6 +572,7 @@ async def _build_chat_llm_messages(
         is_multimodal_llm=is_multimodal_llm, from_tool=False, has_sql_connector=has_sql_connector,
         image_blocks=image_blocks or None,
         ref_mapper=ref_mapper,
+        compact_mode=compact_mode,
     )
 
     messages.append({"role": "user", "content": content})
@@ -795,6 +840,7 @@ async def _generate_internal_search_stream(
             )
             is_multimodal_llm = config.get("isMultimodal")
             context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
+            is_small_model = _is_small_model(config)
 
             if llm is None:
                 raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
@@ -930,6 +976,7 @@ async def _generate_internal_search_stream(
                     has_sql_connector=has_sql_connector,
                     blob_store=blob_store,
                     org_id=org_id,
+                    compact_mode=is_small_model,
                 )
 
                 fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
@@ -983,6 +1030,7 @@ async def _generate_internal_search_stream(
                 conversation_id=query_info.conversationId,
                 defer_tool_until_called_name="search_internal_knowledge" if deferred_tools else None,
                 deferred_tool=deferred_tools if deferred_tools else None,
+                is_small_model=is_small_model,
             ):
                 yield create_sse_event(stream_event["event"], stream_event["data"])
         except Exception as stream_error:

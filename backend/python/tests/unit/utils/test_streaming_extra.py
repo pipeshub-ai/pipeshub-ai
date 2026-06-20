@@ -5,7 +5,7 @@ import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import ValidationError
 
 from app.utils.streaming import (
@@ -1682,7 +1682,7 @@ class TestExecuteToolCallsWebAndDeferred:
             assert any(e.get("event") == "tool_success" for e in events)
 
     @pytest.mark.asyncio
-    async def test_content_handler_appends_tool_instructions_to_human_message(self):
+    async def test_content_handler_appends_tool_instructions_to_last_tool_message(self):
         from app.utils.streaming import execute_tool_calls
 
         mock_tool = MagicMock()
@@ -1740,11 +1740,18 @@ class TestExecuteToolCallsWebAndDeferred:
         ):
             pass
 
-        hm_contents = [
-            m.content for m in messages if isinstance(m, HumanMessage) and isinstance(m.content, str)
-        ]
-        assert any("<tools>" in c for c in hm_contents)
-        assert any("execute_sql_query" in c for c in hm_contents)
+        tool_contents = [m.content for m in messages if isinstance(m, ToolMessage)]
+        assert tool_contents, "expected at least one ToolMessage"
+        last_tool_content = tool_contents[-1]
+        if isinstance(last_tool_content, list):
+            tool_text = " ".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in last_tool_content
+            )
+        else:
+            tool_text = str(last_tool_content)
+        assert "<tools>" in tool_text
+        assert "execute_sql_query" in tool_text
 
 
 # ---------------------------------------------------------------------------

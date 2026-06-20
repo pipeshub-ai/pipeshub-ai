@@ -131,10 +131,11 @@ class ContentHandler(ToolResultHandler):
     def build_tool_instructions(
         has_sql_connector: bool = False,
         has_jira_tickets_in_context: bool = False,
+        is_small_model:bool = False
     ) -> str:
         from app.modules.qna.prompt_templates import render_fetch_full_record_tool_block
 
-        fetch_block = render_fetch_full_record_tool_block(has_jira_tickets_in_context)
+        fetch_block = render_fetch_full_record_tool_block(has_jira_tickets_in_context,is_small_model=is_small_model)
         instructions = f"""<tools>
 {fetch_block}
 """
