@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Requires: bash 4+, Docker Engine with Compose v2.20+
+# Requires: bash 3.2+, Docker Engine with Compose v2.20+
 # ==============================================================================
 # PipesHub AI — Interactive Installer  v1.0.0
 # ==============================================================================
@@ -32,6 +32,21 @@
 set -euo pipefail
 
 INSTALLER_VERSION="1.0.0"
+
+# ── Transparent sudo re-exec (Linux: Docker socket not accessible to current user) ──
+# If the Docker socket file exists but docker info fails, the user is almost
+# certainly not in the 'docker' group. Re-exec with sudo so the rest of the
+# installer works without a cryptic permission error.
+# This runs before arg parsing so "$@" is still the full original argument list.
+if [[ $EUID -ne 0 ]] && \
+   command -v docker >/dev/null 2>&1 && \
+   [[ -S /var/run/docker.sock ]] && \
+   ! docker info >/dev/null 2>&1; then
+  if command -v sudo >/dev/null 2>&1; then
+    exec sudo "${BASH_SOURCE[0]}" "$@"
+  fi
+  # sudo not available — fall through; the pre-flight check will give a clear error
+fi
 
 # ── colour helpers (degrade gracefully when not in a colour terminal) ─────────
 if [ -t 1 ] && command -v tput >/dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
@@ -124,7 +139,10 @@ done
 # database auth strings (no @, $, :, #, etc.).
 gen_secret() {
   local length="${1:-32}"
-  LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom 2>/dev/null | head -c "$((length * 2))"
+  # Run in a subshell with pipefail disabled: when head(1) exits after reading
+  # enough bytes, tr gets SIGPIPE (exit 141). pipefail would propagate that
+  # non-zero status and trip set -e in the caller.
+  ( set +o pipefail; LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom 2>/dev/null | head -c "$((length * 2))" )
 }
 
 # Check if a Docker volume (by exact name) exists.
@@ -132,9 +150,20 @@ volume_exists() {
   docker volume ls --format '{{.Name}}' 2>/dev/null | grep -qx "$1"
 }
 
-# Check if a TCP port is bound on localhost using bash /dev/tcp — no ss/netstat/lsof required.
+# Check if a TCP port is bound on localhost.
+# /dev/tcp is a bash pseudo-device that requires --enable-net-redirections at
+# compile time.  macOS system bash (3.2) and some Git Bash builds omit it, so
+# we fall back to nc(1), which ships on macOS and every major Linux distro.
 port_in_use() {
-  ( : <>/dev/tcp/127.0.0.1/"$1" ) 2>/dev/null
+  local port="$1"
+  # Primary: bash /dev/tcp (GNU/Linux bash, Homebrew bash on macOS)
+  ( : <>/dev/tcp/127.0.0.1/"$port" ) 2>/dev/null && return 0
+  # Fallback: nc -z (macOS system bash, Git Bash, Alpine, BusyBox)
+  if command -v nc >/dev/null 2>&1; then
+    nc -z 127.0.0.1 "$port" 2>/dev/null && return 0
+  fi
+  # Cannot determine — assume free; Docker will surface a clear bind error if not.
+  return 1
 }
 
 # Return 0 if $1 >= $2 as semver. Uses sort -V (GNU coreutils / macOS Ventura+).
@@ -262,7 +291,19 @@ success "docker-compose.yml found"
 
 # Docker daemon reachable
 if ! docker info >/dev/null 2>&1; then
-  die "Cannot connect to the Docker daemon. Is Docker running? On Linux try: sudo systemctl start docker"
+  if [[ -S /var/run/docker.sock ]]; then
+    # Socket exists but inaccessible — user not in docker group (and sudo re-exec didn't help)
+    die "Cannot access the Docker socket. Options:
+  1. Add your user to the docker group (requires logout/login):
+       sudo usermod -aG docker \$USER && newgrp docker
+  2. Run this installer as root:
+       sudo $0"
+  else
+    die "Docker daemon is not running.
+  Linux:   sudo systemctl start docker
+  macOS:   start Docker Desktop
+  Windows: start Docker Desktop (or use WSL)"
+  fi
 fi
 success "Docker daemon is running"
 
@@ -322,11 +363,15 @@ if ! $FLAG_UPGRADE; then
     success "System RAM: ${TOTAL_RAM_MB} MB"
   fi
 
-  # Docker-allocated RAM (relevant for Docker Desktop which runs in a VM)
-  _docker_mem="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
-  _docker_mem_mb=$(( _docker_mem / 1024 / 1024 ))
-  if (( _docker_mem_mb > 0 && _docker_mem_mb < 16384 )); then
-    warn "Docker has only ${_docker_mem_mb} MB allocated. Increase Docker Desktop memory to at least 16 GB in Settings > Resources."
+  # Docker-allocated RAM check — only relevant on macOS where Docker Desktop runs
+  # a Linux VM. On native Linux, docker info reports host RAM (already checked above).
+  # Docker Desktop doesn't need 16 GB; 8 GB in the VM is sufficient for PipesHub.
+  if $IS_MACOS; then
+    _docker_mem="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
+    _docker_mem_mb=$(( _docker_mem / 1024 / 1024 ))
+    if (( _docker_mem_mb > 0 && _docker_mem_mb < 8192 )); then
+      warn "Docker Desktop has only ${_docker_mem_mb} MB allocated to its VM. Recommend at least 8 GB in Docker Desktop → Settings → Resources → Memory."
+    fi
   fi
 
   # CPU cores — minimum 4 required
@@ -347,7 +392,7 @@ if ! $FLAG_UPGRADE; then
   DOCKER_DATA_ROOT="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo "")"
   if [[ -n "$DOCKER_DATA_ROOT" ]]; then
     FREE_KB=0
-    { read -r _; read -r _ _ _ FREE_KB _ || true; } < <(df -Pk "$DOCKER_DATA_ROOT" 2>/dev/null)
+    { read -r _ || true; read -r _ _ _ FREE_KB _ || true; } < <(df -Pk "$DOCKER_DATA_ROOT" 2>/dev/null) || true
     FREE_GB=$(( FREE_KB / 1024 / 1024 ))
     if (( FREE_GB < 20 )); then
       warn "Only ${FREE_GB} GB free on ${DOCKER_DATA_ROOT}. Recommend at least 20 GB."
@@ -415,8 +460,8 @@ if ! ${SKIP_WIZARD:-false}; then
   printf "  ${GREEN}[1] Slim${RESET}  — Smaller image (model downloads on first use), fewer containers.\n"
   printf "         Broker: Redis Streams  |  KV store: Redis  |  Graph: Neo4j\n"
   printf "         Recommended for: laptops, low-resource servers, quick evaluations.\n\n"
-  printf "  [2] Full  — Larger image with the embedding model bundled; uses Kafka + etcd.\n"
-  printf "         Broker: Kafka  |  KV store: etcd  |  Graph: ArangoDB\n"
+  printf "  [2] Full  — Larger image with the embedding model bundled; uses Kafka.\n"
+  printf "         Broker: Kafka  |  KV store: Redis  |  Graph: Neo4j\n"
   printf "         Recommended for: production servers, air-gapped deployments.\n\n"
 
   if [[ -n "${PIPESHUB_DEPLOY_TYPE:-}" ]]; then
@@ -427,7 +472,7 @@ if ! ${SKIP_WIZARD:-false}; then
   fi
 
   case "$DEPLOY_TYPE" in
-    full) DEFAULT_IMAGE_TAG="latest"; DEFAULT_GRAPH="arango"; DEFAULT_BROKER="kafka"; DEFAULT_KV="etcd" ;;
+    full) DEFAULT_IMAGE_TAG="latest"; DEFAULT_GRAPH="neo4j";  DEFAULT_BROKER="kafka"; DEFAULT_KV="redis" ;;
     *)    DEPLOY_TYPE="slim"
           DEFAULT_IMAGE_TAG="slim";   DEFAULT_GRAPH="neo4j";  DEFAULT_BROKER="redis"; DEFAULT_KV="redis" ;;
   esac
