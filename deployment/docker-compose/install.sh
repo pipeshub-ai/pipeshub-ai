@@ -70,6 +70,7 @@ die()     { error "$*"; exit 1; }
 
 # ── constants ─────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR" || exit 1
 ENV_FILE="${SCRIPT_DIR}/.env"
 COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
 PROJECT_NAME="pipeshub-ai"
@@ -145,24 +146,45 @@ gen_secret() {
   ( set +o pipefail; LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom 2>/dev/null | head -c "$((length * 2))" )
 }
 
+# Retrieve an existing value from .env (if the file exists), falling back to
+# the supplied default when the key is absent or empty.  Used during
+# --reconfigure to preserve secrets that were already used to initialise
+# database volumes — regenerating them would break authentication.
+get_existing_val() {
+  local key="$1" default="$2" val=""
+  if [[ -f "$ENV_FILE" ]]; then
+    val="$(grep -E "^${key}=" "$ENV_FILE" | cut -d'=' -f2-)"
+  fi
+  printf '%s' "${val:-$default}"
+}
+
 # Check if a Docker volume (by exact name) exists.
 volume_exists() {
   docker volume ls --format '{{.Name}}' 2>/dev/null | grep -qx "$1"
 }
 
 # Check if a TCP port is bound on localhost.
-# /dev/tcp is a bash pseudo-device that requires --enable-net-redirections at
-# compile time.  macOS system bash (3.2) and some Git Bash builds omit it, so
-# we fall back to nc(1), which ships on macOS and every major Linux distro.
+# Priority:
+#   1. ss (iproute2) — server-side listen check; present on all modern Linux,
+#      including hardened builds where /dev/tcp is compiled out.
+#   2. bash /dev/tcp — fast, zero-dependency; requires --enable-net-redirections
+#      (absent in macOS system bash 3.2 and some hardened Linux builds).
+#   3. nc -z — connection probe; ships on macOS and most Linux distros.
+# If none of the above can determine state, assume free; Docker will surface a
+# clear bind error if the port is actually taken.
 port_in_use() {
   local port="$1"
-  # Primary: bash /dev/tcp (GNU/Linux bash, Homebrew bash on macOS)
+  # ss: Linux (iproute2) — server-side listening check, most reliable
+  if command -v ss >/dev/null 2>&1; then
+    ss -tln 2>/dev/null | grep -q ":${port}\b" && return 0
+    return 1
+  fi
+  # bash /dev/tcp: GNU/Linux bash, Homebrew bash on macOS
   ( : <>/dev/tcp/127.0.0.1/"$port" ) 2>/dev/null && return 0
-  # Fallback: nc -z (macOS system bash, Git Bash, Alpine, BusyBox)
+  # nc -z: macOS system bash, Git Bash, Alpine, BusyBox
   if command -v nc >/dev/null 2>&1; then
     nc -z 127.0.0.1 "$port" 2>/dev/null && return 0
   fi
-  # Cannot determine — assume free; Docker will surface a clear bind error if not.
   return 1
 }
 
@@ -332,7 +354,12 @@ if $FLAG_UNINSTALL; then
     [[ "${_confirm:-N}" =~ ^[Yy]$ ]] || { info "Aborted — nothing was changed."; exit 0; }
   fi
   if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
-  export COMPOSE_PROFILES="${COMPOSE_PROFILES:-}"
+  # Enable ALL profiles so down -v includes every profile-gated service's
+  # volume (ArangoDB, Neo4j, etcd, Kafka/Zookeeper) regardless of which
+  # profile was active for this deployment.  Without this, volumes from a
+  # previously-used profile (e.g. arango_data after switching to neo4j) would
+  # be silently left behind.
+  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka"
   docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" down -v
   success "PipesHub stopped and all data volumes removed."
   exit 0
@@ -371,7 +398,13 @@ if ! $FLAG_UPGRADE; then
   fi
 
   if (( TOTAL_RAM_MB > 0 && TOTAL_RAM_MB < _RAM_MIN_MB )); then
-    die "Insufficient RAM: ${TOTAL_RAM_MB} MB detected. PipesHub requires at least ${_RAM_MIN_LABEL} of RAM."
+    warn "Low RAM: ${TOTAL_RAM_MB} MB detected. PipesHub recommends at least ${_RAM_MIN_LABEL}."
+    warn "The 'slim' deployment may still work on lower-memory machines, but performance may suffer."
+    if ! $FLAG_YES; then
+      printf "\n  ${BOLD}Proceed with installation anyway?${RESET} [y/N]: "
+      read -r _proceed
+      [[ "${_proceed:-N}" =~ ^[Yy]$ ]] || die "Installation aborted due to insufficient RAM."
+    fi
   elif (( TOTAL_RAM_MB >= _RAM_MIN_MB )); then
     success "System RAM: ${TOTAL_RAM_MB} MB"
   fi
@@ -670,19 +703,21 @@ if ! ${SKIP_WIZARD:-false}; then
   # ── 11. SECRET GENERATION ───────────────────────────────────────────────────
   header "Generating secrets"
 
-  SECRET_KEY="$(gen_secret 32)"
-  MONGO_USERNAME="admin"
-  MONGO_PASSWORD="$(gen_secret 16)"
-  REDIS_PASSWORD="$(gen_secret 16)"
-  QDRANT_API_KEY="$(gen_secret 20)"
+  # Preserve any secrets that already exist in .env so that --reconfigure does
+  # not rotate credentials for already-initialised database volumes.
+  SECRET_KEY="$(get_existing_val SECRET_KEY "$(gen_secret 32)")"
+  MONGO_USERNAME="$(get_existing_val MONGO_USERNAME "admin")"
+  MONGO_PASSWORD="$(get_existing_val MONGO_PASSWORD "$(gen_secret 16)")"
+  REDIS_PASSWORD="$(get_existing_val REDIS_PASSWORD "$(gen_secret 16)")"
+  QDRANT_API_KEY="$(get_existing_val QDRANT_API_KEY "$(gen_secret 20)")"
 
   if [[ "$DATA_STORE" == "arangodb" ]]; then
-    ARANGO_PASSWORD="$(gen_secret 16)"; NEO4J_PASSWORD=""
+    ARANGO_PASSWORD="$(get_existing_val ARANGO_PASSWORD "$(gen_secret 16)")"; NEO4J_PASSWORD=""
   else
-    NEO4J_PASSWORD="$(gen_secret 16)";  ARANGO_PASSWORD=""
+    NEO4J_PASSWORD="$(get_existing_val NEO4J_PASSWORD "$(gen_secret 16)")";  ARANGO_PASSWORD=""
   fi
 
-  success "Generated random secrets for all services (hex-only, safe for URIs and shell)."
+  success "Secrets ready (existing values preserved; new ones generated for any that were missing)."
 
   # ── 12. PUBLIC URL ──────────────────────────────────────────────────────────
   header "Public URL"
@@ -773,7 +808,7 @@ KV_STORE_TYPE=${KV_STORE}
 # ── Message broker ──────────────────────────────────────────────────────────
 # "redis" (Redis Streams, default) | "kafka" (Kafka + Zookeeper)
 MESSAGE_BROKER=${BROKER}
-REDIS_STREAMS_MAXLEN=10000
+REDIS_STREAMS_MAXLEN=500000
 
 # ── Redis ────────────────────────────────────────────────────────────────────
 REDIS_PASSWORD=${REDIS_PASSWORD}
