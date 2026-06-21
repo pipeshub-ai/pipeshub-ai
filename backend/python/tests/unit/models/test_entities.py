@@ -2785,6 +2785,54 @@ class TestCodeFileRecordFromArango:
         assert rec.connector_id == "conn-1"
 
 
+class TestDeserializeJsonField:
+    """Tests for _deserialize_json_field — the Neo4j ↔ Python round-trip helper."""
+
+    def test_none_returns_none(self) -> None:
+        from app.models.entities import _deserialize_json_field
+        assert _deserialize_json_field(None) is None
+
+    def test_list_returned_unchanged(self) -> None:
+        from app.models.entities import _deserialize_json_field
+        v = [{"name": "x", "line": 1, "caller": ""}]
+        assert _deserialize_json_field(v) is v
+
+    def test_empty_list_returned_unchanged(self) -> None:
+        from app.models.entities import _deserialize_json_field
+        assert _deserialize_json_field([]) == []
+
+    def test_json_string_parsed_to_list(self) -> None:
+        import json
+        from app.models.entities import _deserialize_json_field
+        payload = [{"name": "getLogger", "caller": "", "line": 24}]
+        assert _deserialize_json_field(json.dumps(payload)) == payload
+
+    def test_invalid_json_string_returned_as_is(self) -> None:
+        from app.models.entities import _deserialize_json_field
+        assert _deserialize_json_field("not-json{{{") == "not-json{{{"
+
+    def test_code_file_record_from_arango_deserializes_neo4j_calls_string(self) -> None:
+        """When Neo4j stores calls as a JSON string, from_arango_record must deserialize it."""
+        import json
+        payload = [{"name": "fn_b", "line": 5, "caller": "fn_a"}]
+        record_doc = {
+            "id": "rec-1",
+            "orgId": "org-1",
+            "recordName": "a.py",
+            "recordType": "CODE_FILE",
+            "externalRecordId": "src/a.py",
+            "origin": "CONNECTOR",
+            "connectorName": "GITLAB",
+            "connectorId": "conn-1",
+            "mimeType": "text/plain",
+            "createdAtTimestamp": 1,
+            "updatedAtTimestamp": 2,
+        }
+        code_doc = {"filePath": "src/a.py", "calls": json.dumps(payload)}
+        rec = CodeFileRecord.from_arango_record(code_doc, record_doc)
+        assert rec.calls == payload, "calls must be deserialized from JSON string"
+
+
 class TestRecordToLlmContextMimeTypeBranch:
     def test_skips_mime_type_line_when_empty(self):
         rec = Record(**_record_kwargs(mime_type=""))

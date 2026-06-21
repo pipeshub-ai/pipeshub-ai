@@ -174,6 +174,10 @@ class CodeMetadata(BaseModel):
     execution_context: Optional[str] = None
     is_executable: bool = False
     dependencies: Optional[list[str]] = None
+    # Extracted by CodeFileParser for contextual embedding and display
+    signature: Optional[str] = None       # First significant line (def/func/class declaration)
+    docstring: Optional[str] = None       # First docstring / JSDoc / doc-comment text
+    decorators: Optional[list[str]] = None  # Decorator names (Python @decorator, Java @Annotation)
 
 class MediaMetadata(BaseModel):
     """Metadata for media blocks (image, video, audio)"""
@@ -266,6 +270,7 @@ class GroupSubType(str, Enum):
     PR_FILE_CHANGE = "pr_file_change"
     SQL_TABLE = "sql_table" 
     SQL_VIEW = "sql_view"
+    CODE_CLASS = "code_class"
 
 class SemanticMetadata(BaseModel):
     entities: Optional[list[dict[str, Any]]] = None

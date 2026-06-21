@@ -428,6 +428,19 @@ class EventProcessor:
             if virtual_record_id is None:
                 virtual_record_id = str(uuid4())
 
+            if record_type == "CODE_FILE":
+                self.logger.info(f"🚀 Processing code file: {record_name}")
+                async for event in self.processor.process_code_file(
+                    recordName=record_name,
+                    recordId=record_id,
+                    file_content=file_content,
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+                return
+
             if mime_type == MimeTypes.GOOGLE_SLIDES.value:
                 self.logger.info("🚀 Processing Google Slides")
                 async for event in self.processor.process_pptx_document(
@@ -788,10 +801,15 @@ class EventProcessor:
                     yield event
 
             elif mime_type in CODE_FILE_MIME_TYPE_VALUES or normalize_file_extension(extension) in CODE_FILE_EXTENSION_VALUES:
-                async for event in self.processor.process_md_document(
+                # Route code-extension FILE records through the semantic code parser.
+                # process_code_file falls back to markdown parsing when the language
+                # is not supported by tree-sitter (e.g. .md, Dockerfile), so it is
+                # safe to use here for all code-like extensions.
+                self.logger.info(f"🚀 Processing code file (non-CODE_FILE record): {record_name}")
+                async for event in self.processor.process_code_file(
                     recordName=record_name,
                     recordId=record_id,
-                    md_binary=file_content,
+                    file_content=file_content,
                     virtual_record_id=virtual_record_id,
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,

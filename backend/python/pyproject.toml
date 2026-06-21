@@ -284,6 +284,16 @@ dependencies = [
     "zstandard==0.25.0",
     "mariadb[binary,pool]>=2.0.0rc2,<3",
     "asyncpg>=0.31.0",
+    # Tree-sitter: AST-based semantic code chunking (versions pinned to prevent ABI mismatches)
+    "tree-sitter==0.24.4",
+    "tree-sitter-python==0.23.6",
+    "tree-sitter-javascript==0.23.1",
+    "tree-sitter-typescript==0.23.2",
+    "tree-sitter-go==0.23.4",
+    "tree-sitter-java==0.23.5",
+    "tree-sitter-rust==0.23.2",
+    "tree-sitter-c==0.23.4",
+    "tree-sitter-cpp==0.23.4",
 ]
 
 [tool.setuptools.packages.find]

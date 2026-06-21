@@ -492,6 +492,12 @@ class RecordRelations(Enum):
     CAUSES = "CAUSES"
     RELATED = "RELATED"
     FOREIGN_KEY = "FOREIGN_KEY"
+    # Code property graph edges (Phase 5: call graph / CPG)
+    # Edge payload follows the FOREIGN_KEY pattern: {sourceSymbol, targetSymbol, sourceLineNumber}
+    IMPORTS = "IMPORTS"      # file A imports module / file B
+    INHERITS = "INHERITS"    # class in file A extends / implements class in file B
+    CALLS = "CALLS"          # function in file A calls function in file B (future)
+    EXPORTS = "EXPORTS"      # file exports a symbol (for module resolution, future)
 
 
 class EntityRelations(Enum):

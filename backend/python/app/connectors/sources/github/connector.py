@@ -1166,15 +1166,36 @@ class GithubConnector(BaseConnector):
                             f"Failed to decode code file content for {file.filename}: {e}"
                         )
                         file_content = file_content_res.data.content
+                    # Detect if the changed file is a source-code file. When
+                    # it is, use DataFormat.CODE so the indexing service routes
+                    # the block through CodeFileParser (tree-sitter) rather than
+                    # MarkdownParser, preserving semantic code structure.
+                    try:
+                        from app.modules.parsers.code_parser.parser import detect_language as _dl_gh
+                        _gh_lang = _dl_gh(file.filename) if file.filename else None
+                    except Exception:
+                        _gh_lang = None
+
+                    if _gh_lang and file_content:
+                        gh_bg_data: str | dict = {
+                            "file_content": str(file_content),
+                            "diff_content": str(file.patch or ""),
+                            "file_path": file.filename,
+                            "language": _gh_lang,
+                            "text": str(file.patch or "") + "\n\nFull File Content:\n" + str(file_content),
+                        }
+                        gh_bg_format = DataFormat.CODE
+                    else:
+                        gh_bg_data = str(file.patch or "") + str("\n\nFull File Content:\n") + str(file_content)
+                        gh_bg_format = DataFormat.MARKDOWN
+
                     bg_n = BlockGroup(
                         index=block_group_number,
                         name=f"block for file {file.filename}",
                         type=GroupType.FULL_CODE_PATCH,
-                        format=DataFormat.MARKDOWN,
+                        format=gh_bg_format,
                         sub_type=GroupSubType.PR_FILE_CHANGE,
-                        data=str(file.patch)
-                        + str("\n\nFull File Content:\n")
-                        + str(file_content),
+                        data=gh_bg_data,
                         comments=review_comments_map.get(file.filename, []),
                         requires_processing=True,
                         weburl=changes_url,

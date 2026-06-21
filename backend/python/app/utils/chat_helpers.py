@@ -52,8 +52,14 @@ valid_group_labels = [
         GroupType.INLINE.value,
         GroupType.KEY_VALUE_AREA.value,
         GroupType.TEXT_SECTION.value,
-        GroupType.CODE.value,
-        GroupType.CONVERSATION.value
+        GroupType.CONVERSATION.value,
+        # NOTE: GroupType.CODE intentionally excluded.
+        # GroupType.CODE.value == BlockType.CODE.value == "code".  Code blocks
+        # carry a plain-string content (not a (summary, children) tuple) and are
+        # handled by the dedicated `elif block_type == BlockType.CODE.value:` branch
+        # in build_message_content_array, which precedes the valid_group_labels check.
+        # Adding it here causes citations.py and retrieval_service.py to attempt
+        # 2-tuple unpacking on a plain string → ValueError: too many values to unpack.
     ]
 
 def _safe_stringify_content(value: Any) -> str:
@@ -698,7 +704,158 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
         )
 
 
+async def enrich_virtual_record_id_to_result_with_code_relations(
+    virtual_record_id_to_result: Dict[str, Dict[str, Any]],
+    blob_store: BlobStorage,
+    org_id: str,
+    graph_provider: Optional[IGraphDBProvider] = None,
+    flattened_results: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    """Enrich context with files imported by the retrieved code files.
 
+    For each ``CODE_FILE`` record in *virtual_record_id_to_result*, traverse
+    the ``IMPORTS`` edges in the code property graph (Phase 5) to pull in
+    related source files (1 hop, direct imports only) and add them to the
+    context so the LLM can reason about dependencies.
+
+    This mirrors :func:`enrich_virtual_record_id_to_result_with_fk_children`
+    for SQL foreign keys.  The traversal depth is fixed at 1 to avoid context
+    explosion.
+
+    Currently only adds the imported-file IDs to *virtual_record_id_to_result*
+    with ``_code_import_of`` metadata so the retrieval layer can fetch their
+    blobs.  When no ``IMPORTS`` edges exist yet (Phase 5 not yet run) the
+    function is a no-op.
+    """
+    if not graph_provider:
+        logger.debug("Code relation enrichment skipped: no graph_provider provided")
+        return
+
+    from app.config.constants.arangodb import RecordRelations
+
+    code_file_record_ids: list[str] = []
+    for _vrid, rec in virtual_record_id_to_result.items():
+        if not rec or not isinstance(rec, dict):
+            continue
+        if rec.get("record_type") == RecordType.CODE_FILE.value:
+            rid = rec.get("id")
+            if rid:
+                code_file_record_ids.append(rid)
+
+    if not code_file_record_ids:
+        return
+
+    logger.debug(
+        "Code relation enrichment: checking %d CODE_FILE records for IMPORTS edges",
+        len(code_file_record_ids),
+    )
+
+    enriched_count = 0
+    for record_id in code_file_record_ids:
+        try:
+            imported_relations = await graph_provider.get_child_record_ids_by_relation_type(
+                record_id, RecordRelations.IMPORTS.value
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not fetch IMPORTS relations for %s: %s", record_id, str(e)
+            )
+            continue
+
+        if not imported_relations:
+            continue
+
+        for rel in imported_relations:
+            imported_record_id = rel.get("record_id")
+            if not imported_record_id:
+                continue
+            # Skip if already in context
+            already_present = any(
+                r.get("id") == imported_record_id
+                for r in virtual_record_id_to_result.values()
+                if r
+            )
+            if already_present:
+                continue
+            try:
+                imported_blob = await blob_store.get_blocks_container_for_record(
+                    record_id=imported_record_id, org_id=org_id
+                )
+                if imported_blob is None:
+                    continue
+                # Represent the imported file as a lightweight metadata entry
+                virtual_record_id_to_result[f"import:{imported_record_id}"] = {
+                    "id": imported_record_id,
+                    "record_type": RecordType.CODE_FILE.value,
+                    "_code_import_of": record_id,
+                    "source_symbol": rel.get("sourceSymbol", ""),
+                    "target_symbol": rel.get("targetSymbol", ""),
+                    "blocks_container": imported_blob,
+                }
+                enriched_count += 1
+            except Exception as e:
+                logger.warning(
+                    "Could not fetch blob for imported record %s: %s",
+                    imported_record_id,
+                    str(e),
+                )
+
+    logger.debug(
+        "Code relation enrichment: added %d imported files to context", enriched_count
+    )
+
+    # ── CALLS enrichment (1-hop, forward: files that this file calls) ────────
+    calls_enriched = 0
+    for record_id in code_file_record_ids:
+        try:
+            callee_relations = await graph_provider.get_parent_record_ids_by_relation_type(
+                record_id, RecordRelations.CALLS.value
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not fetch CALLS relations for %s: %s", record_id, str(e)
+            )
+            continue
+
+        if not callee_relations:
+            continue
+
+        for rel in callee_relations:
+            callee_record_id = rel.get("record_id")
+            if not callee_record_id:
+                continue
+            already_present = any(
+                r.get("id") == callee_record_id
+                for r in virtual_record_id_to_result.values()
+                if r
+            )
+            if already_present:
+                continue
+            try:
+                callee_blob = await blob_store.get_blocks_container_for_record(
+                    record_id=callee_record_id, org_id=org_id
+                )
+                if callee_blob is None:
+                    continue
+                virtual_record_id_to_result[f"call:{callee_record_id}"] = {
+                    "id": callee_record_id,
+                    "record_type": RecordType.CODE_FILE.value,
+                    "_code_call_of": record_id,
+                    "source_symbol": rel.get("sourceSymbol", ""),
+                    "target_symbol": rel.get("targetSymbol", ""),
+                    "blocks_container": callee_blob,
+                }
+                calls_enriched += 1
+            except Exception as e:
+                logger.warning(
+                    "Could not fetch blob for callee record %s: %s",
+                    callee_record_id,
+                    str(e),
+                )
+
+    logger.debug(
+        "Code relation enrichment: added %d callee files to context", calls_enriched
+    )
 
 
 async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: Optional[IGraphDBProvider] = None) -> List[Dict[str, Any]]:
@@ -869,6 +1026,18 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         result["block_type"] = block_type
         if block_type == BlockType.TEXT.value and block.get("parent_index") is None:
             result["content"] = block.get("data","")
+            adjacent_chunks[virtual_record_id].append(index-1)
+            adjacent_chunks[virtual_record_id].append(index+1)
+        elif block_type == BlockType.CODE.value and block.get("parent_index") is None:
+            data = block.get("data", {})
+            code_text = data.get("text", "") if isinstance(data, dict) else str(data)
+            result["content"] = code_text
+            result["code_metadata"] = block.get("code_metadata") or {}
+            result["code_kind"] = data.get("kind", "") if isinstance(data, dict) else ""
+            result["name"] = block.get("name", "")
+            result["start_line"] = data.get("start_line") if isinstance(data, dict) else None
+            result["end_line"] = data.get("end_line") if isinstance(data, dict) else None
+            result["parent_name"] = ""
             adjacent_chunks[virtual_record_id].append(index-1)
             adjacent_chunks[virtual_record_id].append(index+1)
         elif block_type == BlockType.IMAGE.value:
@@ -1681,6 +1850,20 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
 
     result_blocks = []
 
+    def _extract_block_content(blk: dict) -> dict:
+        """Ensure block dict has a 'content' key for template rendering."""
+        if "content" in blk:
+            return blk
+        blk = dict(blk)
+        data = blk.get("data")
+        if isinstance(data, dict):
+            blk["content"] = data.get("text", "")
+        elif isinstance(data, str):
+            blk["content"] = data
+        else:
+            blk["content"] = ""
+        return blk
+
     # Handle new range-based format
     if isinstance(children, dict) and 'block_ranges' in children:
         block_ranges = children.get('block_ranges', [])
@@ -1692,7 +1875,7 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
                     if 0 <= block_index < len(blocks):
                         if blocks[block_index].get("type") == BlockType.IMAGE.value:
                             continue
-                        result_blocks.append(blocks[block_index])
+                        result_blocks.append(_extract_block_content(blocks[block_index]))
     # Handle old format (list of BlockContainerIndex)
     elif isinstance(children, list):
         for child in children:
@@ -1700,7 +1883,7 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
             if block_index is not None and 0 <= block_index < len(blocks):
                 if blocks[block_index].get("type") == BlockType.IMAGE.value:
                     continue
-                result_blocks.append(blocks[block_index])
+                result_blocks.append(_extract_block_content(blocks[block_index]))
 
     child_results = []
     meta = result.get("metadata", {})
@@ -2190,6 +2373,44 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                     "type": "text",
                     "text": prepend_record_blocks_sorted_header(
                         f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
+                    ),
+                })
+            elif block_type == BlockType.CODE.value:
+                # Code blocks get syntax-aware formatting: language tag, line range, parent scope.
+                code_content = result.get("content", "")
+                code_meta = result.get("code_metadata") or {}
+                code_lang = code_meta.get("language", "")
+                code_kind = result.get("code_kind", "")
+                code_start = result.get("start_line", "")
+                code_end = result.get("end_line", "")
+                parent_name = result.get("parent_name", "")
+                code_name = result.get("name", "")
+
+                header_parts = [
+                    f"* Block Index: {block_index}",
+                    f"* Citation ID: {ref}",
+                    f"* Block Type: code",
+                ]
+                if code_lang:
+                    header_parts.append(f"* Language: {code_lang}")
+                if code_kind:
+                    header_parts.append(f"* Kind: {code_kind}")
+                if parent_name:
+                    header_parts.append(f"* Scope: {parent_name}")
+                if code_name:
+                    header_parts.append(f"* Symbol: {code_name}")
+                if code_start and code_end:
+                    header_parts.append(f"* Lines: {code_start}–{code_end}")
+                header_parts.append(f"* Block Content:")
+
+                lang_fence = code_lang or ""
+                formatted_code = f"```{lang_fence}\n{code_content}\n```"
+
+                current_record_has_blocks = True
+                content.append({
+                    "type": "text",
+                    "text": prepend_record_blocks_sorted_header(
+                        "\n".join(header_parts) + "\n" + formatted_code + "\n\n"
                     ),
                 })
             elif block_type in valid_group_labels:

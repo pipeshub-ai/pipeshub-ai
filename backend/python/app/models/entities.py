@@ -2390,11 +2390,35 @@ class ArtifactsRecordGroup(RecordGroup):
     """Record group class for Artifacts"""
     description: str = Field(description="Description of the artifact", default="")
 
+def _deserialize_json_field(value: object) -> object:
+    """Deserialize a field that may be stored as a JSON string (Neo4j) or a native object (ArangoDB).
+
+    Neo4j cannot store ``list[dict]`` directly, so ``_arango_to_neo4j_node`` serializes those
+    values to JSON strings.  When we read them back via ``from_arango_record`` on a Neo4j node,
+    we must parse the string back to its original structure.  If the value is already a list or
+    ``None``, it is returned as-is (ArangoDB path).
+    """
+    if value is None or isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            return value
+    return value
+
+
 class CodeFileRecord(Record):
     """Record class for Code Files"""
 
     file_path: str | None = None
     file_hash: str | None = None
+    # Populated by the indexing pipeline after tree-sitter parsing
+    language: str | None = None           # Detected programming language (e.g. "python", "typescript")
+    imports: list[str] | None = None      # Raw import-block texts extracted from the file (for IMPORTS edges)
+    # Symbol-level data populated by the call-extractor at index time (for CALLS edges)
+    definitions: list[str] | None = None  # Top-level symbol names defined in this file (e.g. ["MyClass", "helper"])
+    calls: list[dict] | None = None       # Call sites: [{"name": callee, "line": int, "caller": enclosing_fn}]
 
     def to_kafka_record(self) -> dict:
         return {
@@ -2413,6 +2437,7 @@ class CodeFileRecord(Record):
             "sourceLastModifiedTimestamp": self.source_updated_at,
             "filePath": self.file_path,
             "fileHash": self.file_hash,
+            "language": self.language,
         }
 
     def to_arango_record(self) -> dict:
@@ -2422,6 +2447,10 @@ class CodeFileRecord(Record):
             "name": self.record_name,
             "filePath": self.file_path,
             "fileHash": self.file_hash,
+            "language": self.language,
+            "imports": self.imports,
+            "definitions": self.definitions,
+            "calls": self.calls,
         }
 
     @staticmethod
@@ -2470,6 +2499,10 @@ class CodeFileRecord(Record):
             reason=arango_base_record.get("reason"),
             file_path=arango_base_code_file_record.get("filePath"),
             file_hash=arango_base_code_file_record.get("fileHash"),
+            language=arango_base_code_file_record.get("language"),
+            imports=arango_base_code_file_record.get("imports"),
+            definitions=arango_base_code_file_record.get("definitions"),
+            calls=_deserialize_json_field(arango_base_code_file_record.get("calls")),
         )
 
 

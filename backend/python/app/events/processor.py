@@ -965,20 +965,73 @@ class Processor:
         record_name: str,
         md_parser: MarkdownParser,
     ) -> Tuple[List[BlockGroup], List[Block]]:
-        """
-        Process a single block group's markdown into blocks.
+        """Process a single block group's data into blocks.
+
+        Routes to the appropriate parser based on ``block_group.format``:
+        - ``DataFormat.CODE``: tree-sitter ``CodeFileParser`` (source-code files in PRs/MRs).
+          The block group's ``data`` may be a dict with ``file_content`` / ``file_path`` keys
+          (set by the GitLab/GitHub connectors) or a plain string.
+        - All other formats: ``MarkdownParser`` (existing behaviour).
 
         Args:
-            block_group: Block group to process
-            record_name: Name of the record (for filename generation)
-            md_parser: Markdown parser instance
+            block_group: Block group to process.
+            record_name: Name of the record (used as filename fallback).
+            md_parser: Markdown parser instance.
 
         Returns:
-            Tuple of (new_block_groups, new_blocks) from processing
-
-        Raises:
-            ValueError: If block group has no valid markdown data
+            Tuple of ``(new_block_groups, new_blocks)`` from parsing.
         """
+        # ── DataFormat.CODE path: use tree-sitter CodeFileParser ─────────
+        bg_format = block_group.format
+        bg_format_str = (
+            bg_format.value if hasattr(bg_format, "value") else str(bg_format)
+        ).lower()
+
+        if bg_format_str == "code":
+            from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
+
+            bg_data = block_group.data
+            if isinstance(bg_data, dict):
+                file_content_str: str = bg_data.get("file_content", "")
+                file_path: str = bg_data.get("file_path", "") or record_name
+            else:
+                file_content_str = str(bg_data) if bg_data else ""
+                file_path = record_name
+
+            if not file_content_str.strip():
+                # Empty code content — fall back to markdown with display text
+                fallback_text = (
+                    bg_data.get("text", "") if isinstance(bg_data, dict) else file_content_str
+                )
+                if not fallback_text:
+                    return [], []
+                processed = await md_parser.parse(fallback_text, name=block_group.name or record_name)
+                return processed.block_groups, processed.blocks
+
+            code_bytes = file_content_str.encode("utf-8", errors="replace")
+            code_parser = CodeFileParser()
+            processed_blocks_container = code_parser.parse(code_bytes, file_path)
+
+            if not processed_blocks_container.blocks and not processed_blocks_container.block_groups:
+                # CodeFileParser produced nothing (unsupported extension or empty) — fall back
+                self.logger.info(
+                    f"⚠️ CodeFileParser produced no blocks for '{file_path}' in block group "
+                    f"{block_group.index}; falling back to markdown parser"
+                )
+                fallback_text = (
+                    bg_data.get("text", "") if isinstance(bg_data, dict) else file_content_str
+                )
+                processed = await md_parser.parse(fallback_text or file_content_str, name=block_group.name or record_name)
+                return processed.block_groups, processed.blocks
+
+            self.logger.debug(
+                f"✅ Code block group {block_group.index} parsed: "
+                f"{len(processed_blocks_container.block_groups)} group(s), "
+                f"{len(processed_blocks_container.blocks)} block(s)"
+            )
+            return processed_blocks_container.block_groups, processed_blocks_container.blocks
+
+        # ── Default path: MarkdownParser ─────────────────────────────────
         # Extract markdown data from BlockGroup
         markdown_data = block_group.data
         if not markdown_data or not isinstance(markdown_data, str):
@@ -1869,6 +1922,172 @@ class Processor:
             recordName, recordId, version, source, orgId, ppt_result, virtual_record_id, event_type, prev_virtual_record_id
         ):
             yield event
+
+    async def process_code_file(
+        self,
+        recordName: str,
+        recordId: str,
+        file_content: bytes,
+        virtual_record_id: str,
+        event_type: Optional[str] = None,
+        prev_virtual_record_id: Optional[str] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process a source-code file into semantic blocks using tree-sitter, yielding phase events.
+
+        Parses the file with the CodeFileParser (tree-sitter backed) and produces:
+        - BlockGroups for top-level containers (classes, impls, traits, structs, enums, namespaces)
+        - Blocks for functions, methods, imports, statements, and comments
+
+        Falls back to the Markdown parser when:
+        - The file extension is not supported by tree-sitter (e.g. .md, Dockerfile, .env)
+        - The file exceeds the maximum parse size
+        - Tree-sitter parsing raises an unexpected error
+
+        Also extracts language and top-level import paths and persists them to the codeFiles
+        ArangoDB node for future call-graph construction (Phase 5).
+        """
+        from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
+        from app.modules.parsers.code_parser.parser import detect_language
+        from app.modules.code_analysis.call_extractor import extract_symbols
+
+        self.logger.info(f"🚀 Starting code-file processing for record: {recordName}")
+
+        # ── Language detection (fast, no I/O) ──────────────────────────────
+        language = detect_language(recordName)
+
+        if language is None:
+            # Extension not supported by tree-sitter — fall back to markdown/text path.
+            self.logger.info(
+                f"🔀 Unsupported language extension for '{recordName}', falling back to markdown parser"
+            )
+            async for event in self.process_md_document(
+                recordName=recordName,
+                recordId=recordId,
+                md_binary=file_content,
+                virtual_record_id=virtual_record_id,
+                event_type=event_type,
+                prev_virtual_record_id=prev_virtual_record_id,
+            ):
+                yield event
+            return
+
+        try:
+            # ── Parse with tree-sitter ──────────────────────────────────────
+            parser = CodeFileParser()
+            block_containers = parser.parse(file_content, recordName)
+
+            if not block_containers.blocks and not block_containers.block_groups:
+                # Tree-sitter produced nothing (empty file, pure config, etc.) — fall back.
+                self.logger.warning(
+                    f"⚠️ No blocks produced for '{recordName}' (language={language}), "
+                    "falling back to markdown parser"
+                )
+                async for event in self.process_md_document(
+                    recordName=recordName,
+                    recordId=recordId,
+                    md_binary=file_content,
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+                return
+
+            # ── Extract top-level import paths for call-graph metadata ──────
+            import_paths: list[str] = [
+                b.data["text"]
+                for b in block_containers.blocks
+                if isinstance(b.data, dict) and b.data.get("kind") == "imports"
+            ]
+
+            # ── Extract symbol definitions + call sites (call-graph Phase A) ─
+            # Best-effort: errors here must not fail the indexing run.
+            try:
+                code_symbols = extract_symbols(file_content, language)
+                definition_names: list[str] = [d.name for d in code_symbols.definitions]
+                call_sites: list[dict] = [
+                    {"name": c.callee, "line": c.line, "caller": c.caller}
+                    for c in code_symbols.calls
+                ]
+            except Exception as sym_err:
+                self.logger.warning(
+                    f"⚠️ call_extractor failed for '{recordName}': {sym_err!r} — skipping symbol extraction"
+                )
+                definition_names = []
+                call_sites = []
+
+            self.logger.info(
+                f"📊 Parsed '{recordName}': language={language}, "
+                f"{len(block_containers.block_groups)} group(s), "
+                f"{len(block_containers.blocks)} block(s), "
+                f"{len(import_paths)} import block(s), "
+                f"{len(definition_names)} definition(s), "
+                f"{len(call_sites)} call site(s)"
+            )
+
+        except Exception as parse_err:
+            # Tree-sitter hard failure — do not leave the record in FAILED; fall back gracefully.
+            self.logger.error(
+                f"❌ Tree-sitter parsing failed for '{recordName}': {parse_err!r} "
+                "— falling back to markdown parser"
+            )
+            async for event in self.process_md_document(
+                recordName=recordName,
+                recordId=recordId,
+                md_binary=file_content,
+                virtual_record_id=virtual_record_id,
+                event_type=event_type,
+                prev_virtual_record_id=prev_virtual_record_id,
+            ):
+                yield event
+            return
+
+        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+
+        # ── Fetch record, attach blocks, run pipeline ───────────────────────
+        record_dict = await self.graph_provider.get_document(recordId, CollectionNames.RECORDS.value)
+        if record_dict is None:
+            self.logger.error(f"❌ Record {recordId} not found in database")
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+            return
+
+        record = convert_record_dict_to_record(record_dict)
+        record.block_containers = block_containers
+        record.virtual_record_id = virtual_record_id
+
+        # ── Persist language + imports + definitions + calls to codeFiles ─────
+        # Best-effort: a failure here must not fail the whole indexing run.
+        try:
+            await self.graph_provider.batch_upsert_nodes(
+                [
+                    {
+                        "id": recordId,
+                        "language": language,
+                        "imports": import_paths,
+                        "definitions": definition_names,
+                        "calls": call_sites,
+                    }
+                ],
+                CollectionNames.CODE_FILES.value,
+            )
+        except Exception as meta_err:
+            self.logger.warning(
+                f"⚠️ Could not persist code metadata for record {recordId}: {meta_err!r}"
+            )
+
+        ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
+        pipeline = IndexingPipeline(
+            document_extraction=self.document_extraction,
+            sink_orchestrator=self.sink_orchestrator,
+        )
+        await pipeline.apply(ctx)
+
+        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+        self.logger.info(
+            f"✅ Code-file processing completed: '{recordName}' "
+            f"(language={language}, {len(block_containers.block_groups)} group(s), "
+            f"{len(block_containers.blocks)} block(s))"
+        )
 
     async def process_sql_structured_data(
         self, recordName: str, recordId: str, json_content: bytes, virtual_record_id: str,

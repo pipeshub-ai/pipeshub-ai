@@ -1117,6 +1117,44 @@ class TestNodeOperations:
         with pytest.raises(RuntimeError, match="invalid"):
             await neo4j_provider.batch_upsert_nodes([{"id": "n1"}], "apps")
 
+    def test_arango_to_neo4j_node_serializes_list_of_dicts(self, neo4j_provider: Neo4jProvider):
+        """Neo4j cannot store list[Map]; _arango_to_neo4j_node must JSON-serialize those values."""
+        import json as _json
+        node = {
+            "id": "rec-1",
+            "language": "python",
+            "imports": ["import os", "from pathlib import Path"],   # list[str] — keep as-is
+            "definitions": ["MyClass", "helper_fn"],                # list[str] — keep as-is
+            "calls": [                                               # list[dict] — must be JSON string
+                {"name": "getLogger", "caller": "", "line": 24},
+                {"name": "helper_fn", "caller": "MyClass.__init__", "line": 42},
+            ],
+        }
+        result = neo4j_provider._arango_to_neo4j_node(node, "codeFiles")
+
+        # List[str] properties should pass through unchanged
+        assert result["imports"] == ["import os", "from pathlib import Path"]
+        assert result["definitions"] == ["MyClass", "helper_fn"]
+        # List[dict] property must be a JSON string so Neo4j can store it
+        assert isinstance(result["calls"], str), "calls should be serialised to a JSON string"
+        parsed = _json.loads(result["calls"])
+        assert parsed == node["calls"], "round-trip must restore original value"
+
+    def test_arango_to_neo4j_node_serializes_top_level_dict(self, neo4j_provider: Neo4jProvider):
+        """Top-level dict values are also serialised to JSON strings for Neo4j compatibility."""
+        import json as _json
+        node = {"id": "x", "meta": {"a": 1, "b": "two"}}
+        result = neo4j_provider._arango_to_neo4j_node(node, "someCollection")
+        assert isinstance(result["meta"], str)
+        assert _json.loads(result["meta"]) == {"a": 1, "b": "two"}
+
+    def test_arango_to_neo4j_node_none_and_empty_list_pass_through(self, neo4j_provider: Neo4jProvider):
+        """None values and empty lists must not be serialised (no data to represent)."""
+        node = {"id": "x", "calls": None, "imports": []}
+        result = neo4j_provider._arango_to_neo4j_node(node, "codeFiles")
+        assert result["calls"] is None
+        assert result["imports"] == []
+
     @pytest.mark.asyncio
     async def test_delete_nodes_returns_true_for_empty_keys(self, neo4j_provider: Neo4jProvider):
         result = await neo4j_provider.delete_nodes([], "apps")
@@ -2943,8 +2981,8 @@ class TestRecordRelationOperations:
             "p1", "FOREIGN_KEY", transaction="txn-child"
         )
         assert rows == [
-            {"record_id": "c1", "childTable": "orders", "sourceColumn": "user_id", "targetColumn": "id"},
-            {"record_id": "c2", "childTable": "", "sourceColumn": "", "targetColumn": ""},
+            {"record_id": "c1", "childTable": "orders", "sourceColumn": "user_id", "targetColumn": "id", "sourceSymbol": "", "targetSymbol": ""},
+            {"record_id": "c2", "childTable": "", "sourceColumn": "", "targetColumn": "", "sourceSymbol": "", "targetSymbol": ""},
         ]
         child_kwargs = neo4j_provider.client.execute_query.await_args.kwargs
         assert child_kwargs["parameters"] == {"record_id": "p1", "relation_type": "FOREIGN_KEY"}
@@ -2996,8 +3034,8 @@ class TestRecordRelationOperations:
             "c1", "FOREIGN_KEY", transaction="txn-parent"
         )
         assert rows == [
-            {"record_id": "p1", "parentTable": "users", "sourceColumn": "user_id", "targetColumn": "id"},
-            {"record_id": "p2", "parentTable": "", "sourceColumn": "", "targetColumn": ""},
+            {"record_id": "p1", "parentTable": "users", "sourceColumn": "user_id", "targetColumn": "id", "sourceSymbol": "", "targetSymbol": ""},
+            {"record_id": "p2", "parentTable": "", "sourceColumn": "", "targetColumn": "", "sourceSymbol": "", "targetSymbol": ""},
         ]
         parent_kwargs = neo4j_provider.client.execute_query.await_args.kwargs
         assert parent_kwargs["parameters"] == {"record_id": "c1", "relation_type": "FOREIGN_KEY"}
