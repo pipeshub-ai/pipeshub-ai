@@ -11,7 +11,6 @@ import {
   resyncConnectorSchema,
   getConnectorStatsSchema,
   uploadRecordsSchema,
-  uploadRecordsToFolderSchema,
   getAllRecordsSchema,
   getAllKBRecordsSchema,
   createKBSchema,
@@ -221,33 +220,32 @@ describe('knowledge_base/validators/validators', () => {
       const result = uploadRecordsSchema.safeParse(data)
       expect(result.success).to.be.false
     })
-  })
-
-  describe('uploadRecordsToFolderSchema', () => {
-    it('should accept valid data', () => {
+    it('should accept optional folderId query param', () => {
       const data = {
         body: {},
-        params: { kbId: '550e8400-e29b-41d4-a716-446655440000', folderId: 'folder-1' },
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+        query: { folderId: 'folder-1' },
       }
-      const result = uploadRecordsToFolderSchema.safeParse(data)
+      const result = uploadRecordsSchema.safeParse(data)
       expect(result.success).to.be.true
     })
 
-    it('should reject missing folderId', () => {
+    it('should accept upload without folderId (KB root)', () => {
       const data = {
         body: {},
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
       }
-      const result = uploadRecordsToFolderSchema.safeParse(data)
-      expect(result.success).to.be.false
+      const result = uploadRecordsSchema.safeParse(data)
+      expect(result.success).to.be.true
     })
 
-    it('should reject empty folderId', () => {
+    it('should reject empty folderId query param', () => {
       const data = {
         body: {},
-        params: { kbId: '550e8400-e29b-41d4-a716-446655440000', folderId: '' },
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+        query: { folderId: '' },
       }
-      const result = uploadRecordsToFolderSchema.safeParse(data)
+      const result = uploadRecordsSchema.safeParse(data)
       expect(result.success).to.be.false
     })
   })

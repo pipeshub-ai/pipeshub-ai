@@ -146,4 +146,18 @@ describe('Knowledge Base Routes', () => {
 
     expect(paths).to.include('/stream/record/:recordId')
   })
+
+  it('should register upload route', () => {
+    const router = createKnowledgeBaseRouter(container)
+    const routes = router.stack
+      .filter((layer: any) => layer.route)
+      .map((layer: any) => ({
+        path: layer.route.path,
+        methods: layer.route.methods,
+      }))
+    const paths = routes.map((r: any) => r.path)
+
+    expect(paths).to.include('/:kbId/upload')
+    expect(paths).to.not.include('/:kbId/folder/:folderId/upload')
+  })
 })

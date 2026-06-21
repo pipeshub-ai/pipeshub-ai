@@ -4503,6 +4503,12 @@ async def _update_oauth_infrastructure_fields(
     if "additionalParams" not in oauth_config and oauth_registry_config.additional_params:
         oauth_config["additionalParams"] = oauth_registry_config.additional_params
 
+    if "scopeParameterName" not in oauth_config and oauth_registry_config.scope_parameter_name and oauth_registry_config.scope_parameter_name != "scope":
+        oauth_config["scopeParameterName"] = oauth_registry_config.scope_parameter_name
+
+    if "tokenResponsePath" not in oauth_config and oauth_registry_config.token_response_path:
+        oauth_config["tokenResponsePath"] = oauth_registry_config.token_response_path
+
     # Update metadata fields if missing
     if "iconPath" not in oauth_config:
         oauth_config["iconPath"] = oauth_registry_config.icon_path
@@ -4596,6 +4602,10 @@ async def _build_oauth_flow_config(
             oauth_flow_config["tokenAccessType"] = shared_oauth_config["tokenAccessType"]
         if "additionalParams" in shared_oauth_config:
             oauth_flow_config["additionalParams"] = shared_oauth_config["additionalParams"]
+        if "scopeParameterName" in shared_oauth_config:
+            oauth_flow_config["scopeParameterName"] = shared_oauth_config["scopeParameterName"]
+        if "tokenResponsePath" in shared_oauth_config:
+            oauth_flow_config["tokenResponsePath"] = shared_oauth_config["tokenResponsePath"]
 
         # Get OAuth credential fields from config section
         oauth_config_data = shared_oauth_config.get(OAuthConfigKeys.CONFIG, {})

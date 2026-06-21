@@ -464,9 +464,9 @@ export const KnowledgeBaseApi = {
     }
 
     // Note: lowercase 'knowledgebase' in URL (Express routing is case-insensitive).
-    const url = folderId
-      ? `/api/v1/knowledgebase/${knowledgeBaseId}/folder/${folderId}/upload`
-      : `/api/v1/knowledgebase/${knowledgeBaseId}/upload`;
+    const url = `/api/v1/knowledgebase/${knowledgeBaseId}/upload${
+      folderId ? `?folderId=${encodeURIComponent(folderId)}` : ''
+    }`;
 
     // Errors (rate limit, payload-too-large, 5xx, transport) surface through
     // `streamSSEUpload`, which reads the server's structured error body and

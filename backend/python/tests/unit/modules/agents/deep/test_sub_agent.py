@@ -1440,7 +1440,12 @@ class TestPrewarmClients:
         tasks = [
             {"task_id": "t1", "tools": ["jira.search_issues", "jira.create_issue"]},
         ]
-        state = _mock_state(tool_to_toolset_map={})
+        state = _mock_state(
+            tool_to_toolset_map={
+                "jira.search_issues": "ts-jira-1",
+                "jira.create_issue": "ts-jira-1",
+            },
+        )
         log = _mock_log()
 
         with patch("app.agents.tools.factories.registry.ClientFactoryRegistry") as mock_registry, \
@@ -1468,7 +1473,7 @@ class TestPrewarmClients:
         tasks = [
             {"task_id": "t1", "tools": ["jira.search_issues"]},
         ]
-        state = _mock_state(tool_to_toolset_map={})
+        state = _mock_state(tool_to_toolset_map={"jira.search_issues": "ts-1"})
         log = _mock_log()
 
         with patch("app.agents.tools.factories.registry.ClientFactoryRegistry") as mock_registry, \
@@ -1887,8 +1892,10 @@ class TestPrewarmClientsCoverage:
     @pytest.mark.asyncio
     async def test_prewarm_skips_already_cached(self):
         """Pre-warm skips domains that already have cached clients (line 1247)."""
-        state = _mock_state_cov()
-        state["_client_cache"] = {("jira", "default", "default"): MagicMock()}
+        state = _mock_state_cov(
+            tool_to_toolset_map={"jira.search": "jira-inst"},
+        )
+        state["_client_cache"] = {("jira", "jira-inst", "default"): MagicMock()}
         state["_client_cache_locks"] = {}
         log = _mock_log_cov()
 
@@ -1934,7 +1941,7 @@ class TestPrewarmClientsCoverage:
     @pytest.mark.asyncio
     async def test_prewarm_exception_does_not_crash(self):
         """Pre-warm handles exceptions gracefully."""
-        state = _mock_state_cov()
+        state = _mock_state_cov(tool_to_toolset_map={"slack.send": "slack-ts-1"})
         state["_client_cache"] = {}
         state["_client_cache_locks"] = {}
         log = _mock_log_cov()
@@ -2997,6 +3004,7 @@ class TestPrewarmClientsLocking:
                 mock_creator._cache_locks = {}
                 mock_creator._get_toolset_config.return_value = {"key": "val"}
                 mock_tic.return_value = mock_creator
+                state["tool_to_toolset_map"] = {"jira.search": "jid-1"}
                 await _prewarm_clients(tasks, state, log)
                 # Client should be cached
                 assert len(mock_creator._client_cache) == 1
@@ -3029,8 +3037,10 @@ class TestPrewarmClientsLocking:
             mock_cfr.get_factory.return_value = mock_factory
             with patch("app.agents.tools.wrapper.ToolInstanceCreator") as mock_tic:
                 mock_creator = MagicMock()
+                toolset_id = "jid-1"
+                state["tool_to_toolset_map"] = {"jira.search": toolset_id}
                 # Pre-populate lock and cache to test double-check
-                cache_key = ("jira", "default", "default")
+                cache_key = ("jira", toolset_id, "default")
                 mock_creator._cache_locks = {cache_key: asyncio.Lock()}
                 mock_creator._client_cache = {cache_key: MagicMock()}  # Already cached
                 mock_creator._get_toolset_config.return_value = None

@@ -1018,11 +1018,12 @@ const assertKbWritePermission = async (
 };
 
 /**
- * Upload records to a Knowledge Base. The POST response is an SSE stream of
- * per-file outcomes (see streamKbUpload). Files are processed by the file
+ * Upload records to a Knowledge Base root or folder. Optional `folderId` query
+ * param targets a folder; omit for KB root. The POST response is an SSE stream
+ * of per-file outcomes (see streamKbUpload). Files are processed by the file
  * processor middleware which attaches filePath/lastModified to each buffer.
  */
-export const uploadRecordsToKB =
+export const uploadRecords =
   (
     keyValueStoreService: KeyValueStoreService,
     appConfig: AppConfig,
@@ -1040,7 +1041,8 @@ export const uploadRecordsToKB =
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const { kbId } = req.params;
-      const isVersioned = req.body?.isVersioned ?? true;
+      const folderId = req.query.folderId as string | undefined;
+      const isVersioned = req.body.isVersioned ?? false;
 
       // Validation
       if (!userId || !orgId) {
@@ -1063,12 +1065,39 @@ export const uploadRecordsToKB =
         req.headers as Record<string, string>,
       );
 
-      logger.info('Processing file upload to KB', {
-        totalFiles: fileBuffers.length,
-        kbId,
-        userId,
-        samplePaths: fileBuffers.slice(0, 3).map((f) => f.filePath),
-      });
+      if (folderId) {
+        // Validate folder exists and belongs to the KB before creating any placeholders.
+        // This turns the silent background failure (which returned 200) into a proper 404/403.
+        const validationResponse = await executeConnectorCommand(
+          `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/validate`,
+          HttpMethod.GET,
+          req.headers as Record<string, string>,
+        );
+        if (
+          validationResponse.statusCode < 200 ||
+          validationResponse.statusCode >= 300
+        ) {
+          throw handleBackendError(
+            validationResponse,
+            'validate folder for upload',
+          );
+        }
+      }
+
+      logger.info(
+        folderId ? 'Processing file upload to folder' : 'Processing file upload to KB',
+        {
+          totalFiles: fileBuffers.length,
+          kbId,
+          ...(folderId ? { folderId } : {}),
+          userId,
+          samplePaths: fileBuffers.slice(0, 3).map((f) => f.filePath),
+        },
+      );
+
+      const pythonServiceUrl = folderId
+        ? `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/upload`
+        : `${appConfig.connectorBackend}/api/v1/kb/${kbId}/upload`;
 
       // Stream every file's outcome (rejections, storage upload, indexing) as
       // SSE on this response. Validation/permission errors above are still
@@ -1082,7 +1111,7 @@ export const uploadRecordsToKB =
         isVersioned,
         keyValueStoreService,
         appConfig,
-        pythonServiceUrl: `${appConfig.connectorBackend}/api/v1/kb/${kbId}/upload`,
+        pythonServiceUrl,
       });
     } catch (error: any) {
       // streamKbUpload handles its own errors after headers are sent, so this
@@ -1094,112 +1123,9 @@ export const uploadRecordsToKB =
         error: error.message,
         userId: req.user?.userId,
         kbId: req.params.kbId,
+        folderId: req.query.folderId,
       });
       const backendError = handleBackendError(error, 'Record upload api');
-      next(backendError);
-    }
-  };
-
-/**
- * Upload records to a specific folder within a Knowledge Base.
- * Files are processed by file processor middleware which attaches
- * filePath and lastModified to each file buffer.
- */
-export const uploadRecordsToFolder =
-  (
-    keyValueStoreService: KeyValueStoreService,
-    appConfig: AppConfig,
-  ) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      const fileBuffers: FileBufferInfo[] = req.body.fileBuffers || [];
-      // Files dropped by the processor (oversize / unsupported type). Reported
-      // back as per-file failures rather than failing the whole batch.
-      const rejectedFiles: RejectedFileInfo[] = req.body.rejectedFiles || [];
-      const userId = req.user?.userId;
-      const orgId = req.user?.orgId;
-      const { kbId, folderId } = req.params;
-      const isVersioned = req.body?.isVersioned ?? true;
-
-      // Validation
-      if (!userId || !orgId) {
-        throw new UnauthorizedError(
-          'User not authenticated or missing organization ID',
-        );
-      }
-
-      if (!kbId || !folderId) {
-        throw new BadRequestError(
-          'Knowledge Base ID and Folder ID are required',
-        );
-      }
-      if (fileBuffers.length === 0 && rejectedFiles.length === 0) {
-        throw new BadRequestError(
-          'Knowledge Base ID, Folder ID, and files are required',
-        );
-      }
-
-      // Verify KB exists and caller has write permission before touching storage.
-      await assertKbWritePermission(
-        appConfig.connectorBackend,
-        kbId,
-        req.headers as Record<string, string>,
-      );
-
-      // Validate folder exists and belongs to the KB before creating any placeholders.
-      // This turns the silent background failure (which returned 200) into a proper 404/403.
-      const validationResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/validate`,
-        HttpMethod.GET,
-        req.headers as Record<string, string>,
-      );
-      if (validationResponse.statusCode < 200 || validationResponse.statusCode >= 300) {
-        throw handleBackendError(
-          validationResponse,
-          'validate folder for upload',
-        );
-      }
-
-      logger.info('Processing file upload to folder', {
-        totalFiles: fileBuffers.length,
-        kbId,
-        folderId,
-        userId,
-        samplePaths: fileBuffers.slice(0, 3).map((f) => f.filePath),
-      });
-
-      // Stream every file's outcome on this response (see uploadRecordsToKB).
-      await streamKbUpload({
-        req,
-        res,
-        fileBuffers,
-        rejectedFiles,
-        orgId,
-        isVersioned,
-        keyValueStoreService,
-        appConfig,
-        pythonServiceUrl: `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/upload`,
-      });
-    } catch (error: any) {
-      // streamKbUpload handles its own errors after headers are sent, so this
-      // only catches pre-stream validation/permission errors.
-      if (res.headersSent) {
-        return;
-      }
-      logger.error('❌ Folder record upload failed', {
-        error: error.message,
-        userId: req.user?.userId,
-        kbId: req.params.kbId,
-        folderId: req.params.folderId,
-      });
-      const backendError = handleBackendError(
-        error,
-        'Folder record upload api',
-      );
       next(backendError);
     }
   };

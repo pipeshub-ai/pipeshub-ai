@@ -3914,3 +3914,168 @@ class TestGetUserAndAppHelpers:
         result = await proc.get_app_by_id("conn-1")
 
         assert result == app_mock
+
+
+# ============================================================================
+# MessageRecord entity edges — additions from Slack connector diff
+# ============================================================================
+
+from app.config.constants.arangodb import Connectors as _EP_Connectors, MimeTypes as _EP_MimeTypes, OriginTypes as _EP_OriginTypes
+from app.models.entities import MessageRecord as _MessageRecord
+
+
+def _make_message_record_ep(**overrides):
+    base = dict(
+        id="msg-1",
+        org_id="org-1",
+        record_name="general_2021-05-03_00-00-00",
+        record_type=RecordType.MESSAGE,
+        external_record_id="1620000000.000100",
+        version=1,
+        origin=_EP_OriginTypes.CONNECTOR,
+        connector_name=_EP_Connectors.SLACK_WORKSPACE,
+        connector_id="conn-123",
+        mime_type=_EP_MimeTypes.BLOCKS.value,
+    )
+    base.update(overrides)
+    return _MessageRecord(**base)
+
+
+def _make_processor_ep():
+    proc = DataSourceEntitiesProcessor.__new__(DataSourceEntitiesProcessor)
+    proc.logger = MagicMock()
+    proc.org_id = "org-1"
+    proc.data_store_provider = MagicMock()
+    return proc
+
+
+def _make_tx_ep(**overrides):
+    tx = MagicMock()
+    tx.delete_edges_to = AsyncMock()
+    tx.get_user_by_source_id = AsyncMock(return_value=None)
+    tx.get_record_group_by_external_id = AsyncMock(return_value=None)
+    tx.batch_create_entity_relations = AsyncMock()
+    for k, v in overrides.items():
+        setattr(tx, k, v)
+    return tx
+
+
+class TestRecordTypesWithBinaryDataMessage:
+    def test_message_included(self):
+        assert RecordType.MESSAGE in DataSourceEntitiesProcessor.ATTACHMENT_CONTAINER_TYPES
+
+
+class TestHandleMessageEntityEdges:
+    def setup_method(self):
+        self.proc = _make_processor_ep()
+
+    @pytest.mark.asyncio
+    async def test_deletes_existing_edges_first(self):
+        msg = _make_message_record_ep()
+        tx = _make_tx_ep()
+        await self.proc._handle_message_entity_edges(msg, tx)
+        tx.delete_edges_to.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_edges_when_no_mentions_no_author(self):
+        msg = _make_message_record_ep(
+            mentioned_user_ids=[], mentioned_group_ids=[],
+            author_id=None, involved_user_source_ids=[],
+        )
+        tx = _make_tx_ep()
+        await self.proc._handle_message_entity_edges(msg, tx)
+        tx.batch_create_entity_relations.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mentioned_user_resolved_creates_edge(self):
+        user = MagicMock()
+        user.id = "internal-user-1"
+        tx = _make_tx_ep(get_user_by_source_id=AsyncMock(return_value=user))
+        msg = _make_message_record_ep(
+            mentioned_user_ids=["U123"], mentioned_group_ids=[], involved_user_source_ids=[]
+        )
+        await self.proc._handle_message_entity_edges(msg, tx)
+        edges = tx.batch_create_entity_relations.call_args[0][0]
+        assert len(edges) == 1
+        assert edges[0]["edgeType"] == "MENTIONED_IN"
+
+    @pytest.mark.asyncio
+    async def test_mentioned_user_unresolved_no_edge(self):
+        tx = _make_tx_ep(get_user_by_source_id=AsyncMock(return_value=None))
+        msg = _make_message_record_ep(mentioned_user_ids=["U_UNKNOWN"])
+        await self.proc._handle_message_entity_edges(msg, tx)
+        tx.batch_create_entity_relations.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mentioned_group_resolved_creates_edge(self):
+        rg = MagicMock()
+        rg.id = "internal-group-1"
+        tx = _make_tx_ep(
+            get_user_by_source_id=AsyncMock(return_value=None),
+            get_record_group_by_external_id=AsyncMock(return_value=rg),
+        )
+        msg = _make_message_record_ep(
+            mentioned_user_ids=[], mentioned_group_ids=["C123"], involved_user_source_ids=[]
+        )
+        await self.proc._handle_message_entity_edges(msg, tx)
+        edges = tx.batch_create_entity_relations.call_args[0][0]
+        assert edges[0]["edgeType"] == "MENTIONED_IN"
+
+    @pytest.mark.asyncio
+    async def test_involved_user_from_author_id_fallback(self):
+        user = MagicMock()
+        user.id = "internal-author-1"
+        tx = _make_tx_ep(get_user_by_source_id=AsyncMock(return_value=user))
+        msg = _make_message_record_ep(
+            mentioned_user_ids=[], mentioned_group_ids=[],
+            involved_user_source_ids=[], author_id="U_AUTHOR",
+        )
+        await self.proc._handle_message_entity_edges(msg, tx)
+        edges = tx.batch_create_entity_relations.call_args[0][0]
+        assert edges[0]["edgeType"] == "INVOLVED_IN"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_involved_ids_deduplicated(self):
+        call_count = [0]
+        user = MagicMock()
+        user.id = "internal-1"
+
+        async def side_effect(**kwargs):
+            call_count[0] += 1
+            return user
+
+        tx = _make_tx_ep(get_user_by_source_id=AsyncMock(side_effect=side_effect))
+        msg = _make_message_record_ep(
+            mentioned_user_ids=[], mentioned_group_ids=[],
+            involved_user_source_ids=["U1", "U1", "U1"],
+        )
+        await self.proc._handle_message_entity_edges(msg, tx)
+        assert call_count[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_delete_edges_exception_logged_and_continues(self):
+        tx = _make_tx_ep()
+        tx.delete_edges_to = AsyncMock(side_effect=RuntimeError("DB error"))
+        msg = _make_message_record_ep()
+        await self.proc._handle_message_entity_edges(msg, tx)
+        self.proc.logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_get_user_exception_logged_and_skipped(self):
+        tx = _make_tx_ep(
+            get_user_by_source_id=AsyncMock(side_effect=RuntimeError("user lookup failed"))
+        )
+        msg = _make_message_record_ep(mentioned_user_ids=["U123"])
+        await self.proc._handle_message_entity_edges(msg, tx)
+        self.proc.logger.warning.assert_called()
+        tx.batch_create_entity_relations.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_source_uid_skipped(self):
+        tx = _make_tx_ep()
+        msg = _make_message_record_ep(
+            mentioned_user_ids=["", ""], involved_user_source_ids=[""],
+        )
+        await self.proc._handle_message_entity_edges(msg, tx)
+        tx.get_user_by_source_id.assert_not_called()
+        tx.batch_create_entity_relations.assert_not_called()

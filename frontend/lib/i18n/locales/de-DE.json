@@ -2176,7 +2176,9 @@
     "page": "Seite {{number}}",
     "paragraph": "Absatz {{number}}",
     "showMore": "Mehr anzeigen",
-    "showLess": "Weniger anzeigen"
+    "showLess": "Weniger anzeigen",
+    "lockZoom": "Zoomstufe sperren",
+    "unlockZoom": "Zoomstufe entsperren"
   },
   "agentBuilder": {
     "goBack": "Zurück",

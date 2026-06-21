@@ -10,7 +10,6 @@ To swap PDFs, update ASANA_PDF_BLOB_URL below — accepts either a github.com
 
 from __future__ import annotations
 
-import io
 import logging
 import mimetypes
 from typing import Any, TypedDict
@@ -139,16 +138,12 @@ def session_kb(
         originalname = asana_pdf_blob["originalname"]
         mimetype = asana_pdf_blob["mimetype"]
 
-        # Upload directly so the multipart tuple carries the real mimetype
-        # (KBClient.upload_file hardcodes text/plain).
-        files = [("files", (originalname, io.BytesIO(buffer), mimetype))]
-        resp = requests.post(
-            kb_client._url(f"/{kb_id}/upload"),
-            headers=kb_client._headers(content_type=None),
-            files=files,
-            timeout=pipeshub_client.timeout_seconds,
+        upload_resp = kb_client.upload_file(
+            kb_id,
+            originalname,
+            buffer,
+            mimetype=mimetype,
         )
-        upload_resp = pipeshub_client._handle_response(resp)
         record_id = _extract_record_id(upload_resp)
         assert record_id, f"Upload returned no record id: {upload_resp}"
         logger.info(

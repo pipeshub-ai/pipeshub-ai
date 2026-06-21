@@ -186,6 +186,9 @@ class ConcreteTransactionStore(TransactionStore):
     async def ensure_team_app_edge(self, connector_id: str, org_id: str) -> None:
         pass
 
+    async def find_slack_burst_record_by_ts(self, connector_id, channel_id, ts):
+        return None
+
 
 class TestDataStoreProvider:
     """Tests for DataStoreProvider base class."""
@@ -345,3 +348,15 @@ class TestBaseDataStoreCannotBeInstantiated:
     def test_transaction_store_is_abstract(self):
         with pytest.raises(TypeError):
             TransactionStore()
+
+
+# ============================================================================
+# Slack diff: find_slack_burst_record_by_ts abstract method on BaseDataStore
+# ============================================================================
+
+class TestBaseDataStoreFindSlackBurstRecord:
+    def test_abstract_method_exists(self):
+        import inspect
+        assert hasattr(BaseDataStore, "find_slack_burst_record_by_ts")
+        method = getattr(BaseDataStore, "find_slack_burst_record_by_ts")
+        assert getattr(method, "__isabstractmethod__", False) is True
