@@ -54,6 +54,10 @@ export class MailService {
         templateData,
       };
 
+      if (initiator.orgId) {
+        data.orgId = initiator.orgId;
+      }
+
       if (attachedDocuments) {
         data.attachments = attachedDocuments;
       }

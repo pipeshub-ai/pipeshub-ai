@@ -87,6 +87,12 @@ const DocumentSchema = new Schema(
         'readonly',
       ] as DocumentPermission[],
     },
+    orgId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'orgs',
+      required: true,
+      index: true,
+    },
     initiatorUserId: {
       type: mongoose.Types.ObjectId,
     },
@@ -147,6 +153,9 @@ const DocumentSchema = new Schema(
     },
   },
 );
+
+DocumentSchema.index({ orgId: 1, isDeleted: 1 });
+DocumentSchema.index({ orgId: 1, initiatorUserId: 1, isDeleted: 1 });
 
 // Create and export the model
 export const DocumentModel = mongoose.model<DocumentModel>('Document', DocumentSchema);

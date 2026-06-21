@@ -95,7 +95,7 @@ describe('accountTypeCheck Middleware', () => {
     expect(orgFindStub.calledOnce).to.be.true;
     const query = orgFindStub.firstCall.args[0];
     expect(query).to.deep.equal({
-      orgId: '507f1f77bcf86cd799439012',
+      _id: '507f1f77bcf86cd799439012',
       isDeleted: false,
     });
   });
