@@ -126,9 +126,6 @@ cd pipeshub-ai/deployment/docker-compose
 # Build and start (Neo4j variant)
 docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai up --build -d
 
-# Build and start (ArangoDB variant)
-docker compose -f docker-compose.build.arango.yml -p pipeshub-ai up --build -d
-
 # Stop
 docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai down
 ```
