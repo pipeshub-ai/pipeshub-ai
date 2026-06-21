@@ -6,6 +6,7 @@ services:
       dockerfile: Dockerfile.dev
       args:
         - BUILDKIT_INLINE_CACHE=1
+        - PYTHON_DEPS_BASE=${PYTHON_DEPS_BASE:-build-base}
       shm_size: 4gb
       ulimits:
         memlock:

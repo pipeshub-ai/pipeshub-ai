@@ -19,11 +19,12 @@ services:
     deploy:
       resources:
         limits:
-          memory: 12G
+          memory: 10G
     shm_size: 2gb
     init: true
     logging:
       driver: local
+      
       options:
         max-size: "${LOG_MAX_SIZE:-20m}"
         max-file: "${LOG_MAX_FILE:-15}"
@@ -64,7 +65,7 @@ services:
       
       # Message broker config
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
-      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-100000}
 
       # Kafka config
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
