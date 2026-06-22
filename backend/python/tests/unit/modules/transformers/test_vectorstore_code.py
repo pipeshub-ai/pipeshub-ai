@@ -155,7 +155,7 @@ def _capture_index(vs, bc, record=None):
          patch.object(vs, "_cleanup_orphaned_embeddings_if_needed", new=AsyncMock(side_effect=fake_cleanup)), \
          patch.object(vs, "_refresh_record_summary_documents", new=AsyncMock()):
         import asyncio
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             vs.index_documents(bc, "org-1", "rec-1", "vrid-1", record=record)
         )
 
