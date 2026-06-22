@@ -39,28 +39,37 @@ const timestampQuerySchema = z.preprocess(
   z.number().int().positive().optional(),
 );
 
-const teamSearchSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(1000, { message: 'Search parameter too long (max 1000 characters)' })
-  .optional()
-  .superRefine((value, ctx) => {
-    if (!value) {
-      return;
-    }
-    try {
-      validateNoXSS(value, 'search parameter');
-      validateNoFormatSpecifiers(value, 'search parameter');
-    } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : 'Invalid search parameter';
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message,
-      });
-    }
-  });
+const normalizeOptionalSearch = (arg: unknown): string | undefined => {
+  if (arg === undefined || arg === '') {
+    return undefined;
+  }
+  const trimmed = String(arg).trim();
+  return trimmed === '' ? undefined : trimmed;
+};
+
+const teamSearchSchema = z.preprocess(
+  normalizeOptionalSearch,
+  z
+    .string()
+    .min(1)
+    .max(1000, { message: 'Search parameter too long (max 1000 characters)' })
+    .optional(),
+).superRefine((value, ctx) => {
+  if (!value) {
+    return;
+  }
+  try {
+    validateNoXSS(value, 'search parameter');
+    validateNoFormatSpecifiers(value, 'search parameter');
+  } catch (error: unknown) {
+    const message =
+      error instanceof Error ? error.message : 'Invalid search parameter';
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message,
+    });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Reusable sub-schemas

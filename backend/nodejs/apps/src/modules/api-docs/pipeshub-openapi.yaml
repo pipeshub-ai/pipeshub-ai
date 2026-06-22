@@ -16366,7 +16366,7 @@ paths:
             type: string
             minLength: 1
             maxLength: 1000
-          description: Search team names (trimmed; blank-after-trim rejected)
+          description: Search team names; empty or whitespace-only values are ignored (no filter)
         - in: query
           name: created_by
           required: false

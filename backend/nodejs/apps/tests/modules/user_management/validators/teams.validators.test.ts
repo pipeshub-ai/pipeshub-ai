@@ -91,6 +91,18 @@ describe('user_management/validators/teams.validators', () => {
       }
     });
 
+    it('should treat empty search as omitted', () => {
+      for (const search of ['', '   ']) {
+        const result = getUserTeamsQuerySchema.safeParse({
+          query: { search },
+        });
+        expect(result.success).to.be.true;
+        if (result.success) {
+          expect(result.data.query.search).to.equal(undefined);
+        }
+      }
+    });
+
     it('should reject XSS in search', () => {
       const result = getUserTeamsQuerySchema.safeParse({
         query: { search: '<script>alert(1)</script>' },
