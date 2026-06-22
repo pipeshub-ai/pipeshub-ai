@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import time
 import traceback
 from typing import Any
@@ -92,11 +94,9 @@ class RetrievalService:
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
         self.logger.info(f"Retrieval service initialized with collection name: {self.collection_name}")
-        # NOTE: the dense embedding model is intentionally NOT cached on the
-        # instance. It is re-resolved from configuration on every search so the
-        # query service always embeds queries with the exact same model the
-        # indexing pipeline used to write the collection. Caching it here risks
-        # serving a stale model after the embedding configuration changes.
+        self._cached_dense_embeddings: Embeddings | None = None
+        self._cached_embedding_config_hash: str | None = None
+        self._embedding_model_lock = asyncio.Lock()
 
     async def _ensure_sparse_embeddings(self) -> FastEmbedSparse:
         """Lazily initialise FastEmbedSparse in a worker thread."""
@@ -146,42 +146,69 @@ class RetrievalService:
             self.logger.error(f"Error getting LLM: {str(e)}")
             return None
 
-    async def get_embedding_model_instance(self, use_cache: bool = False) -> Embeddings | None:
-        """Resolve the dense embedding model fresh from configuration on every call.
+    @staticmethod
+    def _embedding_config_hash(embedding_configs: list[dict[str, Any]] | None) -> str:
+        """Deterministic hash of the embedding configuration for cache invalidation."""
+        if not embedding_configs:
+            return "default"
+        serialisable = []
+        for cfg in embedding_configs:
+            serialisable.append({
+                "provider": cfg.get("provider"),
+                "isDefault": cfg.get("isDefault"),
+                "model": (cfg.get("configuration") or {}).get("model"),
+                "endpoint": (cfg.get("configuration") or {}).get("endpoint"),
+            })
+        return hashlib.sha256(
+            json.dumps(serialisable, sort_keys=True).encode()
+        ).hexdigest()[:16]
 
-        The query service MUST embed queries with the exact same model the indexing
-        pipeline used to write the collection — otherwise the query vectors won't
-        match the stored vectors and Qdrant rejects the search with a dimension
-        error. We therefore do not cache the model instance and re-read the config
-        each time, resolving the model identically to the indexing pipeline
-        (``app/modules/transformers/vectorstore.py``): prefer the ``isDefault``
-        embedding config, fall back to the first one, and only use the built-in
-        default model when no embedding config is present.
+    async def get_embedding_model_instance(self, use_cache: bool = False) -> Embeddings | None:
+        """Resolve the dense embedding model, caching it until the config changes.
+
+        The query service MUST embed queries with the exact same model the
+        indexing pipeline used to write the collection. We cache the model
+        instance but re-read the config on every call (cheap) and compare a
+        config hash so the cache is invalidated whenever the admin changes the
+        embedding provider/model.
         """
         try:
             ai_models = await self.config_service.get_config(
                 config_node_constants.AI_MODELS.value, use_cache=use_cache
             )
             embedding_configs = (ai_models or {}).get("embedding")
+            config_hash = self._embedding_config_hash(embedding_configs)
 
-            if not embedding_configs:
-                self.logger.info("No embedding config found; using default embedding model")
-                # Construction may do blocking I/O, so offload to a worker thread.
-                return await asyncio.to_thread(get_default_embedding_model)
+            if (
+                self._cached_dense_embeddings is not None
+                and self._cached_embedding_config_hash == config_hash
+            ):
+                return self._cached_dense_embeddings
 
-            # Mirror the indexing pipeline's selection so query vectors match the
-            # vectors written to the collection.
-            selected_config = next(
-                (c for c in embedding_configs if c.get("isDefault", False)),
-                embedding_configs[0],
-            )
-            provider = selected_config["provider"]
-            self.logger.info(f"Using embedding provider: {provider}")
-            # Provider clients (Bedrock/OpenAI/etc.) may do blocking I/O on
-            # construction, so offload to a worker thread.
-            return await asyncio.to_thread(
-                get_embedding_model, provider, selected_config
-            )
+            async with self._embedding_model_lock:
+                if (
+                    self._cached_dense_embeddings is not None
+                    and self._cached_embedding_config_hash == config_hash
+                ):
+                    return self._cached_dense_embeddings
+
+                if not embedding_configs:
+                    self.logger.info("No embedding config found; using default embedding model")
+                    dense_embeddings = await asyncio.to_thread(get_default_embedding_model)
+                else:
+                    selected_config = next(
+                        (c for c in embedding_configs if c.get("isDefault", False)),
+                        embedding_configs[0],
+                    )
+                    provider = selected_config["provider"]
+                    self.logger.info(f"Using embedding provider: {provider}")
+                    dense_embeddings = await asyncio.to_thread(
+                        get_embedding_model, provider, selected_config
+                    )
+
+                self._cached_dense_embeddings = dense_embeddings
+                self._cached_embedding_config_hash = config_hash
+                return dense_embeddings
         except Exception as e:
             self.logger.error(f"Error getting embedding model: {str(e)}")
             return None
@@ -663,15 +690,17 @@ class RetrievalService:
                     models.Prefetch(
                         query=dense_embedding,
                         using="dense",
-                        limit=limit * 2,  # Fetch more candidates
+                        limit=limit * 2,
+                        filter=filter,
                     ),
                     models.Prefetch(
                         query=self.to_qdrant_sparse(sparse_embedding),
                         using="sparse",
                         limit=limit * 2,
+                        filter=filter,
                     ),
                 ],
-                query=models.FusionQuery(fusion=models.Fusion.RRF),  # Reciprocal Rank Fusion
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
                 with_payload=True,
                 limit=limit,
                 filter=filter,
