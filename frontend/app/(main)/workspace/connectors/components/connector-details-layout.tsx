@@ -120,7 +120,7 @@ export function ConnectorDetailsLayout({
     [onRefreshInstance, refreshingCardIds, addToast, t]
   );
 
-  const refreshAllBusy = isRefreshingAll || refreshingCardIds.size > 0;
+  const refreshAllBusy = isRefreshingAll;
 
   return (
     <Flex

@@ -1,7 +1,9 @@
 """
 Parse supported file bytes into a ``BlocksContainer``, mirroring ``Processor`` flows.
 
-- DOCX / PPTX / MD / (HTML→MD) / TXT: ``DoclingProcessor`` parse + ``create_blocks``.
+- PDF: ``PyMuPDFOpenCVProcessor.load_document`` (PyMuPDF + OpenCV), not Docling.
+- HTML: ``clean_html`` + ``replace_relative_image_urls``, extract images to base64, then ``HTMLParser.parse()``.
+- DOCX / PPTX / MD / TXT: ``DoclingProcessor`` parse + ``create_blocks``.
 - DOC / XLS / PPT: OLE2 → OOXML via existing converters, then same as DOCX / XLSX / PPTX.
 - CSV / TSV: decode → ``read_raw_rows`` → ``find_tables_in_csv`` →
   ``get_blocks_from_csv_with_multiple_tables`` (requires LLM).
@@ -17,19 +19,13 @@ import io
 import logging
 from pathlib import Path
 from typing import Final, Optional, Union
-from bs4 import BeautifulSoup
-from html_to_markdown import convert as _html_convert
 
-def convert(html: str) -> str:
-    """Wrap html_to_markdown.convert to return a plain string."""
-    result = _html_convert(html)
-    return result.content if hasattr(result, 'content') else str(result)
 from pydantic import BaseModel
 
 from app.api.routes.chatbot import get_model_config
 from app.config.configuration_service import ConfigurationService
 from app.models.entities import FileRecord, LlmTextContent
-from app.models.blocks import BlockType, BlocksContainer
+from app.models.blocks import BlocksContainer
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
@@ -122,9 +118,9 @@ class FileContentParser:
         self._logger = logger
         self._config = config_service
 
-        self._md_parser = MarkdownParser()
+        self._md_parser = MarkdownParser(logger=logger, config_service=config_service)
         self._mdx_parser = MDXParser()
-        self._html_parser = HTMLParser()
+        self._html_parser = HTMLParser(logger=logger, config_service=config_service)
         self._doc_parser = DocParser()
         self._xls_parser = XLSParser()
         self._ppt_parser = PPTParser()
@@ -375,20 +371,23 @@ class FileContentParser:
         return await self._markdown_string_to_blocks(md_content, file_name)
 
     async def handle_html(self, raw: bytes, file_name: str) -> BlocksContainer:
-        try:
-            soup = BeautifulSoup(raw, "html.parser")
-            for element in soup(
-                ["script", "style", "noscript", "iframe", "nav", "footer", "header"]
-            ):
-                element.decompose()
-            html_content = str(soup)
-        except Exception as e:
-            self._logger.warning("Failed to clean HTML: %s", e)
-            html_content = raw.decode("utf-8", errors="replace")
-
+        html_content = raw.decode("utf-8", errors="replace")
+        html_content = self._html_parser.clean_html(html_content)
         html_content = self._html_parser.replace_relative_image_urls(html_content)
-        markdown = convert(html_content)
-        return await self._markdown_string_to_blocks(markdown, file_name)
+
+        caption_map: dict[str, str] = {}
+        modified_html, images = self._html_parser.extract_and_replace_images(html_content)
+        urls_to_convert = [image["url"] for image in images]
+        if urls_to_convert:
+            base64_urls = await self._image_parser.urls_to_base64(urls_to_convert)
+            for i, image in enumerate(images):
+                if base64_urls[i]:
+                    caption_map[image["new_alt_text"]] = base64_urls[i]
+
+        return await self._html_parser.parse(
+            modified_html,
+            caption_map=caption_map if caption_map else None,
+        )
 
     async def _markdown_string_to_blocks(
         self,
@@ -408,26 +407,8 @@ class FileContentParser:
                 if base64_urls[i]:
                     caption_map[image["new_alt_text"]] = base64_urls[i]
 
-        md_bytes = self._md_parser.parse_string(modified_markdown)
-        processor = DoclingProcessor(logger=self._logger, config=self._config)
-        stem = Path(file_name).stem
-        conv_res = await processor.parse_document(f"{stem}.md", md_bytes)
-        block_containers = await processor.create_blocks(conv_res)
-
-        for block in block_containers.blocks:
-            if block.type == BlockType.IMAGE and block.image_metadata:
-                caps = block.image_metadata.captions
-                if caps:
-                    caption = caps[0]
-                    uri = caption_map.get(caption)
-                    if uri:
-                        if block.data is None or not isinstance(block.data, dict):
-                            block.data = {"uri": uri}
-                        else:
-                            block.data["uri"] = uri
-                    else:
-                        self._logger.warning(
-                            "Skipping image with caption %r — no base64 data", caption
-                        )
-
-        return block_containers
+        return await self._md_parser.parse(
+            modified_markdown,
+            caption_map=caption_map or None,
+            name=file_name,
+        )

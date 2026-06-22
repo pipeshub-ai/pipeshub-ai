@@ -1035,3 +1035,48 @@ class TestGraphDataStoreTransaction:
         mock_graph_provider.begin_transaction.assert_awaited_once()
         mock_graph_provider.commit_transaction.assert_not_awaited()
         mock_graph_provider.rollback_transaction.assert_awaited_once()
+
+
+# ============================================================================
+# Slack diff: GraphTransactionStore.find_slack_burst_record_by_ts
+# ============================================================================
+
+class TestGraphTransactionStoreFindSlackBurst:
+    @pytest.mark.asyncio
+    async def test_delegates_to_graph_provider(self):
+        from app.connectors.core.base.data_store.graph_data_store import GraphTransactionStore
+        from app.models.entities import Record
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_record = MagicMock(spec=Record)
+        mock_graph = MagicMock()
+        mock_graph.find_slack_burst_record_by_ts = AsyncMock(return_value=mock_record)
+
+        store = GraphTransactionStore.__new__(GraphTransactionStore)
+        store.graph_provider = mock_graph
+        store.txn = "txn-token"
+
+        result = await store.find_slack_burst_record_by_ts(
+            connector_id="conn-1", channel_id="C123", ts="1620000000.000100"
+        )
+        assert result is mock_record
+        mock_graph.find_slack_burst_record_by_ts.assert_called_once_with(
+            "conn-1", "C123", "1620000000.000100", transaction="txn-token"
+        )
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_not_found(self):
+        from app.connectors.core.base.data_store.graph_data_store import GraphTransactionStore
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_graph = MagicMock()
+        mock_graph.find_slack_burst_record_by_ts = AsyncMock(return_value=None)
+
+        store = GraphTransactionStore.__new__(GraphTransactionStore)
+        store.graph_provider = mock_graph
+        store.txn = None
+
+        result = await store.find_slack_burst_record_by_ts(
+            connector_id="conn-1", channel_id="C123", ts="1.0"
+        )
+        assert result is None

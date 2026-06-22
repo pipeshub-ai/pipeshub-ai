@@ -33,7 +33,7 @@ class MarkdownItParser:
       alt-text to ``Image_N`` labels before parsing.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, **kwargs: object) -> None:
         self._converter = MarkdownToBlocksConverter()
 
     # ------------------------------------------------------------------
@@ -49,14 +49,29 @@ class MarkdownItParser:
 
         Args:
             md_content: Markdown source string.
-            caption_map: Optional mapping of ``Image_N`` alt-text labels to
-                base-64 data URIs (or any string value).  When provided,
-                matching image blocks will have their ``data["uri"]`` set.
+            caption_map: Optional mapping of image alt-text to base-64 data URIs.
+                Keys must be unique per image. The intended usage is::
+
+                    modified_md, images = parser.extract_and_replace_images(md)
+                    caption_map = {img["new_alt_text"]: base64_uri for img, base64_uri in ...}
+                    container = parser.parse_to_blocks(modified_md, caption_map)
+
+                The ``extract_and_replace_images`` step normalises alt-text to
+                unique ``Image_N`` labels, ensuring no key collisions.
 
         Returns:
             Populated ``BlocksContainer``.
         """
         return self._converter.convert(md_content, caption_map=caption_map)
+
+    async def parse(
+        self,
+        md_content: str,
+        caption_map: Dict[str, str] | None = None,
+        name: str | None = None,
+    ) -> BlocksContainer:
+        """Async wrapper around ``parse_to_blocks`` for protocol conformance."""
+        return self.parse_to_blocks(md_content, caption_map)
 
     def extract_and_replace_images(
         self, md_content: str

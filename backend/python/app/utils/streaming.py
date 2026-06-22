@@ -762,7 +762,15 @@ async def execute_tool_calls(
         messages.extend(tool_msgs)
         if has_content_handler_this_hop and not tool_instructions_added:
             has_sql_connector = tool_runtime_kwargs.get("has_sql_connector", False)
-            instructions = ContentHandler.build_tool_instructions(has_sql_connector)
+            has_jira = any(
+                tr.get("has_jira_tickets_in_context")
+                for tr in tool_results_inner
+                if tr.get("ok")
+            )
+            instructions = ContentHandler.build_tool_instructions(
+                has_sql_connector,
+                has_jira_tickets_in_context=has_jira,
+            )
             ai_idx = len(messages) - len(tool_msgs) - 1
             inserted = False
             for i in range(ai_idx - 1, -1, -1):

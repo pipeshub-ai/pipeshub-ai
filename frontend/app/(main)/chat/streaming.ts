@@ -17,6 +17,7 @@ import { startTransition } from 'react';
 import { ChatApi, type StreamMessageCallbacks } from './api';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel } from './store';
+import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import { debugLog } from './debug-logger';
 import { loadHistoricalMessages, getThreadMessagePlainText } from './runtime';
 import { i18n } from '@/lib/i18n';
@@ -604,10 +605,19 @@ export async function streamRegenerateForSlot(
   // Context is the slot's own agent (so regenerate for an agent thread
   // always picks from that agent's models, never leaks assistant choices).
   const regenCtxKey = ctxKeyFromAgent(slot.threadAgentId ?? null);
-  const resolvedModel: ModelOverride =
-    modelOverride
-      ?? getEffectiveModel(regenCtxKey)
-      ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
+  let resolvedModel: ModelOverride | null =
+    modelOverride ?? getEffectiveModel(regenCtxKey);
+  if (!resolvedModel) {
+    try {
+      await fetchModelsForContext(regenCtxKey);
+      resolvedModel = getEffectiveModel(regenCtxKey);
+    } catch (error) {
+      console.warn('[streaming] Failed to fetch models for context, proceeding with defaults:', error);
+    }
+  }
+  if (!resolvedModel) {
+    resolvedModel = { modelKey: '', modelName: '', modelFriendlyName: '' };
+  }
 
   const abortController = new AbortController();
 
@@ -821,6 +831,7 @@ export async function streamRegenerateForSlot(
         {
           modelKey: resolvedModel.modelKey.trim(),
           modelName: resolvedModel.modelName || resolvedModel.modelKey,
+          modelFriendlyName: resolvedModel.modelFriendlyName || resolvedModel.modelName || resolvedModel.modelKey,
           chatMode: agentApiChatMode,
           tools: regenTools,
           filters: originalFilters ?? buildAssistantApiFilters(store.settings.filters),

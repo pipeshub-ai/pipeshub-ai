@@ -23,6 +23,7 @@ from messaging.conftest import (
     _redis_port,
     consume_kafka_messages,
     consume_redis_messages,
+    requires_kafka,
 )
 from messaging.payloads import (
     ALL_AI_CONFIG_EVENTS,
@@ -310,6 +311,7 @@ class TestRedisProducerConsumerE2E:
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
+@requires_kafka
 class TestKafkaProducerConsumerE2E:
     """Use the actual KafkaMessagingProducer and KafkaMessagingConsumer classes
     to verify produce → consume delivers every event."""
@@ -890,6 +892,7 @@ class TestRedisIndexingConsumerPoison:
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
+@requires_kafka
 class TestKafkaNegative:
     """Kafka: edge cases and failure paths."""
 
@@ -1348,6 +1351,7 @@ class TestRedisOverloadAndRecovery:
 @pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.asyncio(loop_scope="session")
+@requires_kafka
 class TestKafkaOverloadAndRecovery:
     """Kafka: behaviour under slow handlers and overload."""
 

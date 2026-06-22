@@ -14,6 +14,7 @@ from logging import Logger
 from typing import Any, Literal, Optional
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -61,6 +62,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.atlassian.core.apps import ConfluenceDataCenterApp
 from app.connectors.sources.atlassian.core.confluence_html import prepare_streaming_html
+from app.sources.client.http.http_retry import call_with_retry
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -4260,9 +4262,13 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 )
 
             datasource = await self._get_fresh_datasource()
-            response = await datasource.get_content_v1(
-                content_id=str(page_id),
-                expand=CONTENT_V1_SINGLE_EXPAND,
+            response = await call_with_retry(
+                lambda: datasource.get_content_v1(
+                    content_id=str(page_id),
+                    expand=CONTENT_V1_SINGLE_EXPAND,
+                ),
+                logger=self.logger,
+                label=f"content/{page_id}",
             )
 
             # Check response
@@ -4298,10 +4304,12 @@ class ConfluenceDataCenterConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Failed to fetch content: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to fetch content: {str(e)}"
-            )
+            # Extract original HTTP status if available
+            status_code = 500
+            if isinstance(e, httpx.HTTPStatusError):
+                status_code = e.response.status_code
+            detail = str(e)
+            raise HTTPException(status_code=status_code, detail=detail) from e
 
     async def _fetch_comment_content(self, record: CommentRecord) -> str:
         """
@@ -4328,9 +4336,13 @@ class ConfluenceDataCenterConnector(BaseConnector):
                     detail=f"Unsupported comment type: {record.record_type}"
                 )
 
-            response = await datasource.get_content_v1(
-                content_id=str(comment_id),
-                expand=CONTENT_V1_COMMENT_EXPAND,
+            response = await call_with_retry(
+                lambda: datasource.get_content_v1(
+                    content_id=str(comment_id),
+                    expand=CONTENT_V1_COMMENT_EXPAND,
+                ),
+                logger=self.logger,
+                label=f"comment/{comment_id}",
             )
 
             # Check response
@@ -4368,14 +4380,19 @@ class ConfluenceDataCenterConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Failed to fetch comment content: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to fetch comment content: {str(e)}"
-            )
+            # Extract original HTTP status if available
+            status_code = 500
+            if isinstance(e, httpx.HTTPStatusError):
+                status_code = e.response.status_code
+            detail = str(e)
+            raise HTTPException(status_code=status_code, detail=detail) from e
 
     async def _fetch_attachment_content(self, record: Record) -> AsyncGenerator[bytes, None]:
         """
         Stream attachment file content from Confluence.
+
+        Downloads the full file with retry before yielding so transient upstream
+        failures never corrupt a partially-sent HTTP response.
 
         Args:
             record: Record with external_record_id and parent_external_record_id
@@ -4386,29 +4403,33 @@ class ConfluenceDataCenterConnector(BaseConnector):
         Raises:
             HTTPException: If attachment not found or download fails
         """
+        attachment_id = record.external_record_id
+        parent_content_id = record.parent_external_record_id
+
+        if not attachment_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No attachment ID available for record {record.id}"
+            )
+
+        if not parent_content_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No parent content ID available for attachment {attachment_id}"
+            )
+
         try:
-            attachment_id = record.external_record_id
-            parent_content_id = record.parent_external_record_id
-
-            if not attachment_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"No attachment ID available for record {record.id}"
-                )
-
-            if not parent_content_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"No parent content ID available for attachment {attachment_id}"
-                )
-
             datasource = await self._get_fresh_datasource()
 
-            # DC has no REST download endpoint; use _links.download from attachment metadata.
-            meta_response = await datasource.get_content_v1(
-                content_id=str(attachment_id),
-                expand="",
+            meta_response = await call_with_retry(
+                lambda: datasource.get_content_v1(
+                    content_id=str(attachment_id),
+                    expand="",
+                ),
+                logger=self.logger,
+                label=f"attachment_meta/{attachment_id}",
             )
+
             if not meta_response or meta_response.status != HttpStatusCode.SUCCESS.value:
                 raise HTTPException(
                     status_code=404,
@@ -4422,17 +4443,34 @@ class ConfluenceDataCenterConnector(BaseConnector):
                     detail=f"No download link for attachment {attachment_id}",
                 )
 
-            async for chunk in datasource.download_attachment_from_link(download_path):
-                yield chunk
+            async def _read_attachment_bytes() -> bytes:
+                chunks: list[bytes] = []
+                async for chunk in datasource.download_attachment_from_link(download_path):
+                    chunks.append(chunk)
+                return b"".join(chunks)
 
+            data = await call_with_retry(
+                _read_attachment_bytes,
+                logger=self.logger,
+                label=f"attachment/{attachment_id}",
+            )
         except HTTPException:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to download attachment {record.external_record_id}: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to download attachment: {str(e)}"
+            self.logger.error(
+                f"Failed to download attachment {attachment_id}: {e}",
+                exc_info=True,
             )
+            # Extract original HTTP status if available
+            status_code = 500
+            if isinstance(e, httpx.HTTPStatusError):
+                status_code = e.response.status_code
+            detail = str(e)
+            raise HTTPException(status_code=status_code, detail=detail) from e
+
+        chunk_size = 8192
+        for offset in range(0, len(data), chunk_size):
+            yield data[offset : offset + chunk_size]
 
     async def run_incremental_sync(self) -> None:
         """Run incremental sync (delegates to full sync)."""

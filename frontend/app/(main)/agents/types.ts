@@ -186,6 +186,77 @@ export interface KnowledgeBaseForBuilder {
   connectorId: string;
 }
 
+// ── Knowledge Hub App Nodes (for agent builder apps palette) ─────
+
+/** Single node item from GET /api/v1/knowledgeBase/knowledge-hub/nodes */
+export interface KnowledgeHubAppNode {
+  id: string;
+  name: string;
+  nodeType: string;
+  parentId: string | null;
+  origin: string;
+  connector: string | null;
+  recordType: string | null;
+  recordGroupType: string | null;
+  indexingStatus: string | null;
+  reason: string | null;
+  createdAt: number;
+  updatedAt: number;
+  sizeInBytes: number | null;
+  mimeType: string | null;
+  extension: string | null;
+  webUrl: string | null;
+  hasChildren: boolean;
+  previewRenderable: boolean | null;
+  permission: {
+    role: string;
+    canEdit: boolean;
+    canDelete: boolean;
+  } | null;
+  sharingStatus: string | null;
+  isInternal: boolean;
+}
+
+/** Pagination envelope from knowledge-hub nodes API */
+export interface KnowledgeHubNodesPagination {
+  page: number;
+  limit: number;
+  totalItems: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrev: boolean;
+}
+
+/** Full response from GET /api/v1/knowledgeBase/knowledge-hub/nodes */
+export interface KnowledgeHubNodesApiResponse {
+  success: boolean;
+  error: string | null;
+  id: string | null;
+  currentNode: { id: string; name: string; nodeType: string; subType?: string | null } | null;
+  parentNode: { id: string; name: string; nodeType: string; subType?: string | null } | null;
+  items: KnowledgeHubAppNode[];
+  pagination: KnowledgeHubNodesPagination;
+  filters: {
+    applied: {
+      q: string | null;
+      nodeTypes: string[] | null;
+      recordTypes: string[] | null;
+      origins: string[] | null;
+      connectorIds: string[] | null;
+      indexingStatus: string[] | null;
+      createdAt: unknown;
+      updatedAt: unknown;
+      size: unknown;
+      sortBy: string;
+      sortOrder: string;
+    };
+    available: unknown;
+  };
+  breadcrumbs: unknown;
+  counts: unknown;
+  permissions: unknown;
+}
+
 // ── Client return shapes (AgentsApi) ─────────────────────────────
 
 /** Normalized result of {@link AgentsApi.getAgents}. */

@@ -3313,9 +3313,8 @@ components:
     UploadStreamSSEEvent:
       type: object
       description: |
-        Server-Sent Event envelope for the KB streaming upload endpoints
-        (`POST /knowledgeBase/{kbId}/upload` and
-        `POST /knowledgeBase/{kbId}/folder/{folderId}/upload`).
+        Server-Sent Event envelope for the KB streaming upload endpoint
+        (`POST /knowledgeBase/{kbId}/upload`, with optional `folderId` query param).
 
         These endpoints respond with `Content-Type: text/event-stream`: the upload
         and its per-file progress are a single request. The body streams one
@@ -4686,7 +4685,10 @@ components:
           description: References to source documents used in the response
         confidence:
           type: string
-          description: AI's confidence level in the response
+          nullable: true
+          description: |
+            AI confidence in the answer. Present only on `bot_response` messages,
+            and only when the model emitted a trailing confidence block.
         followUpQuestions:
           type: array
           items:
@@ -8426,6 +8428,10 @@ components:
         confidence:
           type: string
           enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
+          nullable: true
+          description: |
+            AI confidence in the answer. Present only on `bot_response` messages,
+            and only when the model emitted a trailing confidence block.
         followUpQuestions:
           type: array
           items:
@@ -20215,31 +20221,42 @@ paths:
     post:
       tags:
         - Upload
-      summary: Upload files to knowledge base
+      summary: Upload files to knowledge base or folder
       description: |
-        Upload one or more files directly to a knowledge base.<br><br>
-        <b>Overview:</b><br>
-        Batch upload multiple files in a single request. Each file becomes a new record in the KB with automatic content indexing.<br><br>
-        <b>Upload Limits:</b><br>
-        <ul>
-        <li><b>Max files per request:</b> 1000</li>
-        <li><b>Default max file size:</b> 30MB (configurable via platform settings)</li>
-        <li>Use <code>GET /knowledgeBase/limits</code> to check current limits</li>
-        </ul>
-        <b>Supported File Types:</b><br>
-        Documents (PDF, DOCX, DOC, XLS, XLSX, PPT, PPTX, TXT, CSV, MD), Images (PNG, JPG, GIF, SVG, WebP, BMP, HEIC), Web (HTML, HTM), and Google Workspace formats.<br><br>
-        <b>File Metadata:</b><br>
-        Use <code>files_metadata</code> to provide additional info like file paths and last modified timestamps.<br><br>
-        <b>Versioning:</b><br>
-        Set <code>isVersioned: true</code> to enable version tracking for uploaded files.<br><br>
-        <b>Streaming response:</b><br>
-        This endpoint responds with <code>Content-Type: text/event-stream</code>.
+        Upload one or more files to a knowledge base root or to a specific folder.
+
+        **Overview**
+
+        Batch upload multiple files in a single request. Each file becomes a new record with automatic content indexing.
+        Omit the `folderId` query parameter to upload to the KB root; include it to upload into that folder.
+
+        **Upload Limits**
+
+        - **Max files per request:** 1000
+        - **Default max file size:** 30MB (configurable via platform settings)
+        - Use `GET /knowledgeBase/limits` to check current limits
+
+        **Supported File Types**
+
+        Documents (PDF, DOCX, DOC, XLS, XLSX, PPT, PPTX, TXT, CSV, MD), Images (PNG, JPG, JPEG, SVG, WebP), Web (HTML, HTM), and Google Workspace formats.
+
+        **File Metadata**
+
+        Use `files_metadata` to provide additional info like file paths and last modified timestamps.
+
+        **Versioning**
+
+        Set `isVersioned: true` to enable version tracking for uploaded files.
+
+        **Streaming response**
+
+        This endpoint responds with `Content-Type: text/event-stream`.
         The upload and its per-file progress are a single request: the body streams
-        a <code>file:succeeded</code> or <code>file:failed</code> event per file
+        a `file:succeeded` or `file:failed` event per file
         (including files rejected up front for size/type), followed by a final
-        <code>done</code> summary, then closes. See the
-        <code>UploadStreamSSEEvent</code> schema for the event/payload contract.
-      operationId: uploadRecordsToKB
+        `done` summary, then closes. See the
+        `UploadStreamSSEEvent` schema for the event/payload contract.
+      operationId: uploadRecords
       security:
         - bearerAuth: []
         - oauth2: [kb:upload]
@@ -20248,6 +20265,12 @@ paths:
           in: path
           required: true
           description: Knowledge base ID
+          schema:
+            type: string
+        - name: folderId
+          in: query
+          required: false
+          description: Target folder ID. Omit to upload to the KB root.
           schema:
             type: string
       requestBody:
@@ -20295,83 +20318,9 @@ paths:
         '403':
           description: Insufficient permissions (requires WRITER or higher)
         '404':
-          description: Knowledge base not found
+          description: Knowledge base or folder not found
         '413':
           description: File size exceeds maximum allowed
-        '429':
-          description: Too many upload requests, or too many concurrent uploads for this user
-        '500':
-          description: Failed to verify knowledge base access
-
-  /knowledgeBase/{kbId}/folder/{folderId}/upload:
-    post:
-      tags:
-        - Upload
-      summary: Upload files to folder
-      description: |
-        Upload files directly to a specific folder within a knowledge base.<br><br>
-        <b>Same as KB upload</b> but files are placed in the specified folder instead of KB root.<br><br>
-        <b>Streaming response:</b><br>
-        Like <code>POST /knowledgeBase/{kbId}/upload</code>, this endpoint responds
-        with <code>Content-Type: text/event-stream</code> and streams a
-        <code>file:succeeded</code> / <code>file:failed</code> event per file and a
-        final <code>done</code> summary. See the <code>UploadStreamSSEEvent</code>
-        schema for the event/payload contract.
-      operationId: uploadRecordsToFolder
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:upload]
-      parameters:
-        - name: kbId
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: folderId
-          in: path
-          required: true
-          description: Target folder ID
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              properties:
-                files:
-                  type: array
-                  items:
-                    type: string
-                    format: binary
-                files_metadata:
-                  type: string
-                  description: JSON array with file metadata
-                isVersioned:
-                  type: boolean
-                  default: true
-              required:
-                - files
-      responses:
-        '200':
-          description: |
-            SSE stream (`text/event-stream`) of per-file upload outcomes. The
-            stream emits `file:succeeded` / `file:failed` per file and a final
-            `done` summary, then closes. See `UploadStreamSSEEvent`.
-          content:
-            text/event-stream:
-              schema:
-                $ref: '#/components/schemas/UploadStreamSSEEvent'
-        '400':
-          description: Invalid request
-        '401':
-          description: Unauthorized
-        '403':
-          description: Insufficient permissions
-        '404':
-          description: Folder or knowledge base not found
         '429':
           description: Too many upload requests, or too many concurrent uploads for this user
         '500':
@@ -24100,6 +24049,7 @@ paths:
                               default: MARKDOWN
                             confidence:
                               type: string
+                              nullable: true
                               description: |
                                 AI confidence in the answer. Present only on
                                 `bot_response` messages, and only when the

@@ -50,7 +50,7 @@ on:
       message_broker:
         description: 'Message broker to use'
         required: true
-        default: 'kafka'
+        default: 'redis'
         type: choice
         options:
           - kafka
@@ -62,7 +62,7 @@ permissions:
 env:
   PIPESHUB_BASE_URL: http://localhost:3000
   GRAPH_DB: ${{ github.event.inputs.graph_db || 'neo4j' }}
-  MESSAGE_BROKER: ${{ github.event.inputs.message_broker || 'kafka' }}
+  MESSAGE_BROKER: ${{ github.event.inputs.message_broker || 'redis' }}
 
 jobs:
   integration-tests:

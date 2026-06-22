@@ -18,7 +18,7 @@ import unicodedata
 import uuid
 from collections import defaultdict
 from logging import Logger
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Dict
 
 from fastapi import Request
 from app.config.configuration_service import ConfigurationService
@@ -45,6 +45,7 @@ from app.models.entities import (
     LinkRecord,
     MailRecord,
     MeetingRecord,
+    MessageRecord,
     Person,
     ProductRecord,
     ProjectRecord,
@@ -70,6 +71,7 @@ from app.schema.arango.documents import (
     link_record_schema,
     mail_record_schema,
     meeting_record_schema,
+    message_record_schema,
     orgs_schema,
     people_schema,
     product_record_schema,
@@ -122,6 +124,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.FILES.value, file_record_schema),
     (CollectionNames.LINKS.value, link_record_schema),
     (CollectionNames.MAILS.value, mail_record_schema),
+    (CollectionNames.MESSAGES.value, message_record_schema),
     (CollectionNames.WEBPAGES.value, webpage_record_schema),
     (CollectionNames.COMMENTS.value, comment_record_schema),
     (CollectionNames.PEOPLE.value, people_schema),
@@ -2841,6 +2844,54 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get record by external ID failed: {str(e)}")
             return None
 
+    async def find_slack_burst_record_by_ts(
+        self,
+        connector_id: str,
+        channel_id: str,
+        ts: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[MessageRecord]:
+        """
+        Find the Slack burst MessageRecord whose startTs <= ts <= endTs.
+
+        Joins the MESSAGES collection (which holds startTs / endTs / isReply)
+        with the RECORDS collection (which holds connectorId / externalGroupId) via
+        the shared document _key.
+
+        Returns the first matching MessageRecord, or None.
+        """
+        query = f"""
+            FOR m IN {CollectionNames.MESSAGES.value}
+                FILTER m.startTs != null
+                AND    m.endTs   != null
+                AND    m.startTs <= @ts
+                AND    m.endTs   >= @ts
+                AND    m.startTs != m.endTs
+                LET r = DOCUMENT({CollectionNames.RECORDS.value}, m._key)
+                FILTER r != null
+                AND    r.connectorId     == @connector_id
+                AND    r.externalGroupId == @channel_id
+                LIMIT 1
+                RETURN {{message: m, record: r}}
+        """
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "connector_id": connector_id,
+                    "channel_id": channel_id,
+                    "ts": ts,
+                },
+                txn_id=transaction,
+            )
+            if not results:
+                return None
+            row = results[0]
+            return MessageRecord.from_arango_record(row["message"], row["record"])
+        except Exception as exc:
+            self.logger.error(f"❌ find_slack_burst_record_by_ts({ts}) failed: {exc}")
+            return None
+
     async def get_record_path(
         self,
         record_id: str,
@@ -3737,55 +3788,52 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         record_type = record_dict.get("recordType")
 
-        translated_record = self._translate_node_from_arango(record_dict)
-        record_candidates = self._record_payload_candidates(
-            translated_record,
-            record_dict,
-        )
-
         if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
-            return self._build_base_record(record_candidates)
+            raise ValueError(
+                f"No type collection or no type doc, record type:{record_type} or type doc:{type_doc}"
+            )
 
-        collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
-        translated_type_doc = self._translate_node_from_arango(type_doc)
-        type_doc_candidates = self._record_payload_candidates(
-            translated_type_doc,
-            type_doc,
-        )
+        try:
+            collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
 
-        factory_by_collection = {
-            CollectionNames.ARTIFACTS.value: ArtifactRecord,
-            CollectionNames.FILES.value: FileRecord,
-            CollectionNames.MAILS.value: MailRecord,
-            CollectionNames.WEBPAGES.value: WebpageRecord,
-            CollectionNames.TICKETS.value: TicketRecord,
-            CollectionNames.PROJECTS.value: ProjectRecord,
-            CollectionNames.PRODUCTS.value: ProductRecord,
-            CollectionNames.COMMENTS.value: CommentRecord,
-            CollectionNames.LINKS.value: LinkRecord,
-            CollectionNames.MEETINGS.value: MeetingRecord,
-            CollectionNames.DEALS.value: DealRecord,
-            CollectionNames.SQL_TABLES.value: SQLTableRecord,
-            CollectionNames.SQL_VIEWS.value: SQLViewRecord,
-            CollectionNames.CODE_FILES.value: CodeFileRecord,
-            CollectionNames.PULLREQUESTS.value: PullRequestRecord,
-        }
-        record_factory = factory_by_collection.get(collection)
-        if record_factory is None:
-            return self._build_base_record(record_candidates)
+            type_doc_data = self._translate_node_from_arango(type_doc)
+            record_data = self._translate_node_from_arango(record_dict)
 
-        last_error: Exception | None = None
-        for typed_candidate in type_doc_candidates:
-            for record_candidate in record_candidates:
-                try:
-                    return record_factory.from_arango_record(
-                        typed_candidate,
-                        record_candidate,
-                    )
-                except Exception as exc:  # noqa: PERF203
-                    last_error = exc
-
-        if last_error is not None:
+            if collection == CollectionNames.FILES.value:
+                return FileRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.MAILS.value:
+                return MailRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.MESSAGES.value:
+                return MessageRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.WEBPAGES.value:
+                return WebpageRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.TICKETS.value:
+                return TicketRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.PROJECTS.value:
+                return ProjectRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.PRODUCTS.value:
+                return ProductRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.COMMENTS.value:
+                return CommentRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.LINKS.value:
+                return LinkRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.MEETINGS.value:
+                return MeetingRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.DEALS.value:
+                return DealRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.ARTIFACTS.value:
+                return ArtifactRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.SQL_TABLES.value:
+                return SQLTableRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.SQL_VIEWS.value:
+                return SQLViewRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.CODE_FILES.value:
+                return CodeFileRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.PULLREQUESTS.value:
+                return PullRequestRecord.from_arango_record(type_doc_data, record_data)
+            else:
+                raise ValueError(f"Invalid record type: {record_type}")
+        except Exception as e:
             self.logger.warning(
                 "Failed to create typed record for %s, falling back to base Record: %s",
                 record_type,
@@ -7365,6 +7413,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 CollectionNames.TICKETS.value,
                 CollectionNames.MEETINGS.value,
                 CollectionNames.LINKS.value,
+                CollectionNames.MESSAGES.value,
                 CollectionNames.PROJECTS.value,
                 CollectionNames.PULLREQUESTS.value,
                 CollectionNames.CODE_FILES.value,
@@ -10929,9 +10978,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "origin": record_doc.get("origin"),
                 "extension": file_doc.get("extension", ""),
                 "mimeType": file_doc.get("mimeType", ""),
-                "createdAtTimestamp": str(record_doc.get("createdAtTimestamp", timestamp)),
-                "updatedAtTimestamp": str(record_doc.get("updatedAtTimestamp", timestamp)),
-                "sourceCreatedAtTimestamp": str(record_doc.get("sourceCreatedAtTimestamp", record_doc.get("createdAtTimestamp", timestamp))),
+                "createdAtTimestamp": str(record_doc.get("createdAtTimestamp") or timestamp),
+                "updatedAtTimestamp": str(record_doc.get("updatedAtTimestamp") or timestamp),
+                "sourceCreatedAtTimestamp": str(
+                    record_doc.get("sourceCreatedAtTimestamp")
+                    or record_doc.get("createdAtTimestamp")
+                    or timestamp
+                ),
             }
 
         except Exception as e:
@@ -10950,7 +11003,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             endpoints = await self.config_service.get_config(
                 config_node_constants.ENDPOINTS.value
             )
-            storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+            storage_url = (endpoints or {}).get("storage", {}).get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
 
             signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
 
@@ -10998,10 +11051,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             signed_url_route = ""
             file_content = ""
             if record.get("origin") == OriginTypes.UPLOAD.value:
-                storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+                storage_url = (endpoints or {}).get("storage", {}).get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
                 signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
             else:
-                connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+                connector_url = (endpoints or {}).get("connectors", {}).get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
                 signed_url_route = f"{connector_url}/api/v1/{record.get('orgId')}/{user_id}/{record.get('connectorName', '').lower()}/record/{record_key}/signedUrl"
 
                 if record.get("recordType") == "MAIL":
@@ -11018,9 +11071,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             "mimeType": mime_type,
                             "body": file_content,
                             "connectorId": record.get("connectorId", ""),
-                            "createdAtTimestamp": str(record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())),
+                            "createdAtTimestamp": str(record.get("createdAtTimestamp") or get_epoch_timestamp_in_ms()),
                             "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
-                            "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())))
+                            "sourceCreatedAtTimestamp": str(
+                                record.get("sourceCreatedAtTimestamp")
+                                or record.get("createdAtTimestamp")
+                                or get_epoch_timestamp_in_ms()
+                            )
                         }
                     except Exception as decode_error:
                         self.logger.warning(f"Failed to decode file content as UTF-8: {str(decode_error)}")
@@ -11037,9 +11094,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "mimeType": mime_type,
                 "body": file_content,
                 "connectorId": record.get("connectorId", ""),
-                "createdAtTimestamp": str(record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())),
+                "createdAtTimestamp": str(record.get("createdAtTimestamp") or get_epoch_timestamp_in_ms()),
                 "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
-                "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())))
+                "sourceCreatedAtTimestamp": str(
+                    record.get("sourceCreatedAtTimestamp")
+                    or record.get("createdAtTimestamp")
+                    or get_epoch_timestamp_in_ms()
+                )
             }
 
         except Exception as e:
@@ -11737,7 +11798,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             event_data = None
             try:
                 # Get file record for event payload
-                file_record = await self.get_document(record_id, CollectionNames.FILES.value)
+                file_record = await self.get_document(
+                    record_id, CollectionNames.FILES.value, transaction=transaction
+                )
 
                 # Determine if content changed (if file metadata provided, content likely changed)
                 content_changed = file_metadata is not None
@@ -13204,7 +13267,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         endpoints = await self.config_service.get_config(
                             config_node_constants.ENDPOINTS.value
                         )
-                        storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+                        storage_url = (endpoints or {}).get("storage", {}).get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
 
                         for file_data in created_files_data:
                             record_doc = file_data.get("record")
@@ -14265,6 +14328,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         // Single inherit traversal from all seed recordGroups
         LET inherited_items = (
             FOR seed IN seed_rgs
+                FILTER seed.hideChildren != true
                 FOR inherited_node, edge IN 1..@inherit_max_depth INBOUND seed._id inheritPermissions
                     PRUNE inherited_node.orgId != @org_id
                     OPTIONS {{ bfs: true, uniqueVertices: "global" }}
@@ -16105,7 +16169,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET u = DOCUMENT("users", @user_key)
         FILTER u != null
 
-        LET child_rgs = rg.isInternal == true ? [] : (
+        LET child_rgs = (rg.isInternal == true OR rg.hideChildren == true) ? [] : (
             FOR edge IN belongsTo
                 FILTER edge._to == rg._id AND STARTS_WITH(edge._from, "recordGroups/")
                 LET node = DOCUMENT(edge._from)
@@ -16198,7 +16262,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET u = DOCUMENT("users", @user_key)
         FILTER u != null
 
-        LET direct_records = rg.isInternal == true ? [] : (
+        LET direct_records = (rg.isInternal == true OR rg.hideChildren == true) ? [] : (
             FOR edge IN belongsTo
                 FILTER edge._to == @rg_doc_id AND STARTS_WITH(edge._from, "records/")
                 LET record = DOCUMENT(edge._from)

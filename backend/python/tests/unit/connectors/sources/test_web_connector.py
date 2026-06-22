@@ -105,6 +105,8 @@ def _make_connector():
         scope="personal",
         created_by="test-user-id",
     )
+    connector.record_sync_point.read_sync_point = AsyncMock(return_value={})
+    connector.record_sync_point.update_sync_point = AsyncMock(return_value={})
     return connector
 
 
@@ -1430,6 +1432,8 @@ def _make_connector_cov():
         data_store_provider=dsp, config_service=cs, connector_id="web-c-1",
         scope="personal", created_by="test-user-id",
     )
+    c.record_sync_point.read_sync_point = AsyncMock(return_value={})
+    c.record_sync_point.update_sync_point = AsyncMock(return_value={})
     return c
 
 
@@ -2021,6 +2025,8 @@ def _make_connector_fullcov():
         scope="personal",
         created_by="test-user-id",
     )
+    connector.record_sync_point.read_sync_point = AsyncMock(return_value={})
+    connector.record_sync_point.update_sync_point = AsyncMock(return_value={})
     return connector
 
 

@@ -19,6 +19,9 @@ fields:
   group_type:
     required: true
     type: string
+  hide_children:
+    required: false
+    type: boolean
   id:
     required: false
     type: string

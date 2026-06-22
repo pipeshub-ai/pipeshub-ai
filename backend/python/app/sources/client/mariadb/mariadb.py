@@ -1,14 +1,14 @@
 """MariaDB client implementation.
 
 This module provides clients for interacting with MariaDB databases using
-the official MariaDB Connector/Python.
+MariaDB Connector/Python 2.x async connections and pools.
 
 MariaDB Documentation: https://mariadb.com/docs/
-MariaDB Connector/Python: https://mariadb.com/docs/server/connect/programming-languages/python/
+MariaDB Connector/Python: https://mariadb.com/docs/connectors/mariadb-connector-python/
 """
 
+import asyncio
 import logging
-import threading
 from typing import Any, Optional
 
 from pydantic import AliasChoices, BaseModel, Field, ValidationError
@@ -19,6 +19,8 @@ from app.sources.client.iclient import IClient
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_MAX_POOL_SIZE = 10
+
 try:
     import mariadb
 except ImportError:
@@ -26,9 +28,9 @@ except ImportError:
 
 
 class MariaDBClient:
-    """MariaDB client for database connections.
+    """MariaDB client for async database connections.
 
-    Uses the official MariaDB Connector/Python for connecting to MariaDB databases.
+    Uses MariaDB Connector/Python for connecting to MariaDB databases.
 
     Args:
         host: MariaDB server host
@@ -41,8 +43,6 @@ class MariaDBClient:
         charset: Character set (default: utf8mb4)
     """
 
-    _pool_seq: int = 0
-
     def __init__(
         self,
         host: str,
@@ -53,24 +53,20 @@ class MariaDBClient:
         timeout: int = 30,
         ssl_ca: Optional[str] = None,
         charset: str = "utf8mb4",
-        pool_size: int = 5,
         pool_acquire_timeout: float = 60.0,
     ) -> None:
         if mariadb is None:
             raise ImportError(
                 "mariadb is required for MariaDB client. "
-                "Install with: pip install mariadb"
+                "Install with: uv add 'mariadb[binary,pool]>=2.0.0rc2,<3'"
             )
 
-        if pool_size < 1 or pool_size > 64:
-            # mariadb's ConnectionPool caps at 64.
-            raise ValueError("pool_size must be between 1 and 64")
         if pool_acquire_timeout <= 0:
             raise ValueError("pool_acquire_timeout must be > 0")
 
         logger.debug(
             f"🔧 [MariaDBClient] Initializing with host={host}, port={port}, "
-            f"database={database}, user={user}, pool_size={pool_size}"
+            f"database={database}, user={user}"
         )
 
         self.host = host
@@ -81,19 +77,10 @@ class MariaDBClient:
         self.timeout = timeout
         self.ssl_ca = ssl_ca
         self.charset = charset
-        self.pool_size = pool_size
+        self._max_pool_size = _DEFAULT_MAX_POOL_SIZE
         self.pool_acquire_timeout = pool_acquire_timeout
-        self._pool: Any = None  # mariadb.ConnectionPool when connected
-        # Serializes lazy pool initialization in connect() so concurrent
-        # first-touch callers don't both build pools and leak the loser's.
-        self._connect_lock = threading.Lock()
-        # Bound checkout concurrency at the Python layer so get_connection()
-        # never has to fail/block on exhaustion — semaphore acquire timeout
-        # is the reliable upper bound on how long a caller waits.
-        self._checkout_semaphore = threading.BoundedSemaphore(pool_size)
-        # Pool names must be unique within the process — tag with id+sequence.
-        MariaDBClient._pool_seq += 1
-        self._pool_name = f"pipeshub_mariadb_{id(self)}_{MariaDBClient._pool_seq}"
+        self._pool: Any = None
+        self._connect_lock = asyncio.Lock()
 
         db_part = f"/{database}" if database else ""
         logger.info(
@@ -101,32 +88,22 @@ class MariaDBClient:
             f"{user}@{host}:{port}{db_part}"
         )
 
-    def connect(self) -> "MariaDBClient":
-        """Initialize the MariaDB connection pool.
-
-        Opens a thread-safe pool of connections that callers check out per query.
-        Safe to call repeatedly — a no-op if the pool is already initialized.
-
-        Returns:
-            Self for method chaining
-
-        Raises:
-            ConnectionError: If pool initialization fails
-        """
-        if self._pool is not None:
+    async def connect(self) -> "MariaDBClient":
+        """Initialize the MariaDB async connection pool."""
+        if self.is_connected():
             logger.debug("🔧 [MariaDBClient] Pool already initialized")
             return self
 
-        with self._connect_lock:
-            if self._pool is not None:
+        async with self._connect_lock:
+            if self.is_connected():
                 logger.debug("🔧 [MariaDBClient] Pool already initialized")
                 return self
 
             try:
                 db_part = f"/{self.database}" if self.database else ""
                 logger.debug(
-                    f"🔧 [MariaDBClient] Initializing pool to "
-                    f"{self.host}:{self.port}{db_part} (pool_size={self.pool_size})"
+                    f"🔧 [MariaDBClient] Initializing async pool to "
+                    f"{self.host}:{self.port}{db_part} (max_size={self._max_pool_size})"
                 )
 
                 connect_kwargs: dict[str, Any] = {
@@ -140,208 +117,142 @@ class MariaDBClient:
                     connect_kwargs["database"] = self.database
                 if self.ssl_ca:
                     connect_kwargs["ssl_ca"] = self.ssl_ca
-                # Do not pass charset/character_encoding: the driver does not accept
-                # 'charset' and default is utf8mb4.
 
-                self._pool = mariadb.ConnectionPool(
-                    pool_name=self._pool_name,
-                    pool_size=self.pool_size,
-                    pool_reset_connection=True,
+                self._pool = await mariadb.create_async_pool(
+                    min_size=1,
+                    max_size=self._max_pool_size,
+                    acquire_timeout=self.pool_acquire_timeout,
+                    reset_connection=True,
                     **connect_kwargs,
                 )
 
-                logger.info("🔧 [MariaDBClient] MariaDB connection pool ready")
+                logger.info("🔧 [MariaDBClient] MariaDB async connection pool ready")
                 return self
 
-            except mariadb.Error as e:
+            except Exception as e:
                 logger.error(f"🔧 [MariaDBClient] Pool initialization failed: {e}")
                 raise ConnectionError(f"Failed to connect to MariaDB: {e}") from e
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Close all connections in the pool."""
-        if self._pool is not None:
-            try:
-                self._pool.close()
-                logger.info("🔧 [MariaDBClient] Connection pool closed")
-            except mariadb.Error as e:
-                logger.warning(
-                    f"🔧 [MariaDBClient] Failed to close pool gracefully: {e}"
-                )
-            finally:
-                self._pool = None
+        if self._pool is None:
+            return
+
+        pool = self._pool
+        self._pool = None
+        try:
+            await pool.close()
+            logger.info("🔧 [MariaDBClient] Connection pool closed")
+        except Exception as e:
+            logger.warning(
+                f"🔧 [MariaDBClient] Failed to close pool gracefully: {e}"
+            )
 
     def is_connected(self) -> bool:
         """Check if the pool is initialized."""
         return self._pool is not None
 
-    def resize_pool(self, pool_size: int) -> "MariaDBClient":
-        """Resize the connection pool. Must be called before ``connect()``.
-
-        Useful for one-shot/ad-hoc query callers that don't want to pay for
-        the default pool's eager connection setup.
-        """
+    def resize_pool(self, max_size: int) -> "MariaDBClient":
+        """Resize the connection pool. Must be called before ``connect()``."""
         if self._pool is not None:
             raise RuntimeError("Cannot resize after pool is initialized")
-        if pool_size < 1 or pool_size > 64:
-            raise ValueError("pool_size must be between 1 and 64")
-        self.pool_size = pool_size
-        self._checkout_semaphore = threading.BoundedSemaphore(pool_size)
+        if max_size < 1 or max_size > 64:
+            raise ValueError("max_size must be between 1 and 64")
+        self._max_pool_size = max_size
         return self
 
-    def _checkout_conn(self) -> Any:
-        """Check out a connection from the pool, initializing it if needed.
-
-        Acquires the checkout semaphore first (with timeout) to bound concurrency
-        to ``pool_size``; raises TimeoutError if the wait exceeds
-        ``pool_acquire_timeout``.
-        """
-        if not self.is_connected():
-            self.connect()
-        if not self._checkout_semaphore.acquire(timeout=self.pool_acquire_timeout):
-            raise TimeoutError(
-                f"Timed out after {self.pool_acquire_timeout}s waiting for a "
-                f"MariaDB pool connection (pool_size={self.pool_size})"
-            )
-        try:
-            return self._pool.get_connection()
-        except Exception:
-            self._checkout_semaphore.release()
-            raise
-
-    def _return_conn(self, conn: Any) -> None:
-        """Return a connection to the pool and release the checkout permit.
-
-        Pass ``conn=None`` only if checkout failed (no permit was acquired).
-        """
-        if conn is None:
-            return
-        try:
-            try:
-                conn.close()
-            except Exception as e:
-                logger.warning(
-                    f"🔧 [MariaDBClient] Failed to return connection to pool: {e}"
-                )
-        finally:
-            try:
-                self._checkout_semaphore.release()
-            except ValueError:
-                # Defensive: BoundedSemaphore raises if released past its limit.
-                logger.warning(
-                    "🔧 [MariaDBClient] Checkout semaphore released past limit"
-                )
-
-    def execute_query(
+    async def execute_query(
         self,
         query: str,
         params: Optional[dict[str, Any] | list[Any] | tuple] = None,
     ) -> list[dict[str, Any]]:
-        """Execute a SQL query and return results as list of dicts.
+        """Execute a SQL query and return results as list of dicts."""
+        if not self.is_connected():
+            await self.connect()
+        if self._pool is None:
+            raise RuntimeError("MariaDB pool not initialized")
 
-        Checks out a connection from the pool, runs the query, and returns the
-        connection to the pool when done.
-
-        Args:
-            query: SQL query to execute
-            params: Optional query parameters (for parameterized queries)
-
-        Returns:
-            List of dictionaries containing query results
-
-        Raises:
-            ConnectionError: If pool is not initialized
-            RuntimeError: If query execution fails
-        """
-        conn = self._checkout_conn()
-        cursor = None
         try:
-            cursor = conn.cursor(dictionary=True)
-            cursor.execute(query, params or ())
-
-            if cursor.description:
-                results = cursor.fetchall()
-            else:
-                results = [{"affected_rows": cursor.rowcount}]
-
-            conn.commit()
-            return results
-
-        except mariadb.Error as e:
-            try:
-                conn.rollback()
-            except mariadb.Error:
-                pass
+            async with self._pool.connection() as conn:
+                cursor = None
+                try:
+                    cursor = conn.cursor(dictionary=True)
+                    await cursor.execute(query, params or ())
+                    if cursor.description:
+                        results = await cursor.fetchall()
+                    else:
+                        results = [{"affected_rows": cursor.rowcount}]
+                    await conn.commit()
+                    return results
+                except Exception:
+                    try:
+                        await conn.rollback()
+                    except Exception:
+                        pass
+                    raise
+                finally:
+                    if cursor is not None:
+                        try:
+                            await cursor.close()
+                        except Exception:
+                            pass
+        except Exception as e:
             logger.error(f"🔧 [MariaDBClient] Query execution failed: {e}")
             raise RuntimeError(f"Query execution failed: {e}") from e
-        finally:
-            if cursor is not None:
-                try:
-                    cursor.close()
-                except mariadb.Error:
-                    pass
-            self._return_conn(conn)
 
-    def execute_query_raw(
+    async def execute_query_raw(
         self,
         query: str,
         params: Optional[dict[str, Any] | list[Any] | tuple] = None,
     ) -> tuple:
-        """Execute a SQL query and return raw cursor results.
-
-        Args:
-            query: SQL query to execute
-            params: Optional query parameters
-
-        Returns:
-            Tuple of (columns, rows) where columns is list of column names
-            and rows is list of tuples
-
-        Raises:
-            ConnectionError: If pool is not initialized
-            RuntimeError: If query execution fails
-        """
+        """Execute a SQL query and return raw columns and rows."""
         logger.debug(
             f"🔧 [MariaDBClient.execute_query_raw] Executing query: {query[:200]}..."
         )
 
-        conn = self._checkout_conn()
-        cursor = None
+        if not self.is_connected():
+            await self.connect()
+        if self._pool is None:
+            raise RuntimeError("MariaDB pool not initialized")
+
         try:
-            cursor = conn.cursor()
-            cursor.execute(query, params or ())
+            async with self._pool.connection() as conn:
+                cursor = None
+                try:
+                    cursor = conn.cursor()
+                    await cursor.execute(query, params or ())
+                    if cursor.description:
+                        columns = [desc[0] for desc in cursor.description]
+                        rows = await cursor.fetchall()
+                        logger.debug(
+                            f"🔧 [MariaDBClient.execute_query_raw] Fetched {len(rows)} rows "
+                            f"with columns {columns}"
+                        )
+                    else:
+                        columns = []
+                        rows = []
+                        logger.warning(
+                            "🔧 [MariaDBClient.execute_query_raw] cursor.description is None "
+                            "- no result set"
+                        )
 
-            if cursor.description:
-                columns = [desc[0] for desc in cursor.description]
-                rows = cursor.fetchall()
-                logger.debug(
-                    f"🔧 [MariaDBClient.execute_query_raw] Fetched {len(rows)} rows "
-                    f"with columns {columns}"
-                )
-            else:
-                columns = []
-                rows = []
-                logger.warning(
-                    "🔧 [MariaDBClient.execute_query_raw] cursor.description is None "
-                    "- no result set"
-                )
-
-            conn.commit()
-            return (columns, rows)
-
-        except mariadb.Error as e:
-            try:
-                conn.rollback()
-            except mariadb.Error:
-                pass
+                    await conn.commit()
+                    return (columns, rows)
+                except Exception:
+                    try:
+                        await conn.rollback()
+                    except Exception:
+                        pass
+                    raise
+                finally:
+                    if cursor is not None:
+                        try:
+                            await cursor.close()
+                        except Exception:
+                            pass
+        except Exception as e:
             logger.error(f"🔧 [MariaDBClient] Query execution failed: {e}")
             raise RuntimeError(f"Query execution failed: {e}") from e
-        finally:
-            if cursor is not None:
-                try:
-                    cursor.close()
-                except mariadb.Error:
-                    pass
-            self._return_conn(conn)
 
     def get_connection_info(self) -> dict[str, Any]:
         """Get connection information."""
@@ -353,19 +264,19 @@ class MariaDBClient:
             "charset": self.charset,
         }
 
-    def __enter__(self) -> "MariaDBClient":
-        """Context manager entry."""
-        self.connect()
+    async def __aenter__(self) -> "MariaDBClient":
+        """Async context manager entry."""
+        await self.connect()
         return self
 
-    def __exit__(
+    async def __aexit__(
         self,
         exc_type,
         exc_val,
         exc_tb,
     ) -> None:
-        """Context manager exit."""
-        self.close()
+        """Async context manager exit."""
+        await self.close()
 
     @classmethod
     async def build_from_toolset(
@@ -462,7 +373,6 @@ class MariaDBConfig(BaseModel):
         default=None, description="Path to CA certificate for SSL"
     )
     charset: str = Field(default="utf8mb4", description="Character set")
-    pool_size: int = Field(default=5, description="Connection pool size", ge=1, le=64)
     pool_acquire_timeout: float = Field(
         default=30.0,
         description="Seconds a caller will wait for a free pool connection",
@@ -480,7 +390,6 @@ class MariaDBConfig(BaseModel):
             timeout=self.timeout,
             ssl_ca=self.ssl_ca,
             charset=self.charset,
-            pool_size=self.pool_size,
             pool_acquire_timeout=self.pool_acquire_timeout,
         )
 

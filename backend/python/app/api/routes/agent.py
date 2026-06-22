@@ -26,6 +26,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.capability_summary import fetch_connector_configs
 from app.utils.execute_query import has_sql_connector_configured
+from app.utils.fetch_slack_thread import has_slack_connector_configured
 from app.modules.agents.deep.graph import deep_agent_graph
 from app.modules.agents.deep.state import build_deep_agent_state
 from app.modules.agents.qna.cache_manager import get_cache_manager
@@ -2778,6 +2779,9 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         has_sql_connector = await has_sql_connector_configured(
             graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
         )
+        has_slack_connector = await has_slack_connector_configured(
+            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
+        )
         if selected_graph == deep_agent_graph:
             initial_state = build_deep_agent_state(
                 query_info.model_dump(),
@@ -2792,6 +2796,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 query_info.modelName,
                 query_info.modelKey,
                 has_sql_connector=has_sql_connector,
+                has_slack_connector=has_slack_connector,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -2809,6 +2814,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 org_info,
                 graph_type,
                 has_sql_connector=has_sql_connector,
+                has_slack_connector=has_slack_connector,
             )
 
         graph_to_use = selected_graph
@@ -2891,6 +2897,9 @@ async def stream_response(
         has_sql_connector = await has_sql_connector_configured(
             graph_provider, user_info["userId"], user_info["orgId"]
         )
+        has_slack_connector = await has_slack_connector_configured(
+            graph_provider, user_info["userId"], user_info["orgId"]
+        )
         if selected_graph == deep_agent_graph:
             graph_type = "deep"
             initial_state = build_deep_agent_state(
@@ -2907,6 +2916,7 @@ async def stream_response(
                 modelKey,
                 has_sql_connector=has_sql_connector,
                 is_multimodal_llm=is_multimodal_llm,
+                has_slack_connector=has_slack_connector,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -2925,6 +2935,7 @@ async def stream_response(
                 graph_type,
                 has_sql_connector=has_sql_connector,
                 is_multimodal_llm=is_multimodal_llm,
+                has_slack_connector=has_slack_connector,
             )
 
         config = {"recursion_limit": 50}
@@ -4643,6 +4654,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         has_sql_connector = await has_sql_connector_configured(
             graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
         )
+        has_slack_connector = await has_slack_connector_configured(
+            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
+        )
         if selected_graph == deep_agent_graph:
             initial_state = build_deep_agent_state(
                 query_info,
@@ -4657,6 +4671,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 chat_query.modelName,
                 chat_query.modelKey,
                 has_sql_connector=has_sql_connector,
+                has_slack_connector=has_slack_connector,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -4674,6 +4689,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 org_info,
                 graph_type,
                 has_sql_connector=has_sql_connector,
+                has_slack_connector=has_slack_connector,
             )
 
         graph_to_use = selected_graph
@@ -4726,7 +4742,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         if chat_query.tools is not None and len(chat_query.tools) > _MAX_TOOLS:
             raise HTTPException(
                 status_code=400,
-                detail=f"Too many tools: maximum {_MAX_TOOLS} tools are allowed per request.",
+                detail=f"Too many actions: maximum {_MAX_TOOLS} actions are allowed per request.",
             )
 
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
@@ -4952,20 +4968,20 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
                 if is_service_account:
                     error_message = (
-                        f"This service account agent requires the following toolset(s) to be configured — "
+                        f"This service account agent requires the following actions to be configured — "
                         f"{'; '.join(problem_parts)}. "
-                        "Please configure the agent's toolset credentials in the Agent Builder → Manage Credentials."
+                        "Please configure the agent's action credentials in Agent Builder (key icon next to each action)."
                     )
                 else:
                     error_message = (
-                        f"This agent requires the following toolset(s) to be set up — "
+                        f"This agent requires the following actions to be set up — "
                         f"{'; '.join(problem_parts)}. "
-                        "Please connect your account(s) in Settings → Toolsets before using this agent."
+                        "Please connect your actions in Workspace → Actions before using this agent."
                     )
                 logger.info(
                     f"Blocking agent {agent_id} execution "
                     f"({'service account' if is_service_account else f'user {executing_user_id!r}'}): "
-                    f"toolset issue(s) — {'; '.join(problem_parts)}"
+                    f"action issue(s) — {'; '.join(problem_parts)}"
                 )
 
                 async def _toolset_config_error_stream() -> AsyncGenerator[str, None]:

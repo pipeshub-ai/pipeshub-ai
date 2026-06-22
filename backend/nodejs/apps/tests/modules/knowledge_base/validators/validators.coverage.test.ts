@@ -10,7 +10,6 @@ import {
   resyncConnectorSchema,
   getConnectorStatsSchema,
   uploadRecordsSchema,
-  uploadRecordsToFolderSchema,
   getAllRecordsSchema,
   getAllKBRecordsSchema,
   createKBSchema,
@@ -131,26 +130,22 @@ describe('Knowledge Base Validators - coverage', () => {
       })
       expect(result.success).to.be.false
     })
-  })
-
-  // -----------------------------------------------------------------------
-  // uploadRecordsToFolderSchema
-  // -----------------------------------------------------------------------
-  describe('uploadRecordsToFolderSchema', () => {
-    it('should require folderId param', () => {
-      const result = uploadRecordsToFolderSchema.safeParse({
+    it('should accept optional folderId query param', () => {
+      const result = uploadRecordsSchema.safeParse({
         body: {},
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.false
-    })
-
-    it('should accept valid params', () => {
-      const result = uploadRecordsToFolderSchema.safeParse({
-        body: {},
-        params: { kbId: '550e8400-e29b-41d4-a716-446655440000', folderId: 'folder-123' },
+        query: { folderId: 'folder-123' },
       })
       expect(result.success).to.be.true
+    })
+
+    it('should reject empty folderId query param', () => {
+      const result = uploadRecordsSchema.safeParse({
+        body: {},
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+        query: { folderId: '' },
+      })
+      expect(result.success).to.be.false
     })
   })
 
@@ -624,12 +619,9 @@ describe('Knowledge Base Validators - coverage', () => {
     })
   })
 
-  // -----------------------------------------------------------------------
-  // rejectedFiles in uploadRecordsToFolderSchema
-  // -----------------------------------------------------------------------
-  describe('rejectedFiles schema in uploadRecordsToFolderSchema', () => {
-    it('should accept valid rejectedFiles', () => {
-      const result = uploadRecordsToFolderSchema.safeParse({
+  describe('rejectedFiles schema in uploadRecordsSchema (folder query)', () => {
+    it('should accept valid rejectedFiles with folderId query', () => {
+      const result = uploadRecordsSchema.safeParse({
         body: {
           rejectedFiles: [
             {
@@ -642,13 +634,14 @@ describe('Knowledge Base Validators - coverage', () => {
             },
           ],
         },
-        params: { kbId: '550e8400-e29b-41d4-a716-446655440000', folderId: 'folder-1' },
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+        query: { folderId: 'folder-1' },
       })
       expect(result.success).to.be.true
     })
 
-    it('should reject invalid reason in rejectedFiles', () => {
-      const result = uploadRecordsToFolderSchema.safeParse({
+    it('should reject invalid reason in rejectedFiles with folderId query', () => {
+      const result = uploadRecordsSchema.safeParse({
         body: {
           rejectedFiles: [
             {
@@ -661,7 +654,8 @@ describe('Knowledge Base Validators - coverage', () => {
             },
           ],
         },
-        params: { kbId: '550e8400-e29b-41d4-a716-446655440000', folderId: 'folder-1' },
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+        query: { folderId: 'folder-1' },
       })
       expect(result.success).to.be.false
     })

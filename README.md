@@ -1,4 +1,5 @@
 <div align="center">
+<!-- dev note: README touch for branch test -->
 
 <a href="https://www.pipeshub.com"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg" alt="PipesHub" width="280"/></a>
 
@@ -131,56 +132,45 @@
 
 ## 🚀 Deployment Guide
 
-PipesHub (the Workplace AI Platform) can be run locally or deployed on the cloud using Docker Compose.
-**Note**: If you are deploying PipesHub on a cloud server, make sure you are using an HTTPS endpoint. PipesHub enforces stricter security checks, and browsers will block certain requests when the application is served over HTTP.
-You can use a reverse proxy like Cloudflare, Nginx, or Traefik to terminate SSL/TLS and provide a valid HTTPS certificate.
-If you see a white screen after deploying PipesHub while accessing it over HTTP, this is likely the cause. The frontend will refuse to load due to stricter security checks.
+PipesHub can be run locally or deployed on any server using Docker Compose. The interactive installer handles all configuration — including secrets, graph DB, broker, and image tag selection — and generates a `.env` for you.
+
+> **HTTPS on cloud servers:** If you deploy PipesHub on a cloud server, use an HTTPS endpoint. Browsers block certain requests over plain HTTP. Use Cloudflare, Nginx, or Traefik to terminate TLS. A white screen after HTTP-only deployment is typically caused by this restriction.
 
 ---
 
-### 📦 Production Deployment
+### ⚡ Quickstart (Recommended)
+
+Requires [Docker](https://docs.docker.com/get-docker/) with Compose v2.
 
 ```bash
-# Clone the repository
+# 1. Clone the repository
 git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-
-# 📁 Navigate to the deployment folder
 cd pipeshub-ai/deployment/docker-compose
 
-# Set Environment Variables
-> 👉 Set Environment Variables for secrets, passwords, and the public URLs of the **Frontend** and **Connector** services
-> _(Required for webhook notifications and real-time updates)_
-> Refer to env.template
-
-# 🚀 Start the production deployment
-docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
-
-# 🛑 To stop the services
-docker compose -f docker-compose.prod.yml -p pipeshub-ai down
+# 2. Run the interactive installer
+./install.sh
 ```
 
-### 📦 Developer Deployment Build
+The installer will:
+- Check Docker, RAM, and disk prerequisites
+- Ask whether you want a **slim** or **full** deployment
+- Let you optionally customise the graph DB, message broker, and KV store
+- Generate randomised secrets and write a `.env` file
+- Pull images and start the stack
+- Wait for PipesHub to pass its health check and print the URL
 
-```bash
-# Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
+Open **http://localhost:3000** once the installer completes.
 
-# 📁 Navigate to the deployment folder
-cd pipeshub-ai/deployment/docker-compose
+#### Installer options
 
-# Set Optional Environment Variables
-> 👉 Set Environment Variables for secrets, passwords, and the public URLs of the **Frontend** and **Connector** services
-> _(Required for webhook notifications and real-time updates)_
-> Refer to env.template
+| Flag | Description |
+|------|-------------|
+| `-y` / `--yes` | Accept all defaults; skip interactive prompts (CI-friendly) |
+| `--version TAG` | Pin a specific image tag, e.g. `--version 0.7.0` |
+| `--reconfigure` | Re-run the wizard and overwrite an existing `.env` |
+| `--print-env-only` | Write `.env` and print the compose command without starting containers |
 
-# 🚀 Start the local build deployment
-docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai up --build -d
-
-# 🛑 To stop the services
-docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai down
-```
-
-The main `Dockerfile` pulls pre-built layers from `pipeshubai/pipeshub-ai-base:python-deps` and `pipeshubai/pipeshub-ai-base:runtime` (see [`Dockerfile.base`](Dockerfile.base) in the repo root for build/push commands). To use local tags instead, set `PYTHON_DEPS_IMAGE` and `RUNTIME_BASE_IMAGE` in the environment or in compose build args.
+> **Advanced options:** CI environment variables, slim vs. full deployment types, manual Compose profile usage, and local source builds are covered in [Advanced Deployment Options](deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
 
 ## MCP Server
 

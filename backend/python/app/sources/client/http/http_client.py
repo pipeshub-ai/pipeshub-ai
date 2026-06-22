@@ -31,7 +31,8 @@ class HTTPClient(IClient):
         if self.client is None:
             self.client = httpx.AsyncClient(
                 timeout=self.timeout,
-                follow_redirects=self.follow_redirects
+                follow_redirects=self.follow_redirects,
+                headers=self.headers
             )
         return self.client
 

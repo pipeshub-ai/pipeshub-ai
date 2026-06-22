@@ -83,7 +83,7 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
-from app.utils.oauth_config import fetch_oauth_config_by_id, get_oauth_config
+from app.utils.oauth_config import extract_oauth_error_message, fetch_oauth_config_by_id, get_oauth_config
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -4257,6 +4257,7 @@ async def update_connector_instance_name(
 # Common Helper Functions
 # ============================================================================
 
+
 def _get_user_context(request: Request) -> dict[str, Any]:
     """
     Extract and validate user authentication context from request.
@@ -4502,6 +4503,12 @@ async def _update_oauth_infrastructure_fields(
     if "additionalParams" not in oauth_config and oauth_registry_config.additional_params:
         oauth_config["additionalParams"] = oauth_registry_config.additional_params
 
+    if "scopeParameterName" not in oauth_config and oauth_registry_config.scope_parameter_name and oauth_registry_config.scope_parameter_name != "scope":
+        oauth_config["scopeParameterName"] = oauth_registry_config.scope_parameter_name
+
+    if "tokenResponsePath" not in oauth_config and oauth_registry_config.token_response_path:
+        oauth_config["tokenResponsePath"] = oauth_registry_config.token_response_path
+
     # Update metadata fields if missing
     if "iconPath" not in oauth_config:
         oauth_config["iconPath"] = oauth_registry_config.icon_path
@@ -4595,6 +4602,10 @@ async def _build_oauth_flow_config(
             oauth_flow_config["tokenAccessType"] = shared_oauth_config["tokenAccessType"]
         if "additionalParams" in shared_oauth_config:
             oauth_flow_config["additionalParams"] = shared_oauth_config["additionalParams"]
+        if "scopeParameterName" in shared_oauth_config:
+            oauth_flow_config["scopeParameterName"] = shared_oauth_config["scopeParameterName"]
+        if "tokenResponsePath" in shared_oauth_config:
+            oauth_flow_config["tokenResponsePath"] = shared_oauth_config["tokenResponsePath"]
 
         # Get OAuth credential fields from config section
         oauth_config_data = shared_oauth_config.get(OAuthConfigKeys.CONFIG, {})
@@ -5098,9 +5109,11 @@ async def handle_oauth_callback(
             except Exception:
                 pass
 
+        error_message = extract_oauth_error_message(e)
         return {
             "success": False,
             "error": "server_error",
+            "error_message": error_message,
             "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=server_error"
         }
 

@@ -492,6 +492,28 @@ meeting_record_schema = {
     "message": "Document does not match the meeting record schema.",
 }
 
+message_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            # Generic fields (common across Slack, Teams, Discord, WhatsApp, etc.)
+            "threadId": {"type": ["string", "null"]},
+            "hasReplies": {"type": "boolean", "default": False},
+            "isReply": {"type": "boolean", "default": False},
+            "isEdited": {"type": "boolean", "default": False},
+            "authorId": {"type": ["string", "null"]},
+            "authorEmail": {"type": ["string", "null"]},
+            # Burst / thread range timestamps (Slack ts strings)
+            "startTs": {"type": ["string", "null"]},
+            "endTs": {"type": ["string", "null"]},
+        },
+        "required": ["orgId"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the message record schema.",
+}
 
 pull_request_record_schema = {
     "rule": {
@@ -662,6 +684,7 @@ record_group_schema = {
                 "enum": [connector.value for connector in Connectors],
             },
             "isInternal": {"type": ["boolean", "null"], "default": False},
+            "hideChildren": {"type": ["boolean", "null"], "default": False},
             "connectorId": {"type": ["string", "null"]},
             "parentExternalGroupId": {"type": ["string", "null"]},
             "webUrl": {"type": ["string", "null"]},

@@ -107,7 +107,9 @@ _init_global_test_env()
 
 from ai_models_setup import (  # noqa: E402
     SeededAIModel,
+    setup_test_indexing_models,
     setup_test_llm_model,
+    teardown_test_indexing_models,
     teardown_test_llm_model,
 )
 from integration_report import TestReportEntry, write_html_report  # noqa: E402
@@ -307,26 +309,32 @@ def sample_data_root() -> Path:
 def ai_models_configured(
     pipeshub_client: PipeshubClient,
 ) -> Generator[SeededAIModel, None, None]:
-    """Seed a single OpenAI LLM model and tear it down at session end.
+    """Seed OpenAI LLM + cloud embedding models and tear them down at session end.
 
     Required by tests that wait for ``indexingStatus == COMPLETED``: without an
-    LLM the indexing pipeline cannot finish, and tests will either time out or
-    fail. Mirrors the frontend's ``modelService.addModel`` payload so the same
-    backend validation/health-check path runs in tests.
+    LLM the indexing pipeline cannot finish, and without a cloud embedding the
+    backend falls back to the local CPU model (``BAAI/bge-large-en-v1.5``),
+    which is slow enough to cause timeouts. Mirrors the frontend's
+    ``modelService.addModel`` / onboarding embedding payloads so the same
+    backend validation/health-check paths run in tests.
 
     Reads ``TEST_OPENAI_API_KEY`` (or ``OPENAI_API_KEY``) for the API key and
-    optionally ``TEST_OPENAI_LLM_MODEL`` to override the model name. Raises
-    ``RuntimeError`` if no API key is available — failure is loud rather than a
-    silent indexing timeout downstream.
+    optionally ``TEST_OPENAI_LLM_MODEL`` / ``TEST_OPENAI_EMBEDDING_MODEL`` to
+    override model names. Raises ``RuntimeError`` if no API key is available —
+    failure is loud rather than a silent indexing timeout downstream.
 
-    On teardown, the seeded model is DELETEd via the same providers endpoint so
-    no test residue is left on the backend.
+    Yields the seeded LLM ``SeededAIModel`` for backward compatibility. The
+    embedding is also written to org config via the same API call path; indexing
+    services load it from Configuration Manager, not from this fixture object.
+
+    On teardown, both models are DELETEd via the providers endpoint so no test
+    residue is left on the backend.
     """
-    seeded = setup_test_llm_model(pipeshub_client)
+    models = setup_test_indexing_models(pipeshub_client)
     try:
-        yield seeded
+        yield models.llm
     finally:
-        teardown_test_llm_model(pipeshub_client, seeded)
+        teardown_test_indexing_models(pipeshub_client, models)
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")

@@ -25,6 +25,9 @@ from app.config.constants.arangodb import (
     ExtensionTypes,
     MimeTypes,
     ProgressStatus,
+    CODE_FILE_EXTENSION_VALUES,
+    CODE_FILE_MIME_TYPE_VALUES,
+    normalize_file_extension,
 )
 from app.events.processor import Processor
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
@@ -241,8 +244,9 @@ class EventProcessor:
         if not md5_checksum:
             return False
 
+        rec_key = doc.get('_key') or doc.get('id')
         duplicate_records = await self.graph_provider.find_duplicate_records(
-            record_key=doc.get('_key'),
+            record_key=rec_key,
             md5_checksum=md5_checksum,
             record_type=record_type,
             size_in_bytes=size_in_bytes
@@ -251,7 +255,7 @@ class EventProcessor:
         duplicate_records = [r for r in duplicate_records if r is not None]
 
         if not duplicate_records:
-            self.logger.info(f"🚀 No duplicate records found for record {doc.get('_key')}")
+            self.logger.info(f"🚀 No duplicate records found for record {rec_key}")
             return False
 
         # Check for processed or in-progress duplicates
@@ -296,7 +300,7 @@ class EventProcessor:
             await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
             return True  # Marked as queued
 
-        self.logger.info(f"🚀 No duplicate found, proceeding with processing for {doc.get('_key')}")
+        self.logger.info(f"🚀 No duplicate found, proceeding with processing for {rec_key}")
         return False  # No duplicate found, proceed with processing
 
     async def on_event(self, event_data: dict[str, Any]) -> AsyncGenerator[dict[str, Any], None]:
@@ -778,6 +782,17 @@ class EventProcessor:
                     recordType=record_type,
                     connectorName=connector,
                     origin=origin,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+
+            elif mime_type in CODE_FILE_MIME_TYPE_VALUES or normalize_file_extension(extension) in CODE_FILE_EXTENSION_VALUES:
+                async for event in self.processor.process_md_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    md_binary=file_content,
+                    virtual_record_id=virtual_record_id,
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):

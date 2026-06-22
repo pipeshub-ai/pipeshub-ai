@@ -259,7 +259,7 @@ export const ChatApi = {
         query: request.query,
         modelKey: request.modelKey,
         modelName: request.modelName,
-        modelFriendlyName: request.modelFriendlyName ?? request.modelName,
+        modelFriendlyName: request.modelFriendlyName || request.modelName,
         chatMode: agentChatMode,
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
@@ -277,6 +277,7 @@ export const ChatApi = {
       const { agentStreamTools, filters: reqFilters, attachments: reqAttachments, ...rest } = request;
       payload = {
         ...rest,
+        modelFriendlyName: request.modelFriendlyName || request.modelName,
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
         ...(agentStreamTools !== undefined ? { tools: agentStreamTools } : {}),
@@ -383,7 +384,7 @@ export const ChatApi = {
     const body: Record<string, unknown> = {
       modelKey: request.modelKey,
       modelName: request.modelName,
-      modelFriendlyName: request.modelFriendlyName,
+      modelFriendlyName: request.modelFriendlyName || request.modelName,
       chatMode: request.chatMode,
       ...buildFiltersPayload(request.filters?.apps, request.filters?.kb),
       timezone: getClientTimezone(),
@@ -456,6 +457,7 @@ export const ChatApi = {
     model: {
       modelKey: string;
       modelName: string;
+      modelFriendlyName?: string;
       chatMode: AgentStrategyApiSegment;
       /** Explicit tool subset for this agent context (all tools when omitted). */
       tools?: string[];
@@ -470,6 +472,7 @@ export const ChatApi = {
     const agentRegenBody: Record<string, unknown> = {
       modelKey: model.modelKey,
       modelName: model.modelName,
+      modelFriendlyName: model.modelFriendlyName || model.modelName,
       chatMode: model.chatMode,
       timezone: getClientTimezone(),
       currentTime: getClientCurrentTime(),

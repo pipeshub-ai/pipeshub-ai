@@ -51,6 +51,8 @@ def _make_connector():
         scope="personal",
         created_by="test-user-id",
     )
+    connector.record_sync_point.read_sync_point = AsyncMock(return_value={})
+    connector.record_sync_point.update_sync_point = AsyncMock(return_value={})
     return connector
 
 

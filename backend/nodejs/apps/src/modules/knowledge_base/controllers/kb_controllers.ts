@@ -1018,11 +1018,12 @@ const assertKbWritePermission = async (
 };
 
 /**
- * Upload records to a Knowledge Base. The POST response is an SSE stream of
- * per-file outcomes (see streamKbUpload). Files are processed by the file
+ * Upload records to a Knowledge Base root or folder. Optional `folderId` query
+ * param targets a folder; omit for KB root. The POST response is an SSE stream
+ * of per-file outcomes (see streamKbUpload). Files are processed by the file
  * processor middleware which attaches filePath/lastModified to each buffer.
  */
-export const uploadRecordsToKB =
+export const uploadRecords =
   (
     keyValueStoreService: KeyValueStoreService,
     appConfig: AppConfig,
@@ -1040,7 +1041,8 @@ export const uploadRecordsToKB =
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const { kbId } = req.params;
-      const isVersioned = req.body?.isVersioned ?? true;
+      const folderId = req.query.folderId as string | undefined;
+      const isVersioned = req.body.isVersioned ?? false;
 
       // Validation
       if (!userId || !orgId) {
@@ -1063,12 +1065,39 @@ export const uploadRecordsToKB =
         req.headers as Record<string, string>,
       );
 
-      logger.info('Processing file upload to KB', {
-        totalFiles: fileBuffers.length,
-        kbId,
-        userId,
-        samplePaths: fileBuffers.slice(0, 3).map((f) => f.filePath),
-      });
+      if (folderId) {
+        // Validate folder exists and belongs to the KB before creating any placeholders.
+        // This turns the silent background failure (which returned 200) into a proper 404/403.
+        const validationResponse = await executeConnectorCommand(
+          `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/validate`,
+          HttpMethod.GET,
+          req.headers as Record<string, string>,
+        );
+        if (
+          validationResponse.statusCode < 200 ||
+          validationResponse.statusCode >= 300
+        ) {
+          throw handleBackendError(
+            validationResponse,
+            'validate folder for upload',
+          );
+        }
+      }
+
+      logger.info(
+        folderId ? 'Processing file upload to folder' : 'Processing file upload to KB',
+        {
+          totalFiles: fileBuffers.length,
+          kbId,
+          ...(folderId ? { folderId } : {}),
+          userId,
+          samplePaths: fileBuffers.slice(0, 3).map((f) => f.filePath),
+        },
+      );
+
+      const pythonServiceUrl = folderId
+        ? `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/upload`
+        : `${appConfig.connectorBackend}/api/v1/kb/${kbId}/upload`;
 
       // Stream every file's outcome (rejections, storage upload, indexing) as
       // SSE on this response. Validation/permission errors above are still
@@ -1082,7 +1111,7 @@ export const uploadRecordsToKB =
         isVersioned,
         keyValueStoreService,
         appConfig,
-        pythonServiceUrl: `${appConfig.connectorBackend}/api/v1/kb/${kbId}/upload`,
+        pythonServiceUrl,
       });
     } catch (error: any) {
       // streamKbUpload handles its own errors after headers are sent, so this
@@ -1094,112 +1123,9 @@ export const uploadRecordsToKB =
         error: error.message,
         userId: req.user?.userId,
         kbId: req.params.kbId,
+        folderId: req.query.folderId,
       });
       const backendError = handleBackendError(error, 'Record upload api');
-      next(backendError);
-    }
-  };
-
-/**
- * Upload records to a specific folder within a Knowledge Base.
- * Files are processed by file processor middleware which attaches
- * filePath and lastModified to each file buffer.
- */
-export const uploadRecordsToFolder =
-  (
-    keyValueStoreService: KeyValueStoreService,
-    appConfig: AppConfig,
-  ) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      const fileBuffers: FileBufferInfo[] = req.body.fileBuffers || [];
-      // Files dropped by the processor (oversize / unsupported type). Reported
-      // back as per-file failures rather than failing the whole batch.
-      const rejectedFiles: RejectedFileInfo[] = req.body.rejectedFiles || [];
-      const userId = req.user?.userId;
-      const orgId = req.user?.orgId;
-      const { kbId, folderId } = req.params;
-      const isVersioned = req.body?.isVersioned ?? true;
-
-      // Validation
-      if (!userId || !orgId) {
-        throw new UnauthorizedError(
-          'User not authenticated or missing organization ID',
-        );
-      }
-
-      if (!kbId || !folderId) {
-        throw new BadRequestError(
-          'Knowledge Base ID and Folder ID are required',
-        );
-      }
-      if (fileBuffers.length === 0 && rejectedFiles.length === 0) {
-        throw new BadRequestError(
-          'Knowledge Base ID, Folder ID, and files are required',
-        );
-      }
-
-      // Verify KB exists and caller has write permission before touching storage.
-      await assertKbWritePermission(
-        appConfig.connectorBackend,
-        kbId,
-        req.headers as Record<string, string>,
-      );
-
-      // Validate folder exists and belongs to the KB before creating any placeholders.
-      // This turns the silent background failure (which returned 200) into a proper 404/403.
-      const validationResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/validate`,
-        HttpMethod.GET,
-        req.headers as Record<string, string>,
-      );
-      if (validationResponse.statusCode < 200 || validationResponse.statusCode >= 300) {
-        throw handleBackendError(
-          validationResponse,
-          'validate folder for upload',
-        );
-      }
-
-      logger.info('Processing file upload to folder', {
-        totalFiles: fileBuffers.length,
-        kbId,
-        folderId,
-        userId,
-        samplePaths: fileBuffers.slice(0, 3).map((f) => f.filePath),
-      });
-
-      // Stream every file's outcome on this response (see uploadRecordsToKB).
-      await streamKbUpload({
-        req,
-        res,
-        fileBuffers,
-        rejectedFiles,
-        orgId,
-        isVersioned,
-        keyValueStoreService,
-        appConfig,
-        pythonServiceUrl: `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/upload`,
-      });
-    } catch (error: any) {
-      // streamKbUpload handles its own errors after headers are sent, so this
-      // only catches pre-stream validation/permission errors.
-      if (res.headersSent) {
-        return;
-      }
-      logger.error('❌ Folder record upload failed', {
-        error: error.message,
-        userId: req.user?.userId,
-        kbId: req.params.kbId,
-        folderId: req.params.folderId,
-      });
-      const backendError = handleBackendError(
-        error,
-        'Folder record upload api',
-      );
       next(backendError);
     }
   };
@@ -1280,7 +1206,95 @@ export const updateRecord =
         }
       }
 
-      // STEP 1: Update the record in the database FIRST (before storage)
+      // STEP 1: If there's a file to upload, upload to storage FIRST (before DB update)
+      // This ensures the new content is available when the indexing service
+      // receives the update event and tries to download it.
+      let fileUploaded = false;
+      let storageDocumentId = null;
+
+      if (hasFileBuffer) {
+        // Get the existing record's externalRecordId for storage upload
+        const getRecordResponse = await executeConnectorCommand(
+          `${appConfig.connectorBackend}/api/v1/records/${recordId}`,
+          HttpMethod.GET,
+          req.headers as Record<string, string>,
+        );
+
+        if (getRecordResponse.statusCode < 200 || getRecordResponse.statusCode >= 300) {
+          throw handleBackendError(getRecordResponse, 'get record for update');
+        }
+
+        const existingRecord = (getRecordResponse.data as any)?.record;
+        storageDocumentId = existingRecord?.externalRecordId;
+
+        if (!storageDocumentId) {
+          logger.error('No external record ID found on existing record', {
+            recordId,
+          });
+          throw new BadRequestError(
+            'Cannot update file: No external record ID found for this record',
+          );
+        }
+
+        logger.info('Uploading new version of file to storage', {
+          recordId,
+          fileName: originalname,
+          fileSize: size,
+          mimeType: mimetype,
+          extension,
+          storageDocumentId: storageDocumentId,
+        });
+
+        try {
+          const fileBuffer = req.body.fileBuffer;
+          const storageToken = scopedStorageServiceJwtGenerator(
+            orgId,
+            appConfig.scopedJwtSecret,
+            userId,
+          );
+          await uploadNextVersionToStorage(
+            req,
+            fileBuffer,
+            storageDocumentId,
+            keyValueStoreService,
+            appConfig.storage,
+            storageToken,
+          );
+
+          logger.info('File uploaded to storage successfully', {
+            recordId,
+            storageDocumentId,
+          });
+
+          fileUploaded = true;
+        } catch (storageError: any) {
+          const is404 = storageError?.response?.status === 404;
+
+          logger.error(
+            'Failed to upload file to storage',
+            {
+              recordId,
+              storageDocumentId: storageDocumentId,
+              error: storageError.message,
+              is404,
+            },
+          );
+
+          if (is404) {
+            throw new InternalServerError(
+              `File storage document not found. The original file may have been deleted` +
+                `Please delete this record and re-upload the file.`,
+            );
+          }
+
+          throw new InternalServerError(
+            `File upload failed: ${storageError.message}. Please retry.`,
+          );
+        }
+      }
+
+      // STEP 2: Update the record in the database (triggers reindex event via Kafka)
+      // Blob is already uploaded at this point, so indexing service will find new content.
       logger.info('Updating record in database via Python service', {
         recordId,
         hasFileUpload: hasFileBuffer,
@@ -1311,101 +1325,6 @@ export const updateRecord =
       }
 
       const updateResult = updateRecordResponse.updatedRecord;
-
-      // STEP 2: Upload file to storage ONLY after database update succeeds
-      let fileUploaded = false;
-      let storageDocumentId = null;
-
-      if (hasFileBuffer && updateResult) {
-        // Use the externalRecordId as the storageDocumentId
-        storageDocumentId = updateResult.externalRecordId;
-
-        // Check if we have a valid externalRecordId to use
-        if (!storageDocumentId) {
-          logger.error('No external record ID found after database update', {
-            recordId,
-            updatedRecord: updateResult?._key,
-          });
-          throw new BadRequestError(
-            'Cannot update file: No external record ID found for this record',
-          );
-        }
-
-        // Log the file upload attempt
-        logger.info('Uploading new version of file to storage', {
-          recordId,
-          fileName: originalname,
-          fileSize: size,
-          mimeType: mimetype,
-          extension,
-          storageDocumentId: storageDocumentId,
-          version: updateResult?.version,
-        });
-
-        try {
-          // Update version through storage service using externalRecordId.
-          // Use the INTERNAL storage route with a scoped service token (carries
-          // orgId + userId) rather than forwarding the user's JWT.
-          const fileBuffer = req.body.fileBuffer;
-          const storageToken = scopedStorageServiceJwtGenerator(
-            orgId,
-            appConfig.scopedJwtSecret,
-            userId,
-          );
-          await uploadNextVersionToStorage(
-            req,
-            fileBuffer,
-            storageDocumentId,
-            keyValueStoreService,
-            appConfig.storage, // Fixed: use appConfig.storage instead of defaultConfig
-            storageToken,
-          );
-
-          logger.info('File uploaded to storage successfully', {
-            recordId,
-            storageDocumentId,
-            version: updateResult?.version,
-          });
-
-          fileUploaded = true;
-        } catch (storageError: any) {
-          const is404 = storageError?.response?.status === 404;
-
-          logger.error(
-            'Failed to upload file to storage after database update',
-            {
-              recordId,
-              storageDocumentId: storageDocumentId,
-              error: storageError.message,
-              version: updateResult.version,
-              is404,
-            },
-          );
-
-          // Log the inconsistent state but don't fail the request
-          // since the database update was successful
-          logger.warn(
-            'Database updated but storage upload failed - inconsistent state',
-            {
-              recordId,
-              storageDocumentId,
-              databaseVersion: updateResult.version,
-            },
-          );
-
-          // Provide specific error message for 404 (file not found in storage)
-          if (is404) {
-            throw new InternalServerError(
-              `File storage document not found. The original file may have been deleted` +
-                `Please delete this record and re-upload the file.`,
-            );
-          }
-
-          throw new InternalServerError(
-            `Record updated but file upload failed: ${storageError.message}. Please retry the file upload.`,
-          );
-        }
-      }
 
       // Log the successful update
       logger.info('Record updated successfully', {
@@ -2637,11 +2556,13 @@ export const getRecordBuffer =
       );
 
       // Set appropriate headers from the FastAPI response
-      if (response.headers['content-type']) {
-        res.set('Content-Type', response.headers['content-type']);
+      const contentType = response.headers['content-type'];
+      if (contentType) {
+        res.set('Content-Type', String(contentType));
       }
-      if (response.headers['content-disposition']) {
-        res.set('Content-Disposition', response.headers['content-disposition']);
+      const contentDisposition = response.headers['content-disposition'];
+      if (contentDisposition) {
+        res.set('Content-Disposition', String(contentDisposition));
       }
 
       // Pipe the streaming response directly to the client

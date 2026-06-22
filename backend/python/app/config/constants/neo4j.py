@@ -20,6 +20,7 @@ class Neo4jLabel(Enum):
     # Record types
     FILES = "File"
     MAILS = "Mail"
+    MESSAGES = "Message"
     WEBPAGES = "Webpage"
     COMMENTS = "Comment"
     TICKETS = "Ticket"
@@ -116,6 +117,7 @@ COLLECTION_TO_LABEL: dict[str, str] = {
     CollectionNames.SYNC_POINTS.value: Neo4jLabel.SYNC_POINTS.value,
     CollectionNames.FILES.value: Neo4jLabel.FILES.value,
     CollectionNames.MAILS.value: Neo4jLabel.MAILS.value,
+    CollectionNames.MESSAGES.value: Neo4jLabel.MESSAGES.value,
     CollectionNames.WEBPAGES.value: Neo4jLabel.WEBPAGES.value,
     CollectionNames.COMMENTS.value: Neo4jLabel.COMMENTS.value,
     CollectionNames.TICKETS.value: Neo4jLabel.TICKETS.value,

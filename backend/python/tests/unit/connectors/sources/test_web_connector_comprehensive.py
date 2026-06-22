@@ -80,6 +80,8 @@ def _make_connector(scope: str = "personal", created_by: str = "test-user-id"):
         data_store_provider=dsp, config_service=cs, connector_id="web-comp-1",
         scope=scope, created_by=created_by,
     )
+    c.record_sync_point.read_sync_point = AsyncMock(return_value={})
+    c.record_sync_point.update_sync_point = AsyncMock(return_value={})
     return c
 
 
@@ -813,44 +815,46 @@ class TestCleanDataUris:
 # Permissions, sync orchestration, crawl/fetch (from gaps coverage merge)
 # ===========================================================================
 class TestCreateWebPermissions:
-    def test_team_scope_org_read(self):
+    @pytest.mark.asyncio
+    async def test_team_scope_org_read(self):
         c = _make_connector(scope=ConnectorScope.TEAM.value)
-        perms = c._create_web_permissions("https://example.com/page")
+        c.url = "https://example.com"
+        await c.create_record_group([])
+        _, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
         assert len(perms) == 1
         assert perms[0].type == PermissionType.READ
         assert perms[0].entity_type == EntityType.ORG
 
-    def test_personal_with_creator_owner(self):
+    @pytest.mark.asyncio
+    async def test_personal_with_app_users_grants_user_read(self):
         c = _make_connector()
-        c.creator_email = "owner@example.com"
-        perms = c._create_web_permissions("https://example.com/page")
-        assert perms[0].type == PermissionType.OWNER
+        c.url = "https://example.com"
+        app_user = MagicMock()
+        app_user.email = "owner@example.com"
+        await c.create_record_group([app_user])
+        _, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
+        assert len(perms) == 1
+        assert perms[0].type == PermissionType.READ
+        assert perms[0].entity_type == EntityType.USER
         assert perms[0].email == "owner@example.com"
 
-    def test_personal_without_creator_falls_back_to_org(self):
+    @pytest.mark.asyncio
+    async def test_personal_without_creator_yields_no_permissions(self):
         c = _make_connector()
-        c.creator_email = None
-        perms = c._create_web_permissions("https://example.com/page")
-        assert perms[0].entity_type == EntityType.ORG
+        c.url = "https://example.com"
+        await c.create_record_group([])
+        _, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
+        assert perms == []
 
-    def test_exception_returns_org_read_fallback(self):
+    @pytest.mark.asyncio
+    async def test_exception_propagates_from_create_record_group(self):
         c = _make_connector(scope=ConnectorScope.TEAM.value)
-        real_permission = Permission
-        call_count = 0
-
-        def _permission_factory(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise RuntimeError("perm fail")
-            return real_permission(*args, **kwargs)
-
-        with patch(
-            "app.connectors.sources.web.connector.Permission",
-            side_effect=_permission_factory,
-        ):
-            perms = c._create_web_permissions("https://example.com/page")
-        assert perms[0].entity_type == EntityType.ORG
+        c.url = "https://example.com"
+        c.data_entities_processor.on_new_record_groups = AsyncMock(
+            side_effect=RuntimeError("perm fail")
+        )
+        with pytest.raises(RuntimeError, match="perm fail"):
+            await c.create_record_group([])
 
 
 class TestCreateRecordGroupTeam:

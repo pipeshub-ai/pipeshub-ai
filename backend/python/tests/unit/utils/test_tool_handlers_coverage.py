@@ -154,6 +154,21 @@ class TestContentHandler:
         assert "fetch_full_record" in instructions
         assert "execute_sql_query" in instructions
 
+    def test_build_tool_instructions_includes_jira_rule_when_flag_true(self):
+        instructions = ContentHandler.build_tool_instructions(
+            has_sql_connector=False,
+            has_jira_tickets_in_context=True,
+        )
+        assert "Jira tickets" in instructions
+        assert "story points" in instructions
+
+    def test_build_tool_instructions_omits_jira_rule_when_flag_false(self):
+        instructions = ContentHandler.build_tool_instructions(
+            has_sql_connector=False,
+            has_jira_tickets_in_context=False,
+        )
+        assert "Jira tickets" not in instructions
+
     def test_extract_records_returns_empty(self):
         handler = ContentHandler()
         assert handler.extract_records({}) == []

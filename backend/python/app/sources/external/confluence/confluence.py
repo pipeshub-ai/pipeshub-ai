@@ -106,8 +106,9 @@ class ConfluenceDataSource:
         async with httpx_client.stream(
             "GET",
             download_url,
+            headers=self._client.headers,
             follow_redirects=True,
-            timeout=300.0,
+            timeout=httpx.Timeout(connect=30.0, read=600.0, write=30.0, pool=30.0),
         ) as response:
             response.raise_for_status()
             async for chunk in response.aiter_bytes(chunk_size=chunk_size):
@@ -195,6 +196,7 @@ class ConfluenceDataSource:
             async with httpx_client.stream(
                 "GET",
                 url,
+                headers=self._client.headers,
                 follow_redirects=True,
                 timeout=timeout,
             ) as response:

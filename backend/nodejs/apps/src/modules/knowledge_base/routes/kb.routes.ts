@@ -25,10 +25,9 @@ import {
   getKBContent,
   getFolderContents,
   getAllRecords,
-  uploadRecordsToFolder,
+  uploadRecords,
   createNestedFolder,
   createRootFolder,
-  uploadRecordsToKB,
   getKnowledgeHubNodes,
   moveRecord,
 } from '../controllers/kb_controllers';
@@ -56,7 +55,6 @@ import {
   getAllRecordsSchema,
   getAllKBRecordsSchema,
   uploadRecordsSchema,
-  uploadRecordsToFolderSchema,
   listKnowledgeBasesSchema,
   reindexRecordSchema,
   getConnectorStatsSchema,
@@ -414,7 +412,7 @@ export function createKnowledgeBaseRouter(
     getKBContent(appConfig),
   );
 
-  // upload folder in the kb along with the direct record creation in the kb
+  // Upload records to KB root or folder (?folderId= optional)
   router.post(
     '/:kbId/upload',
     authMiddleware.authenticate,
@@ -440,36 +438,7 @@ export function createKnowledgeBaseRouter(
     ValidationMiddleware.validate(uploadRecordsSchema),
 
     // Upload handler
-    uploadRecordsToKB(keyValueStoreService, appConfig),
-  );
-
-  // Upload records to a specific folder in the KB
-  router.post(
-    '/:kbId/folder/:folderId/upload',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.KB_UPLOAD),
-    metricsMiddleware(container),
-    // File processing middleware (dynamic max size)
-    ...createDynamicBufferUpload({
-      fieldName: 'files',
-      allowedMimeTypes: Object.values(extensionToMimeType),
-      allowedExtensions: Object.keys(extensionToMimeType).map((e) =>
-        e.toLowerCase(),
-      ),
-      maxFilesAllowed: KB_UPLOAD_LIMITS.maxFilesPerRequest,
-      isMultipleFilesAllowed: true,
-      strictFileUpload: true,
-      // Reject oversize / unsupported files individually instead of failing the
-      // whole batch; rejected files are reported back as per-file failures.
-      partialUpload: true,
-    }),
-    // Validate multipart form data after file processing
-    validateMultipartFormData,
-    // Validation middleware
-    ValidationMiddleware.validate(uploadRecordsToFolderSchema),
-
-    // Upload handler
-    uploadRecordsToFolder(keyValueStoreService, appConfig),
+    uploadRecords(keyValueStoreService, appConfig),
   );
 
   // Create a root folder

@@ -435,8 +435,10 @@ class TestPrewarmClientsCoverage:
     @pytest.mark.asyncio
     async def test_prewarm_skips_already_cached(self):
         """Pre-warm skips domains that already have cached clients (line 1247)."""
-        state = _mock_state()
-        state["_client_cache"] = {("jira", "default", "default"): MagicMock()}
+        toolset_id = "jid-1"
+        cache_key = ("jira", toolset_id, "default")
+        state = _mock_state(tool_to_toolset_map={"jira.search": toolset_id})
+        state["_client_cache"] = {cache_key: MagicMock()}
         state["_client_cache_locks"] = {}
         log = _mock_log()
 
@@ -460,7 +462,7 @@ class TestPrewarmClientsCoverage:
     @pytest.mark.asyncio
     async def test_prewarm_no_factory_skips(self):
         """Pre-warm skips domains without a factory (line 1237)."""
-        state = _mock_state()
+        state = _mock_state(tool_to_toolset_map={"unknown.tool": "ts1"})
         state["_client_cache"] = {}
         state["_client_cache_locks"] = {}
         log = _mock_log()
@@ -482,7 +484,7 @@ class TestPrewarmClientsCoverage:
     @pytest.mark.asyncio
     async def test_prewarm_exception_does_not_crash(self):
         """Pre-warm handles exceptions gracefully."""
-        state = _mock_state()
+        state = _mock_state(tool_to_toolset_map={"slack.send": "ts1"})
         state["_client_cache"] = {}
         state["_client_cache_locks"] = {}
         log = _mock_log()
@@ -1526,7 +1528,7 @@ class TestPrewarmClientsLocking:
     @pytest.mark.asyncio
     async def test_prewarm_creates_lock_and_caches(self):
         """Pre-warm creates lock, caches client (lines 1250-1258)."""
-        state = _mock_state()
+        state = _mock_state(tool_to_toolset_map={"jira.search": "jid-1"})
         log = _mock_log()
 
         tasks = [
@@ -1564,7 +1566,9 @@ class TestPrewarmClientsLocking:
     @pytest.mark.asyncio
     async def test_prewarm_double_check_after_lock(self):
         """Pre-warm checks cache again after acquiring lock (line 1254)."""
-        state = _mock_state()
+        toolset_id = "jid-1"
+        cache_key = ("jira", toolset_id, "default")
+        state = _mock_state(tool_to_toolset_map={"jira.search": toolset_id})
         log = _mock_log()
 
         tasks = [
@@ -1578,7 +1582,6 @@ class TestPrewarmClientsLocking:
             with patch("app.agents.tools.wrapper.ToolInstanceCreator") as mock_tic:
                 mock_creator = MagicMock()
                 # Pre-populate lock and cache to test double-check
-                cache_key = ("jira", "default", "default")
                 mock_creator._cache_locks = {cache_key: asyncio.Lock()}
                 mock_creator._client_cache = {cache_key: MagicMock()}  # Already cached
                 mock_creator._get_toolset_config.return_value = None
@@ -1926,26 +1929,22 @@ class TestPrewarmClientsLockAndLog:
     async def test_prewarm_creates_lock_and_caches(self):
         """Pre-warm creates lock, caches client, and logs when above threshold."""
         log = _mock_log()
-        state = _mock_state()
+        state = _mock_state(tool_to_toolset_map={"jira.create": "ts1"})
 
-        mock_creator = MagicMock()
-        mock_creator._client_cache = {}
-        mock_creator._cache_locks = {}
-        mock_factory = AsyncMock()
-        mock_factory.create_client = AsyncMock(return_value="client_obj")
+        mock_client = MagicMock()
 
         tasks = [{"task_id": "t1", "domains": ["jira"], "tools": ["jira.create"]}]
 
-        with patch("app.modules.agents.deep.sub_agent.get_tools_for_sub_agent") as mock_get_tools, \
+        with patch("app.agents.tools.factories.registry.ClientFactoryRegistry") as mock_cfr, \
              patch("app.modules.agents.deep.sub_agent._WARM_LOG_THRESHOLD_MS", -1):
-            mock_tool = MagicMock()
-            mock_tool.name = "jira.create"
-            mock_tool._creator = mock_creator
-            mock_tool._factory = mock_factory
-            mock_tool._app_name = "jira"
-            mock_tool._toolset_id = "ts1"
-            mock_tool._config = {}
-            mock_get_tools.return_value = [mock_tool]
-
-            await _prewarm_clients(tasks, state, log)
+            mock_factory = MagicMock()
+            mock_factory.create_client = AsyncMock(return_value=mock_client)
+            mock_cfr.get_factory.return_value = mock_factory
+            with patch("app.agents.tools.wrapper.ToolInstanceCreator") as mock_tic:
+                mock_creator = MagicMock()
+                mock_creator._client_cache = {}
+                mock_creator._cache_locks = {}
+                mock_creator._get_toolset_config.return_value = {}
+                mock_tic.return_value = mock_creator
+                await _prewarm_clients(tasks, state, log)
         log.info.assert_called()
