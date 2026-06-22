@@ -80,6 +80,8 @@ jobs:
 
     env:
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      REDIS_PASSWORD: integration_redis_password
+      MONGO_PASSWORD: password
       DOCKER_BUILDKIT: "1"
       PIPESHUB_TEST_ENV: local
       PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
@@ -130,21 +132,11 @@ jobs:
           npx playwright install chromium --with-deps
 
       # App Dockerfile uses these as FROM stages; pulling first warms the local
-      # cache so compose build does not rebuild Dockerfile.base on every run.
+      # cache so install.sh --build does not rebuild Dockerfile.base on every run.
       - name: Pull pre-built base images
         run: |
           docker pull pipeshubai/pipeshub-ai-base:python-deps || true
           docker pull pipeshubai/pipeshub-ai-base:runtime || true
-
-      - name: Build Neo4j stack images
-        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
-        working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml build
-
-      - name: Build ArangoDB stack images
-        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
-        working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml build
 
       - name: Set up Python ${{ github.event.inputs.python_version || '3.12' }}
         uses: actions/setup-python@v5
@@ -160,10 +152,26 @@ jobs:
           uv venv
           uv pip install -e .
 
-      - name: 'Neo4j: Start services'
+      - name: 'Neo4j: Build and start services'
         if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml up -d
+        env:
+          PIPESHUB_GRAPH_DB: neo4j
+          PIPESHUB_BROKER: ${{ env.MESSAGE_BROKER }}
+          PIPESHUB_KV_STORE: redis
+          PIPESHUB_DEPLOY_TYPE: slim
+          PIPESHUB_PORT: "3000"
+        run: |
+          # Seed stack .env so install.sh keeps the same creds pytest already has.
+          {
+            echo "SECRET_KEY=${SECRET_KEY}"
+            echo "NEO4J_PASSWORD=${TEST_NEO4J_PASSWORD}"
+            echo "REDIS_PASSWORD=${REDIS_PASSWORD}"
+            echo "MONGO_PASSWORD=${MONGO_PASSWORD}"
+          } > .env
+          chmod +x install.sh
+          ./install.sh --yes --reconfigure --build
+          echo "TEST_GRAPH_DB_TYPE=neo4j" >> "$GITHUB_ENV"
 
       - name: 'Neo4j: Wait for core services'
         if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
@@ -262,22 +270,41 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/neo4j
-          docker compose -f docker-compose.integration.neo4j.yml ps -a \
+          set -a
+          # shellcheck disable=SC1091
+          [[ -f .env ]] && . ./.env
+          set +a
+          docker compose -f docker-compose.yml -p pipeshub-ai --env-file .env ps -a \
             > ../../integration-tests/reports/docker-logs/neo4j/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.neo4j.yml config --services); do
-            docker compose -f docker-compose.integration.neo4j.yml logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.yml -p pipeshub-ai --env-file .env config --services 2>/dev/null); do
+            docker compose -f docker-compose.yml -p pipeshub-ai --env-file .env logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" 2>&1 || true
           done
 
       - name: 'Neo4j: Tear down services (preserve images)'
         if: always() && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml down -v
+        run: ./install.sh --uninstall --yes
 
-      - name: 'ArangoDB: Start services'
+      - name: 'ArangoDB: Build and start services'
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml up -d
+        env:
+          PIPESHUB_IMAGE_SOURCE: local
+          PIPESHUB_GRAPH_DB: arango
+          PIPESHUB_BROKER: ${{ env.MESSAGE_BROKER }}
+          PIPESHUB_KV_STORE: etcd
+          PIPESHUB_DEPLOY_TYPE: full
+          PIPESHUB_PORT: "3000"
+        run: |
+          {
+            echo "SECRET_KEY=${SECRET_KEY}"
+            echo "ARANGO_PASSWORD=your_password"
+            echo "REDIS_PASSWORD=${REDIS_PASSWORD}"
+            echo "MONGO_PASSWORD=${MONGO_PASSWORD}"
+          } > .env
+          chmod +x install.sh
+          ./install.sh --yes --reconfigure --build
 
       - name: 'ArangoDB: Wait for core services'
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
@@ -376,17 +403,21 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/arango
-          docker compose -f docker-compose.integration.arango.yml ps -a \
+          set -a
+          # shellcheck disable=SC1091
+          [[ -f .env ]] && . ./.env
+          set +a
+          docker compose -f docker-compose.yml -p pipeshub-ai --env-file .env ps -a \
             > ../../integration-tests/reports/docker-logs/arango/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.arango.yml config --services); do
-            docker compose -f docker-compose.integration.arango.yml logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.yml -p pipeshub-ai --env-file .env config --services 2>/dev/null); do
+            docker compose -f docker-compose.yml -p pipeshub-ai --env-file .env logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/arango/${svc}.log" 2>&1 || true
           done
 
       - name: 'ArangoDB: Tear down services (preserve images)'
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml down -v
+        run: ./install.sh --uninstall --yes
 
       - name: Collect test results and prepare email
         if: always()

@@ -239,6 +239,8 @@ services:
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-}
+    ports:
+      - "27017:27017"
     volumes:
       - mongodb_data:/data/db
     networks:
@@ -258,6 +260,8 @@ services:
       --appendonly yes
       --appendfsync everysec
       ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}"
+    ports:
+      - "6379:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -355,6 +359,8 @@ services:
       - NEO4J_dbms_memory_heap_initial__size=1G
       - NEO4J_dbms_memory_heap_max__size=2G
       - NEO4J_dbms_memory_pagecache_size=1G
+    ports:
+      - "7687:7687"
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
