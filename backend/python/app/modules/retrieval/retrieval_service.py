@@ -148,7 +148,7 @@ class RetrievalService:
 
     @staticmethod
     def _embedding_config_hash(embedding_configs: list[dict[str, Any]] | None) -> str:
-        """Deterministic hash of the embedding configuration for cache invalidation."""
+        """Deterministic hash of the embedding config for cache invalidation."""
         if not embedding_configs:
             return "default"
         serialisable = []
@@ -164,13 +164,12 @@ class RetrievalService:
         ).hexdigest()[:16]
 
     async def get_embedding_model_instance(self, use_cache: bool = False) -> Embeddings | None:
-        """Resolve the dense embedding model, caching it until the config changes.
+        """Return the dense embedding model, cached across calls while config is stable.
 
-        The query service MUST embed queries with the exact same model the
-        indexing pipeline used to write the collection. We cache the model
-        instance but re-read the config on every call (cheap) and compare a
-        config hash so the cache is invalidated whenever the admin changes the
-        embedding provider/model.
+        The config is re-read every call so a provider/model change in the admin
+        UI takes effect immediately; but when the config hash hasn't changed the
+        previously-built model instance is reused, avoiding the heavy
+        construction cost on every query.
         """
         try:
             ai_models = await self.config_service.get_config(
