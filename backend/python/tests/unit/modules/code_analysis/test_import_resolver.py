@@ -149,6 +149,50 @@ class TestResolvePythonImports:
         assert "os.py" in paths or "os/__init__.py" in paths
         assert "app/utils.py" in paths
 
+    # ------------------------------------------------------------------
+    # New: reviewer-requested symbol-as-submodule coverage
+    # ------------------------------------------------------------------
+
+    def test_from_dot_import_submodule(self):
+        """``from . import utils`` must resolve to utils.py inside file_dir."""
+        paths = resolve_python_imports("from . import utils\n", "src/app/views.py")
+        # file_dir = "src/app"  →  prefix = "src/app"  →  symbol "utils"
+        assert "src/app/utils.py" in paths
+        assert "src/app/utils/__init__.py" in paths
+
+    def test_from_relative_module_symbol_as_submodule(self):
+        """``from .utils import helper`` must also yield utils/helper.py candidate."""
+        paths = resolve_python_imports("from .utils import helper\n", "src/app/views.py")
+        # module "utils" itself
+        assert "src/app/utils.py" in paths
+        # symbol "helper" treated as potential submodule
+        assert "src/app/utils/helper.py" in paths
+        assert "src/app/utils/helper/__init__.py" in paths
+
+    def test_absolute_from_symbol_as_submodule(self):
+        """``from app.utils import helper`` also yields app/utils/helper.py candidate."""
+        paths = resolve_python_imports("from app.utils import helper\n", "src/main.py")
+        assert "app/utils.py" in paths
+        assert "app/utils/helper.py" in paths
+
+    def test_comma_separated_import(self):
+        """``import os, sys`` must resolve both modules."""
+        paths = resolve_python_imports("import os, sys\n", "src/main.py")
+        assert "os.py" in paths or "os/__init__.py" in paths
+        assert "sys.py" in paths or "sys/__init__.py" in paths
+
+    def test_aliased_import_ignored_alias(self):
+        """``import numpy as np`` — alias is stripped, 'numpy' resolved."""
+        paths = resolve_python_imports("import numpy as np\n", "src/main.py")
+        assert "numpy.py" in paths or "numpy/__init__.py" in paths
+        assert not any("np" in p for p in paths)
+
+    def test_star_import_not_treated_as_symbol(self):
+        """``from app.utils import *`` — wildcard should not produce a 'star' path."""
+        paths = resolve_python_imports("from app.utils import *\n", "src/main.py")
+        assert "app/utils.py" in paths
+        assert not any(p.endswith("/*.py") or "*" in p for p in paths)
+
 
 # ===========================================================================
 # resolve_typescript_imports

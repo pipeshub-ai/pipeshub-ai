@@ -52,7 +52,6 @@ valid_group_labels = [
         GroupType.INLINE.value,
         GroupType.KEY_VALUE_AREA.value,
         GroupType.TEXT_SECTION.value,
-        GroupType.CONVERSATION.value,
         # NOTE: GroupType.CODE intentionally excluded.
         # GroupType.CODE.value == BlockType.CODE.value == "code".  Code blocks
         # carry a plain-string content (not a (summary, children) tuple) and are
@@ -60,6 +59,8 @@ valid_group_labels = [
         # in build_message_content_array, which precedes the valid_group_labels check.
         # Adding it here causes citations.py and retrieval_service.py to attempt
         # 2-tuple unpacking on a plain string → ValueError: too many values to unpack.
+        GroupType.CODE.value,
+        GroupType.CONVERSATION.value
     ]
 
 def _safe_stringify_content(value: Any) -> str:

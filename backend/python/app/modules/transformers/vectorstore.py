@@ -1476,12 +1476,16 @@ class VectorStore(Transformer):
 
                 # -- Embed individual code blocks --
                 for block in code_blocks:
-                    block_data = block.data if isinstance(block.data, dict) else {}
-                    code_text = block_data.get("text", "")
+                    if isinstance(block.data, dict):
+                        block_data = block.data
+                        code_text = block_data.get("text", "")
+                        block_kind = block_data.get("kind", "")
+                    else:
+                        block_data = {}
+                        code_text = str(block.data) if block.data else ""
+                        block_kind = ""
                     if not code_text or not code_text.strip():
                         continue
-
-                    block_kind = block_data.get("kind", "")
 
                     # File-level summary blocks (kind="file_summary") are embedded with
                     # isRecordSummary metadata so retrieval can treat them like document
@@ -1558,14 +1562,19 @@ class VectorStore(Transformer):
 
                 # -- Embed code block groups (classes/structs/impls) --
                 for bg in code_block_groups:
-                    bg_data = bg.data if isinstance(bg.data, dict) else {}
-                    bg_text = bg_data.get("text", "")
+                    if isinstance(bg.data, dict):
+                        bg_data = bg.data
+                        bg_text = bg_data.get("text", "")
+                        bg_kind = bg_data.get("kind", "")
+                    else:
+                        bg_data = {}
+                        bg_text = str(bg.data) if bg.data else ""
+                        bg_kind = ""
                     if not bg_text or not bg_text.strip():
                         continue
 
                     bg_code_meta = bg.code_metadata
                     bg_language = (bg_code_meta.language or "") if bg_code_meta else ""
-                    bg_kind = bg_data.get("kind", "")
 
                     bg_prefix = _build_code_prefix(
                         bg_language, file_path, None, bg_kind,

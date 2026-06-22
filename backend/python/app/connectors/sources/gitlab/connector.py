@@ -2726,11 +2726,10 @@ class GitLabConnector(BaseConnector):
 
                 record_group_id: str = record_group.id
 
-                # Use the raw graph provider (without transaction) so that the
-                # long-running batch reads and writes are not held inside a
+                # Use the raw graph_provider directly (no transaction) so that
+                # the long-running batch reads and writes are not held inside a
                 # single DB transaction.
-                async with self.data_store_provider.transaction() as tx_store:
-                    graph_provider = tx_store.graph_provider
+                graph_provider = self.data_store_provider.graph_provider
 
                 self.logger.info(
                     "Code-graph build: running ImportResolver for project %s (group=%s)",

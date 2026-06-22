@@ -48,8 +48,11 @@ logger = logging.getLogger(__name__)
 def resolve_python_imports(import_text: str, file_path: str) -> list[str]:
     """Parse Python import statements and return candidate file paths.
 
-    Resolves both ``import a.b.c`` and ``from a.b.c import X`` patterns to
-    candidate relative file paths (``a/b/c.py`` and ``a/b/c/__init__.py``).
+    Resolves ``import a.b.c``, ``from a.b.c import X``, ``from . import utils``,
+    and comma-separated imports to candidate relative file paths.  Imported
+    symbols are also tested as potential sub-module files (e.g.
+    ``from .utils import helper`` generates ``utils/helper.py`` in addition to
+    ``utils.py``).  Unmatched candidates are harmlessly skipped by the caller.
 
     Args:
         import_text: The raw text of the imports block.
@@ -62,33 +65,63 @@ def resolve_python_imports(import_text: str, file_path: str) -> list[str]:
     candidates: list[str] = []
     file_dir = os.path.dirname(file_path)
 
+    def _add(prefix: str) -> None:
+        candidates.extend([f"{prefix}.py", f"{prefix}/__init__.py"])
+
+    def _parse_symbols(raw: str) -> list[str]:
+        """Return bare symbol names from an imports clause, ignoring aliases."""
+        clean = raw.replace("(", "").replace(")", "")
+        return [
+            part.strip().split(" as ")[0].strip()
+            for part in clean.split(",")
+            if part.strip() and part.strip() != "*"
+        ]
+
     for line in import_text.splitlines():
         line = line.strip()
-        # ``from .utils import X`` or ``from ..models import Y``
-        m = re.match(r"^from\s+(\.+)([\w.]*)\s+import", line)
+
+        # ``from [dots][module] import sym1, sym2``
+        # Covers: ``from . import utils``, ``from .utils import X``,
+        #         ``from ..models import Y``, ``from a.b import c``
+        m = re.match(r"^from\s+(\.+)?([\w.]*)\s+import\s+([\w.,\s()*]+)", line)
         if m:
-            dots = m.group(1)
-            module = m.group(2)
-            base = file_dir
-            for _ in dots[1:]:  # each extra dot goes one level up
-                base = os.path.dirname(base)
+            dots = m.group(1) or ""
+            module = m.group(2) or ""
+            imports_raw = m.group(3) or ""
+
             rel = module.replace(".", "/")
-            prefix = os.path.join(base, rel) if rel else base
-            candidates.extend([f"{prefix}.py", f"{prefix}/__init__.py"])
+
+            if dots:
+                # Relative import: resolve dots against the importing file's dir.
+                base = file_dir
+                for _ in dots[1:]:  # each extra dot goes one level up
+                    base = os.path.dirname(base)
+                # prefix = directory that owns the imported symbols
+                prefix = os.path.join(base, rel) if rel else base
+                if rel:
+                    # ``from .utils import X`` → utils.py / utils/__init__.py
+                    _add(prefix)
+                # ``from . import utils`` (rel="") or ``from .utils import helper``
+                # → each symbol may be a sub-module file inside prefix
+                for sym in _parse_symbols(imports_raw):
+                    _add(os.path.join(prefix, sym))
+            else:
+                # Absolute import: prefix is the module path relative to the repo root.
+                # ``from app.utils import helper`` → app/utils.py + app/utils/helper.py
+                prefix = rel  # e.g. "app/utils"
+                if prefix:
+                    _add(prefix)
+                for sym in _parse_symbols(imports_raw):
+                    _add(os.path.join(prefix, sym) if prefix else sym)
             continue
 
-        # ``from a.b.c import X``
-        m = re.match(r"^from\s+([\w.]+)\s+import", line)
+        # ``import a.b.c`` or ``import a, b.c``
+        m = re.match(r"^import\s+([\w.,\s]+)", line)
         if m:
-            module_path = m.group(1).replace(".", "/")
-            candidates.extend([f"{module_path}.py", f"{module_path}/__init__.py"])
-            continue
-
-        # ``import a.b.c``
-        m = re.match(r"^import\s+([\w.]+)", line)
-        if m:
-            module_path = m.group(1).replace(".", "/")
-            candidates.extend([f"{module_path}.py", f"{module_path}/__init__.py"])
+            for part in m.group(1).split(","):
+                name = part.strip().split(" as ")[0].strip()
+                if name:
+                    _add(name.replace(".", "/"))
 
     return candidates
 
@@ -111,6 +144,14 @@ def resolve_typescript_imports(import_text: str, file_path: str) -> list[str]:
         path = m.group(1)
         if path.startswith("."):
             base = os.path.normpath(os.path.join(file_dir, path))
+        elif path.startswith("@/"):
+            src_idx = file_path.rfind("/src/")
+            if src_idx != -1:
+                base = os.path.normpath(os.path.join(file_path[:src_idx], "src", path[2:]))
+            elif file_path.startswith("src/"):
+                base = os.path.normpath(os.path.join("src", path[2:]))
+            else:
+                base = path
         else:
             base = path
         # TypeScript resolution order: exact, .ts, .tsx, .js, /index.ts

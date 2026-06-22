@@ -36,7 +36,6 @@ interface and implemented by both ArangoDB and Neo4j.
 from __future__ import annotations
 
 import logging
-import os
 from collections import defaultdict
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations

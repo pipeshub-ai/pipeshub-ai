@@ -78,11 +78,13 @@ def _subtokenise(text: str) -> str:
     from identifiers.  The original text is preserved so exact-match queries
     still work; the sub-tokens improve natural-language recall."""
     tokens: list[str] = []
+    seen: set[str] = set()
     for word in re.findall(r'[A-Za-z_][A-Za-z0-9_]*', text):
         parts = _CAMEL_SPLIT_RE.sub(' ', word).lower().split('_')
         for p in parts:
             p = p.strip()
-            if p and p not in tokens:
+            if p and p not in seen:
+                seen.add(p)
                 tokens.append(p)
     if not tokens:
         return text
