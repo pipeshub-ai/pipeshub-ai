@@ -1,0 +1,216 @@
+NORTHGATE RETAIL GROUP
+MONTHLY FINANCIAL SUMMARY REPORT
+Period: October 2024
+Prepared by: Finance & Accounts Department
+Report ID: FIN-OCT2024-MG-007
+Classification: INTERNAL — RESTRICTED DISTRIBUTION
+
+-------------------------------------------------------------------------------
+EXECUTIVE SUMMARY
+-------------------------------------------------------------------------------
+
+October 2024 marked a strong performance month for Northgate Retail Group,
+with consolidated net revenue of INR 48.7 crore against a budget of INR 44.2
+crore, representing a 10.2% positive variance. Operating expenses came in at
+INR 39.1 crore, yielding an EBITDA of INR 9.6 crore (19.7% margin), up from
+INR 7.9 crore in September (17.4% margin).
+
+The festive season (Dussehra and Diwali) was the primary driver of revenue
+outperformance, particularly in the Electronics and Home Decor categories.
+Apparel underperformed slightly against target due to delayed inventory
+replenishment from the Tirupur sourcing hub.
+
+Key highlights:
+  - Revenue beat: +INR 4.5 crore vs. budget
+  - EBITDA margin expansion: +230 bps vs. prior month
+  - Inventory turnover: 6.2x (vs. 5.8x target)
+  - Days Sales Outstanding (DSO): 18 days (vs. 22 days September)
+  - Cash and cash equivalents: INR 14.3 crore (healthy position)
+
+Areas of concern:
+  - Rental costs up 8% YoY due to new store openings (Whitefield, Noida)
+  - Shrinkage losses in Electronics: INR 23.4 lakhs (above acceptable threshold)
+  - Returns rate in Apparel: 9.1% (target: below 7%)
+
+-------------------------------------------------------------------------------
+SECTION 1: REVENUE BREAKDOWN BY CATEGORY
+-------------------------------------------------------------------------------
+
+Category               Budget (Cr)   Actual (Cr)   Variance (Cr)   Var %
+------------------------------------------------------------------------------
+Electronics               14.80         17.20          +2.40        +16.2%
+Apparel & Fashion         11.50         10.85          -0.65         -5.7%
+Home & Living              7.40          8.30          +0.90        +12.2%
+Beauty & Personal Care     4.60          5.10          +0.50        +10.9%
+Sports & Fitness           2.90          3.25          +0.35        +12.1%
+Food & Grocery             2.20          2.55          +0.35        +15.9%
+Kids & Toys                0.80          1.45          +0.65        +81.3%
+------------------------------------------------------------------------------
+TOTAL                     44.20         48.70          +4.50        +10.2%
+------------------------------------------------------------------------------
+
+Notes:
+  - Electronics surge driven by mobile phone upgrades (new flagship launches by
+    two major OEMs in early October) and TV/appliance festive discounts.
+  - Kids & Toys outperformance is seasonal (Diwali gifting) — not expected to
+    sustain into November.
+  - Apparel shortfall: supply chain delay caused stockouts in Men's Formal
+    (sizes 40–44) and Women's Ethnic Wear at the Indiranagar and Koramangala
+    branches.
+
+-------------------------------------------------------------------------------
+SECTION 2: STORE-WISE REVENUE PERFORMANCE
+-------------------------------------------------------------------------------
+
+Store              City          Budget (Cr)   Actual (Cr)   Status
+----------------------------------------------------------------------
+Indiranagar        Bengaluru       7.20          8.10        ABOVE TARGET
+Koramangala        Bengaluru       6.50          6.25        BELOW TARGET
+Whitefield         Bengaluru       3.10          3.40        ABOVE TARGET (new)
+HSR Layout         Bengaluru       4.80          5.10        ABOVE TARGET
+Jayanagar          Bengaluru       5.60          5.90        ABOVE TARGET
+Connaught Place    New Delhi       6.00          7.20        ABOVE TARGET
+Noida Sector 18    Noida           2.50          2.85        ABOVE TARGET (new)
+Banjara Hills      Hyderabad       4.80          5.40        ABOVE TARGET
+Ameerpet           Hyderabad       3.70          4.50        ABOVE TARGET
+----------------------------------------------------------------------
+TOTAL                             44.20         48.70        ABOVE TARGET
+----------------------------------------------------------------------
+
+Comments:
+  - Koramangala is the only store that missed target. Root cause: ongoing
+    ground-floor renovation reduced walk-in traffic by approx. 22% vs. plan.
+    Renovation expected to complete by November 15, 2024.
+  - Both new stores (Whitefield, Noida) are ahead of ramp-up projections.
+    Whitefield reached break-even in Month 3, one month ahead of plan.
+
+-------------------------------------------------------------------------------
+SECTION 3: COST ANALYSIS
+-------------------------------------------------------------------------------
+
+3.1 Operating Expenses
+
+Expense Head               Budget (Cr)   Actual (Cr)   Variance (Cr)   Var %
+-------------------------------------------------------------------------------
+Cost of Goods Sold (COGS)    26.52         28.40          +1.88         +7.1%
+Staff Costs                   4.42          4.65          +0.23         +5.2%
+Rental & Occupancy            3.10          3.35          +0.25         +8.1%
+Marketing & Promotions        2.00          1.80          -0.20        -10.0%
+Logistics & Warehousing       1.50          1.65          +0.15        +10.0%
+IT & Systems                  0.50          0.48          -0.02         -4.0%
+Admin & Miscellaneous         0.60          0.72          +0.12        +20.0%
+-------------------------------------------------------------------------------
+TOTAL OPEX                   38.64         41.05          +2.41         +6.2%
+
+EBITDA (Revenue - OPEX)       5.56          7.65          +2.09
+EBITDA Margin %               12.6%         15.7%
+-------------------------------------------------------------------------------
+
+NOTE: The above table excludes depreciation, interest, and tax.
+
+3.2 COGS Analysis
+
+  - Gross Margin: 41.7% vs. budget of 40.0% — improvement driven by
+    better negotiated vendor rates for Electronics (festive season contracts).
+  - However, markdown and liquidation activity in Apparel compressed margins
+    in that category to 28.3% vs. target of 34.0%.
+
+3.3 Shrinkage Report
+
+Category               Shrinkage Value (Lakhs)   Acceptable Limit   Status
+----------------------------------------------------------------------------
+Electronics                     23.40                15.00           ALERT
+Apparel & Fashion                9.80                12.00           OK
+Home & Living                    4.20                 6.00           OK
+Beauty & Personal Care           2.10                 3.00           OK
+Sports & Fitness                 1.30                 2.00           OK
+Food & Grocery                   0.90                 1.50           OK
+----------------------------------------------------------------------------
+TOTAL                           41.70                39.50           ALERT
+----------------------------------------------------------------------------
+
+Electronics shrinkage spike is under investigation. Suspected causes:
+  (a) High footfall during festive season with insufficient floor staff
+  (b) Possible internal pilferage at the Noida store (audit triggered)
+  (c) Vendor package manipulation (3 incidents of short-shipment flagged)
+
+Loss Prevention team has been notified. CCTV footage review in progress.
+
+-------------------------------------------------------------------------------
+SECTION 4: CASH FLOW SUMMARY
+-------------------------------------------------------------------------------
+
+                                                              INR (Lakhs)
+--------------------------------------------------------------------------
+Opening Cash Balance (Oct 1)                                    1,185.00
++ Collections from Operations                                   4,870.00
++ Interest Income                                                  12.40
+- Payments to Vendors (COGS)                                   (2,840.00)
+- Payroll Disbursements                                          (465.00)
+- Rental & Occupancy Payments                                    (335.00)
+- Marketing Payments                                             (180.00)
+- Capital Expenditure (new store fit-outs)                       (620.00)
+- Loan EMI (Term Loan - HDFC Bank)                               (190.00)
+- Tax Advance Payment (Q2)                                       (210.00)
+--------------------------------------------------------------------------
+Closing Cash Balance (Oct 31)                                   1,227.40
+--------------------------------------------------------------------------
+
+Bank Account Details (Closing Balances):
+  Current A/c - HDFC Bank (Operating)   :   INR 842.30 Lakhs
+  Current A/c - Axis Bank (Payroll)     :   INR 215.60 Lakhs
+  FD - HDFC Bank (6-month, 6.9% p.a.)  :   INR 169.50 Lakhs
+  TOTAL                                 :   INR 1,227.40 Lakhs
+
+Outstanding Dues:
+  Payables to Top 5 Vendors (>30 days)  :   INR 380.00 Lakhs
+  Advance from Customers (Gift Cards)   :   INR  42.00 Lakhs
+  TDS Payable (Oct, due Nov 7)          :   INR  28.50 Lakhs
+  GST Payable (Oct, due Nov 20)         :   INR 164.80 Lakhs
+
+-------------------------------------------------------------------------------
+SECTION 5: KEY METRICS DASHBOARD
+-------------------------------------------------------------------------------
+
+Metric                          Oct 2024    Sep 2024    Oct 2023    Target
+---------------------------------------------------------------------------
+Net Revenue (INR Cr)             48.70       45.40        41.20      44.20
+EBITDA (INR Cr)                   7.65        7.90         5.80       5.56
+EBITDA Margin (%)                15.7%       17.4%        14.1%      12.6%
+Gross Margin (%)                 41.7%       40.2%        39.5%      40.0%
+Inventory Turnover (x)            6.2x        5.6x         5.3x       5.8x
+Days Sales Outstanding (days)      18          22           24         20
+Same Store Sales Growth (%)       +9.8%       +5.4%        +6.2%      +7.0%
+Average Transaction Value (INR)   2,840       2,420        2,180      2,500
+Units Sold                      171,479     187,603      188,990    176,800
+Returns Rate (%)                   7.4%        6.8%         6.2%       7.0%
+NPS Score                          62          59            54         60
+Active Loyalty Members           84,320      79,100        61,400     75,000
+---------------------------------------------------------------------------
+
+-------------------------------------------------------------------------------
+SECTION 6: OUTLOOK FOR NOVEMBER 2024
+-------------------------------------------------------------------------------
+
+  Expected Revenue Range: INR 42–44 crore
+  Key Drivers:
+    - Post-festive season softening expected (typical Nov dip)
+    - Koramangala renovation completion should partially offset
+    - Year-end clothing season collections launching Nov 10
+    - Black Friday and end-of-season sale planned for Nov 29
+
+  Watch Points:
+    - Electronics inventory restocking lead times (currently 18–22 days)
+    - Apparel vendor delivery commitments for winter collections
+    - Shrinkage control measures for Electronics category
+
+-------------------------------------------------------------------------------
+END OF REPORT
+
+For queries, contact:
+  Mangala Iyer, Head of Finance          — m.iyer@northgateretail.com
+  Suresh Balakrishnan, CFO               — s.bala@northgateretail.com
+
+Distribution: CEO | CFO | COO | VP Operations | Regional Store Heads
+DO NOT FORWARD OUTSIDE NORTHGATE RETAIL GROUP
+-------------------------------------------------------------------------------

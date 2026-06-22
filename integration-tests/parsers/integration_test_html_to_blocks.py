@@ -60,12 +60,12 @@ def _load_snapshot(path: Path) -> dict[str, Any]:
         group.pop("id", None)
     return raw
 
-@pytest.mark.integration
 @pytest.fixture(scope="module")
 def converter() -> HtmlToBlocksConverter:
     return HtmlToBlocksConverter()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize(
     "html_path",
     _discover_html_fixtures(),
