@@ -47,6 +47,7 @@ from app.utils.chat_helpers import (
     build_message_content_array,
     context_includes_jira_tickets,
     enrich_virtual_record_id_to_result_with_fk_children,
+    enrich_virtual_record_id_to_result_with_code_relations,
     flattened_result_sort_key,
     get_flattened_results,
     get_message_content,
@@ -166,6 +167,10 @@ def create_internal_search_tool(
                 graph_provider=graph_provider,
             )
             await enrich_virtual_record_id_to_result_with_fk_children(
+                virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
+            )
+            # Enrich code-file context with directly-imported files (Phase 4.2 / Phase 5 graph)
+            await enrich_virtual_record_id_to_result_with_code_relations(
                 virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
             )
 
@@ -921,6 +926,9 @@ async def _generate_internal_search_stream(
                     graph_provider=graph_provider,
                 )
                 await enrich_virtual_record_id_to_result_with_fk_children(
+                    virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
+                )
+                await enrich_virtual_record_id_to_result_with_code_relations(
                     virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
                 )
 

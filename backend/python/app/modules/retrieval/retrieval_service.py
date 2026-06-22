@@ -56,7 +56,7 @@ valid_group_labels = [
         GroupType.INLINE.value,
         GroupType.KEY_VALUE_AREA.value,
         GroupType.TEXT_SECTION.value,
-        GroupType.CODE.value,
+        # NOTE: GroupType.CODE intentionally excluded — see chat_helpers.py for rationale.
     ]
 
 class RetrievalService:

@@ -822,9 +822,10 @@ class TestOnEventExtensionDispatch:
         processor.process_html_document.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_code_mime_routes_to_md_processor(self):
+    async def test_code_mime_routes_to_code_processor(self):
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_code_file = MagicMock(side_effect=_mock_processor_gen)
         processor.process_md_document = MagicMock(side_effect=_mock_processor_gen)
         processor.process_txt_document = MagicMock(side_effect=_mock_processor_gen)
 
@@ -837,13 +838,15 @@ class TestOnEventExtensionDispatch:
             events = await _drain(ep.on_event(event_data))
 
         assert len(events) == 2
-        processor.process_md_document.assert_called_once()
+        processor.process_code_file.assert_called_once()
+        processor.process_md_document.assert_not_called()
         processor.process_txt_document.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_code_extension_routes_to_md_processor_when_mime_unknown(self):
+    async def test_code_extension_routes_to_code_processor(self):
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_code_file = MagicMock(side_effect=_mock_processor_gen)
         processor.process_md_document = MagicMock(side_effect=_mock_processor_gen)
         processor.process_txt_document = MagicMock(side_effect=_mock_processor_gen)
 
@@ -856,7 +859,8 @@ class TestOnEventExtensionDispatch:
             events = await _drain(ep.on_event(event_data))
 
         assert len(events) == 2
-        processor.process_md_document.assert_called_once()
+        processor.process_code_file.assert_called_once()
+        processor.process_md_document.assert_not_called()
         processor.process_txt_document.assert_not_called()
 
 

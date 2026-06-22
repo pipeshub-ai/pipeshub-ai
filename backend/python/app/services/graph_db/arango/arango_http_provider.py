@@ -2959,7 +2959,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     record_id: PARSE_IDENTIFIER(edge._from).key,
                     childTable: edge.childTableName || "",
                     sourceColumn: edge.sourceColumn || "",
-                    targetColumn: edge.targetColumn || ""
+                    targetColumn: edge.targetColumn || "",
+                    sourceSymbol: edge.sourceSymbol || "",
+                    targetSymbol: edge.targetSymbol || ""
                 }}
             """
             results = await self.http_client.execute_aql(
@@ -3003,7 +3005,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     record_id: PARSE_IDENTIFIER(edge._to).key,
                     parentTable: edge.parentTableName || "",
                     sourceColumn: edge.sourceColumn || "",
-                    targetColumn: edge.targetColumn || ""
+                    targetColumn: edge.targetColumn || "",
+                    sourceSymbol: edge.sourceSymbol || "",
+                    targetSymbol: edge.targetSymbol || ""
                 }}
             """
             results = await self.http_client.execute_aql(

@@ -318,6 +318,8 @@ class TestAbstractMethodInventory:
         "remove_sync_point",
         "delete_sync_points_by_connector_id",
         "delete_connector_sync_edges",
+        # Record relation operations
+        "batch_upsert_record_relations",
         # Batch operations
         "batch_upsert_app_users",
         "batch_upsert_user_groups",

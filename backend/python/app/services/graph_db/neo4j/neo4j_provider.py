@@ -665,6 +665,12 @@ class Neo4jProvider(IGraphDBProvider):
         """
         Convert ArangoDB node format to Neo4j format.
 
+        Neo4j only supports primitive types and arrays of primitives as property
+        values.  Any dict or list-of-dict value is JSON-serialised to a string so
+        that it round-trips safely.  Callers that read properties back (e.g.
+        ``from_arango_record``) must JSON-parse those fields when they encounter a
+        string where they expect a structured type.
+
         Args:
             arango_node: Node from ArangoDB (may have _key, _id)
             collection: Collection name
@@ -672,7 +678,17 @@ class Neo4jProvider(IGraphDBProvider):
         Returns:
             Node in Neo4j format (with id, label)
         """
-        neo4j_node = arango_node.copy()
+        neo4j_node = {}
+        for key, value in arango_node.items():
+            if isinstance(value, dict):
+                # Top-level dict → serialise to JSON string
+                neo4j_node[key] = json.dumps(value, default=str)
+            elif isinstance(value, list) and value and isinstance(value[0], dict):
+                # List of dicts → serialise each element, store as JSON array string
+                # (Neo4j can't store list[Map]; a JSON string survives round-trip)
+                neo4j_node[key] = json.dumps(value, default=str)
+            else:
+                neo4j_node[key] = value
 
         # Convert _key to id
         if "_key" in neo4j_node:
@@ -4573,7 +4589,9 @@ class Neo4jProvider(IGraphDBProvider):
             RETURN child.id AS record_id,
                    COALESCE(r.childTableName, '') AS childTable,
                    COALESCE(r.sourceColumn, '') AS sourceColumn,
-                   COALESCE(r.targetColumn, '') AS targetColumn
+                   COALESCE(r.targetColumn, '') AS targetColumn,
+                   COALESCE(r.sourceSymbol, '') AS sourceSymbol,
+                   COALESCE(r.targetSymbol, '') AS targetSymbol
             """
 
             results = await self.client.execute_query(
@@ -4589,6 +4607,8 @@ class Neo4jProvider(IGraphDBProvider):
                     "childTable": record.get("childTable", ""),
                     "sourceColumn": record.get("sourceColumn", ""),
                     "targetColumn": record.get("targetColumn", ""),
+                    "sourceSymbol": record.get("sourceSymbol", ""),
+                    "targetSymbol": record.get("targetSymbol", ""),
                 })
             return output
 
@@ -4659,7 +4679,9 @@ class Neo4jProvider(IGraphDBProvider):
             RETURN parent.id AS record_id,
                    COALESCE(r.parentTableName, '') AS parentTable,
                    COALESCE(r.sourceColumn, '') AS sourceColumn,
-                   COALESCE(r.targetColumn, '') AS targetColumn
+                   COALESCE(r.targetColumn, '') AS targetColumn,
+                   COALESCE(r.sourceSymbol, '') AS sourceSymbol,
+                   COALESCE(r.targetSymbol, '') AS targetSymbol
             """
 
             results = await self.client.execute_query(
@@ -4675,6 +4697,8 @@ class Neo4jProvider(IGraphDBProvider):
                     "parentTable": record.get("parentTable", ""),
                     "sourceColumn": record.get("sourceColumn", ""),
                     "targetColumn": record.get("targetColumn", ""),
+                    "sourceSymbol": record.get("sourceSymbol", ""),
+                    "targetSymbol": record.get("targetSymbol", ""),
                 })
             return output
 

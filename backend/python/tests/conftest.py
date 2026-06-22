@@ -125,8 +125,45 @@ _OPTIONAL_PACKAGES = [
     "google.cloud.storage",
     "azure.storage.fileshare",
     "sentence_transformers",
-    # LangChain*: declared in pyproject — must not be MagicMock stubs or
-    # isinstance(..., ChatOpenAI) and PydanticOutputParser break in unit tests.
+    # LangChain*: _ensure_module only mocks if the package is absent; when it IS
+    # installed the real module is used unchanged, so isinstance checks still work.
+    "langchain_core",
+    "langchain_core.documents",
+    "langchain_core.documents.base",
+    "langchain_core.prompts",
+    "langchain_openai",
+    "langchain_anthropic",
+    "langchain_aws",
+    "langchain_google_vertexai",
+    "langchain_google_genai",
+    "langchain_community",
+    "langchain_mistralai",
+    "langchain_cohere",
+    "langchain_together",
+    "langchain_groq",
+    "langchain_fireworks",
+    "langchain_nvidia_ai_endpoints",
+    "langchain_huggingface",
+    "langchain_chroma",
+    "langchain_qdrant",
+    "langchain_pinecone",
+    "langchain_elasticsearch",
+    "langchain_voyageai",
+    "langchain_nomic",
+    "pymongo",
+    "motor",
+    "boto3",
+    "botocore",
+    "mariadb",
+    "asyncpg",
+    # tree-sitter language grammars — mocked when not all grammars are installed
+    # (the parser itself still works for languages whose grammars ARE installed;
+    # for unit tests that test fallback/routing logic, the mock is sufficient)
+    "tree_sitter_go",
+    "tree_sitter_java",
+    "tree_sitter_rust",
+    "tree_sitter_c",
+    "tree_sitter_cpp",
     "litellm",
     "qdrant_client",
     "fastembed",
@@ -170,13 +207,18 @@ class _DocumentStub:
 
 
 def _inject_document_stub() -> None:
+    import inspect
     import types
 
-    # When langchain_core is installed, use the real documents module so
-    # transitive imports (e.g. langchain_aws -> BaseDocumentCompressor) work.
+    # When langchain_core is the REAL package, use its real Document class so
+    # transitive isinstance checks (e.g. langchain_aws, PydanticOutputParser) work.
+    # When it is a MagicMock stub (not installed), inject our _DocumentStub so that
+    # isinstance(doc, Document) type-guards in production code do not raise TypeError.
     try:
         import langchain_core  # noqa: F401
-        return
+        # Distinguish between the real package and a MagicMock stub
+        if inspect.ismodule(langchain_core) and not isinstance(langchain_core, MagicMock):
+            return  # Real langchain_core installed — nothing to do
     except ImportError:
         pass
 

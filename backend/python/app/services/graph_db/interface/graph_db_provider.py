@@ -329,6 +329,36 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def batch_upsert_record_relations(
+        self,
+        edges: list[dict],
+        transaction: str | None = None,
+    ) -> bool:
+        """
+        Batch upsert record relation edges with UPSERT semantics.
+
+        UPSERT matches on (_from, _to, relationshipType, constraintName), so
+        multiple edge types or constraint names between the same pair of records
+        are preserved as distinct edges.
+
+        Args:
+            edges: List of edge dicts with at minimum:
+                {
+                    "_from": "records/source_id",
+                    "_to": "records/target_id",
+                    "relationshipType": "CALLS",  # or "IMPORTS", etc.
+                    "constraintName": "",          # "" for single-edge-per-pair
+                    "orgId": "...",
+                    # optional extra payload: sourceSymbol, targetSymbol, etc.
+                }
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if successful
+        """
+        pass
+
+    @abstractmethod
     async def get_edge(
         self,
         from_id: str,

@@ -566,6 +566,21 @@ code_file_record_schema={
             "description": {"type": ["string", "null"]},
             "filePath": {"type": "string", "minLength": 0},
             "fileHash": {"type": "string", "minLength": 0},
+            "language": {"type": ["string", "null"]},
+            "imports": {"type": ["array", "null"], "items": {"type": "string"}},
+            # Populated by call-extractor at index time — used to build CALLS edges
+            "definitions": {"type": ["array", "null"], "items": {"type": "string"}},
+            "calls": {
+                "type": ["array", "null"],
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "line": {"type": "integer"},
+                        "caller": {"type": ["string", "null"]},
+                    },
+                },
+            },
         },
     },
 }

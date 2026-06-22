@@ -107,6 +107,8 @@ from app.sources.client.gitlab.gitlab import (
 )
 from app.sources.external.gitlab.gitlab_ import GitLabDataSource
 from app.utils.oauth_config import resolve_instance_url
+from app.modules.code_analysis.call_graph_builder import CallGraphBuilder
+from app.modules.code_analysis.import_resolver import ImportResolver
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import (
     get_epoch_timestamp_in_ms,
@@ -514,6 +516,7 @@ class GitLabConnector(BaseConnector):
         # to on GitLab. See _resolve_creator_identity / Patch #4.
         self._gitlab_user_id: int | None = None
         self._code_file_timestamp_backfill_task: asyncio.Task[None] | None = None
+        self._code_graph_build_task: asyncio.Task[None] | None = None
         # GitLab user-level access flags, captured from ``GET /user``.
         # ``is_admin``: all editions; ``is_auditor``: Premium/Ultimate only.
         # GitLab OMITS both attributes from the response when the caller
@@ -1604,6 +1607,7 @@ class GitLabConnector(BaseConnector):
         """syncing various entities"""
         try:
             await self._cancel_code_file_timestamp_backfill()
+            await self._cancel_code_graph_build()
             await self._refresh_token_if_needed()
             self.logger.info("⚒️⚒️ Starting GitLab sync")
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -1618,6 +1622,7 @@ class GitLabConnector(BaseConnector):
             self.logger.info("🕛🕛 Starting sync of projects")
             await self._sync_all_project()
             self._schedule_code_file_timestamp_backfill_after_sync()
+            self._schedule_code_graph_build_after_sync()
         except Exception as e:
             self.logger.error(f"Error in GitLab sync: {e}", exc_info=True)
             raise
@@ -2660,6 +2665,124 @@ class GitLabConnector(BaseConnector):
         finally:
             self._code_file_timestamp_backfill_task = None
 
+    # ---------------------------Code Graph Build-----------------------------#
+
+    async def _cancel_code_graph_build(self) -> None:
+        """Stop any in-flight code-graph build before starting a new sync."""
+        task = self._code_graph_build_task
+        self._code_graph_build_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    def _schedule_code_graph_build_after_sync(self) -> None:
+        """Schedule a background task that runs ImportResolver + CallGraphBuilder per project."""
+        existing = self._code_graph_build_task
+        if existing is not None and not existing.done():
+            return
+        self._code_graph_build_task = asyncio.create_task(
+            self._run_code_graph_build_after_sync(),
+            name=f"gitlab_code_graph_build_{self.connector_id}",
+        )
+
+    async def _run_code_graph_build_after_sync(self) -> None:
+        """Background: build IMPORTS + CALLS edges for all synced code repositories.
+
+        Runs ``ImportResolver`` then ``CallGraphBuilder`` per project, mirroring
+        the ``_backfill_code_file_timestamps_after_sync`` pattern.  The run is
+        idempotent — re-running on the same repo overwrites edges via UPSERT.
+        """
+        try:
+            projects = await self._resolve_projects_with_filters()
+        except Exception as e:
+            self.logger.error(
+                "Code-graph build: failed to resolve projects for connector %s: %s",
+                self.connector_id,
+                e,
+                exc_info=True,
+            )
+            self._code_graph_build_task = None
+            return
+
+        org_id: str = self.data_entities_processor.org_id
+
+        for project in projects:
+            external_group_id = f"{project.id}-code-repository"
+            try:
+                # Resolve the internal record group ID from the external ID.
+                async with self.data_store_provider.transaction() as tx_store:
+                    record_group = await tx_store.get_record_group_by_external_id(
+                        self.connector_id, external_group_id
+                    )
+
+                if record_group is None:
+                    self.logger.debug(
+                        "Code-graph build: no record group for project %s (external=%s) — skipping",
+                        project.id,
+                        external_group_id,
+                    )
+                    continue
+
+                record_group_id: str = record_group.id
+
+                # Use the raw graph_provider directly (no transaction) so that
+                # the long-running batch reads and writes are not held inside a
+                # single DB transaction.
+                graph_provider = self.data_store_provider.graph_provider
+
+                self.logger.info(
+                    "Code-graph build: running ImportResolver for project %s (group=%s)",
+                    project.id,
+                    record_group_id,
+                )
+                import_resolver = ImportResolver(
+                    graph_provider=graph_provider,
+                    org_id=org_id,
+                    record_group_id=record_group_id,
+                    connector_id=self.connector_id,
+                )
+                import_stats = await import_resolver.resolve_all()
+                self.logger.info(
+                    "Code-graph build: ImportResolver done for project %s: %s",
+                    project.id,
+                    import_stats,
+                )
+
+                self.logger.info(
+                    "Code-graph build: running CallGraphBuilder for project %s (group=%s)",
+                    project.id,
+                    record_group_id,
+                )
+                call_graph_builder = CallGraphBuilder(
+                    graph_provider=graph_provider,
+                    org_id=org_id,
+                    record_group_id=record_group_id,
+                    connector_id=self.connector_id,
+                )
+                calls_stats = await call_graph_builder.resolve_all()
+                self.logger.info(
+                    "Code-graph build: CallGraphBuilder done for project %s: %s",
+                    project.id,
+                    calls_stats,
+                )
+
+            except Exception as e:
+                self.logger.error(
+                    "Code-graph build failed for project %s connector %s: %s",
+                    project.id,
+                    self.connector_id,
+                    e,
+                    exc_info=True,
+                )
+
+        self._code_graph_build_task = None
+        self.logger.info(
+            "Code-graph build completed for connector %s (%d project(s))",
+            self.connector_id,
+            len(projects),
+        )
+
     async def _run_code_file_timestamp_backfill(self, project_id: int) -> None:
         batch_size = 100
 
@@ -3542,6 +3665,14 @@ class GitLabConnector(BaseConnector):
             preview_renderable = (
                 file_extension.lower() in PREVIEW_RENDERABLE_EXTENSIONS
             )
+            # Detect language at sync time so it is stored on the codeFiles node
+            # without waiting for indexing. Non-code files (e.g. .md, .html) get
+            # language=None here; process_code_file will fall back to markdown parsing.
+            try:
+                from app.modules.parsers.code_parser.parser import detect_language as _detect_lang
+                code_file_language = _detect_lang(file_name)
+            except Exception:
+                code_file_language = None
             # Derive parent (tree) externalRecordId from the child blob's
             # webPath. GitLab uses different URL segments for the two:
             #   trees:  /<group>/<project>/-/tree/<ref>/<path>
@@ -3579,6 +3710,7 @@ class GitLabConnector(BaseConnector):
                 preview_renderable=preview_renderable,
                 file_path=file_path,
                 file_hash=file_hash,
+                language=code_file_language,
                 inherit_permissions=True,
                 parent_external_record_id=parent_external_record_id,
                 # See _sync_repo_main: lets _handle_parent_record create a
@@ -4940,17 +5072,48 @@ class GitLabConnector(BaseConnector):
                 data = f"Existing file \n\n {file_content} \n\n Diff content \n\n {diff_content}"
             if is_truncated_diff:
                 data = data + "\n\n[TRUNCATED] Diff"
+
+            # Detect if this file change is for a source-code file. When it is,
+            # use DataFormat.CODE so _process_blockgroups routes it through
+            # CodeFileParser (tree-sitter) instead of MarkdownParser.
+            try:
+                from app.modules.parsers.code_parser.parser import detect_language as _dl
+                _change_lang = _dl(file_path) if file_path else None
+            except Exception:
+                _change_lang = None
+
+            if _change_lang and file_content:
+                # Store the raw source and diff separately so the code parser
+                # receives only the compilable source, not the annotated diff.
+                bg_data: str | dict = {
+                    "file_content": file_content,
+                    "diff_content": diff_content,
+                    "file_path": file_path,
+                    "language": _change_lang,
+                    "is_new_file": is_new_file,
+                    "is_deleted_file": is_deleted_file,
+                    "is_truncated_diff": is_truncated_diff,
+                    # Keep the concatenated text as a fallback display value
+                    "text": data,
+                }
+                bg_format = DataFormat.CODE
+                bg_requires_processing = True
+            else:
+                bg_data = data
+                bg_format = DataFormat.MARKDOWN
+                bg_requires_processing = True
+
             file_comments = map_file_r_comments.get(file_path, [])
             comments = [file_comments] if file_comments else []
             bg_n = BlockGroup(
                 index=block_group_number,
                 name=f"block for file {file_path}",
                 type=GroupType.FULL_CODE_PATCH,
-                format=DataFormat.MARKDOWN,
+                format=bg_format,
                 sub_type=GroupSubType.PR_FILE_CHANGE,
-                data=data,
+                data=bg_data,
                 comments=comments,
-                requires_processing=True,
+                requires_processing=bg_requires_processing,
             )
             block_groups.append(bg_n)
             block_group_number += 1
@@ -6351,6 +6514,7 @@ class GitLabConnector(BaseConnector):
         """
         self.logger.info("Cleaning up GitLab connector resources.")
         await self._cancel_code_file_timestamp_backfill()
+        await self._cancel_code_graph_build()
         self.data_source = None
         try:
             self._gitlab_executor.shutdown(wait=False, cancel_futures=True)
