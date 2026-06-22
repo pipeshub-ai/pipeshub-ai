@@ -92,7 +92,7 @@ describe('user_management/validators/teams.validators', () => {
     });
 
     it('should treat empty search as omitted', () => {
-      for (const search of ['', '   ']) {
+      for (const search of ['', '   ', null]) {
         const result = getUserTeamsQuerySchema.safeParse({
           query: { search },
         });
@@ -100,6 +100,24 @@ describe('user_management/validators/teams.validators', () => {
         if (result.success) {
           expect(result.data.query.search).to.equal(undefined);
         }
+      }
+    });
+
+    it('should treat null pagination and timestamp filters as omitted', () => {
+      const result = getUserTeamsQuerySchema.safeParse({
+        query: {
+          page: null,
+          limit: null,
+          created_after: null,
+          created_before: null,
+        },
+      });
+      expect(result.success).to.be.true;
+      if (result.success) {
+        expect(result.data.query.page).to.equal(1);
+        expect(result.data.query.limit).to.equal(10);
+        expect(result.data.query.created_after).to.equal(undefined);
+        expect(result.data.query.created_before).to.equal(undefined);
       }
     });
 

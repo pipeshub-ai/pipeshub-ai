@@ -24,26 +24,39 @@ const teamGraphKey = z
 
 const teamRole = z.enum(['OWNER', 'READER', 'WRITER']);
 
+const emptyQueryValue = (arg: unknown): unknown =>
+  arg === undefined || arg === null || arg === '' ? undefined : arg;
+
 const pageSchema = z.preprocess(
-  (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
+  (arg) => {
+    const value = emptyQueryValue(arg);
+    return value === undefined ? undefined : Number(value);
+  },
   z.number().min(1).default(1),
 );
 
 const teamLimitSchema = z.preprocess(
-  (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
+  (arg) => {
+    const value = emptyQueryValue(arg);
+    return value === undefined ? undefined : Number(value);
+  },
   z.number().min(1).max(100).default(10),
 );
 
 const timestampQuerySchema = z.preprocess(
-  (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
+  (arg) => {
+    const value = emptyQueryValue(arg);
+    return value === undefined ? undefined : Number(value);
+  },
   z.number().int().positive().optional(),
 );
 
 const normalizeOptionalSearch = (arg: unknown): string | undefined => {
-  if (arg === undefined || arg === '') {
+  const value = emptyQueryValue(arg);
+  if (value === undefined) {
     return undefined;
   }
-  const trimmed = String(arg).trim();
+  const trimmed = String(value).trim();
   return trimmed === '' ? undefined : trimmed;
 };
 
