@@ -57,50 +57,6 @@ _GRAPH_USER_POLL_INTERVAL = 2.0
 
 
 # ---------------------------------------------------------------------------
-# HTTP helpers
-# ---------------------------------------------------------------------------
-def _url(client: PipeshubClient, path: str = "") -> str:
-    return f"{client.base_url}{_BASE_PATH}{path}"
-
-
-def _request(
-    client: PipeshubClient,
-    method: str,
-    path: str = "",
-    *,
-    json: object = None,
-    params: dict[str, Any] | None = None,
-    auth: bool = True,
-) -> requests.Response:
-    """Unified HTTP request helper for teams API."""
-    headers = client._headers() if auth else {}
-    return requests.request(
-        method,
-        _url(client, path),
-        headers=headers,
-        json=json,
-        params=params,
-        timeout=client.timeout_seconds,
-    )
-
-
-def _get(client: PipeshubClient, path: str = "", **kw: Any) -> requests.Response:
-    return _request(client, "GET", path, **kw)
-
-
-def _post(client: PipeshubClient, path: str = "", **kw: Any) -> requests.Response:
-    return _request(client, "POST", path, **kw)
-
-
-def _put(client: PipeshubClient, path: str = "", **kw: Any) -> requests.Response:
-    return _request(client, "PUT", path, **kw)
-
-
-def _delete_request(client: PipeshubClient, path: str = "", **kw: Any) -> requests.Response:
-    return _request(client, "DELETE", path, **kw)
-
-
-# ---------------------------------------------------------------------------
 # User management helpers
 # ---------------------------------------------------------------------------
 def _list_graph_mongo_user_ids(
@@ -116,7 +72,7 @@ def _list_graph_mongo_user_ids(
     while True:
         resp = requests.get(
             url,
-            headers=client._headers(),
+            headers=client.auth_headers,
             params={"page": page, "limit": 100},
             timeout=client.timeout_seconds,
         )
@@ -172,7 +128,7 @@ def _create_test_user(client: PipeshubClient) -> str:
     unique = uuid.uuid4().hex[:8]
     resp = requests.post(
         f"{client.base_url}/api/v1/users",
-        headers=client._headers(),
+        headers=client.auth_headers,
         json={
             "fullName": f"RV Teams Test {unique}",
             "email": f"rv-teams-{unique}@test-pipeshub.com",
@@ -190,7 +146,7 @@ def _activate_test_user(client: PipeshubClient, mongo_user_id: str) -> None:
     """Mark user logged-in so graph sync activates the User node."""
     resp = requests.put(
         f"{client.base_url}/api/v1/users/{mongo_user_id}",
-        headers=client._headers(),
+        headers=client.auth_headers,
         json={"hasLoggedIn": True},
         timeout=client.timeout_seconds,
     )
@@ -251,7 +207,7 @@ def _delete_test_users(client: PipeshubClient, user_ids: list[str]) -> None:
         try:
             resp = requests.delete(
                 f"{client.base_url}/api/v1/users/{user_id}",
-                headers=client._headers(),
+                headers=client.auth_headers,
                 timeout=client.timeout_seconds,
             )
             if resp.status_code != 200:
@@ -313,7 +269,12 @@ def _create_team(
     **kwargs: object,
 ) -> dict[str, object]:
     """Create a team, assert 201, return response body."""
-    resp = _post(client, json={"name": name, **kwargs})
+    resp = requests.post(
+        f"{client.base_url}{_BASE_PATH}",
+        headers=client.auth_headers,
+        json={"name": name, **kwargs},
+        timeout=client.timeout_seconds,
+    )
     assert resp.status_code == 201, f"Failed to create team '{name}': {resp.status_code}: {resp.text}"
     return resp.json()
 
@@ -321,14 +282,22 @@ def _create_team(
 def _delete_team(client: PipeshubClient, team_id: str) -> None:
     """Delete team (best-effort, ignores errors)."""
     try:
-        _delete_request(client, f"/{team_id}")
+        requests.delete(
+            f"{client.base_url}{_BASE_PATH}/{team_id}",
+            headers=client.auth_headers,
+            timeout=client.timeout_seconds,
+        )
     except Exception:
         pass
 
 
 def _team_member_roles_by_mongo_id(client: PipeshubClient, team_id: str) -> dict[str, str]:
     """Get team members and return {mongoUserId: role} mapping."""
-    resp = _get(client, f"/{team_id}/users")
+    resp = requests.get(
+        f"{client.base_url}{_BASE_PATH}/{team_id}/users",
+        headers=client.auth_headers,
+        timeout=client.timeout_seconds,
+    )
     assert resp.status_code == 200, f"Expected 200 loading team members, got {resp.status_code}: {resp.text}"
     body = resp.json()
     return {
@@ -510,7 +479,12 @@ def _assert_teams_in_time_range(
 
 def _get_user_teams_body(client: PipeshubClient, params: dict[str, Any]) -> dict[str, object]:
     """Get user teams with params, assert 200 and schema."""
-    resp = _get(client, "/user/teams", params=params)
+    resp = requests.get(
+        f"{client.base_url}{_BASE_PATH}/user/teams",
+        headers=client.auth_headers,
+        params=params,
+        timeout=client.timeout_seconds,
+    )
     assert resp.status_code == 200, f"getUserTeams failed {resp.status_code}: {resp.text}"
     body = resp.json()
     assert_response_matches_openapi_operation(body, "getUserTeams")
@@ -527,6 +501,9 @@ class TeamsTestBase:
     @pytest.fixture(autouse=True)
     def _setup(self, pipeshub_client: PipeshubClient) -> None:
         self.client = pipeshub_client
+        self.base_url = pipeshub_client.base_url
+        self.headers = pipeshub_client.auth_headers
+        self.timeout = pipeshub_client.timeout_seconds
 
 
 # ====================================================================
@@ -574,7 +551,11 @@ class TestCreateTeam(TeamsTestBase):
     def test_create_team_negative_tests(self) -> None:
         """Negative: 401 no auth, 400 validation errors, 400 backend errors."""
         # 401 - No authentication
-        resp = _post(self.client, json={"name": "rv-test-no-auth"}, auth=False)
+        resp = requests.post(
+            f"{self.base_url}{_BASE_PATH}",
+            json={"name": "rv-test-no-auth"},
+            timeout=self.timeout,
+        )
         assert resp.status_code == 401
         _assert_unauthorized(resp.json(), "createTeam")
 
@@ -588,15 +569,25 @@ class TestCreateTeam(TeamsTestBase):
             ("invalid userRoles role", {"name": _unique_team_name(), "userRoles": [{"userId": _NONEXISTENT_MONGO_USER_ID, "role": "ADMIN"}]}),
         ]
         for label, payload in validation_cases:
-            resp = _post(self.client, json=payload)
+            resp = requests.post(
+                f"{self.base_url}{_BASE_PATH}",
+                headers=self.headers,
+                json=payload,
+                timeout=self.timeout,
+            )
             assert resp.status_code == 400, f"[{label}] Expected 400, got {resp.status_code}: {resp.text}"
             _assert_validation_error(resp.json(), "createTeam")
 
         # 400 - Backend errors (user not in graph)
-        resp = _post(self.client, json={
-            "name": _unique_team_name(),
-            "userRoles": [{"userId": _NONEXISTENT_MONGO_USER_ID, "role": "READER"}],
-        })
+        resp = requests.post(
+            f"{self.base_url}{_BASE_PATH}",
+            headers=self.headers,
+            json={
+                "name": _unique_team_name(),
+                "userRoles": [{"userId": _NONEXISTENT_MONGO_USER_ID, "role": "READER"}],
+            },
+            timeout=self.timeout,
+        )
         assert resp.status_code == 400
         _assert_backend_bad_request(resp.json(), "createTeam", "not found")
 
@@ -611,14 +602,23 @@ class TestGetUserTeams(TeamsTestBase):
     def test_get_user_teams_response_schema(self) -> None:
         """Positive: list teams, pagination, and search."""
         # Basic list
-        resp = _get(self.client, "/user/teams")
+        resp = requests.get(
+            f"{self.base_url}{_BASE_PATH}/user/teams",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
         body = resp.json()
         assert "teams" in body and "pagination" in body
         assert_response_matches_openapi_operation(body, "getUserTeams")
 
         # Pagination
-        resp = _get(self.client, "/user/teams", params={"page": 1, "limit": 5})
+        resp = requests.get(
+            f"{self.base_url}{_BASE_PATH}/user/teams",
+            headers=self.headers,
+            params={"page": 1, "limit": 5},
+            timeout=self.timeout,
+        )
         assert resp.status_code == 200
         body = resp.json()
         assert_response_matches_openapi_operation(body, "getUserTeams")
@@ -628,7 +628,11 @@ class TestGetUserTeams(TeamsTestBase):
         # Search
         with managed_resources(self.client) as res:
             team_id, _ = res.create_team()
-            detail = _get(self.client, f"/{team_id}").json()
+            detail = requests.get(
+                f"{self.base_url}{_BASE_PATH}/{team_id}",
+                headers=self.headers,
+                timeout=self.timeout,
+            ).json()
             team_name = _team_from_detail_response(detail).get("name", "")
             search_term = team_name.rsplit("-", 1)[-1]
             search_body = _get_user_teams_body(self.client, {"search": search_term})
@@ -639,7 +643,12 @@ class TestGetUserTeams(TeamsTestBase):
 
             # Empty search is ignored (same as no filter), not 400
             for empty_search in ("", "   "):
-                resp = _get(self.client, "/user/teams", params={"search": empty_search})
+                resp = requests.get(
+                    f"{self.base_url}{_BASE_PATH}/user/teams",
+                    headers=self.headers,
+                    params={"search": empty_search},
+                    timeout=self.timeout,
+                )
                 assert resp.status_code == 200, (
                     f"Expected 200 for empty search {empty_search!r}, "
                     f"got {resp.status_code}: {resp.text}"
@@ -652,7 +661,11 @@ class TestGetUserTeams(TeamsTestBase):
 
         with managed_resources(self.client) as res:
             team_id, _ = res.create_team()
-            detail = _get(self.client, f"/{team_id}").json()
+            detail = requests.get(
+                f"{self.base_url}{_BASE_PATH}/{team_id}",
+                headers=self.headers,
+                timeout=self.timeout,
+            ).json()
             team = _team_from_detail_response(detail)
             creator_id = _creator_mongo_user_id(team)
             assert creator_id, "Team detail must include creator Mongo userId"
@@ -690,12 +703,20 @@ class TestGetUserTeams(TeamsTestBase):
     def test_get_user_teams_negative_tests(self) -> None:
         """Negative: 401 no auth, 400 invalid created_by."""
         # 401 - No authentication
-        resp = _get(self.client, "/user/teams", auth=False)
+        resp = requests.get(
+            f"{self.base_url}{_BASE_PATH}/user/teams",
+            timeout=self.timeout,
+        )
         assert resp.status_code == 401
         _assert_unauthorized(resp.json(), "getUserTeams")
 
         # 400 - Invalid created_by format
-        resp = _get(self.client, "/user/teams", params={"created_by": "not-a-mongo-id"})
+        resp = requests.get(
+            f"{self.base_url}{_BASE_PATH}/user/teams",
+            headers=self.headers,
+            params={"created_by": "not-a-mongo-id"},
+            timeout=self.timeout,
+        )
         assert resp.status_code == 400
         _assert_validation_error(resp.json(), "getUserTeams")
 
@@ -712,7 +733,11 @@ class TestGetTeamById(TeamsTestBase):
         with managed_resources(self.client) as res:
             name = _unique_team_name()
             team_id, _ = res.create_team(name)
-            resp = _get(self.client, f"/{team_id}")
+            resp = requests.get(
+                f"{self.base_url}{_BASE_PATH}/{team_id}",
+                headers=self.headers,
+                timeout=self.timeout,
+            )
             assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
             body = resp.json()
             assert_response_matches_openapi_operation(body, "getTeamById")
@@ -722,17 +747,28 @@ class TestGetTeamById(TeamsTestBase):
     def test_get_team_by_id_negative_tests(self) -> None:
         """Negative: 401 no auth, 400 malformed id, 404 not found."""
         # 401 - No authentication
-        resp = _get(self.client, f"/{_NONEXISTENT_TEAM_ID}", auth=False)
+        resp = requests.get(
+            f"{self.base_url}{_BASE_PATH}/{_NONEXISTENT_TEAM_ID}",
+            timeout=self.timeout,
+        )
         assert resp.status_code == 401
         _assert_unauthorized(resp.json(), "getTeamById")
 
         # 400 - Malformed team id
-        resp = _get(self.client, f"/{_MALFORMED_TEAM_ID}")
+        resp = requests.get(
+            f"{self.base_url}{_BASE_PATH}/{_MALFORMED_TEAM_ID}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
         assert resp.status_code == 400
         _assert_validation_error(resp.json(), "getTeamById")
 
         # 404 - Team not found
-        resp = _get(self.client, f"/{_NONEXISTENT_TEAM_ID}")
+        resp = requests.get(
+            f"{self.base_url}{_BASE_PATH}/{_NONEXISTENT_TEAM_ID}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
         assert resp.status_code == 404
         _assert_not_found(resp.json(), "getTeamById")
 
@@ -751,10 +787,12 @@ class TestUpdateTeam(TeamsTestBase):
             team_id, _ = res.create_team(name)
 
             # Update name and description
-            resp = _put(self.client, f"/{team_id}", json={
-                "name": f"{name}-renamed",
-                "description": "Updated by integration test",
-            })
+            resp = requests.put(
+                f"{self.base_url}{_BASE_PATH}/{team_id}",
+                headers=self.headers,
+                json={"name": f"{name}-renamed", "description": "Updated by integration test"},
+                timeout=self.timeout,
+            )
             assert resp.status_code == 200
             body = resp.json()
             assert_response_matches_openapi_operation(body, "updateTeam")
@@ -763,21 +801,32 @@ class TestUpdateTeam(TeamsTestBase):
             # Add member
             extra_user_id, _ = res.get_test_user()
             if extra_user_id:
-                resp = _put(self.client, f"/{team_id}", json={
-                    "addUserRoles": [{"userId": extra_user_id, "role": "READER"}],
-                })
+                resp = requests.put(
+                    f"{self.base_url}{_BASE_PATH}/{team_id}",
+                    headers=self.headers,
+                    json={"addUserRoles": [{"userId": extra_user_id, "role": "READER"}]},
+                    timeout=self.timeout,
+                )
                 assert resp.status_code == 200
                 assert_response_matches_openapi_operation(resp.json(), "updateTeam")
 
                 # Update member role
-                resp = _put(self.client, f"/{team_id}", json={
-                    "updateUserRoles": [{"userId": extra_user_id, "role": "WRITER"}],
-                })
+                resp = requests.put(
+                    f"{self.base_url}{_BASE_PATH}/{team_id}",
+                    headers=self.headers,
+                    json={"updateUserRoles": [{"userId": extra_user_id, "role": "WRITER"}]},
+                    timeout=self.timeout,
+                )
                 assert resp.status_code == 200
                 assert_response_matches_openapi_operation(resp.json(), "updateTeam")
 
                 # Remove member
-                resp = _put(self.client, f"/{team_id}", json={"removeUserIds": [extra_user_id]})
+                resp = requests.put(
+                    f"{self.base_url}{_BASE_PATH}/{team_id}",
+                    headers=self.headers,
+                    json={"removeUserIds": [extra_user_id]},
+                    timeout=self.timeout,
+                )
                 assert resp.status_code == 200
                 assert_response_matches_openapi_operation(resp.json(), "updateTeam")
 
@@ -793,13 +842,18 @@ class TestUpdateTeam(TeamsTestBase):
             ])
             combined_name = f"{name}-combined"
 
-            resp = _put(self.client, f"/{team_id}", json={
-                "name": combined_name,
-                "description": "Combined add, update, and remove",
-                "addUserRoles": [{"userId": user_c, "role": "READER"}],
-                "updateUserRoles": [{"userId": user_a, "role": "WRITER"}],
-                "removeUserIds": [user_b],
-            })
+            resp = requests.put(
+                f"{self.base_url}{_BASE_PATH}/{team_id}",
+                headers=self.headers,
+                json={
+                    "name": combined_name,
+                    "description": "Combined add, update, and remove",
+                    "addUserRoles": [{"userId": user_c, "role": "READER"}],
+                    "updateUserRoles": [{"userId": user_a, "role": "WRITER"}],
+                    "removeUserIds": [user_b],
+                },
+                timeout=self.timeout,
+            )
             assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
             body = resp.json()
             assert_response_matches_openapi_operation(body, "updateTeam")
@@ -817,22 +871,41 @@ class TestUpdateTeam(TeamsTestBase):
             team_id, _ = res.create_team()
 
             # 401 - No authentication
-            resp = _put(self.client, f"/{team_id}", json={"name": "no-auth"}, auth=False)
+            resp = requests.put(
+                f"{self.base_url}{_BASE_PATH}/{team_id}",
+                json={"name": "no-auth"},
+                timeout=self.timeout,
+            )
             assert resp.status_code == 401
             _assert_unauthorized(resp.json(), "updateTeam")
 
             # 400 - Malformed team id
-            resp = _put(self.client, f"/{_MALFORMED_TEAM_ID}", json={"name": "x"})
+            resp = requests.put(
+                f"{self.base_url}{_BASE_PATH}/{_MALFORMED_TEAM_ID}",
+                headers=self.headers,
+                json={"name": "x"},
+                timeout=self.timeout,
+            )
             assert resp.status_code == 400
             _assert_validation_error(resp.json(), "updateTeam")
 
             # 400 - Empty name
-            resp = _put(self.client, f"/{team_id}", json={"name": ""})
+            resp = requests.put(
+                f"{self.base_url}{_BASE_PATH}/{team_id}",
+                headers=self.headers,
+                json={"name": ""},
+                timeout=self.timeout,
+            )
             assert resp.status_code == 400
             _assert_validation_error(resp.json(), "updateTeam")
 
             # 403/404 - Team not found
-            resp = _put(self.client, f"/{_NONEXISTENT_TEAM_ID}", json={"name": "nope"})
+            resp = requests.put(
+                f"{self.base_url}{_BASE_PATH}/{_NONEXISTENT_TEAM_ID}",
+                headers=self.headers,
+                json={"name": "nope"},
+                timeout=self.timeout,
+            )
             assert resp.status_code in (403, 404), f"Expected 403 or 404, got {resp.status_code}"
             assert_response_matches_openapi_operation(resp.json(), "updateTeam", status_code=str(resp.status_code))
 
@@ -850,7 +923,11 @@ class TestGetTeamUsers(TeamsTestBase):
             team_id, _ = res.create_team()
 
             # Basic list
-            resp = _get(self.client, f"/{team_id}/users")
+            resp = requests.get(
+                f"{self.base_url}{_BASE_PATH}/{team_id}/users",
+                headers=self.headers,
+                timeout=self.timeout,
+            )
             assert resp.status_code == 200
             body = resp.json()
             assert_response_matches_openapi_operation(body, "getTeamUsers")
@@ -858,24 +935,40 @@ class TestGetTeamUsers(TeamsTestBase):
             assert "totalCount" in body["pagination"]
 
             # With pagination params
-            resp = _get(self.client, f"/{team_id}/users", params={"page": 1, "limit": 10})
+            resp = requests.get(
+                f"{self.base_url}{_BASE_PATH}/{team_id}/users",
+                headers=self.headers,
+                params={"page": 1, "limit": 10},
+                timeout=self.timeout,
+            )
             assert resp.status_code == 200
             assert_response_matches_openapi_operation(resp.json(), "getTeamUsers")
 
     def test_get_team_users_negative_tests(self) -> None:
         """Negative: 401 no auth, 400 malformed id, 404 not found."""
         # 401 - No authentication
-        resp = _get(self.client, f"/{_NONEXISTENT_TEAM_ID}/users", auth=False)
+        resp = requests.get(
+            f"{self.base_url}{_BASE_PATH}/{_NONEXISTENT_TEAM_ID}/users",
+            timeout=self.timeout,
+        )
         assert resp.status_code == 401
         _assert_unauthorized(resp.json(), "getTeamUsers")
 
         # 400 - Malformed team id
-        resp = _get(self.client, f"/{_MALFORMED_TEAM_ID}/users")
+        resp = requests.get(
+            f"{self.base_url}{_BASE_PATH}/{_MALFORMED_TEAM_ID}/users",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
         assert resp.status_code == 400
         _assert_validation_error(resp.json(), "getTeamUsers")
 
         # 404 - Team not found
-        resp = _get(self.client, f"/{_NONEXISTENT_TEAM_ID}/users")
+        resp = requests.get(
+            f"{self.base_url}{_BASE_PATH}/{_NONEXISTENT_TEAM_ID}/users",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
         assert resp.status_code == 404
         _assert_not_found(resp.json(), "getTeamUsers")
 
@@ -894,28 +987,47 @@ class TestDeleteTeam(TeamsTestBase):
         created = _create_team(self.client, name)
         team_id = _team_id_from_response(created)
 
-        resp = _delete_request(self.client, f"/{team_id}")
+        resp = requests.delete(
+            f"{self.base_url}{_BASE_PATH}/{team_id}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
         body = resp.json()
         assert_response_matches_openapi_operation(body, "deleteTeam")
 
         # Verify team is gone
-        resp = _get(self.client, f"/{team_id}")
+        resp = requests.get(
+            f"{self.base_url}{_BASE_PATH}/{team_id}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
         assert resp.status_code == 404
 
     def test_delete_team_negative_tests(self) -> None:
         """Negative: 401 no auth, 400 malformed id, 403/404 not found."""
         # 401 - No authentication
-        resp = _delete_request(self.client, f"/{_NONEXISTENT_TEAM_ID}", auth=False)
+        resp = requests.delete(
+            f"{self.base_url}{_BASE_PATH}/{_NONEXISTENT_TEAM_ID}",
+            timeout=self.timeout,
+        )
         assert resp.status_code == 401
         _assert_unauthorized(resp.json(), "deleteTeam")
 
         # 400 - Malformed team id
-        resp = _delete_request(self.client, f"/{_MALFORMED_TEAM_ID}")
+        resp = requests.delete(
+            f"{self.base_url}{_BASE_PATH}/{_MALFORMED_TEAM_ID}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
         assert resp.status_code == 400
         _assert_validation_error(resp.json(), "deleteTeam")
 
         # 403/404 - Team not found
-        resp = _delete_request(self.client, f"/{_NONEXISTENT_TEAM_ID}")
+        resp = requests.delete(
+            f"{self.base_url}{_BASE_PATH}/{_NONEXISTENT_TEAM_ID}",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
         assert resp.status_code in (403, 404), f"Expected 403 or 404, got {resp.status_code}"
         assert_response_matches_openapi_operation(resp.json(), "deleteTeam", status_code=str(resp.status_code))

@@ -14,7 +14,7 @@ import {
   getTeamUsersSchema,
   getUserTeamsQuerySchema,
   updateTeamSchema,
-} from '../validators/teams.validators';
+} from '../validators/teams.request.validators';
 
 export function createTeamsRouter(container: Container) {
   const router = Router();
