@@ -54,6 +54,7 @@ export class Logger {
   constructor(config?: LoggerConfig) {
     if (!Logger.instance) {
       this.defaultMeta = {
+        service_tier: 'nodejs_service',
         service: config?.service || 'default-service',
         ...config?.additionalMeta,
       };
@@ -76,7 +77,21 @@ export class Logger {
     const logFormat = winston.format.combine(
       winston.format.timestamp(),
       winston.format.errors({ stack: true }),
-      winston.format.printf(({ timestamp, level, message, metadata, stack, filename, line, request_id, thread_id }) => {
+      winston.format.printf((info) => {
+        const { message, metadata, stack, filename, line, request_id, thread_id } = info;
+        const serviceTier = info.service_tier || 'nodejs_service';
+
+        const ts =
+          typeof info.timestamp === 'string'
+            ? info.timestamp.replace('T', ' ').replace('Z', '').replace('.', ',')
+            : info.timestamp;
+
+        const rawLevel = String(info[Symbol.for('level')] || info.level).toUpperCase();
+        const levelColors: Record<string, string> = { ERROR: '\x1b[31m', WARNING: '\x1b[33m' };
+        const levelStr = levelColors[rawLevel]
+          ? `${levelColors[rawLevel]}${rawLevel}\x1b[0m`
+          : rawLevel;
+
         let metaString = '';
         if (metadata) {
           try {
@@ -93,7 +108,7 @@ export class Logger {
         const traceInfo =
           request_id !== undefined ? `[req:${request_id} thr:${thread_id}] ` : '';
 
-        return `${timestamp} ${traceInfo}${fileInfo} ${level}: ${message}${metaString}${stackString}`;
+        return `${ts} - ${serviceTier} - ${levelStr} - ${traceInfo}${fileInfo} - ${message}${metaString}${stackString}`;
       })
     );
 
@@ -113,9 +128,7 @@ export class Logger {
           format: winston.format.combine(logFormat, winston.format.json())
         }),
         new winston.transports.Console({
-          format: process.env.NODE_ENV !== 'production'
-            ? winston.format.combine(winston.format.colorize(), logFormat)
-            : winston.format.combine(logFormat, winston.format.json()),
+          format: logFormat,
         }),
       ],
     });
