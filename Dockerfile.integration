@@ -8,10 +8,6 @@ ARG PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps
 ARG RUNTIME_BASE_IMAGE=pipeshubai/pipeshub-ai-base:runtime
 
 FROM ${PYTHON_DEPS_IMAGE} AS python-deps
-WORKDIR /app/python
-COPY backend/python/pyproject.toml ./
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system -r pyproject.toml
 
 FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
 
@@ -99,7 +95,11 @@ COPY --from=nodejs-backend /app/backend/node_modules ./backend/dist/node_modules
 # Copy frontend build (normalized to /out by the selected frontend stage)
 COPY --from=frontend-build /out ./backend/dist/public
 
-# Copy Python application code
+# Python backend — reconcile deps from pyproject.toml, then copy application code
+WORKDIR /app/python
+COPY backend/python/pyproject.toml ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system -r pyproject.toml
 COPY backend/python/app/ /app/python/app/
 
 # Copy the process monitor script
