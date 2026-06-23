@@ -2,6 +2,8 @@ import winston from 'winston';
 import { Request } from 'express';
 import { injectable } from 'inversify';
 import path from 'path';
+import { threadId } from 'worker_threads';
+import { currentDisplayId, getRequestContext } from '../context/request-context';
 
 export enum LogLevel {
   Debug = 'debug',
@@ -74,7 +76,7 @@ export class Logger {
     const logFormat = winston.format.combine(
       winston.format.timestamp(),
       winston.format.errors({ stack: true }),
-      winston.format.printf(({ timestamp, level, message, metadata, stack, filename, line }) => {
+      winston.format.printf(({ timestamp, level, message, metadata, stack, filename, line, request_id, thread_id }) => {
         let metaString = '';
         if (metadata) {
           try {
@@ -87,8 +89,11 @@ export class Logger {
         }
         const stackString = stack ? `\nstack: ${stack}` : '';
         const fileInfo = filename ? `[${filename}:${line}]` : '';
+        // Present only when a request context is in flight.
+        const traceInfo =
+          request_id !== undefined ? `[req:${request_id} thr:${thread_id}] ` : '';
 
-        return `${timestamp} ${fileInfo} ${level}: ${message}${metaString}${stackString}`;
+        return `${timestamp} ${traceInfo}${fileInfo} ${level}: ${message}${metaString}${stackString}`;
       })
     );
 
@@ -206,10 +211,15 @@ export class Logger {
 
   private logWithLevel(level: string, message: string, meta?: any) {
     const callerInfo = this.getCallerInfo();
+    // Read at emit time; omitted entirely when there is no context.
+    const traceMeta = getRequestContext()
+      ? { request_id: currentDisplayId(), thread_id: threadId }
+      : {};
     this.logger.log({
       level,
       message,
       metadata: meta,
+      ...traceMeta,
       ...callerInfo,
     });
   }

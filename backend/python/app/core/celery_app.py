@@ -1,6 +1,8 @@
 import threading
+from typing import Any, Dict, Optional
 
 from celery import Celery
+from celery.signals import task_postrun, task_prerun
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import (
@@ -8,9 +10,42 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.utils.redis_util import build_redis_url
+from app.utils.request_context import (
+    context_from_envelope,
+    new_system_root,
+    reset_context,
+    set_context,
+)
 
 # Create the Celery instance at module level
 celery = Celery("drive_sync")
+
+# Per-task trace tokens, keyed by task id (solo pool → one task at a time).
+_celery_trace_tokens: Dict[str, Any] = {}
+
+
+@task_prerun.connect
+def _celery_set_trace_context(
+    task_id: Optional[str] = None,
+    kwargs: Optional[Dict[str, Any]] = None,
+    **_: Any,
+) -> None:
+    """Seed a trace id for the task: honor an enqueuer-supplied id, else fresh."""
+    kw = kwargs if isinstance(kwargs, dict) else {}
+    if kw.get("requestId"):
+        ctx = context_from_envelope(kw)
+        token = set_context(ctx.root_id)
+    else:
+        token = set_context(new_system_root())
+    if task_id:
+        _celery_trace_tokens[task_id] = token
+
+
+@task_postrun.connect
+def _celery_reset_trace_context(task_id: Optional[str] = None, **_: Any) -> None:
+    token = _celery_trace_tokens.pop(task_id, None) if task_id else None
+    if token is not None:
+        reset_context(token)
 
 class CeleryApp:
     """Celery application manager"""

@@ -84,12 +84,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Error closing configuration service: {e}")
 
 
+from app.api.middlewares.request_context import RequestContextMiddleware
+from app.utils.request_context import set_service_suffix
+
+set_service_suffix("-ds")
+
 app = FastAPI(
     lifespan=lifespan,
     title="Docling Processing Service",
     description="Microservice for PDF processing using Docling",
     version="1.0.0",
 )
+
+# Trace context — outermost.
+app.add_middleware(RequestContextMiddleware)
 
 # Mount the Docling service routes
 app.mount("/", docling_app)

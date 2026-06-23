@@ -15,6 +15,13 @@ import {
   StreamMessage,
 } from '../types/messaging.types';
 import { BadRequestError } from '../errors/http.errors';
+import {
+  injectEnvelope,
+  runWithRequestContext,
+  ENVELOPE_REQUEST_ID,
+  newSystemRoot,
+  sanitizeRootId,
+} from '../context/request-context';
 
 @injectable()
 export abstract class BaseKafkaConnection implements IKafkaConnection {
@@ -143,9 +150,14 @@ export abstract class BaseKafkaProducerConnection
     value: string;
     headers?: Record<string, string>;
   } {
+    // Stamp the trace id into the JSON envelope (only when value is an object).
+    const value =
+      message.value && typeof message.value === 'object'
+        ? injectEnvelope({ ...(message.value as Record<string, unknown>) })
+        : message.value;
     return {
       key: message.key,
-      value: JSON.stringify(message.value),
+      value: JSON.stringify(value),
       headers: message.headers,
     };
   }
@@ -248,12 +260,21 @@ export abstract class BaseKafkaConsumerConnection
               throw new BadRequestError('Empty message value');
             }
 
+            const parsedValue = JSON.parse(message.value.toString());
             const parsedMessage: StreamMessage<T> = {
               key: message.key?.toString() ?? '',
-              value: JSON.parse(message.value.toString()),
+              value: parsedValue,
             };
 
-            await handler(parsedMessage);
+            // Carry the producer's trace id into consumer-side logs.
+            const envelope = (parsedValue ?? {}) as Record<string, unknown>;
+            const rootId =
+              sanitizeRootId(envelope[ENVELOPE_REQUEST_ID] as string | undefined) ??
+              newSystemRoot();
+
+            await runWithRequestContext({ rootId }, () =>
+              handler(parsedMessage),
+            );
           } catch (error) {
             this.logger.error('Error processing message', {
               topic,

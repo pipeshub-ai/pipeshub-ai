@@ -1,6 +1,46 @@
+import asyncio
 import logging
 import os
 import sys
+
+from app.utils.request_context import NO_CONTEXT, current_display_id, get_context
+
+# ``%(trace)s`` expands to ``[req:<id> thr:<thread> task:<task>] `` only when a
+# context is in flight, so startup/background lines stay clean.
+LOG_FORMAT = (
+    "%(asctime)s - %(name)s - %(levelname)s - "
+    "%(trace)s[%(filename)s:%(lineno)d] - %(message)s"
+)
+
+
+_base_record_factory = logging.LogRecord
+
+
+def _record_factory(*args: object, **kwargs: object) -> logging.LogRecord:
+    record = _base_record_factory(*args, **kwargs)  # type: ignore[arg-type]
+
+    if get_context() is None:
+        record.request_id = ""
+        record.task = NO_CONTEXT
+        record.trace = ""
+        return record
+
+    try:
+        task = asyncio.current_task()
+        task_name = task.get_name() if task is not None else NO_CONTEXT
+    except RuntimeError:
+        task_name = NO_CONTEXT
+
+    display_id = current_display_id()
+    record.request_id = display_id
+    record.task = task_name
+    record.trace = f"[req:{display_id} thr:{record.threadName} task:{task_name}] "
+    return record
+
+
+_record_factory._pipeshub_trace = True  # type: ignore[attr-defined]
+if not getattr(logging.getLogRecordFactory(), "_pipeshub_trace", False):
+    logging.setLogRecordFactory(_record_factory)
 
 
 class ColoredFormatter(logging.Formatter):
@@ -62,7 +102,7 @@ if sys.platform == "win32":
 # Configure base logging settings
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s",
+    format=LOG_FORMAT,
     encoding="utf-8",
 )
 
@@ -90,8 +130,8 @@ def create_logger(service_name: str) -> logging.Logger:
 
     # Prevent DUPLICATE handlers
     if not logger.handlers:
-        # Enhanced format with filename and line number
-        log_format = "%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s"
+        # Enhanced format: request id + thread/task + filename and line number
+        log_format = LOG_FORMAT
 
         # File handler with enhanced format
         file_handler = logging.FileHandler(

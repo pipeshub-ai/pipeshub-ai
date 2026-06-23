@@ -1,4 +1,8 @@
 import { InternalServerError } from "../errors/http.errors";
+import {
+  injectRequestHeaders,
+  HEADER_REQUEST_ID,
+} from "../context/request-context";
 
 export interface ICommand<T> {
   execute(): Promise<T>;
@@ -49,8 +53,16 @@ export abstract class BaseCommand<T> implements ICommand<T> {
   protected sanitizeHeaders(
     headers: Record<string, string>,
   ): Record<string, string> {
+    // Propagate the trace id onto every outbound service call.
+    headers = injectRequestHeaders(headers);
     // Define allowed headers in lowercase.
-    const allowedHeaders = new Set(['content-type', 'authorization', 'x-is-admin', 'x-oauth-user-id']);
+    const allowedHeaders = new Set([
+      'content-type',
+      'authorization',
+      'x-is-admin',
+      'x-oauth-user-id',
+      HEADER_REQUEST_ID,
+    ]);
     // Ensure content-type is set to application/json if not present
     if (!headers['content-type'] && !headers['Content-Type']) {
       headers['content-type'] = 'application/json';

@@ -1,5 +1,9 @@
 import crypto from "crypto";
 import { Request, Response, NextFunction } from "express";
+import {
+  runWithRequestContext,
+  sanitizeRootId,
+} from "../context/request-context";
 
 /**
  * Interface for the request context object.
@@ -55,7 +59,7 @@ const createRequestContext = (req: Request): RequestContext => {
     userAgent: req.get("user-agent") || "unknown",
     clientIp: req.ip || undefined,
     correlationId: req.get("X-Correlation-ID") || undefined,
-    requestId: req.get("X-Request-ID") || generateRequestId(),
+    requestId: sanitizeRootId(req.get("X-Request-ID")) || generateRequestId(),
     origin: req.get("origin") || undefined,
     referer: req.get("referer") || undefined,
     language: req.get("accept-language") || undefined,
@@ -89,8 +93,13 @@ export const requestContextMiddleware = (
   if(process.env.NEED_REQUEST_ID_HEADER === 'true') {
     res.setHeader("X-Request-ID", req.context.requestId);
   }
-  
+
   // DO NOT expose internal request IDs to clients (security/privacy concern)
-  // Only use internally for logging and debugging
-  next();
+  // Only use internally for logging and debugging.
+  //
+  // Bind the id for the whole request so the Logger tags every line.
+  runWithRequestContext(
+    { rootId: req.context.requestId },
+    () => next(),
+  );
 };

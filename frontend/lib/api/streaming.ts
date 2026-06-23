@@ -35,6 +35,7 @@ import {
 } from './token-refresh';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { streamingFetch, isElectron } from '@/lib/electron';
+import { generateRequestId } from '@/lib/utils/request-id';
 
 // Default to '' (same origin) rather than `undefined`, because template-string
 // concatenation like `${API_BASE_URL}${url}` would otherwise stringify
@@ -175,6 +176,7 @@ export async function streamRequest(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-request-id': generateRequestId(),
         ...(token && { Authorization: `Bearer ${token}` }),
       },
       body: JSON.stringify(body),
@@ -346,6 +348,7 @@ export async function streamSSERequest<T = unknown>(
     const requestInit: RequestInit = {
       method: 'POST',
       headers: {
+        'x-request-id': generateRequestId(),
         'Content-Type': 'application/json',
         'Accept': 'text/event-stream',
         ...(token && { Authorization: `Bearer ${token}` }),
@@ -475,6 +478,7 @@ export async function streamSSEUpload<T = unknown>(
     const requestInit: RequestInit = {
       method: 'POST',
       headers: {
+        'x-request-id': generateRequestId(),
         Accept: 'text/event-stream',
         ...(extraHeaders || {}),
         ...(token && { Authorization: `Bearer ${token}` }),
@@ -579,6 +583,7 @@ export async function streamSSEGet<T = unknown>(
     const requestInit: RequestInit = {
       method: 'GET',
       headers: {
+        'x-request-id': generateRequestId(),
         Accept: 'text/event-stream',
         ...(extraHeaders || {}),
         ...(token && { Authorization: `Bearer ${token}` }),

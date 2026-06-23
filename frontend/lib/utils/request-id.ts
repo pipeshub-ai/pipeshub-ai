@@ -1,13 +1,16 @@
 import { nanoid } from 'nanoid';
 import { useAuthStore } from '@/lib/store/auth-store';
+import { getUserIdFromToken } from '@/lib/utils/jwt';
 
 /**
- * Generates a unique request identifier for the `x-request-id` header.
- *
- * Format: `<userId>-<nanoid>` when the user is loaded,
- *         `prelogin-<nanoid>` otherwise.
+ * Unique id for the `x-request-id` header: `<userId>-<nanoid>`, or
+ * `prelogin-<nanoid>` when unauthenticated. User id comes from the access token
+ * first (present even before the `user` profile loads), then the store.
  */
 export function generateRequestId(): string {
-  const userId = useAuthStore.getState().user?.id ?? 'prelogin';
+  const userId =
+    getUserIdFromToken() ??
+    useAuthStore.getState().user?.id ??
+    'prelogin';
   return `${userId}-${nanoid()}`;
 }

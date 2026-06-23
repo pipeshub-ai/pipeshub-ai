@@ -379,12 +379,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
 
 
+from app.api.middlewares.request_context import RequestContextMiddleware
+from app.utils.request_context import set_service_suffix
+
+set_service_suffix("-is")
+
 app = FastAPI(
     lifespan=lifespan,
     title="Vector Search API",
     description="API for semantic search and document retrieval with message consumer",
     version="1.0.0",
 )
+
+# Trace context — outermost.
+app.add_middleware(RequestContextMiddleware)
 
 
 @app.get("/health")

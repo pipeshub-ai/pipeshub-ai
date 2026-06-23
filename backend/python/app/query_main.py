@@ -11,6 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.middlewares.auth import authMiddleware
+from app.api.middlewares.request_context import RequestContextMiddleware
+from app.utils.request_context import set_service_suffix
+
+set_service_suffix("-qs")
 from app.api.routes.agent import router as agent_router
 from app.api.routes.chatbot import router as chatbot_router
 from app.api.routes.health import router as health_router
@@ -274,6 +278,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Trace context — outermost, before auth.
+app.add_middleware(RequestContextMiddleware)
 
 
 @app.get("/health")
