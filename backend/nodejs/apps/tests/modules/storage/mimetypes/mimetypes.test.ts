@@ -91,12 +91,27 @@ describe('storage/mimetypes/mimetypes', () => {
     });
   });
 
+  describe('getMimeType', () => {
+    it('maps jpg and jpeg extensions to distinct MIME types', () => {
+      expect(getMimeType('jpg')).to.equal('image/jpg');
+      expect(getMimeType('jpeg')).to.equal('image/jpeg');
+      expect(getMimeType('.JPG')).to.equal('image/jpg');
+      expect(getMimeType('JPEG')).to.equal('image/jpeg');
+    });
+  });
+
   describe('getIndexableMimeTypes', () => {
     it('returns deduplicated MIME types for indexable extensions', () => {
       const mimeTypes = getIndexableMimeTypes();
       expect(mimeTypes.length).to.equal(new Set(mimeTypes).size);
       expect(mimeTypes).to.include('application/pdf');
       expect(mimeTypes).to.include('text/markdown');
+    });
+
+    it('includes both image/jpeg and image/jpg for JPEG uploads', () => {
+      const mimeTypes = getIndexableMimeTypes();
+      expect(mimeTypes).to.include('image/jpeg');
+      expect(mimeTypes).to.include('image/jpg');
     });
 
     it('is a strict subset of the broad extensionToMimeType registry', () => {
