@@ -279,3 +279,220 @@ class TestRuntimeShutdown:
 
         runtime.shutdown(wait=True)
         executor_mock.shutdown.assert_called_once_with(wait=True, cancel_futures=False)
+
+
+# ===========================================================================
+# _apply_access_token_to_clients — no-op when same token
+# ===========================================================================
+
+
+class TestApplyAccessTokenNoop:
+    def test_same_token_no_set_token_called(self) -> None:
+        """When client already has the same token, set_token is NOT called."""
+        c, runtime = _make_runtime()
+        internal_client = MagicMock()
+        internal_client.get_token = MagicMock(return_value="same-token")
+        c.external_client = MagicMock()
+        c.external_client.get_client = MagicMock(return_value=internal_client)
+        c.data_source = MagicMock()
+        c.data_source.token = "same-token"
+
+        runtime._apply_access_token_to_clients("same-token")
+        internal_client.set_token.assert_not_called()
+
+
+# ===========================================================================
+# refresh_token_if_needed — additional paths
+# ===========================================================================
+
+
+class TestRefreshTokenIfNeededAdditional:
+    async def test_no_config_returns_early(self) -> None:
+        """When config_service returns None, method returns early."""
+        c, runtime = _make_runtime()
+        c.config_service = AsyncMock()
+        c.config_service.get_config = AsyncMock(return_value=None)
+        c.external_client = MagicMock()
+        applied = []
+        runtime._apply_access_token_to_clients = MagicMock(side_effect=lambda t: applied.append(t))
+
+        await runtime.refresh_token_if_needed()
+        assert applied == []
+
+    async def test_no_fresh_token_returns_early(self) -> None:
+        """When credentials.access_token is empty, method returns early."""
+        c, runtime = _make_runtime()
+        c.config_service = AsyncMock()
+        c.config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "OAUTH"}, "credentials": {"access_token": ""}}
+        )
+        c.external_client = MagicMock()
+        applied = []
+        runtime._apply_access_token_to_clients = MagicMock(side_effect=lambda t: applied.append(t))
+
+        await runtime.refresh_token_if_needed()
+        assert applied == []
+
+    async def test_exception_logged_and_swallowed(self) -> None:
+        """Exception during config read is logged, not propagated."""
+        c, runtime = _make_runtime()
+        c.config_service = AsyncMock()
+        c.config_service.get_config = AsyncMock(side_effect=Exception("config error"))
+        c.external_client = MagicMock()
+
+        # Should not raise
+        await runtime.refresh_token_if_needed()
+        c.logger.warning.assert_called()
+
+
+# ===========================================================================
+# force_refresh_oauth_token — happy path and failure
+# ===========================================================================
+
+
+class TestForceRefreshOAuthToken:
+    _PATCH_PATH = "app.connectors.core.base.token_service.startup_service.startup_service"
+
+    async def test_api_token_auth_skips(self) -> None:
+        """force_refresh_oauth_token returns False for API_TOKEN auth."""
+        c, runtime = _make_runtime()
+        c.config_service = AsyncMock()
+        c.config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "API_TOKEN"}, "credentials": {}}
+        )
+
+        with patch(self._PATCH_PATH) as mock_ss:
+            mock_refresh = MagicMock()
+            mock_ss.get_token_refresh_service = MagicMock(return_value=mock_refresh)
+            result = await runtime.force_refresh_oauth_token()
+        assert result is False
+
+    async def test_no_refresh_token_returns_false(self) -> None:
+        """force_refresh_oauth_token returns False when refresh_token is missing."""
+        c, runtime = _make_runtime()
+        c.config_service = AsyncMock()
+        c.config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "OAUTH"}, "credentials": {}}
+        )
+
+        with patch(self._PATCH_PATH) as mock_ss:
+            mock_refresh = MagicMock()
+            mock_ss.get_token_refresh_service = MagicMock(return_value=mock_refresh)
+            result = await runtime.force_refresh_oauth_token()
+        assert result is False
+
+    async def test_successful_refresh_returns_true(self) -> None:
+        """force_refresh_oauth_token returns True when refresh succeeds."""
+        c, runtime = _make_runtime()
+        c.config_service = AsyncMock()
+        c.config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {"authType": "OAUTH"},
+                "credentials": {"refresh_token": "tok-refresh"},
+            }
+        )
+        runtime.refresh_token_if_needed = AsyncMock()
+
+        mock_refresh = MagicMock()
+        mock_refresh.refresh_now = AsyncMock()
+
+        with patch(self._PATCH_PATH) as mock_ss:
+            mock_ss.get_token_refresh_service = MagicMock(return_value=mock_refresh)
+            result = await runtime.force_refresh_oauth_token()
+        assert result is True
+        mock_refresh.refresh_now.assert_called_once()
+
+    async def test_exception_returns_false(self) -> None:
+        """Exception during refresh is caught and returns False."""
+        c, runtime = _make_runtime()
+        c.config_service = AsyncMock()
+        c.config_service.get_config = AsyncMock(side_effect=Exception("config fail"))
+
+        with patch(self._PATCH_PATH) as mock_ss:
+            mock_ss.get_token_refresh_service = MagicMock(return_value=MagicMock())
+            result = await runtime.force_refresh_oauth_token()
+        assert result is False
+
+
+# ===========================================================================
+# _execute_gitlab_op — sync path
+# ===========================================================================
+
+
+class TestExecuteGitlabOpSyncPath:
+    async def test_sync_callable_runs_on_executor(self) -> None:
+        """A regular (non-coroutine) callable is dispatched to the executor."""
+        c, runtime = _make_runtime()
+        success_res = GitLabResponse(success=True, data="sync-result")
+
+        def sync_op() -> GitLabResponse:
+            return success_res
+
+        result = await runtime._execute_gitlab_op(sync_op)
+        assert result.success is True
+        assert result.data == "sync-result"
+
+
+# ===========================================================================
+# paged_list — two-page drain and mid-iteration error
+# ===========================================================================
+
+
+class TestPagedList:
+    async def test_two_page_drain(self) -> None:
+        """paged_list accumulates items from iterator that spans two drain calls."""
+        c, runtime = _make_runtime()
+
+        # Create an iterator with 2 items
+        items = [MagicMock(), MagicMock()]
+        iter_data = iter(items)
+        iter_res = GitLabResponse(success=True, data=iter_data)
+        runtime.ds_call = AsyncMock(return_value=iter_res)
+
+        result = await runtime.paged_list(
+            MagicMock(),
+            progress_label="test paged list",
+            progress_every=1,
+        )
+        assert result.success is True
+        assert len(result.data) == 2
+
+    async def test_api_failure_returns_failure(self) -> None:
+        """When ds_call fails, paged_list returns the failure immediately."""
+        c, runtime = _make_runtime()
+        runtime.ds_call = AsyncMock(return_value=GitLabResponse(success=False, data=None, error="forbidden"))
+
+        result = await runtime.paged_list(
+            MagicMock(),
+            progress_label="test",
+        )
+        assert result.success is False
+
+
+# ===========================================================================
+# ds_call / ds_call_async — argument forwarding
+# ===========================================================================
+
+
+class TestDsCallArgForwarding:
+    async def test_ds_call_forwards_args_and_kwargs(self) -> None:
+        """ds_call passes positional and keyword args to the method."""
+        c, runtime = _make_runtime()
+        success_res = GitLabResponse(success=True, data="result")
+
+        method = MagicMock(return_value=success_res)
+        result = await runtime.ds_call(method, "arg1", key="value")
+
+        method.assert_called_once_with("arg1", key="value")
+        assert result.success is True
+
+    async def test_ds_call_async_forwards_args(self) -> None:
+        """ds_call_async passes positional and keyword args to the async method."""
+        c, runtime = _make_runtime()
+        success_res = GitLabResponse(success=True, data="async-result")
+
+        async def async_method(*args, **kwargs) -> GitLabResponse:
+            return success_res
+
+        result = await runtime.ds_call_async(async_method, "arg1", key="value")
+        assert result.success is True

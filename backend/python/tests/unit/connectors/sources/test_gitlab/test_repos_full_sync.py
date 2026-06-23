@@ -321,3 +321,130 @@ class TestTimestampBackfill:
             mock_asyncio.create_task = MagicMock(return_value=mock_task)
             repos.schedule_timestamp_backfill()
             mock_asyncio.create_task.assert_called_once()
+
+
+# ===========================================================================
+# Full sync failure does not advance checkpoint
+# ===========================================================================
+
+
+class TestFullSyncFailureNoCheckpoint:
+    async def test_full_sync_failure_skips_checkpoint_update(self) -> None:
+        """When full sync fails (returns False), checkpoint not advanced."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        repos = ReposSync(c)
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=None)
+        repos._sync_repo_full = AsyncMock(return_value=False)
+        repos._update_code_repo_checkpoint = AsyncMock()
+
+        # Branch call succeeds
+        branch_data = MagicMock()
+        branch_data.commit = {"id": "abc123"}
+        br = MagicMock(success=True, data=branch_data, error=None)
+        c.runtime.ds_call = AsyncMock(return_value=br)
+
+        await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
+
+        repos._update_code_repo_checkpoint.assert_not_called()
+
+
+# ===========================================================================
+# _fetch_blob_page — error path
+# ===========================================================================
+
+
+class TestFetchBlobPageError:
+    async def test_ds_call_async_raises_returns_abort(self) -> None:
+        """When ds_call_async raises, _fetch_blob_page returns abort."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        repos = ReposSync(c)
+
+        c.runtime.ds_call_async = AsyncMock(side_effect=Exception("GraphQL error"))
+
+        kind, nodes, page_info = await repos._fetch_blob_page(_PROJECT_PATH, _PROJECT_ID, "")
+        assert kind == "abort"
+        assert nodes == []
+
+    async def test_api_failure_returns_abort(self) -> None:
+        """When ds_call_async returns failure, _fetch_blob_page returns abort."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        repos = ReposSync(c)
+
+        fail_res = MagicMock(success=False, data=None, error="network error")
+        c.runtime.ds_call_async = AsyncMock(return_value=fail_res)
+
+        kind, nodes, page_info = await repos._fetch_blob_page(_PROJECT_PATH, _PROJECT_ID, "")
+        assert kind == "abort"
+
+
+# ===========================================================================
+# Module-level static helpers
+# ===========================================================================
+
+
+class TestModuleLevelHelpers:
+    def test_branch_head_commit_sha_dict_path(self) -> None:
+        """_branch_head_commit_sha returns SHA when commit is a dict."""
+        from app.connectors.sources.gitlab.repos import _branch_head_commit_sha
+        branch_data = MagicMock()
+        branch_data.commit = {"id": "abc123"}
+        result = _branch_head_commit_sha(branch_data)
+        assert result == "abc123"
+
+    def test_branch_head_commit_sha_none_commit(self) -> None:
+        """_branch_head_commit_sha returns None when commit is None."""
+        from app.connectors.sources.gitlab.repos import _branch_head_commit_sha
+        branch_data = MagicMock()
+        branch_data.commit = None
+        result = _branch_head_commit_sha(branch_data)
+        assert result is None
+
+    def test_gitlab_timestamp_to_ms_valid(self) -> None:
+        """ISO timestamp string is converted to epoch ms."""
+        from app.connectors.sources.gitlab.repos import _gitlab_timestamp_to_ms
+        result = _gitlab_timestamp_to_ms("2024-01-01T00:00:00Z")
+        assert isinstance(result, int)
+        assert result > 0
+
+    def test_gitlab_timestamp_to_ms_none(self) -> None:
+        """None input returns None."""
+        from app.connectors.sources.gitlab.repos import _gitlab_timestamp_to_ms
+        result = _gitlab_timestamp_to_ms(None)
+        assert result is None
+
+    def test_gitlab_timestamp_to_ms_datetime(self) -> None:
+        """datetime object is converted to epoch ms."""
+        from datetime import datetime, timezone
+        from app.connectors.sources.gitlab.repos import _gitlab_timestamp_to_ms
+        dt = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        result = _gitlab_timestamp_to_ms(dt)
+        assert isinstance(result, int)
+        assert result == 1704067200000
+
+    def test_repo_path_from_blob_web_url_valid(self) -> None:
+        """Valid blob URL returns repo-relative path."""
+        from app.connectors.sources.gitlab.repos import _repo_path_from_blob_web_url
+        url = "https://gitlab.com/ns/proj/-/blob/main/src/file.py"
+        result = _repo_path_from_blob_web_url(url)
+        assert result == "src/file.py"
+
+    def test_repo_path_from_blob_web_url_none(self) -> None:
+        """None URL returns None."""
+        from app.connectors.sources.gitlab.repos import _repo_path_from_blob_web_url
+        assert _repo_path_from_blob_web_url(None) is None
+
+    def test_pagination_stop_on_no_next(self) -> None:
+        """_should_continue_repo_tree_pagination returns False when hasNextPage=False."""
+        from app.connectors.sources.gitlab.repos import _should_continue_repo_tree_pagination
+        cont, cursor = _should_continue_repo_tree_pagination(10, 10, {"hasNextPage": False, "endCursor": "abc"})
+        assert cont is False
+
+    def test_pagination_continue_on_next(self) -> None:
+        """_should_continue_repo_tree_pagination returns True when hasNextPage=True."""
+        from app.connectors.sources.gitlab.repos import _should_continue_repo_tree_pagination
+        cont, cursor = _should_continue_repo_tree_pagination(10, 10, {"hasNextPage": True, "endCursor": "cursor1"})
+        assert cont is True
+        assert cursor == "cursor1"

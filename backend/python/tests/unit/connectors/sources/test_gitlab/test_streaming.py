@@ -227,3 +227,106 @@ class TestReindexRecords:
 
         await helper.reindex_records([folder_record])
         c.data_entities_processor.reindex_existing_records.assert_not_called()
+
+
+# ===========================================================================
+# reindex_records — additional uncovered paths
+# ===========================================================================
+
+
+class TestReindexRecordsAdditional:
+    async def test_data_source_not_initialized_raises(self) -> None:
+        """reindex_records raises when data_source is None."""
+        c = make_mock_connector()
+        c.data_source = None
+        helper = StreamingHelper(c)
+
+        record = _make_record("PULL_REQUEST")
+        with pytest.raises(Exception):
+            await helper.reindex_records([record])
+
+    async def test_per_record_exception_continues_others(self) -> None:
+        """Exception for one record does not abort processing of others."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        helper = StreamingHelper(c)
+
+        fresh_record = MagicMock()
+        fresh_permissions: list = []
+
+        call_count = 0
+
+        async def check_side(record):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise Exception("transient error")
+            return (fresh_record, fresh_permissions)
+
+        c.merge_requests = MagicMock()
+        c.merge_requests.check_and_fetch_updated_record_for_reindex = AsyncMock(side_effect=check_side)
+        c.data_entities_processor.on_new_records = AsyncMock()
+        c.data_entities_processor.reindex_existing_records = AsyncMock()
+
+        r1 = _make_record("PULL_REQUEST")
+        r2 = _make_record("PULL_REQUEST")
+        r2.id = "rec-2"
+
+        # Should not raise even though r1 causes exception
+        await helper.reindex_records([r1, r2])
+        # r2 was processed successfully → on_new_records called
+        c.data_entities_processor.on_new_records.assert_called()
+
+    async def test_skip_base_record_class(self) -> None:
+        """Records that are base Record type (not subclass) are skipped for reindex."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        helper = StreamingHelper(c)
+
+        c.merge_requests = MagicMock()
+        c.merge_requests.check_and_fetch_updated_record_for_reindex = AsyncMock(return_value=None)
+        c.data_entities_processor.reindex_existing_records = AsyncMock()
+
+        # Dynamically create a class literally named "Record" (as the guard checks)
+        RecordBase = type("Record", (), {})
+        base_record = RecordBase()
+        base_record.id = "base-1"
+        base_record.record_type = "TICKET"
+
+        await helper.reindex_records([base_record])
+        c.data_entities_processor.reindex_existing_records.assert_not_called()
+
+    async def test_not_implemented_error_from_reindex_existing_records(self) -> None:
+        """NotImplementedError from reindex_existing_records is caught and logged."""
+        from app.models.entities import PullRequestRecord
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        helper = StreamingHelper(c)
+
+        c.merge_requests = MagicMock()
+        c.merge_requests.check_and_fetch_updated_record_for_reindex = AsyncMock(return_value=None)
+        c.data_entities_processor.reindex_existing_records = AsyncMock(
+            side_effect=NotImplementedError("not implemented")
+        )
+
+        typed_record = MagicMock(spec=PullRequestRecord)
+        typed_record.id = "rec-1"
+        typed_record.record_type = "PULL_REQUEST"
+
+        # Should not raise
+        await helper.reindex_records([typed_record])
+        c.logger.warning.assert_called()
+
+    async def test_outer_exception_handler_raises(self) -> None:
+        """Outer exception in reindex_records is logged and re-raised."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        helper = StreamingHelper(c)
+
+        # Make refresh_token_if_needed raise to trigger outer handler
+        c.runtime.refresh_token_if_needed = AsyncMock(side_effect=RuntimeError("outer error"))
+
+        record = _make_record("PULL_REQUEST")
+        with pytest.raises(RuntimeError):
+            await helper.reindex_records([record])
+        c.logger.error.assert_called()

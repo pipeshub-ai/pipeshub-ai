@@ -251,3 +251,200 @@ class TestConnectionAndAccess:
         from app.connectors.sources.gitlab.connector import GitLabConnector
         result = await GitLabConnector.test_connection_and_access(c)
         assert result is False
+
+    async def test_exception_returns_false(self) -> None:
+        """Exception during connection test is caught and returns False."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        c.runtime.refresh_token_if_needed = AsyncMock()
+        c.runtime.call_with_auth_retry = AsyncMock(side_effect=Exception("network error"))
+
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        result = await GitLabConnector.test_connection_and_access(c)
+        assert result is False
+
+
+# ===========================================================================
+# run_incremental_sync delegates to run_sync
+# ===========================================================================
+
+
+class TestRunIncrementalSync:
+    async def test_delegates_to_run_sync(self) -> None:
+        """run_incremental_sync calls run_sync exactly once."""
+        c = make_mock_connector()
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+
+        c.run_sync = AsyncMock()
+        await GitLabConnector.run_incremental_sync(c)
+        c.run_sync.assert_called_once()
+
+
+# ===========================================================================
+# Delegation methods
+# ===========================================================================
+
+
+class TestDelegationMethods:
+    async def test_stream_record_delegates_to_streaming(self) -> None:
+        """stream_record delegates to streaming.stream_record."""
+        c = make_mock_connector()
+        c.streaming = MagicMock()
+        c.streaming.stream_record = AsyncMock(return_value=MagicMock())
+
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        record = MagicMock()
+        await GitLabConnector.stream_record(c, record)
+        c.streaming.stream_record.assert_called_once_with(record)
+
+    async def test_reindex_records_delegates_to_streaming(self) -> None:
+        """reindex_records delegates to streaming.reindex_records."""
+        c = make_mock_connector()
+        c.streaming = MagicMock()
+        c.streaming.reindex_records = AsyncMock()
+
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        records = [MagicMock()]
+        await GitLabConnector.reindex_records(c, records)
+        c.streaming.reindex_records.assert_called_once_with(records)
+
+    async def test_get_filter_options_delegates_to_filters(self) -> None:
+        """get_filter_options delegates to filters.get_filter_options."""
+        c = make_mock_connector()
+        c.filters = MagicMock()
+        from app.connectors.core.registry.filters import FilterOptionsResponse
+        c.filters.get_filter_options = AsyncMock(
+            return_value=FilterOptionsResponse(success=True, options=[], page=1, limit=20, has_more=False)
+        )
+
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        await GitLabConnector.get_filter_options(c, "group_ids")
+        c.filters.get_filter_options.assert_called_once()
+
+    async def test_get_signed_url_returns_none(self) -> None:
+        """get_signed_url returns None (not implemented for GitLab)."""
+        c = make_mock_connector()
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        result = await GitLabConnector.get_signed_url(c, MagicMock())
+        assert result is None
+
+    async def test_handle_webhook_returns_true(self) -> None:
+        """handle_webhook_notification returns True (not implemented for GitLab)."""
+        c = make_mock_connector()
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        result = await GitLabConnector.handle_webhook_notification(c)
+        assert result is True
+
+
+# ===========================================================================
+# cleanup failure paths
+# ===========================================================================
+
+
+class TestCleanupFailurePaths:
+    async def test_executor_shutdown_failure_does_not_raise(self) -> None:
+        """Executor shutdown failure is silently ignored."""
+        c = make_mock_connector()
+        c.repos = MagicMock()
+        c.repos.cancel_timestamp_backfill = AsyncMock()
+        c.data_source = MagicMock()
+        c.data_source.aclose = AsyncMock()
+        c._gitlab_executor = MagicMock()
+        c._gitlab_executor.shutdown = MagicMock(side_effect=Exception("executor error"))
+
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        # Should not raise
+        await GitLabConnector.cleanup(c)
+
+
+# ===========================================================================
+# datetime_range_from_sync_filter — empty filter value
+# ===========================================================================
+
+
+class TestDatetimeRangeFromSyncFilterEmpty:
+    def test_filter_key_present_but_no_value_returns_none_none(self) -> None:
+        """Filter key present but no start/end values returns (None, None)."""
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        method = GitLabConnector.datetime_range_from_sync_filter
+        fake_self = MagicMock()
+
+        from app.connectors.core.registry.filters import SyncFilterKey
+        f = MagicMock()
+        f.get_datetime_start.return_value = None
+        f.get_datetime_end.return_value = None
+        fake_self.sync_filters = {SyncFilterKey.MODIFIED: f}
+
+        after, before = method(fake_self, "modified")
+        assert after is None
+        assert before is None
+
+
+# ===========================================================================
+# _resolve_creator_identity
+# ===========================================================================
+
+
+class TestResolveCreatorIdentity:
+    async def test_sets_admin_flag(self) -> None:
+        """Admin flag is set from get_user response."""
+        c = make_mock_connector()
+        c.created_by = "user-1"
+        c.data_source = MagicMock()
+        c.creator_email = None
+        c._is_admin = False
+        c._is_auditor = False
+        c._gitlab_user_id = None
+
+        creator_user = MagicMock()
+        creator_user.email = "creator@example.com"
+        c.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=creator_user)
+
+        me = MagicMock()
+        me.is_admin = True
+        me.is_auditor = False
+        me.id = 42
+        me_res = MagicMock(success=True, data=me, error=None)
+        c.runtime.ds_call = AsyncMock(return_value=me_res)
+
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        await GitLabConnector._resolve_creator_identity(c)
+        assert c._is_admin is True
+        assert c._gitlab_user_id == 42
+
+    async def test_get_user_failure_logs_warning(self) -> None:
+        """When get_user fails, warning is logged and flags remain False."""
+        c = make_mock_connector()
+        c.created_by = "user-1"
+        c.data_source = MagicMock()
+        c.creator_email = None
+        c._is_admin = False
+        c._is_auditor = False
+        c._gitlab_user_id = None
+
+        c.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=None)
+
+        fail_res = MagicMock(success=False, data=None, error="forbidden")
+        c.runtime.ds_call = AsyncMock(return_value=fail_res)
+
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        await GitLabConnector._resolve_creator_identity(c)
+        # Flags should remain False, warning should be logged
+        assert c._is_admin is False
+
+    async def test_exception_in_get_user_logs_warning(self) -> None:
+        """Exception in get_user is caught and warning is logged."""
+        c = make_mock_connector()
+        c.created_by = "user-1"
+        c.data_source = MagicMock()
+        c.creator_email = None
+        c._is_admin = False
+        c._is_auditor = False
+        c._gitlab_user_id = None
+
+        c.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=None)
+        c.runtime.ds_call = AsyncMock(side_effect=Exception("API error"))
+
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        await GitLabConnector._resolve_creator_identity(c)
+        c.logger.warning.assert_called()

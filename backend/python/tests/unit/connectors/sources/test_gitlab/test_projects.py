@@ -309,3 +309,338 @@ class TestCreatePermissionFromPrincipal:
             EntityType.USER.value, "user-999", PermissionType.OWNER.value,
         )
         assert result is None
+
+
+# ===========================================================================
+# sync_all_projects — checkpoint update
+# ===========================================================================
+
+
+class TestSyncAllProjectsCheckpoint:
+    async def test_updates_checkpoint_after_sync(self) -> None:
+        """sync_all_projects calls update_sync_point after _sync_projects."""
+        c = make_mock_connector()
+        projects_sync = ProjectsSync(c)
+        projects_sync._sync_projects = AsyncMock()
+
+        await projects_sync.sync_all_projects()
+
+        c.record_sync_point.update_sync_point.assert_called_once()
+        call_kwargs = c.record_sync_point.update_sync_point.call_args[0]
+        assert call_kwargs is not None
+
+
+# ===========================================================================
+# _sync_projects — empty project list warning
+# ===========================================================================
+
+
+class TestSyncProjectsEmptyWarning:
+    async def test_warns_when_no_projects(self) -> None:
+        """Warning logged when _resolve_projects_with_filters returns empty list."""
+        c = make_mock_connector()
+        projects_sync = ProjectsSync(c)
+        projects_sync._resolve_projects_with_filters = AsyncMock(return_value=[])
+
+        await projects_sync._sync_projects()
+
+        c.logger.warning.assert_called()
+
+
+# ===========================================================================
+# _build_included_group_hierarchy
+# ===========================================================================
+
+
+class TestBuildIncludedGroupHierarchy:
+    async def test_grp_in_paths_returned(self) -> None:
+        """GROUP_IDS IN: the listed group paths are included in hierarchy."""
+        c = make_mock_connector()
+        projects_sync = ProjectsSync(c)
+
+        p = _project(1, "eng/proj", ns_path="eng")
+        result = await projects_sync._build_included_group_hierarchy(
+            candidates=[p], grp_in=["eng"], grp_not_in=[], proj_in=[]
+        )
+        assert "eng" in result
+
+    async def test_proj_in_namespace_paths_added(self) -> None:
+        """PROJECT_IDS IN: namespace paths of candidate group projects added."""
+        c = make_mock_connector()
+        projects_sync = ProjectsSync(c)
+
+        p = _project(1, "eng/proj", ns_kind="group", ns_path="eng")
+        result = await projects_sync._build_included_group_hierarchy(
+            candidates=[p], grp_in=[], grp_not_in=[], proj_in=["eng/proj"]
+        )
+        assert "eng" in result
+
+    async def test_grp_not_in_excludes_groups(self) -> None:
+        """GROUP_IDS NOT_IN: excluded group paths are not in hierarchy."""
+        c = make_mock_connector()
+
+        g_ok = MagicMock()
+        g_ok.full_path = "keep"
+        g_excl = MagicMock()
+        g_excl.full_path = "exclude"
+        scope_res = MagicMock(success=True, data=[g_ok, g_excl], error=None)
+        c.scope = MagicMock()
+        c.scope.paged_list_groups_with_role_fallback = AsyncMock(return_value=scope_res)
+
+        p = _project(1, "keep/proj", ns_path="keep")
+        projects_sync = ProjectsSync(c)
+        result = await projects_sync._build_included_group_hierarchy(
+            candidates=[p], grp_in=[], grp_not_in=["exclude"], proj_in=[]
+        )
+        assert "exclude" not in result
+        assert "keep" in result
+
+
+# ===========================================================================
+# _ensure_gitlab_group_record_groups
+# ===========================================================================
+
+
+class TestEnsureGitlabGroupRecordGroups:
+    async def test_happy_path_creates_record_group(self) -> None:
+        """Group members found → RecordGroup created with permissions."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+
+        group = MagicMock()
+        group.full_path = "eng"
+        group.name = "Engineering"
+        group.web_url = "https://gitlab.com/eng"
+        group_res = MagicMock(success=True, data=group, error=None)
+
+        member = _member(uid=1, access_level=40)
+        members_res = MagicMock(success=True, data=[member], error=None)
+
+        async def ds_call_side(fn, *args, **kwargs):
+            if "get_group" in str(fn):
+                return group_res
+            if "list_group_members_all" in str(fn):
+                return members_res
+            return MagicMock(success=True, data=[], error=None)
+
+        c.runtime.ds_call = AsyncMock(side_effect=ds_call_side)
+        c.creator_user_permission = MagicMock(return_value=None)
+
+        projects_sync = ProjectsSync(c)
+        from app.models.permission import EntityType, PermissionType, Permission
+        perm = Permission(email="dev@example.com", type=PermissionType.OWNER.value, entity_type=EntityType.USER)
+        projects_sync._transform_restrictions_to_permissions = AsyncMock(return_value=perm)
+
+        await projects_sync._ensure_gitlab_group_record_groups(["eng"])
+        c.data_entities_processor.on_new_record_groups.assert_called_once()
+
+    async def test_group_not_found_uses_creator_fallback(self) -> None:
+        """Group not accessible → creator-only RecordGroup created."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+
+        fail_res = MagicMock(success=False, data=None, error="forbidden")
+        c.runtime.ds_call = AsyncMock(return_value=fail_res)
+
+        from app.models.permission import Permission, EntityType, PermissionType
+        creator_perm = Permission(email="creator@example.com", type=PermissionType.OWNER.value, entity_type=EntityType.USER)
+        c.creator_user_permission = MagicMock(return_value=creator_perm)
+
+        projects_sync = ProjectsSync(c)
+        await projects_sync._ensure_gitlab_group_record_groups(["eng"])
+
+        c.data_entities_processor.on_new_record_groups.assert_called_once()
+
+    async def test_member_list_failure_triggers_child_project_union(self) -> None:
+        """Group found but member listing fails → child-project union attempted."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+
+        group = MagicMock()
+        group.full_path = "eng"
+        group.name = "Engineering"
+        group.web_url = "https://gitlab.com/eng"
+        group_res = MagicMock(success=True, data=group, error=None)
+        members_fail_res = MagicMock(success=False, data=None, error="forbidden")
+
+        async def ds_call_side(fn, *args, **kwargs):
+            if "get_group" in str(fn):
+                return group_res
+            if "list_group_members_all" in str(fn):
+                return members_fail_res
+            return MagicMock(success=True, data=[], error=None)
+
+        c.runtime.ds_call = AsyncMock(side_effect=ds_call_side)
+        c.creator_user_permission = MagicMock(return_value=None)
+
+        projects_sync = ProjectsSync(c)
+        projects_sync._group_permissions_from_child_projects = AsyncMock(return_value=[])
+        projects_sync._transform_restrictions_to_permissions = AsyncMock(return_value=None)
+
+        p = _project(1, "eng/proj", ns_path="eng")
+        await projects_sync._ensure_gitlab_group_record_groups(["eng"], candidate_projects=[p])
+        projects_sync._group_permissions_from_child_projects.assert_called_once()
+
+
+# ===========================================================================
+# _group_permissions_from_child_projects
+# ===========================================================================
+
+
+class TestGroupPermissionsFromChildProjects:
+    async def test_returns_permissions_from_child_projects(self) -> None:
+        """Members from child projects under group path produce permissions."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+
+        p = _project(1, "eng/proj", ns_path="eng")
+        member = _member(uid=1, access_level=40)
+        member.id = 1
+        pm_res = MagicMock(success=True, data=[member], error=None)
+        c.runtime.ds_call = AsyncMock(return_value=pm_res)
+
+        from app.models.permission import Permission, EntityType, PermissionType
+        perm = Permission(email="dev@example.com", type=PermissionType.OWNER.value, entity_type=EntityType.USER)
+
+        projects_sync = ProjectsSync(c)
+        projects_sync._transform_restrictions_to_permissions = AsyncMock(return_value=perm)
+
+        result = await projects_sync._group_permissions_from_child_projects(
+            group_path="eng", candidate_projects=[p]
+        )
+        assert len(result) >= 1
+
+    async def test_no_child_projects_returns_empty(self) -> None:
+        """No candidate projects under group → empty permissions."""
+        c = make_mock_connector()
+        projects_sync = ProjectsSync(c)
+
+        p = _project(1, "other/proj", ns_path="other")
+        result = await projects_sync._group_permissions_from_child_projects(
+            group_path="eng", candidate_projects=[p]
+        )
+        assert result == []
+
+
+# ===========================================================================
+# _sync_project_members_as_pseudo
+# ===========================================================================
+
+
+class TestSyncProjectMembersAsPseudo:
+    async def test_tiered_access_creates_four_record_groups(self) -> None:
+        """Members with various access levels produce 4 RecordGroups."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        c._gitlab_included_group_paths = None
+
+        project = _project(1, "eng/proj")
+        project.name = "proj"
+
+        # One member with DEVELOPER access (level=30)
+        member = _member(uid=1, access_level=30)
+        member.id = 1
+        members_res = MagicMock(success=True, data=[member], error=None)
+        c.runtime.ds_call = AsyncMock(return_value=members_res)
+
+        from app.models.permission import Permission, EntityType, PermissionType
+        perm = Permission(email="dev@example.com", type=PermissionType.OWNER.value, entity_type=EntityType.USER)
+
+        c.users = MagicMock()
+        c.users._inject_creator_member_into = MagicMock()
+
+        projects_sync = ProjectsSync(c)
+        projects_sync._transform_restrictions_to_permissions = AsyncMock(return_value=perm)
+
+        await projects_sync._sync_project_members_as_pseudo(project)
+
+        c.data_entities_processor.on_new_record_groups.assert_called_once()
+        # 4 record groups passed
+        call_args = c.data_entities_processor.on_new_record_groups.call_args[0][0]
+        assert len(call_args) == 4
+
+    async def test_member_listing_failure_calls_creator_fallback(self) -> None:
+        """Listing failure → _apply_creator_fallback_for_project called."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+
+        project = _project(1, "eng/proj")
+        project.name = "proj"
+
+        fail_res = MagicMock(success=False, data=None, error="forbidden")
+        c.runtime.ds_call = AsyncMock(return_value=fail_res)
+
+        from app.models.permission import Permission, EntityType, PermissionType
+        creator_perm = Permission(email="creator@example.com", type=PermissionType.OWNER.value, entity_type=EntityType.USER)
+        c.creator_user_permission = MagicMock(return_value=creator_perm)
+
+        projects_sync = ProjectsSync(c)
+        projects_sync._apply_creator_fallback_for_project = AsyncMock()
+
+        await projects_sync._sync_project_members_as_pseudo(project)
+
+        projects_sync._apply_creator_fallback_for_project.assert_called_once()
+
+
+# ===========================================================================
+# _build_project_record_groups — parent group path
+# ===========================================================================
+
+
+class TestBuildProjectRecordGroupsParentPath:
+    def test_sets_parent_for_group_namespace(self) -> None:
+        """Project under a group namespace gets parent_external_group_id set."""
+        c = make_mock_connector()
+        c._gitlab_included_group_paths = ["eng"]
+
+        p = _project(1, "eng/proj", ns_path="eng")
+        projects_sync = ProjectsSync(c)
+        rgs = projects_sync._build_project_record_groups(p)
+        project_rg = rgs[0]
+        # Parent should be set to "eng"
+        assert project_rg.parent_external_group_id == "eng"
+
+
+# ===========================================================================
+# _create_pseudo_group
+# ===========================================================================
+
+
+class TestCreatePseudoGroup:
+    async def test_creates_and_returns_app_user_group(self) -> None:
+        """_create_pseudo_group creates AppUserGroup and calls on_new_user_groups."""
+        c = make_mock_connector()
+        c.data_entities_processor.on_new_user_groups = AsyncMock()
+
+        projects_sync = ProjectsSync(c)
+        result = await projects_sync._create_pseudo_group("user-99")
+
+        assert result is not None
+        assert result.source_user_group_id == "user-99"
+        c.data_entities_processor.on_new_user_groups.assert_called_once()
+
+    async def test_exception_returns_none(self) -> None:
+        """Exception during creation returns None."""
+        c = make_mock_connector()
+        c.data_entities_processor.on_new_user_groups = AsyncMock(side_effect=Exception("DB error"))
+
+        projects_sync = ProjectsSync(c)
+        result = await projects_sync._create_pseudo_group("user-99")
+        assert result is None
+
+
+# ===========================================================================
+# _longest_matching_group_path — prefix match
+# ===========================================================================
+
+
+class TestLongestMatchingGroupPathPrefixMatch:
+    def test_exact_match_works(self) -> None:
+        """Exact path match returns that path."""
+        result = _longest_matching_group_path("eng", ["eng", "other"])
+        assert result == "eng"
+
+    def test_child_path_returns_parent(self) -> None:
+        """Child path with deep namespace returns longest matching prefix."""
+        result = _longest_matching_group_path("eng/backend/api", ["eng", "eng/backend", "ops"])
+        assert result == "eng/backend"

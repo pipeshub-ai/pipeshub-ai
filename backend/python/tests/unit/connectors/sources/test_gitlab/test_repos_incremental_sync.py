@@ -833,3 +833,61 @@ class TestModifyFiresReindex:
 
         await repos._sync_repo_incremental(_PROJECT_ID, _PROJECT_PATH, _FROM_SHA, _TO_SHA)
         repos._delete_code_files_by_paths.assert_not_called()
+
+
+# ===========================================================================
+# Compare overflow — falls back to full sync
+# ===========================================================================
+
+
+class TestCompareOverflow:
+    async def test_overflow_flag_returns_false(self) -> None:
+        """When compare_commits has overflow=True, incremental returns False."""
+        c, repos = _make_incremental_connector()
+        overflow_data = {"diffs": [], "overflow": True}
+        overflow_res = MagicMock(success=True, data=overflow_data, error=None)
+        c.runtime.ds_call = AsyncMock(return_value=overflow_res)
+
+        result = await repos._sync_repo_incremental(_PROJECT_ID, _PROJECT_PATH, _FROM_SHA, _TO_SHA)
+        assert result is False
+
+    async def test_too_many_diffs_returns_false(self) -> None:
+        """When diffs count >= GITLAB_COMPARE_DIFF_LIMIT, incremental returns False."""
+        c, repos = _make_incremental_connector()
+        diffs = [diff_entry(old_path=f"file{i}.py", new_path=f"file{i}.py") for i in range(GITLAB_COMPARE_DIFF_LIMIT)]
+        overflow_res = MagicMock(success=True, data={"diffs": diffs, "overflow": False}, error=None)
+        c.runtime.ds_call = AsyncMock(return_value=overflow_res)
+
+        result = await repos._sync_repo_incremental(_PROJECT_ID, _PROJECT_PATH, _FROM_SHA, _TO_SHA)
+        assert result is False
+
+
+# ===========================================================================
+# _resolve_blob_sha_by_path — not found path
+# ===========================================================================
+
+
+class TestResolveBlobShaByPath:
+    async def test_empty_tree_result_returns_none_sha(self) -> None:
+        """When list_repo_tree returns empty, sha_map has no entries."""
+        c, repos = _make_incremental_connector()
+        repos._reconcile_sha_moves = AsyncMock(return_value=([], [], []))
+
+        empty_res = MagicMock(success=True, data=[], error=None)
+        c.runtime.paged_list = AsyncMock(return_value=empty_res)
+
+        sha_map, all_ok = await repos._resolve_blob_sha_by_path(
+            _PROJECT_ID, ["src/newfile.py"], ref="HEAD"
+        )
+        assert sha_map == {} or "src/newfile.py" not in sha_map
+
+    async def test_api_failure_marks_not_ok(self) -> None:
+        """When list_repo_tree fails, all_ok is False."""
+        c, repos = _make_incremental_connector()
+        fail_res = MagicMock(success=False, data=None, error="forbidden")
+        c.runtime.paged_list = AsyncMock(return_value=fail_res)
+
+        sha_map, all_ok = await repos._resolve_blob_sha_by_path(
+            _PROJECT_ID, ["src/file.py"], ref="HEAD"
+        )
+        assert all_ok is False

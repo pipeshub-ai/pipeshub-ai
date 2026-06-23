@@ -270,3 +270,399 @@ class TestEnrichMembersWithFullUser:
 
         # Enrichment should return dict with all members
         assert len(enriched) == 1
+
+    async def test_get_user_failure_uses_member_payload(self) -> None:
+        """When get_user fails, the original member payload is kept."""
+        c = make_mock_connector()
+        users = UsersSync(c)
+
+        member = _make_member(uid=5, email="orig@example.com")
+        dict_member = {member.id: member}
+
+        fail_res = MagicMock()
+        fail_res.success = False
+        fail_res.data = None
+        fail_res.error = "not found"
+        c.runtime.ds_call = AsyncMock(return_value=fail_res)
+
+        enriched = await users._enrich_members_with_full_user(dict_member)
+        assert 5 in enriched
+        # Original member returned
+        assert enriched[5] is member
+
+
+# ===========================================================================
+# _resolve_user_sync_scope NOT_IN paths
+# ===========================================================================
+
+
+class TestResolveUserSyncScopeNotIn:
+    async def test_group_ids_not_in_excludes_groups(self) -> None:
+        """GROUP_IDS NOT_IN: visible groups minus excluded prefixes."""
+        c = make_mock_connector()
+        from app.connectors.core.registry.filters import SyncFilterKey
+        grp_filter = _make_sync_filter("not_in", ["eng"])
+        c.sync_filters = {SyncFilterKey.GROUP_IDS: grp_filter}
+
+        # Simulate scope listing groups
+        g_eng = MagicMock()
+        g_eng.full_path = "eng"
+        g_ops = MagicMock()
+        g_ops.full_path = "ops"
+        scope_res = MagicMock()
+        scope_res.success = True
+        scope_res.data = [g_eng, g_ops]
+        c.scope = MagicMock()
+        c.scope.paged_list_groups_with_role_fallback = AsyncMock(return_value=scope_res)
+
+        users = UsersSync(c)
+        result = await users._resolve_user_sync_scope()
+        assert result is not None
+        group_targets, _ = result
+        assert "eng" not in group_targets
+        assert "ops" in group_targets
+
+    async def test_group_ids_not_in_list_failure_empty_targets(self) -> None:
+        """When group listing fails for NOT_IN, group_targets is empty."""
+        c = make_mock_connector()
+        from app.connectors.core.registry.filters import SyncFilterKey
+        grp_filter = _make_sync_filter("not_in", ["eng"])
+        c.sync_filters = {SyncFilterKey.GROUP_IDS: grp_filter}
+
+        scope_res = MagicMock()
+        scope_res.success = False
+        scope_res.data = None
+        scope_res.error = "API error"
+        c.scope = MagicMock()
+        c.scope.paged_list_groups_with_role_fallback = AsyncMock(return_value=scope_res)
+
+        users = UsersSync(c)
+        result = await users._resolve_user_sync_scope()
+        # Returns tuple with empty group_targets (not None) to avoid unscoped fallback
+        assert result is not None
+        group_targets, _ = result
+        assert group_targets == []
+
+    async def test_project_ids_not_in_excludes_projects(self) -> None:
+        """PROJECT_IDS NOT_IN: visible projects minus excluded paths."""
+        c = make_mock_connector()
+        from app.connectors.core.registry.filters import SyncFilterKey
+        proj_filter = _make_sync_filter("not_in", ["ns/excluded"])
+        c.sync_filters = {SyncFilterKey.PROJECT_IDS: proj_filter}
+
+        p_ok = MagicMock()
+        p_ok.path_with_namespace = "ns/ok"
+        p_excl = MagicMock()
+        p_excl.path_with_namespace = "ns/excluded"
+        proj_res = MagicMock()
+        proj_res.success = True
+        proj_res.data = [p_ok, p_excl]
+        c.scope = MagicMock()
+        c.scope.paged_list_projects_with_role_fallback = AsyncMock(return_value=proj_res)
+
+        users = UsersSync(c)
+        result = await users._resolve_user_sync_scope()
+        assert result is not None
+        _, project_targets = result
+        assert "ns/excluded" not in project_targets
+        assert "ns/ok" in project_targets
+
+    async def test_project_ids_not_in_list_failure_empty_targets(self) -> None:
+        """When project listing fails for NOT_IN, project_targets is empty."""
+        c = make_mock_connector()
+        from app.connectors.core.registry.filters import SyncFilterKey
+        proj_filter = _make_sync_filter("not_in", ["ns/excluded"])
+        c.sync_filters = {SyncFilterKey.PROJECT_IDS: proj_filter}
+
+        proj_res = MagicMock()
+        proj_res.success = False
+        proj_res.data = None
+        proj_res.error = "API error"
+        c.scope = MagicMock()
+        c.scope.paged_list_projects_with_role_fallback = AsyncMock(return_value=proj_res)
+
+        users = UsersSync(c)
+        result = await users._resolve_user_sync_scope()
+        assert result is not None
+        _, project_targets = result
+        assert project_targets == []
+
+
+# ===========================================================================
+# _sync_users_scoped
+# ===========================================================================
+
+
+class TestSyncUsersScoped:
+    async def test_scoped_happy_path_calls_sync_users_from_projects_groups(self) -> None:
+        """Scoped path collects group members and calls _sync_users_from_projects_groups."""
+        c = make_mock_connector()
+        c._gitlab_user_id = 1
+        c.creator_email = "creator@example.com"
+
+        member = _make_member(uid=1, email="creator@example.com")
+
+        # ds_call for group members_all
+        members_res = MagicMock(success=True, data=[member], error=None)
+        # paged_list for list_group_projects (subgroup expansion)
+        proj = MagicMock()
+        proj.id = 10
+        proj.path_with_namespace = "grp/proj"
+        proj_res = MagicMock(success=True, data=[proj], error=None)
+        # ds_call for project members_all (subgroup project)
+        proj_members_res = MagicMock(success=True, data=[member], error=None)
+
+        call_count = 0
+
+        async def ds_call_side(fn, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if "list_group_members_all" in str(fn):
+                return members_res
+            if "list_project_members_all" in str(fn):
+                return proj_members_res
+            return MagicMock(success=True, data=[], error=None)
+
+        c.runtime.ds_call = AsyncMock(side_effect=ds_call_side)
+        c.runtime.paged_list = AsyncMock(return_value=proj_res)
+
+        users = UsersSync(c)
+        users._enrich_members_with_full_user = AsyncMock(side_effect=lambda d: d)
+        users._sync_users_from_projects_groups = AsyncMock()
+
+        await users._sync_users_scoped(["grp"], [])
+
+        users._sync_users_from_projects_groups.assert_called_once()
+
+    async def test_scoped_group_member_failure_falls_back_gracefully(self) -> None:
+        """When group member listing fails, the run continues with creator fallback."""
+        c = make_mock_connector()
+        c._gitlab_user_id = 99
+        c.creator_email = "creator@example.com"
+
+        members_fail = MagicMock(success=False, data=None, error="403 Forbidden")
+        c.runtime.ds_call = AsyncMock(return_value=members_fail)
+        proj_res = MagicMock(success=True, data=[], error=None)
+        c.runtime.paged_list = AsyncMock(return_value=proj_res)
+
+        users = UsersSync(c)
+        users._enrich_members_with_full_user = AsyncMock(side_effect=lambda d: d)
+        users._sync_users_from_projects_groups = AsyncMock()
+
+        # Should not raise — creator can be injected
+        await users._sync_users_scoped(["grp"], [])
+        users._sync_users_from_projects_groups.assert_called_once()
+
+    async def test_scoped_explicit_project_path_walked(self) -> None:
+        """Explicit project_paths are walked for members."""
+        c = make_mock_connector()
+        c._gitlab_user_id = 1
+        c.creator_email = "creator@example.com"
+
+        member = _make_member(uid=1)
+        proj_members_res = MagicMock(success=True, data=[member], error=None)
+        c.runtime.ds_call = AsyncMock(return_value=proj_members_res)
+
+        users = UsersSync(c)
+        users._enrich_members_with_full_user = AsyncMock(side_effect=lambda d: d)
+        users._sync_users_from_projects_groups = AsyncMock()
+
+        await users._sync_users_scoped([], ["ns/proj"])
+
+        users._sync_users_from_projects_groups.assert_called_once()
+        # Verify ds_call was called for list_project_members_all
+        c.runtime.ds_call.assert_called()
+
+
+# ===========================================================================
+# _sync_users_unscoped
+# ===========================================================================
+
+
+class TestSyncUsersUnscoped:
+    async def test_unscoped_happy_path(self) -> None:
+        """Unscoped path: groups + projects synced, _sync_users_from_projects_groups called."""
+        c = make_mock_connector()
+        c._gitlab_user_id = 1
+        c.creator_email = "creator@example.com"
+
+        group = MagicMock()
+        group.id = 10
+        groups_res = MagicMock(success=True, data=[group], error=None)
+
+        project = MagicMock()
+        project.id = 20
+        projects_res = MagicMock(success=True, data=[project], error=None)
+
+        member = _make_member(uid=1)
+        members_res = MagicMock(success=True, data=[member], error=None)
+
+        c.scope = MagicMock()
+        c.scope.list_groups_scope_kwargs = MagicMock(return_value={})
+        c.scope.list_projects_scope_kwargs = MagicMock(return_value={})
+        c.scope.paged_list_groups_with_role_fallback = AsyncMock(return_value=groups_res)
+        c.scope.paged_list_projects_with_role_fallback = AsyncMock(return_value=projects_res)
+
+        c.runtime.ds_call = AsyncMock(return_value=members_res)
+
+        users = UsersSync(c)
+        users._enrich_members_with_full_user = AsyncMock(side_effect=lambda d: d)
+        users._sync_users_from_projects_groups = AsyncMock()
+
+        await users._sync_users_unscoped()
+
+        users._sync_users_from_projects_groups.assert_called_once()
+
+    async def test_unscoped_both_fail_with_creator_does_not_raise(self) -> None:
+        """Both groups and projects fail; creator present: no exception raised."""
+        c = make_mock_connector()
+        c._gitlab_user_id = 99
+        c.creator_email = "creator@example.com"
+
+        fail_res = MagicMock(success=False, data=None, error="timeout")
+        c.scope = MagicMock()
+        c.scope.list_groups_scope_kwargs = MagicMock(return_value={})
+        c.scope.list_projects_scope_kwargs = MagicMock(return_value={})
+        c.scope.paged_list_groups_with_role_fallback = AsyncMock(return_value=fail_res)
+        c.scope.paged_list_projects_with_role_fallback = AsyncMock(return_value=fail_res)
+
+        users = UsersSync(c)
+        users._enrich_members_with_full_user = AsyncMock(side_effect=lambda d: d)
+        users._sync_users_from_projects_groups = AsyncMock()
+
+        # Should not raise since creator is available
+        await users._sync_users_unscoped()
+        users._sync_users_from_projects_groups.assert_called_once()
+
+    async def test_unscoped_both_fail_no_creator_raises(self) -> None:
+        """Both groups and projects fail AND no creator: RuntimeError raised."""
+        c = make_mock_connector()
+        c._gitlab_user_id = None
+        c.creator_email = None
+
+        fail_res = MagicMock(success=False, data=None, error="timeout")
+        c.scope = MagicMock()
+        c.scope.list_groups_scope_kwargs = MagicMock(return_value={})
+        c.scope.list_projects_scope_kwargs = MagicMock(return_value={})
+        c.scope.paged_list_groups_with_role_fallback = AsyncMock(return_value=fail_res)
+        c.scope.paged_list_projects_with_role_fallback = AsyncMock(return_value=fail_res)
+
+        users = UsersSync(c)
+        users._enrich_members_with_full_user = AsyncMock(side_effect=lambda d: d)
+        users._sync_users_from_projects_groups = AsyncMock()
+
+        with pytest.raises(RuntimeError):
+            await users._sync_users_unscoped()
+
+
+# ===========================================================================
+# _inject_creator_member_into — stub=None path
+# ===========================================================================
+
+
+class TestInjectCreatorMemberStubNone:
+    def test_returns_false_when_stub_is_none(self) -> None:
+        """When _build_creator_member_stub returns None, inject returns False."""
+        c = make_mock_connector()
+        c._gitlab_user_id = None
+        c.creator_email = None
+        users = UsersSync(c)
+
+        member_dict: dict = {1: _make_member(uid=1)}
+        result = users._inject_creator_member_into(member_dict)
+        assert result is False
+        # Dict unchanged
+        assert len(member_dict) == 1
+
+
+# ===========================================================================
+# _sync_users_from_projects_groups
+# ===========================================================================
+
+
+class TestSyncUsersFromProjectsGroups:
+    async def test_creator_email_bypass(self) -> None:
+        """Creator with no public_email uses PipesHub email."""
+        c = make_mock_connector()
+        c._gitlab_user_id = 42
+        c.creator_email = "creator@example.com"
+
+        # Member with no public_email and no email, but matches creator id
+        member = SimpleNamespace(
+            id=42,
+            username="creator",
+            name="Creator User",
+            public_email="",
+            email="",
+        )
+        dict_member = {42: member}
+        users = UsersSync(c)
+
+        c.data_entities_processor.on_new_app_users = AsyncMock()
+        c.data_entities_processor.migrate_group_to_user_by_external_id = AsyncMock()
+
+        await users._sync_users_from_projects_groups(dict_member)
+
+        c.data_entities_processor.on_new_app_users.assert_called_once()
+        call_args = c.data_entities_processor.on_new_app_users.call_args[0][0]
+        assert len(call_args) == 1
+        assert call_args[0].email == "creator@example.com"
+
+    async def test_skip_no_email_member(self) -> None:
+        """Members without any email are skipped."""
+        c = make_mock_connector()
+        c._gitlab_user_id = None
+        c.creator_email = None
+
+        member = SimpleNamespace(
+            id=5,
+            username="noemail",
+            name="No Email",
+            public_email="",
+            email="",
+        )
+        dict_member = {5: member}
+        users = UsersSync(c)
+
+        c.data_entities_processor.on_new_app_users = AsyncMock()
+
+        await users._sync_users_from_projects_groups(dict_member)
+
+        c.data_entities_processor.on_new_app_users.assert_not_called()
+
+    async def test_pseudo_group_migration_called_for_each_user(self) -> None:
+        """migrate_group_to_user_by_external_id is called for each synced user."""
+        c = make_mock_connector()
+        c._gitlab_user_id = None
+        c.creator_email = None
+
+        m1 = SimpleNamespace(id=1, username="alice", name="Alice", public_email="alice@example.com", email="")
+        m2 = SimpleNamespace(id=2, username="bob", name="Bob", public_email="bob@example.com", email="")
+        dict_member = {1: m1, 2: m2}
+
+        users = UsersSync(c)
+        c.data_entities_processor.on_new_app_users = AsyncMock()
+        c.data_entities_processor.migrate_group_to_user_by_external_id = AsyncMock()
+
+        await users._sync_users_from_projects_groups(dict_member)
+
+        assert c.data_entities_processor.migrate_group_to_user_by_external_id.call_count == 2
+
+    async def test_migration_failure_logged_not_raised(self) -> None:
+        """A failed pseudo-group migration is logged but does not abort."""
+        c = make_mock_connector()
+        c._gitlab_user_id = None
+        c.creator_email = None
+
+        member = SimpleNamespace(id=3, username="charlie", name="Charlie", public_email="charlie@example.com", email="")
+        dict_member = {3: member}
+
+        users = UsersSync(c)
+        c.data_entities_processor.on_new_app_users = AsyncMock()
+        c.data_entities_processor.migrate_group_to_user_by_external_id = AsyncMock(
+            side_effect=Exception("migration failed")
+        )
+
+        # Should not raise
+        await users._sync_users_from_projects_groups(dict_member)
+        c.logger.warning.assert_called()

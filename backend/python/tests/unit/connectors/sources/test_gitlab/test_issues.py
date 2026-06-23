@@ -267,3 +267,303 @@ class TestIssueIndexingFilters:
         c.indexing_filters = filters_mock
         issues_sync = IssuesSync(c)
         assert issues_sync._issues_indexing_enabled() is False
+
+    def test_comments_disabled_by_filter(self) -> None:
+        c = make_mock_connector()
+        from app.connectors.core.registry.filters import IndexingFilterKey
+        filters = MagicMock()
+        filters.is_enabled = MagicMock(side_effect=lambda k: k != IndexingFilterKey.COMMENTS)
+        c.indexing_filters = filters
+        issues_sync = IssuesSync(c)
+        assert issues_sync._comments_indexing_enabled() is False
+
+
+# ===========================================================================
+# fetch_issues_batched — filter_after merge
+# ===========================================================================
+
+
+class TestFetchIssuesBatchedFilterAfter:
+    async def test_filter_after_later_than_checkpoint_wins(self) -> None:
+        """filter_after that is later than stored checkpoint is used."""
+        from datetime import datetime, timezone
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        issues_sync = IssuesSync(c)
+
+        issues_sync._get_issues_sync_checkpoint = AsyncMock(return_value=1000)
+        later_dt = datetime(2025, 6, 1, tzinfo=timezone.utc)
+        c.datetime_range_from_sync_filter = MagicMock(return_value=(later_dt, None))
+
+        empty_res = MagicMock(success=True, data=[], error=None)
+        c.runtime.ds_call = AsyncMock(return_value=empty_res)
+        issues_sync.process_new_records = AsyncMock()
+
+        await issues_sync.fetch_issues_batched(42)
+        call_kwargs = c.runtime.ds_call.call_args.kwargs
+        assert call_kwargs["updated_after"] == later_dt
+
+
+# ===========================================================================
+# _build_issue_records — attachments and indexing paths
+# ===========================================================================
+
+
+class TestBuildIssueRecords:
+    async def _make_tx(self, existing=None):
+        tx_store = MagicMock()
+        tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=None)
+        return ctx
+
+    async def test_description_attachments_processed(self) -> None:
+        """Issue with description upload triggers make_file_records_from_list."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        c.data_store_provider = MagicMock()
+        c.data_store_provider.transaction = MagicMock(return_value=await self._make_tx())
+
+        issue = _make_issue(iid=1)
+        issue.description = "![img](/uploads/abc/file.png)"
+
+        from app.connectors.sources.gitlab.models import RecordUpdate
+        ru = MagicMock(spec=RecordUpdate)
+        ru.record = MagicMock()
+        ru.record.indexing_status = None
+        ru.new_permissions = []
+
+        attachment = MagicMock()
+        file_ru = MagicMock(spec=RecordUpdate)
+        file_ru.record = MagicMock()
+        file_ru.record.indexing_status = None
+
+        c.attachments = MagicMock()
+        c.attachments.parse_gitlab_uploads = AsyncMock(return_value=([attachment], "cleaned"))
+        c.attachments.make_file_records_from_list = AsyncMock(return_value=[file_ru])
+        c.attachments.make_files_records_from_notes = AsyncMock(return_value=[])
+
+        issues_sync = IssuesSync(c)
+        issues_sync._process_issue_incident_task_to_ticket = AsyncMock(return_value=ru)
+        issues_sync._issues_indexing_enabled = MagicMock(return_value=True)
+        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
+
+        result = await issues_sync._build_issue_records([issue])
+        assert len(result) == 2
+        c.attachments.make_file_records_from_list.assert_called_once()
+
+    async def test_note_attachments_included(self) -> None:
+        """Note attachments returned by make_files_records_from_notes are included."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        c.data_store_provider = MagicMock()
+        c.data_store_provider.transaction = MagicMock(return_value=await self._make_tx())
+
+        issue = _make_issue(iid=2)
+        issue.description = ""
+
+        from app.connectors.sources.gitlab.models import RecordUpdate
+        ru = MagicMock(spec=RecordUpdate)
+        ru.record = MagicMock()
+        ru.record.indexing_status = None
+        ru.new_permissions = []
+
+        note_ru = MagicMock(spec=RecordUpdate)
+        note_ru.record = MagicMock()
+        note_ru.record.indexing_status = None
+
+        c.attachments = MagicMock()
+        c.attachments.parse_gitlab_uploads = AsyncMock(return_value=([], ""))
+        c.attachments.make_files_records_from_notes = AsyncMock(return_value=[note_ru])
+
+        issues_sync = IssuesSync(c)
+        issues_sync._process_issue_incident_task_to_ticket = AsyncMock(return_value=ru)
+        issues_sync._issues_indexing_enabled = MagicMock(return_value=True)
+        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
+
+        result = await issues_sync._build_issue_records([issue])
+        assert len(result) == 2
+        c.attachments.make_files_records_from_notes.assert_called_once()
+
+    async def test_indexing_disabled_stamps_off(self) -> None:
+        """When issues indexing is disabled, indexing_status is AUTO_INDEX_OFF."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        c.data_store_provider = MagicMock()
+        c.data_store_provider.transaction = MagicMock(return_value=await self._make_tx())
+
+        issue = _make_issue(iid=3)
+        issue.description = ""
+
+        from app.connectors.sources.gitlab.models import RecordUpdate
+        from app.config.constants.arangodb import ProgressStatus
+        ru = MagicMock(spec=RecordUpdate)
+        ru.record = MagicMock()
+        ru.record.indexing_status = None
+
+        c.attachments = MagicMock()
+        c.attachments.parse_gitlab_uploads = AsyncMock(return_value=([], ""))
+        c.attachments.make_files_records_from_notes = AsyncMock(return_value=[])
+
+        issues_sync = IssuesSync(c)
+        issues_sync._process_issue_incident_task_to_ticket = AsyncMock(return_value=ru)
+        issues_sync._issues_indexing_enabled = MagicMock(return_value=False)
+        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
+
+        await issues_sync._build_issue_records([issue])
+        assert ru.record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+    async def test_existing_record_same_title_no_metadata_change(self) -> None:
+        """Existing record with same title: metadata_changed is False."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+
+        existing = MagicMock()
+        existing.record_name = "Test Issue"
+        existing.id = "existing-1"
+        c.data_store_provider = MagicMock()
+        c.data_store_provider.transaction = MagicMock(return_value=await self._make_tx(existing))
+
+        issue = _make_issue(iid=1, title="Test Issue")
+        issue.description = ""
+
+        c.attachments = MagicMock()
+        c.attachments.parse_gitlab_uploads = AsyncMock(return_value=([], ""))
+        c.attachments.make_files_records_from_notes = AsyncMock(return_value=[])
+
+        issues_sync = IssuesSync(c)
+        issues_sync._issues_indexing_enabled = MagicMock(return_value=True)
+        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
+
+        result = await issues_sync._build_issue_records([issue])
+        assert len(result) == 1
+        assert result[0].metadata_changed is False
+
+
+# ===========================================================================
+# process_new_records
+# ===========================================================================
+
+
+class TestProcessNewRecords:
+    async def test_happy_path_calls_on_new_records(self) -> None:
+        """Batch of records triggers on_new_records and checkpoint update."""
+        c = make_mock_connector()
+        c.batch_size = 10
+        c.data_entities_processor.on_new_records = AsyncMock()
+
+        from app.connectors.sources.gitlab.models import RecordUpdate
+        from app.models.entities import RecordType
+        ru = MagicMock(spec=RecordUpdate)
+        ru.record = MagicMock()
+        ru.record.record_type = RecordType.TICKET.value
+        ru.record.source_updated_at = 1000
+        ru.record.external_record_group_id = "42-work-items"
+        ru.new_permissions = []
+
+        issues_sync = IssuesSync(c)
+        issues_sync._update_sync_checkpoint = AsyncMock()
+
+        await issues_sync.process_new_records([ru])
+
+        c.data_entities_processor.on_new_records.assert_called_once()
+        issues_sync._update_sync_checkpoint.assert_called_once()
+
+    async def test_on_new_records_failure_logged(self) -> None:
+        """on_new_records failure is caught and logged, does not propagate."""
+        c = make_mock_connector()
+        c.batch_size = 10
+        c.data_entities_processor.on_new_records = AsyncMock(side_effect=Exception("DB error"))
+
+        from app.connectors.sources.gitlab.models import RecordUpdate
+        ru = MagicMock(spec=RecordUpdate)
+        ru.record = MagicMock()
+        ru.record.record_type = "TICKET"
+        ru.record.source_updated_at = 1000
+        ru.record.external_record_group_id = "42-work-items"
+        ru.new_permissions = []
+
+        issues_sync = IssuesSync(c)
+        # Should not raise
+        await issues_sync.process_new_records([ru])
+        c.logger.error.assert_called()
+
+
+# ===========================================================================
+# build_ticket_blocks
+# ===========================================================================
+
+
+class TestBuildTicketBlocks:
+    async def test_happy_path_returns_bytes(self) -> None:
+        """build_ticket_blocks returns serialised BlocksContainer bytes."""
+        c = make_mock_connector()
+        c._gitlab_base_url = "https://gitlab.com"
+
+        record = MagicMock()
+        record.weburl = "https://gitlab.com/ns/proj/-/issues/1"
+        record.external_record_group_id = "42-work-items"
+        record.external_record_id = "1"
+        record.record_name = "Test Issue"
+
+        issue = _make_issue(iid=1)
+        issue.description = ""
+        issue.updated_at = "2024-01-01T00:00:00Z"
+        issue.title = "Test Issue"
+        issue_res = MagicMock(success=True, data=issue, error=None)
+
+        c.runtime.ds_call = AsyncMock(return_value=issue_res)
+
+        c.attachments = MagicMock()
+        c.attachments.embed_images_as_base64 = AsyncMock(return_value="")
+        c.attachments.make_child_records_of_attachments = AsyncMock(return_value=([], []))
+
+        c.comments = MagicMock()
+        c.comments.build_comment_blocks = AsyncMock(return_value=([], []))
+
+        issues_sync = IssuesSync(c)
+        issues_sync._comments_indexing_enabled = MagicMock(return_value=False)
+        issues_sync.process_new_records = AsyncMock()
+
+        result = await issues_sync.build_ticket_blocks(record)
+        assert isinstance(result, bytes)
+        assert b"block_groups" in result
+
+    async def test_with_comments_appended(self) -> None:
+        """When comments indexing enabled, comment blocks are included."""
+        c = make_mock_connector()
+        c._gitlab_base_url = "https://gitlab.com"
+
+        record = MagicMock()
+        record.weburl = "https://gitlab.com/ns/proj/-/issues/2"
+        record.external_record_group_id = "42-work-items"
+        record.external_record_id = "2"
+        record.record_name = "Test Issue 2"
+
+        issue = _make_issue(iid=2)
+        issue.description = ""
+        issue.updated_at = "2024-01-01T00:00:00Z"
+        issue.title = "Test Issue 2"
+        issue_res = MagicMock(success=True, data=issue, error=None)
+
+        c.runtime.ds_call = AsyncMock(return_value=issue_res)
+
+        c.attachments = MagicMock()
+        c.attachments.embed_images_as_base64 = AsyncMock(return_value="")
+        c.attachments.make_child_records_of_attachments = AsyncMock(return_value=([], []))
+
+        from app.models.blocks import BlockGroup, GroupType
+        comment_bg = BlockGroup(index=1, name="comment", type=GroupType.TEXT_SECTION.value)
+        c.comments = MagicMock()
+        c.comments.build_comment_blocks = AsyncMock(return_value=([comment_bg], []))
+
+        issues_sync = IssuesSync(c)
+        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
+        issues_sync.process_new_records = AsyncMock()
+
+        result = await issues_sync.build_ticket_blocks(record)
+        assert isinstance(result, bytes)
+        import json
+        data = json.loads(result)
+        assert len(data["block_groups"]) == 2  # description + comment
