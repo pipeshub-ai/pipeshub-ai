@@ -691,7 +691,8 @@ if ! ${SKIP_WIZARD:-false}; then
   esac
   [[ "$KV_STORE"  == "etcd"  ]] && PROFILES+=("kv-etcd")
   [[ "$BROKER"    == "kafka" ]] && PROFILES+=("broker-kafka")
-  if [[ "${PIPESHUB_INTEGRATION_PORTS:-}" == "1" ]]; then
+  _existing_host_ports="$(get_existing_val HOST_PORTS_ENABLED "")"
+  if [[ "${PIPESHUB_INTEGRATION_PORTS:-}" == "1" || "$_existing_host_ports" == "1" ]]; then
     PROFILES+=("integration")
     HOST_PORTS_ENABLED="1"
   else
