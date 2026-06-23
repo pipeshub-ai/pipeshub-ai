@@ -1,0 +1,58 @@
+# PipesHub AI — integration-test host port override
+#
+# Stack with the base compose file to expose service ports on the host:
+#   PIPESHUB_INTEGRATION_PORTS=1 ./install.sh --yes
+#
+# Or manually:
+#   COMPOSE_PROFILES=graph-neo4j \
+#     docker compose -f docker-compose.yml -f docker-compose.integration-test.yml \
+#     -p pipeshub-ai up -d
+#
+# Including this override always adds host port mappings. Production installs
+# that use only docker-compose.yml do not expose database ports on the host.
+# Service startup is controlled by docker-compose.yml profiles.
+
+services:
+  mongodb:
+    ports:
+      - "27017:27017"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  qdrant:
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+
+  neo4j:
+    profiles: ["graph-neo4j"]
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+
+  arango:
+    profiles: ["graph-arango"]
+    ports:
+      - "8529:8529"
+
+  etcd:
+    profiles: ["kv-etcd"]
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+
+  zookeeper:
+    profiles: ["broker-kafka"]
+    ports:
+      - "2181:2181"
+
+  kafka-1:
+    profiles: ["broker-kafka"]
+    ports:
+      - "29092:29092"
+    environment:
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=ACCESS:PLAINTEXT,HOST:PLAINTEXT
+      - KAFKA_LISTENERS=ACCESS://0.0.0.0:9092,HOST://0.0.0.0:29092
+      - KAFKA_ADVERTISED_LISTENERS=ACCESS://kafka-1:9092,HOST://localhost:29092
