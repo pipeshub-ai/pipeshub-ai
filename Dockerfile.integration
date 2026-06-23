@@ -8,10 +8,10 @@ ARG PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps
 ARG RUNTIME_BASE_IMAGE=pipeshubai/pipeshub-ai-base:runtime
 
 FROM ${PYTHON_DEPS_IMAGE} AS python-deps
-
 WORKDIR /app/python
 COPY backend/python/pyproject.toml ./
-RUN uv pip install --system -e .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system -r pyproject.toml
 
 FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
 
@@ -275,11 +275,11 @@ trap cleanup SIGTERM SIGINT SIGQUIT
 log "=== Process Monitor Starting ==="
 start_nodejs
 start_slackbot
-start_embedding
 start_connector
-start_indexing
 start_query
+start_indexing
 start_docling
+start_embedding
 
 log "All services started. Beginning monitoring cycle (checking every ${CHECK_INTERVAL}s)..."
 
@@ -294,24 +294,24 @@ while true; do
         start_slackbot
     fi
 
-    if ! check_process "$EMBEDDING_PID" "Embedding"; then
-        start_embedding
-    fi
-    
-    if ! check_process "$DOCLING_PID" "Docling"; then
-        start_docling
-    fi
-    
-    if ! check_process "$INDEXING_PID" "Indexing"; then
-        start_indexing
-    fi
-    
     if ! check_process "$CONNECTOR_PID" "Connector"; then
         start_connector
     fi
     
     if ! check_process "$QUERY_PID" "Query"; then
         start_query
+    fi
+    
+    if ! check_process "$INDEXING_PID" "Indexing"; then
+        start_indexing
+    fi
+    
+    if ! check_process "$DOCLING_PID" "Docling"; then
+        start_docling
+    fi
+
+    if ! check_process "$EMBEDDING_PID" "Embedding"; then
+        start_embedding
     fi
 done
 EOF
