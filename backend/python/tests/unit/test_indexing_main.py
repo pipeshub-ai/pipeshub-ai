@@ -34,7 +34,7 @@ def _make_graph_provider():
     """Build a mock graph_provider."""
     gp = MagicMock()
     gp.get_nodes_by_filters = AsyncMock(return_value=[])
-    gp.batch_upsert_nodes = AsyncMock()
+    gp.batch_update_nodes = AsyncMock(return_value=True)
     gp.get_document = AsyncMock(return_value=None)
     gp.update_node = AsyncMock()
     return gp
@@ -149,7 +149,7 @@ class TestRecoverInProgressRecords:
         gp.get_nodes_by_filters = AsyncMock(side_effect=[[], queued])
 
         await recover_in_progress_records(mock_container, gp)
-        gp.batch_upsert_nodes.assert_awaited_once()
+        gp.batch_update_nodes.assert_awaited_once()
 
     async def test_queued_records_bulk_update_failure(self):
         """Failure to bulk update queued records is logged but does not raise."""
@@ -160,7 +160,7 @@ class TestRecoverInProgressRecords:
 
         queued = [{"_key": "r1"}]
         gp.get_nodes_by_filters = AsyncMock(side_effect=[[], queued])
-        gp.batch_upsert_nodes = AsyncMock(side_effect=RuntimeError("db error"))
+        gp.batch_update_nodes = AsyncMock(side_effect=RuntimeError("db error"))
 
         # Should not raise
         await recover_in_progress_records(mock_container, gp)

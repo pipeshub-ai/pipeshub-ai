@@ -393,7 +393,7 @@ class TestProcessImage:
 
         assert len(events) == 2
         # Record should have been updated with ENABLE_MULTIMODAL_MODELS status
-        upserted_doc = gp.batch_upsert_nodes.call_args[0][0][0]
+        upserted_doc = gp.batch_update_nodes.call_args[0][0][0]
         assert upserted_doc["indexingStatus"] == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value
 
 
@@ -810,26 +810,26 @@ class TestMarkRecord:
             await proc._mark_record("rec-1", ProgressStatus.EMPTY)
 
     @pytest.mark.asyncio
-    async def test_upsert_failure_raises(self):
-        """Raises DocumentProcessingError when upsert fails."""
-        from app.exceptions.indexing_exceptions import DocumentProcessingError
+    async def test_upsert_failure_logs_warning(self):
+        """Logs warning when batch_update_nodes returns False."""
         proc, _, gp, _ = _make_processor()
         gp.get_document.return_value = {"_key": "rec-1"}
-        gp.batch_upsert_nodes.return_value = False
+        gp.batch_update_nodes.return_value = False
 
-        with pytest.raises(DocumentProcessingError, match="Failed to update"):
-            await proc._mark_record("rec-1", ProgressStatus.EMPTY)
+        await proc._mark_record("rec-1", ProgressStatus.EMPTY)
+
+        proc.logger.warning.assert_called()
 
     @pytest.mark.asyncio
     async def test_successful_mark(self):
         """Successfully marks record status."""
         proc, _, gp, _ = _make_processor()
         gp.get_document.return_value = {"_key": "rec-1"}
-        gp.batch_upsert_nodes.return_value = True
+        gp.batch_update_nodes.return_value = True
 
         await proc._mark_record("rec-1", ProgressStatus.EMPTY)
 
-        gp.batch_upsert_nodes.assert_awaited_once()
+        gp.batch_update_nodes.assert_awaited_once()
 
 
 # ===========================================================================
@@ -845,7 +845,7 @@ class TestProcessExcelDocument:
         """Empty binary marks record as EMPTY."""
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = {"_key": "rec-1"}
-        gp.batch_upsert_nodes.return_value = True
+        gp.batch_update_nodes.return_value = True
 
         mock_parser = MagicMock()
         proc.parsers["xlsx"] = mock_parser
@@ -991,7 +991,7 @@ class TestProcessMdDocument:
         """Empty markdown content marks record as EMPTY."""
         proc, _, gp, _ = _make_processor()
         gp.get_document.return_value = {"_key": "rec-1"}
-        gp.batch_upsert_nodes.return_value = True
+        gp.batch_update_nodes.return_value = True
 
         mock_parser = MagicMock()
         proc.parsers["md"] = mock_parser
@@ -1291,7 +1291,7 @@ class TestProcessDelimitedDocument:
         """Empty file yields both events and marks empty."""
         proc, _, gp, _ = _make_processor()
         gp.get_document.return_value = {"_key": "rec-1"}
-        gp.batch_upsert_nodes.return_value = True
+        gp.batch_update_nodes.return_value = True
 
         mock_parser = MagicMock()
         mock_parser.read_raw_rows.return_value = []
@@ -1370,7 +1370,7 @@ class TestProcessDelimitedDocument:
         """Uses custom extension parser when provided."""
         proc, _, gp, _ = _make_processor()
         gp.get_document.return_value = {"_key": "rec-1"}
-        gp.batch_upsert_nodes.return_value = True
+        gp.batch_update_nodes.return_value = True
 
         mock_parser = MagicMock()
         mock_parser.read_raw_rows.return_value = []
@@ -1464,7 +1464,7 @@ class TestProcessImageAdditional:
         """When neither embedding nor LLM is multimodal, should set ENABLE_MULTIMODAL_MODELS."""
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict(mimeType="image/png")
-        gp.batch_upsert_nodes.return_value = True
+        gp.batch_update_nodes.return_value = True
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -1476,19 +1476,20 @@ class TestProcessImageAdditional:
         assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
-    async def test_no_multimodal_batch_upsert_failure(self):
-        """When batch_upsert_nodes fails, should raise."""
-        from app.exceptions.indexing_exceptions import DocumentProcessingError
+    async def test_no_multimodal_batch_update_failure_yields_events(self):
+        """When batch_update_nodes fails, log warning and still complete the phase."""
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict(mimeType="image/png")
-        gp.batch_upsert_nodes.return_value = False
+        gp.batch_update_nodes.return_value = False
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             with patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
                 mock_emb.return_value = {"isMultimodal": False}
-                with pytest.raises(DocumentProcessingError, match="Failed to update indexing status"):
-                    await _collect(proc.process_image("rec-1", b"imgdata", "vr-1"))
+                events = await _collect(proc.process_image("rec-1", b"imgdata", "vr-1"))
+
+        assert len(events) == 2
+        proc.logger.warning.assert_called()
 
     @pytest.mark.asyncio
     async def test_no_mime_type_raises(self):
@@ -1797,28 +1798,28 @@ class TestMarkRecord:
             await proc._mark_record("rec-1", ProgressStatus.EMPTY)
 
     @pytest.mark.asyncio
-    async def test_batch_upsert_failure(self):
-        """Should raise when batch_upsert_nodes returns False."""
-        from app.exceptions.indexing_exceptions import DocumentProcessingError
+    async def test_batch_update_failure_logs_warning(self):
+        """Should log warning when batch_update_nodes returns False."""
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict()
-        gp.batch_upsert_nodes.return_value = False
+        gp.batch_update_nodes.return_value = False
 
         with patch("app.events.processor.get_epoch_timestamp_in_ms", return_value=12345):
-            with pytest.raises(DocumentProcessingError, match="Failed to update indexing status"):
-                await proc._mark_record("rec-1", ProgressStatus.EMPTY)
+            await proc._mark_record("rec-1", ProgressStatus.EMPTY)
+
+        proc.logger.warning.assert_called()
 
     @pytest.mark.asyncio
     async def test_success(self):
         """Should update record status successfully."""
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict()
-        gp.batch_upsert_nodes.return_value = True
+        gp.batch_update_nodes.return_value = True
 
         with patch("app.events.processor.get_epoch_timestamp_in_ms", return_value=12345):
             await proc._mark_record("rec-1", ProgressStatus.EMPTY)
 
-        gp.batch_upsert_nodes.assert_awaited_once()
+        gp.batch_update_nodes.assert_awaited_once()
 
 
 # ===========================================================================
@@ -3508,7 +3509,7 @@ class TestProcessSqlStructuredData:
     async def test_unknown_record_type_marks_failed(self):
         """Unknown record_type marks record as FAILED and yields both events."""
         proc = _make_processor_cov()
-        proc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        proc.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
 
         events = await _collect_events(
@@ -3526,7 +3527,7 @@ class TestProcessSqlStructuredData:
         """When parser is not registered, marks record as FAILED."""
         proc = _make_processor_cov()
         proc.parsers = {}  # No parsers
-        proc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        proc.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
 
         events = await _collect_events(
@@ -3548,7 +3549,7 @@ class TestProcessSqlStructuredData:
         mock_parser.parse_stream.return_value = BlocksContainer(blocks=[], block_groups=[])
         proc = _make_processor_cov()
         proc.parsers = {"sql_table": mock_parser}
-        proc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        proc.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
 
         events = await _collect_events(
@@ -3596,7 +3597,7 @@ class TestProcessSqlStructuredData:
         )
         proc = _make_processor_cov()
         proc.parsers = {"sql_table": mock_parser}
-        proc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        proc.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
 
         with patch("app.events.processor.IndexingPipeline") as MockPipeline, \

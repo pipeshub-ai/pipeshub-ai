@@ -84,7 +84,7 @@ async def _collect_events(async_gen):
 
 # ===================================================================
 # Lines 156-157: process_image - non-DocumentProcessingError wrapping
-# When batch_upsert_nodes raises a generic Exception (not
+# When batch_update_nodes raises a generic Exception (not
 # DocumentProcessingError), it should be wrapped.
 # ===================================================================
 
@@ -97,8 +97,8 @@ class TestProcessImageNonDocError:
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="photo.png", mimeType="image/png")
         )
-        # batch_upsert_nodes raises a generic error
-        proc.graph_provider.batch_upsert_nodes = AsyncMock(
+        # batch_update_nodes raises a generic error
+        proc.graph_provider.batch_update_nodes = AsyncMock(
             side_effect=RuntimeError("db connection lost")
         )
 
@@ -807,7 +807,7 @@ class TestProcessDelimitedNonUnicodeError:
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="test.csv")
         )
-        proc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        proc.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})

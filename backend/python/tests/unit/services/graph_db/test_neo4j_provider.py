@@ -2526,7 +2526,7 @@ class TestDuplicateAndSyncOperations:
         neo4j_provider._neo4j_to_arango_node = MagicMock(  # type: ignore[method-assign]
             side_effect=[{"_key": "rec-2"}, {"_key": "rec-3"}]
         )
-        neo4j_provider.batch_upsert_nodes = AsyncMock()  # type: ignore[method-assign]
+        neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
         with patch("app.services.graph_db.neo4j.neo4j_provider.get_epoch_timestamp_in_ms", return_value=101):
             updated_count = await neo4j_provider.update_queued_duplicates_status(
@@ -2537,13 +2537,13 @@ class TestDuplicateAndSyncOperations:
             )
 
         assert updated_count == 2
-        payload = neo4j_provider.batch_upsert_nodes.await_args.args[0]
+        payload = neo4j_provider.batch_update_nodes.await_args.args[0]
         assert payload[0]["indexingStatus"] == "COMPLETED"
         assert payload[0]["extractionStatus"] == "COMPLETED"
         assert payload[0]["virtualRecordId"] == "v-1"
         assert payload[1]["lastIndexTimestamp"] == 101
-        assert neo4j_provider.batch_upsert_nodes.await_args.args[1] == "records"
-        assert neo4j_provider.batch_upsert_nodes.await_args.args[2] == "txn-upd"
+        assert neo4j_provider.batch_update_nodes.await_args.args[1] == "records"
+        assert neo4j_provider.batch_update_nodes.await_args.args[2] == "txn-upd"
 
     @pytest.mark.asyncio
     async def test_update_queued_duplicates_status_maps_failed_and_empty(self, neo4j_provider: Neo4jProvider):
@@ -2556,14 +2556,14 @@ class TestDuplicateAndSyncOperations:
             ]
         )
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "rec-2"})  # type: ignore[method-assign]
-        neo4j_provider.batch_upsert_nodes = AsyncMock()  # type: ignore[method-assign]
+        neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
         await neo4j_provider.update_queued_duplicates_status("rec-1", "FAILED")
-        failed_payload = neo4j_provider.batch_upsert_nodes.await_args_list[0].args[0]
+        failed_payload = neo4j_provider.batch_update_nodes.await_args_list[0].args[0]
         assert failed_payload[0]["extractionStatus"] == "FAILED"
 
         await neo4j_provider.update_queued_duplicates_status("rec-1", "EMPTY")
-        empty_payload = neo4j_provider.batch_upsert_nodes.await_args_list[1].args[0]
+        empty_payload = neo4j_provider.batch_update_nodes.await_args_list[1].args[0]
         assert empty_payload[0]["extractionStatus"] == "EMPTY"
 
     @pytest.mark.asyncio

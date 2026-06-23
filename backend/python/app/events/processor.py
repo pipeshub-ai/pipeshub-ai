@@ -153,14 +153,14 @@ class Processor:
                         })
 
                     docs = [record]
-                    success = await self.graph_provider.batch_upsert_nodes(
+                    success = await self.graph_provider.batch_update_nodes(
                         docs, CollectionNames.RECORDS.value
                     )
                     if not success:
-                        raise DocumentProcessingError(
-                            "Failed to update indexing status", doc_id=record_id
+                        self.logger.warning(
+                            "⚠️ Failed to update indexing status for record %s - record may not exist",
+                            record_id,
                         )
-
                     # Yield both events since we're skipping processing
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1534,13 +1534,15 @@ class Processor:
 
         docs = [doc]
 
-        success = await self.graph_provider.batch_upsert_nodes(
+        success = await self.graph_provider.batch_update_nodes(
             docs, CollectionNames.RECORDS.value
         )
         if not success:
-            raise DocumentProcessingError(
-                "Failed to update indexing status", doc_id=record_id
+            self.logger.warning(
+                "⚠️ Failed to update indexing status for record %s - record may not exist",
+                record_id,
             )
+            return
 
     async def process_html_document(
         self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
