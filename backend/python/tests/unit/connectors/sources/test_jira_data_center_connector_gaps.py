@@ -2,6 +2,7 @@
 
 import logging
 from contextlib import asynccontextmanager
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -45,7 +46,7 @@ def _make_connector() -> JiraDataCenterConnector:
     return JiraDataCenterConnector(logger, dep, dsp, cs, "conn-dc-gaps", "team", "u1")
 
 
-def _ok_resp(data):
+def _ok_resp(data: Any) -> MagicMock:
     resp = MagicMock()
     resp.status = HttpStatusCode.OK.value
     resp.json = MagicMock(return_value=data)
@@ -53,7 +54,7 @@ def _ok_resp(data):
     return resp
 
 
-def _tx_ctx(store):
+def _tx_ctx(store: Any) -> Any:
     @asynccontextmanager
     async def _cm():
         yield store

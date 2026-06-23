@@ -288,3 +288,383 @@ class TestPersonalRunSyncOrchestration:
         # Downstream steps still run.
         conn._fetch_projects.assert_awaited_once()
         conn._sync_all_project_issues.assert_awaited_once()
+
+
+# -----------------------------------------------------------------------------
+# run_sync edge cases, init, creator lookup, filters
+# -----------------------------------------------------------------------------
+
+
+class TestPersonalRunSyncEdgeCases:
+    async def test_run_sync_raises_when_init_fails(self) -> None:
+        conn = _make_connector()
+        conn.data_source = None
+        conn.init = AsyncMock(return_value=False)
+
+        with pytest.raises(RuntimeError, match="init failed"):
+            await conn.run_sync()
+
+    async def test_run_sync_calls_init_when_data_source_missing(self) -> None:
+        conn = _make_connector()
+        conn.data_source = None
+        conn.init = AsyncMock(return_value=True)
+        conn.creator_email = "owner@example.com"
+        conn._fetch_projects = AsyncMock(return_value=([], []))
+        conn._sync_all_project_issues = AsyncMock(
+            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0},
+        )
+        conn._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        conn._update_issues_sync_checkpoint = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_data_center_personal.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(None, None),
+        ):
+            await conn.run_sync()
+
+        conn.init.assert_awaited_once()
+
+    async def test_run_sync_resolves_creator_email_from_created_by(self) -> None:
+        conn = _make_connector(created_by="creator-id-99")
+        conn.data_source = MagicMock()
+        conn.creator_email = None
+
+        resolved_user = MagicMock()
+        resolved_user.email = "resolved@example.com"
+        conn.data_entities_processor.get_user_by_user_id = AsyncMock(
+            return_value=resolved_user,
+        )
+
+        conn._fetch_projects = AsyncMock(return_value=([], []))
+        conn._sync_all_project_issues = AsyncMock(
+            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0},
+        )
+        conn._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        conn._update_issues_sync_checkpoint = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_data_center_personal.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(None, None),
+        ):
+            await conn.run_sync()
+
+        conn.data_entities_processor.get_user_by_user_id.assert_awaited_once_with(
+            "creator-id-99",
+        )
+        assert conn.creator_email == "resolved@example.com"
+        conn.data_entities_processor.on_new_user_groups.assert_awaited_once()
+
+    async def test_run_sync_creator_lookup_exception_is_logged(self) -> None:
+        conn = _make_connector(created_by="creator-id")
+        conn.data_source = MagicMock()
+        conn.creator_email = None
+        conn.data_entities_processor.get_user_by_user_id = AsyncMock(
+            side_effect=RuntimeError("lookup failed"),
+        )
+        conn._fetch_projects = AsyncMock(return_value=([], []))
+        conn._sync_all_project_issues = AsyncMock(
+            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0},
+        )
+        conn._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        conn._update_issues_sync_checkpoint = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_data_center_personal.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(None, None),
+        ):
+            await conn.run_sync()
+
+        assert conn.creator_email is None
+        conn.data_entities_processor.on_new_user_groups.assert_not_awaited()
+
+    async def test_run_sync_no_creator_email_logs_and_syncs_without_permissions(self) -> None:
+        conn = _make_connector(created_by="")
+        conn.data_source = MagicMock()
+        conn.creator_email = None
+        conn._fetch_projects = AsyncMock(return_value=([], []))
+        conn._sync_all_project_issues = AsyncMock(
+            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0},
+        )
+        conn._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        conn._update_issues_sync_checkpoint = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_data_center_personal.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(None, None),
+        ):
+            await conn.run_sync()
+
+        conn._fetch_projects.assert_awaited_once()
+
+    async def test_run_sync_project_keys_filter_in_logs(self) -> None:
+        from app.connectors.core.registry.filters import ListOperator, SyncFilterKey
+
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.creator_email = "owner@example.com"
+
+        pfilter = MagicMock()
+        pfilter.get_value = MagicMock(return_value=["ALPHA", "BETA"])
+        pfilter.get_operator = MagicMock(return_value=ListOperator.IN)
+        sync_filters = MagicMock()
+        sync_filters.get = MagicMock(
+            side_effect=lambda k: pfilter if k == SyncFilterKey.PROJECT_KEYS else None,
+        )
+
+        conn._fetch_projects = AsyncMock(return_value=([], []))
+        conn._sync_all_project_issues = AsyncMock(
+            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0},
+        )
+        conn._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        conn._update_issues_sync_checkpoint = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_data_center_personal.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(sync_filters, None),
+        ):
+            await conn.run_sync()
+
+        conn._fetch_projects.assert_awaited_once_with(
+            ["ALPHA", "BETA"],
+            ListOperator.IN,
+            [],
+        )
+
+    async def test_run_sync_project_keys_filter_not_in_logs(self) -> None:
+        from app.connectors.core.registry.filters import ListOperator, SyncFilterKey
+
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.creator_email = "owner@example.com"
+
+        pfilter = MagicMock()
+        pfilter.get_value = MagicMock(return_value=["SKIP"])
+        pfilter.get_operator = MagicMock(return_value=ListOperator.NOT_IN)
+        sync_filters = MagicMock()
+        sync_filters.get = MagicMock(
+            side_effect=lambda k: pfilter if k == SyncFilterKey.PROJECT_KEYS else None,
+        )
+
+        conn._fetch_projects = AsyncMock(return_value=([], []))
+        conn._sync_all_project_issues = AsyncMock(
+            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0},
+        )
+        conn._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        conn._update_issues_sync_checkpoint = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_data_center_personal.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(sync_filters, None),
+        ):
+            await conn.run_sync()
+
+        conn._fetch_projects.assert_awaited_once_with(
+            ["SKIP"],
+            ListOperator.NOT_IN,
+            [],
+        )
+
+    async def test_run_sync_empty_project_keys_filter_syncs_all(self) -> None:
+        from app.connectors.core.registry.filters import SyncFilterKey
+
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.creator_email = "owner@example.com"
+
+        pfilter = MagicMock()
+        pfilter.get_value = MagicMock(return_value=[])
+        pfilter.get_operator = MagicMock(return_value=None)
+        sync_filters = MagicMock()
+        sync_filters.get = MagicMock(
+            side_effect=lambda k: pfilter if k == SyncFilterKey.PROJECT_KEYS else None,
+        )
+
+        conn._fetch_projects = AsyncMock(return_value=([], []))
+        conn._sync_all_project_issues = AsyncMock(
+            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0},
+        )
+        conn._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        conn._update_issues_sync_checkpoint = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_data_center_personal.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(sync_filters, None),
+        ):
+            await conn.run_sync()
+
+        conn._fetch_projects.assert_awaited_once_with(None, None, [])
+
+    async def test_run_sync_with_sync_filters_but_no_project_keys(self) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.creator_email = "owner@example.com"
+        sync_filters = MagicMock()
+        sync_filters.get = MagicMock(return_value=None)
+
+        conn._fetch_projects = AsyncMock(return_value=([], []))
+        conn._sync_all_project_issues = AsyncMock(
+            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0},
+        )
+        conn._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        conn._update_issues_sync_checkpoint = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_data_center_personal.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(sync_filters, None),
+        ):
+            await conn.run_sync()
+
+        conn._fetch_projects.assert_awaited_once_with(None, None, [])
+
+    async def test_run_sync_error_is_logged_and_reraised(self) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.creator_email = "owner@example.com"
+        conn._fetch_projects = AsyncMock(side_effect=RuntimeError("sync boom"))
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_data_center_personal.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(None, None),
+        ):
+            with pytest.raises(RuntimeError, match="sync boom"):
+                await conn.run_sync()
+
+
+# -----------------------------------------------------------------------------
+# _fetch_projects edge cases
+# -----------------------------------------------------------------------------
+
+
+class TestFetchProjectsEdgeCases:
+    async def test_raises_when_data_source_not_initialized(self) -> None:
+        conn = _make_connector()
+        conn.data_source = None
+
+        with pytest.raises(ValueError, match="DataSource not initialized"):
+            await conn._fetch_projects()
+
+    async def test_applies_exclude_project_key_filter(self) -> None:
+        from app.connectors.core.registry.filters import ListOperator
+
+        conn = _make_connector()
+        conn.creator_email = "owner@example.com"
+        conn.data_source = MagicMock()
+        conn._list_all_projects_dc = AsyncMock(
+            return_value=[
+                {"id": "1", "key": "KEEP", "name": "Keep"},
+                {"id": "2", "key": "DROP", "name": "Drop"},
+            ],
+        )
+
+        record_groups, raw = await conn._fetch_projects(
+            project_keys=["DROP"],
+            project_keys_operator=ListOperator.NOT_IN,
+        )
+
+        assert [p["key"] for p in raw] == ["KEEP"]
+        assert [rg.short_name for rg, _ in record_groups] == ["KEEP"]
+
+    async def test_syncs_all_projects_when_no_key_filter(self) -> None:
+        conn = _make_connector()
+        conn.creator_email = "owner@example.com"
+        conn.data_source = MagicMock()
+        conn._list_all_projects_dc = AsyncMock(
+            return_value=[
+                {"id": "1", "key": "A", "name": "A"},
+                {"id": "2", "key": "B", "name": "B"},
+            ],
+        )
+
+        record_groups, raw = await conn._fetch_projects()
+
+        assert len(raw) == 2
+        assert len(record_groups) == 2
+
+    async def test_non_string_description_becomes_none(self) -> None:
+        conn = _make_connector()
+        conn.creator_email = "owner@example.com"
+        conn.data_source = MagicMock()
+        conn._list_all_projects_dc = AsyncMock(
+            return_value=[
+                {"id": "1", "key": "X", "name": "X", "description": {"type": "doc"}},
+                {"id": "2", "key": "Y", "name": "Y", "description": ""},
+            ],
+        )
+
+        record_groups, _ = await conn._fetch_projects()
+
+        assert record_groups[0][0].description is None
+        assert record_groups[1][0].description is None
+
+    async def test_plain_string_description_preserved(self) -> None:
+        conn = _make_connector()
+        conn.creator_email = "owner@example.com"
+        conn.data_source = MagicMock()
+        conn._list_all_projects_dc = AsyncMock(
+            return_value=[
+                {"id": "1", "key": "X", "name": "X", "description": "Summary text"},
+            ],
+        )
+
+        record_groups, _ = await conn._fetch_projects()
+
+        assert record_groups[0][0].description == "Summary text"
+
+    async def test_logs_debug_when_project_permissions_present(self) -> None:
+        conn = _make_connector()
+        conn.creator_email = "owner@example.com"
+        conn.data_source = MagicMock()
+        conn._connector_group_permission = Permission(
+            entity_type=EntityType.GROUP,
+            external_id="internal-cid",
+            type=PermissionType.READ,
+        )
+        conn._list_all_projects_dc = AsyncMock(
+            return_value=[{"id": "1", "key": "X", "name": "X"}],
+        )
+
+        with patch.object(conn.logger, "debug") as mock_debug:
+            await conn._fetch_projects()
+
+        mock_debug.assert_called_once()
+        assert "ConnectorGroup" in mock_debug.call_args[0][0]
+
+
+# -----------------------------------------------------------------------------
+# create_connector factory entry point
+# -----------------------------------------------------------------------------
+
+
+class TestPersonalCreateConnector:
+    async def test_create_connector_returns_personal_subclass(self) -> None:
+        logger, _dep, dsp, cs = _make_deps()
+        with patch(
+            "app.connectors.sources.atlassian.jira_data_center_personal.connector.DataSourceEntitiesProcessor",
+        ) as MockProc:
+            mock_proc = MagicMock()
+            mock_proc.org_id = "org-x"
+            mock_proc.initialize = AsyncMock()
+            MockProc.return_value = mock_proc
+
+            instance = await JiraDataCenterPersonalConnector.create_connector(
+                logger=logger,
+                data_store_provider=dsp,
+                config_service=cs,
+                connector_id="cid-create",
+                scope="personal",
+                created_by="u1",
+            )
+
+        assert isinstance(instance, JiraDataCenterPersonalConnector)
+        assert instance.connector_id == "cid-create"
+        assert instance.connector_name == Connectors.JIRA_DATA_CENTER_PERSONAL
+        mock_proc.initialize.assert_awaited_once()
