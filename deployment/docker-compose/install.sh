@@ -28,6 +28,8 @@
 #   PIPESHUB_IMAGE_SOURCE    prebuilt | local (default: prebuilt)
 #   PIPESHUB_PORT            host port to expose on (default 3000)
 #   PIPESHUB_PUBLIC_URL      public HTTPS URL for external access (optional)
+#   PIPESHUB_INTEGRATION_PORTS  set to 1 to stack docker-compose.integration.yml
+#                            and enable the integration profile (CI / host DB access)
 # ==============================================================================
 set -euo pipefail
 
@@ -73,9 +75,30 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 ENV_FILE="${SCRIPT_DIR}/.env"
 COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
+COMPOSE_OVERRIDE_FILE="${SCRIPT_DIR}/docker-compose.integration.yml"
 PROJECT_NAME="pipeshub-ai"
 HEALTH_WAIT_SECS=300
 # APP_PORT and HEALTH_URL are resolved later (after port selection in the wizard)
+
+integration_ports_enabled() {
+  [[ "${HOST_PORTS_ENABLED:-}" == "1" || "${PIPESHUB_INTEGRATION_PORTS:-}" == "1" ]]
+}
+
+compose_cmd() {
+  local args=(-f "$COMPOSE_FILE")
+  if integration_ports_enabled; then
+    args+=(-f "$COMPOSE_OVERRIDE_FILE")
+  fi
+  docker compose "${args[@]}" "$@"
+}
+
+compose_files_for_display() {
+  if integration_ports_enabled; then
+    printf -- "-f %s -f %s" "$COMPOSE_FILE" "$COMPOSE_OVERRIDE_FILE"
+  else
+    printf -- "-f %s" "$COMPOSE_FILE"
+  fi
+}
 
 # ── CLI flags ─────────────────────────────────────────────────────────────────
 FLAG_YES=false
@@ -339,7 +362,7 @@ if $FLAG_STOP; then
   header "Stopping PipesHub"
   if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
   export COMPOSE_PROFILES="${COMPOSE_PROFILES:-}"
-  docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" down
+  compose_cmd -p "$PROJECT_NAME" down
   success "PipesHub stopped. Data volumes are preserved."
   info "To start again: ./install.sh"
   exit 0
@@ -360,7 +383,10 @@ if $FLAG_UNINSTALL; then
   # previously-used profile (e.g. arango_data after switching to neo4j) would
   # be silently left behind.
   export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka"
-  docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" down -v
+  if [[ "${HOST_PORTS_ENABLED:-}" == "1" ]]; then
+    export COMPOSE_PROFILES="${COMPOSE_PROFILES},integration"
+  fi
+  compose_cmd -p "$PROJECT_NAME" down -v
   success "PipesHub stopped and all data volumes removed."
   exit 0
 fi
@@ -665,6 +691,12 @@ if ! ${SKIP_WIZARD:-false}; then
   esac
   [[ "$KV_STORE"  == "etcd"  ]] && PROFILES+=("kv-etcd")
   [[ "$BROKER"    == "kafka" ]] && PROFILES+=("broker-kafka")
+  if [[ "${PIPESHUB_INTEGRATION_PORTS:-}" == "1" ]]; then
+    PROFILES+=("integration")
+    HOST_PORTS_ENABLED="1"
+  else
+    HOST_PORTS_ENABLED=""
+  fi
   COMPOSE_PROFILES="$(IFS=','; echo "${PROFILES[*]}")"
 
   case "$GRAPH_DB" in
@@ -770,8 +802,10 @@ IMAGE_SOURCE=${IMAGE_SOURCE}
 SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE}
 
 # ── Compose profiles (controls which optional containers start) ──────────────
-# Values: graph-arango | graph-neo4j | kv-etcd | broker-kafka  (comma-separated)
+# Values: graph-arango | graph-neo4j | kv-etcd | broker-kafka | integration
 COMPOSE_PROFILES=${COMPOSE_PROFILES}
+# Set to 1 when PIPESHUB_INTEGRATION_PORTS=1 (stacks docker-compose.integration.yml)
+HOST_PORTS_ENABLED=${HOST_PORTS_ENABLED:-}
 
 # ── Core ─────────────────────────────────────────────────────────────────────
 NODE_ENV=production
@@ -880,10 +914,11 @@ printf "\n"
 if $FLAG_PRINT_ENV_ONLY; then
   _build_flag=""
   [[ "${IMAGE_SOURCE:-prebuilt}" == "local" ]] && _build_flag=" --build"
+  _compose_files="$(compose_files_for_display)"
   printf "\n"
   info "Run the following to start PipesHub:"
-  printf "\n  ${BOLD}COMPOSE_PROFILES=%s \\\\\n    docker compose -f %s -p %s up -d%s${RESET}\n\n" \
-    "${COMPOSE_PROFILES:-}" "$COMPOSE_FILE" "$PROJECT_NAME" "$_build_flag"
+  printf "\n  ${BOLD}COMPOSE_PROFILES=%s \\\\\n    docker compose %s -p %s up -d%s${RESET}\n\n" \
+    "${COMPOSE_PROFILES:-}" "$_compose_files" "$PROJECT_NAME" "$_build_flag"
   success "Done (--print-env-only mode; not launching)."
   exit 0
 fi
@@ -915,8 +950,7 @@ if $FLAG_UPGRADE; then
     info "Rebuilding image from source for tag: ${IMAGE_TAG:-local}..."
   else
     info "Pulling new images for tag: ${IMAGE_TAG:-latest}..."
-    docker compose \
-      -f "$COMPOSE_FILE" \
+    compose_cmd \
       -p "$PROJECT_NAME" \
       --env-file "$ENV_FILE" \
       pull 2>&1 || true
@@ -926,24 +960,22 @@ fi
 if $_USE_BUILD; then
   info "Building image from source and starting containers..."
   info "(This may take 10–30+ minutes on first run)"
-  if ! docker compose \
-      -f "$COMPOSE_FILE" \
+  if ! compose_cmd \
       -p "$PROJECT_NAME" \
       --env-file "$ENV_FILE" \
       up -d --build; then
     error "docker compose up --build failed. Last 30 lines of container logs:"
-    docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true
+    compose_cmd -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true
     die "Fix the build error above and re-run install.sh."
   fi
 else
   info "Starting containers..."
-  if ! docker compose \
-      -f "$COMPOSE_FILE" \
+  if ! compose_cmd \
       -p "$PROJECT_NAME" \
       --env-file "$ENV_FILE" \
       up -d; then
     error "docker compose up failed. Last 30 lines of container logs:"
-    docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true
+    compose_cmd -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true
     die "Fix the error above and re-run install.sh."
   fi
 fi
@@ -991,7 +1023,7 @@ if $HEALTHY; then
 else
   warn "Health check did not pass within ${HEALTH_WAIT_SECS}s."
   warn "Services may still be starting. Check logs:"
-  warn "  docker compose -f ${COMPOSE_FILE} -p ${PROJECT_NAME} logs -f pipeshub-ai"
+  warn "  docker compose $(compose_files_for_display) -p ${PROJECT_NAME} logs -f pipeshub-ai"
 fi
 
 # ==============================================================================
@@ -1010,7 +1042,7 @@ fi
 printf "\n  ${BOLD}Useful commands${RESET}\n"
 printf "  ${DIM}%s${RESET}\n\n" "$(printf '─%.0s' {1..53})"
 printf "  ${DIM}# View logs${RESET}\n"
-printf "  docker compose -f %s -p %s logs -f pipeshub-ai\n\n" "$COMPOSE_FILE" "$PROJECT_NAME"
+printf "  docker compose $(compose_files_for_display) -p %s logs -f pipeshub-ai\n\n" "$PROJECT_NAME"
 printf "  ${DIM}# Stop (data preserved)${RESET}\n"
 printf "  ./install.sh --stop\n\n"
 printf "  ${DIM}# Upgrade to latest images (or rebuild from source if IMAGE_SOURCE=local)${RESET}\n"

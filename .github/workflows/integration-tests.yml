@@ -161,6 +161,7 @@ jobs:
           PIPESHUB_KV_STORE: redis
           PIPESHUB_DEPLOY_TYPE: slim
           PIPESHUB_PORT: "3000"
+          PIPESHUB_INTEGRATION_PORTS: "1"
         run: |
           # Seed stack .env so install.sh keeps the same creds pytest already has.
           {
@@ -274,10 +275,10 @@ jobs:
           # shellcheck disable=SC1091
           [[ -f .env ]] && . ./.env
           set +a
-          docker compose -f docker-compose.yml -p pipeshub-ai --env-file .env ps -a \
+          docker compose -f docker-compose.yml -f docker-compose.integration.yml -p pipeshub-ai --env-file .env ps -a \
             > ../../integration-tests/reports/docker-logs/neo4j/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.yml -p pipeshub-ai --env-file .env config --services 2>/dev/null); do
-            docker compose -f docker-compose.yml -p pipeshub-ai --env-file .env logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.yml -f docker-compose.integration.yml -p pipeshub-ai --env-file .env config --services 2>/dev/null); do
+            docker compose -f docker-compose.yml -f docker-compose.integration.yml -p pipeshub-ai --env-file .env logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" 2>&1 || true
           done
 
@@ -296,6 +297,7 @@ jobs:
           PIPESHUB_KV_STORE: etcd
           PIPESHUB_DEPLOY_TYPE: full
           PIPESHUB_PORT: "3000"
+          PIPESHUB_INTEGRATION_PORTS: "1"
         run: |
           {
             echo "SECRET_KEY=${SECRET_KEY}"
@@ -305,6 +307,9 @@ jobs:
           } > .env
           chmod +x install.sh
           ./install.sh --yes --reconfigure --build
+          echo "TEST_GRAPH_DB_TYPE=arango" >> "$GITHUB_ENV"
+          echo "TEST_ARANGO_URL=http://localhost:8529" >> "$GITHUB_ENV"
+          echo "TEST_ARANGO_PASSWORD=your_password" >> "$GITHUB_ENV"
 
       - name: 'ArangoDB: Wait for core services'
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
@@ -407,10 +412,10 @@ jobs:
           # shellcheck disable=SC1091
           [[ -f .env ]] && . ./.env
           set +a
-          docker compose -f docker-compose.yml -p pipeshub-ai --env-file .env ps -a \
+          docker compose -f docker-compose.yml -f docker-compose.integration.yml -p pipeshub-ai --env-file .env ps -a \
             > ../../integration-tests/reports/docker-logs/arango/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.yml -p pipeshub-ai --env-file .env config --services 2>/dev/null); do
-            docker compose -f docker-compose.yml -p pipeshub-ai --env-file .env logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.yml -f docker-compose.integration.yml -p pipeshub-ai --env-file .env config --services 2>/dev/null); do
+            docker compose -f docker-compose.yml -f docker-compose.integration.yml -p pipeshub-ai --env-file .env logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/arango/${svc}.log" 2>&1 || true
           done
 
