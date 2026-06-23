@@ -2885,17 +2885,44 @@ class TestBatchUpdateNodes:
     async def test_no_updates(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = []
         result = await connected_provider.batch_update_nodes(
-            ["missing"], {"indexingStatus": "COMPLETED"}, "records"
+            [{"id": "missing", "indexingStatus": "COMPLETED"}], "records"
         )
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
+    async def test_partial_update_returns_false(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [
+            {"_key": "r1", "indexingStatus": "COMPLETED"},
+            None,
+        ]
         result = await connected_provider.batch_update_nodes(
-            ["r1"], {"status": "OK"}, "records"
+            [
+                {"id": "r1", "indexingStatus": "COMPLETED"},
+                {"id": "missing", "indexingStatus": "COMPLETED"},
+            ],
+            "records",
         )
         assert result is False
+        aql_query = connected_provider.http_client.execute_aql.call_args[0][0]
+        assert "ignoreErrors: true" in aql_query
+
+    @pytest.mark.asyncio
+    async def test_all_updates_succeed(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [
+            {"_key": "r1", "indexingStatus": "COMPLETED"},
+        ]
+        result = await connected_provider.batch_update_nodes(
+            [{"id": "r1", "indexingStatus": "COMPLETED"}], "records"
+        )
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_exception(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.batch_update_nodes(
+                [{"id": "r1", "status": "OK"}], "records"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -3910,7 +3937,7 @@ class TestUpdateQueuedDuplicatesStatus:
             [{"_key": "r2", "md5Checksum": "abc123"}],  # queued duplicate
         ]
         with patch.object(
-            connected_provider, "batch_upsert_nodes",
+            connected_provider, "batch_update_nodes",
             new_callable=AsyncMock, return_value=True
         ):
             result = await connected_provider.update_queued_duplicates_status(
@@ -3925,12 +3952,12 @@ class TestUpdateQueuedDuplicatesStatus:
             [{"_key": "r2", "md5Checksum": "abc123"}],
         ]
         with patch.object(
-            connected_provider, "batch_upsert_nodes",
+            connected_provider, "batch_update_nodes",
             new_callable=AsyncMock, return_value=True
-        ) as mock_upsert:
+        ) as mock_update:
             await connected_provider.update_queued_duplicates_status("r1", "EMPTY")
             # Verify extraction status is EMPTY
-            call_args = mock_upsert.call_args[0][0]
+            call_args = mock_update.call_args[0][0]
             assert call_args[0]["extractionStatus"] == "EMPTY"
 
     @pytest.mark.asyncio
@@ -11844,13 +11871,9 @@ class TestCheckRecordPermissionsExpanded:
 
 class TestBatchUpdateNodesExpanded:
     @pytest.mark.asyncio
-    async def test_empty_keys(self, connected_provider):
-        connected_provider.http_client.execute_aql.return_value = []
-        result = await connected_provider.batch_update_nodes(
-            [], {"status": "OK"}, "records"
-        )
-        # Empty keys may still execute query but return no updates
-        assert isinstance(result, bool)
+    async def test_empty_nodes(self, connected_provider):
+        result = await connected_provider.batch_update_nodes([], "records")
+        assert result is True
 
 
 # ---------------------------------------------------------------------------

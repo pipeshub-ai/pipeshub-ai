@@ -2526,7 +2526,7 @@ class TestDuplicateAndSyncOperations:
         neo4j_provider._neo4j_to_arango_node = MagicMock(  # type: ignore[method-assign]
             side_effect=[{"_key": "rec-2"}, {"_key": "rec-3"}]
         )
-        neo4j_provider.batch_upsert_nodes = AsyncMock()  # type: ignore[method-assign]
+        neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
         with patch("app.services.graph_db.neo4j.neo4j_provider.get_epoch_timestamp_in_ms", return_value=101):
             updated_count = await neo4j_provider.update_queued_duplicates_status(
@@ -2537,13 +2537,13 @@ class TestDuplicateAndSyncOperations:
             )
 
         assert updated_count == 2
-        payload = neo4j_provider.batch_upsert_nodes.await_args.args[0]
+        payload = neo4j_provider.batch_update_nodes.await_args.args[0]
         assert payload[0]["indexingStatus"] == "COMPLETED"
         assert payload[0]["extractionStatus"] == "COMPLETED"
         assert payload[0]["virtualRecordId"] == "v-1"
         assert payload[1]["lastIndexTimestamp"] == 101
-        assert neo4j_provider.batch_upsert_nodes.await_args.args[1] == "records"
-        assert neo4j_provider.batch_upsert_nodes.await_args.args[2] == "txn-upd"
+        assert neo4j_provider.batch_update_nodes.await_args.args[1] == "records"
+        assert neo4j_provider.batch_update_nodes.await_args.args[2] == "txn-upd"
 
     @pytest.mark.asyncio
     async def test_update_queued_duplicates_status_maps_failed_and_empty(self, neo4j_provider: Neo4jProvider):
@@ -2556,14 +2556,14 @@ class TestDuplicateAndSyncOperations:
             ]
         )
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "rec-2"})  # type: ignore[method-assign]
-        neo4j_provider.batch_upsert_nodes = AsyncMock()  # type: ignore[method-assign]
+        neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
         await neo4j_provider.update_queued_duplicates_status("rec-1", "FAILED")
-        failed_payload = neo4j_provider.batch_upsert_nodes.await_args_list[0].args[0]
+        failed_payload = neo4j_provider.batch_update_nodes.await_args_list[0].args[0]
         assert failed_payload[0]["extractionStatus"] == "FAILED"
 
         await neo4j_provider.update_queued_duplicates_status("rec-1", "EMPTY")
-        empty_payload = neo4j_provider.batch_upsert_nodes.await_args_list[1].args[0]
+        empty_payload = neo4j_provider.batch_update_nodes.await_args_list[1].args[0]
         assert empty_payload[0]["extractionStatus"] == "EMPTY"
 
     @pytest.mark.asyncio
@@ -4057,3 +4057,95 @@ class TestCreateRecordsDuplicateName:
         assert result["total_created"] == 0
         assert len(result["skipped_files"]) == 1
         assert result["skipped_files"][0]["reason"] == "DUPLICATE_NAME"
+class TestBatchUpdateConnectorStatus:
+    @pytest.mark.asyncio
+    async def test_empty_keys_skips_query(self, neo4j_provider: Neo4jProvider):
+        result = await neo4j_provider.batch_update_connector_status(
+            collection="apps",
+            connector_keys=[],
+            is_active=False,
+            is_agent_active=False,
+        )
+
+        assert result == 0
+        neo4j_provider.client.execute_query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_success_returns_updated_count(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"updated_count": 2}]
+        )
+
+        result = await neo4j_provider.batch_update_connector_status(
+            collection="apps",
+            connector_keys=["c1", "c2"],
+            is_active=False,
+            is_agent_active=False,
+        )
+
+        assert result == 2
+        neo4j_provider.client.execute_query.assert_awaited_once()
+        call_args = neo4j_provider.client.execute_query.call_args
+        query = call_args[0][0]
+        call_kwargs = call_args.kwargs
+        assert call_kwargs["parameters"] == {
+            "connector_ids": ["c1", "c2"],
+            "is_active": False,
+            "is_agent_active": False,
+        }
+        assert "MATCH (app:App" in query
+        assert "isAgentActive" in query
+        assert call_kwargs["txn_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_uses_label_from_collection(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"updated_count": 1}]
+        )
+
+        with patch.object(neo4j_provider, "_get_label", return_value="CustomLabel") as mock_get_label:
+            await neo4j_provider.batch_update_connector_status(
+                collection="apps",
+                connector_keys=["c1"],
+                is_active=False,
+                is_agent_active=False,
+            )
+
+        query = neo4j_provider.client.execute_query.call_args[0][0]
+        assert "MATCH (app:CustomLabel" in query
+        mock_get_label.assert_called_once_with("apps")
+
+    @pytest.mark.asyncio
+    async def test_passes_transaction_id(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"updated_count": 1}]
+        )
+
+        await neo4j_provider.batch_update_connector_status(
+            collection="apps",
+            connector_keys=["c1"],
+            is_active=True,
+            is_agent_active=True,
+            transaction="txn-123",
+        )
+
+        call_kwargs = neo4j_provider.client.execute_query.call_args.kwargs
+        assert call_kwargs["txn_id"] == "txn-123"
+        assert call_kwargs["parameters"]["is_active"] is True
+        assert call_kwargs["parameters"]["is_agent_active"] is True
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_zero(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=Exception("neo4j error")
+        )
+
+        result = await neo4j_provider.batch_update_connector_status(
+            collection="apps",
+            connector_keys=["c1"],
+            is_active=False,
+            is_agent_active=False,
+        )
+
+        assert result == 0
+        neo4j_provider.logger.error.assert_called_once()

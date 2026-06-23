@@ -122,6 +122,9 @@ fields:
   signed_url:
     required: false
     type: string
+  fetch_signed_url:
+    required: false
+    type: string
   size_in_bytes:
     required: false
     type: integer

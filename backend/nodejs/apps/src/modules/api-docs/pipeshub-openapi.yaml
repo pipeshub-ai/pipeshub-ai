@@ -4685,7 +4685,10 @@ components:
           description: References to source documents used in the response
         confidence:
           type: string
-          description: AI's confidence level in the response
+          nullable: true
+          description: |
+            AI confidence in the answer. Present only on `bot_response` messages,
+            and only when the model emitted a trailing confidence block.
         followUpQuestions:
           type: array
           items:
@@ -8403,6 +8406,10 @@ components:
         confidence:
           type: string
           enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
+          nullable: true
+          description: |
+            AI confidence in the answer. Present only on `bot_response` messages,
+            and only when the model emitted a trailing confidence block.
         followUpQuestions:
           type: array
           items:
@@ -24020,6 +24027,7 @@ paths:
                               default: MARKDOWN
                             confidence:
                               type: string
+                              nullable: true
                               description: |
                                 AI confidence in the answer. Present only on
                                 `bot_response` messages, and only when the

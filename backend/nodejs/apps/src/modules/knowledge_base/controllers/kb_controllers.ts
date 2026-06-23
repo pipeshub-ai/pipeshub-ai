@@ -2556,11 +2556,13 @@ export const getRecordBuffer =
       );
 
       // Set appropriate headers from the FastAPI response
-      if (response.headers['content-type']) {
-        res.set('Content-Type', response.headers['content-type']);
+      const contentType = response.headers['content-type'];
+      if (contentType) {
+        res.set('Content-Type', String(contentType));
       }
-      if (response.headers['content-disposition']) {
-        res.set('Content-Disposition', response.headers['content-disposition']);
+      const contentDisposition = response.headers['content-disposition'];
+      if (contentDisposition) {
+        res.set('Content-Disposition', String(contentDisposition));
       }
 
       // Pipe the streaming response directly to the client

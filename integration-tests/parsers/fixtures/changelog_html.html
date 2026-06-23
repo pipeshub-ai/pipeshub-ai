@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Changelog — PipesHub</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 780px; margin: 0 auto; padding: 32px 24px 80px; color: #1a1a1a; line-height: 1.6; background: #fff; }
+    h1   { font-size: 28px; margin-bottom: 4px; }
+    .subtitle { color: #666; font-size: 14px; margin-bottom: 32px; }
+
+    /* ── Summary table ── */
+    .summary-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 48px; }
+    .summary-table caption { text-align: left; font-size: 12px; font-weight: 600; letter-spacing: .5px; text-transform: uppercase; color: #888; margin-bottom: 10px; caption-side: top; padding-bottom: 8px; }
+    .summary-table th { background: #f5f5f5; padding: 9px 14px; text-align: left; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; color: #555; border: 1px solid #e5e5e5; }
+    .summary-table td { padding: 9px 14px; border: 1px solid #e5e5e5; vertical-align: top; }
+    .summary-table tr:hover td { background: #fafafa; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 3px; margin: 1px 2px; }
+    .tag.added       { background: #dcfce7; color: #15803d; }
+    .tag.changed     { background: #fef9c3; color: #a16207; }
+    .tag.fixed       { background: #dbeafe; color: #1d4ed8; }
+    .tag.deprecated  { background: #fee2e2; color: #b91c1c; }
+    .tag.removed     { background: #ede9fe; color: #6d28d9; }
+
+    hr { border: none; border-top: 1px solid #e5e5e5; margin: 40px 0; }
+
+    /* ── Version blocks ── */
+    .version-block { margin-bottom: 48px; }
+    .version-header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+    h2 { font-size: 20px; margin: 0; }
+    .release-date { font-size: 13px; color: #888; }
+    .unreleased { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 4px; background: #f0f0ff; color: #4f46e5; border: 1px solid #c7d2fe; }
+
+    /* ── Change type groups ── */
+    .change-group { margin-bottom: 18px; }
+    .change-type {
+      font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .7px;
+      display: inline-flex; align-items: center; gap: 5px;
+      margin-bottom: 8px;
+    }
+    .change-type::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .change-type.added    { color: #15803d; }
+    .change-type.changed  { color: #a16207; }
+    .change-type.fixed    { color: #1d4ed8; }
+    .change-type.deprecated { color: #b91c1c; }
+    .change-type.removed  { color: #6d28d9; }
+
+    ul.changes { margin: 0; padding-left: 20px; list-style: disc; }
+    ul.changes li { font-size: 14px; margin-bottom: 6px; color: #333; }
+    ul.changes li::marker { color: #ccc; }
+    code { font-family: 'Menlo', 'Fira Code', monospace; font-size: 12.5px; background: #f3f4f6; padding: 1px 5px; border-radius: 3px; color: #374151; }
+    a.issue { font-size: 12px; font-family: monospace; color: #6b7280; text-decoration: none; border: 1px solid #e5e7eb; padding: 0 5px; border-radius: 3px; }
+    a.issue:hover { color: #4f46e5; border-color: #818cf8; }
+  </style>
+</head>
+<body>
+
+  <h1>Changelog</h1>
+  <p class="subtitle">All notable changes. Follows <a href="#">Keep a Changelog</a> · Semantic Versioning.</p>
+
+  <!-- Summary table -->
+  <table class="summary-table">
+    <caption>Release history at a glance</caption>
+    <thead>
+      <tr>
+        <th>Version</th>
+        <th>Date</th>
+        <th>Highlights</th>
+        <th>Types</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Unreleased</strong></td>
+        <td>—</td>
+        <td>Dark mode, CSV export, token refresh fix</td>
+        <td><span class="tag added">Added</span><span class="tag changed">Changed</span></td>
+      </tr>
+      <tr>
+        <td><strong>v2.4.0</strong></td>
+        <td>2026-05-12</td>
+        <td>Webhook retry queue, multi-tenant Slack routing, Python 3.12</td>
+        <td><span class="tag added">Added</span><span class="tag changed">Changed</span><span class="tag fixed">Fixed</span><span class="tag deprecated">Deprecated</span></td>
+      </tr>
+      <tr>
+        <td><strong>v2.3.1</strong></td>
+        <td>2026-04-01</td>
+        <td>Calendar timezone fix, MongoDB O(n²) regression</td>
+        <td><span class="tag fixed">Fixed</span></td>
+      </tr>
+      <tr>
+        <td><strong>v2.3.0</strong></td>
+        <td>2026-03-18</td>
+        <td>Salesforce Lead conversion, Zoom Docs toolset</td>
+        <td><span class="tag added">Added</span><span class="tag changed">Changed</span><span class="tag removed">Removed</span></td>
+      </tr>
+      <tr>
+        <td><strong>v2.2.0</strong></td>
+        <td>2026-02-10</td>
+        <td>Teams meeting discovery, OneDrive modernisation</td>
+        <td><span class="tag added">Added</span><span class="tag fixed">Fixed</span></td>
+      </tr>
+      <tr>
+        <td><strong>v1.0.0</strong></td>
+        <td>2025-11-01</td>
+        <td>Initial public release</td>
+        <td><span class="tag added">Added</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <hr />
+
+  <!-- Unreleased -->
+  <div class="version-block">
+    <div class="version-header">
+      <h2>Unreleased</h2>
+      <span class="unreleased">upcoming</span>
+    </div>
+
+    <div class="change-group">
+      <div class="change-type added">Added</div>
+      <ul class="changes">
+        <li>Dark mode support across all dashboard views</li>
+        <li>Export to CSV for analytics reports</li>
+      </ul>
+    </div>
+
+    <div class="change-group">
+      <div class="change-type changed">Changed</div>
+      <ul class="changes">
+        <li>Improved token refresh logic to reduce 401 errors on slow connections</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr />
+
+  <!-- v2.4.0 -->
+  <div class="version-block">
+    <div class="version-header">
+      <h2>v2.4.0</h2>
+      <span class="release-date">2026-05-12</span>
+    </div>
+
+    <div class="change-group">
+      <div class="change-type added">Added</div>
+      <ul class="changes">
+        <li>Webhook retry queue with exponential backoff (max 5 attempts)</li>
+        <li><code>GET /v1/connectors/:id/status</code> endpoint for health polling</li>
+        <li>Support for multi-tenant Slack app routing via shared signing secrets</li>
+      </ul>
+    </div>
+
+    <div class="change-group">
+      <div class="change-type changed">Changed</div>
+      <ul class="changes">
+        <li><code>POST /v1/agents/run</code> now accepts optional <code>timeout_ms</code> (default: <code>30000</code>)</li>
+        <li>Python async service layer upgraded from Python 3.10 → 3.12</li>
+      </ul>
+    </div>
+
+    <div class="change-group">
+      <div class="change-type fixed">Fixed</div>
+      <ul class="changes">
+        <li><code>SignatureDoesNotMatch</code> 403 from Content-Type mismatch in S3 presigned URL uploads <a href="#" class="issue">#412</a></li>
+        <li>OneDrive <code>sharedWithMe</code> pagination silently dropping items beyond page 2 <a href="#" class="issue">#398</a></li>
+      </ul>
+    </div>
+
+    <div class="change-group">
+      <div class="change-type deprecated">Deprecated</div>
+      <ul class="changes">
+        <li><code>legacy_auth</code> flag in connector config — will be removed in v3.0.0</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr />
+
+  <!-- v2.3.1 -->
+  <div class="version-block">
+    <div class="version-header">
+      <h2>v2.3.1</h2>
+      <span class="release-date">2026-04-01</span>
+    </div>
+
+    <div class="change-group">
+      <div class="change-type fixed">Fixed</div>
+      <ul class="changes">
+        <li>Recurring calendar events failing silently when <code>recurrenceTimeZone</code> was missing from PATCH body</li>
+        <li>MongoDB aggregation pipeline performance regression in archived conversations controller (was O(n²), now O(n log n))</li>
+      </ul>
+    </div>
+  </div>
+
+  <hr />
+
+  <!-- v2.3.0 -->
+  <div class="version-block">
+    <div class="version-header">
+      <h2>v2.3.0</h2>
+      <span class="release-date">2026-03-18</span>
+    </div>
+
+    <div class="change-group">
+      <div class="change-type added">Added</div>
+      <ul class="changes">
+        <li>Salesforce connector: Lead conversion via <code>convertLead</code> invocable action with Tooling API fallback</li>
+        <li>Zoom Docs toolset: create, read, update, delete operations</li>
+        <li><code>isExternal</code> field filtering in ArangoDB and Neo4j queries for legacy document compatibility</li>
+      </ul>
+    </div>
+
+    <div class="change-group">
+      <div class="change-type changed">Changed</div>
+      <ul class="changes">
+        <li>Zoom transcript endpoint corrected from <code>/meetings/{id}/recordings/transcript</code> to <code>/meetings/{id}/recordings</code></li>
+      </ul>
+    </div>
+
+    <div class="change-group">
+      <div class="change-type removed">Removed</div>
+      <ul class="changes">
+        <li><code>SalesforceAgent.list_price_books()</code> — merged into <code>get_products()</code> with <code>include_pricing=True</code></li>
+      </ul>
+    </div>
+  </div>
+
+  <hr />
+
+  <!-- v1.0.0 -->
+  <div class="version-block">
+    <div class="version-header">
+      <h2>v1.0.0</h2>
+      <span class="release-date">2025-11-01</span>
+    </div>
+
+    <div class="change-group">
+      <div class="change-type added">Added</div>
+      <ul class="changes">
+        <li>Initial public release</li>
+        <li>Connectors: Outlook, OneDrive, Slack, Jira</li>
+        <li>Multi-tenant webhook routing architecture</li>
+        <li>HMAC signature verification for all inbound webhooks</li>
+      </ul>
+    </div>
+  </div>
+
+</body>
+</html>

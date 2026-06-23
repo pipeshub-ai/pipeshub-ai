@@ -331,9 +331,14 @@ class RecordEventHandler(BaseEventService):
                         "extractionStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
                     }
                 )
-                await self.event_processor.graph_provider.batch_upsert_nodes(
+                success = await self.event_processor.graph_provider.batch_update_nodes(
                     [doc], CollectionNames.RECORDS.value
                 )
+                if not success:
+                    self.logger.warning(
+                        "⚠️ Failed to update CODE_FILE record %s status - record may not exist",
+                        record_id,
+                    )
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
@@ -446,9 +451,14 @@ class RecordEventHandler(BaseEventService):
                     }
                 )
                 docs = [doc]
-                await self.event_processor.graph_provider.batch_upsert_nodes(
+                success = await self.event_processor.graph_provider.batch_update_nodes(
                     docs, CollectionNames.RECORDS.value
                 )
+                if not success:
+                    self.logger.warning(
+                        "⚠️ Failed to update unsupported file record %s status - record may not exist",
+                        record_id,
+                    )
 
                 # Yield both events for unsupported file types
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -574,7 +584,9 @@ class RecordEventHandler(BaseEventService):
                     extraction_status=ProgressStatus.FAILED.value,
                     reason=error_msg,
                 )
-                virtual_record_id = record.get("virtualRecordId") if record else None
+                if record is None:
+                    return
+                virtual_record_id = record.get("virtualRecordId")
                 self.logger.info(f"🔄 Current record {record_id} has failed, triggering next queued duplicate")
                 await self._trigger_next_queued_duplicate(record_id,virtual_record_id)
             elif record is not None and event_type != EventTypes.DELETE_RECORD.value:
@@ -624,9 +636,15 @@ class RecordEventHandler(BaseEventService):
                 doc["reason"] = reason
 
             docs = [doc]
-            await self.event_processor.graph_provider.batch_upsert_nodes(
+            success = await self.event_processor.graph_provider.batch_update_nodes(
                 docs, CollectionNames.RECORDS.value
             )
+            if not success:
+                self.logger.warning(
+                    "⚠️ Failed to update document status for record %s - record may not exist",
+                    record_id,
+                )
+                return None
             self.logger.info(f"✅ Updated document status for record {record_id}")
             return record
         except Exception as e:

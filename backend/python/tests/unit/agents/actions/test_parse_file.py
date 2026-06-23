@@ -719,34 +719,66 @@ class TestHandleMdx:
 
 class TestHandleHtml:
     @pytest.mark.asyncio
-    async def test_strips_and_converts(self):
+    async def test_delegates_to_html_parser(self):
         parser = _make_parser()
-        parser._html_parser.replace_relative_image_urls = MagicMock(
-            side_effect=lambda html: html
-        )
         expected = BlocksContainer(blocks=[], block_groups=[])
-        parser._markdown_string_to_blocks = AsyncMock(return_value=expected)
+        cleaned = "<html><body><p>hello</p><script>bad()</script></body></html>"
+        parser._html_parser.clean_html = MagicMock(side_effect=lambda x: x)
+        parser._html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
+        parser._html_parser.extract_and_replace_images = MagicMock(return_value=(cleaned, []))
+        parser._html_parser.parse = AsyncMock(return_value=expected)
         html = b"<html><body><p>hello</p><script>bad()</script></body></html>"
         result = await parser.handle_html(html, "page.html")
         assert result is expected
-        # Markdown arg should not contain '<script'
-        markdown_arg = parser._markdown_string_to_blocks.call_args[0][0]
-        assert "bad()" not in markdown_arg
+        parser._html_parser.clean_html.assert_called_once_with(
+            "<html><body><p>hello</p><script>bad()</script></body></html>"
+        )
+        parser._html_parser.replace_relative_image_urls.assert_called_once()
+        parser._html_parser.extract_and_replace_images.assert_called_once_with(cleaned)
+        parser._html_parser.parse.assert_awaited_once_with(cleaned, caption_map=None)
 
     @pytest.mark.asyncio
-    async def test_beautifulsoup_failure_falls_back_to_decode(self):
+    async def test_decodes_bytes_before_parse(self):
         parser = _make_parser()
-        parser._html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda h: h)
         expected = BlocksContainer(blocks=[], block_groups=[])
-        parser._markdown_string_to_blocks = AsyncMock(return_value=expected)
-        with patch(
-            "app.agents.actions.util.parse_file.BeautifulSoup",
-            side_effect=RuntimeError("no soup"),
-        ):
-            result = await parser.handle_html(b"<html>ok", "page.html")
+        parser._html_parser.clean_html = MagicMock(side_effect=lambda x: x)
+        parser._html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
+        parser._html_parser.extract_and_replace_images = MagicMock(return_value=("<html>ok", []))
+        parser._html_parser.parse = AsyncMock(return_value=expected)
+        result = await parser.handle_html(b"<html>ok", "page.html")
         assert result is expected
-        md_arg = parser._markdown_string_to_blocks.call_args[0][0]
-        assert "ok" in md_arg or len(md_arg) >= 0
+        parser._html_parser.parse.assert_awaited_once_with("<html>ok", caption_map=None)
+
+    @pytest.mark.asyncio
+    async def test_remote_images_converted_to_caption_map(self):
+        parser = _make_parser()
+        expected = BlocksContainer(blocks=[], block_groups=[])
+        cleaned = '<img alt="Image_1" src="https://example.com/pic.png">'
+        parser._html_parser.clean_html = MagicMock(side_effect=lambda x: x)
+        parser._html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
+        parser._html_parser.extract_and_replace_images = MagicMock(
+            return_value=(
+                cleaned,
+                [{
+                    "url": "https://example.com/pic.png",
+                    "alt_text": "diagram",
+                    "new_alt_text": "Image_1",
+                }],
+            )
+        )
+        parser._image_parser.urls_to_base64 = AsyncMock(
+            return_value=["data:image/png;base64,QQ=="]
+        )
+        parser._html_parser.parse = AsyncMock(return_value=expected)
+        result = await parser.handle_html(b"<html></html>", "page.html")
+        assert result is expected
+        parser._image_parser.urls_to_base64.assert_awaited_once_with(
+            ["https://example.com/pic.png"]
+        )
+        parser._html_parser.parse.assert_awaited_once_with(
+            cleaned,
+            caption_map={"Image_1": "data:image/png;base64,QQ=="},
+        )
 
 
 class TestMarkdownStringToBlocks:

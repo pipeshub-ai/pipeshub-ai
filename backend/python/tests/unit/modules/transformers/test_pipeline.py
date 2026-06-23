@@ -48,7 +48,7 @@ def doc_extraction():
     de = AsyncMock()
     de.graph_provider = AsyncMock()
     de.graph_provider.get_document = AsyncMock(return_value={})
-    de.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+    de.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
     return de
 
 
@@ -59,7 +59,9 @@ def sink_orchestrator():
 
 @pytest.fixture
 def pipeline(doc_extraction, sink_orchestrator):
-    return IndexingPipeline(doc_extraction, sink_orchestrator)
+    pipe = IndexingPipeline(doc_extraction, sink_orchestrator)
+    pipe.logger = MagicMock()  # Replace real logger with mock for assertion support
+    return pipe
 
 
 # ---------------------------------------------------------------------------
@@ -78,8 +80,8 @@ class TestApplyEmpty:
             "rec-1", CollectionNames.RECORDS.value
         )
         # Should batch upsert with EMPTY status
-        doc_extraction.graph_provider.batch_upsert_nodes.assert_awaited_once()
-        call_args = doc_extraction.graph_provider.batch_upsert_nodes.call_args
+        doc_extraction.graph_provider.batch_update_nodes.assert_awaited_once()
+        call_args = doc_extraction.graph_provider.batch_update_nodes.call_args
         docs = call_args[0][0]
         assert docs[0]["indexingStatus"] == ProgressStatus.EMPTY.value
         assert docs[0]["isDirty"] is False
@@ -90,13 +92,16 @@ class TestApplyEmpty:
         sink_orchestrator.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_empty_blocks_upsert_failure_raises(self, pipeline, doc_extraction):
-        doc_extraction.graph_provider.batch_upsert_nodes = AsyncMock(return_value=False)
+    async def test_empty_blocks_update_failure_logs_warning(self, pipeline, doc_extraction, sink_orchestrator):
+        doc_extraction.graph_provider.batch_update_nodes = AsyncMock(return_value=False)
         record = _make_record(blocks=[], block_groups=[], record_id="rec-fail")
         ctx = _make_ctx(record)
 
-        with pytest.raises(DocumentProcessingError):
-            await pipeline.apply(ctx)
+        await pipeline.apply(ctx)
+
+        pipeline.logger.warning.assert_called()
+        doc_extraction.apply.assert_not_awaited()
+        sink_orchestrator.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_blocks_none_does_not_take_empty_path(self, pipeline, doc_extraction, sink_orchestrator):

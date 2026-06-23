@@ -116,9 +116,11 @@ class ContainerUtils:
         parsers = {
             ExtensionTypes.DOCX.value: DocxParser(),
             ExtensionTypes.DOC.value: DocParser(),
-            ExtensionTypes.PPTX.value: PPTXParser(),
             ExtensionTypes.PPT.value: PPTParser(),
-            ExtensionTypes.HTML.value: HTMLParser(),
+            ExtensionTypes.PPTX.value: PPTXParser(),
+            ExtensionTypes.HTML.value: HTMLParser(
+                logger=logger, config_service=config_service
+            ),
             ExtensionTypes.MD.value: MarkdownParser(
                 logger=logger, config_service=config_service
             ),

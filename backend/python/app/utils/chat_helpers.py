@@ -53,7 +53,7 @@ valid_group_labels = [
         GroupType.KEY_VALUE_AREA.value,
         GroupType.TEXT_SECTION.value,
         GroupType.CODE.value,
-        GroupType.CONVERSATION.value,
+        GroupType.CONVERSATION.value
     ]
 
 def _safe_stringify_content(value: Any) -> str:

@@ -13,7 +13,7 @@ Targets remaining uncovered lines:
 - 1347-1348: _process_blockgroups: empty processing_results
 - 1497-1502: process_delimited_document: non-UnicodeDecodeError exception during CSV parsing
 - 1549-1551: process_delimited_document: outer exception handler
-- 1601, 1612: process_html_document: element.decompose loop, html_binary is not bytes fallback
+- 1606-1609, 1613-1619: process_html_document: bytes/string input, empty content handling
 - 1684-1687: process_md_document: empty markdown _mark_record raises non-DocumentProcessingError
 - 1705-1711: process_md_document: urls_to_base64 image conversion
 - 1739-1752: process_md_document: image block caption mapping with caption_map
@@ -84,7 +84,7 @@ async def _collect_events(async_gen):
 
 # ===================================================================
 # Lines 156-157: process_image - non-DocumentProcessingError wrapping
-# When batch_upsert_nodes raises a generic Exception (not
+# When batch_update_nodes raises a generic Exception (not
 # DocumentProcessingError), it should be wrapped.
 # ===================================================================
 
@@ -97,8 +97,8 @@ class TestProcessImageNonDocError:
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="photo.png", mimeType="image/png")
         )
-        # batch_upsert_nodes raises a generic error
-        proc.graph_provider.batch_upsert_nodes = AsyncMock(
+        # batch_update_nodes raises a generic error
+        proc.graph_provider.batch_update_nodes = AsyncMock(
             side_effect=RuntimeError("db connection lost")
         )
 
@@ -807,7 +807,7 @@ class TestProcessDelimitedNonUnicodeError:
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="test.csv")
         )
-        proc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        proc.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
@@ -854,60 +854,63 @@ class TestProcessDelimitedOuterException:
 
 
 # ===================================================================
-# Line 1601: process_html_document - element.decompose() loop
-# Line 1612: html_binary is not bytes -> html_content = html_binary
+# Lines 1606-1609, 1613-1619: process_html_document input handling
 # ===================================================================
 
 
-class TestProcessHtmlDecomposeAndStringFallback:
+class TestProcessHtmlInputHandling:
     @pytest.mark.asyncio
-    async def test_html_with_script_tags_decomposed(self):
-        """Script/style elements are decomposed from HTML before conversion."""
+    async def test_html_parsed_via_parser(self):
+        """HTML content is passed to html_parser.parse for block extraction."""
         proc = _make_processor()
-
-        async def _fake_md(*args, **kwargs):
-            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
-            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
-
-        proc.process_md_document = _fake_md
-
-        html_parser = MagicMock()
-        html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
-        proc.parsers = {"html": html_parser}
-
-        # HTML with script and style tags that should be decomposed
-        html = b"<html><head><script>alert('x')</script><style>body{}</style></head><body><p>Content</p></body></html>"
-
-        events = await _collect_events(
-            proc.process_html_document("test.html", "r1", "1", "src", "o1", html, "vr1")
+        proc.graph_provider.get_document = AsyncMock(
+            return_value=_mock_record_dict(recordName="test.html")
         )
 
+        html_parser = MagicMock()
+        html_parser.clean_html = MagicMock(side_effect=lambda x: x)
+        html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
+        html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
+        html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
+        proc.parsers = {"html": html_parser}
+
+        html = b"<html><head><script>alert('x')</script><style>body{}</style></head><body><p>Content</p></body></html>"
+
+        with patch("app.events.processor.IndexingPipeline") as MockPipeline:
+            MockPipeline.return_value.apply = AsyncMock()
+            events = await _collect_events(
+                proc.process_html_document("test.html", "r1", "1", "src", "o1", html, "vr1")
+            )
+
+        html_parser.parse.assert_awaited_once()
+        MockPipeline.return_value.apply.assert_awaited_once()
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_html_binary_is_string(self):
-        """When html_binary is a string (not bytes) and BS4 fails, it falls through."""
+        """When html_binary is a string (not bytes), it is processed directly."""
         proc = _make_processor()
-
-        async def _fake_md(*args, **kwargs):
-            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
-            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
-
-        proc.process_md_document = _fake_md
+        proc.graph_provider.get_document = AsyncMock(
+            return_value=_mock_record_dict(recordName="test.html")
+        )
 
         html_parser = MagicMock()
+        html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
+        html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
+        html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers = {"html": html_parser}
 
-        # Pass a string (not bytes) and force BS4 to fail
         html_str = "<p>Hello</p>"
 
-        with patch("app.events.processor.BeautifulSoup", side_effect=Exception("parse error")):
+        with patch("app.events.processor.IndexingPipeline") as MockPipeline:
+            MockPipeline.return_value.apply = AsyncMock()
             events = await _collect_events(
                 proc.process_html_document("test.html", "r1", "1", "src", "o1", html_str, "vr1")
             )
 
+        html_parser.parse.assert_awaited_once_with("<p>Hello</p>", caption_map=None)
         assert any(e.event == "indexing_complete" for e in events)
 
 
