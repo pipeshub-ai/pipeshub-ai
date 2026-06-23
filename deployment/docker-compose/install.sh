@@ -29,7 +29,7 @@
 #   PIPESHUB_PORT            host port to expose on (default 3000)
 #   PIPESHUB_PUBLIC_URL      public HTTPS URL for external access (optional)
 #   PIPESHUB_INTEGRATION_PORTS  set to 1 to stack docker-compose.integration.yml
-#                            and enable the integration profile (CI / host DB access)
+#                            for CI / host DB access
 # ==============================================================================
 set -euo pipefail
 
@@ -383,9 +383,6 @@ if $FLAG_UNINSTALL; then
   # previously-used profile (e.g. arango_data after switching to neo4j) would
   # be silently left behind.
   export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka"
-  if [[ "${HOST_PORTS_ENABLED:-}" == "1" ]]; then
-    export COMPOSE_PROFILES="${COMPOSE_PROFILES},integration"
-  fi
   compose_cmd -p "$PROJECT_NAME" down -v
   success "PipesHub stopped and all data volumes removed."
   exit 0
@@ -693,7 +690,6 @@ if ! ${SKIP_WIZARD:-false}; then
   [[ "$BROKER"    == "kafka" ]] && PROFILES+=("broker-kafka")
   _existing_host_ports="$(get_existing_val HOST_PORTS_ENABLED "")"
   if [[ "${PIPESHUB_INTEGRATION_PORTS:-}" == "1" || "$_existing_host_ports" == "1" ]]; then
-    PROFILES+=("integration")
     HOST_PORTS_ENABLED="1"
   else
     HOST_PORTS_ENABLED=""
@@ -803,7 +799,7 @@ IMAGE_SOURCE=${IMAGE_SOURCE}
 SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE}
 
 # ── Compose profiles (controls which optional containers start) ──────────────
-# Values: graph-arango | graph-neo4j | kv-etcd | broker-kafka | integration
+# Values: graph-arango | graph-neo4j | kv-etcd | broker-kafka
 COMPOSE_PROFILES=${COMPOSE_PROFILES}
 # Set to 1 when PIPESHUB_INTEGRATION_PORTS=1 (stacks docker-compose.integration.yml)
 HOST_PORTS_ENABLED=${HOST_PORTS_ENABLED:-}

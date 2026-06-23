@@ -1,54 +1,55 @@
 # PipesHub AI — integration-test host port override
 #
-# Stack with the base compose file and enable the integration profile:
+# Stack with the base compose file to expose service ports on the host:
 #   PIPESHUB_INTEGRATION_PORTS=1 ./install.sh --yes
 #
 # Or manually:
-#   COMPOSE_PROFILES=graph-neo4j,integration \
+#   COMPOSE_PROFILES=graph-neo4j \
 #     docker compose -f docker-compose.yml -f docker-compose.integration.yml \
 #     -p pipeshub-ai up -d
 #
-# All entries require the "integration" profile so production installs that use
-# only docker-compose.yml never expose database ports on the host.
-# Graph/broker/KV services inherit their operational profiles from the base file;
-# this override only adds host port mappings for whichever of those are active.
+# Including this override always adds host port mappings. Production installs
+# that use only docker-compose.yml do not expose database ports on the host.
+# Service startup is controlled by docker-compose.yml profiles.
 
 services:
   mongodb:
-    profiles: ["integration"]
     ports:
       - "27017:27017"
 
   redis:
-    profiles: ["integration"]
     ports:
       - "6379:6379"
 
   qdrant:
-    profiles: ["integration"]
     ports:
       - "6333:6333"
       - "6334:6334"
 
   neo4j:
+    profiles: ["graph-neo4j"]
     ports:
       - "7474:7474"
       - "7687:7687"
 
   arango:
+    profiles: ["graph-arango"]
     ports:
       - "8529:8529"
 
   etcd:
+    profiles: ["kv-etcd"]
     ports:
       - "2379:2379"
       - "2380:2380"
 
   zookeeper:
+    profiles: ["broker-kafka"]
     ports:
       - "2181:2181"
 
   kafka-1:
+    profiles: ["broker-kafka"]
     ports:
       - "9092:9092"
       - "29092:29092"
