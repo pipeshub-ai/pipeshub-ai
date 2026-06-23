@@ -159,6 +159,10 @@ describe('storage/utils/utils', () => {
     it('should return false for name with unknown extension', () => {
       expect(hasExtension('file.xyz123unknown')).to.be.false
     })
+
+    it('should return false for known-but-non-indexable extension', () => {
+      expect(hasExtension('file.exe')).to.be.false
+    })
   })
 
   // -------------------------------------------------------------------------
@@ -298,6 +302,10 @@ describe('storage/utils/utils', () => {
 
     it('should throw for unsupported extension', () => {
       expect(() => validateFileAndDocumentName('xyz123', 'myDoc', 'file.xyz123')).to.throw(BadRequestError)
+    })
+
+    it('should throw for known-but-non-indexable extension', () => {
+      expect(() => validateFileAndDocumentName('exe', 'myDoc', 'file.exe')).to.throw(BadRequestError)
     })
 
     it('should throw when document name contains forward slash', () => {

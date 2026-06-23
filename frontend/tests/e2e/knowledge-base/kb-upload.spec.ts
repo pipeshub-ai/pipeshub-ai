@@ -188,10 +188,9 @@ test.describe('Knowledge Base Upload', () => {
     const input = await openUploadSidebar(page, kbId);
     test.skip(!input, 'Upload affordance not reachable');
 
-    // .exe is in extensionToMimeType → backend accepts it.
-    // .xyz is not in the map → rejected as UNSUPPORTED_TYPE.
+    // .exe is in extensionToMimeType but not indexable → rejected as UNSUPPORTED_TYPE.
     await input!.setInputFiles(
-      makeFiles(3, { prefix: 'bad-all', ext: 'xyz', mimeType: 'application/octet-stream' }),
+      makeFiles(3, { prefix: 'bad-all', ext: 'exe', mimeType: 'application/vnd.microsoft.portable-executable' }),
     );
     await page.getByRole('button', { name: 'Save' }).click();
 

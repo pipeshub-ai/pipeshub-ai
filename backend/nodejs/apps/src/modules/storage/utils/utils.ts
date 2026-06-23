@@ -7,7 +7,11 @@ import {
 } from '../../../libs/errors/http.errors';
 import mongoose from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
-import { getMimeType } from '../mimetypes/mimetypes';
+import {
+  getMimeType,
+  indexableExtensions,
+  isIndexableExtension,
+} from '../mimetypes/mimetypes';
 import { Document, StorageVendor } from '../types/storage.service.types';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { ErrorMetadata } from '../../../libs/errors/base.error';
@@ -236,7 +240,7 @@ export function hasExtension(
   }
 
   const lastSegment = documentName.split('.').pop() || '';
-  return getMimeType(lastSegment) !== '';
+  return isIndexableExtension(lastSegment);
 }
 
 /**
@@ -251,14 +255,11 @@ export function validateFileAndDocumentName(
   documentName: string | undefined,
   fileNameForError: string,
 ): void {
-  // Validate MIME type support FIRST - most important check
-  const mimeType = getMimeType(extension);
-  if (mimeType === '') {
+  if (!isIndexableExtension(extension)) {
     throw new BadRequestError(
-      `File "${fileNameForError}" has an unsupported file extension "${extension}". Supported file types include: .pdf, .docx, .xlsx, .csv, .md, .txt, .pptx, .html, .tsv, and images (.png, .jpg, .svg, .webp).`,
+      `File "${fileNameForError}" has an unsupported file extension ".${extension.replace(/^\./, '')}". Supported file types include: ${indexableExtensions.map((ext) => `.${ext}`).join(', ')}.`,
     );
   }
-
 
   if (documentName?.includes('/')) {
     throw new BadRequestError(

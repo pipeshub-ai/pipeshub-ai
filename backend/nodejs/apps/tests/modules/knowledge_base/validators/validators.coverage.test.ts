@@ -702,5 +702,24 @@ describe('Knowledge Base Validators - coverage', () => {
       })
       expect(result.success).to.be.false
     })
+
+    it('should reject a fileBuffer with a registry MIME type that is not indexable', () => {
+      const result = uploadRecordsSchema.safeParse({
+        body: {
+          fileBuffers: [
+            {
+              buffer: Buffer.from('test'),
+              mimetype: 'application/vnd.microsoft.portable-executable',
+              originalname: 'test.exe',
+              size: 4,
+              lastModified: Date.now(),
+              filePath: '/path/to/test.exe',
+            },
+          ],
+        },
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+      })
+      expect(result.success).to.be.false
+    })
   })
 })

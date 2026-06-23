@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { extensionToMimeType } from '../../storage/mimetypes/mimetypes';
+import { getIndexableMimeTypes } from '../../storage/mimetypes/mimetypes';
 import { FileRejectionReason } from '../../../libs/middlewares/file_processor/fp.constant';
 
 const rejectedFileSchema = z.object({
@@ -71,6 +71,8 @@ export const getConnectorStatsSchema = z.object({
   params: z.object({ connectorId: z.string().min(1) }),
 });
 
+const INDEXABLE_MIME_TYPES = getIndexableMimeTypes();
+
 /**
  * Schema for the processed file buffer with metadata attached.
  * This is set by the file processor middleware after parsing files_metadata.
@@ -78,8 +80,8 @@ export const getConnectorStatsSchema = z.object({
 const fileBufferSchema = z.object({
   buffer: z.any(),
   mimetype: z.string().refine(
-    (value) => Object.values(extensionToMimeType).includes(value),
-    { message: 'Invalid MIME type' },
+    (value) => INDEXABLE_MIME_TYPES.includes(value),
+    { message: 'File type is not supported for indexing' },
   ),
   originalname: z.string(),
   size: z.number(),

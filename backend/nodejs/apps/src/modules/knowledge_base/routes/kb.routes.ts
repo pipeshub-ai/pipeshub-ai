@@ -62,7 +62,11 @@ import {
 } from '../validators/validators';
 // Clean up unused commented import
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
-import { extensionToMimeType, getMimeType } from '../../storage/mimetypes/mimetypes';
+import {
+  getIndexableMimeTypes,
+  getMimeType,
+  indexableExtensions,
+} from '../../storage/mimetypes/mimetypes';
 import { RecordRelationService } from '../services/kb.relation.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { RecordsEventProducer } from '../services/records_events.service';
@@ -255,7 +259,8 @@ export function createKnowledgeBaseRouter(
     metricsMiddleware(container),
     ...createDynamicBufferUpload({
       fieldName: 'file',
-      allowedMimeTypes: Object.values(extensionToMimeType),
+      allowedMimeTypes: getIndexableMimeTypes(),
+      allowedExtensions: [...indexableExtensions],
       maxFilesAllowed: 1,
       isMultipleFilesAllowed: false,
       strictFileUpload: false,
@@ -421,10 +426,8 @@ export function createKnowledgeBaseRouter(
     // File processing middleware (dynamic max size)
     ...createDynamicBufferUpload({
       fieldName: 'files',
-      allowedMimeTypes: Object.values(extensionToMimeType),
-      allowedExtensions: Object.keys(extensionToMimeType).map((e) =>
-        e.toLowerCase(),
-      ),
+      allowedMimeTypes: getIndexableMimeTypes(),
+      allowedExtensions: [...indexableExtensions],
       maxFilesAllowed: KB_UPLOAD_LIMITS.maxFilesPerRequest,
       isMultipleFilesAllowed: true,
       strictFileUpload: true,

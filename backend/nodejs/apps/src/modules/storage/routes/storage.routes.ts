@@ -6,7 +6,11 @@ import {
   AuthenticatedUserRequest,
   AuthenticatedServiceRequest,
 } from '../../../libs/middlewares/types';
-import { extensionToMimeType } from '../mimetypes/mimetypes';
+import {
+  getIndexableMimeTypes,
+  getMimeType,
+  indexableExtensions,
+} from '../mimetypes/mimetypes';
 import { Logger } from '../../../libs/services/logger.service';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import {
@@ -33,6 +37,7 @@ import { requireScopes } from '../../../libs/middlewares/require-scopes.middlewa
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
 const logger = Logger.getInstance({ service: 'StorageRoutes' });
+const INDEXABLE_MIME_TYPES = getIndexableMimeTypes();
 
 export function createStorageRouter(container: Container): Router {
   const router = Router();
@@ -61,7 +66,9 @@ export function createStorageRouter(container: Container): Router {
     metricsMiddleware(container),
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
-      allowedMimeTypes: Object.values(extensionToMimeType),
+      allowedMimeTypes: INDEXABLE_MIME_TYPES,
+      allowedExtensions: [...indexableExtensions],
+      resolveMimeType: (ext: string) => getMimeType(ext),
       maxFilesAllowed: 1,
       isMultipleFilesAllowed: false,
       processingType: FileProcessingType.BUFFER,
@@ -91,7 +98,9 @@ export function createStorageRouter(container: Container): Router {
         const maxFileSize = await resolveMaxUploadSize();
         const service = new FileProcessorService({
           fieldName: 'file',
-          allowedMimeTypes: Object.values(extensionToMimeType),
+          allowedMimeTypes: INDEXABLE_MIME_TYPES,
+          allowedExtensions: [...indexableExtensions],
+          resolveMimeType: (ext: string) => getMimeType(ext),
           maxFilesAllowed: 1,
           isMultipleFilesAllowed: false,
           processingType: FileProcessingType.BUFFER,
@@ -322,7 +331,9 @@ export function createStorageRouter(container: Container): Router {
     metricsMiddleware(container),
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
-      allowedMimeTypes: Object.values(extensionToMimeType),
+      allowedMimeTypes: INDEXABLE_MIME_TYPES,
+      allowedExtensions: [...indexableExtensions],
+      resolveMimeType: (ext: string) => getMimeType(ext),
       maxFilesAllowed: 1,
       isMultipleFilesAllowed: false,
       processingType: FileProcessingType.BUFFER,
@@ -350,7 +361,9 @@ export function createStorageRouter(container: Container): Router {
     metricsMiddleware(container),
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
-      allowedMimeTypes: Object.values(extensionToMimeType),
+      allowedMimeTypes: INDEXABLE_MIME_TYPES,
+      allowedExtensions: [...indexableExtensions],
+      resolveMimeType: (ext: string) => getMimeType(ext),
       maxFilesAllowed: 1,
       isMultipleFilesAllowed: false,
       processingType: FileProcessingType.BUFFER,
@@ -377,7 +390,9 @@ export function createStorageRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.KB_WRITE),
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
-      allowedMimeTypes: Object.values(extensionToMimeType),
+      allowedMimeTypes: INDEXABLE_MIME_TYPES,
+      allowedExtensions: [...indexableExtensions],
+      resolveMimeType: (ext: string) => getMimeType(ext),
       maxFilesAllowed: 1,
       isMultipleFilesAllowed: false,
       processingType: FileProcessingType.BUFFER,
@@ -411,7 +426,9 @@ export function createStorageRouter(container: Container): Router {
         const maxFileSize = await resolveMaxUploadSize();
         const service = new FileProcessorService({
           fieldName: 'file',
-          allowedMimeTypes: Object.values(extensionToMimeType),
+          allowedMimeTypes: INDEXABLE_MIME_TYPES,
+          allowedExtensions: [...indexableExtensions],
+          resolveMimeType: (ext: string) => getMimeType(ext),
           maxFilesAllowed: 1,
           isMultipleFilesAllowed: false,
           processingType: FileProcessingType.BUFFER,

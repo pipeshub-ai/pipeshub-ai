@@ -213,3 +213,75 @@ export const getMimeType = (extension: string): string => {
   const normalizedExtension = extension.toLowerCase().replace('.', '');
   return extensionToMimeType[normalizedExtension] || '';
 };
+
+/**
+ * Extensions supported for KB upload and indexing.
+ * Must stay in sync with supported_extensions in
+ * backend/python/app/services/messaging/kafka/handlers/record.py
+ * (excluding connector-only virtual types sql_table / sql_view).
+ */
+export const indexableExtensions = [
+  'pdf',
+  'docx',
+  'doc',
+  'xlsx',
+  'xls',
+  'pptx',
+  'ppt',
+  'csv',
+  'tsv',
+  'txt',
+  'md',
+  'mdx',
+  'html',
+  'htm',
+  'png',
+  'jpg',
+  'jpeg',
+  'webp',
+  'svg',
+  'py',
+  'js',
+  'jsx',
+  'mjs',
+  'cjs',
+  'ts',
+  'tsx',
+  'java',
+  'c',
+  'h',
+  'cpp',
+  'cc',
+  'cxx',
+  'hpp',
+  'hxx',
+  'cs',
+  'go',
+  'rs',
+  'rb',
+  'php',
+  'swift',
+  'kt',
+  'kts',
+  'dart',
+  'sh',
+  'bash',
+] as const;
+
+export const indexableExtensionSet = new Set<string>(indexableExtensions);
+
+export const isIndexableExtension = (extension: string): boolean => {
+  if (!extension) {
+    return false;
+  }
+  const normalizedExtension = extension.toLowerCase().replace(/^\./, '');
+  return indexableExtensionSet.has(normalizedExtension);
+};
+
+export const getIndexableMimeTypes = (): string[] => [
+  ...new Set(
+    indexableExtensions
+      .map((ext) => getMimeType(ext))
+      .filter((mime) => mime !== ''),
+  ),
+];
