@@ -274,12 +274,12 @@ trap cleanup SIGTERM SIGINT SIGQUIT
 
 log "=== Process Monitor Starting ==="
 start_nodejs
-start_slackbot
 start_connector
 start_query
 start_indexing
 start_docling
 start_embedding
+start_slackbot
 
 log "All services started. Beginning monitoring cycle (checking every ${CHECK_INTERVAL}s)..."
 
@@ -288,10 +288,6 @@ while true; do
     
     if ! check_process "$NODEJS_PID" "Node.js"; then
         start_nodejs
-    fi
-    
-    if [ -n "$SLACKBOT_PID" ] && ! check_process "$SLACKBOT_PID" "Slack Bot"; then
-        start_slackbot
     fi
 
     if ! check_process "$CONNECTOR_PID" "Connector"; then
@@ -312,6 +308,10 @@ while true; do
 
     if ! check_process "$EMBEDDING_PID" "Embedding"; then
         start_embedding
+    fi
+
+    if [ -n "$SLACKBOT_PID" ] && ! check_process "$SLACKBOT_PID" "Slack Bot"; then
+        start_slackbot
     fi
 done
 EOF
