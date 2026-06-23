@@ -264,6 +264,7 @@ class TestSharePointConnectorInit:
             root_site.site_collection.data_location_code = "NAM"
             mock_client.sites.by_site_id.return_value.get = AsyncMock(return_value=root_site)
             mock_graph_cls.return_value = mock_client
+            connector._get_sharepoint_access_token = AsyncMock(return_value="fake-sharepoint-token")
 
             result = await connector.init()
             assert result is True
@@ -339,6 +340,7 @@ class TestSharePointConnectorInit:
                 MagicMock(country_letter_code="US")
             ]))
             mock_graph_cls.return_value = mock_client
+            connector._get_sharepoint_access_token = AsyncMock(return_value="fake-sharepoint-token")
 
             result = await connector.init()
             assert result is True

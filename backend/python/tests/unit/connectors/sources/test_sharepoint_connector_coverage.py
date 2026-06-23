@@ -256,6 +256,7 @@ class TestSharePointInitCertificate:
             mock_root_site.site_collection = MagicMock()
             mock_root_site.site_collection.data_location_code = "NAM"
             mock_graph_instance.sites.by_site_id.return_value.get = AsyncMock(return_value=mock_root_site)
+            c._get_sharepoint_access_token = AsyncMock(return_value="fake-sharepoint-token")
             result = await c.init()
             assert result is True
 
@@ -417,6 +418,7 @@ class TestSharePointInitDomainException:
             mock_graph.return_value.sites.by_site_id.return_value.get = AsyncMock(
                 return_value=root_site
             )
+            c._get_sharepoint_access_token = AsyncMock(return_value="fake-sharepoint-token")
             assert await c.init() is True
             assert c.sharepoint_domain == "https://contoso.sharepoint.com"
 

@@ -2404,7 +2404,12 @@ class SharePointConnector(BaseConnector):
                     self.logger.debug("Using ClientSecretCredential for SharePoint REST API")
 
                     # Parse domain to ensure correct format
-                    parsed = urllib.parse.urlparse(self.sharepoint_domain)
+                    parsed = None
+                    if resource_host:
+                        parsed = urllib.parse.urlparse(resource_host)
+                    else:
+                        parsed = urllib.parse.urlparse(self.sharepoint_domain)
+
                     if parsed.hostname:
                         resource_host = parsed.hostname
                     else:
