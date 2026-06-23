@@ -35,7 +35,7 @@ type RedisXReadGroupResult = [stream: string, entries: RedisStreamEntry[]];
 
 /** Serialize a message value, stamping the trace id into the envelope. */
 function serializeValueWithTrace(value: unknown): string {
-  if (value && typeof value === 'object') {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
     return JSON.stringify(injectEnvelope({ ...(value as Record<string, unknown>) }));
   }
   return JSON.stringify(value);

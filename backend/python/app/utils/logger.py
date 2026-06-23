@@ -13,7 +13,7 @@ LOG_FORMAT = (
 )
 
 
-_base_record_factory = logging.LogRecord
+_base_record_factory = logging.getLogRecordFactory()
 
 
 def _record_factory(*args: object, **kwargs: object) -> logging.LogRecord:

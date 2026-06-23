@@ -152,7 +152,7 @@ export abstract class BaseKafkaProducerConnection
   } {
     // Stamp the trace id into the JSON envelope (only when value is an object).
     const value =
-      message.value && typeof message.value === 'object'
+      message.value && typeof message.value === 'object' && !Array.isArray(message.value)
         ? injectEnvelope({ ...(message.value as Record<string, unknown>) })
         : message.value;
     return {
