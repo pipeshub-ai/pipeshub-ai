@@ -278,14 +278,6 @@ class WebApp(App):
             default_value=True
         ))
         .add_filter_field(FilterField(
-            name=IndexingFilterKey.VIDEOS.value,
-            display_name="Index Videos",
-            filter_type=FilterType.BOOLEAN,
-            category=FilterCategory.INDEXING,
-            description="Enable indexing of videos",
-            default_value=True
-        ))
-        .add_filter_field(FilterField(
             name=IndexingFilterKey.DOCUMENTS.value,
             display_name="Index Documents",
             filter_type=FilterType.BOOLEAN,
