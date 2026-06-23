@@ -1952,7 +1952,6 @@ class TestAttachInlineComments:
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 class TestBlockCommentParsing:
     async def test_missing_id_returns_none(self):
         parser = _parser()

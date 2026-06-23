@@ -62,7 +62,7 @@ def _category_api_row(**fields: object) -> dict:
 
 
 def _record_update(**kwargs):
-    """Lightweight RecordUpdate stand-in (avoids msgraph_client import)."""
+    """Lightweight RecordUpdate stand-in for ServiceNow tests."""
     defaults = {
         "record": None,
         "is_new": True,
@@ -2805,9 +2805,16 @@ class TestSyncArticles:
         file_update = _record_update(record=MagicMock(record_type=RecordType.FILE))
 
         with patch.object(servicenow_connector, "_process_single_article", new_callable=AsyncMock,
-                          return_value=[article_update, file_update]), \
-             patch.object(servicenow_connector, "_process_record_updates_batch", new_callable=AsyncMock):
+                          return_value=[article_update, file_update]) as mock_process_single, \
+             patch.object(servicenow_connector, "_process_record_updates_batch", new_callable=AsyncMock) as mock_batch:
             await servicenow_connector._sync_articles()
+            
+            mock_process_single.assert_called_once()
+            mock_batch.assert_called_once()
+            batch_call_args = mock_batch.call_args[0][0]
+            assert len(batch_call_args) == 2
+            assert batch_call_args[0].record.record_type == RecordType.WEBPAGE
+            assert batch_call_args[1].record.record_type == RecordType.FILE
 
     @pytest.mark.asyncio
     async def test_sync_articles_exception_propagates(self, servicenow_connector):

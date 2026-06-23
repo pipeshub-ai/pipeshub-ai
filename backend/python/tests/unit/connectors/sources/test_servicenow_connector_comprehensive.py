@@ -910,11 +910,13 @@ class TestTransformToCategoryRecordGroup:
         )
         result = connector._transform_to_category_record_group(data)
         assert result.source_created_at is not None
+        assert result.source_updated_at is not None
 
     def test_transform_category_without_timestamps(self, connector):
         data = KBCategory(sys_id="cat1", label="Cat")
         result = connector._transform_to_category_record_group(data)
         assert result.source_created_at is None
+        assert result.source_updated_at is None
 
     def test_transform_category_web_url_generated(self, connector):
         connector.instance_url = "https://test.service-now.com"
