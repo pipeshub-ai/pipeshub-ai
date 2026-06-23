@@ -812,7 +812,7 @@ class GitLabDataSource:
     async def get_file_tree_g(
         self,
         project_id: int | str,
-        ref: str | None = None,
+        ref: str | None = "HEAD",
         after_cursor: str = "",
     ) -> GitLabResponse:
         """Fetch the repository *blob* (file) tree via GraphQL (cursor-paginated).
@@ -846,7 +846,7 @@ class GitLabDataSource:
             resp = await self.http_client.post(
                 f"{self._base_url}/api/graphql",
                 headers=headers,
-                json={"query": query, "variables": {"fullPath": project_id, "branch": ref, "afterCursor": after_cursor}},
+                json={"query": query, "variables": {"fullPath": project_id, "branch": ref or "HEAD", "afterCursor": after_cursor}},
             )
             resp.raise_for_status()
             return GitLabResponse(success=True, data=resp.content)

@@ -139,7 +139,7 @@ class TestEmbedImagesAsBase64:
 
         img_bytes = b"x" * 100  # Small image
         img_res = MagicMock(success=True, data=img_bytes, error=None)
-        c.data_source.get_img_bytes = AsyncMock(return_value=img_res)
+        c.runtime.ds_call_async = AsyncMock(return_value=img_res)
 
         result = await helper.embed_images_as_base64(text, "https://gitlab.com/api/v4/projects/1")
         assert "data:image/" in result
@@ -150,7 +150,7 @@ class TestEmbedImagesAsBase64:
 
         big_bytes = b"x" * (4 * 1024 * 1024 + 1)
         img_res = MagicMock(success=True, data=big_bytes, error=None)
-        c.data_source.get_img_bytes = AsyncMock(return_value=img_res)
+        c.runtime.ds_call_async = AsyncMock(return_value=img_res)
 
         result = await helper.embed_images_as_base64(text, "https://gitlab.com/api/v4/projects/1")
         # Image should be skipped but cleaned text returned
@@ -159,10 +159,10 @@ class TestEmbedImagesAsBase64:
     async def test_non_image_not_embedded(self) -> None:
         c, helper = _make_attachment_helper()
         text = f"[report.pdf](/uploads/{_HASH32}/report.pdf)"
-        c.data_source.get_img_bytes = AsyncMock()
+        c.runtime.ds_call_async = AsyncMock()
 
         result = await helper.embed_images_as_base64(text, "https://gitlab.com/api/v4/projects/1")
-        c.data_source.get_img_bytes.assert_not_called()
+        c.runtime.ds_call_async.assert_not_called()
 
     async def test_empty_body_returned_as_is(self) -> None:
         c, helper = _make_attachment_helper()
@@ -245,7 +245,7 @@ class TestEmbedImagesAsBase64Extended:
 
         img_bytes = b"fake-image-data"
         img_res = MagicMock(success=True, data=img_bytes, error=None)
-        c.data_source.get_img_bytes = AsyncMock(return_value=img_res)
+        c.runtime.ds_call_async = AsyncMock(return_value=img_res)
 
         result = await helper.embed_images_as_base64(text, "https://gitlab.com/api/v4/projects/1")
         assert "data:image/png;base64," in result
@@ -255,7 +255,7 @@ class TestEmbedImagesAsBase64Extended:
         c, helper = _make_attachment_helper()
         text = f"![img](/uploads/{_HASH32}/img.png)"
 
-        c.data_source.get_img_bytes = AsyncMock(side_effect=Exception("network error"))
+        c.runtime.ds_call_async = AsyncMock(side_effect=Exception("network error"))
 
         result = await helper.embed_images_as_base64(text, "https://gitlab.com/api/v4/projects/1")
         # Exception caught, cleaned text still returned (image upload removed)

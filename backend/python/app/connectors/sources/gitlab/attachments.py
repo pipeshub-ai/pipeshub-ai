@@ -93,7 +93,9 @@ class AttachmentsHelper:
                 continue
             full_attachment_url = f"{base_project_url}{attach.href}"
             try:
-                response = await self.c.data_source.get_img_bytes(full_attachment_url)
+                response = await self.c.runtime.ds_call_async(
+                    self.c.data_source.get_img_bytes, full_attachment_url
+                )
                 if response.success and response.data:
                     if len(response.data) > _MAX_IMAGE_BYTES:
                         self.logger.debug(

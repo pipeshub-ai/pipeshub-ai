@@ -4132,10 +4132,6 @@ def _setup_proc_for_moved(tx_store, *, old_record, new_record_id: str = "old-rec
     proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
     tx_store.get_record_by_external_id = AsyncMock(return_value=old_record)
-    # Needed by _reset_indexing_status_to_queued (called per reindex record)
-    queued_rec = MagicMock()
-    queued_rec.indexing_status = ProgressStatus.COMPLETED.value
-    tx_store.get_record_by_key = AsyncMock(return_value=queued_rec)
 
     # Mock complex graph-building internals that are tested elsewhere
     proc._handle_record_group = AsyncMock(return_value=None)
@@ -4368,11 +4364,11 @@ class TestOnRecordsMovedReindex:
 
         assert new_record.indexing_status == ProgressStatus.COMPLETED.value
 
-    async def test_completed_record_content_change_resets_to_not_started(self) -> None:
-        """Move of a COMPLETED record whose content changed resets status to NOT_STARTED.
+    async def test_completed_record_content_change_resets_to_queued(self) -> None:
+        """Move of a COMPLETED record whose content changed resets status to QUEUED.
 
-        The new content has not been indexed yet, so the status must be reset so
-        the indexing pipeline picks it up for re-embedding.
+        The new content has not been indexed yet, so the status is set to QUEUED
+        inside the main transaction so the indexing pipeline picks it up.
         """
         tx_store = _make_tx_store()
         old_record = _make_old_record(
@@ -4388,7 +4384,7 @@ class TestOnRecordsMovedReindex:
 
         await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
 
-        assert new_record.indexing_status == ProgressStatus.NOT_STARTED.value
+        assert new_record.indexing_status == ProgressStatus.QUEUED.value
 
     async def test_non_completed_record_indexing_status_not_overridden(self) -> None:
         """When the old record is NOT COMPLETED, the indexing_status block is skipped.

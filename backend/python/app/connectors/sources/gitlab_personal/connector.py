@@ -30,6 +30,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from gitlab.v4.objects import Project
 from app.connectors.sources.gitlab.connector import GitLabConnector
 from app.connectors.sources.gitlab.constants import GITLAB_CLOUD_URL
 from app.connectors.sources.gitlab.projects import ProjectsSync
@@ -47,14 +48,14 @@ class GitLabPersonalProjectsSync(ProjectsSync):
     out individual user edges derived from GitLab membership lists.
     """
 
-    async def _sync_project_members_as_pseudo(self, project) -> None:
+    async def _sync_project_members_as_pseudo(self, project: Project) -> None:
         """Route all project access through the ConnectorGroup."""
         await self._apply_creator_fallback_for_project(project)
 
     async def _ensure_gitlab_group_record_groups(
         self,
         group_paths: list[str],
-        candidate_projects=None,
+        candidate_projects: list[Project] | None = None,
     ) -> None:
         """Create GitLab-group record groups with ConnectorGroup permissions only."""
         c = self.c

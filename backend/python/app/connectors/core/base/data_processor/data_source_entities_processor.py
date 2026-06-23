@@ -1098,12 +1098,12 @@ class DataSourceEntitiesProcessor:
                             # If the old record is completed and content hasn't changed,
                             # preserve the completed status for the new record
                             new_record.indexing_status = ProgressStatus.COMPLETED.value
-                        else:
-                            # If the old record is completed and content has changed,
-                            # set the indexing status to not started for the new record
-                            # so that it can be reindexed
-                            new_record.indexing_status = ProgressStatus.NOT_STARTED.value
                     record_group_id = await self._handle_record_group(new_record, tx_store)
+
+                    if content_changed:
+                        new_record.indexing_status = ProgressStatus.QUEUED.value
+                        records_to_reindex.append(new_record)
+
                     await tx_store.batch_upsert_records([new_record])
 
                     if record_group_id:
@@ -1114,12 +1114,10 @@ class DataSourceEntitiesProcessor:
                     await self._handle_parent_record(new_record, tx_store, existing_record=None)
                     await self._handle_record_permissions(new_record, permissions, tx_store)
 
-                    if content_changed:
-                        records_to_reindex.append(new_record)
 
             # Publish events outside the transaction.
             for record in new_records_to_publish:
-                if hasattr(record, "indexing_status") and record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
+                if record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
                     continue
                 if record.is_internal:
                     continue
@@ -1139,12 +1137,10 @@ class DataSourceEntitiesProcessor:
                     record.record_name,
                     record.id,
                 )
-                if hasattr(record, "indexing_status") and record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
+                if record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
                     continue
                 if record.is_internal:
                     continue
-                async with self.data_store_provider.transaction() as tx_store:
-                    await self._reset_indexing_status_to_queued(record.id, tx_store)
                 await self.messaging_producer.send_message(
                     "record-events",
                     {
