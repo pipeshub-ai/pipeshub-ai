@@ -1101,7 +1101,8 @@ class DataSourceEntitiesProcessor:
                     record_group_id = await self._handle_record_group(new_record, tx_store)
 
                     if content_changed:
-                        new_record.indexing_status = ProgressStatus.QUEUED.value
+                        if new_record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
+                            new_record.indexing_status = ProgressStatus.QUEUED.value
                         records_to_reindex.append(new_record)
 
                     await tx_store.batch_upsert_records([new_record])
