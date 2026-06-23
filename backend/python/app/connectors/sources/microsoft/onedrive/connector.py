@@ -64,6 +64,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import NotificationType, NotificationSeverity
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -221,6 +222,20 @@ class OneDriveConnector(BaseConnector):
             self.logger.info("✅ Credential initialized and HTTP session established")
         except Exception as token_error:
             self.logger.error(f"❌ Failed to initialize credential: {token_error}")
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="OneDrive authentication failed",
+                message=(
+                    "Unable to authenticate using current credentials. Please verify the connector authentication credentials."
+                ),
+                payload={
+                    "connector_id": self.connector_id,
+                    "connector_name": self.connector_name,
+                    "connector_scope": self.scope,
+                },
+                recipient_user_ids=[self.created_by],
+            )
             raise ValueError(f"Failed to initialize OneDrive credential: {token_error}")
 
         self.client = GraphServiceClient(self.credential, scopes=["https://graph.microsoft.com/.default"])
@@ -1290,26 +1305,32 @@ class OneDriveConnector(BaseConnector):
             ]):
                 return False
             raise
-
-    async def _detect_and_handle_permission_changes(self) -> None:
+    
+    async def _sync_users(self) -> List[AppUser]:
         """
-        Detect and handle permission changes for existing records.
-        This should be run periodically to catch permission-only changes.
+        Syncs OneDrive users.
         """
         try:
-            self.logger.info("Starting permission change detection")
-
-            # Get all records for the organization
-            # This would need to be implemented in the data processor
-            # For now, we'll check permissions during regular sync
-
-            # This is handled in the _process_delta_item method
-            # where we compare old and new permissions
-
-            self.logger.info("Completed permission change detection")
-
-        except Exception as e:
-            self.logger.error(f"❌ Error detecting permission changes: {e}")
+            users = await self.msgraph_client.get_all_users()
+            await self.data_entities_processor.on_new_app_users(users)
+            self.logger.info(f"✅ Successfully synced {len(users)} users")
+            return users
+        except Exception:
+            await self.notify(
+                type=NotificationType.CONNECTOR_USER_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="Unable to sync OneDrive users",
+                message=(
+                    "Cannot sync OneDrive users. Please check your authentication credentials and try again."
+                ),
+                recipient_user_ids=[self.created_by],
+                payload={
+                    "connector_id": self.connector_id,
+                    "connector_name": self.connector_name,
+                    "connector_scope": self.scope,
+                },
+            )
+            raise
 
     async def _handle_reindex_event(self, record_id: str) -> None:
         """
@@ -1412,8 +1433,7 @@ class OneDriveConnector(BaseConnector):
 
             # Step 1: Sync users
             self.logger.info("Syncing users...")
-            users = await self.msgraph_client.get_all_users()
-            await self.data_entities_processor.on_new_app_users(users)
+            users = await self._sync_users()
 
             # Step 2: Sync user groups and their members
             self.logger.info("Syncing user groups...")
@@ -1423,11 +1443,19 @@ class OneDriveConnector(BaseConnector):
             self.logger.info("Syncing user drives...")
             await self._process_users_in_batches(users)
 
-            # Step 4: Detect and handle permission changes
-            self.logger.info("Checking for permission changes...")
-            await self._detect_and_handle_permission_changes()
-
             self.logger.info("OneDrive connector sync completed successfully")
+            await self.notify(
+                type=NotificationType.CONNECTOR_SUCCESS,
+                severity=NotificationSeverity.INFO,
+                title="OneDrive sync complete",
+                message="OneDrive sync completed successfully",
+                recipient_user_ids=[self.created_by],
+                payload={
+                    "connector_id": self.connector_id,
+                    "connector_name": self.connector_name,
+                    "connector_scope": self.scope,
+                },
+            )
 
         except Exception as e:
             self.logger.error(f"❌ Error in OneDrive connector run: {e}")
@@ -1443,44 +1471,59 @@ class OneDriveConnector(BaseConnector):
             # Test if the credential is still valid by attempting to get a token
             await self.credential.get_token("https://graph.microsoft.com/.default")
             self.logger.debug("✅ Credential is valid and active")
+            return
         except Exception as e:
             self.logger.warning(f"⚠️ Credential needs reinitialization: {e}")
 
-            # Close old credential if it exists
-            if hasattr(self, 'credential') and self.credential:
-                try:
-                    await self.credential.close()
-                except Exception:
-                    pass
+        # Close old credential if it exists
+        if hasattr(self, 'credential') and self.credential:
+            try:
+                await self.credential.close()
+            except Exception:
+                pass
 
-            # Get credentials from config
-            config = self.config.get("credentials", {})
-            auth_config = config.get("auth", {})
-            tenant_id = auth_config.get("tenantId")
-            client_id = auth_config.get("clientId")
-            client_secret = auth_config.get("clientSecret")
+        # Get credentials from config
+        config = self.config.get("credentials", {})
+        auth_config = config.get("auth", {})
+        tenant_id = auth_config.get("tenantId")
+        client_id = auth_config.get("clientId")
+        client_secret = auth_config.get("clientSecret")
 
-            if not all((tenant_id, client_id, client_secret)):
-                raise ValueError("Cannot reinitialize: credentials not found in config")
+        if not all((tenant_id, client_id, client_secret)):
+            raise ValueError("Cannot reinitialize: credentials not found in config")
 
-            # Create new credential
-            self.credential = ClientSecretCredential(
-                tenant_id=tenant_id,
-                client_id=client_id,
-                client_secret=client_secret,
-            )
+        # Create new credential
+        self.credential = ClientSecretCredential(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
 
+        try:
             # Pre-initialize to establish HTTP session
             await self.credential.get_token("https://graph.microsoft.com/.default")
-
-            # Recreate Graph client with new credential
-            self.client = GraphServiceClient(
-                self.credential,
-                scopes=["https://graph.microsoft.com/.default"]
+        except Exception as reinit_error:
+            self.logger.error(f"❌ Failed to reinitialize OneDrive credential: {reinit_error}")
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="OneDrive authentication failed",
+                message=(
+                    "Unable to re-authenticate the OneDrive connector. "
+                    "The client secret may have expired. Please update the connector credentials."
+                ),
+                recipient_user_ids=[self.created_by],
             )
-            self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
+            raise
 
-            self.logger.info("✅ Credential successfully reinitialized")
+        # Recreate Graph client with new credential
+        self.client = GraphServiceClient(
+            self.credential,
+            scopes=["https://graph.microsoft.com/.default"]
+        )
+        self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
+
+        self.logger.info("✅ Credential successfully reinitialized")
 
     async def run_incremental_sync(self) -> None:
         """
