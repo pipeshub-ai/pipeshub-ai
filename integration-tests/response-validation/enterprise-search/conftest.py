@@ -19,8 +19,9 @@ from uuid import uuid4
 import pytest
 import requests
 
+from helper.clients.kb_client import KBClient
+from helper.clients.agents_client import AgentsClient
 from messaging.test_e2e_record_pipeline import (
-    KBClient,
     TERMINAL_STATUSES,
     _extract_kb_id,
     _extract_record_id,
@@ -36,7 +37,6 @@ from pipeshub_client import PipeshubClient
 
 logger = logging.getLogger("enterprise-search-conftest")
 
-_AGENTS_CREATE_PATH = "/api/v1/agents/create"
 _AGENT_COUNT = 5
 
 
@@ -212,16 +212,10 @@ def _extract_agent_key(create_response: dict[str, Any]) -> str:
 
 
 def _create_agent(
-    client: PipeshubClient,
+    agents: AgentsClient,
     payload: dict[str, Any],
 ) -> str:
-    url = f"{client.base_url}{_AGENTS_CREATE_PATH}"
-    resp = requests.post(
-        url,
-        headers=client.auth_headers,
-        json=payload,
-        timeout=client.timeout_seconds,
-    )
+    resp = agents.create_agent(**payload)
     if resp.status_code >= 300:
         raise AssertionError(
             f"Agent create failed: HTTP {resp.status_code} {resp.text[:500]}"
@@ -229,13 +223,8 @@ def _create_agent(
     return _extract_agent_key(resp.json())
 
 
-def _delete_agent(client: PipeshubClient, agent_key: str) -> None:
-    url = f"{client.base_url}/api/v1/agents/{agent_key}"
-    resp = requests.delete(
-        url,
-        headers=client.auth_headers,
-        timeout=client.timeout_seconds,
-    )
+def _delete_agent(agents: AgentsClient, agent_key: str) -> None:
+    resp = agents.delete_agent(agent_key)
     if resp.status_code >= 300:
         raise RuntimeError(
             f"Agent delete failed for {agent_key}: HTTP {resp.status_code} {resp.text[:300]}"
@@ -274,7 +263,10 @@ def reasoning_multimodal_llm_model(
     except RuntimeError as e:
         pytest.fail(
             f"Failed to seed reasoning multimodal LLM for enterprise-search ITs: {e}. "
-            "Set TEST_OPENAI_API_KEY (or OPENAI_API_KEY)."
+            "Configure TEST_OPENAI_API_KEY, TEST_AZURE_OPENAI_API_KEY (+ endpoint "
+            "and deployment), TEST_GEMINI_API_KEY, or TEST_GROQ_API_KEY. "
+            "Set TEST_AI_MODEL_PROVIDER=azureOpenAI to prefer Azure when multiple "
+            "providers are configured."
         )
     finally:
         if seeded_by_fixture is not None:
@@ -283,6 +275,7 @@ def reasoning_multimodal_llm_model(
 
 @pytest.fixture(scope="session")
 def agent_session(
+    agents_client: AgentsClient,
     pipeshub_client: PipeshubClient,
     reasoning_multimodal_llm_model: SeededAIModel,
     session_kb: dict[str, str],
@@ -299,7 +292,7 @@ def agent_session(
 
     try:
         primary_key = _create_agent(
-            pipeshub_client,
+            agents_client,
             _agent_create_payload(
                 name=f"integration-agent-primary-{uuid4().hex[:8]}",
                 seeded_model=reasoning_multimodal_llm_model,
@@ -313,7 +306,7 @@ def agent_session(
         secondary_keys: list[str] = []
         for index in range(2, _AGENT_COUNT + 1):
             agent_key = _create_agent(
-                pipeshub_client,
+                agents_client,
                 _agent_create_payload(
                     name=f"integration-agent-{index}-{uuid4().hex[:8]}",
                     seeded_model=reasoning_multimodal_llm_model,
@@ -332,7 +325,7 @@ def agent_session(
     finally:
         for agent_key in reversed(created_keys):
             try:
-                _delete_agent(pipeshub_client, agent_key)
+                _delete_agent(agents_client, agent_key)
                 logger.info("Deleted agent %s", agent_key)
             except Exception as e:
                 logger.warning("Failed to delete agent %s: %s", agent_key, e)

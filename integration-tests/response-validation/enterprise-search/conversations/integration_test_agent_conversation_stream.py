@@ -25,18 +25,18 @@ import pytest
 import requests
 
 _ROOT = Path(__file__).resolve().parents[3]
-_HELPER = _ROOT / "helper"
 _RV_HELPER = _ROOT / "response-validation" / "helper"
-for _p in (_ROOT, _HELPER, _RV_HELPER):
+for _p in (_ROOT, _RV_HELPER):
     s = str(_p)
     if s not in sys.path:
         sys.path.insert(0, s)
 
+from helper.clients.agents_client import AgentsClient
+from helper.clients.conversations_client import AgentConversationsClient
 from openapi_schema_validator import (
     assert_request_body_matches_openapi_operation,
     assert_response_matches_openapi_ref,
 )
-from pipeshub_client import PipeshubClient
 
 SEARCH_QUERY = "every year asana undertakes which exercise?"
 
@@ -53,6 +53,7 @@ _SSE_MAX_EVENTS = 10_000
 _SSEEnvelope = dict[str, str]
 _AGENT_STREAM_SSE_EVENT_REF = "#/components/schemas/AgentStreamSSEEvent"
 _AGENT_MESSAGE_STREAM_SSE_EVENT_REF = "#/components/schemas/AgentMessageStreamSSEEvent"
+
 
 def _iter_sse_envelopes(
     resp: requests.Response,
@@ -168,14 +169,15 @@ class _AgentStreamTestBase:
     @pytest.fixture(autouse=True)
     def _setup(
         self,
-        pipeshub_client: PipeshubClient,
+        agent_conversations_client: AgentConversationsClient,
+        agents_client: AgentsClient,
         session_kb: dict,
         agent_session: dict[str, Any],
     ) -> None:
-        self.base_url = pipeshub_client.base_url
+        self.conversations = agent_conversations_client
+        self.agents = agents_client
         self.kb_id = session_kb["kb_id"]
         self.agent_session = agent_session
-        self.headers = pipeshub_client.auth_headers
         self.timeout = int(os.getenv("PIPESHUB_TEST_TIMEOUT", "60"))
         stream_override = os.getenv("PIPESHUB_TEST_STREAM_TIMEOUT", "").strip()
         self.stream_timeout = (
@@ -184,15 +186,11 @@ class _AgentStreamTestBase:
             else max(self.timeout, 120)
         )
 
-    def _agent_stream_url(self, agent_key: str) -> str:
-        return f"{self.base_url}/api/v1/agents/{agent_key}/conversations/stream"
-
     def _stream_agent_conversation(
         self,
         agent_key: str,
         *,
         query: str,
-        headers: dict | None = None,
         allow_error: bool = False,
     ) -> tuple[str | None, str, bool]:
         """Stream a new agent conversation.
@@ -200,16 +198,13 @@ class _AgentStreamTestBase:
         Returns ``(conversation_id, accumulated_answer, saw_complete)``.
         When ``allow_error`` is True, error SSE events do not raise (for negative tests).
         """
-        req_headers = {**(headers or self.headers), "Accept": "text/event-stream"}
         connected_conv_id: str | None = None
         accumulated_answer = ""
         saw_complete = False
 
-        with requests.post(
-            self._agent_stream_url(agent_key),
-            headers=req_headers,
-            json={"query": query},
-            stream=True,
+        with self.conversations.stream_conversation(
+            agent_key,
+            query=query,
             timeout=self.stream_timeout,
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -263,12 +258,6 @@ class _AgentStreamTestBase:
 
         return connected_conv_id, accumulated_answer, saw_complete
 
-    def _agent_message_stream_url(self, agent_key: str, conversation_id: str) -> str:
-        return (
-            f"{self.base_url}/api/v1/agents/{agent_key}"
-            f"/conversations/{conversation_id}/messages/stream"
-        )
-
     def _create_agent_conversation_id(self, agent_key: str, *, query: str) -> str:
         conv_id, _, saw_complete = self._stream_agent_conversation(agent_key, query=query)
         assert saw_complete, "stream ended without a complete event"
@@ -282,7 +271,6 @@ class _AgentStreamTestBase:
         *,
         json_body: dict[str, Any] | None = None,
         query: str | None = None,
-        headers: dict | None = None,
         params: dict[str, str] | None = None,
         allow_error: bool = False,
     ) -> tuple[str, bool]:
@@ -290,20 +278,19 @@ class _AgentStreamTestBase:
 
         Returns ``(accumulated_answer, saw_complete)``.
         """
-        body: dict[str, Any] = dict(json_body) if json_body is not None else {}
-        if query is not None:
-            body["query"] = query
-        req_headers = {**(headers or self.headers), "Accept": "text/event-stream"}
+        options: dict[str, Any] = {"timeout": self.stream_timeout}
+        if params is not None:
+            options["params"] = params
+
         accumulated_answer = ""
         saw_complete = False
 
-        with requests.post(
-            self._agent_message_stream_url(agent_key, conversation_id),
-            headers=req_headers,
-            json=body,
-            params=params,
-            stream=True,
-            timeout=self.stream_timeout,
+        with self.conversations.stream_message(
+            agent_key,
+            conversation_id,
+            query=query,
+            json=json_body,
+            **options,
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
@@ -375,13 +362,10 @@ class TestAgentConversationStream(_AgentStreamTestBase):
 
     def test_stream_agent_conversation_response_matches_spec(self) -> None:
         agent_key = self.agent_session["primary_agent"]
-        headers = {**self.headers, "Accept": "text/event-stream"}
 
-        with requests.post(
-            self._agent_stream_url(agent_key),
-            headers=headers,
-            json={"query": SEARCH_QUERY},
-            stream=True,
+        with self.conversations.stream_conversation(
+            agent_key,
+            query=SEARCH_QUERY,
             timeout=self.stream_timeout,
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -460,25 +444,24 @@ class TestAgentConversationStream(_AgentStreamTestBase):
     def test_stream_agent_conversation_invalid_payload_returns_400(
         self, payload: dict
     ) -> None:
-        headers = {**self.headers, "Accept": "text/event-stream"}
         agent_key = self.agent_session["primary_agent"]
 
-        resp = requests.post(
-            self._agent_stream_url(agent_key),
-            headers=headers,
+        resp = self.conversations.stream_conversation(
+            agent_key,
             json=payload,
+            stream=False,
             timeout=self.timeout,
         )
         _assert_validation_error(resp)
 
     def test_stream_agent_conversation_missing_auth_returns_401_or_403(self) -> None:
         agent_key = self.agent_session["primary_agent"]
-        headers = {"Accept": "text/event-stream"}
 
-        resp = requests.post(
-            self._agent_stream_url(agent_key),
-            headers=headers,
-            json={"query": SEARCH_QUERY},
+        resp = self.conversations.stream_conversation(
+            agent_key,
+            query=SEARCH_QUERY,
+            stream=False,
+            auth=False,
             timeout=self.timeout,
         )
         assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
@@ -500,12 +483,7 @@ class TestAgentConversationStream(_AgentStreamTestBase):
     def test_stream_agent_conversation_deleted_agent_fails(self) -> None:
         deleted_key = self.agent_session["secondary_agents"][0]
 
-        delete_url = f"{self.base_url}/api/v1/agents/{deleted_key}"
-        delete_resp = requests.delete(
-            delete_url,
-            headers=self.headers,
-            timeout=self.timeout,
-        )
+        delete_resp = self.agents.delete_agent(deleted_key, timeout=self.timeout)
         assert delete_resp.status_code < 300, (
             f"agent delete failed: {delete_resp.status_code}: {delete_resp.text}"
         )
@@ -535,14 +513,11 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
             agent_key,
             query="stream-create conversation for add-message spec test",
         )
-        headers = {**self.headers, "Accept": "text/event-stream"}
-        url = self._agent_message_stream_url(agent_key, conversation_id)
 
-        with requests.post(
-            url,
-            headers=headers,
-            json={"query": SEARCH_QUERY},
-            stream=True,
+        with self.conversations.stream_message(
+            agent_key,
+            conversation_id,
+            query=SEARCH_QUERY,
             timeout=self.stream_timeout,
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -623,14 +598,11 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
             agent_key,
             query="stream-create conversation for message-count test",
         )
-        headers = {**self.headers, "Accept": "text/event-stream"}
-        url = self._agent_message_stream_url(agent_key, conversation_id)
 
-        with requests.post(
-            url,
-            headers=headers,
-            json={"query": "follow-up question"},
-            stream=True,
+        with self.conversations.stream_message(
+            agent_key,
+            conversation_id,
+            query="follow-up question",
             timeout=self.stream_timeout,
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -751,13 +723,12 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
 
     def test_add_message_invalid_conversation_id_returns_400(self) -> None:
         agent_key = self.agent_session["primary_agent"]
-        headers = {**self.headers, "Accept": "text/event-stream"}
-        url = self._agent_message_stream_url(agent_key, "not-an-objectid")
 
-        resp = requests.post(
-            url,
-            headers=headers,
-            json={"query": "hi"},
+        resp = self.conversations.stream_message(
+            agent_key,
+            "not-an-objectid",
+            query="hi",
+            stream=False,
             timeout=self.timeout,
         )
         _assert_validation_error(resp)
@@ -765,27 +736,24 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
     def test_add_message_missing_auth_returns_401_or_403(self) -> None:
         agent_key = self.agent_session["primary_agent"]
         conversation_id = "0" * 24
-        headers = {"Accept": "text/event-stream"}
-        url = self._agent_message_stream_url(agent_key, conversation_id)
 
-        resp = requests.post(
-            url,
-            headers=headers,
-            json={"query": "hi"},
+        resp = self.conversations.stream_message(
+            agent_key,
+            conversation_id,
+            query="hi",
+            stream=False,
+            auth=False,
             timeout=self.timeout,
         )
         assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
 
     def test_add_message_nonexistent_conversation_emits_error(self) -> None:
         agent_key = self.agent_session["primary_agent"]
-        headers = {**self.headers, "Accept": "text/event-stream"}
-        url = self._agent_message_stream_url(agent_key, "0" * 24)
 
-        with requests.post(
-            url,
-            headers=headers,
-            json={"query": "hi"},
-            stream=True,
+        with self.conversations.stream_message(
+            agent_key,
+            "0" * 24,
+            query="hi",
             timeout=self.stream_timeout,
         ) as resp:
             if resp.status_code != 200:
@@ -826,16 +794,13 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
     def test_add_message_unknown_agent_emits_error(self) -> None:
         unknown_key = str(uuid.uuid4())
         conversation_id = "0" * 24
-        headers = {**self.headers, "Accept": "text/event-stream"}
-        url = self._agent_message_stream_url(unknown_key, conversation_id)
 
         saw_complete = False
         saw_error = False
-        with requests.post(
-            url,
-            headers=headers,
-            json={"query": SEARCH_QUERY},
-            stream=True,
+        with self.conversations.stream_message(
+            unknown_key,
+            conversation_id,
+            query=SEARCH_QUERY,
             timeout=self.stream_timeout,
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -885,13 +850,12 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
             agent_key,
             query=f"stream-create for invalid body: {label}",
         )
-        headers = {**self.headers, "Accept": "text/event-stream"}
-        url = self._agent_message_stream_url(agent_key, conversation_id)
 
-        resp = requests.post(
-            url,
-            headers=headers,
+        resp = self.conversations.stream_message(
+            agent_key,
+            conversation_id,
             json=payload,
+            stream=False,
             timeout=self.timeout,
         )
         _assert_validation_error(resp, label=label)

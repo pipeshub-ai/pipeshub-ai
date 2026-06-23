@@ -266,6 +266,51 @@ class PipeshubClient:
             path = f"/{path}"
         return f"{self.base_url}{path}"
 
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        auth: bool = True,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Execute HTTP request returning raw Response.
+
+        Unlike _request_json, this does NOT raise on 4xx/5xx, allowing
+        tests to assert specific status codes. Handles token refresh
+        on 401 with a single retry.
+
+        Args:
+            method: HTTP method (GET, POST, PUT, DELETE, PATCH)
+            path: URL path to append to base_url
+            auth: If True, include Authorization header (default True)
+            **kwargs: Additional arguments passed to requests.request()
+
+        Returns:
+            Raw requests.Response object
+        """
+        url = self._url(path)
+        kwargs.setdefault("timeout", self.timeout_seconds)
+
+        for attempt in range(2):
+            if auth:
+                self._ensure_access_token()
+                extra_headers = kwargs.pop("headers", None) or {}
+                headers = self._headers()
+                # Let requests set multipart boundary when uploading files.
+                if kwargs.get("files"):
+                    headers.pop("Content-Type", None)
+                kwargs["headers"] = {**headers, **extra_headers}
+
+            resp = requests.request(method, url, **kwargs)
+
+            if resp.status_code == 401 and auth and attempt == 0:
+                self._invalidate_access_token()
+                continue
+            return resp
+
+        return resp
+
     def _handle_response(self, resp: requests.Response) -> Any:
         if resp.status_code >= 400:
             p = urlparse(resp.url or "")

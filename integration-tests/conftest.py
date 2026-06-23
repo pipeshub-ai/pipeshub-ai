@@ -115,6 +115,21 @@ from ai_models_setup import (  # noqa: E402
 from integration_report import TestReportEntry, write_html_report  # noqa: E402
 from local_auth import obtain_local_oauth_credentials  # noqa: E402
 from pipeshub_client import PipeshubClient  # noqa: E402
+from helper.clients.agents_client import AgentsClient  # noqa: E402
+from helper.clients.ai_models_client import AIModelsClient  # noqa: E402
+from helper.clients.auth_client import AuthClient, UserAccountClient  # noqa: E402
+from helper.clients.config_client import ConfigClient  # noqa: E402
+from helper.clients.conversations_client import (  # noqa: E402
+    AgentConversationsClient,
+    ConversationsClient,
+)
+from helper.clients.kb_client import KBClient  # noqa: E402
+from helper.clients.oauth_client import OAuthAppsClient, OAuthProviderClient  # noqa: E402
+from helper.clients.org_client import OrgClient  # noqa: E402
+from helper.clients.search_client import SearchClient  # noqa: E402
+from helper.clients.teams_client import TeamsClient  # noqa: E402
+from helper.clients.user_groups_client import UserGroupsClient  # noqa: E402
+from helper.clients.users_client import UsersClient  # noqa: E402
 from sample_data import ensure_sample_data_files_root  # noqa: E402
 
 # Module-level refs so pytest_runtest_logreport can merge even when report.config is missing
@@ -300,6 +315,83 @@ def pipeshub_client() -> PipeshubClient:
 
 
 @pytest.fixture(scope="session")
+def teams_client(pipeshub_client: PipeshubClient) -> TeamsClient:
+    return TeamsClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def users_client(pipeshub_client: PipeshubClient) -> UsersClient:
+    return UsersClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def user_groups_client(pipeshub_client: PipeshubClient) -> UserGroupsClient:
+    return UserGroupsClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def org_client(pipeshub_client: PipeshubClient) -> OrgClient:
+    return OrgClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def agents_client(pipeshub_client: PipeshubClient) -> AgentsClient:
+    return AgentsClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def conversations_client(pipeshub_client: PipeshubClient) -> ConversationsClient:
+    return ConversationsClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def agent_conversations_client(
+    pipeshub_client: PipeshubClient,
+) -> AgentConversationsClient:
+    return AgentConversationsClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def search_client(pipeshub_client: PipeshubClient) -> SearchClient:
+    return SearchClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def auth_client(pipeshub_client: PipeshubClient) -> AuthClient:
+    return AuthClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def user_account_client(pipeshub_client: PipeshubClient) -> UserAccountClient:
+    return UserAccountClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def oauth_provider_client(pipeshub_client: PipeshubClient) -> OAuthProviderClient:
+    return OAuthProviderClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def oauth_apps_client(pipeshub_client: PipeshubClient) -> OAuthAppsClient:
+    return OAuthAppsClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def ai_models_client(pipeshub_client: PipeshubClient) -> AIModelsClient:
+    return AIModelsClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def config_client(pipeshub_client: PipeshubClient) -> ConfigClient:
+    return ConfigClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def kb_client(pipeshub_client: PipeshubClient) -> KBClient:
+    return KBClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
 def sample_data_root() -> Path:
     """Session-scoped path to sample data files from GitHub."""
     return ensure_sample_data_files_root()
@@ -318,9 +410,12 @@ def ai_models_configured(
     ``modelService.addModel`` / onboarding embedding payloads so the same
     backend validation/health-check paths run in tests.
 
-    Reads ``TEST_OPENAI_API_KEY`` (or ``OPENAI_API_KEY``) for the API key and
-    optionally ``TEST_OPENAI_LLM_MODEL`` / ``TEST_OPENAI_EMBEDDING_MODEL`` to
-    override model names. Raises ``RuntimeError`` if no API key is available —
+    Reads provider credentials from env (OpenAI, Azure OpenAI, Gemini, or Groq).
+    Set ``TEST_AI_MODEL_PROVIDER`` to force a provider. When OpenAI is configured
+    but its health check fails (e.g. quota exceeded), the next configured provider
+    is tried automatically.
+
+    Raises ``RuntimeError`` if no provider credentials are available or all fail —
     failure is loud rather than a silent indexing timeout downstream.
 
     Yields the seeded LLM ``SeededAIModel`` for backward compatibility. The
