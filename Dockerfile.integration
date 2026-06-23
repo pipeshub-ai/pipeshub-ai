@@ -8,6 +8,11 @@ ARG PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps
 ARG RUNTIME_BASE_IMAGE=pipeshubai/pipeshub-ai-base:runtime
 
 FROM ${PYTHON_DEPS_IMAGE} AS python-deps
+
+WORKDIR /app/python
+COPY backend/python/pyproject.toml ./
+RUN uv pip install --system -e .
+
 FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
 
 # -----------------------------------------------------------------------------
