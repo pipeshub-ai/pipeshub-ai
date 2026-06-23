@@ -2441,10 +2441,9 @@ class SharePointConnector(BaseConnector):
             await self.notify(
                 type=NotificationType.CONNECTOR_AUTH_ERROR,
                 severity=NotificationSeverity.ERROR,
-                title="SharePoint authentication configuration issue",
+                title="SharePoint authentication failed",
                 message=(
-                    "Unable to use the configured authentication method for SharePoint. "
-                    "Please verify connector authentication settings."
+                    "Unable to authenticate using current credentials. Please verify the connector authentication credentials."
                 ),
                 recipient_user_ids=[self.created_by],
             )
@@ -3870,7 +3869,6 @@ class SharePointConnector(BaseConnector):
                 title="SharePoint connector sync complete",
                 message=(
                     "SharePoint connector sync completed successfully. "
-                    f"Synced {len(sites)} sites in {duration}."
                 ),
                 recipient_user_ids=[self.created_by],
             )

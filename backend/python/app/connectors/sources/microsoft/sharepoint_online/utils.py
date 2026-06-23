@@ -239,7 +239,7 @@ def get_sharepoint_auth_notification(error: Exception) -> Tuple[str, str]:
             "client ID in connector settings.",
         )
     return (
-        "SharePoint authentication configuration issue",
+        "SharePoint authentication configuration error",
         "Unable to acquire a SharePoint access token. Please verify SharePoint host URL and "
         "connector authentication settings.",
     )
