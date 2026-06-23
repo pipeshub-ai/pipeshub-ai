@@ -7,7 +7,7 @@ import {
   getTeamUsersSchema,
   getUserTeamsQuerySchema,
   updateTeamSchema,
-} from '../../../../src/modules/user_management/validators/teams.validators';
+} from '../../../../src/modules/user_management/validators/teams.request.validators';
 
 const VALID_TEAM_ID = '550e8400-e29b-41d4-a716-446655440000';
 const VALID_ALL_TEAM_ID = 'all_507f1f77bcf86cd799439011';

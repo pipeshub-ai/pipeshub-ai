@@ -139,6 +139,57 @@ describe('Teams Routes', () => {
     });
   });
 
+  describe('middleware chains', () => {
+    it('should include auth middleware on all routes', () => {
+      const router = createTeamsRouter(container);
+      const routes = (router as any).stack.filter((layer: any) => layer.route);
+
+      for (const routeLayer of routes) {
+        // Each route must have at least: authenticate + handler = 2 handlers in its stack
+        expect(routeLayer.route.stack.length).to.be.greaterThanOrEqual(2,
+          `Route ${routeLayer.route.methods} ${routeLayer.route.path} should include auth middleware`);
+      }
+    });
+
+    it('should have full middleware chain on write routes (POST, PUT, DELETE)', () => {
+      const router = createTeamsRouter(container);
+      const writeRoutes = [
+        { path: '/', method: 'post' },
+        { path: '/:teamId', method: 'put' },
+        { path: '/:teamId', method: 'delete' },
+      ];
+
+      for (const { path, method } of writeRoutes) {
+        const routeLayer = (router as any).stack.find(
+          (l: any) => l.route && l.route.path === path && l.route.methods[method],
+        );
+        expect(routeLayer).to.not.be.undefined;
+        // authenticate + requireScopes + metricsMiddleware + validate + handler = 5
+        expect(routeLayer.route.stack.length).to.equal(5,
+          `${method.toUpperCase()} ${path} should have 5 middleware handlers`);
+      }
+    });
+
+    it('should have full middleware chain on read routes (GET)', () => {
+      const router = createTeamsRouter(container);
+      const readRoutes = [
+        { path: '/user/teams', method: 'get' },
+        { path: '/:teamId', method: 'get' },
+        { path: '/:teamId/users', method: 'get' },
+      ];
+
+      for (const { path, method } of readRoutes) {
+        const routeLayer = (router as any).stack.find(
+          (l: any) => l.route && l.route.path === path && l.route.methods[method],
+        );
+        expect(routeLayer).to.not.be.undefined;
+        // authenticate + requireScopes + metricsMiddleware + validate + handler = 5
+        expect(routeLayer.route.stack.length).to.equal(5,
+          `${method.toUpperCase()} ${path} should have 5 middleware handlers`);
+      }
+    });
+  });
+
   describe('handler wiring', () => {
     const VALID_TEAM_ID = '550e8400-e29b-41d4-a716-446655440000';
 
