@@ -16,6 +16,8 @@ from app.connectors.sources.servicenow.servicenow.connector import (
 from app.sources.external.servicenow.models import (
     AttachmentMetadata,
     KBKnowledge,
+    KBKnowledgeBase,
+    KBCategory,
     OrganizationalEntity,
     ServiceNowAPIError,
     SysUser,
@@ -219,6 +221,11 @@ class TestTransformToAppUser:
         assert result is not None
         assert result.email == "user@test.com"
 
+    @pytest.mark.asyncio
+    async def test_empty_email_returns_none(self, connector):
+        user_data = SysUser(sys_id="u1", email=None)
+        assert await connector._transform_to_app_user(user_data) is None
+
 
 # ===========================================================================
 # _transform_to_user_group
@@ -244,6 +251,16 @@ class TestTransformToUserGroup:
         data = SysUserGroup(sys_id="g1", name="")
         result = connector._transform_to_user_group(data)
         assert result is None
+
+    def test_exception_returns_none(self, connector):
+        class BadGroup:
+            sys_id = "g1"
+
+            @property
+            def name(self):
+                raise RuntimeError("bad group")
+
+        assert connector._transform_to_user_group(BadGroup()) is None
 
 
 # ===========================================================================
@@ -276,6 +293,17 @@ class TestTransformToOrgGroup:
         data = TableAPIRecord(sys_id="c1", name="")
         result = connector._transform_to_organizational_group(data, "CC_")
         assert result is None
+
+    def test_parses_updated_on_timestamp(self, connector):
+        data = TableAPIRecord(
+            sys_id="c1",
+            name="Acme",
+            sys_created_on="2024-01-01 00:00:00",
+            sys_updated_on="2024-06-01 00:00:00",
+        )
+        result = connector._transform_to_organizational_group(data, "COMPANY_")
+        assert result is not None
+        assert result.source_updated_at is not None
 
 
 # ===========================================================================
@@ -366,6 +394,12 @@ class TestTransformToArticleWebpageRecord:
         assert result is not None
         assert "art-7" in result.weburl
 
+    def test_no_web_url_when_instance_url_none(self, connector):
+        connector.instance_url = None
+        data = KBKnowledge(sys_id="art1", short_description="Title", kb_category="cat1")
+        result = connector._transform_to_article_webpage_record(data)
+        assert result.weburl is None
+
 
 # ===========================================================================
 # _transform_to_attachment_file_record
@@ -449,6 +483,46 @@ class TestTransformToAttachmentFileRecord:
         result = connector._transform_to_attachment_file_record(data)
         assert result is not None
         assert result.extension is None
+
+    def test_mime_type_enum_mapping(self, connector):
+        data = AttachmentMetadata(
+            sys_id="att1",
+            file_name="doc.pdf",
+            content_type=MimeTypes.PDF.value,
+            size_bytes="100",
+            table_sys_id="art1",
+            sys_created_on="2023-01-01 00:00:00",
+            sys_updated_on="2023-06-01 00:00:00",
+        )
+        result = connector._transform_to_attachment_file_record(data)
+        assert result.mime_type == MimeTypes.PDF.value
+
+    def test_unknown_mime_type_returns_none(self, connector):
+        data = AttachmentMetadata(
+            sys_id="att2",
+            file_name="data.xyz",
+            content_type="application/x-unknown",
+            size_bytes="100",
+            table_sys_id="art1",
+            sys_created_on="2023-01-01 00:00:00",
+            sys_updated_on="2023-06-01 00:00:00",
+        )
+        result = connector._transform_to_attachment_file_record(data)
+        assert result is None
+
+    def test_no_web_url_when_instance_url_none(self, connector):
+        connector.instance_url = None
+        data = AttachmentMetadata(
+            sys_id="att3",
+            file_name="doc.pdf",
+            content_type="application/pdf",
+            size_bytes="100",
+            table_sys_id="art1",
+            sys_created_on="2023-01-01 00:00:00",
+            sys_updated_on="2023-06-01 00:00:00",
+        )
+        result = connector._transform_to_attachment_file_record(data)
+        assert result.weburl is None
 
 
 # ===========================================================================
@@ -802,3 +876,117 @@ class TestFetchContent:
         with pytest.raises(HTTPException) as exc_info:
             await connector._fetch_attachment_content("att-missing")
         assert exc_info.value.status_code == 404
+
+
+# ===========================================================================
+# _transform_to_category_record_group
+# ===========================================================================
+
+class TestTransformToCategoryRecordGroup:
+    def test_transform_category_missing_sys_id(self, connector):
+        data = TableAPIRecord(label="Cat")
+        assert connector._transform_to_category_record_group(data) is None
+
+    def test_transform_category_missing_label(self, connector):
+        data = TableAPIRecord(sys_id="cat1", label="")
+        assert connector._transform_to_category_record_group(data) is None
+
+    def test_transform_category_with_parent(self, connector):
+        data = KBCategory(sys_id="cat2", label="Sub", parent_id="cat1")
+        result = connector._transform_to_category_record_group(data)
+        assert result.parent_external_group_id == "cat1"
+
+    def test_transform_category_without_parent(self, connector):
+        data = KBCategory(sys_id="cat1", label="Root")
+        result = connector._transform_to_category_record_group(data)
+        assert result.parent_external_group_id is None
+
+    def test_transform_category_with_timestamps(self, connector):
+        data = KBCategory(
+            sys_id="cat1",
+            label="Cat",
+            sys_created_on="2023-01-01 00:00:00",
+            sys_updated_on="2023-06-01 00:00:00",
+        )
+        result = connector._transform_to_category_record_group(data)
+        assert result.source_created_at is not None
+
+    def test_transform_category_without_timestamps(self, connector):
+        data = KBCategory(sys_id="cat1", label="Cat")
+        result = connector._transform_to_category_record_group(data)
+        assert result.source_created_at is None
+
+    def test_transform_category_web_url_generated(self, connector):
+        connector.instance_url = "https://test.service-now.com"
+        data = KBCategory(sys_id="cat1", label="Cat")
+        result = connector._transform_to_category_record_group(data)
+        assert "cat1" in result.web_url
+
+    def test_transform_category_exception_handling(self, connector):
+        class BadCategory:
+            sys_id = "cat1"
+
+            @property
+            def label(self):
+                raise RuntimeError("bad")
+
+        assert connector._transform_to_category_record_group(BadCategory()) is None
+
+    def test_transform_category_inherit_permissions_flag(self, connector):
+        data = KBCategory(sys_id="cat1", label="Cat")
+        result = connector._transform_to_category_record_group(data)
+        assert result.inherit_permissions is True
+
+
+class TestTransformToKbRecordGroup:
+    def test_transform_kb_missing_sys_id(self, connector):
+        data = TableAPIRecord(title="KB Title")
+        assert connector._transform_to_kb_record_group(data) is None
+
+    def test_transform_kb_missing_title(self, connector):
+        data = TableAPIRecord(sys_id="kb1", title="")
+        assert connector._transform_to_kb_record_group(data) is None
+
+    def test_transform_kb_with_description(self, connector):
+        data = KBKnowledgeBase(sys_id="kb1", title="My KB", description="KB desc")
+        result = connector._transform_to_kb_record_group(data)
+        assert result.description == "KB desc"
+
+    def test_transform_kb_without_timestamps(self, connector):
+        data = KBKnowledgeBase(sys_id="kb1", title="My KB")
+        result = connector._transform_to_kb_record_group(data)
+        assert result.source_created_at is None
+        assert result.source_updated_at is None
+
+    def test_transform_kb_with_timestamps(self, connector):
+        data = KBKnowledgeBase(
+            sys_id="kb1",
+            title="My KB",
+            sys_created_on="2023-01-01 00:00:00",
+            sys_updated_on="2023-06-01 00:00:00",
+        )
+        result = connector._transform_to_kb_record_group(data)
+        assert result.source_created_at is not None
+        assert result.source_updated_at is not None
+
+    def test_transform_kb_web_url_generated(self, connector):
+        connector.instance_url = "https://test.service-now.com"
+        data = KBKnowledgeBase(sys_id="kb1", title="My KB")
+        result = connector._transform_to_kb_record_group(data)
+        assert "kb1" in result.web_url
+
+    def test_transform_kb_exception_handling(self, connector):
+        class BadKB:
+            sys_id = "kb1"
+
+            @property
+            def title(self):
+                raise RuntimeError("bad")
+
+        assert connector._transform_to_kb_record_group(BadKB()) is None
+
+    def test_transform_kb_no_instance_url(self, connector):
+        connector.instance_url = None
+        data = KBKnowledgeBase(sys_id="kb1", title="My KB")
+        result = connector._transform_to_kb_record_group(data)
+        assert result.web_url is None
