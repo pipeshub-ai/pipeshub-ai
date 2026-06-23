@@ -5,7 +5,7 @@
 #
 # Or manually:
 #   COMPOSE_PROFILES=graph-neo4j \
-#     docker compose -f docker-compose.yml -f docker-compose.integration.yml \
+#     docker compose -f docker-compose.yml -f docker-compose.integration-test.yml \
 #     -p pipeshub-ai up -d
 #
 # Including this override always adds host port mappings. Production installs
@@ -51,7 +51,6 @@ services:
   kafka-1:
     profiles: ["broker-kafka"]
     ports:
-      - "9092:9092"
       - "29092:29092"
     environment:
       - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=ACCESS:PLAINTEXT,HOST:PLAINTEXT

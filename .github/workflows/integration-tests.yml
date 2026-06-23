@@ -275,10 +275,10 @@ jobs:
           # shellcheck disable=SC1091
           [[ -f .env ]] && . ./.env
           set +a
-          docker compose -f docker-compose.yml -f docker-compose.integration.yml -p pipeshub-ai --env-file .env ps -a \
+          docker compose -f docker-compose.yml -f docker-compose.integration-test.yml -p pipeshub-ai --env-file .env ps -a \
             > ../../integration-tests/reports/docker-logs/neo4j/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.yml -f docker-compose.integration.yml -p pipeshub-ai --env-file .env config --services 2>/dev/null); do
-            docker compose -f docker-compose.yml -f docker-compose.integration.yml -p pipeshub-ai --env-file .env logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.yml -f docker-compose.integration-test.yml -p pipeshub-ai --env-file .env config --services 2>/dev/null); do
+            docker compose -f docker-compose.yml -f docker-compose.integration-test.yml -p pipeshub-ai --env-file .env logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" 2>&1 || true
           done
 
@@ -412,10 +412,10 @@ jobs:
           # shellcheck disable=SC1091
           [[ -f .env ]] && . ./.env
           set +a
-          docker compose -f docker-compose.yml -f docker-compose.integration.yml -p pipeshub-ai --env-file .env ps -a \
+          docker compose -f docker-compose.yml -f docker-compose.integration-test.yml -p pipeshub-ai --env-file .env ps -a \
             > ../../integration-tests/reports/docker-logs/arango/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.yml -f docker-compose.integration.yml -p pipeshub-ai --env-file .env config --services 2>/dev/null); do
-            docker compose -f docker-compose.yml -f docker-compose.integration.yml -p pipeshub-ai --env-file .env logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.yml -f docker-compose.integration-test.yml -p pipeshub-ai --env-file .env config --services 2>/dev/null); do
+            docker compose -f docker-compose.yml -f docker-compose.integration-test.yml -p pipeshub-ai --env-file .env logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/arango/${svc}.log" 2>&1 || true
           done
 

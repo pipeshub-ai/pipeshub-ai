@@ -28,7 +28,7 @@
 #   PIPESHUB_IMAGE_SOURCE    prebuilt | local (default: prebuilt)
 #   PIPESHUB_PORT            host port to expose on (default 3000)
 #   PIPESHUB_PUBLIC_URL      public HTTPS URL for external access (optional)
-#   PIPESHUB_INTEGRATION_PORTS  set to 1 to stack docker-compose.integration.yml
+#   PIPESHUB_INTEGRATION_PORTS  set to 1 to stack docker-compose.integration-test.yml
 #                            for CI / host DB access
 # ==============================================================================
 set -euo pipefail
@@ -75,7 +75,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 ENV_FILE="${SCRIPT_DIR}/.env"
 COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
-COMPOSE_OVERRIDE_FILE="${SCRIPT_DIR}/docker-compose.integration.yml"
+COMPOSE_OVERRIDE_FILE="${SCRIPT_DIR}/docker-compose.integration-test.yml"
 PROJECT_NAME="pipeshub-ai"
 HEALTH_WAIT_SECS=300
 # APP_PORT and HEALTH_URL are resolved later (after port selection in the wizard)
@@ -801,7 +801,7 @@ SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE}
 # ── Compose profiles (controls which optional containers start) ──────────────
 # Values: graph-arango | graph-neo4j | kv-etcd | broker-kafka
 COMPOSE_PROFILES=${COMPOSE_PROFILES}
-# Set to 1 when PIPESHUB_INTEGRATION_PORTS=1 (stacks docker-compose.integration.yml)
+# Set to 1 when PIPESHUB_INTEGRATION_PORTS=1 (stacks docker-compose.integration-test.yml)
 HOST_PORTS_ENABLED=${HOST_PORTS_ENABLED:-}
 
 # ── Core ─────────────────────────────────────────────────────────────────────
