@@ -218,7 +218,20 @@
     "filterTooltip": "Filter: {{filter}}",
     "loadFailed": "Benachrichtigungen konnten nicht geladen werden",
     "updateFailed": "Benachrichtigung konnte nicht aktualisiert werden",
-    "removeFailed": "Benachrichtigung konnte nicht entfernt werden"
+    "removeFailed": "Benachrichtigung konnte nicht entfernt werden",
+    "desktop": {
+      "promptTitle": "Desktop-Benachrichtigungen einschalten",
+      "promptDescription": "Erhalten Sie Benachrichtigungen, wenn Sie woanders arbeiten, damit Sie kein Update verpassen.",
+      "allow": "Erlauben",
+      "askLater": "Später fragen",
+      "dismiss": "Verwerfen",
+      "enabledTitle": "Desktop-Benachrichtigungen aktiviert",
+      "blockedTitle": "Benachrichtigungen blockiert",
+      "blockedDescription": "Erlauben Sie Benachrichtigungen für diese Website in Ihren Browser-Einstellungen.",
+      "promptAckTitle": "Verstanden",
+      "settingsHint": "Sie können Desktop-Benachrichtigungen jederzeit unter Workspace → Profil → Benachrichtigungen aktivieren.",
+      "openSettings": "Einstellungen öffnen"
+    }
   },
   "action": {
     "find": "Finden",
@@ -2101,6 +2114,13 @@
         "accountPassword": "Konto-Passwort",
         "followEmailDescription": "Bitte folgen Sie den Anweisungen in der E-Mail, um Ihr Passwort festzulegen",
         "changePassword": "Passwort ändern"
+      },
+      "notifications": {
+        "title": "Benachrichtigungen",
+        "desktop": "Desktop-Benachrichtigungen",
+        "desktopDescription": "Browser-Benachrichtigungen erhalten, wenn Sie woanders arbeiten.",
+        "blockedHint": "Benachrichtigungen für diese Website sind blockiert. Erlauben Sie sie in Ihren Browser-Einstellungen.",
+        "unsupported": "Desktop-Benachrichtigungen werden in diesem Browser nicht unterstützt."
       },
       "rolesPermissions": {
         "title": "Rollen & Berechtigungen",

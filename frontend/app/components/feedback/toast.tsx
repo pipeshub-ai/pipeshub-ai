@@ -5,7 +5,7 @@ import { Flex, Box, Text, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
-import type { Toast as ToastType, ToastVariant } from '@/lib/store/toast-store';
+import type { Toast as ToastType, ToastAction, ToastVariant } from '@/lib/store/toast-store';
 import { getToastRenderDescription } from '@/lib/store/toast-store';
 
 // ========================================
@@ -45,6 +45,111 @@ const VARIANT_CONFIG: Record<ToastVariant, VariantConfig> = {
     iconBgColor: 'var(--olive-3)',
   },
 };
+
+// ========================================
+// Toast Action Button
+// ========================================
+
+const TOAST_ACTION_HEIGHT = '28px';
+
+function getToastActionStyles(action: ToastAction): {
+  button: React.CSSProperties;
+  labelColor: string;
+  iconColor: string;
+} {
+  const shared: React.CSSProperties = {
+    height: TOAST_ACTION_HEIGHT,
+    padding: '0 8px',
+    cursor: 'pointer',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '4px',
+    boxSizing: 'border-box',
+  };
+
+  if (action.variant === 'primary') {
+    return {
+      button: {
+        ...shared,
+        border: 'none',
+        borderRadius: 'var(--radius-2)',
+        backgroundColor: 'var(--slate-12)',
+      },
+      labelColor: 'var(--olive-1)',
+      iconColor: 'var(--olive-1)',
+    };
+  }
+
+  return {
+    button: {
+      ...shared,
+      border: '1px solid rgba(0, 6, 46, 0.2)',
+      borderRadius: '3px',
+      backgroundColor: 'transparent',
+    },
+    labelColor: 'var(--slate-11)',
+    iconColor: 'var(--slate-11)',
+  };
+}
+
+function ToastActionButton({ action }: { action: ToastAction }) {
+  if (action.href) {
+    return (
+      <Flex align="center" gap="1">
+        {action.icon && (
+          <MaterialIcon
+            name={action.icon}
+            size={14}
+            color="var(--accent-11)"
+          />
+        )}
+        <Text size="1" weight="medium" asChild>
+          <a
+            href={action.href}
+            target={action.openInNewTab ? '_blank' : undefined}
+            rel={action.openInNewTab ? 'noopener noreferrer' : undefined}
+            style={{
+              color: 'var(--accent-11)',
+              textDecoration: 'underline',
+              textUnderlineOffset: '2px',
+              cursor: 'pointer',
+            }}
+          >
+            {action.label}
+          </a>
+        </Text>
+        {action.openInNewTab && (
+          <MaterialIcon
+            name="open_in_new"
+            size={14}
+            color="var(--accent-11)"
+          />
+        )}
+      </Flex>
+    );
+  }
+
+  const { button, labelColor, iconColor } = getToastActionStyles(action);
+  return (
+    <button type="button" onClick={action.onClick} style={button}>
+      {action.icon && (
+        <MaterialIcon name={action.icon} size={16} color={iconColor} />
+      )}
+      <Text
+        size="1"
+        weight="medium"
+        style={{
+          color: labelColor,
+          lineHeight: '16px',
+          letterSpacing: '0.04px',
+        }}
+      >
+        {action.label}
+      </Text>
+    </button>
+  );
+}
 
 // ========================================
 // Toast Component Props
@@ -184,79 +289,19 @@ export function Toast({ toast, onDismiss, style }: ToastProps) {
             </Box>
           )}
 
-          {toast.action && (
-            <Box style={{ marginTop: '6px' }}>
-              {toast.action.href ? (
-                <Flex align="center" gap="1">
-                  {toast.action.icon && (
-                    <MaterialIcon
-                      name={toast.action.icon}
-                      size={14}
-                      color="var(--accent-11)"
-                    />
-                  )}
-                  <Text size="1" weight="medium" asChild>
-                    <a
-                      href={toast.action.href}
-                      target={toast.action.openInNewTab ? '_blank' : undefined}
-                      rel={toast.action.openInNewTab ? 'noopener noreferrer' : undefined}
-                      style={{
-                        color: 'var(--accent-11)',
-                        textDecoration: 'underline',
-                        textUnderlineOffset: '2px',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {toast.action.label}
-                    </a>
-                  </Text>
-                  {toast.action.openInNewTab && (
-                    <MaterialIcon
-                      name="open_in_new"
-                      size={14}
-                      color="var(--accent-11)"
-                    />
-                  )}
-                </Flex>
-              ) : (
-                <Flex align="center" justify="center" gap="1" asChild>
-                  <button
-                    type="button"
-                    onClick={toast.action.onClick}
-                    style={{
-                      height: '24px',
-                      padding: '0 8px',
-                      border: '1px solid rgba(0, 6, 46, 0.2)',
-                      borderRadius: '3px',
-                      backgroundColor: 'transparent',
-                      cursor: 'pointer',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '4px',
-                    }}
-                  >
-                    {toast.action.icon && (
-                      <MaterialIcon
-                        name={toast.action.icon}
-                        size={16}
-                        color="var(--slate-11)"
-                      />
-                    )}
-                    <Text
-                      size="1"
-                      weight="medium"
-                      style={{
-                        color: 'var(--slate-11)',
-                        lineHeight: '16px',
-                        letterSpacing: '0.04px',
-                      }}
-                    >
-                      {toast.action.label}
-                    </Text>
-                  </button>
-                </Flex>
-              )}
-            </Box>
+          {/* Action buttons */}
+          {toast.actions && toast.actions.length > 0 ? (
+            <Flex wrap="wrap" gap="1" style={{ marginTop: '8px' }}>
+              {toast.actions.map((action) => (
+                <ToastActionButton key={action.label} action={action} />
+              ))}
+            </Flex>
+          ) : (
+            toast.action && (
+              <Box style={{ marginTop: '8px' }}>
+                <ToastActionButton action={toast.action} />
+              </Box>
+            )
           )}
         </Flex>
 

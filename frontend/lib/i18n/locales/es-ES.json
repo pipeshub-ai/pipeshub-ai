@@ -217,7 +217,20 @@
     "filterTooltip": "Filtro: {{filter}}",
     "loadFailed": "No se pudieron cargar las notificaciones",
     "updateFailed": "No se pudo actualizar la notificación",
-    "removeFailed": "No se pudo eliminar la notificación"
+    "removeFailed": "No se pudo eliminar la notificación",
+    "desktop": {
+      "promptTitle": "Activa las notificaciones de escritorio",
+      "promptDescription": "Recibe alertas cuando trabajes en otro lugar para no perderte ninguna actualización.",
+      "allow": "Permitir",
+      "askLater": "Preguntar más tarde",
+      "dismiss": "Descartar",
+      "enabledTitle": "Notificaciones de escritorio activadas",
+      "blockedTitle": "Notificaciones bloqueadas",
+      "blockedDescription": "Permite las notificaciones de este sitio en la configuración de tu navegador.",
+      "promptAckTitle": "Entendido",
+      "settingsHint": "Puedes activar las notificaciones de escritorio en cualquier momento en Workspace → Perfil → Notificaciones.",
+      "openSettings": "Abrir configuración"
+    }
   },
   "action": {
     "find": "Buscar",
@@ -2098,6 +2111,13 @@
         "accountPassword": "Account Password",
         "followEmailDescription": "Please follow the instructions in the email to finish setting your password",
         "changePassword": "Change Password"
+      },
+      "notifications": {
+        "title": "Notificaciones",
+        "desktop": "Notificaciones de escritorio",
+        "desktopDescription": "Muestra alertas del navegador cuando recibas nuevas notificaciones mientras trabajas en otro lugar.",
+        "blockedHint": "Las notificaciones están bloqueadas para este sitio. Permítelas en la configuración de tu navegador.",
+        "unsupported": "Las notificaciones de escritorio no son compatibles con este navegador."
       },
       "rolesPermissions": {
         "title": "Roles & Permissions",
