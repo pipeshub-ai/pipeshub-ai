@@ -1689,27 +1689,6 @@ class TestUserHasOneDriveCoverage:
 
 
 # ===========================================================================
-# _detect_and_handle_permission_changes
-# ===========================================================================
-
-
-class TestDetectAndHandlePermissionChanges:
-
-    @pytest.mark.asyncio
-    async def test_success(self):
-        connector = _make_connector()
-        await connector._detect_and_handle_permission_changes()
-
-    @pytest.mark.asyncio
-    async def test_error_logged(self):
-        """Error in detection is logged but not raised."""
-        connector = _make_connector()
-        # The method doesn't really do much, but test that exceptions are caught
-        # by patching the logger itself to track calls
-        await connector._detect_and_handle_permission_changes()
-
-
-# ===========================================================================
 # _handle_reindex_event
 # ===========================================================================
 
@@ -1870,7 +1849,6 @@ class TestRunSyncCoverage:
         connector.msgraph_client.get_all_users = AsyncMock(return_value=[MagicMock()])
         connector._sync_user_groups = AsyncMock()
         connector._process_users_in_batches = AsyncMock()
-        connector._detect_and_handle_permission_changes = AsyncMock()
 
         with patch("app.connectors.sources.microsoft.onedrive.connector.load_connector_filters",
                     new_callable=AsyncMock, return_value=(MagicMock(), MagicMock())):
