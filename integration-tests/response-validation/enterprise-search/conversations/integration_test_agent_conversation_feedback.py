@@ -221,12 +221,12 @@ class TestAgentConversationMessageFeedback:
 
             for envelope in _iter_sse_envelopes(resp):
                 if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
+                    payload = json.loads(envelope["data"]) if envelope["data"] else {}
                     raise AssertionError(f"stream emitted error event: {payload!r}")
                 if envelope["event"] != "complete":
                     continue
 
-                payload = json.loads(envelope["data"])
+                payload = json.loads(envelope["data"]) if envelope["data"] else {}
                 conversation = payload.get("conversation") or {}
                 conversation_id = conversation.get("_id")
                 assert isinstance(conversation_id, str) and conversation_id, (

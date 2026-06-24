@@ -222,7 +222,7 @@ class _AgentStreamTestBase:
             for envelope in _iter_sse_envelopes(resp):
                 assert_response_matches_openapi_ref(envelope, _AGENT_STREAM_SSE_EVENT_REF)
                 event = envelope["event"]
-                payload = json.loads(envelope["data"])
+                payload = json.loads(envelope["data"]) if envelope["data"] else {}
 
                 if event == "connected":
                     conv_id = payload.get("conversationId")
@@ -317,7 +317,7 @@ class _AgentStreamTestBase:
                     envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
                 )
                 event = envelope["event"]
-                payload = json.loads(envelope["data"])
+                payload = json.loads(envelope["data"]) if envelope["data"] else {}
 
                 if event == "answer_chunk" and isinstance(payload, dict):
                     acc = payload.get("accumulated")
@@ -397,7 +397,7 @@ class TestAgentConversationStream(_AgentStreamTestBase):
             for envelope in _iter_sse_envelopes(resp):
                 assert_response_matches_openapi_ref(envelope, _AGENT_STREAM_SSE_EVENT_REF)
 
-                payload = json.loads(envelope["data"])
+                payload = json.loads(envelope["data"]) if envelope["data"] else {}
                 event = envelope["event"]
 
                 if event == "answer_chunk" and isinstance(payload, dict):
@@ -560,7 +560,7 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
                     envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
                 )
 
-                payload = json.loads(envelope["data"])
+                payload = json.loads(envelope["data"]) if envelope["data"] else {}
                 event = envelope["event"]
 
                 if event == "answer_chunk" and isinstance(payload, dict):
@@ -641,13 +641,13 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
                     envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
                 )
                 if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
+                    payload = json.loads(envelope["data"]) if envelope["data"] else {}
                     raise AssertionError(f"stream emitted error event: {payload!r}")
                 if envelope["event"] != "complete":
                     continue
 
                 saw_complete = True
-                payload = json.loads(envelope["data"])
+                payload = json.loads(envelope["data"]) if envelope["data"] else {}
                 conv = payload.get("conversation") or {}
                 assert conv.get("_id") == conversation_id, (
                     f"complete conversation id mismatch: {conv.get('_id')!r}"
@@ -795,7 +795,7 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
             for envelope in _iter_sse_envelopes(resp):
                 if envelope["event"] != "error":
                     continue
-                payload = json.loads(envelope["data"])
+                payload = json.loads(envelope["data"]) if envelope["data"] else {}
                 msg = payload.get("message") or payload.get("error") or ""
                 assert "not found" in str(msg).lower(), (
                     f"unexpected error payload: {payload!r}"

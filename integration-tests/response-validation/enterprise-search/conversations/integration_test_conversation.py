@@ -156,12 +156,12 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
 
             for envelope in _iter_sse_envelopes(resp):
                 if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
+                    payload = json.loads(envelope["data"]) if envelope["data"] else {}
                     raise AssertionError(f"stream emitted error event: {payload!r}")
                 if envelope["event"] != "complete":
                     continue
 
-                payload = json.loads(envelope["data"])
+                payload = json.loads(envelope["data"]) if envelope["data"] else {}
                 conv = payload.get("conversation") or {}
                 conv_id = conv.get("_id")
                 assert isinstance(conv_id, str) and conv_id, (
@@ -201,13 +201,13 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             for envelope in _iter_sse_envelopes(resp):
                 assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
                 if envelope["event"] == "connected":
-                    payload = json.loads(envelope["data"])
+                    payload = json.loads(envelope["data"]) if envelope["data"] else {}
                     conv_id = payload.get("conversationId")
                     if isinstance(conv_id, str) and conv_id:
                         connected_conv_id = conv_id
                     continue
                 if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
+                    payload = json.loads(envelope["data"]) if envelope["data"] else {}
                     raise AssertionError(f"stream emitted error event: {payload!r}")
                 if envelope["event"] != "complete":
                     continue
@@ -251,12 +251,12 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             for envelope in _iter_sse_envelopes(resp):
                 assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
                 if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
+                    payload = json.loads(envelope["data"]) if envelope["data"] else {}
                     raise AssertionError(f"stream emitted error event: {payload!r}")
                 if envelope["event"] != "complete":
                     continue
 
-                payload = json.loads(envelope["data"])
+                payload = json.loads(envelope["data"]) if envelope["data"] else {}
                 conv = payload.get("conversation") or {}
                 conv_id = conv.get("_id")
                 assert isinstance(conv_id, str) and conv_id, (
@@ -316,7 +316,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             for envelope in _iter_sse_envelopes(resp):
                 assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
 
-                payload = json.loads(envelope["data"])
+                payload = json.loads(envelope["data"]) if envelope["data"] else {}
                 event = envelope["event"]
 
                 if event == "answer_chunk" and isinstance(payload, dict):
@@ -371,7 +371,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             for envelope in _iter_sse_envelopes(resp):
                 assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
 
-                payload = json.loads(envelope["data"])
+                payload = json.loads(envelope["data"]) if envelope["data"] else {}
                 event = envelope["event"]
 
                 if event == "answer_chunk" and isinstance(payload, dict):
@@ -1211,13 +1211,13 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             for envelope in _iter_sse_envelopes(resp):
                 assert_matches_component_schema(envelope, "AgentMessageStreamSSEEvent")
                 if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
+                    payload = json.loads(envelope["data"]) if envelope["data"] else {}
                     raise AssertionError(f"stream emitted error event: {payload!r}")
                 if envelope["event"] != "complete":
                     continue
 
                 saw_complete = True
-                payload = json.loads(envelope["data"])
+                payload = json.loads(envelope["data"]) if envelope["data"] else {}
                 conv = payload.get("conversation") or {}
                 assert conv.get("_id") == conversation_id, (
                     f"complete conversation id mismatch: {conv.get('_id')!r}"
@@ -1282,7 +1282,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             for envelope in _iter_sse_envelopes(resp):
                 if envelope["event"] != "error":
                     continue
-                payload = json.loads(envelope["data"])
+                payload = json.loads(envelope["data"]) if envelope["data"] else {}
                 msg = payload.get("message") or payload.get("error") or ""
                 assert "not found" in str(msg).lower(), f"unexpected error payload: {payload!r}"
                 return
@@ -1316,13 +1316,13 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             for envelope in _iter_sse_envelopes(resp):
                 assert_matches_component_schema(envelope, "AssistantStreamSSEEvent")
                 if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
+                    payload = json.loads(envelope["data"]) if envelope["data"] else {}
                     raise AssertionError(f"regenerate stream emitted error: {payload!r}")
                 if envelope["event"] != "complete":
                     continue
 
                 saw_complete = True
-                payload = json.loads(envelope["data"])
+                payload = json.loads(envelope["data"]) if envelope["data"] else {}
                 conv = payload.get("conversation") or {}
                 assert conv.get("_id") == conversation_id, (
                     f"complete conversation id mismatch: {conv.get('_id')!r}"
@@ -1425,7 +1425,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             for envelope in _iter_sse_envelopes(resp):
                 if envelope["event"] != "error":
                     continue
-                payload = json.loads(envelope["data"])
+                payload = json.loads(envelope["data"]) if envelope["data"] else {}
                 err = payload.get("message") or payload.get("error") or ""
                 assert "last message" in str(err).lower(), (
                     f"unexpected error payload: {payload!r}"
