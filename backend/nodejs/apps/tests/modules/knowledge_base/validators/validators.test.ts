@@ -165,6 +165,18 @@ describe('knowledge_base/validators/validators', () => {
       expect(result.success).to.be.true
     })
 
+    it('should default isVersioned to true when omitted', () => {
+      const data = {
+        body: {},
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+      }
+      const result = uploadRecordsSchema.safeParse(data)
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.isVersioned).to.be.true
+      }
+    })
+
     it('should reject non-UUID kbId', () => {
       const data = {
         body: {},

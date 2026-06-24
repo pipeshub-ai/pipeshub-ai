@@ -1042,7 +1042,7 @@ export const uploadRecords =
       const orgId = req.user?.orgId;
       const { kbId } = req.params;
       const folderId = req.query.folderId as string | undefined;
-      const isVersioned = req.body.isVersioned ?? false;
+      const isVersioned = req.body.isVersioned ?? true;
 
       // Validation
       if (!userId || !orgId) {
