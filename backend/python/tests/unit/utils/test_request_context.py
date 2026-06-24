@@ -53,6 +53,12 @@ class TestSanitizeRootId:
         raw = "a" * (rc._MAX_ROOT_ID_LEN + 50)
         assert rc.sanitize_root_id(raw) == "a" * rc._MAX_ROOT_ID_LEN
 
+    def test_full_frontend_id_survives_uncut(self):
+        # 24-char ObjectId + '-' + 21-char nanoid = 46 chars, under the 64 cap.
+        frontend_id = "6a3992e0a771842adbf1039f-ZgUvzvsipDj0C_kjKwhMj"
+        assert len(frontend_id) == 46
+        assert rc.sanitize_root_id(frontend_id) == frontend_id
+
 
 class TestServiceSuffix:
     def test_set_and_get(self):

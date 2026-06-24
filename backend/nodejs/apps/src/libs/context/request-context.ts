@@ -14,9 +14,8 @@ export const HEADER_REQUEST_ID = 'x-request-id';
 export const ENVELOPE_REQUEST_ID = 'requestId';
 export const NO_CONTEXT = '-';
 
-// Inbound ids are client-controlled and land verbatim in logs: cap length and
-// drop unsafe chars to prevent CR/LF log-line forging and bloat.
-const MAX_ROOT_ID_LEN = 200;
+// `<objectId:24>-<nanoid:21>`
+const MAX_ROOT_ID_LEN = 64;
 const UNSAFE_ID_CHARS = /[^A-Za-z0-9._:-]/g;
 
 /** Strip a client-supplied id to a safe charset + length. `undefined` if empty. */
@@ -47,6 +46,11 @@ export function getRootId(): string | undefined {
 /** Mint a root id for a system/automation-initiated unit of work. */
 export function newSystemRoot(): string {
   return randomUUID();
+}
+
+/** Fallback root id when an inbound request carries none (mirrors Python `new_anon_root`). */
+export function newAnonRoot(): string {
+  return `anon-${randomUUID().replace(/-/g, '')}`;
 }
 
 /** The id stamped into log lines: `<root><service-suffix>` (node suffix is empty). */

@@ -8,6 +8,7 @@ import {
   getRequestContext,
   getRootId,
   newSystemRoot,
+  newAnonRoot,
   currentDisplayId,
   injectRequestHeaders,
   injectEnvelope,
@@ -43,7 +44,14 @@ describe('request-context', () => {
 
     it('truncates to the max length', () => {
       const out = sanitizeRootId('a'.repeat(250));
-      expect(out).to.equal('a'.repeat(200));
+      expect(out).to.equal('a'.repeat(64));
+    });
+
+    it('preserves a full frontend id (<objectId>-<nanoid>) uncut', () => {
+      // 24-char ObjectId + '-' + 21-char nanoid = 46 chars, under the 64 cap.
+      const frontendId = '6a3992e0a771842adbf1039f-ZgUvzvsipDj0C_kjKwhMj';
+      expect(frontendId.length).to.equal(46);
+      expect(sanitizeRootId(frontendId)).to.equal(frontendId);
     });
   });
 
@@ -96,6 +104,23 @@ describe('request-context', () => {
       const b = newSystemRoot();
       expect(a).to.not.equal(b);
       expect(a).to.match(/^[0-9a-f-]{36}$/);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // newAnonRoot
+  // ---------------------------------------------------------------------------
+  describe('newAnonRoot', () => {
+    it('mints a unique anon-prefixed id matching Python new_anon_root', () => {
+      const a = newAnonRoot();
+      const b = newAnonRoot();
+      expect(a).to.not.equal(b);
+      expect(a).to.match(/^anon-[a-f0-9]{32}$/);
+    });
+
+    it('survives sanitizeRootId unchanged (safe charset, under cap)', () => {
+      const id = newAnonRoot();
+      expect(sanitizeRootId(id)).to.equal(id);
     });
   });
 

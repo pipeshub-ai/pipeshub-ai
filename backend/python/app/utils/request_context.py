@@ -15,9 +15,8 @@ HEADER_REQUEST_ID = "x-request-id"
 ENVELOPE_REQUEST_ID = "requestId"
 NO_CONTEXT = "-"
 
-# Inbound ids are client-controlled and land verbatim in logs: cap length and
-# drop unsafe chars to prevent CR/LF log-line forging and bloat.
-_MAX_ROOT_ID_LEN = 200
+# `<objectId:24>-<nanoid:21>`
+_MAX_ROOT_ID_LEN = 64
 _UNSAFE_ID_CHARS = re.compile(r"[^A-Za-z0-9._:-]")
 
 

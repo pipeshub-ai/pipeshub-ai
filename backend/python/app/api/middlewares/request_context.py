@@ -7,6 +7,7 @@ that. Register it outermost so even auth-middleware logs carry the id.
 
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
+from app.utils.logger import create_logger
 from app.utils.request_context import (
     HEADER_REQUEST_ID,
     new_anon_root,
@@ -14,6 +15,8 @@ from app.utils.request_context import (
     sanitize_root_id,
     set_context,
 )
+
+logger = create_logger(__name__)
 
 Scope = Dict[str, Any]
 Receive = Callable[[], Awaitable[Dict[str, Any]]]
@@ -39,10 +42,18 @@ class RequestContextMiddleware:
             return
 
         headers: List[Tuple[bytes, bytes]] = scope.get("headers") or []
-        root_id = sanitize_root_id(_header(headers, HEADER_REQUEST_ID)) or new_anon_root()
+        raw_id = _header(headers, HEADER_REQUEST_ID)
+        sanitized = sanitize_root_id(raw_id)
+        root_id = sanitized or new_anon_root()
 
         token = set_context(root_id)
         try:
+            if raw_id and sanitized != raw_id:
+                logger.debug(
+                    "Sanitized client-supplied x-request-id (raw_len=%d, result=%s)",
+                    len(raw_id),
+                    sanitized or "(empty, regenerated)",
+                )
             await self.app(scope, receive, send)
         finally:
             reset_context(token)
