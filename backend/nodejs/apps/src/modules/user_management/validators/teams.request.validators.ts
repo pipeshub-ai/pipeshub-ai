@@ -190,7 +190,7 @@ export const getTeamUsersSchema = z.object({
 
 export const getUserTeamsQuerySchema = z.object({
   query: teamListQueryObject.extend({
-    created_by: mongoUserId.optional(),
+    created_by: z.preprocess(emptyQueryValue, mongoUserId.optional()),
     created_after: timestampQuerySchema,
     created_before: timestampQuerySchema,
   }),

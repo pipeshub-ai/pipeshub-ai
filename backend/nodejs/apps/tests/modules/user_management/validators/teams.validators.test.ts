@@ -154,6 +154,18 @@ describe('user_management/validators/teams.validators', () => {
       expect(result.success).to.be.true;
     });
 
+    it('should treat empty created_by as omitted', () => {
+      for (const created_by of ['', null]) {
+        const result = getUserTeamsQuerySchema.safeParse({
+          query: { created_by },
+        });
+        expect(result.success).to.be.true;
+        if (result.success) {
+          expect(result.data.query.created_by).to.equal(undefined);
+        }
+      }
+    });
+
     it('should reject invalid created_by', () => {
       const result = getUserTeamsQuerySchema.safeParse({
         query: { created_by: 'bad-id' },

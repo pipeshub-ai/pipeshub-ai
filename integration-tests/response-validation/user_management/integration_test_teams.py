@@ -73,10 +73,10 @@ def _list_graph_mongo_user_ids(
         if resp.status_code != 200:
             break
         body = resp.json()
-        users = body.get("users") or []
-        if not users:
+        user_list = body.get("users") or []
+        if not user_list:
             break
-        for u in users:
+        for u in user_list:
             if not isinstance(u, dict):
                 continue
             if active_only and u.get("isActive") is False:

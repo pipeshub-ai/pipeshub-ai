@@ -292,15 +292,17 @@ class PipeshubClient:
         url = self._url(path)
         kwargs.setdefault("timeout", self.timeout_seconds)
 
+        extra_headers = kwargs.pop("headers", None) or {}
         for attempt in range(2):
             if auth:
                 self._ensure_access_token()
-                extra_headers = kwargs.pop("headers", None) or {}
                 headers = self._headers()
                 # Let requests set multipart boundary when uploading files.
                 if kwargs.get("files"):
                     headers.pop("Content-Type", None)
                 kwargs["headers"] = {**headers, **extra_headers}
+            elif extra_headers:
+                kwargs["headers"] = extra_headers
 
             resp = requests.request(method, url, **kwargs)
 
