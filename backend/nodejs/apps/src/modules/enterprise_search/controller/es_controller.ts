@@ -843,6 +843,7 @@ export const streamChat =
         conversationId: newConversationId || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        reasoningEffort: req.body.reasoningEffort || null,
       };
       if (agentMode) {
         assignToolsToPayload(aiPayload, req.body.tools);
@@ -1948,6 +1949,7 @@ export const addMessageStream =
         conversationId: conversationId || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        reasoningEffort: req.body.reasoningEffort || null,
       };
       if (agentMode) {
         assignToolsToPayload(aiPayload, req.body.tools);
@@ -3259,6 +3261,7 @@ async function regenerateAnswersInternal(
       conversationId: conversationId || null,
       timezone: req.body.timezone || null,
       currentTime: req.body.currentTime || null,
+      reasoningEffort: req.body.reasoningEffort || null,
     };
     if (agentKey || regenIsAgentMode) {
       assignToolsToPayload(aiPayload, req.body.tools);
@@ -5423,6 +5426,7 @@ export const deleteAgent =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
         conversationId: newAgentConversationId || null,
+        reasoningEffort: req.body.reasoningEffort || null,
       };
 
       assignToolsToPayload(aiPayload, req.body.tools);
@@ -6441,6 +6445,7 @@ export const addMessageStreamToAgentConversation =
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
         conversationId: conversationId || null,
+        reasoningEffort: req.body.reasoningEffort || null,
       };
       assignToolsToPayload(aiPayload, req.body.tools);
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);

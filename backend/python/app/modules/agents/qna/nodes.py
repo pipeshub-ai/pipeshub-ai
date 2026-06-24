@@ -56,6 +56,34 @@ from app.utils.time_conversion import build_llm_time_context
 # Logging
 logger = logging.getLogger(__name__)
 
+
+def _log_llm_token_usage(response_obj: Any, label: str = "LLM", log: logging.Logger | None = None) -> None:
+    """Log token usage from a LangChain AIMessage/structured-output response.
+
+    Safe to call on any LLM response type; silently no-ops when usage data is
+    absent (e.g. providers or structured-output wrappers that strip metadata).
+    """
+    _log = log or logger
+    try:
+        usage = getattr(response_obj, "usage_metadata", None)
+        if not usage:
+            return
+        prompt_tokens = usage.get("input_tokens", usage.get("prompt_tokens", "?"))
+        completion_tokens = usage.get("output_tokens", usage.get("completion_tokens", "?"))
+        total_tokens = usage.get("total_tokens", "?")
+        model = (
+            getattr(response_obj, "response_metadata", {}).get("model_name")
+            or getattr(response_obj, "response_metadata", {}).get("model")
+            or "unknown"
+        )
+        _log.info(
+            "📊 Token usage [%s] model=%s | prompt=%s  completion=%s  total=%s",
+            label, model, prompt_tokens, completion_tokens, total_tokens,
+        )
+    except Exception:
+        pass  # Never let logging failures affect response delivery
+
+
 # Tool execution constants
 TOOL_RESULT_TUPLE_LENGTH = 2
 MAX_PARALLEL_TOOLS = 10
@@ -4905,6 +4933,8 @@ async def _plan_with_validation_retry(
                 with contextlib.suppress(asyncio.CancelledError):
                     await keepalive_task
 
+            _log_llm_token_usage(response, label="planner", log=log)
+
             # Parse response — structured output returns a Pydantic model or dict;
             # raw LLM returns an AIMessage with text content.
             plan = _parse_planner_response_from_llm(response, log, using_structured)
@@ -6272,6 +6302,7 @@ async def reflect_node(
             with contextlib.suppress(asyncio.CancelledError):
                 await keepalive_task
 
+        _log_llm_token_usage(response, label="reflection", log=log)
         reflection = _parse_reflection_response(_normalize_llm_content(response.content), log)
 
     except asyncio.TimeoutError:

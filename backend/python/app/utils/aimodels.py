@@ -382,6 +382,165 @@ def _get_anthropic_max_tokens(model_name: str) -> int:
     return MAX_OUTPUT_TOKENS
 
 
+REASONING_EFFORT_LEVELS = frozenset({"low", "medium", "high"})
+
+# Legacy Anthropic extended thinking: budget in tokens per effort level.
+# Only used for Claude 4.5 and older — Opus 4.6+/Sonnet 4.6+ use adaptive thinking.
+_ANTHROPIC_THINKING_BUDGET: dict[str, int] = {"low": 4096, "medium": 10000, "high": 16000}
+
+# Gemini 2.5 thinking: integer token budget per effort level.
+_GEMINI_THINKING_BUDGET: dict[str, int] = {"low": 1024, "medium": 8192, "high": 16384}
+
+# Gemini 3+ thinking: enum level strings per effort level.
+_GEMINI_THINKING_LEVEL: dict[str, str] = {"low": "LOW", "medium": "MEDIUM", "high": "HIGH"}
+
+
+def _normalize_reasoning_effort(reasoning_effort: str | None) -> str | None:
+    if not reasoning_effort:
+        return None
+    normalized = reasoning_effort.strip().lower()
+    return normalized if normalized in REASONING_EFFORT_LEVELS else None
+
+
+def _is_reasoning_model(config: dict[str, Any], model_name: str | None) -> bool:
+    return bool(config.get("isReasoning", False) or (model_name and "gpt-5" in model_name))
+
+
+def _anthropic_uses_adaptive_thinking(model_name: str | None) -> bool:
+    """Return True for Claude models that require/prefer adaptive thinking.
+
+    Routing logic (Anthropic API evolution):
+    - Claude Opus 4.7+: adaptive thinking is **required** (budget_tokens → 400).
+    - Claude Opus 4.6 / Sonnet 4.6: adaptive thinking strongly recommended;
+      budget_tokens still works but is deprecated.
+    - Older models (≤ 4.5, haiku tiers): legacy budget_tokens API.
+    - Unknown model name patterns (future codenames, new tiers): default to
+      **adaptive** — Anthropic is moving all new models to adaptive thinking,
+      so the safe forward-compatible choice is True.  An admin will only mark
+      a new model ``isReasoning: true`` after it has been validated to work.
+    """
+    if not model_name:
+        return False
+    lowered = model_name.lower()
+    if "claude" not in lowered:
+        return False
+
+    match = re.search(r"claude[-_]?(opus|sonnet|haiku)[-_]?(\d+)[-_.](\d+)", lowered)
+
+    if not match:
+        # Unrecognised naming (e.g. claude-mythos-preview, future codenames) —
+        # default to adaptive thinking so new models work without a code release.
+        return True
+
+    tier = match.group(1)
+    major = int(match.group(2))
+    minor = int(match.group(3))
+
+    # Any Claude 5+ family uses adaptive thinking.
+    if major >= 5:
+        return True
+
+    # Within the Claude 4 family: Opus 4.6+ and Sonnet 4.6+ use adaptive.
+    if tier in ("opus", "sonnet") and major == 4 and minor >= 6:
+        return True
+
+    return False
+
+
+def _is_gemini3_model(model_name: str | None) -> bool:
+    """Return True when the model is from the Gemini 3 generation or later.
+
+    Gemini 3+ uses ``thinking_level`` (enum: LOW / MEDIUM / HIGH) instead of
+    ``thinking_budget`` (integer token count) used by Gemini 2.5 and earlier.
+
+    The major version is extracted numerically so that Gemini 10, 11, …
+    are handled correctly without a code change.
+    """
+    if not model_name:
+        return False
+    lowered = model_name.lower()
+    # Match the leading integer after "gemini" (with optional separator).
+    # Examples: gemini-3-flash, gemini-3.1-pro, gemini3pro, gemini-10-ultra.
+    match = re.search(r"gemini[-_.]?(\d+)", lowered)
+    if match:
+        return int(match.group(1)) >= 3
+    return False
+
+
+def _get_openai_reasoning_effort(
+    reasoning_effort: str | None,
+    is_reasoning_model: bool,
+) -> str | None:
+    """Return the validated reasoning_effort string to pass to ChatOpenAI, or None."""
+    normalized = _normalize_reasoning_effort(reasoning_effort)
+    if normalized and is_reasoning_model:
+        return normalized
+    return None
+
+
+def _apply_anthropic_thinking(
+    anthropic_kwargs: dict[str, Any],
+    reasoning_effort: str | None,
+    config: dict[str, Any],
+    max_tokens: int,
+) -> None:
+    """Inject thinking / effort parameters into Anthropic model kwargs.
+
+    Routing:
+    - Opus 4.6+, Sonnet 4.6+ → adaptive thinking + output_config.effort
+      (Opus 4.7+ *requires* this; budget_tokens raises HTTP 400 there)
+    - Older models (≤ 4.5) → legacy extended thinking with budget_tokens
+    """
+    if not config.get("isReasoning", False):
+        return
+    normalized = _normalize_reasoning_effort(reasoning_effort)
+    if not normalized:
+        return
+
+    model_name = anthropic_kwargs.get("model", "")
+
+    if _anthropic_uses_adaptive_thinking(model_name):
+        # Modern API: adaptive thinking + effort signal
+        anthropic_kwargs["thinking"] = {"type": "adaptive"}
+        anthropic_kwargs["output_config"] = {"effort": normalized}
+        # temperature is rejected on Opus 4.7+, and _apply_anthropic_thinking is
+        # called after the temperature guard already ran, so don't set it here.
+    else:
+        # Legacy API: explicit budget_tokens (still valid on 4.5 and older)
+        budget = _ANTHROPIC_THINKING_BUDGET[normalized]
+        anthropic_kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        anthropic_kwargs["temperature"] = 1
+        anthropic_kwargs["max_tokens"] = max(max_tokens, budget + 4096)
+
+
+def _apply_gemini_thinking_kwargs(
+    model_kwargs: dict[str, Any],
+    reasoning_effort: str | None,
+    config: dict[str, Any],
+    model_name: str | None = None,
+) -> None:
+    """Inject thinking configuration into Gemini model_kwargs.
+
+    Routing:
+    - Gemini 3+ → thinking_level enum ("LOW" / "MEDIUM" / "HIGH")
+    - Gemini 2.5 and earlier → thinking_budget integer token count
+    """
+    if not config.get("isReasoning", False):
+        return
+    normalized = _normalize_reasoning_effort(reasoning_effort)
+    if not normalized:
+        return
+
+    if _is_gemini3_model(model_name):
+        model_kwargs["thinking_config"] = {
+            "thinking_level": _GEMINI_THINKING_LEVEL[normalized],
+        }
+    else:
+        model_kwargs["thinking_config"] = {
+            "thinking_budget": _GEMINI_THINKING_BUDGET[normalized],
+        }
+
+
 def _anthropic_supports_sampling_params(model_name: str | None) -> bool:
     """Whether the given Claude model accepts ``temperature``/``top_p``/``top_k``.
 
@@ -416,7 +575,12 @@ def _anthropic_supports_sampling_params(model_name: str | None) -> bool:
 
     return True
 
-def get_generator_model(provider: str, config: dict[str, Any], model_name: str | None = None) -> BaseChatModel:
+def get_generator_model(
+    provider: str,
+    config: dict[str, Any],
+    model_name: str | None = None,
+    reasoning_effort: str | None = None,
+) -> BaseChatModel:
     configuration = config['configuration']
     is_default = config.get("isDefault")
     if is_default and model_name is None:
@@ -442,8 +606,9 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
             api_key=configuration["apiKey"],
             max_tokens=max_tokens,
         )
-        if _anthropic_supports_sampling_params(model_name):
+        if _anthropic_supports_sampling_params(model_name) and not config.get("isReasoning", False):
             anthropic_kwargs["temperature"] = 0.2
+        _apply_anthropic_thinking(anthropic_kwargs, reasoning_effort, config, max_tokens)
         return ChatAnthropic(**anthropic_kwargs)
 
     elif provider == LLMProvider.AWS_BEDROCK.value:
@@ -515,7 +680,7 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
         from langchain_anthropic import ChatAnthropic
         from langchain_openai import ChatOpenAI
 
-        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
+        is_reasoning_model = _is_reasoning_model(config, model_name)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
 
         is_claude_model = "claude" in model_name
@@ -528,33 +693,47 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
                 api_key=configuration.get("apiKey"),
                 max_tokens=configuration.get("maxTokens", max_tokens),
             )
-            if _anthropic_supports_sampling_params(model_name):
+            if _anthropic_supports_sampling_params(model_name) and not config.get("isReasoning", False):
                 azure_claude_kwargs["temperature"] = temperature
+            _apply_anthropic_thinking(
+                azure_claude_kwargs,
+                reasoning_effort,
+                config,
+                azure_claude_kwargs["max_tokens"],
+            )
             return ChatAnthropic(**azure_claude_kwargs)
         else:
-            return ChatOpenAI(
-                    model=model_name,
-                    temperature=temperature,
-                    timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                    api_key=configuration.get("apiKey"),
-                    base_url=configuration.get("endpoint"),
-                    stream_usage=True,  # Enable token usage tracking for Opik
-                )
+            re_effort = _get_openai_reasoning_effort(reasoning_effort, is_reasoning_model)
+            azure_ai_gpt_kwargs: Dict[str, Any] = dict(
+                model=model_name,
+                temperature=temperature,
+                timeout=DEFAULT_LLM_TIMEOUT,
+                api_key=configuration.get("apiKey"),
+                base_url=configuration.get("endpoint"),
+                stream_usage=True,
+            )
+            if re_effort:
+                azure_ai_gpt_kwargs["reasoning_effort"] = re_effort
+            return ChatOpenAI(**azure_ai_gpt_kwargs)
 
     elif provider == LLMProvider.AZURE_OPENAI.value:
         from langchain_openai import AzureChatOpenAI
 
-        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
+        is_reasoning_model = _is_reasoning_model(config, model_name)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return AzureChatOpenAI(
-                api_key=configuration["apiKey"],
-                azure_endpoint=configuration["endpoint"],
-                api_version=AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
-                temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                azure_deployment=configuration["deploymentName"],
-                stream_usage=True,
-            )
+        re_effort = _get_openai_reasoning_effort(reasoning_effort, is_reasoning_model)
+        azure_openai_kwargs: Dict[str, Any] = dict(
+            api_key=configuration["apiKey"],
+            azure_endpoint=configuration["endpoint"],
+            api_version=AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,
+            azure_deployment=configuration["deploymentName"],
+            stream_usage=True,
+        )
+        if re_effort:
+            azure_openai_kwargs["reasoning_effort"] = re_effort
+        return AzureChatOpenAI(**azure_openai_kwargs)
 
     elif provider == LLMProvider.COHERE.value:
         from langchain_cohere import ChatCohere
@@ -577,6 +756,8 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
     elif provider == LLMProvider.GEMINI.value:
         from langchain_google_genai import ChatGoogleGenerativeAI
 
+        gemini_kwargs: Dict[str, Any] = {}
+        _apply_gemini_thinking_kwargs(gemini_kwargs, reasoning_effort, config, model_name)
         return ChatGoogleGenerativeAI(
                 model=model_name,
                 temperature=0.2,
@@ -584,6 +765,7 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 max_retries=2,
                 google_api_key=configuration["apiKey"],
+                model_kwargs=gemini_kwargs,
             )
 
     elif provider == LLMProvider.GROQ.value:
@@ -634,16 +816,20 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
     elif provider == LLMProvider.OPENAI.value:
         from langchain_openai import ChatOpenAI
 
-        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
+        is_reasoning_model = _is_reasoning_model(config, model_name)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return ChatOpenAI(
-                model=model_name,
-                temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                api_key=configuration["apiKey"],
-                organization=configuration.get("organizationId"),
-                stream_usage=True,  # Enable token usage tracking for Opik
-            )
+        re_effort = _get_openai_reasoning_effort(reasoning_effort, is_reasoning_model)
+        openai_direct_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,
+            api_key=configuration["apiKey"],
+            organization=configuration.get("organizationId"),
+            stream_usage=True,
+        )
+        if re_effort:
+            openai_direct_kwargs["reasoning_effort"] = re_effort
+        return ChatOpenAI(**openai_direct_kwargs)
 
     elif provider == LLMProvider.XAI.value:
         from langchain_xai import ChatXAI
@@ -668,16 +854,22 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
 
     elif provider == LLMProvider.OPENAI_COMPATIBLE.value:
         from langchain_openai import ChatOpenAI
-        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
+        is_reasoning_model = _is_reasoning_model(config, model_name)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return ChatOpenAI(
-                model=model_name,
-                temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                api_key=configuration["apiKey"],
-                base_url=configuration["endpoint"],
-                stream_usage=True,  # Enable token usage tracking for Opik
-            )
+        # Reasoning effort is forwarded as a top-level param for compatible APIs;
+        # some providers may not support it, but it won't break those that don't.
+        re_effort = _get_openai_reasoning_effort(reasoning_effort, is_reasoning_model)
+        compat_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,
+            api_key=configuration["apiKey"],
+            base_url=configuration["endpoint"],
+            stream_usage=True,
+        )
+        if re_effort:
+            compat_kwargs["reasoning_effort"] = re_effort
+        return ChatOpenAI(**compat_kwargs)
 
     elif provider == LLMProvider.VERTEX_AI.value:
         from langchain_google_genai import ChatGoogleGenerativeAI
@@ -695,8 +887,10 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
                 "Please provide the Google Cloud project that hosts Vertex AI."
             )
         creds = _create_vertex_credentials(sa_json)
-        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
+        is_reasoning_model = _is_reasoning_model(config, model_name)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
+        vertex_kwargs: Dict[str, Any] = {}
+        _apply_gemini_thinking_kwargs(vertex_kwargs, reasoning_effort, config, model_name)
         return ChatGoogleGenerativeAI(
             model=model_name,
             project=project,
@@ -706,6 +900,7 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
             max_tokens=MAX_OUTPUT_TOKENS,
             timeout=DEFAULT_LLM_TIMEOUT,
             max_retries=2,
+            model_kwargs=vertex_kwargs,
         )
 
     raise ValueError(f"Unsupported provider type: {provider}")

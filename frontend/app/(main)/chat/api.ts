@@ -267,6 +267,7 @@ export const ChatApi = {
         ...buildAgentFiltersPayload(f.apps, f.kb),
         ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
         ...(request.attachments?.length ? { attachments: request.attachments } : {}),
+        ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
       };
     } else {
       endpoint = request.conversationId
@@ -374,6 +375,7 @@ export const ChatApi = {
       filters: StreamChatRequest['filters'];
       /** Universal agent mode: explicit tool subset (null = all, [] = none). */
       agentStreamTools?: string[];
+      reasoningEffort?: StreamChatRequest['reasoningEffort'];
     }
   ): Promise<void> {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -392,6 +394,9 @@ export const ChatApi = {
     };
     if (request.agentStreamTools !== undefined) {
       body.tools = request.agentStreamTools;
+    }
+    if (request.reasoningEffort) {
+      body.reasoningEffort = request.reasoningEffort;
     }
 
     await streamSSERequest(
@@ -462,6 +467,7 @@ export const ChatApi = {
       /** Explicit tool subset for this agent context (all tools when omitted). */
       tools?: string[];
       filters: { apps: string[]; kb: string[] };
+      reasoningEffort?: StreamChatRequest['reasoningEffort'];
     }
   ): Promise<void> {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -480,6 +486,9 @@ export const ChatApi = {
     };
     if (model.tools !== undefined) {
       agentRegenBody.tools = model.tools;
+    }
+    if (model.reasoningEffort) {
+      agentRegenBody.reasoningEffort = model.reasoningEffort;
     }
 
     await streamSSERequest(
