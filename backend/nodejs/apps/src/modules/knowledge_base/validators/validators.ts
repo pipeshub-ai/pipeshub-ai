@@ -100,8 +100,8 @@ const uploadRecordsBodySchema = z.object({
         throw new Error('Invalid boolean string value');
       }),
     ])
-    .default(true)
-    .optional(),
+    .optional()
+    .default(true),
 
   // Processed file buffers (set by file processor middleware)
   fileBuffers: z.array(fileBufferSchema).optional(),
