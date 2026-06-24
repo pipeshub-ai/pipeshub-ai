@@ -60,6 +60,8 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from msgraph.generated.models.o_data_errors.main_error import MainError
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 
 # ===========================================================================
@@ -2304,13 +2306,126 @@ class TestParseDatetimeCoverage:
 # ===========================================================================
 
 
+def _make_403_odata_error() -> ODataError:
+    """Build an ODataError that looks like a missing-permission 403."""
+    err = ODataError()
+    err.error = MainError()
+    err.error.code = "Authorization_RequestDenied"
+    err.response_status_code = 403
+    return err
+
+
+def _make_transient_odata_error() -> ODataError:
+    """Build an ODataError that looks like a transient 503."""
+    err = ODataError()
+    err.error = MainError()
+    err.error.code = "ServiceUnavailable"
+    err.response_status_code = 503
+    return err
+
+
 class TestConnectionAndAccess:
 
     @pytest.mark.asyncio
-    async def test_returns_true(self):
+    async def test_all_scopes_pass_returns_true(self):
+        """When all three probes succeed, returns True and no notification is sent."""
         connector = _make_connector()
+        connector._probe_users_scope = AsyncMock()
+        connector._probe_groups_scope = AsyncMock()
+        connector._probe_drives_scope = AsyncMock()
+        connector.notify = AsyncMock()
+
         result = await connector.test_connection_and_access()
+
         assert result is True
+        connector.notify.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_user_read_all_returns_false_with_notification(self):
+        """403 on users probe → False, notification lists User.Read.All."""
+        connector = _make_connector()
+        connector._probe_users_scope = AsyncMock(side_effect=_make_403_odata_error())
+        connector._probe_groups_scope = AsyncMock()
+        connector._probe_drives_scope = AsyncMock()
+        connector.notify = AsyncMock()
+
+        result = await connector.test_connection_and_access()
+
+        assert result is False
+        connector.notify.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_missing_group_read_all_returns_false_with_notification(self):
+        """403 on groups probe → False, notification fired."""
+        connector = _make_connector()
+        connector._probe_users_scope = AsyncMock()
+        connector._probe_groups_scope = AsyncMock(side_effect=_make_403_odata_error())
+        connector._probe_drives_scope = AsyncMock()
+        connector.notify = AsyncMock()
+
+        result = await connector.test_connection_and_access()
+
+        assert result is False
+        connector.notify.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_missing_files_read_all_returns_false_with_notification(self):
+        """403 on drives probe → False, notification fired."""
+        connector = _make_connector()
+        connector._probe_users_scope = AsyncMock()
+        connector._probe_groups_scope = AsyncMock()
+        connector._probe_drives_scope = AsyncMock(side_effect=_make_403_odata_error())
+        connector.notify = AsyncMock()
+
+        result = await connector.test_connection_and_access()
+
+        assert result is False
+        connector.notify.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_all_scopes_missing_single_notification_with_all_three(self):
+        """All three probes return 403 → exactly one notification fired."""
+        connector = _make_connector()
+        connector._probe_users_scope = AsyncMock(side_effect=_make_403_odata_error())
+        connector._probe_groups_scope = AsyncMock(side_effect=_make_403_odata_error())
+        connector._probe_drives_scope = AsyncMock(side_effect=_make_403_odata_error())
+        connector.notify = AsyncMock()
+
+        result = await connector.test_connection_and_access()
+
+        assert result is False
+        connector.notify.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_transient_error_returns_false_without_notification(self):
+        """
+        A non-403 ODataError (e.g. 503 ServiceUnavailable) is a transient failure.
+        The method returns False but must NOT fire a missing-permission notification.
+        """
+        connector = _make_connector()
+        connector._probe_users_scope = AsyncMock(side_effect=_make_transient_odata_error())
+        connector._probe_groups_scope = AsyncMock()
+        connector._probe_drives_scope = AsyncMock()
+        connector.notify = AsyncMock()
+
+        result = await connector.test_connection_and_access()
+
+        assert result is False
+        connector.notify.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_generic_exception_returns_false_without_notification(self):
+        """A non-ODataError exception returns False without a notification."""
+        connector = _make_connector()
+        connector._probe_users_scope = AsyncMock(side_effect=RuntimeError("network down"))
+        connector._probe_groups_scope = AsyncMock()
+        connector._probe_drives_scope = AsyncMock()
+        connector.notify = AsyncMock()
+
+        result = await connector.test_connection_and_access()
+
+        assert result is False
+        connector.notify.assert_not_called()
 
 
 # ===========================================================================

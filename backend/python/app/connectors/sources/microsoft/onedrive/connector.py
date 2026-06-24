@@ -1772,9 +1772,7 @@ class OneDriveConnector(BaseConnector):
             except ODataError as e:
                 all_passed = False
                 error_code = (e.error.code or "") if e.error else ""
-                if error_code == "Authorization_RequestDenied" or (
-                    hasattr(e, "response_status_code") and e.response_status_code == 403
-                ):
+                if error_code == "Authorization_RequestDenied" or e.response_status_code == 403:
                     # permission not granted — actionable by the user.
                     missing_scopes.append(scope_name)
                     self.logger.error(
