@@ -11,7 +11,6 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from kiota_abstractions.base_request_configuration import RequestConfiguration
 from msgraph import GraphServiceClient
-from msgraph.generated.drives.drives_request_builder import DrivesRequestBuilder
 from msgraph.generated.groups.groups_request_builder import GroupsRequestBuilder
 from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.group import Group
@@ -200,6 +199,7 @@ class OneDriveConnector(BaseConnector):
         # Batch processing configuration
         self.batch_size = 100
         self.max_concurrent_batches = 1 # set to 1 for now to avoid write write conflicts for small number of records
+        self.onedrive_users_synced = 0
 
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
         self.sync_filters: FilterCollection = FilterCollection()
@@ -785,6 +785,23 @@ class OneDriveConnector(BaseConnector):
                 self.logger.info("Sync point found, performing incremental delta sync...")
                 await self._perform_delta_sync(delta_link, sync_point_key)
 
+        except ODataError as e:
+            self.logger.error(f"❌ Error in user group sync: {e}", exc_info=True)
+            error_code = (e.error.code or "") if e.error else ""
+            if error_code == "Authorization_RequestDenied" or e.response_status_code == 403:
+                await self.notify(
+                    type=NotificationType.CONNECTOR_AUTH_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title="User group sync failed",
+                    message="Please check your authentication credentials are correct and has Group.Read.All API permission.",
+                    payload={
+                        "connector_id": self.connector_id,
+                        "connector_name": self.connector_name.value,
+                        "connector_scope": self.scope,
+                    },
+                    recipient_user_ids=[self.created_by],
+                )
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error in user group sync: {e}", exc_info=True)
             raise
@@ -1261,6 +1278,30 @@ class OneDriveConnector(BaseConnector):
             users: List of users to process
         """
         try:
+            # Probe for Files.Read.All API permission
+            try:
+                await self._probe_drives_scope()
+            except ODataError as e:
+                self.logger.error(f"❌ Error in files sync: {e}", exc_info=True)
+                error_code = (e.error.code or "") if e.error else ""
+                if error_code == "Authorization_RequestDenied" or e.response_status_code == 403:
+                    await self.notify(
+                        type=NotificationType.CONNECTOR_AUTH_ERROR,
+                        severity=NotificationSeverity.ERROR,
+                        title="Files sync failed",
+                        message="Please check your authentication credentials are correct and has Files.Read.All API permission.",
+                        payload={
+                            "connector_id": self.connector_id,
+                            "connector_name": self.connector_name.value,
+                            "connector_scope": self.scope,
+                        },
+                        recipient_user_ids=[self.created_by],
+                    )
+                raise
+            except Exception as e:
+                self.logger.error(f"❌ Error in files sync: {e}", exc_info=True)
+                raise
+
             all_active_users = await self.data_entities_processor.get_all_active_users()
             active_user_emails = {active_user.email.lower() for active_user in all_active_users}
 
@@ -1281,6 +1322,20 @@ class OneDriveConnector(BaseConnector):
                     self.logger.info(f"Skipping user {user.email}: No OneDrive license or drive not provisioned")
 
             self.logger.info(f"Processing {len(users_to_sync)} users with OneDrive out of {len(active_users)} active users")
+            self.onedrive_users_synced = len(users_to_sync)
+            if len(users_to_sync) == 0:
+                await self.notify(
+                    type=NotificationType.CONNECTOR_RECORD_SYNC_ERROR,
+                    severity=NotificationSeverity.WARNING,
+                    title="No users with OneDrive found",
+                    message="Ensure that your OneDrive users are invited to Pipeshub, and verify that your application has Files.Read.All API permission with admin consent.",
+                    recipient_user_ids=[self.created_by],
+                    payload={
+                        "connector_id": self.connector_id,
+                        "connector_name": self.connector_name.value,
+                        "connector_scope": self.scope,
+                    },
+                )
 
             # Process users in concurrent batches
             for i in range(0, len(users_to_sync), self.max_concurrent_batches):
@@ -1339,22 +1394,27 @@ class OneDriveConnector(BaseConnector):
             await self.data_entities_processor.on_new_app_users(users)
             self.logger.info(f"✅ Successfully synced {len(users)} users")
             return users
+        except ODataError as e:
+            self.logger.error(f"❌ Error syncing OneDrive users: {e}", exc_info=True)
+            error_code = (e.error.code or "") if e.error else ""
+            if error_code == "Authorization_RequestDenied" or e.response_status_code == 403:
+                await self.notify(
+                    type=NotificationType.CONNECTOR_USER_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title="OneDrive users sync failed",
+                    message=(
+                        "Please check your authentication credentials are correct and has User.Read.All API permission."
+                    ),
+                    recipient_user_ids=[self.created_by],
+                    payload={
+                        "connector_id": self.connector_id,
+                        "connector_name": self.connector_name.value,
+                        "connector_scope": self.scope,
+                    },
+                )
+            raise
         except Exception as e:
-            self.logger.error(f"Error syncing OneDrive users: {e}")
-            await self.notify(
-                type=NotificationType.CONNECTOR_USER_SYNC_ERROR,
-                severity=NotificationSeverity.ERROR,
-                title="Unable to sync OneDrive users",
-                message=(
-                    "Cannot sync OneDrive users. Please check your authentication credentials and API permissions."
-                ),
-                recipient_user_ids=[self.created_by],
-                payload={
-                    "connector_id": self.connector_id,
-                    "connector_name": self.connector_name.value,
-                    "connector_scope": self.scope,
-                },
-            )
+            self.logger.error(f"❌ Error syncing OneDrive users: {e}", exc_info=True)
             raise
 
     async def _handle_reindex_event(self, record_id: str) -> None:
@@ -1451,6 +1511,7 @@ class OneDriveConnector(BaseConnector):
             # This is necessary because the connector instance may be reused across multiple
             # scheduled runs that are days apart, causing the HTTP session to timeout
             await self._reinitialize_credential_if_needed()
+            self.onedrive_users_synced = 0
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "onedrive", self.connector_id, self.logger
@@ -1469,18 +1530,19 @@ class OneDriveConnector(BaseConnector):
             await self._process_users_in_batches(users)
 
             self.logger.info("OneDrive connector sync completed successfully")
-            await self.notify(
-                type=NotificationType.CONNECTOR_SUCCESS,
-                severity=NotificationSeverity.INFO,
-                title="OneDrive sync complete",
-                message="OneDrive sync completed successfully",
-                recipient_user_ids=[self.created_by],
-                payload={
-                    "connector_id": self.connector_id,
-                    "connector_name": self.connector_name.value,
-                    "connector_scope": self.scope,
-                },
-            )
+            if self.onedrive_users_synced > 0:
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SUCCESS,
+                    severity=NotificationSeverity.INFO,
+                    title="OneDrive sync complete",
+                    message="OneDrive sync completed successfully",
+                    recipient_user_ids=[self.created_by],
+                    payload={
+                        "connector_id": self.connector_id,
+                        "connector_name": self.connector_name.value,
+                        "connector_scope": self.scope,
+                    },
+                )
 
         except Exception as e:
             self.logger.error(f"❌ Error in OneDrive connector run: {e}")
@@ -1832,17 +1894,28 @@ class OneDriveConnector(BaseConnector):
 
     async def _probe_drives_scope(self) -> None:
         """
-        Probe Files.Read.All via GET /drives?$top=1&$select=id.
-        /drives returns a proper 403 Authorization_RequestDenied when the scope
-        is absent.
+        Probe Files.Read.All via GET /users/{first_user_id}/drives.
+
+        The global GET /drives endpoint is scoped to user/group/site and cannot
+        be called tenant-wide. Instead we fetch the first available user, then
+        list that user's drives:
+          - 200 + empty list  → user has no OneDrive yet, but Files.Read.All IS present.
+          - 403               → Files.Read.All scope is not granted.
         """
-        await self.client.drives.get(
+        users_response = await self.client.users.get(
             RequestConfiguration(
-                query_parameters=DrivesRequestBuilder.DrivesRequestBuilderGetQueryParameters(
-                    top=1, select=["id"]
+                query_parameters=UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
+                    top=1, select=["id", "displayName"]
                 )
             )
         )
+
+        if not (users_response and users_response.value):
+            self.logger.debug("No users found; skipping Files.Read.All drive probe")
+            return
+
+        user = users_response.value[0]
+        await self.client.users.by_user_id(user.id).drives.get()
 
     @classmethod
     async def create_connector(cls, logger: Logger,

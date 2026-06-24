@@ -1617,6 +1617,7 @@ class TestProcessUsersInBatchesCoverage:
     @pytest.mark.asyncio
     async def test_error_propagates(self):
         connector = _make_connector()
+        connector._probe_drives_scope = AsyncMock()
         connector.data_entities_processor.get_all_active_users = AsyncMock(side_effect=Exception("db err"))
 
         with pytest.raises(Exception, match="db err"):
@@ -1626,6 +1627,7 @@ class TestProcessUsersInBatchesCoverage:
     async def test_user_without_email_filtered(self):
         """User with None email is filtered out."""
         connector = _make_connector()
+        connector._probe_drives_scope = AsyncMock()
         active_user = MagicMock()
         active_user.email = "active@test.com"
         connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[active_user])

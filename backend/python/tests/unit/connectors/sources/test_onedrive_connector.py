@@ -1110,6 +1110,7 @@ class TestProcessUsersInBatches:
     async def test_filters_active_users_with_onedrive(self):
         connector = _make_connector()
         connector.msgraph_client = MagicMock()
+        connector._probe_drives_scope = AsyncMock()
         connector.max_concurrent_batches = 10
 
         active_user = MagicMock()
@@ -1135,6 +1136,7 @@ class TestProcessUsersInBatches:
     async def test_no_active_users_skips(self):
         connector = _make_connector()
         connector.msgraph_client = MagicMock()
+        connector._probe_drives_scope = AsyncMock()
 
         connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
         connector._run_sync_with_yield = AsyncMock()
@@ -3322,6 +3324,7 @@ class TestProcessUsersInBatchesCoverage:
     @pytest.mark.asyncio
     async def test_error_propagates(self):
         connector = _make_connector_cov()
+        connector._probe_drives_scope = AsyncMock()
         connector.data_entities_processor.get_all_active_users = AsyncMock(side_effect=Exception("db err"))
 
         with pytest.raises(Exception, match="db err"):
@@ -3331,6 +3334,7 @@ class TestProcessUsersInBatchesCoverage:
     async def test_user_without_email_filtered(self):
         """User with None email is filtered out."""
         connector = _make_connector_cov()
+        connector._probe_drives_scope = AsyncMock()
         active_user = MagicMock()
         active_user.email = "active@test.com"
         connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[active_user])
