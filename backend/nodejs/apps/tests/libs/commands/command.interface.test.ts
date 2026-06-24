@@ -222,14 +222,20 @@ describe('command.interface', () => {
       const cmd = new TestCommand('http://example.com')
       const result = cmd.testSanitizeHeaders({
         'x-custom-header': 'some-value',
-        'x-request-id': '12345',
         'cache-control': 'no-cache',
       })
       expect(result).not.to.have.property('x-custom-header')
-      expect(result).not.to.have.property('x-request-id')
       expect(result).not.to.have.property('cache-control')
       // Should still add content-type
       expect(result).to.have.property('content-type', 'application/json')
+    })
+
+    it('should keep x-request-id header for trace propagation', () => {
+      const cmd = new TestCommand('http://example.com')
+      const result = cmd.testSanitizeHeaders({
+        'x-request-id': '12345',
+      })
+      expect(result).to.have.property('x-request-id', '12345')
     })
 
     it('should be case-insensitive when filtering headers', () => {

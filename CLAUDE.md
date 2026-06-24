@@ -97,6 +97,10 @@ Does the code do what the PR claims? Trace the happy path and the failure paths.
 - Functions over ~50 lines or with >3 levels of nesting usually hide a missing abstraction.
 - Dead code, commented-out blocks, and TODOs without owner/ticket should be removed.
 
+#### Code comments — write few, write only what the code can't say
+
+When writing or editing code (yours or in review), do not add comments that merely restate what the line does, narrate the change ("now we capture X instead of Y"), or describe obvious control flow. A comment earns its place only when it explains *why* — a non-obvious constraint, a subtle bug it guards against, or context a reader cannot recover from the code itself. Prefer one terse line over a multi-line docstring for such notes. No banner/separator comments, no commented-out code, no TODOs without an owner. If a comment would just paraphrase the code, delete it and let the code speak.
+
 ### 7. Extensibility
 
 - Does adding the next connector / LLM provider / storage backend require editing this file, or just adding a new implementation?

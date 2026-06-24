@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import sys
+from collections.abc import Callable
 
 from app.utils.request_context import NO_CONTEXT, current_display_id, get_context
 
@@ -13,33 +14,49 @@ LOG_FORMAT = (
 )
 
 
-_base_record_factory = logging.getLogRecordFactory()
+def _make_record_factory(
+    base_factory: Callable[..., logging.LogRecord],
+) -> Callable[..., logging.LogRecord]:
+    # base_factory is captured in the closure, not a module global, so reloading
+    # this module cannot rebind it to ourselves and cause infinite recursion.
+    def _record_factory(*args: object, **kwargs: object) -> logging.LogRecord:
+        record = base_factory(*args, **kwargs)  # type: ignore[arg-type]
 
+        if get_context() is None:
+            record.request_id = ""
+            record.task = NO_CONTEXT
+            record.trace = ""
+            return record
 
-def _record_factory(*args: object, **kwargs: object) -> logging.LogRecord:
-    record = _base_record_factory(*args, **kwargs)  # type: ignore[arg-type]
+        try:
+            task = asyncio.current_task()
+            task_name = task.get_name() if task is not None else NO_CONTEXT
+        except RuntimeError:
+            task_name = NO_CONTEXT
 
-    if get_context() is None:
-        record.request_id = ""
-        record.task = NO_CONTEXT
-        record.trace = ""
+        display_id = current_display_id()
+        record.request_id = display_id
+        record.task = task_name
+        record.trace = f"[req:{display_id} thr:{record.threadName} task:{task_name}] "
         return record
 
-    try:
-        task = asyncio.current_task()
-        task_name = task.get_name() if task is not None else NO_CONTEXT
-    except RuntimeError:
-        task_name = NO_CONTEXT
-
-    display_id = current_display_id()
-    record.request_id = display_id
-    record.task = task_name
-    record.trace = f"[req:{display_id} thr:{record.threadName} task:{task_name}] "
-    return record
+    _record_factory._pipeshub_trace = True  # type: ignore[attr-defined]
+    _record_factory._pipeshub_base = base_factory  # type: ignore[attr-defined]
+    return _record_factory
 
 
-_record_factory._pipeshub_trace = True  # type: ignore[attr-defined]
-if not getattr(logging.getLogRecordFactory(), "_pipeshub_trace", False):
+# On reload, reuse the original base our installed factory already captured
+# rather than wrapping the installed factory (which would recurse).
+_existing_factory = logging.getLogRecordFactory()
+if getattr(_existing_factory, "_pipeshub_trace", False):
+    _base_record_factory = getattr(
+        _existing_factory, "_pipeshub_base", logging.LogRecord
+    )
+else:
+    _base_record_factory = _existing_factory
+
+_record_factory = _make_record_factory(_base_record_factory)
+if not getattr(_existing_factory, "_pipeshub_trace", False):
     logging.setLogRecordFactory(_record_factory)
 
 
