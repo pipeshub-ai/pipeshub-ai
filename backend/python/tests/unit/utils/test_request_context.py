@@ -112,11 +112,11 @@ class TestContextLifecycle:
 
 
 class TestRootIdGenerators:
-    def test_new_system_root_is_unique_hex(self):
+    def test_new_system_root_is_prefixed_and_unique(self):
         a, b = rc.new_system_root(), rc.new_system_root()
         assert a != b
-        assert len(a) == 32
-        int(a, 16)  # raises if not valid hex
+        assert a.startswith("sys-")
+        int(a[len("sys-"):], 16)  # body is valid hex
 
     def test_new_anon_root_is_prefixed_and_unique(self):
         a, b = rc.new_anon_root(), rc.new_anon_root()
@@ -184,10 +184,10 @@ class TestContextFromEnvelope:
         ctx = rc.context_from_envelope({rc.ENVELOPE_REQUEST_ID: "abc\r\ndef"})
         assert ctx.root_id == "abcdef"
 
-    def test_missing_request_id_falls_back_to_system_root(self):
+    def test_missing_request_id_falls_back_to_anon_root(self):
         ctx = rc.context_from_envelope({})
-        assert len(ctx.root_id) == 32  # a fresh new_system_root() hex
+        assert ctx.root_id.startswith("anon-")  # propagation gap, not system work
 
-    def test_unsafe_only_request_id_falls_back_to_system_root(self):
+    def test_unsafe_only_request_id_falls_back_to_anon_root(self):
         ctx = rc.context_from_envelope({rc.ENVELOPE_REQUEST_ID: "@@@ ///"})
-        assert len(ctx.root_id) == 32
+        assert ctx.root_id.startswith("anon-")

@@ -43,9 +43,11 @@ export function getRootId(): string | undefined {
   return storage.getStore()?.rootId;
 }
 
-/** Mint a root id for a system/automation-initiated unit of work. */
+/**
+ * The `sys-` prefix marks it as machine-originated work.
+ */
 export function newSystemRoot(): string {
-  return randomUUID();
+  return `sys-${randomUUID().replace(/-/g, '')}`;
 }
 
 /** Fallback root id when an inbound request carries none (mirrors Python `new_anon_root`). */

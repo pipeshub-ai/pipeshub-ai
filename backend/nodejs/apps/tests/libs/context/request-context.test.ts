@@ -99,11 +99,11 @@ describe('request-context', () => {
   // newSystemRoot
   // ---------------------------------------------------------------------------
   describe('newSystemRoot', () => {
-    it('mints a unique uuid each call', () => {
+    it('mints a unique sys-prefixed id each call', () => {
       const a = newSystemRoot();
       const b = newSystemRoot();
       expect(a).to.not.equal(b);
-      expect(a).to.match(/^[0-9a-f-]{36}$/);
+      expect(a).to.match(/^sys-[a-f0-9]{32}$/);
     });
   });
 

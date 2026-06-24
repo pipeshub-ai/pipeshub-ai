@@ -70,8 +70,13 @@ def reset_context(token: Optional[CtxToken]) -> None:
 
 
 def new_system_root() -> str:
-    """Root id for a system/automation-initiated unit of work."""
-    return uuid.uuid4().hex
+    """Root id for a system/automation-initiated unit of work.
+
+    The ``sys-`` prefix marks the work as machine-originated (scheduled sync,
+    token refresh, migration, broker message with no inbound id), the way a
+    user request carries its ``<userId>-`` prefix.
+    """
+    return f"sys-{uuid.uuid4().hex}"
 
 
 def new_anon_root() -> str:
@@ -108,5 +113,8 @@ def inject_envelope(message: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def context_from_envelope(message: Dict[str, Any]) -> RequestContext:
+    # A message with no id is a propagation gap across the broker boundary
+    # (the broker analogue of an inbound HTTP request with no header), not
+    # self-initiated machine work — so it gets an `anon-` root, not `sys-`.
     root_id = sanitize_root_id(message.get(ENVELOPE_REQUEST_ID))
-    return RequestContext(root_id=root_id or new_system_root())
+    return RequestContext(root_id=root_id or new_anon_root())

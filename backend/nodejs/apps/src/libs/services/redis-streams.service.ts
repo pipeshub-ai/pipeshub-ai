@@ -16,7 +16,7 @@ import {
   injectEnvelope,
   runWithRequestContext,
   ENVELOPE_REQUEST_ID,
-  newSystemRoot,
+  newAnonRoot,
   sanitizeRootId,
 } from '../context/request-context';
 import {
@@ -47,7 +47,7 @@ function contextFromValue(value: unknown): { rootId: string } {
   return {
     rootId:
       sanitizeRootId(env[ENVELOPE_REQUEST_ID] as string | undefined) ??
-      newSystemRoot(),
+      newAnonRoot(),
   };
 }
 
