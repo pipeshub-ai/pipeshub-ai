@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional
@@ -280,6 +281,16 @@ class BlockContainerValidator:
                     message=(
                         f"data must be a string (empty string allowed), "
                         f"got {type(block.data).__name__}"
+                    ),
+                    location=loc,
+                ))
+            elif self._contains_base64_image(block.data):
+                issues.append(ValidationIssue(
+                    severity=Severity.ERROR,
+                    code="TEXT_DATA_CONTAINS_BASE64_IMAGE",
+                    message=(
+                        "data contains an embedded base64 image; "
+                        "images must be stored in IMAGE blocks, not TEXT blocks"
                     ),
                     location=loc,
                 ))
@@ -644,3 +655,43 @@ class BlockContainerValidator:
         if fmt is None:
             return None
         return fmt.value if hasattr(fmt, "value") else str(fmt)
+
+    # Smallest real image in base64 is a 1×1 PNG (~68 raw bytes → ~92 base64 chars).
+    # Anything shorter cannot be a valid image.
+    _MIN_BASE64_IMAGE_LEN = 96
+
+    # Matches a base64 image payload after a data URI prefix.
+    _DATA_URI_BASE64_RE = re.compile(
+        r"data:image/[^;]+;base64,([A-Za-z0-9+/\r\n]+=*)"
+    )
+
+    # Matches a raw base64 payload starting with the base64-encoded magic bytes of
+    # common image formats, embedded anywhere in the string.
+    #   iVBORw0KGgo → PNG  (\x89PNG\r\n\x1a\n)
+    #   /9j/        → JPEG (\xff\xd8\xff)
+    #   R0lGOD      → GIF  (GIF8)
+    #   UklGR       → WebP (RIFF....WEBP)
+    #   Qk0         → BMP  (BM)
+    #   SUkq        → TIFF little-endian (II*\x00)
+    #   TU0A        → TIFF big-endian    (MM\x00*)
+    _RAW_BASE64_IMAGE_RE = re.compile(
+        r"(?:iVBORw0KGgo|/9j/|R0lGOD|UklGR|Qk0|SUkq|TU0A)[A-Za-z0-9+/\r\n]+=*"
+    )
+
+    @staticmethod
+    def _contains_base64_image(text: str) -> bool:
+        """Return True if *text* contains a base64-encoded image, either as a
+        data URI (``data:image/...;base64,<payload>``) or as a raw base64
+        payload identified by its format magic-byte prefix.
+
+        In both cases the base64 payload must be >= _MIN_BASE64_IMAGE_LEN chars
+        to rule out short strings that merely share a prefix with image data.
+        The search is a substring match, so an embedded image anywhere in the
+        text is detected.
+        """
+        m = BlockContainerValidator._DATA_URI_BASE64_RE.search(text)
+        if m and len(m.group(1)) >= BlockContainerValidator._MIN_BASE64_IMAGE_LEN:
+            return True
+
+        m = BlockContainerValidator._RAW_BASE64_IMAGE_RE.search(text)
+        return bool(m and len(m.group(0)) >= BlockContainerValidator._MIN_BASE64_IMAGE_LEN)
