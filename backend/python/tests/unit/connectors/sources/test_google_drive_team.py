@@ -1416,6 +1416,23 @@ class TestGetSharedDriveOptions:
         assert result.success is True
         assert result.options == []
 
+    @pytest.mark.asyncio
+    async def test_uninitialized_drive_source_returns_failure(self, connector):
+        connector.drive_data_source = None
+        result = await connector._get_shared_drive_options(page=1, limit=20, search=None)
+        assert result.success is False
+        assert "not initialized" in result.message
+
+    @pytest.mark.asyncio
+    async def test_search_with_single_quote_is_escaped(self, connector):
+        connector.drive_data_source.drives_list = AsyncMock(return_value={"drives": []})
+        await connector._get_shared_drive_options(page=1, limit=20, search="User's Drive")
+        connector.drive_data_source.drives_list.assert_awaited_once_with(
+            pageSize=20, pageToken=None,
+            q="name contains 'User\\'s Drive'",
+            useDomainAdminAccess=True,
+        )
+
 
 class TestReindexRecords:
     @pytest.mark.asyncio

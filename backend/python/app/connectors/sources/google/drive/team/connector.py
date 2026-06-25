@@ -2911,7 +2911,14 @@ class GoogleDriveTeamConnector(BaseConnector):
         search: Optional[str],
         cursor: Optional[str] = None,
     ) -> FilterOptionsResponse:
-        q = f"name contains '{search.strip()}'" if search and search.strip() else None
+        if not self.drive_data_source:
+            return FilterOptionsResponse(
+                success=False, options=[], page=page, limit=limit,
+                has_more=False, message="Drive data source not initialized",
+            )
+        # Single quotes inside the term would break the Drive query syntax, so escape them.
+        escaped_search = search.strip().replace("'", "\\'") if search else ""
+        q = f"name contains '{escaped_search}'" if escaped_search else None
         try:
             result = await self.drive_data_source.drives_list(
                 pageSize=limit,
