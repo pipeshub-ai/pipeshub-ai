@@ -3124,7 +3124,7 @@ components:
                 type: string
               userRole:
                 type: string
-                enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+                enum: [OWNER, WRITER, READER]
               folders:
                 type: array
                 items:
@@ -3189,7 +3189,7 @@ components:
                   type: array
                   items:
                     type: string
-                    enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+                    enum: [OWNER, WRITER, READER]
                 sort_by:
                   type: string
                   enum: [name, createdAtTimestamp, updatedAtTimestamp, userRole]
@@ -3208,7 +3208,7 @@ components:
                   type: array
                   items:
                     type: string
-                    enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+                    enum: [OWNER, WRITER, READER]
                 sortFields:
                   type: array
                   items:
@@ -19866,7 +19866,7 @@ paths:
         **Filtering:**
 
         - **search:** Full-text search on KB names (max 1000 chars)
-        - **permissions:** Filter by user's role (comma-separated: OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER)
+        - **permissions:** Filter by user's role (comma-separated: OWNER, WRITER, READER)
 
         **Sorting Options:**
 
@@ -19919,10 +19919,10 @@ paths:
           required: false
           description: |
             Comma-separated permission roles to filter by. Each token must be one of:
-            OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER.
+            OWNER, WRITER, READER.
           schema:
             type: string
-            example: "OWNER,ORGANIZER,WRITER"
+            example: "OWNER,WRITER"
         - name: sortBy
           in: query
           required: false

@@ -310,10 +310,7 @@ export const listKnowledgeBases =
       if (permissions) {
         const validPermissions = [
           'OWNER',
-          'ORGANIZER',
-          'FILEORGANIZER',
           'WRITER',
-          'COMMENTER',
           'READER',
         ];
         const invalidPermissions = permissions.filter(
