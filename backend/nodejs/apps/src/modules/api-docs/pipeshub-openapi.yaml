@@ -3418,6 +3418,67 @@ components:
         - OTHERS
       example: "FILE"
 
+    ConnectorNameEnum:
+      type: string
+      description: |
+        Name of the source connector. Mirrors the values of the backend
+        `Connectors` enum (`backend/python/app/config/constants/arangodb.py`);
+        records store the enum value (e.g. Google Drive is `DRIVE`,
+        SharePoint Online is `SHAREPOINT ONLINE`), not the enum member name.
+      enum:
+        - "DRIVE"
+        - "DRIVE WORKSPACE"
+        - "GMAIL"
+        - "GMAIL WORKSPACE"
+        - "CALENDAR"
+        - "ONEDRIVE"
+        - "SHAREPOINT ONLINE"
+        - "OUTLOOK"
+        - "OUTLOOK PERSONAL"
+        - "OUTLOOK CALENDAR"
+        - "MICROSOFT TEAMS"
+        - "NOTION"
+        - "SLACK"
+        - "SLACK WORKSPACE"
+        - "KB"
+        - "CONFLUENCE"
+        - "CONFLUENCE DATA CENTER"
+        - "CONFLUENCE DATA CENTER PERSONAL"
+        - "JIRA"
+        - "JIRA PERSONAL"
+        - "JIRA DATA CENTER"
+        - "JIRA DATA CENTER PERSONAL"
+        - "BOX"
+        - "NEXTCLOUD"
+        - "DROPBOX"
+        - "DROPBOX PERSONAL"
+        - "WEB"
+        - "BOOKSTACK"
+        - "GITHUB"
+        - "SERVICENOW"
+        - "SALESFORCE"
+        - "S3"
+        - "MINIO"
+        - "GCS"
+        - "AZURE BLOB"
+        - "AZURE FILES"
+        - "LINEAR"
+        - "ZAMMAD"
+        - "ZOOM"
+        - "GITLAB"
+        - "GITLAB PERSONAL"
+        - "SNOWFLAKE"
+        - "POSTGRESQL"
+        - "MARIADB"
+        - "UNKNOWN"
+        - "RSS"
+        - "LOCAL_FS"
+        - "CODING_SANDBOX"
+        - "DATABASE_SANDBOX"
+        - "IMAGE_GENERATION"
+        - "ATTACHMENTS"
+      example: "DRIVE"
+
     Record:
       type: object
       description: |
@@ -3454,10 +3515,7 @@ components:
           description: ID of the connector that synced this record (null for uploads)
           example: "conn_123456"
         connectorName:
-          type: string
-          enum: [KB, ONEDRIVE, GOOGLE_DRIVE, CONFLUENCE, JIRA, SLACK, SHAREPOINT_ONLINE, GMAIL, DROPBOX, OUTLOOK, SERVICENOW, BOOKSTACK, WEB]
-          description: Name of the source connector
-          example: "GOOGLE_DRIVE"
+          $ref: '#/components/schemas/ConnectorNameEnum'
         orgId:
           type: string
           description: Organization ID that owns this record
