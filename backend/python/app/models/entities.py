@@ -590,6 +590,7 @@ class FileRecord(Record):
             updated_at=arango_base_record["updatedAtTimestamp"],
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp"),
+            preview_renderable=arango_base_record.get("previewRenderable", True),
             is_dependent_node=arango_base_record.get("isDependentNode", False),
             parent_node_id=arango_base_record.get("parentNodeId"),
             is_internal=arango_base_record.get("isInternal", False),
@@ -941,6 +942,8 @@ class WebpageRecord(Record):
             source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
             source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
             virtual_record_id=record_doc.get("virtualRecordId"),
+            preview_renderable=record_doc.get("previewRenderable", True),
+            is_dependent_node=record_doc.get("isDependentNode", False),
         )
 
 class LinkRecord(Record):
@@ -1044,6 +1047,8 @@ class LinkRecord(Record):
             title=link_doc.get("title"),
             is_public=LinkPublicStatus(link_doc.get("isPublic", "unknown")),
             linked_record_id=link_doc.get("linkedRecordId"),
+            preview_renderable=record_doc.get("previewRenderable", True),
+            is_dependent_node=record_doc.get("isDependentNode", False),
         )
 
 class CommentRecord(Record):

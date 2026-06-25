@@ -145,7 +145,19 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
                     "setup"
                 )
             ]
-        )
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            AuthField(
+                name="apiToken",
+                display_name="API Token",
+                placeholder="Enter your Linear personal API key",
+                description="Personal API key from Linear",
+                field_type="PASSWORD",
+                required=True,
+                max_length=2000,
+                is_secret=True,
+            ),
+        ])
     ])\
     .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
@@ -154,6 +166,11 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
         .add_documentation_link(DocumentationLink(
             "Linear OAuth Setup",
             "https://linear.app/developers/oauth-2-0-authentication",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Linear API Key Setup",
+            "https://linear.app/settings/api",
             "setup"
         ))
         .add_documentation_link(DocumentationLink(

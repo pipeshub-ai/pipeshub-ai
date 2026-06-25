@@ -116,7 +116,7 @@ class TestQueries:
             assert "description" in op, f"Query {name} missing 'description'"
 
     def test_viewer_has_no_fragments(self):
-        assert LinearGraphQLOperations.QUERIES["viewer"]["fragments"] == []
+        assert LinearGraphQLOperations.QUERIES["viewer"]["fragments"] == ["UserFields"]
 
     def test_issues_has_fragments(self):
         frags = LinearGraphQLOperations.QUERIES["issues"]["fragments"]
@@ -162,8 +162,8 @@ class TestMutations:
 class TestGetOperationWithFragments:
     def test_query_with_no_fragments(self):
         result = LinearGraphQLOperations.get_operation_with_fragments("query", "viewer")
-        assert "organization" in result
-        assert "fragment" not in result
+        assert "viewer" in result
+        assert "fragment UserFields" in result
 
     def test_query_with_fragments(self):
         result = LinearGraphQLOperations.get_operation_with_fragments("query", "teams")
@@ -174,6 +174,7 @@ class TestGetOperationWithFragments:
     def test_mutation_with_fragments(self):
         result = LinearGraphQLOperations.get_operation_with_fragments("mutation", "issueCreate")
         assert "fragment IssueFields" in result
+        assert "fragment CommentFields" in result
         assert "mutation IssueCreate" in result
 
     def test_mutation_with_no_fragments(self):
