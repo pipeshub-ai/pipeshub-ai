@@ -10412,7 +10412,18 @@ class TestListUserKnowledgeBases:
     @pytest.mark.asyncio
     async def test_success_returns_kbs_and_count(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"id": "kb1", "name": "KB1", "userRole": "OWNER", "folders": []}],
+            [
+                {
+                    "id": "kb1",
+                    "name": "KB1",
+                    "connectorId": "knowledgeBase_org1",
+                    "createdAtTimestamp": 1,
+                    "updatedAtTimestamp": 2,
+                    "createdBy": "u1",
+                    "userRole": "OWNER",
+                    "folders": [],
+                }
+            ],
             [1],
             [{"OWNER": 1, "WRITER": 0, "READER": 0, "COMMENTER": 0}],
         ]
@@ -10420,6 +10431,7 @@ class TestListUserKnowledgeBases:
             "u1", "org1", skip=0, limit=10
         )
         assert len(kbs) == 1
+        assert kbs[0]["connectorId"] == "knowledgeBase_org1"
         assert total == 1
 
     @pytest.mark.asyncio
@@ -10438,7 +10450,18 @@ class TestListUserKnowledgeBases:
     @pytest.mark.asyncio
     async def test_with_search_filter(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"id": "kb1", "name": "Search Result"}],
+            [
+                {
+                    "id": "kb1",
+                    "name": "Search Result",
+                    "connectorId": "knowledgeBase_org1",
+                    "createdAtTimestamp": 1,
+                    "updatedAtTimestamp": 2,
+                    "createdBy": "u1",
+                    "userRole": "OWNER",
+                    "folders": [],
+                }
+            ],
             [1],
             [{"OWNER": 1}],
         ]
@@ -10450,7 +10473,18 @@ class TestListUserKnowledgeBases:
     @pytest.mark.asyncio
     async def test_with_permissions_filter(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"id": "kb1", "name": "KB1", "userRole": "OWNER"}],
+            [
+                {
+                    "id": "kb1",
+                    "name": "KB1",
+                    "connectorId": "knowledgeBase_org1",
+                    "createdAtTimestamp": 1,
+                    "updatedAtTimestamp": 2,
+                    "createdBy": "u1",
+                    "userRole": "OWNER",
+                    "folders": [],
+                }
+            ],
             [1],
             [{"OWNER": 1}],
         ]
@@ -12414,6 +12448,7 @@ class TestListUserKnowledgeBasesExtended:
         kb_item = {
             "id": "kb1",
             "name": "Test KB",
+            "connectorId": "knowledgeBase_org1",
             "createdAtTimestamp": 1000,
             "updatedAtTimestamp": 2000,
             "createdBy": "u1",
@@ -12429,6 +12464,7 @@ class TestListUserKnowledgeBasesExtended:
         )
         assert len(kbs) == 1
         assert kbs[0]["id"] == "kb1"
+        assert kbs[0]["connectorId"] == "knowledgeBase_org1"
         assert total == 1
         assert "permissions" in filters
 

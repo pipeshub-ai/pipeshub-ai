@@ -4149,3 +4149,69 @@ class TestBatchUpdateConnectorStatus:
 
         assert result == 0
         neo4j_provider.logger.error.assert_called_once()
+
+
+class TestListUserKnowledgeBases:
+    @pytest.mark.asyncio
+    async def test_success_returns_kbs_with_connector_id(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        kb_result = {
+            "id": "kb1",
+            "name": "KB1",
+            "connectorId": "knowledgeBase_org1",
+            "createdAtTimestamp": 1,
+            "updatedAtTimestamp": 2,
+            "createdBy": "u1",
+            "userRole": "OWNER",
+            "folders": [],
+        }
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"result": kb_result}],
+                [{"total": 1}],
+                [{"permission": "OWNER"}],
+            ]
+        )
+
+        kbs, total, filters = await neo4j_provider.list_user_knowledge_bases(
+            "user1", "org1", skip=0, limit=10
+        )
+
+        assert len(kbs) == 1
+        assert kbs[0]["connectorId"] == "knowledgeBase_org1"
+        assert total == 1
+        assert "permissions" in filters
+
+    @pytest.mark.asyncio
+    async def test_query_includes_connector_id_projection(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"result": {"id": "kb1", "name": "KB1", "connectorId": "knowledgeBase_org1"}}],
+                [{"total": 1}],
+                [],
+            ]
+        )
+
+        await neo4j_provider.list_user_knowledge_bases(
+            "user1", "org1", skip=0, limit=10
+        )
+
+        main_query = neo4j_provider.client.execute_query.call_args_list[0][0][0]
+        assert "connectorId: kb.connectorId" in main_query
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_empty(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=Exception("neo4j error")
+        )
+
+        kbs, total, filters = await neo4j_provider.list_user_knowledge_bases(
+            "user1", "org1", skip=0, limit=10
+        )
+
+        assert kbs == []
+        assert total == 0
+        assert filters["permissions"] == []

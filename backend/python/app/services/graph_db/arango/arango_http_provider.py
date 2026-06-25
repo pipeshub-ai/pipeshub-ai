@@ -9625,6 +9625,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN {{
                     id: kb._key,
                     name: kb.groupName,
+                    connectorId: kb.connectorId,
                     createdAtTimestamp: kb.createdAtTimestamp,
                     updatedAtTimestamp: kb.updatedAtTimestamp,
                     createdBy: kb.createdBy,
