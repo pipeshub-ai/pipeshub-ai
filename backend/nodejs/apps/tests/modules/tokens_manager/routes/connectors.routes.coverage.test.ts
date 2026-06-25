@@ -47,7 +47,7 @@ describe('Connector Routes - handler coverage', () => {
       get: sinon.stub().returns(mockScheduler),
     }
 
-    const mockKnowledgeBaseContainer = {
+    const mockConnectorContainer = {
       get: sinon.stub().callsFake((token: string) => {
         if (token === 'RecordsEventProducer') {
           return { start: sinon.stub().resolves(), publishEvent: sinon.stub().resolves() }
@@ -55,7 +55,7 @@ describe('Connector Routes - handler coverage', () => {
         if (token === 'SyncEventProducer') {
           return { start: sinon.stub().resolves(), publishEvent: sinon.stub().resolves() }
         }
-        throw new Error(`Unexpected knowledge base token: ${token}`)
+        throw new Error(`Unexpected connector token: ${token}`)
       }),
     }
 
@@ -70,7 +70,7 @@ describe('Connector Routes - handler coverage', () => {
     container.bind<any>(PrometheusService).toConstantValue({ recordActivity: sinon.stub() })
     container.bind<any>('KeyValueStoreService').toConstantValue(mockKeyValueStoreService)
 
-    router = createConnectorRouter(container, mockCrawlingContainer, mockKnowledgeBaseContainer)
+    router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
   })
 
   afterEach(() => {

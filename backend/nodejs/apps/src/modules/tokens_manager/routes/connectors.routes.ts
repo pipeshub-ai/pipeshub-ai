@@ -363,20 +363,16 @@ const getConnectorStatsSchema = z.object({
 /**
  * Create and configure the connector router.
  *
- * @param container - Tokens-manager DI container (auth, app config, events)
- * @param crawlingContainer - Crawling-manager DI container. Passed whole
- *   (not as individual services) so future crawling-side dependencies
- *   needed by connector routes can be resolved here without changing the
- *   factory signature or the call site in `app.ts`. Mirrors the
- *   `createXRouter(container)` pattern used by every other module.
- * @param knowledgeBaseContainer - Knowledge-base DI container for sync/reindex
- *   event producers used by connector stats and resync routes.
+ * @param container - Tokens-manager DI container for existing connector route
+ *   dependencies: auth, app config, entity events, metrics, and storage.
+ * @param crawlingContainer - Crawling-manager DI container for the scheduler.
+ * @param connectorContainer - Connector DI container for record/sync producers.
  * @returns Configured Express router
  */
 export function createConnectorRouter(
   container: Container,
   crawlingContainer: Container,
-  knowledgeBaseContainer: Container,
+  connectorContainer: Container,
 ): Router {
   const router = Router();
   let config = container.get<AppConfig>('AppConfig');
@@ -388,11 +384,11 @@ export function createConnectorRouter(
   const localFsUploadMiddleware = createLocalFsConnectorFileEventsUploadMiddleware(
     container.get<KeyValueStoreService>('KeyValueStoreService'),
   );
-  const recordsEventProducer = knowledgeBaseContainer.get<RecordsEventProducer>(
+  const recordsEventProducer = connectorContainer.get<RecordsEventProducer>(
     'RecordsEventProducer',
   );
   const syncEventProducer =
-    knowledgeBaseContainer.get<SyncEventProducer>('SyncEventProducer');
+    connectorContainer.get<SyncEventProducer>('SyncEventProducer');
   const recordRelationService = new RecordRelationService(
     recordsEventProducer,
     syncEventProducer,

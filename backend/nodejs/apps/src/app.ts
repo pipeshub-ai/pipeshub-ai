@@ -7,6 +7,7 @@ import http from 'http';
 import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
 import { TokenManagerContainer } from './modules/tokens_manager/container/token-manager.container';
+import { ConnectorContainer } from './modules/tokens_manager/container/connector.container';
 import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
@@ -88,6 +89,7 @@ export class Application {
   private app: Express;
   private server: http.Server;
   private tokenManagerContainer!: Container;
+  private connectorContainer!: Container;
   private storageServiceContainer!: Container;
   private esAgentContainer!: Container;
   private logger!: Logger;
@@ -135,6 +137,7 @@ export class Application {
       this.tokenManagerContainer = await TokenManagerContainer.initialize(
         configurationManagerConfig,
       );
+      this.connectorContainer = await ConnectorContainer.initialize(appConfig);
 
       this.configurationManagerContainer =
         await ConfigurationManagerContainer.initialize(
@@ -474,14 +477,13 @@ export class Application {
 
     // enterprise search connectors routes — pass the crawling container
     // whole so the route factory can resolve any crawling-side service it
-    // needs (currently the scheduler) without us threading individual
-    // bindings through here.
+    // needs (currently the scheduler).
     this.app.use(
       '/api/v1/connectors',
       createConnectorRouter(
         this.tokenManagerContainer,
         this.crawlingManagerContainer,
-        this.knowledgeBaseContainer,
+        this.connectorContainer,
       ),
     );
 
@@ -627,6 +629,7 @@ export class Application {
       await UserManagerContainer.dispose();
       await AuthServiceContainer.dispose();
       await EnterpriseSearchAgentContainer.dispose();
+      await ConnectorContainer.dispose();
       await TokenManagerContainer.dispose();
       await KnowledgeBaseContainer.dispose();
       await ConfigurationManagerContainer.dispose();
