@@ -1275,6 +1275,8 @@ export const getRecordById =
             ...responseForClient.data.record.fileRecord,
           };
           delete responseForClient.data.record.fileRecord._rev;
+          delete responseForClient.data.record.fileRecord._key;
+          delete responseForClient.data.record.fileRecord._id;
         }
       }
 

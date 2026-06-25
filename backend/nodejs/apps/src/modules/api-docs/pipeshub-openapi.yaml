@@ -3781,8 +3781,6 @@ components:
               additionalProperties: false
               required:
                 - id
-                - _key
-                - _id
                 - orgId
                 - name
                 - extension
@@ -3792,10 +3790,6 @@ components:
                 - webUrl
               properties:
                 id:
-                  type: string
-                _key:
-                  type: string
-                _id:
                   type: string
                 orgId:
                   type: string
