@@ -988,7 +988,11 @@ class _OpenRouterImageAdapter(ImageGenerationAdapter):
             try:
                 payload = response.json()
                 if isinstance(payload, dict):
-                    snippet = str(payload.get("error") or payload.get("message") or "")
+                    err = payload.get("error")
+                    if isinstance(err, dict):
+                        snippet = str(err.get("message") or "")
+                    else:
+                        snippet = str(err or payload.get("message") or "")
             except Exception:
                 pass
             logger.error(
@@ -1985,7 +1989,11 @@ class _OpenRouterSTTAdapter(STTAdapter):
             try:
                 data = response.json()
                 if isinstance(data, dict):
-                    snippet = str(data.get("error") or data.get("message") or "")
+                    err = data.get("error")
+                    if isinstance(err, dict):
+                        snippet = str(err.get("message") or "")
+                    else:
+                        snippet = str(err or data.get("message") or "")
             except Exception:
                 pass
             logger.error(
