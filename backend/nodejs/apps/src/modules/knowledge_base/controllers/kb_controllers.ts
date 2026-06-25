@@ -495,6 +495,10 @@ export const createFolder =
         },
       );
 
+      if (response?.data && typeof response.data === 'object') {
+        delete (response.data as Record<string, unknown>).webUrl;
+      }
+
       handleConnectorResponse(
         response,
         res,

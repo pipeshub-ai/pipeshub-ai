@@ -3022,13 +3022,9 @@ components:
         name:
           type: string
           description: Name of the folder
-        webUrl:
-          type: string
-          description: Web URL path to the folder
       required:
         - id
         - name
-        - webUrl
 
     FolderUpdateResponseSchema:
       type: object
