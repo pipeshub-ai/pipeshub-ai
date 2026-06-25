@@ -861,7 +861,7 @@ const streamKbUpload = async (opts: {
 
 /**
  * Verify the KB exists and the caller has write permission before touching
- * storage. The GET /kb endpoint returns 200 for ANY role (READER/COMMENTER
+ * storage. The GET /kb endpoint returns 200 for ANY role (READER
  * included), so a 200 alone is insufficient — we must inspect `userRole` in the
  * response body. Throws the appropriate HTTP error otherwise.
  */
@@ -1473,10 +1473,7 @@ export const createKBPermission =
       if (role) {
         const validRoles = [
           'OWNER',
-          'ORGANIZER',
-          'FILEORGANIZER',
           'WRITER',
-          'COMMENTER',
           'READER',
         ];
         if (!validRoles.includes(role)) {
@@ -1553,10 +1550,7 @@ export const updateKBPermission =
 
       const validRoles = [
         'OWNER',
-        'ORGANIZER',
-        'FILEORGANIZER',
         'WRITER',
-        'COMMENTER',
         'READER',
       ];
       if (!validRoles.includes(role)) {

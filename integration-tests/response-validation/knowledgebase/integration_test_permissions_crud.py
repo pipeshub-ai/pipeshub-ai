@@ -218,6 +218,17 @@ class TestKBPermissionCreate:
         )
 
         resp = requests.post(
+            perms_url,
+            headers=self.headers,
+            json={"userIds": [grantee_id], "role": "COMMENTER"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "createKBPermission", status_code="400"
+        )
+
+        resp = requests.post(
             _permissions_url(self.base_url, "not-a-uuid"),
             headers=self.headers,
             json=valid_body,
@@ -475,6 +486,17 @@ class TestKBPermissionUpdate:
             perms_url,
             headers=self.headers,
             json={"userIds": [grantee_id], "teamIds": [], "role": "INVALID"},
+            timeout=self.client.timeout_seconds,
+        )
+        assert resp.status_code == 400, resp.text
+        assert_response_matches_openapi_operation(
+            resp.json(), "updateKBPermissions", status_code="400"
+        )
+
+        resp = requests.put(
+            perms_url,
+            headers=self.headers,
+            json={"userIds": [grantee_id], "teamIds": [], "role": "COMMENTER"},
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 400, resp.text

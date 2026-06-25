@@ -3972,7 +3972,7 @@ components:
                 type: string
               relationship:
                 type: string
-                enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+                enum: [OWNER, WRITER, READER]
               accessType:
                 type: string
 
@@ -4776,7 +4776,7 @@ components:
           description: User display name
         role:
           type: string
-          enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+          enum: [OWNER, WRITER, READER]
         type:
           type: string
           enum: [USER, TEAM]
@@ -4819,7 +4819,7 @@ components:
               description: Team IDs that received new permissions
             role:
               type: string
-              enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+              enum: [OWNER, WRITER, READER]
               description: Granted role (defaults to READER for team-only grants)
             kbId:
               type: string
@@ -4874,7 +4874,7 @@ components:
               role:
                 type: string
                 nullable: true
-                enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+                enum: [OWNER, WRITER, READER]
                 description: Permission role (null for team permissions; teams are not assigned roles)
               type:
                 type: string
@@ -4921,7 +4921,7 @@ components:
           description: Graph team document IDs updated (always empty — teams cannot have roles updated)
         newRole:
           type: string
-          enum: [OWNER, WRITER, READER, COMMENTER]
+          enum: [OWNER, WRITER, READER]
           description: New role assigned to the updated users
       required:
         - kbId
@@ -19869,7 +19869,7 @@ paths:
         **Features:**
 
         - Hierarchical folder structure support
-        - Role-based access control (OWNER, ORGANIZER, WRITER, READER, etc.)
+        - Role-based access control (OWNER, WRITER, READER)
         - Full-text search across all records
         - Integration with external connectors (Google Drive, OneDrive, etc.)
         - Automatic content indexing for AI-powered search
@@ -20185,7 +20185,7 @@ paths:
 
         **Required permission:**
 
-        User must have one of `OWNER`, `WRITER`, `ORGANIZER`, or `FILEORGANIZER` on the knowledge base.
+        User must have one of `OWNER` or `WRITER` on the knowledge base.
 
         **Validation:**
 
@@ -20253,7 +20253,7 @@ paths:
 
             - OAuth token lacks the `kb:write` scope
             - User has no permission on this knowledge base
-            - User role is insufficient (`COMMENTER` or `READER`; requires `OWNER`, `WRITER`, `ORGANIZER`, or `FILEORGANIZER`)
+            - User role is insufficient (`READER`; requires `OWNER` or `WRITER`)
             - Connector service denied the request
           content:
             application/json:
@@ -20689,7 +20689,7 @@ paths:
         pass `folderId` as a query parameter to create a nested subfolder inside an
         existing parent folder.
 
-        **Required permission:** FILEORGANIZER or higher
+        **Required permission:** WRITER or higher
 
         **Folder features:**
 
@@ -20768,7 +20768,7 @@ paths:
             Forbidden. Possible reasons:
 
             - OAuth token lacks the `kb:write` scope
-            - User lacks FILEORGANIZER or higher permission on the knowledge base
+            - User lacks WRITER or higher permission on the knowledge base
           content:
             application/json:
               schema:
@@ -20792,8 +20792,9 @@ paths:
         - Folders
       summary: Update folder
       description: |
-        Rename a folder.<br><br>
-        <b>Required Permission:</b> FILEORGANIZER or higher
+        Rename a folder.
+
+        **Required permission:** WRITER or higher
       operationId: updateFolder
       x-pipeshub-sdk: true
       security:
@@ -20853,7 +20854,7 @@ paths:
             Forbidden. Possible reasons:
 
             - OAuth token lacks the `kb:write` scope
-            - User lacks FILEORGANIZER or higher permission on the knowledge base
+            - User lacks WRITER or higher permission on the knowledge base
           content:
             application/json:
               schema:
@@ -20876,11 +20877,15 @@ paths:
         - Folders
       summary: Delete folder
       description: |
-        Delete a folder and all its contents.<br><br>
-        <b>Required Permission:</b> FILEORGANIZER or higher<br><br>
-        <b>Cascade Delete:</b><br>
-        All subfolders and records within will be permanently deleted.<br><br>
-        <b>Warning:</b> This action is irreversible.
+        Delete a folder and all its contents.
+
+        **Required permission:** WRITER or higher
+
+        **Cascade delete:**
+
+        All subfolders and records within will be permanently deleted.
+
+        **Warning:** This action is irreversible.
       operationId: deleteFolder
       x-pipeshub-sdk: true
       security:
@@ -21494,16 +21499,13 @@ paths:
       description: |
         Grant access permissions to users or teams for a knowledge base.
 
-        **Required Permission:** OWNER or ORGANIZER
+        **Required Permission:** OWNER
 
         **Permission Roles (highest to lowest):**
 
         1. **OWNER:** Full control, can delete KB, manage all permissions
-        2. **ORGANIZER:** Can manage permissions (except OWNER), edit KB settings
-        3. **FILEORGANIZER:** Can create/delete folders, organize content
-        4. **WRITER:** Can upload, edit, delete records
-        5. **COMMENTER:** Can add comments (if supported)
-        6. **READER:** View-only access
+        2. **WRITER:** Can upload, edit, delete records, create/delete folders
+        3. **READER:** View-only access
 
         **Grant to Multiple:**
 
@@ -21538,7 +21540,7 @@ paths:
                   description: Team IDs to grant permission
                 role:
                   type: string
-                  enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+                  enum: [OWNER, WRITER, READER]
                   description: Permission role to grant. Required when userIds is provided; omit for team-only grants.
       responses:
         '201':
@@ -21606,7 +21608,7 @@ paths:
       description: |
         Retrieve all permissions granted on a knowledge base.
 
-        **Required access:** Caller must hold any role on the knowledge base (OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, or READER) and the `kb:read` OAuth scope when using an OAuth token.
+        **Required access:** Caller must hold any role on the knowledge base (OWNER, WRITER, or READER) and the `kb:read` OAuth scope when using an OAuth token.
 
         Returns every user and team permission on the KB. Team entries have `type: TEAM` and `role: null` (teams are not assigned roles).
       operationId: listKBPermissions
@@ -21715,7 +21717,7 @@ paths:
               properties:
                 role:
                   type: string
-                  enum: [OWNER, WRITER, READER, COMMENTER]
+                  enum: [OWNER, WRITER, READER]
                   description: New permission role to assign (required)
                 userIds:
                   type: array
@@ -21740,7 +21742,7 @@ paths:
           description: |
             Invalid request. Possible reasons:
 
-            - Missing or invalid `role` (must be OWNER, WRITER, READER, or COMMENTER)
+            - Missing or invalid `role` (must be OWNER, WRITER, or READER)
             - Missing `userIds` and `teamIds`, or both empty
             - Non-empty `teamIds` (teams cannot have roles updated)
             - Invalid `kbId` (must be UUID)

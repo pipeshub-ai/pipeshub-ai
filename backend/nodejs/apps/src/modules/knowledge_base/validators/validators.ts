@@ -277,7 +277,7 @@ export const kbPermissionSchema = z.object({
   body: z.object({
     userIds: z.array(z.string()).optional(),
     teamIds: z.array(z.string()).optional(),
-    role: z.enum(['OWNER', 'WRITER', 'READER', 'COMMENTER']).optional(), // Optional for teams
+    role: z.enum(['OWNER', 'WRITER', 'READER']).optional(), // Optional for teams
   }).refine((data) => (data.userIds && data.userIds.length > 0) || (data.teamIds && data.teamIds.length > 0),
     {
       message: 'At least one user or team ID is required',
@@ -315,7 +315,7 @@ export const getPermissionsSchema = z.object({
 
 export const updatePermissionsSchema = z.object({
   body: z.object({
-    role: z.enum(['OWNER', 'WRITER', 'READER', 'COMMENTER']),
+    role: z.enum(['OWNER', 'WRITER', 'READER']),
     userIds: z.array(z.string()).optional(),
     teamIds: z.array(z.string()).optional(), // Teams don't have roles, so this will be ignored
   }).refine((data) => {
