@@ -3371,18 +3371,7 @@ components:
           description: External storage document ID (links to Storage module)
           example: "507f1f77bcf86cd799439011"
         recordType:
-          type: string
-          enum: [FILE, WEBPAGE, COMMENT, MESSAGE, EMAIL, TICKET, OTHERS]
-          description: |
-            Type of content:
-            - FILE: Uploaded documents (PDF, DOCX, etc.)
-            - WEBPAGE: Web pages crawled or bookmarked
-            - COMMENT: Comments from collaboration tools
-            - MESSAGE: Chat/messaging content (Slack, Teams)
-            - EMAIL: Email messages (Gmail, Outlook)
-            - TICKET: Support tickets (Jira, ServiceNow)
-            - OTHERS: Miscellaneous content types
-          example: "FILE"
+          $ref: '#/components/schemas/RecordTypeEnum'
         origin:
           type: string
           enum: [UPLOAD, CONNECTOR]
@@ -3514,7 +3503,7 @@ components:
         mailRecord:
           type: object
           nullable: true
-          description: Email-specific metadata (present when recordType is EMAIL)
+          description: Email-specific metadata (present when recordType is MAIL or GROUP_MAIL)
         ticketRecord:
           type: object
           nullable: true
