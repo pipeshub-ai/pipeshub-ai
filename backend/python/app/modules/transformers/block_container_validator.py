@@ -7,7 +7,141 @@ from typing import List, Optional
 
 from app.exceptions.indexing_exceptions import BlockContainerValidationError
 from app.models.blocks import BlockType, BlocksContainer, DataFormat, GroupType, IndexRange
-
+import base64
+ 
+# ── image magic signatures ──────────────────────────────────────────
+# Each entry: (prefix_bytes, secondary_bytes_at_offset_8_or_None)
+_IMAGE_SIGNATURES = (
+    (b"\x89PNG\r\n\x1a\n", None),   # PNG
+    (b"\xff\xd8\xff",       None),   # JPEG / JFIF / EXIF
+    (b"GIF87a",             None),   # GIF 87a
+    (b"GIF89a",             None),   # GIF 89a
+    (b"RIFF",               b"WEBP"),# WEBP  (RIFF....WEBP)
+    (b"II\x2a\x00",        None),   # TIFF little-endian
+    (b"MM\x00\x2a",        None),   # TIFF big-endian
+    (b"\x00\x00\x01\x00",  None),   # ICO
+    (b"\x00\x00\x02\x00",  None),   # CUR
+)
+ 
+ 
+def _is_image_data(data: bytes) -> bool:
+    """Return True if *data* starts with a known image magic signature."""
+    if len(data) < 4:
+        return False
+ 
+    for prefix, secondary in _IMAGE_SIGNATURES:
+        if data[: len(prefix)] == prefix:
+            if secondary is not None:
+                # RIFF container: verify the format marker at byte 8
+                return len(data) >= 12 and data[8:12] == secondary
+            return True
+ 
+    # AVIF / HEIC / HEIF — ISO BMFF ftyp box
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        brand = data[8:12]
+        if brand in (b"avif", b"avis", b"heic", b"heix", b"mif1"):
+            return True
+ 
+    return False
+ 
+ 
+# ── regex helpers ────────────────────────────────────────────────────
+_B64_CHARS = r"A-Za-z0-9+/\-_"
+ 
+# data:image/<subtype>;base64,<payload>
+_DATA_URI_RE = re.compile(
+    rf"data:image/[a-zA-Z0-9.+_-]+;base64,([{_B64_CHARS}=\s]+)",
+    re.ASCII,
+)
+ 
+# Raw base64 runs — at least 16 contiguous base64 chars (decodes to ≥12
+# bytes, enough for every magic signature) optionally followed by more
+# base64, whitespace, or padding.
+_RAW_B64_RE = re.compile(
+    rf"[{_B64_CHARS}]{{16,}}[{_B64_CHARS}=\s]*",
+    re.ASCII,
+)
+ 
+ 
+def _decode_b64_prefix(raw: str, decoded_bytes_needed: int = 32) -> Optional[bytes]:
+    """Decode just enough of a base64 string to check magic bytes.
+ 
+    Strips whitespace, normalises base64url → standard base64, fixes
+    padding, and returns the first *decoded_bytes_needed* decoded bytes
+    (or fewer if the input is short).  Returns ``None`` on failure.
+    """
+    cleaned = re.sub(r"\s+", "", raw)
+    if len(cleaned) < 8:          # too short to be any image
+        return None
+ 
+    # base64url → standard
+    cleaned = cleaned.replace("-", "+").replace("_", "/")
+ 
+    # Only decode enough chars for the prefix we need.
+    # 4 base64 chars → 3 bytes
+    chars_needed = ((decoded_bytes_needed + 2) // 3) * 4
+    snippet = cleaned[:chars_needed]
+ 
+    # Fix padding
+    pad = (4 - len(snippet) % 4) % 4
+    snippet += "=" * pad
+ 
+    try:
+        return base64.b64decode(snippet, validate=True)
+    except Exception:
+        # Retry without strict validation (ignores stray characters)
+        try:
+            return base64.b64decode(snippet, validate=False)
+        except Exception:
+            return None
+ 
+ 
+# ── public API ───────────────────────────────────────────────────────
+_MAX_CANDIDATES = 64  # safety cap to avoid pathological inputs
+ 
+ 
+def contains_base64_image(text: str) -> bool:
+    """Return ``True`` if *text* contains a base64-encoded image substring.
+ 
+    Detection covers two forms:
+ 
+    1. **Data-URI** — ``data:image/<type>;base64,<payload>``
+       The payload is decoded and its leading bytes are checked against
+       known image magic signatures.
+ 
+    2. **Raw base64** — a bare base64 (or base64url) string whose decoded
+       bytes begin with a recognised image header.
+ 
+    Supported formats: PNG, JPEG, GIF, BMP, WEBP, TIFF, ICO, CUR,
+    AVIF, HEIC.
+ 
+    The function is designed to be robust against:
+      • missing or excess ``=`` padding
+      • base64url encoding (``-_`` instead of ``+/``)
+      • embedded whitespace / line-breaks (MIME-style)
+      • very large input strings (only a prefix is decoded per candidate)
+    """
+    tried = 0
+ 
+    # ── pass 1: data URIs ────────────────────────────────────────
+    for m in _DATA_URI_RE.finditer(text):
+        if tried >= _MAX_CANDIDATES:
+            break
+        tried += 1
+        decoded = _decode_b64_prefix(m.group(1))
+        if decoded and _is_image_data(decoded):
+            return True
+ 
+    # ── pass 2: raw base64 ───────────────────────────────────────
+    for m in _RAW_B64_RE.finditer(text):
+        if tried >= _MAX_CANDIDATES:
+            break
+        tried += 1
+        decoded = _decode_b64_prefix(m.group())
+        if decoded and _is_image_data(decoded):
+            return True
+ 
+    return False
 
 class Severity(str, Enum):
     ERROR = "error"
@@ -284,7 +418,7 @@ class BlockContainerValidator:
                     ),
                     location=loc,
                 ))
-            elif self._contains_base64_image(block.data):
+            elif contains_base64_image(block.data):
                 issues.append(ValidationIssue(
                     severity=Severity.ERROR,
                     code="TEXT_DATA_CONTAINS_BASE64_IMAGE",
@@ -656,42 +790,3 @@ class BlockContainerValidator:
             return None
         return fmt.value if hasattr(fmt, "value") else str(fmt)
 
-    # Smallest real image in base64 is a 1×1 PNG (~68 raw bytes → ~92 base64 chars).
-    # Anything shorter cannot be a valid image.
-    _MIN_BASE64_IMAGE_LEN = 96
-
-    # Matches a base64 image payload after a data URI prefix.
-    _DATA_URI_BASE64_RE = re.compile(
-        r"data:image/[^;]+;base64,([A-Za-z0-9+/\r\n]+=*)"
-    )
-
-    # Matches a raw base64 payload starting with the base64-encoded magic bytes of
-    # common image formats, embedded anywhere in the string.
-    #   iVBORw0KGgo → PNG  (\x89PNG\r\n\x1a\n)
-    #   /9j/        → JPEG (\xff\xd8\xff)
-    #   R0lGOD      → GIF  (GIF8)
-    #   UklGR       → WebP (RIFF....WEBP)
-    #   Qk0         → BMP  (BM)
-    #   SUkq        → TIFF little-endian (II*\x00)
-    #   TU0A        → TIFF big-endian    (MM\x00*)
-    _RAW_BASE64_IMAGE_RE = re.compile(
-        r"(?:iVBORw0KGgo|/9j/|R0lGOD|UklGR|Qk0|SUkq|TU0A)[A-Za-z0-9+/\r\n]+=*"
-    )
-
-    @staticmethod
-    def _contains_base64_image(text: str) -> bool:
-        """Return True if *text* contains a base64-encoded image, either as a
-        data URI (``data:image/...;base64,<payload>``) or as a raw base64
-        payload identified by its format magic-byte prefix.
-
-        In both cases the base64 payload must be >= _MIN_BASE64_IMAGE_LEN chars
-        to rule out short strings that merely share a prefix with image data.
-        The search is a substring match, so an embedded image anywhere in the
-        text is detected.
-        """
-        m = BlockContainerValidator._DATA_URI_BASE64_RE.search(text)
-        if m and len(m.group(1)) >= BlockContainerValidator._MIN_BASE64_IMAGE_LEN:
-            return True
-
-        m = BlockContainerValidator._RAW_BASE64_IMAGE_RE.search(text)
-        return bool(m and len(m.group(0)) >= BlockContainerValidator._MIN_BASE64_IMAGE_LEN)
