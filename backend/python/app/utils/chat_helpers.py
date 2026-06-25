@@ -1836,18 +1836,19 @@ def _render_blocks_with_images(
                 "text": f"  - Block Index: {block_idx}\n  - Citation ID: {citation_ref}\n  - Block Content:\n",
             })
             for item in group:
-                if item.get("block_type") == BlockType.IMAGE.value and is_multimodal_llm:
-                    img_uri = item.get("content", "")
-                    if img_uri and is_base64_image(img_uri):
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {"url": img_uri}
-                        })
-                else:
-                    content.append({
-                        "type": "text",
-                        "text": f"    {item.get('content')}\n",
-                    })
+                if item.get("block_type") == BlockType.IMAGE.value:
+                    if is_multimodal_llm:
+                        img_uri = item.get("content", "")
+                        if img_uri and is_base64_image(img_uri):
+                            content.append({
+                                "type": "image_url",
+                                "image_url": {"url": img_uri}
+                            })
+                    continue
+                content.append({
+                    "type": "text",
+                    "text": f"    {item.get('content')}\n",
+                })
     return content
 
 
