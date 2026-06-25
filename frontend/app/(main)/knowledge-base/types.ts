@@ -467,7 +467,6 @@ export interface MoreConnectorLink {
 
 export interface RecordDetailsResponse {
   record: {
-    _id: string;
     id: string;
     orgId: string;
     recordName: string;

@@ -1263,8 +1263,15 @@ export const getRecordById =
         req.headers as Record<string, string>,
       );
 
+      const responseForClient: Record<string, any> = { ...response, data: { ...(response?.data || {}) } };
+      if (responseForClient.data?.record) {
+        responseForClient.data.record = { ...responseForClient.data.record };
+        // TODO: Move this response shaping into a typed mapper once the connector contract drops record._id.
+        delete responseForClient.data.record._id;
+      }
+
       handleConnectorResponse(
-        response,
+        responseForClient,
         res,
         'Getting record by id',
         'Record not found',

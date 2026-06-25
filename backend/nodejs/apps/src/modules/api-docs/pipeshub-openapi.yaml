@@ -3566,7 +3566,6 @@ components:
           additionalProperties: false
           required:
             - id
-            - _id
             - orgId
             - recordName
             - externalRecordId
@@ -3595,8 +3594,6 @@ components:
             - ticketRecord
           properties:
             id:
-              type: string
-            _id:
               type: string
             _rev:
               type: string
