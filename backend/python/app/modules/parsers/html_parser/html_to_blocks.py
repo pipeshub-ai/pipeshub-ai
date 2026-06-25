@@ -1015,9 +1015,11 @@ def normalized_table_to_markdown(
 def _lexbor_subtree_to_markdown(node: LexborNode) -> str:
     """Render a DOM subtree to markdown, normalizing ``<table>`` nodes in-place.
 
-    Walks direct children when a subtree contains tables so surrounding text and
-    inline markup still pass through ``markdownify`` while each ``<table>`` is
-    rendered with ``HtmlTableNormalizer`` (preserving ``![alt](uri)`` in cells).
+    Walks children recursively whenever a ``<table>`` appears anywhere in the
+    subtree so surrounding text and inline markup still pass through
+    ``markdownify`` while each table is rendered with ``HtmlTableNormalizer``
+    (preserving ``![alt](uri)`` in cells). Subtrees with no table at any depth
+    short-circuit through a single ``markdownify`` call.
     """
     tag = _tag_name(node)
     if tag == "table":
@@ -1032,24 +1034,24 @@ def _lexbor_subtree_to_markdown(node: LexborNode) -> str:
             return ""
         return markdownify(inner, heading_style="ATX").strip()
 
-    if not any(_tag_name(child) == "table" for child in children):
+    # Only short-circuit when *no* descendant is a table. Checking only direct
+    # children would route subtrees like ``<ul><li><table>...</table></li></ul>``
+    # through ``markdownify`` for the whole fragment, which strips ``<img>`` in
+    # ``<td>`` down to bare alt text.
+    if not _TABLE_TAG_RE.search(node.html):
         return markdownify(node.html, heading_style="ATX").strip()
 
     parts: list[str] = []
     for child in children:
         child_tag = _tag_name(child)
         if child_tag == "table":
-            table_md = normalized_table_to_markdown(normalize_html_table(child))
-            if table_md:
-                parts.append(table_md)
+            piece = normalized_table_to_markdown(normalize_html_table(child))
         elif child_tag is None:
-            text = child.text(deep=False, strip=False).strip()
-            if text:
-                parts.append(text)
+            piece = child.text(deep=False, strip=False).strip()
         else:
             piece = _lexbor_subtree_to_markdown(child)
-            if piece:
-                parts.append(piece)
+        if piece:
+            parts.append(piece)
     return "\n\n".join(parts)
 
 

@@ -272,6 +272,7 @@
     {
       "index": 0,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -303,6 +304,7 @@
     {
       "index": 1,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -313,7 +315,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - distributed-systems",
+      "data": "distributed-systems",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -334,6 +336,7 @@
     {
       "index": 2,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -344,7 +347,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - machine-learning",
+      "data": "machine-learning",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -365,6 +368,7 @@
     {
       "index": 3,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -375,7 +379,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - knowledge-graphs\n",
+      "data": "knowledge-graphs",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -396,6 +400,7 @@
     {
       "index": 4,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -427,6 +432,7 @@
     {
       "index": 5,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -458,6 +464,7 @@
     {
       "index": 6,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -489,6 +496,7 @@
     {
       "index": 7,
       "parent_index": 1,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -499,7 +507,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "1. Introduction",
+      "data": "Introduction",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -520,6 +528,7 @@
     {
       "index": 8,
       "parent_index": 1,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -530,7 +539,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "2. Architecture\n",
+      "data": "Architecture",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -551,6 +560,7 @@
     {
       "index": 9,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -582,6 +592,7 @@
     {
       "index": 10,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -613,6 +624,7 @@
     {
       "index": 11,
       "parent_index": 2,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -623,7 +635,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "- Horizontal scalability",
+      "data": "Horizontal scalability",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -644,6 +656,7 @@
     {
       "index": 12,
       "parent_index": 2,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -654,7 +667,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "- Distributed execution",
+      "data": "Distributed execution",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -675,6 +688,7 @@
     {
       "index": 13,
       "parent_index": 2,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -685,7 +699,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "- Fault tolerance",
+      "data": "Fault tolerance",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -706,6 +720,7 @@
     {
       "index": 14,
       "parent_index": 2,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -716,7 +731,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "- Streaming ingestion",
+      "data": "Streaming ingestion",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -737,6 +752,7 @@
     {
       "index": 15,
       "parent_index": 2,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -747,7 +763,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "- Semantic search",
+      "data": "Semantic search",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -768,6 +784,7 @@
     {
       "index": 16,
       "parent_index": 2,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -778,7 +795,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "- Graph-based storage",
+      "data": "Graph-based storage",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -799,6 +816,7 @@
     {
       "index": 17,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -830,6 +848,7 @@
     {
       "index": 18,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -869,6 +888,7 @@
     {
       "index": 19,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -908,6 +928,7 @@
     {
       "index": 20,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -947,6 +968,7 @@
     {
       "index": 21,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -986,6 +1008,7 @@
     {
       "index": 22,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -1025,6 +1048,7 @@
     {
       "index": 23,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1056,6 +1080,7 @@
     {
       "index": 24,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1087,6 +1112,7 @@
     {
       "index": 25,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -1118,6 +1144,7 @@
     {
       "index": 26,
       "parent_index": 4,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "code",
       "name": null,
@@ -1154,6 +1181,7 @@
     {
       "index": 27,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -1185,6 +1213,7 @@
     {
       "index": 28,
       "parent_index": 5,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1195,7 +1224,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "- Core\n  - Scheduler\n    - Task Queue\n    - Worker Pool\n  - Storage\n    - Graph Store\n    - Vector Store\n    - Blob Store\n  - Search\n    - Lexical Engine\n    - Semantic Engine\n",
+      "data": "Core\n  - Scheduler\n    - Task Queue\n    - Worker Pool\n  - Storage\n    - Graph Store\n    - Vector Store\n    - Blob Store\n  - Search\n    - Lexical Engine\n    - Semantic Engine",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1216,6 +1245,7 @@
     {
       "index": 29,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -1247,6 +1277,7 @@
     {
       "index": 30,
       "parent_index": 6,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "code",
       "name": null,
@@ -1257,7 +1288,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "graph TD\n\nA[Client] --> B[API Gateway]\n\nB --> C[Authentication]\n\nB --> D[Search Service]\n\nD --> E[Vector DB]\n\nD --> F[Graph DB]\n\nC --> G[User Store]",
+      "data": "graph TD\n\nA[Client] --&gt; B[API Gateway]\n\nB --&gt; C[Authentication]\n\nB --&gt; D[Search Service]\n\nD --&gt; E[Vector DB]\n\nD --&gt; F[Graph DB]\n\nC --&gt; G[User Store]",
       "links": null,
       "weburl": null,
       "public_data_link": null,

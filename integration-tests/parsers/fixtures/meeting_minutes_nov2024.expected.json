@@ -329,6 +329,7 @@
     {
       "index": 0,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -360,6 +361,7 @@
     {
       "index": 1,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -391,6 +393,7 @@
     {
       "index": 2,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -422,6 +425,7 @@
     {
       "index": 3,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -432,7 +436,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "1. Rajesh Kumar Nair       — Chief Digital Officer (Chair)",
+      "data": "Rajesh Kumar Nair       — Chief Digital Officer (Chair)",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -453,6 +457,7 @@
     {
       "index": 4,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -463,7 +468,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "2. Anita Sharma            — VP, IT Infrastructure",
+      "data": "Anita Sharma            — VP, IT Infrastructure",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -484,6 +489,7 @@
     {
       "index": 5,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -494,7 +500,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "3. Deepak Menon            — VP, Customer Experience",
+      "data": "Deepak Menon            — VP, Customer Experience",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -515,6 +521,7 @@
     {
       "index": 6,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -525,7 +532,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "4. Kavitha Sundaram        — Head, Data &amp; Analytics",
+      "data": "Kavitha Sundaram        — Head, Data &amp; Analytics",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -546,6 +553,7 @@
     {
       "index": 7,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -556,7 +564,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "5. Rohan Pillai            — Head, Compliance &amp; Risk",
+      "data": "Rohan Pillai            — Head, Compliance &amp; Risk",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -577,6 +585,7 @@
     {
       "index": 8,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -587,7 +596,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "6. Meghna Tewari           — Head, Human Resources",
+      "data": "Meghna Tewari           — Head, Human Resources",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -608,6 +617,7 @@
     {
       "index": 9,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -618,7 +628,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "7. Sudarshan Rao           — Project Lead, Digital Core Program",
+      "data": "Sudarshan Rao           — Project Lead, Digital Core Program",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -639,6 +649,7 @@
     {
       "index": 10,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -649,7 +660,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "8. Priya Anand             — PMO (Minutes)\n",
+      "data": "Priya Anand             — PMO (Minutes)",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -670,6 +681,7 @@
     {
       "index": 11,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -701,6 +713,7 @@
     {
       "index": 12,
       "parent_index": 1,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -711,7 +724,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "9.  Arun Krishnamurthy     — Regional Head, South India Operations",
+      "data": "Arun Krishnamurthy     — Regional Head, South India Operations",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -732,6 +745,7 @@
     {
       "index": 13,
       "parent_index": 1,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -742,7 +756,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "10. Farida Khan            — Head, Actuary &amp; Underwriting Analytics",
+      "data": "Farida Khan            — Head, Actuary &amp; Underwriting Analytics",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -763,6 +777,7 @@
     {
       "index": 14,
       "parent_index": 1,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -773,7 +788,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "11. Nilesh Joshi           — CTO, TechEdge Consulting (Vendor)\n",
+      "data": "Nilesh Joshi           — CTO, TechEdge Consulting (Vendor)",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -794,6 +809,7 @@
     {
       "index": 15,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -825,6 +841,7 @@
     {
       "index": 16,
       "parent_index": 2,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -835,7 +852,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "- Girish Patel (CFO) — travel. Represented by Meena Handa (Finance).\n  Note: Meena Handa joined via VC at 11:00 AM for Agenda Item 4.\n",
+      "data": "Girish Patel (CFO) — travel. Represented by Meena Handa (Finance).\n  Note: Meena Handa joined via VC at 11:00 AM for Agenda Item 4.",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -856,6 +873,7 @@
     {
       "index": 17,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -887,6 +905,7 @@
     {
       "index": 18,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -897,7 +916,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "1. Approval of Previous Meeting Minutes (Oct 3, 2024)",
+      "data": "Approval of Previous Meeting Minutes (Oct 3, 2024)",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -918,6 +937,7 @@
     {
       "index": 19,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -928,7 +948,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "2. Program Status Update — Digital Core Program",
+      "data": "Program Status Update — Digital Core Program",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -949,6 +969,7 @@
     {
       "index": 20,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -959,7 +980,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "3. CRM Platform Migration — Phase 2 Update",
+      "data": "CRM Platform Migration — Phase 2 Update",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -980,6 +1001,7 @@
     {
       "index": 21,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -990,7 +1012,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "4. Budget Review: Q4 Actuals vs. Plan",
+      "data": "Budget Review: Q4 Actuals vs. Plan",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1011,6 +1033,7 @@
     {
       "index": 22,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1021,7 +1044,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "5. Data Privacy Compliance Update (DPDP Act 2023)",
+      "data": "Data Privacy Compliance Update (DPDP Act 2023)",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1042,6 +1065,7 @@
     {
       "index": 23,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1052,7 +1076,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "6. Change Management &amp; Training Rollout",
+      "data": "Change Management &amp; Training Rollout",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1073,6 +1097,7 @@
     {
       "index": 24,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1083,7 +1108,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "7. Risk Log Review",
+      "data": "Risk Log Review",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1104,6 +1129,7 @@
     {
       "index": 25,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1114,7 +1140,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "8. Any Other Business (AOB)",
+      "data": "Any Other Business (AOB)",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1135,6 +1161,7 @@
     {
       "index": 26,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1145,7 +1172,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "9. Next Steps and Close\n",
+      "data": "Next Steps and Close",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1166,6 +1193,7 @@
     {
       "index": 27,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1197,6 +1225,7 @@
     {
       "index": 28,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1228,6 +1257,7 @@
     {
       "index": 29,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1259,6 +1289,7 @@
     {
       "index": 30,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1290,6 +1321,7 @@
     {
       "index": 31,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1321,6 +1353,7 @@
     {
       "index": 32,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1352,6 +1385,7 @@
     {
       "index": 33,
       "parent_index": 4,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1362,7 +1396,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - 7 of 12 workstreams are on track (GREEN)",
+      "data": "7 of 12 workstreams are on track (GREEN)",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1383,6 +1417,7 @@
     {
       "index": 34,
       "parent_index": 4,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1393,7 +1428,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - 3 workstreams are at risk (AMBER): Policy Admin System migration,\n    Agent Portal enhancements, and Legacy Data Archival",
+      "data": "3 workstreams are at risk (AMBER): Policy Admin System migration,\n    Agent Portal enhancements, and Legacy Data Archival",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1414,6 +1449,7 @@
     {
       "index": 35,
       "parent_index": 4,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1424,7 +1460,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - 2 workstreams are behind schedule (RED): Mobile App v2.0 and the\n    Document Management System (DMS) integration\n",
+      "data": "2 workstreams are behind schedule (RED): Mobile App v2.0 and the\n    Document Management System (DMS) integration",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1445,6 +1481,7 @@
     {
       "index": 36,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1476,6 +1513,7 @@
     {
       "index": 37,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1507,6 +1545,7 @@
     {
       "index": 38,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1538,6 +1577,7 @@
     {
       "index": 39,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1569,6 +1609,7 @@
     {
       "index": 40,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1600,6 +1641,7 @@
     {
       "index": 41,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1631,6 +1673,7 @@
     {
       "index": 42,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1662,6 +1705,7 @@
     {
       "index": 43,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1693,6 +1737,7 @@
     {
       "index": 44,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1724,6 +1769,7 @@
     {
       "index": 45,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1755,6 +1801,7 @@
     {
       "index": 46,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1786,6 +1833,7 @@
     {
       "index": 47,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1817,6 +1865,7 @@
     {
       "index": 48,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1848,6 +1897,7 @@
     {
       "index": 49,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1879,6 +1929,7 @@
     {
       "index": 50,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1910,6 +1961,7 @@
     {
       "index": 51,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1941,6 +1993,7 @@
     {
       "index": 52,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1972,6 +2025,7 @@
     {
       "index": 53,
       "parent_index": 5,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1982,7 +2036,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - Business Requirements Sign-off         : Completed Oct 25, 2024",
+      "data": "Business Requirements Sign-off         : Completed Oct 25, 2024",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -2003,6 +2057,7 @@
     {
       "index": 54,
       "parent_index": 5,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -2013,7 +2068,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - Configuration Sprint 1 (5 weeks)       : Nov 1 – Dec 6, 2024",
+      "data": "Configuration Sprint 1 (5 weeks)       : Nov 1 – Dec 6, 2024",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -2034,6 +2089,7 @@
     {
       "index": 55,
       "parent_index": 5,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -2044,7 +2100,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - User Acceptance Testing (UAT)          : Dec 9 – Dec 23, 2024",
+      "data": "User Acceptance Testing (UAT)          : Dec 9 – Dec 23, 2024",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -2065,6 +2121,7 @@
     {
       "index": 56,
       "parent_index": 5,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -2075,7 +2132,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - Training (claims team)                 : Jan 6 – Jan 17, 2025",
+      "data": "Training (claims team)                 : Jan 6 – Jan 17, 2025",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -2096,6 +2153,7 @@
     {
       "index": 57,
       "parent_index": 5,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -2106,7 +2164,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - Go-live                                : Jan 31, 2025\n",
+      "data": "Go-live                                : Jan 31, 2025",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -2127,6 +2185,7 @@
     {
       "index": 58,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2158,6 +2217,7 @@
     {
       "index": 59,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2189,6 +2249,7 @@
     {
       "index": 60,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2220,6 +2281,7 @@
     {
       "index": 61,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2251,6 +2313,7 @@
     {
       "index": 62,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2282,6 +2345,7 @@
     {
       "index": 63,
       "parent_index": 6,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "code",
       "name": null,
@@ -2318,6 +2382,7 @@
     {
       "index": 64,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2349,6 +2414,7 @@
     {
       "index": 65,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2380,6 +2446,7 @@
     {
       "index": 66,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2411,6 +2478,7 @@
     {
       "index": 67,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2442,6 +2510,7 @@
     {
       "index": 68,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2473,6 +2542,7 @@
     {
       "index": 69,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2504,6 +2574,7 @@
     {
       "index": 70,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2535,6 +2606,7 @@
     {
       "index": 71,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2566,6 +2638,7 @@
     {
       "index": 72,
       "parent_index": 7,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -2576,7 +2649,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - Data inventory (mapping of personal data flows): 80% complete",
+      "data": "Data inventory (mapping of personal data flows): 80% complete",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -2597,6 +2670,7 @@
     {
       "index": 73,
       "parent_index": 7,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -2607,7 +2681,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - Consent management framework: Design approved; implementation 60%",
+      "data": "Consent management framework: Design approved; implementation 60%",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -2628,6 +2702,7 @@
     {
       "index": 74,
       "parent_index": 7,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -2638,7 +2713,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - Privacy notices update (policy documents, website): 90% complete",
+      "data": "Privacy notices update (policy documents, website): 90% complete",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -2659,6 +2734,7 @@
     {
       "index": 75,
       "parent_index": 7,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -2669,7 +2745,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - Data Principal rights mechanism (access, correction, erasure): 25%\n    (significant work remaining)",
+      "data": "Data Principal rights mechanism (access, correction, erasure): 25%\n    (significant work remaining)",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -2690,6 +2766,7 @@
     {
       "index": 76,
       "parent_index": 7,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -2700,7 +2777,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - Vendor DPA (Data Processing Agreements) review: 40 of 112 done\n",
+      "data": "Vendor DPA (Data Processing Agreements) review: 40 of 112 done",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -2721,6 +2798,7 @@
     {
       "index": 77,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2752,6 +2830,7 @@
     {
       "index": 78,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2783,6 +2862,7 @@
     {
       "index": 79,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2814,6 +2894,7 @@
     {
       "index": 80,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2845,6 +2926,7 @@
     {
       "index": 81,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2876,6 +2958,7 @@
     {
       "index": 82,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -2907,6 +2990,7 @@
     {
       "index": 83,
       "parent_index": 8,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -2917,7 +3001,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - Digital Readiness Assessment: Completed for all 3,200 employees\n    - 38% assessed as \"digitally proficient\"\n    - 49% assessed as \"developing\"\n    - 13% assessed as \"requiring intensive support\"\n",
+      "data": "Digital Readiness Assessment: Completed for all 3,200 employees\n    - 38% assessed as \"digitally proficient\"\n    - 49% assessed as \"developing\"\n    - 13% assessed as \"requiring intensive support\"",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -2938,6 +3022,7 @@
     {
       "index": 84,
       "parent_index": 8,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -2948,7 +3033,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - Training delivered YTD (Oct):\n    - InsureCore Awareness Sessions : 1,840 employees (57%)\n    - Salesforce Sales Cloud Basic  :   890 employees (completed target)\n    - Cybersecurity Awareness (mandatory): 2,910 employees (91%)\n",
+      "data": "Training delivered YTD (Oct):\n    - InsureCore Awareness Sessions : 1,840 employees (57%)\n    - Salesforce Sales Cloud Basic  :   890 employees (completed target)\n    - Cybersecurity Awareness (mandatory): 2,910 employees (91%)",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -2969,6 +3054,7 @@
     {
       "index": 85,
       "parent_index": 8,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -2979,7 +3065,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - Upcoming:\n    - InsureCore Role-Based Training (Nov–Dec): 850 employees (Ops + Claims)\n    - Mobile App User Orientation: Dec 2024 (post-launch)\n",
+      "data": "Upcoming:\n    - InsureCore Role-Based Training (Nov–Dec): 850 employees (Ops + Claims)\n    - Mobile App User Orientation: Dec 2024 (post-launch)",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -3000,6 +3086,7 @@
     {
       "index": 86,
       "parent_index": 8,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -3010,7 +3097,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  - Challenges:\n    - Tier-2 city attendance rates are lower (avg. 62% vs. 85% target)\n    - Language barriers: training content available only in English and Hindi;\n      regional language versions (Tamil, Telugu, Marathi) still in development.\n",
+      "data": "Challenges:\n    - Tier-2 city attendance rates are lower (avg. 62% vs. 85% target)\n    - Language barriers: training content available only in English and Hindi;\n      regional language versions (Tamil, Telugu, Marathi) still in development.",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -3031,6 +3118,7 @@
     {
       "index": 87,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -3062,6 +3150,7 @@
     {
       "index": 88,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -3093,6 +3182,7 @@
     {
       "index": 89,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -3124,6 +3214,7 @@
     {
       "index": 90,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -3155,6 +3246,7 @@
     {
       "index": 91,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -3186,6 +3278,7 @@
     {
       "index": 92,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -3217,6 +3310,7 @@
     {
       "index": 93,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -3248,6 +3342,7 @@
     {
       "index": 94,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -3279,6 +3374,7 @@
     {
       "index": 95,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -3310,6 +3406,7 @@
     {
       "index": 96,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -3341,6 +3438,7 @@
     {
       "index": 97,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -3372,6 +3470,7 @@
     {
       "index": 98,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -3403,6 +3502,7 @@
     {
       "index": 99,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
@@ -3434,6 +3534,7 @@
     {
       "index": 100,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -3465,6 +3566,7 @@
     {
       "index": 101,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -3496,6 +3598,7 @@
     {
       "index": 102,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -3527,6 +3630,7 @@
     {
       "index": 103,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -3558,6 +3662,7 @@
     {
       "index": 104,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,

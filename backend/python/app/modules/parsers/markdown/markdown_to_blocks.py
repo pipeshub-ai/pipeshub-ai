@@ -15,6 +15,7 @@ from app.models.blocks import (
     BlocksContainer,
     BlockSubType,
     BlockType,
+    CitationMetadata,
     CodeMetadata,
     DataFormat,
     GroupSubType,
@@ -125,6 +126,15 @@ class _TableState:
 _PLAIN_INLINE_CHILD_TYPES = frozenset({"text", "softbreak", "hardbreak"})
 
 
+def _apply_page_number_to_container(
+    container: BlocksContainer, page_number: int
+) -> None:
+    for block in container.blocks:
+        block.citation_metadata = CitationMetadata(page_number=page_number)
+    for group in container.block_groups:
+        group.citation_metadata = CitationMetadata(page_number=page_number)
+
+
 class MarkdownToBlocksConverter:
     """Convert Markdown content directly into BlocksContainer without Docling."""
 
@@ -135,6 +145,7 @@ class MarkdownToBlocksConverter:
         self,
         markdown_content: str,
         caption_map: dict[str, str] | None = None,
+        page_number: int | None = None,
     ) -> BlocksContainer:
         """Convert Markdown to a BlocksContainer.
 
@@ -155,7 +166,10 @@ class MarkdownToBlocksConverter:
             markdown_content=markdown_content,
             caption_map=caption_map,
         )
-        return walker.walk(tokens)
+        container = walker.walk(tokens)
+        if page_number is not None:
+            _apply_page_number_to_container(container, page_number)
+        return container
 
 
 class _TokenWalker:

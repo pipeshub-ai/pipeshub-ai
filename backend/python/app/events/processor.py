@@ -1604,6 +1604,7 @@ class Processor:
             block_containers = await html_parser.parse(
                 modified_html,
                 caption_map=caption_map if caption_map else None,
+                name=recordName,
             )
 
             # Signal parsing complete
