@@ -3026,7 +3026,7 @@ class TestNotImplementedMethods:
     @pytest.mark.asyncio
     async def test_get_filter_options(self):
         conn = _make_connector()
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(ValueError, match="Unsupported filter key"):
             await conn.get_filter_options("some_key")
 
 
