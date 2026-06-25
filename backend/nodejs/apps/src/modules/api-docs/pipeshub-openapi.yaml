@@ -3003,7 +3003,7 @@ components:
         userRole:
           type: string
           nullable: true
-          enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+          enum: [OWNER, WRITER, READER]
           description: User's role in this knowledge base
       required:
         - id
