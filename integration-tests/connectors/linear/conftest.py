@@ -63,7 +63,7 @@ async def linear_datasource() -> LinearDataSource:
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def connector_assertions(graph_provider: GraphProviderProtocol):
+async def connector_assertions(graph_provider: GraphProviderProtocol) -> ConnectorAssertions:
     """Generic assertions helper — works for any connector."""
     return ConnectorAssertions(graph_provider)
 

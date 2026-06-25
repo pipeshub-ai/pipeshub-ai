@@ -35,6 +35,7 @@ if str(_ROOT) not in sys.path:
 
 from app.config.constants.arangodb import ProgressStatus  # type: ignore[import-not-found]  # noqa: E402
 from app.models.entities import (  # type: ignore[import-not-found]  # noqa: E402
+    LinkRecord,
     Record,
     RecordType,
 )
@@ -565,12 +566,12 @@ class TestLinearValidation:
         )
         actual = await graph_provider.get_typed_record_by_external_id(connector_id, attachment_id)
         assert actual is not None, f"LINK record missing for attachment {attachment_id}"
-        assert actual.record_type == RecordType.LINK
+        assert isinstance(actual, LinkRecord), f"Expected LinkRecord, got {type(actual).__name__}"
 
         skip = frozenset({"created_at", "updated_at"})
         _assert_dependent_record_fields(expected, actual, skip=skip)
-        assert getattr(actual, "url", None) == expected.url
-        assert getattr(actual, "title", None) == expected.title
+        assert actual.url == expected.url
+        assert actual.title == expected.title
 
         record_edges = build_record_edge_expectations(actual, connector_id)
         await assert_graph_edges(graph_provider, record_edges)
