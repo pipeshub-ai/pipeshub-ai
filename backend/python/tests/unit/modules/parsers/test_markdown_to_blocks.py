@@ -253,7 +253,7 @@ class TestParagraphs:
         container = converter.convert("Plain paragraph.\n")
         block = container.blocks[0]
         assert block.data == "Plain paragraph."
-        assert block.format == DataFormat.TXT
+        assert block.format == DataFormat.MARKDOWN
 
     def test_multiple_paragraphs_are_separate_blocks(self, converter: MarkdownToBlocksConverter):
         container = converter.convert("First paragraph.\n\nSecond paragraph.\n")
@@ -583,6 +583,7 @@ class TestImages:
         assert list_container.sub_type == BlockSubType.LIST_ITEM
         assert _is_empty_split_container(list_container)
         assert _fragment_blocks(container, list_container.index)[0].data == "- "
+        assert _fragment_blocks(container, list_container.index)[0].sub_type is None
         assert list_container.parent_index == list_group.index
 
     def test_image_inside_list_with_caption_map_emits_image_block(
@@ -602,11 +603,13 @@ class TestImages:
         assert _is_empty_split_container(list_containers[0])
         fragments = _fragment_blocks(container, list_containers[0].index)
         assert fragments[0].data == "- Available connectors: "
+        assert fragments[0].sub_type is None
         assert len(image_blocks) == 1
         assert image_blocks[0].data == {"uri": "data:image/png;base64,LISTIMG"}
         assert image_blocks[0].format == DataFormat.BASE64
         assert image_blocks[0].parent_index is None
         assert image_blocks[0].parent_block_index == list_containers[0].index
+        assert image_blocks[0].sub_type is None
         assert _child_block_indices(list_group) == [list_containers[0].index]
 
     def test_image_inside_table_cell_with_caption_map_emits_image_block(
@@ -1051,7 +1054,7 @@ class TestInlineRendering:
     def test_hard_line_break_renders_as_newline(self, converter: MarkdownToBlocksConverter):
         container = converter.convert("Line one  \nLine two\n")
         block = container.blocks[0]
-        assert block.format == DataFormat.TXT
+        assert block.format == DataFormat.MARKDOWN
         assert "Line one\nLine two" in block.data
 
 
@@ -1110,7 +1113,7 @@ class TestSplitRawMarkdownIntoSegments:
         assert [(s.kind, s.text or s.alt_text) for s in segments] == [
             ("text", "text "),
             ("image", "Image_1"),
-            ("text", ' src="x"> more'),
+            ("text", " more"),
         ]
 
     def test_empty_string_returns_no_segments(self):
@@ -1250,7 +1253,7 @@ class TestTokenWalkerUtilities:
         inline.children = None
         text, fmt = walker._split_inline_content(inline)
         assert text == "plain"
-        assert fmt == DataFormat.TXT
+        assert fmt == DataFormat.MARKDOWN
 
     def test_split_inline_into_segments_with_markdown_image(self):
         walker = _TokenWalker("")
@@ -1281,7 +1284,6 @@ class TestTokenWalkerUtilities:
         assert [(s.kind, s.text or s.alt_text) for s in segments] == [
             ("text", "Before "),
             ("image", "Image_1"),
-            ("text", ' src="x">'),
         ]
 
     def test_render_inline_markdown_softbreak_and_hardbreak(self):

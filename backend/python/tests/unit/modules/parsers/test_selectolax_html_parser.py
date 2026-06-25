@@ -97,7 +97,7 @@ class TestHeadingMergesIntoParagraph:
         block = container.blocks[0]
         assert block.sub_type == BlockSubType.PARAGRAPH
         assert block.data == "## Section\nSome text."
-        assert block.format == DataFormat.TXT
+        assert block.format == DataFormat.MARKDOWN
 
     def test_all_heading_levels_merge(self, converter: HtmlToBlocksConverter) -> None:
         for level in range(1, 7):
@@ -183,6 +183,23 @@ class TestHeadingMergesIntoParagraph:
             ("text", "## Title\nBody."),
         ]
 
+    def test_merge_heading_content_segments_preserves_image_first_heading(
+        self,
+    ) -> None:
+        merged = _merge_heading_content_segments(
+            2,
+            [
+                _Segment(kind="image", alt_text="logo"),
+                _Segment(kind="text", text=" Release notes"),
+            ],
+            [_Segment(kind="text", text="We shipped v2.")],
+        )
+        assert [(s.kind, s.text if s.kind == "text" else s.alt_text) for s in merged] == [
+            ("text", "## "),
+            ("image", "logo"),
+            ("text", " Release notes\nWe shipped v2."),
+        ]
+
 
 class TestHeadings:
     def test_heading_produces_text_block(self, converter: HtmlToBlocksConverter) -> None:
@@ -193,7 +210,7 @@ class TestHeadings:
         ]
         assert len(headings) == 2
         assert headings[0].data == "Title"
-        assert headings[0].format == DataFormat.TXT
+        assert headings[0].format == DataFormat.MARKDOWN
         assert headings[1].data == "Subtitle"
 
     def test_heading_with_inline_formatting_uses_markdown(self, converter: HtmlToBlocksConverter) -> None:
@@ -223,7 +240,7 @@ class TestParagraphs:
         container = converter.convert("<p>Plain paragraph.</p>")
         block = container.blocks[0]
         assert block.data == "Plain paragraph."
-        assert block.format == DataFormat.TXT
+        assert block.format == DataFormat.MARKDOWN
 
     def test_relative_link_resolved_with_base_url(self, converter: HtmlToBlocksConverter) -> None:
         container = converter.convert(
@@ -619,8 +636,10 @@ class TestImages:
         assert _is_empty_split_container(list_containers[0])
         fragments = _fragment_blocks(container, list_containers[0].index)
         assert fragments[0].data == "Item with "
+        assert fragments[0].sub_type is None
         assert len(image_blocks) == 1
         assert image_blocks[0].parent_block_index == list_containers[0].index
+        assert image_blocks[0].sub_type is None
         assert image_blocks[0].parent_index is None
         assert _child_block_indices(list_group) == [list_containers[0].index]
 
@@ -656,7 +675,9 @@ class TestImages:
         assert image_blocks[0].format == DataFormat.BASE64
         assert image_blocks[0].parent_block_index == list_containers[0].index
         assert fragments[0].data is not None
+        assert fragments[0].sub_type is None
         assert "Slack | Active |" in fragments[0].data
+        assert image_blocks[0].sub_type is None
         assert image_blocks[0].image_metadata.captions == ["Image_1"]
 
     def test_blockquote_with_image_splits_blocks(

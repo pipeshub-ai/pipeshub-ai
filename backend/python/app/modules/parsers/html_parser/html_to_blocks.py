@@ -286,10 +286,10 @@ def _is_paragraph_like(tag: str | None, node: LexborNode) -> bool:
 def _has_inline_formatting(node: LexborNode, depth: int = 0) -> bool:
     """Check whether a DOM subtree contains inline formatting tags (bold, links, etc.).
 
-    Decides the storage format for block content: ``DataFormat.MARKDOWN`` when
-    formatting is present (to preserve bold, links, inline code), or
-    ``DataFormat.TXT`` when plain text suffices (cheaper for indexing).
-    Block/container descendants are skipped — they have their own emitters.
+    Decides whether the element's ``inner_html`` must be rendered to markdown
+    (formatting tags present) or can be walked as plain text while still
+    stored with ``DataFormat.MARKDOWN``. Block/container descendants are
+    skipped — they have their own emitters.
     Depth is capped at ``_MAX_DOM_PROBE_DEPTH`` to prevent stack overflows.
     """
     if depth > _MAX_DOM_PROBE_DEPTH:
@@ -377,19 +377,19 @@ def _element_to_segments(
 ) -> tuple[list[_Segment], DataFormat, str, list[LexborNode]]:
     """Split a block-level DOM element into ordered text/image segments.
 
-    Two extraction paths mirror the block's ``DataFormat``:
+    Two extraction paths; both emit ``DataFormat.MARKDOWN``:
 
-    * **Markdown path** — inline formatting tags are present; the element's
-      ``inner_html`` is rendered to markdown and split on image syntax.
-    * **Plain TXT path** — direct children are walked in document order; text
+    * **Markdown render path** — inline formatting tags are present; the
+      element's ``inner_html`` is rendered to markdown and split on image syntax.
+    * **Plain walk path** — direct children are walked in document order; text
       nodes and ``<br>`` accumulate into text segments and each direct-child
       ``<img>`` becomes an image segment.
 
     Returns:
         ``(segments, data_format, markdown_source, image_nodes)`` where
-        *markdown_source* supports ``data:image`` lookup on the markdown path,
-        and *image_nodes* aligns one-to-one with image segments on the TXT path
-        (empty on the markdown path).
+        *markdown_source* supports ``data:image`` lookup on the render path,
+        and *image_nodes* aligns one-to-one with image segments on the plain
+        walk path (empty on the render path).
     """
     if _has_inline_formatting(node):
         markdown = _html_to_markdown(node.inner_html.strip())
@@ -431,7 +431,7 @@ def _element_to_segments(
                 text_buf.append(rendered)
 
     flush_text()
-    return segments, DataFormat.TXT, "", image_nodes
+    return segments, DataFormat.MARKDOWN, "", image_nodes
 
 
 def _merge_heading_content_segments(
@@ -462,6 +462,7 @@ def _merge_heading_content_segments(
         merged.extend(heading_segments[1:])
     elif level > 0:
         merged.append(_Segment(kind="text", text="#" * level + " "))
+        merged.extend(heading_segments)
     else:
         merged.extend(heading_segments)
 
@@ -1230,15 +1231,10 @@ class _DomWalker:
         elif content_md:
             markdown_source = content_md
 
-        data_format = (
-            DataFormat.MARKDOWN
-            if content_fmt == DataFormat.MARKDOWN or heading_md
-            else DataFormat.TXT
-        )
         self._emit_with_image_splits(
             block_type=BlockType.TEXT,
             sub_type=BlockSubType.PARAGRAPH,
-            format=data_format,
+            format=DataFormat.MARKDOWN,
             segments=segments,
             markdown_source=markdown_source,
             image_nodes=heading_images + content_images,
@@ -1703,8 +1699,8 @@ class _DomWalker:
 
         Without images: one block with joined text. With images inside a list or
         quote group: empty container plus TEXT/IMAGE children linked via
-        ``parent_block_index``. With images at document root: flat sequential
-        TEXT and IMAGE sibling blocks (no container, no ``parent_block_index``).
+        ``parent_block_index``. Fragment children omit ``sub_type``; only the
+        container carries the parent semantic type (e.g. ``LIST_ITEM``).
 
         Args:
             block_type: Block type for unsplit content or the empty container.
@@ -1781,7 +1777,6 @@ class _DomWalker:
                     Block(
                         id=str(uuid4()),
                         type=BlockType.TEXT,
-                        sub_type=sub_type,
                         format=format,
                         data=seg.text,
                     ),
@@ -1911,7 +1906,7 @@ class _DomWalker:
                     Block(
                         id=str(uuid4()),
                         type=BlockType.TEXT,
-                        format=DataFormat.TXT,
+                        format=DataFormat.MARKDOWN,
                         data=seg.text,
                     ),
                     container_index,

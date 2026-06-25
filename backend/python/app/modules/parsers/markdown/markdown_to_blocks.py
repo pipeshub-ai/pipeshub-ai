@@ -25,7 +25,9 @@ from app.models.blocks import (
 )
 
 _MD_IMAGE_RE = re.compile(r'!\[([^\]]*)\]\(([^\s)]+)(?:\s+"[^"]*")?\)')
-_HTML_IMG_ALT_RE = re.compile(r'<img\s[^>]*alt=["\']([^"\']*)["\']', re.IGNORECASE)
+_HTML_IMG_ALT_RE = re.compile(
+    r'<img\s[^>]*alt=["\']([^"\']*)["\'][^>]*>', re.IGNORECASE
+)
 _LIST_MARKER_RE = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+")
 
 
@@ -681,8 +683,8 @@ class _TokenWalker:
 
         Without images: one block with joined text. With images inside a list or
         quote group: empty container plus TEXT/IMAGE children linked via
-        ``parent_block_index``. With images at document root: flat sequential
-        TEXT and IMAGE sibling blocks (no container, no ``parent_block_index``).
+        ``parent_block_index``. Fragment children omit ``sub_type``; only the
+        container carries the parent semantic type (e.g. ``LIST_ITEM``).
         """
         has_images = any(seg.kind == "image" for seg in segments)
         if not has_images:
@@ -744,7 +746,6 @@ class _TokenWalker:
                     Block(
                         id=str(uuid4()),
                         type=BlockType.TEXT,
-                        sub_type=sub_type,
                         format=format,
                         data=seg.text,
                     ),
@@ -782,11 +783,7 @@ class _TokenWalker:
         return segments
 
     def _inline_segments_format(self, inline_token: Token) -> DataFormat:
-        if not inline_token.children:
-            return DataFormat.TXT
-        if self._has_inline_formatting(inline_token.children):
-            return DataFormat.MARKDOWN
-        return DataFormat.TXT
+        return DataFormat.MARKDOWN
 
     def _split_inline_into_segments(self, inline_token: Token) -> list[_Segment]:
         if not inline_token.children:
@@ -909,7 +906,7 @@ class _TokenWalker:
                     Block(
                         id=str(uuid4()),
                         type=BlockType.TEXT,
-                        format=DataFormat.TXT,
+                        format=DataFormat.MARKDOWN,
                         data=seg.text,
                     ),
                     container_index,
@@ -932,7 +929,7 @@ class _TokenWalker:
         self, inline_token: Token
     ) -> tuple[str, DataFormat]:
         if not inline_token.children:
-            return inline_token.content.strip(), DataFormat.TXT
+            return inline_token.content.strip(), DataFormat.MARKDOWN
 
         non_image_children = [c for c in inline_token.children if c.type != "image"]
         has_images = len(non_image_children) != len(inline_token.children)
@@ -940,7 +937,7 @@ class _TokenWalker:
         if not has_images:
             if self._has_inline_formatting(inline_token.children):
                 return inline_token.content.strip(), DataFormat.MARKDOWN
-            return self._render_inline(inline_token).strip(), DataFormat.TXT
+            return self._render_inline(inline_token).strip(), DataFormat.MARKDOWN
 
         if self._has_inline_formatting(non_image_children):
             return (
@@ -949,7 +946,7 @@ class _TokenWalker:
             )
 
         text_parts = [rendered for c in non_image_children if (rendered := self._render_inline(c))]
-        return "".join(text_parts).strip(), DataFormat.TXT
+        return "".join(text_parts).strip(), DataFormat.MARKDOWN
 
     def _render_inline(self, token: Token) -> str:
         """Render a token to plain text (no markup decorators)."""
