@@ -368,7 +368,7 @@ class MariaDBConnector(BaseConnector):
                 password=password,
             )
             client = mariadb_config.create_client()
-            client.connect()
+            await client.connect()
 
             self.data_source = MariaDBDataSource(client)
 
@@ -761,7 +761,7 @@ class MariaDBConnector(BaseConnector):
             if self.data_source:
                 client = self.data_source.get_client()
                 if client:
-                    client.close()
+                    await client.close()
                 self.data_source = None
 
             self._record_id_cache.clear()

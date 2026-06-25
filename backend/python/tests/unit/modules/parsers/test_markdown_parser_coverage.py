@@ -10,14 +10,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Mock docling imports before importing MarkdownParser
+# Mock docling imports before importing DoclingMarkdownParser
 with patch.dict("sys.modules", {
     "docling": MagicMock(),
     "docling.datamodel": MagicMock(),
     "docling.datamodel.document": MagicMock(),
     "docling.document_converter": MagicMock(),
 }):
-    from app.modules.parsers.markdown.markdown_parser import MarkdownParser
+    from app.modules.parsers.markdown.docling_markdown_parser import (
+        DoclingMarkdownParser,
+    )
 
 
 @pytest.fixture
@@ -29,7 +31,7 @@ def parser():
         "docling.document_converter": MagicMock(),
     }):
         with patch("app.modules.parsers.markdown.docling_markdown_parser.DocumentConverter"):
-            return MarkdownParser()
+            return DoclingMarkdownParser()
 
 
 class TestParseFileFailure:

@@ -1,3 +1,5 @@
+import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
+
 import asyncio
 import os
 from collections.abc import AsyncGenerator
@@ -82,11 +84,12 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
                     {"_key": record.get("_key"), "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value}
                     for record in queued_records
                 ]
-                await graph_provider.batch_upsert_nodes(
+                success = await graph_provider.batch_update_nodes(
                     update_docs,
                     CollectionNames.RECORDS.value,
                 )
-                logger.info(f"✅ Set {len(queued_records)} queued record(s) to AUTO_INDEX_OFF")
+                if not success:
+                    logger.warning(f"⚠️ Failed to set some queued records to AUTO_INDEX_OFF - some records may not exist")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to bulk set records to AUTO_INDEX_OFF: {e}")
 
@@ -368,6 +371,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error shutting down PDF OCR detection pool: {e}")
 
+    try:
+        from app.modules.parsers.pdf.pdf_rasterizer import shutdown_pdf_raster_pool
+        if shutdown_pdf_raster_pool():
+            logger.info("✅ PDF rasterization process pool shut down")
+    except Exception as e:
+        logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
+
+
+from app.api.middlewares.request_context import RequestContextMiddleware
+from app.utils.request_context import set_service_suffix
+
+set_service_suffix("-is")
 
 app = FastAPI(
     lifespan=lifespan,
@@ -375,6 +390,9 @@ app = FastAPI(
     description="API for semantic search and document retrieval with message consumer",
     version="1.0.0",
 )
+
+# Trace context — outermost.
+app.add_middleware(RequestContextMiddleware)
 
 
 @app.get("/health")

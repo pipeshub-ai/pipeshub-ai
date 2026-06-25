@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import time
 import traceback
 from typing import Any
@@ -20,7 +22,6 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.service import config_node_constants
-from app.exceptions.embedding_exceptions import EmbeddingModelCreationError
 from app.exceptions.fastapi_responses import Status
 from app.models.blocks import GroupType
 from app.modules.transformers.blob_storage import BlobStorage
@@ -57,6 +58,7 @@ valid_group_labels = [
         GroupType.INLINE.value,
         GroupType.KEY_VALUE_AREA.value,
         GroupType.TEXT_SECTION.value,
+        GroupType.CODE.value,
     ]
 
 class RetrievalService:
@@ -92,12 +94,8 @@ class RetrievalService:
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
         self.logger.info(f"Retrieval service initialized with collection name: {self.collection_name}")
-        self.embedding_model = None
-        self.embedding_size = None
-        self.embedding_model_instance = None
-        # Serialize concurrent embedding model loads so we only build the model
-        # once even if multiple requests race during warmup. Safe to create at
-        # import-time on Python 3.10+ (no running loop required).
+        self._cached_dense_embeddings: Embeddings | None = None
+        self._cached_embedding_config_hash: str | None = None
         self._embedding_model_lock = asyncio.Lock()
 
     async def _ensure_sparse_embeddings(self) -> FastEmbedSparse:
@@ -148,73 +146,67 @@ class RetrievalService:
             self.logger.error(f"Error getting LLM: {str(e)}")
             return None
 
+    @staticmethod
+    def _embedding_config_hash(embedding_configs: list[dict[str, Any]] | None) -> str:
+        """Deterministic hash of the embedding config for cache invalidation."""
+        if not embedding_configs:
+            return "default"
+        serialisable = []
+        for cfg in embedding_configs:
+            serialisable.append({
+                "provider": cfg.get("provider"),
+                "isDefault": cfg.get("isDefault"),
+                "model": (cfg.get("configuration") or {}).get("model"),
+                "endpoint": (cfg.get("configuration") or {}).get("endpoint"),
+            })
+        return hashlib.sha256(
+            json.dumps(serialisable, sort_keys=True).encode()
+        ).hexdigest()[:16]
+
     async def get_embedding_model_instance(self, use_cache: bool = False) -> Embeddings | None:
+        """Return the dense embedding model, cached across calls while config is stable.
+
+        The config is re-read every call so a provider/model change in the admin
+        UI takes effect immediately; but when the config hash hasn't changed the
+        previously-built model instance is reused, avoiding the heavy
+        construction cost on every query.
+        """
         try:
-            embedding_model = await self.get_current_embedding_model_name(use_cache)
+            ai_models = await self.config_service.get_config(
+                config_node_constants.AI_MODELS.value, use_cache=use_cache
+            )
+            embedding_configs = (ai_models or {}).get("embedding")
+            config_hash = self._embedding_config_hash(embedding_configs)
 
-            # Fast path: same model already loaded, no lock needed.
-            if self.embedding_model == embedding_model and self.embedding_model_instance is not None:
-                return self.embedding_model_instance
+            if (
+                self._cached_dense_embeddings is not None
+                and self._cached_embedding_config_hash == config_hash
+            ):
+                return self._cached_dense_embeddings
 
-            # Serialize the (potentially very slow) model load so concurrent
-            # callers don't all download / instantiate the embedding model.
             async with self._embedding_model_lock:
-                # Re-check after acquiring the lock in case another coroutine
-                # already finished loading while we were waiting.
-                if self.embedding_model == embedding_model and self.embedding_model_instance is not None:
-                    return self.embedding_model_instance
+                if (
+                    self._cached_dense_embeddings is not None
+                    and self._cached_embedding_config_hash == config_hash
+                ):
+                    return self._cached_dense_embeddings
 
-                try:
-                    if not embedding_model or embedding_model == DEFAULT_EMBEDDING_MODEL:
-                        self.logger.info("Using default embedding model")
-                        effective_model = DEFAULT_EMBEDDING_MODEL
-                        # HuggingFaceEmbeddings(...) may download ~1GB+ and load a
-                        # transformer, which blocks the event loop. Offload to a
-                        # worker thread so the server stays responsive.
-                        dense_embeddings = await asyncio.to_thread(get_default_embedding_model)
-                    else:
-                        self.logger.info(
-                            f"Using embedding model: {getattr(embedding_model, 'model', embedding_model)}"
-                        )
-                        ai_models = await self.config_service.get_config(
-                            config_node_constants.AI_MODELS.value
-                        )
-                        dense_embeddings = None
-                        effective_model = embedding_model
-                        if ai_models["embedding"]:
-                            self.logger.info(
-                                "No default embedding model found, using first available provider"
-                            )
-                            configs = ai_models["embedding"]
-                            selected_config = next(
-                                (c for c in configs if c.get("isDefault", False)), None
-                            )
-                            if not selected_config and configs:
-                                selected_config = configs[0]
+                if not embedding_configs:
+                    self.logger.info("No embedding config found; using default embedding model")
+                    dense_embeddings = await asyncio.to_thread(get_default_embedding_model)
+                else:
+                    selected_config = next(
+                        (c for c in embedding_configs if c.get("isDefault", False)),
+                        embedding_configs[0],
+                    )
+                    provider = selected_config["provider"]
+                    self.logger.info(f"Using embedding provider: {provider}")
+                    dense_embeddings = await asyncio.to_thread(
+                        get_embedding_model, provider, selected_config
+                    )
 
-                            if selected_config:
-                                # Provider clients (Bedrock/OpenAI/etc.) may also do
-                                # blocking I/O on construction, so offload here too.
-                                dense_embeddings = await asyncio.to_thread(
-                                    get_embedding_model,
-                                    selected_config["provider"],
-                                    selected_config,
-                                )
-                                self.logger.info(
-                                    f"Embedding provider: {selected_config['provider']}"
-                                )
-
-                except Exception as e:
-                    self.logger.error(f"Error creating embedding model: {str(e)}")
-                    raise EmbeddingModelCreationError(
-                        f"Failed to create embedding model: {str(e)}"
-                    ) from e
-
-                self.logger.info(
-                    f"Using embedding model: {getattr(effective_model, 'model', effective_model)}"
-                )
-                self.embedding_model = embedding_model
-                self.embedding_model_instance = dense_embeddings
+                self._cached_dense_embeddings = dense_embeddings
+                self._cached_embedding_config_hash = config_hash
                 return dense_embeddings
         except Exception as e:
             self.logger.error(f"Error getting embedding model: {str(e)}")
@@ -697,15 +689,17 @@ class RetrievalService:
                     models.Prefetch(
                         query=dense_embedding,
                         using="dense",
-                        limit=limit * 2,  # Fetch more candidates
+                        limit=limit * 2,
+                        filter=filter,
                     ),
                     models.Prefetch(
                         query=self.to_qdrant_sparse(sparse_embedding),
                         using="sparse",
                         limit=limit * 2,
+                        filter=filter,
                     ),
                 ],
-                query=models.FusionQuery(fusion=models.Fusion.RRF),  # Reciprocal Rank Fusion
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
                 with_payload=True,
                 limit=limit,
                 filter=filter,

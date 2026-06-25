@@ -1,15 +1,281 @@
 """Unit tests for app.utils.oauth_config."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.utils.oauth_config import (
+    _override_oauth_host_with_instance,
+    extract_oauth_error_message,
     fetch_oauth_config_by_id,
     fetch_toolset_oauth_config_by_id,
     get_oauth_config,
     resolve_instance_url,
 )
+
+
+# ===================================================================
+# extract_oauth_error_message
+# ===================================================================
+class TestExtractOAuthErrorMessage:
+    """Covers lines 52-138 — the entire extract_oauth_error_message function."""
+
+    # --- Path 1: JSON body with error_description > 5 chars (lines 77-79, 84-95) ---
+
+    def test_json_body_with_error_description(self):
+        exc = Exception(
+            'Token request failed. Response: {"error": "invalid_grant", '
+            '"error_description": "The authorization code has expired"}'
+        )
+        result = extract_oauth_error_message(exc)
+        assert result.startswith("OAuth provider error:")
+        assert "authorization code has expired" in result
+        assert result.endswith("Please verify your OAuth credentials in the admin settings.")
+
+    def test_json_body_error_description_strips_trailing_dot(self):
+        exc = Exception(
+            'Token request failed. Response: {"error_description": "Token was revoked."}'
+        )
+        result = extract_oauth_error_message(exc)
+        assert "OAuth provider error: Token was revoked." in result
+        assert not result.startswith("OAuth provider error: Token was revoked..")
+        assert "Token was revoked" in result
+
+    def test_json_body_with_notion_message_field(self):
+        """Notion returns {"error": "unauthorized", "message": "..."} — line 88-89."""
+        exc = Exception(
+            'Token request failed. Response: {"error": "unauthorized", '
+            '"message": "API token is invalid or has been revoked"}'
+        )
+        result = extract_oauth_error_message(exc)
+        assert result.startswith("OAuth provider error:")
+        assert "API token is invalid" in result
+
+    def test_json_body_short_description_falls_through_to_error_code(self):
+        """Description <= 5 chars should be ignored; fall through to error code map."""
+        exc = Exception(
+            'Token request failed. Response: {"error": "invalid_client", '
+            '"error_description": "bad"}'
+        )
+        result = extract_oauth_error_message(exc)
+        assert "Invalid OAuth client credentials" in result
+        assert "Please update it in the admin settings." in result
+
+    # --- Path 2: error code in _OAUTH_ERROR_CODE_MAP (lines 99-106) ---
+
+    def test_known_error_code_no_description(self):
+        exc = Exception(
+            'Token request failed. Response: {"error": "invalid_scope"}'
+        )
+        result = extract_oauth_error_message(exc)
+        assert "One or more requested scopes" in result
+        assert "Please update it in the admin settings." in result
+
+    def test_slack_ok_false_without_error_code(self):
+        """Slack returns {"ok": false} with no "error" key — line 103."""
+        exc = Exception(
+            'Token request failed. Response: {"ok": false}'
+        )
+        result = extract_oauth_error_message(exc)
+        assert "malformed" in result or "invalid_request" in result.lower() or "Please update" in result
+
+    def test_slack_ok_false_with_error_code(self):
+        exc = Exception(
+            'Token request failed. Response: {"ok": false, "error": "bad_client_secret"}'
+        )
+        result = extract_oauth_error_message(exc)
+        assert "Slack client secret is invalid" in result
+
+    # --- Path 3: error_body is not a dict (branch 84->93, 99->105) ---
+
+    def test_json_body_is_list_not_dict(self):
+        """json.loads returns a list — isinstance(error_body, dict) is False."""
+        exc = Exception(
+            'Token request failed. Response: ["error1", "error2"]'
+        )
+        result = extract_oauth_error_message(exc)
+        assert "unexpected error" in result.lower()
+
+    def test_json_body_is_string(self):
+        exc = Exception(
+            'Token request failed. Response: "some string"'
+        )
+        result = extract_oauth_error_message(exc)
+        assert "unexpected error" in result.lower()
+
+    # --- Path 4: JSON parse fails, fallback to raw regex scan (line 113) ---
+
+    def test_json_parse_fails_but_known_code_in_raw_message(self):
+        """No valid JSON but a known code appears in the text — line 113."""
+        exc = Exception("OAuth error: invalid_client returned by provider")
+        result = extract_oauth_error_message(exc)
+        assert "Invalid OAuth client credentials" in result
+        assert "Please update it in the admin settings." in result
+
+    def test_raw_message_contains_access_denied(self):
+        exc = Exception("The request resulted in access_denied from the server")
+        result = extract_oauth_error_message(exc)
+        assert "Access was denied" in result
+
+    # --- Path 5: HTTP status code fallback (lines 118-130) ---
+
+    def test_status_400(self):
+        exc = Exception("Request failed with status 400")
+        result = extract_oauth_error_message(exc)
+        assert "400 Bad Request" in result
+
+    def test_status_401(self):
+        exc = Exception("Request failed with status 401")
+        result = extract_oauth_error_message(exc)
+        assert "401 Unauthorized" in result
+
+    def test_status_403(self):
+        exc = Exception("Request failed with status 403")
+        result = extract_oauth_error_message(exc)
+        assert "403 Forbidden" in result
+
+    def test_status_404(self):
+        exc = Exception("Request failed with status 404")
+        result = extract_oauth_error_message(exc)
+        assert "404" in result
+        assert "not found" in result.lower()
+
+    def test_status_429(self):
+        exc = Exception("Request failed with status 429")
+        result = extract_oauth_error_message(exc)
+        assert "rate-limited" in result.lower() or "rate" in result.lower()
+
+    def test_status_500(self):
+        exc = Exception("Request failed with status 500")
+        result = extract_oauth_error_message(exc)
+        assert "experiencing issues" in result
+
+    def test_status_502(self):
+        """Any status >= 500 should give the server-issues message."""
+        exc = Exception("Request failed with status 502")
+        result = extract_oauth_error_message(exc)
+        assert "experiencing issues" in result
+
+    def test_status_422_unhandled_falls_through(self):
+        """Status codes not explicitly handled (e.g. 422) fall through to generic."""
+        exc = Exception("Request failed with status 422")
+        result = extract_oauth_error_message(exc)
+        assert "unexpected error" in result.lower()
+
+    # --- Path 6: ValueError messages from handle_callback (lines 134, 136) ---
+
+    def test_invalid_or_expired_state(self):
+        exc = ValueError("Invalid or expired state token received")
+        result = extract_oauth_error_message(exc)
+        assert "session has expired" in result
+
+    def test_already_been_used(self):
+        exc = ValueError("This code has already been used")
+        result = extract_oauth_error_message(exc)
+        assert "already been used" in result
+
+    # --- Path 7: Generic fallback (line 138) ---
+
+    def test_generic_fallback(self):
+        exc = Exception("Something completely unexpected happened")
+        result = extract_oauth_error_message(exc)
+        assert "unexpected error" in result.lower()
+        assert "administrator" in result
+
+    # --- Edge cases ---
+
+    def test_no_response_prefix_no_known_code(self):
+        exc = Exception("Network timeout")
+        result = extract_oauth_error_message(exc)
+        assert "unexpected error" in result.lower()
+
+    def test_malformed_json_in_response(self):
+        """Response: followed by invalid JSON — lines 77-79 except branch."""
+        exc = Exception("Token request failed. Response: {not valid json}")
+        result = extract_oauth_error_message(exc)
+        assert isinstance(result, str)
+
+    def test_empty_exception_message(self):
+        exc = Exception("")
+        result = extract_oauth_error_message(exc)
+        assert "unexpected error" in result.lower()
+
+    def test_json_body_with_empty_error_description_falls_to_code_map(self):
+        exc = Exception(
+            'Token request failed. Response: {"error": "server_error", "error_description": ""}'
+        )
+        result = extract_oauth_error_message(exc)
+        assert "internal error" in result.lower()
+
+    def test_json_body_with_whitespace_only_description(self):
+        exc = Exception(
+            'Token request failed. Response: {"error": "forbidden", "error_description": "   "}'
+        )
+        result = extract_oauth_error_message(exc)
+        assert "403 Forbidden" in result or "Please update" in result
+
+    def test_all_known_error_codes_return_mapped_message(self):
+        """Smoke test: every code in the map should produce its mapped message."""
+        from app.utils.oauth_config import _OAUTH_ERROR_CODE_MAP
+
+        for code in _OAUTH_ERROR_CODE_MAP:
+            exc = Exception(f'Token request failed. Response: {{"error": "{code}"}}')
+            result = extract_oauth_error_message(exc)
+            assert "Please update it in the admin settings." in result, f"Code {code} not mapped"
+
+
+# ===================================================================
+# _override_oauth_host_with_instance
+# ===================================================================
+class TestOverrideOAuthHostWithInstance:
+    """Covers edge cases in _override_oauth_host_with_instance (lines 155, 159-160)."""
+
+    def test_empty_url_returns_url(self):
+        """Line 155 — not url branch."""
+        assert _override_oauth_host_with_instance("", "https://example.com") == ""
+
+    def test_empty_instance_url_returns_url(self):
+        """Line 155 — not instance_url branch."""
+        assert (
+            _override_oauth_host_with_instance("https://gitlab.com/oauth/authorize", "")
+            == "https://gitlab.com/oauth/authorize"
+        )
+
+    def test_both_empty_returns_empty(self):
+        assert _override_oauth_host_with_instance("", "") == ""
+
+    def test_instance_url_no_scheme_or_netloc_returns_url(self):
+        """instance_url without scheme/netloc — line 161-162 guard."""
+        result = _override_oauth_host_with_instance(
+            "https://gitlab.com/oauth/authorize", "not-a-url"
+        )
+        assert result == "https://gitlab.com/oauth/authorize"
+
+    def test_non_standard_path_left_untouched(self):
+        result = _override_oauth_host_with_instance(
+            "https://host.com/custom/auth", "https://instance.com"
+        )
+        assert result == "https://host.com/custom/auth"
+
+    def test_same_netloc_noop(self):
+        result = _override_oauth_host_with_instance(
+            "https://gitlab.myco.com/oauth/authorize", "https://gitlab.myco.com"
+        )
+        assert result == "https://gitlab.myco.com/oauth/authorize"
+
+    def test_standard_path_swaps_host(self):
+        result = _override_oauth_host_with_instance(
+            "https://gitlab.com/oauth/token", "https://my.gitlab.com"
+        )
+        assert result == "https://my.gitlab.com/oauth/token"
+
+    @patch("app.utils.oauth_config.urlparse", side_effect=ValueError("bad url"))
+    def test_urlparse_exception_returns_url_unchanged(self, _mock):
+        """Lines 159-160 — exception during URL parsing."""
+        result = _override_oauth_host_with_instance(
+            "https://gitlab.com/oauth/authorize", "https://instance.com"
+        )
+        assert result == "https://gitlab.com/oauth/authorize"
 
 
 # ===================================================================
@@ -278,8 +544,24 @@ class TestGetOAuthConfig:
             "tokenUrl": "not-a-valid-url",
         }
         result = get_oauth_config(auth)
-        # Should not crash; notion detection should not trigger
         assert result.client_id == "c"
+
+    @patch("app.utils.oauth_config.urlparse")
+    def test_notion_detection_urlparse_exception(self, mock_urlparse):
+        """Line 227 — urlparse raises inside the Notion detection try block.
+
+        When there is no instanceUrl, _override_oauth_host_with_instance is
+        never called, so the FIRST urlparse call is the Notion detection one.
+        """
+        mock_urlparse.side_effect = ValueError("intentional parse failure")
+        auth = {
+            "clientId": "c",
+            "clientSecret": "s",
+            "tokenUrl": "https://api.notion.com/v1/oauth/token",
+        }
+        result = get_oauth_config(auth)
+        assert result.client_id == "c"
+        assert result.additional_params.get("use_basic_auth") is None
 
 
 # ===================================================================
@@ -406,6 +688,99 @@ class TestResolveInstanceUrl:
             default="https://gitlab.com",
         )
         assert result == "https://gitlab.com"
+
+    @pytest.mark.asyncio
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    async def test_fetch_raises_uncaught_exception_returns_default(self, mock_fetch):
+        """Lines 277-278 — the outer except around fetch_oauth_config_by_id."""
+        mock_fetch.side_effect = RuntimeError("unexpected crash")
+        config_service = AsyncMock()
+        result = await resolve_instance_url(
+            {"oauthConfigId": "oauth-1", "connectorType": "GITLAB"},
+            config_service,
+            default="https://gitlab.com",
+        )
+        assert result == "https://gitlab.com"
+
+    @pytest.mark.asyncio
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    async def test_fetch_raises_with_empty_default(self, mock_fetch):
+        """Lines 277-278 — default is empty string."""
+        mock_fetch.side_effect = RuntimeError("crash")
+        config_service = AsyncMock()
+        result = await resolve_instance_url(
+            {"oauthConfigId": "oauth-1", "connectorType": "GITLAB"},
+            config_service,
+            default="",
+        )
+        assert result == ""
+
+    @pytest.mark.asyncio
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    async def test_fetch_raises_with_trailing_slash_default(self, mock_fetch):
+        """Lines 277-278 — default has trailing slash, should be stripped."""
+        mock_fetch.side_effect = RuntimeError("crash")
+        config_service = AsyncMock()
+        result = await resolve_instance_url(
+            {"oauthConfigId": "oauth-1", "connectorType": "GITLAB"},
+            config_service,
+            default="https://gitlab.com/",
+        )
+        assert result == "https://gitlab.com"
+
+    @pytest.mark.asyncio
+    async def test_shared_config_returns_none(self):
+        """Line 280-281 — fetch_oauth_config_by_id returns None."""
+        config_service = AsyncMock()
+        config_service.get_config.return_value = []
+        result = await resolve_instance_url(
+            {"oauthConfigId": "oauth-1", "connectorType": "GITLAB"},
+            config_service,
+            default="https://fallback.com/",
+        )
+        assert result == "https://fallback.com"
+
+    @pytest.mark.asyncio
+    async def test_shared_config_has_no_config_key(self):
+        """Line 283 — shared.get("config") returns None."""
+        config_service = AsyncMock()
+        config_service.get_config.return_value = [
+            {"_id": "oauth-1"}
+        ]
+        result = await resolve_instance_url(
+            {"oauthConfigId": "oauth-1", "connectorType": "GITLAB"},
+            config_service,
+            default="https://fallback.com",
+        )
+        assert result == "https://fallback.com"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_instance_url_treated_as_empty(self):
+        config_service = AsyncMock()
+        config_service.get_config.return_value = [
+            {"_id": "oauth-1", "config": {"instanceUrl": "   "}}
+        ]
+        result = await resolve_instance_url(
+            {
+                "instanceUrl": "   ",
+                "oauthConfigId": "oauth-1",
+                "connectorType": "GITLAB",
+            },
+            config_service,
+            default="https://fallback.com",
+        )
+        assert result == "https://fallback.com"
+
+    @pytest.mark.asyncio
+    async def test_returns_default_when_no_connector_type(self):
+        config_service = AsyncMock()
+        result = await resolve_instance_url(
+            {"oauthConfigId": "oauth-1"},
+            config_service,
+            default="https://fallback.com/",
+        )
+        assert result == "https://fallback.com"
+        config_service.get_config.assert_not_called()
 
 
 # ===================================================================
@@ -573,6 +948,19 @@ class TestFetchOAuthConfigById:
         assert result is None
         logger.warning.assert_called()
 
+    @pytest.mark.asyncio
+    async def test_non_list_response_no_logger(self):
+        """Branch 389->391 — non-list config without logger should not crash."""
+        config_service = AsyncMock()
+        config_service.get_config.return_value = "not-a-list"
+        result = await fetch_oauth_config_by_id(
+            oauth_config_id="cfg-1",
+            connector_type="GOOGLE_DRIVE",
+            config_service=config_service,
+            logger=None,
+        )
+        assert result is None
+
 
 # ===================================================================
 # fetch_toolset_oauth_config_by_id
@@ -696,6 +1084,19 @@ class TestFetchToolsetOAuthConfigById:
         result = await fetch_toolset_oauth_config_by_id(
             oauth_config_id="cfg-1",
             toolset_type="slack",
+            config_service=config_service,
+            logger=None,
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_non_list_response_no_logger(self):
+        """Branch 315->317 — non-list config without logger should not crash."""
+        config_service = AsyncMock()
+        config_service.get_config.return_value = "not-a-list"
+        result = await fetch_toolset_oauth_config_by_id(
+            oauth_config_id="cfg-1",
+            toolset_type="jira",
             config_service=config_service,
             logger=None,
         )

@@ -484,8 +484,8 @@ describe('tokens_manager/routes/health.routes', () => {
 
       const axiosModule = require('axios')
       sinon.stub(axiosModule, 'get').callsFake((url: string) => {
-        if (url.includes('8529')) {
-          return Promise.reject(new Error('ArangoDB connection refused'))
+        if (url.includes('graph-db')) {
+          return Promise.reject(new Error('connector unreachable'))
         }
         return Promise.resolve({ status: 200 })
       })
@@ -507,8 +507,8 @@ describe('tokens_manager/routes/health.routes', () => {
 
       const axiosModule = require('axios')
       sinon.stub(axiosModule, 'get').callsFake((url: string) => {
-        if (url.includes('7474')) {
-          return Promise.reject(new Error('Neo4j connection refused'))
+        if (url.includes('graph-db')) {
+          return Promise.reject(new Error('connector unreachable'))
         }
         return Promise.resolve({ status: 200 })
       })
@@ -520,9 +520,9 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.services.graphDb).to.equal('unhealthy')
     })
 
-    it('should convert neo4j bolt:// URI to http:// with port 7474', async () => {
+    it('should call connector /health/graph-db for neo4j and mark healthy on 200', async () => {
       mockAppConfig.deployment.dataStoreType = 'neo4j'
-      process.env.NEO4J_URI = 'bolt://neo4j-host:7687'
+      mockAppConfig.connectorBackend = 'http://localhost:8088'
       router = createHealthRouter(container, cmContainer)
 
       const handler = findHandler('/', 'get')
@@ -534,18 +534,19 @@ describe('tokens_manager/routes/health.routes', () => {
 
       await handler({}, res, next)
 
-      const neo4jCall = axiosStub.getCalls().find(
-        (c: any) => c.args[0].includes('neo4j-host'),
+      const graphDbCall = axiosStub.getCalls().find(
+        (c: any) => c.args[0].includes('graph-db'),
       )
-      expect(neo4jCall).to.exist
-      expect(neo4jCall!.args[0]).to.equal('http://neo4j-host:7474')
+      expect(graphDbCall).to.exist
+      expect(graphDbCall!.args[0]).to.equal('http://localhost:8088/health/graph-db')
 
-      delete process.env.NEO4J_URI
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.services.graphDb).to.equal('healthy')
     })
 
-    it('should convert neo4j neo4j:// URI to http:// with port 7474', async () => {
+    it('should mark graphDb unhealthy when connector /health/graph-db returns non-200 (neo4j or arangodb)', async () => {
       mockAppConfig.deployment.dataStoreType = 'neo4j'
-      process.env.NEO4J_URI = 'neo4j://neo4j-host:7687'
+      mockAppConfig.connectorBackend = 'http://localhost:8088'
       router = createHealthRouter(container, cmContainer)
 
       const handler = findHandler('/', 'get')
@@ -553,17 +554,18 @@ describe('tokens_manager/routes/health.routes', () => {
       const next = sinon.stub()
 
       const axiosModule = require('axios')
-      const axiosStub = sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+      sinon.stub(axiosModule, 'get').callsFake((url: string) => {
+        if (url.includes('graph-db')) {
+          return Promise.resolve({ status: 503 })
+        }
+        return Promise.resolve({ status: 200 })
+      })
 
       await handler({}, res, next)
 
-      const neo4jCall = axiosStub.getCalls().find(
-        (c: any) => c.args[0].includes('neo4j-host'),
-      )
-      expect(neo4jCall).to.exist
-      expect(neo4jCall!.args[0]).to.equal('http://neo4j-host:7474')
-
-      delete process.env.NEO4J_URI
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.status).to.equal('unhealthy')
+      expect(jsonArg.services.graphDb).to.equal('unhealthy')
     })
 
     it('should mark vectorDb as unhealthy when qdrant health check fails', async () => {
@@ -613,7 +615,7 @@ describe('tokens_manager/routes/health.routes', () => {
 
       const axiosModule = require('axios')
       sinon.stub(axiosModule, 'get').callsFake((url: string) => {
-        if (url.includes('8529')) {
+        if (url.includes('graph-db')) {
           return Promise.resolve({ status: 503 })
         }
         return Promise.resolve({ status: 200 })
@@ -746,8 +748,9 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(qdrantCall!.args[0]).to.equal('http://qdrant.example.com:6333/healthz')
     })
 
-    it('should check arango at the correct URL from config', async () => {
-      mockAppConfig.arango = { url: 'http://arango.example.com:8529', db: 'test', username: 'root', password: '' }
+    it('should call connector /health/graph-db for arangodb and mark healthy on 200', async () => {
+      mockAppConfig.deployment.dataStoreType = 'arangodb'
+      mockAppConfig.connectorBackend = 'http://localhost:8088'
       router = createHealthRouter(container, cmContainer)
 
       const handler = findHandler('/', 'get')
@@ -759,11 +762,14 @@ describe('tokens_manager/routes/health.routes', () => {
 
       await handler({}, res, next)
 
-      const arangoCall = axiosStub.getCalls().find(
-        (c: any) => c.args[0].includes('arango.example.com'),
+      const graphDbCall = axiosStub.getCalls().find(
+        (c: any) => c.args[0].includes('graph-db'),
       )
-      expect(arangoCall).to.exist
-      expect(arangoCall!.args[0]).to.equal('http://arango.example.com:8529/_api/version')
+      expect(graphDbCall).to.exist
+      expect(graphDbCall!.args[0]).to.equal('http://localhost:8088/health/graph-db')
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.services.graphDb).to.equal('healthy')
     })
   })
 

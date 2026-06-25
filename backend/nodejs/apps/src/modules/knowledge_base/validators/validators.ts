@@ -1,5 +1,15 @@
 import { z } from 'zod';
 import { extensionToMimeType } from '../../storage/mimetypes/mimetypes';
+import { FileRejectionReason } from '../../../libs/middlewares/file_processor/fp.constant';
+
+const rejectedFileSchema = z.object({
+  originalname: z.string(),
+  filePath: z.string(),
+  size: z.number(),
+  mimetype: z.string(),
+  reason: z.nativeEnum(FileRejectionReason),
+  error: z.string(),
+});
 
 
 export const getRecordByIdSchema = z.object({
@@ -57,110 +67,67 @@ const fileBufferSchema = z.object({
   filePath: z.string(),
 });
 
-export const uploadRecordsSchema = z.object({
-  body: z.object({
-    recordName: z.string().min(1).optional(),
-    recordType: z.string().min(1).default('FILE').optional(),
-    origin: z.string().min(1).default('UPLOAD').optional(),
-    isVersioned: z
-      .union([
-        z.boolean(),
-        z.string().transform((val) => {
-          if (val === '' || val === 'false' || val === '0') return false;
-          if (val === 'true' || val === '1') return true;
-          throw new Error('Invalid boolean string value');
-        }),
-      ])
-      .default(false)
-      .optional(),
+const uploadRecordsBodySchema = z.object({
+  recordName: z.string().min(1).optional(),
+  recordType: z.string().min(1).default('FILE').optional(),
+  origin: z.string().min(1).default('UPLOAD').optional(),
+  isVersioned: z
+    .union([
+      z.boolean(),
+      z.string().transform((val) => {
+        if (val === '' || val === 'false' || val === '0') return false;
+        if (val === 'true' || val === '1') return true;
+        throw new Error('Invalid boolean string value');
+      }),
+    ])
+    .optional()
+    .default(true),
 
-    // Processed file buffers (set by file processor middleware)
-    fileBuffers: z.array(fileBufferSchema).optional(),
-    fileBuffer: fileBufferSchema.optional(),
+  // Processed file buffers (set by file processor middleware)
+  fileBuffers: z.array(fileBufferSchema).optional(),
+  fileBuffer: fileBufferSchema.optional(),
+  // Set by the file processor for files it rejected (oversize / unsupported).
+  // Declared so validation doesn't strip it before the handler reads it.
+  rejectedFiles: z.array(rejectedFileSchema).optional(),
 
-    // Files metadata JSON string - parsed by file processor
-    // Format: [{ file_path: string, last_modified: number }, ...]
-    files_metadata: z
-      .string()
-      .optional()
-      .refine(
-        (val) => {
-          if (!val) return true;
-          try {
-            const parsed = JSON.parse(val);
-            if (!Array.isArray(parsed)) return false;
-            // Validate each entry has required fields
-            return parsed.every(
-              (entry: any) =>
-                typeof entry.file_path === 'string' &&
-                typeof entry.last_modified === 'number',
-            );
-          } catch {
-            return false;
-          }
-        },
-        {
-          message:
-            'files_metadata must be a valid JSON array with { file_path, last_modified } objects',
-        },
-      ),
-  }),
-  params: z.object({
-    kbId: z.string().uuid(),
-  }),
+  // Files metadata JSON string - parsed by file processor
+  // Format: [{ file_path: string, last_modified: number }, ...]
+  files_metadata: z
+    .string()
+    .optional()
+    .refine(
+      (val) => {
+        if (!val) return true;
+        try {
+          const parsed = JSON.parse(val);
+          if (!Array.isArray(parsed)) return false;
+          // Validate each entry has required fields
+          return parsed.every(
+            (entry: any) =>
+              typeof entry.file_path === 'string' &&
+              typeof entry.last_modified === 'number',
+          );
+        } catch {
+          return false;
+        }
+      },
+      {
+        message:
+          'files_metadata must be a valid JSON array with { file_path, last_modified } objects',
+      },
+    ),
 });
 
-export const uploadRecordsToFolderSchema = z.object({
-  body: z.object({
-    recordName: z.string().min(1).optional(),
-    recordType: z.string().min(1).default('FILE').optional(),
-    origin: z.string().min(1).default('UPLOAD').optional(),
-    isVersioned: z
-      .union([
-        z.boolean(),
-        z.string().transform((val) => {
-          if (val === '' || val === 'false' || val === '0') return false;
-          if (val === 'true' || val === '1') return true;
-          throw new Error('Invalid boolean string value');
-        }),
-      ])
-      .default(false)
-      .optional(),
-
-    // Processed file buffers (set by file processor middleware)
-    fileBuffers: z.array(fileBufferSchema).optional(),
-    fileBuffer: fileBufferSchema.optional(),
-
-    // Files metadata JSON string - parsed by file processor
-    // Format: [{ file_path: string, last_modified: number }, ...]
-    files_metadata: z
-      .string()
-      .optional()
-      .refine(
-        (val) => {
-          if (!val) return true;
-          try {
-            const parsed = JSON.parse(val);
-            if (!Array.isArray(parsed)) return false;
-            return parsed.every(
-              (entry: any) =>
-                typeof entry.file_path === 'string' &&
-                typeof entry.last_modified === 'number',
-            );
-          } catch {
-            return false;
-          }
-        },
-        {
-          message:
-            'files_metadata must be a valid JSON array with { file_path, last_modified } objects',
-        },
-      ),
-  }),
+export const uploadRecordsSchema = z.object({
+  body: uploadRecordsBodySchema,
   params: z.object({
     kbId: z.string().uuid(),
-    folderId: z.string().min(1),
   }),
+  query: z
+    .object({
+      folderId: z.string().min(1).optional(),
+    })
+    .default({}),
 });
 
 export const createKBSchema = z.object({

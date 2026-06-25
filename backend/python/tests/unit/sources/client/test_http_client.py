@@ -63,7 +63,11 @@ class TestEnsureClient:
             mock_instance = MagicMock()
             MockAsyncClient.return_value = mock_instance
             result = await client._ensure_client()
-            MockAsyncClient.assert_called_once_with(timeout=30.0, follow_redirects=True)
+            MockAsyncClient.assert_called_once_with(
+                timeout=30.0,
+                follow_redirects=True,
+                headers={"Authorization": "Bearer t"},
+            )
             assert result is mock_instance
             assert client.client is mock_instance
 

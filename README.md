@@ -1,4 +1,5 @@
 <div align="center">
+<!-- dev note: README touch for branch test -->
 
 <a href="https://www.pipeshub.com"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg" alt="PipesHub" width="280"/></a>
 
@@ -32,7 +33,13 @@
   <br/>
   <a href="https://x.com/PipesHub"><img src="https://img.shields.io/twitter/follow/PipesHub?style=social" alt="Twitter"></a>
   <a href="https://www.linkedin.com/company/pipeshub"><img src="https://img.shields.io/badge/LinkedIn-PipesHub-blue?logo=linkedin&amp;logoColor=white" alt="LinkedIn"></a>
-  
+  <br/>
+  <img src="https://img.shields.io/badge/-d0d0d0?style=flat" width="40%" height="1" alt="" />
+  <br/>
+  <a href="https://www.npmjs.com/package/@pipeshub-ai/sdk"><img src="https://img.shields.io/npm/v/@pipeshub-ai/sdk?logo=npm&amp;logoColor=white&amp;label=node%20sdk" alt="Node.js SDK" /></a>
+  <a href="https://pypi.org/project/pipeshub-sdk/"><img src="https://img.shields.io/pypi/v/pipeshub-sdk?logo=python&amp;logoColor=white&amp;label=python%20sdk" alt="Python SDK" /></a>
+  <a href="https://github.com/pipeshub-ai/pipeshub-sdk-go"><img src="https://img.shields.io/github/v/release/pipeshub-ai/pipeshub-sdk-go?logo=go&amp;logoColor=white&amp;label=go%20sdk" alt="Go SDK" /></a>
+  <a href="https://www.npmjs.com/package/pipeshub"><img src="https://img.shields.io/npm/v/pipeshub?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
 </p>
 
 **Translations:** [Français](docs/i18n/fr/README.md) · [Deutsch](docs/i18n/de/README.md) · [简体中文](docs/i18n/zh-CN/README.md) · [日本語](docs/i18n/ja/README.md) · [Русский](docs/i18n/ru/README.md) · [עברית](docs/i18n/he/README.md) · [한국어](docs/i18n/ko/README.md) · [Español](docs/i18n/es/README.md) · [Português](docs/i18n/pt/README.md) · [Türkçe](docs/i18n/tr/README.md) · [Tiếng Việt](docs/i18n/vi/README.md) · [Italiano](docs/i18n/it/README.md)
@@ -120,61 +127,50 @@
 | Redis / etcd3 | Distributed key-value configuration store |
 | Celery | Distributed task queue system |
 | Docling | Document parsing and extraction toolkit |
-| PyMuPDF | PDF processing library |
+| pdfplumber | PDF processing library |
 | pandas | Data analysis and manipulation |
 
 ## 🚀 Deployment Guide
 
-PipesHub (the Workplace AI Platform) can be run locally or deployed on the cloud using Docker Compose.
-**Note**: If you are deploying PipesHub on a cloud server, make sure you are using an HTTPS endpoint. PipesHub enforces stricter security checks, and browsers will block certain requests when the application is served over HTTP.
-You can use a reverse proxy like Cloudflare, Nginx, or Traefik to terminate SSL/TLS and provide a valid HTTPS certificate.
-If you see a white screen after deploying PipesHub while accessing it over HTTP, this is likely the cause. The frontend will refuse to load due to stricter security checks.
+PipesHub can be run locally or deployed on any server using Docker Compose. The interactive installer handles all configuration — including secrets, graph DB, broker, and image tag selection — and generates a `.env` for you.
+
+> **HTTPS on cloud servers:** If you deploy PipesHub on a cloud server, use an HTTPS endpoint. Browsers block certain requests over plain HTTP. Use Cloudflare, Nginx, or Traefik to terminate TLS. A white screen after HTTP-only deployment is typically caused by this restriction.
 
 ---
 
-### 📦 Production Deployment
+### ⚡ Quickstart (Recommended)
+
+Requires [Docker](https://docs.docker.com/get-docker/) with Compose v2.
 
 ```bash
-# Clone the repository
+# 1. Clone the repository
 git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-
-# 📁 Navigate to the deployment folder
 cd pipeshub-ai/deployment/docker-compose
 
-# Set Environment Variables
-> 👉 Set Environment Variables for secrets, passwords, and the public URLs of the **Frontend** and **Connector** services
-> _(Required for webhook notifications and real-time updates)_
-> Refer to env.template
-
-# 🚀 Start the production deployment
-docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
-
-# 🛑 To stop the services
-docker compose -f docker-compose.prod.yml -p pipeshub-ai down
+# 2. Run the interactive installer
+./install.sh
 ```
 
-### 📦 Developer Deployment Build
+The installer will:
+- Check Docker, RAM, and disk prerequisites
+- Ask whether you want a **slim** or **full** deployment
+- Let you optionally customise the graph DB, message broker, and KV store
+- Generate randomised secrets and write a `.env` file
+- Pull images and start the stack
+- Wait for PipesHub to pass its health check and print the URL
 
-```bash
-# Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
+Open **http://localhost:3000** once the installer completes.
 
-# 📁 Navigate to the deployment folder
-cd pipeshub-ai/deployment/docker-compose
+#### Installer options
 
-# Set Optional Environment Variables
-> 👉 Set Environment Variables for secrets, passwords, and the public URLs of the **Frontend** and **Connector** services
-> _(Required for webhook notifications and real-time updates)_
-> Refer to env.template
+| Flag | Description |
+|------|-------------|
+| `-y` / `--yes` | Accept all defaults; skip interactive prompts (CI-friendly) |
+| `--version TAG` | Pin a specific image tag, e.g. `--version 0.7.0` |
+| `--reconfigure` | Re-run the wizard and overwrite an existing `.env` |
+| `--print-env-only` | Write `.env` and print the compose command without starting containers |
 
-# 🚀 Start the local build deployment
-docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai up --build -d
-
-# 🛑 To stop the services
-docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai down
-```
-
-The main `Dockerfile` pulls pre-built layers from `pipeshubai/pipeshub-ai-base:python-deps` and `pipeshubai/pipeshub-ai-base:runtime` (see [`Dockerfile.base`](Dockerfile.base) in the repo root for build/push commands). To use local tags instead, set `PYTHON_DEPS_IMAGE` and `RUNTIME_BASE_IMAGE` in the environment or in compose build args.
+> **Advanced options:** CI environment variables, slim vs. full deployment types, manual Compose profile usage, and local source builds are covered in [Advanced Deployment Options](deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
 
 ## MCP Server
 
@@ -278,7 +274,7 @@ Yes. PipesHub has a no-code agent builder. You can build agents visually and exe
 
 ### What is the multimodal support?
 
-PipesHub supports image, diagram, and scanned-file understanding, plus voice-based interaction. It uses Docling and PyMuPDF for document parsing, and Azure Document Intelligence or a multimodal LLM (VLM) for scanned PDF OCR.
+PipesHub supports image, diagram, and scanned-file understanding, plus voice-based interaction. It uses Docling and pdfplumber for document parsing, or a multimodal LLM (VLM) for scanned PDF OCR.
 
 ### How do I troubleshoot deployment issues?
 

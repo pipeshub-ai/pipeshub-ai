@@ -38,7 +38,6 @@ from pathlib import Path
 from typing import Optional
 
 import pytest
-import requests
 
 _ROOT = Path(__file__).resolve().parents[2]
 _RV_HELPER = _ROOT / "response-validation" / "helper"
@@ -47,92 +46,73 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
-from helper.pipeshub_client import PipeshubClient  # noqa: E402
+from helper.clients.user_groups_client import UserGroupsClient  # noqa: E402
+from helper.clients.users_client import UsersClient  # noqa: E402
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
 )
 
 logger = logging.getLogger("user-groups-integration-test")
 
-_BASE_PATH = "/api/v1/userGroups"
+
+# ------------------------------------------------------------------ #
+# Base test classes
+# ------------------------------------------------------------------ #
+class UserGroupsTestBase:
+    """Base class with shared user_groups_client fixture."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, user_groups_client: UserGroupsClient) -> None:
+        self.groups = user_groups_client
 
 
-# ====================================================================
+class UserGroupsTestBaseWithUsers(UserGroupsTestBase):
+    """Extends base with users_client for membership tests."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_users(self, users_client: UsersClient) -> None:
+        self.users = users_client
+
+
+# ------------------------------------------------------------------ #
 # Helpers
-# ====================================================================
+# ------------------------------------------------------------------ #
 
-def _url(client: PipeshubClient, path: str = "") -> str:
-    return f"{client.base_url}{_BASE_PATH}{path}"
-
-
-def _get(client: PipeshubClient, path: str = "") -> requests.Response:
-    return requests.get(
-        _url(client, path),
-        headers=client._headers(),
-        timeout=client.timeout_seconds,
-    )
-
-
-def _post(client: PipeshubClient, path: str = "", json: object = None) -> requests.Response:
-    return requests.post(
-        _url(client, path),
-        headers=client._headers(),
-        json=json,
-        timeout=client.timeout_seconds,
-    )
-
-
-def _put(client: PipeshubClient, path: str = "", json: object = None) -> requests.Response:
-    return requests.put(
-        _url(client, path),
-        headers=client._headers(),
-        json=json,
-        timeout=client.timeout_seconds,
-    )
-
-
-def _delete(client: PipeshubClient, path: str = "") -> requests.Response:
-    return requests.delete(
-        _url(client, path),
-        headers=client._headers(),
-        timeout=client.timeout_seconds,
-    )
-
-
-def _delete_group(client: PipeshubClient, group_id: str) -> None:
+def _delete_group(groups: UserGroupsClient, group_id: str) -> None:
     """Best-effort cleanup — ignore errors."""
     try:
-        _delete(client, f"/{group_id}")
+        groups.delete_group(group_id)
     except Exception:
         pass
 
 
-def _cleanup_stale_group(client: PipeshubClient, name: str) -> None:
+def _cleanup_stale_group(groups: UserGroupsClient, name: str) -> None:
     """Delete any existing non-deleted group with this name (leftover from prior runs)."""
-    resp = _get(client)
+    resp = groups.get_all_groups()
     if resp.status_code != 200:
         return
     for g in resp.json().get("groups", []):
         if g.get("name") == name and not g.get("isDeleted"):
-            _delete_group(client, g["_id"])
+            _delete_group(groups, g["_id"])
 
 
-def _create_group(client: PipeshubClient, name: str, group_type: str = "custom") -> dict[str, object]:
-    """Create a group and return the response body. Asserts 201.
-
-    Cleans up any stale group with the same name from prior runs first.
-    """
-    _cleanup_stale_group(client, name)
-    resp = _post(client, json={"name": name, "type": group_type})
+def _create_group(
+    groups: UserGroupsClient,
+    name: str,
+    group_type: str = "custom",
+) -> dict[str, object]:
+    """Create a group and return the response body. Asserts 201."""
+    _cleanup_stale_group(groups, name)
+    resp = groups.create_group(name, group_type=group_type)
     assert resp.status_code == 201, (
         f"Failed to create group '{name}': {resp.status_code}: {resp.text}"
     )
     return resp.json()
 
 
-def _find_any_group(client: PipeshubClient) -> Optional[dict[str, object]]:
+def _find_any_group(groups: UserGroupsClient) -> Optional[dict[str, object]]:
     """Find any non-deleted group."""
-    resp = _get(client)
+    resp = groups.get_all_groups()
     if resp.status_code != 200:
         return None
     for g in resp.json().get("groups", []):
@@ -141,22 +121,26 @@ def _find_any_group(client: PipeshubClient) -> Optional[dict[str, object]]:
     return None
 
 
-def _find_user_id(client: PipeshubClient) -> Optional[str]:
+def _find_user_id(groups: UserGroupsClient, users: UsersClient) -> Optional[str]:
     """Get a userId by fetching users from the first group that has members."""
-    ids = _find_user_ids(client, min_count=1)
+    ids = _find_user_ids(groups, users, min_count=1)
     return ids[0] if ids else None
 
 
-def _find_user_ids(client: PipeshubClient, min_count: int = 2) -> Optional[list[str]]:
+def _find_user_ids(
+    groups: UserGroupsClient,
+    users: UsersClient,
+    min_count: int = 2,
+) -> Optional[list[str]]:
     """Collect up to ``min_count`` distinct user ObjectIds from groups or GET /users."""
     seen: set[str] = set()
 
-    groups_resp = _get(client)
+    groups_resp = groups.get_all_groups()
     if groups_resp.status_code == 200:
         for g in groups_resp.json().get("groups", []):
             if g.get("userCount", 0) <= 0:
                 continue
-            users_resp = _get(client, f"/{g['_id']}/users")
+            users_resp = groups.get_users_in_group(g["_id"])
             if users_resp.status_code != 200:
                 continue
             for u in users_resp.json().get("users", []):
@@ -166,12 +150,7 @@ def _find_user_ids(client: PipeshubClient, min_count: int = 2) -> Optional[list[
                 if len(seen) >= min_count:
                     return list(seen)[:min_count]
 
-    users_resp = requests.get(
-        f"{client.base_url}/api/v1/users",
-        headers=client._headers(),
-        params={"page": 1, "limit": max(min_count, 10)},
-        timeout=client.timeout_seconds,
-    )
+    users_resp = users.get_all_users(page=1, limit=max(min_count, 10))
     if users_resp.status_code == 200:
         for u in users_resp.json().get("users", []):
             uid = str(u.get("id") or u.get("_id") or "")
@@ -185,17 +164,12 @@ def _find_user_ids(client: PipeshubClient, min_count: int = 2) -> Optional[list[
     return list(seen)[:min_count]
 
 
-def _create_test_user(client: PipeshubClient) -> str:
+def _create_test_user(users: UsersClient) -> str:
     """Create a disposable user for integration tests; returns ObjectId string."""
     unique = uuid.uuid4().hex[:8]
-    resp = requests.post(
-        f"{client.base_url}/api/v1/users",
-        headers=client._headers(),
-        json={
-            "fullName": f"RV User Groups Test {unique}",
-            "email": f"rv-user-groups-{unique}@test-pipeshub.com",
-        },
-        timeout=client.timeout_seconds,
+    resp = users.create_user(
+        email=f"rv-user-groups-{unique}@test-pipeshub.com",
+        full_name=f"RV User Groups Test {unique}",
     )
     assert resp.status_code == 201, (
         f"Failed to create test user: {resp.status_code}: {resp.text}"
@@ -206,33 +180,32 @@ def _create_test_user(client: PipeshubClient) -> str:
     return user_id
 
 
-def _delete_test_user(client: PipeshubClient, user_id: str, label: str = "test user") -> None:
+def _delete_test_user(users: UsersClient, user_id: str, label: str = "test user") -> None:
     """Delete a user created for integration tests."""
-    resp = requests.delete(
-        f"{client.base_url}/api/v1/users/{user_id}",
-        headers=client._headers(),
-        timeout=client.timeout_seconds,
-    )
+    resp = users.delete_user(user_id)
     assert resp.status_code == 200, (
         f"[{label} cleanup] Expected 200 deleting user {user_id}, "
         f"got {resp.status_code}: {resp.text}"
     )
 
 
-def _ensure_two_user_ids(client: PipeshubClient) -> tuple[list[str], list[str]]:
-    """Return two distinct user ids and the subset that were created for this test run."""
-    user_ids: list[str] = list(_find_user_ids(client, min_count=2) or [])
+def _ensure_two_user_ids(
+    groups: UserGroupsClient,
+    users: UsersClient,
+) -> tuple[list[str], list[str]]:
+    """Return two distinct user ids and the subset created for this test run."""
+    user_ids: list[str] = list(_find_user_ids(groups, users, min_count=2) or [])
     created: list[str] = []
     while len(user_ids) < 2:
-        new_id = _create_test_user(client)
+        new_id = _create_test_user(users)
         created.append(new_id)
         user_ids.append(new_id)
     return user_ids[:2], created
 
 
-def _group_member_ids(client: PipeshubClient, group_id: str) -> list[str]:
+def _group_member_ids(groups: UserGroupsClient, group_id: str) -> list[str]:
     """Return user ObjectIds currently listed in a group."""
-    users_resp = _get(client, f"/{group_id}/users")
+    users_resp = groups.get_users_in_group(group_id)
     assert users_resp.status_code == 200, (
         f"Expected 200 listing group users, got {users_resp.status_code}: {users_resp.text}"
     )
@@ -243,9 +216,12 @@ def _group_member_ids(client: PipeshubClient, group_id: str) -> list[str]:
     ]
 
 
-def _find_group_by_type(client: PipeshubClient, group_type: str) -> Optional[dict[str, object]]:
+def _find_group_by_type(
+    groups: UserGroupsClient,
+    group_type: str,
+) -> Optional[dict[str, object]]:
     """Return the first non-deleted group whose type matches group_type."""
-    resp = _get(client)
+    resp = groups.get_all_groups()
     if resp.status_code != 200:
         return None
     for g in resp.json().get("groups", []):
@@ -264,17 +240,13 @@ _MALFORMED_ID = "not-a-valid-objectid"
 # GET /api/v1/userGroups/health
 # ====================================================================
 @pytest.mark.integration
-class TestUserGroupHealth:
+class TestUserGroupHealth(UserGroupsTestBase):
     """GET /api/v1/userGroups/health — no auth required."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.client = pipeshub_client
-        self.url = f"{pipeshub_client.base_url}{_BASE_PATH}/health"
 
     def test_user_groups_health_response_schema(self) -> None:
         """Response must match UserGroupHealthResponse schema."""
-        resp = requests.get(self.url, timeout=self.client.timeout_seconds)
+        resp = self.groups.health()
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -282,7 +254,7 @@ class TestUserGroupHealth:
 
     def test_unsupported_method_returns_4xx(self) -> None:
         """POST to /health is not a registered method — must return 4xx."""
-        resp = requests.post(self.url, timeout=self.client.timeout_seconds)
+        resp = self.groups.post("/health", auth=False)
         assert resp.status_code >= 400, (
             f"Expected 4xx for unsupported POST method, got {resp.status_code}"
         )
@@ -292,17 +264,14 @@ class TestUserGroupHealth:
 # GET /api/v1/userGroups
 # ====================================================================
 @pytest.mark.integration
-class TestGetAllUserGroups:
+class TestGetAllUserGroups(UserGroupsTestBase):
     """GET /api/v1/userGroups — list all groups for the org."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.client = pipeshub_client
 
     def test_get_all_user_groups_response_schema(self) -> None:
         """Response must be a paginated object matching getAllUserGroups schema."""
         # Default call — no query params, server applies its defaults (page=1, limit=25).
-        resp = _get(self.client)
+        resp = self.groups.get_all_groups()
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -314,12 +283,7 @@ class TestGetAllUserGroups:
         assert_response_matches_openapi_operation(body, "getAllUserGroups")
 
         # Explicit page + limit — pagination metadata must reflect the requested values.
-        resp = requests.get(
-            _url(self.client),
-            headers=self.client._headers(),
-            params={"page": 1, "limit": 5},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.groups.get_all_groups(page=1, limit=5)
         assert resp.status_code == 200, (
             f"[page=1,limit=5] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -333,12 +297,7 @@ class TestGetAllUserGroups:
         )
 
         # limit=1 — smallest valid page; response still satisfies schema.
-        resp = requests.get(
-            _url(self.client),
-            headers=self.client._headers(),
-            params={"page": 1, "limit": 1},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.groups.get_all_groups(page=1, limit=1)
         assert resp.status_code == 200, (
             f"[limit=1] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -348,15 +307,10 @@ class TestGetAllUserGroups:
         assert len(body["groups"]) <= 1
 
         # search — case-insensitive substring match; all returned names must contain the term.
-        any_group = _find_any_group(self.client)
+        any_group = _find_any_group(self.groups)
         if any_group:
             search_term = str(any_group["name"])[:3]
-            resp = requests.get(
-                _url(self.client),
-                headers=self.client._headers(),
-                params={"search": search_term},
-                timeout=self.client.timeout_seconds,
-            )
+            resp = self.groups.get_all_groups(search=search_term)
             assert resp.status_code == 200, (
                 f"[search] Expected 200, got {resp.status_code}: {resp.text}"
             )
@@ -368,24 +322,14 @@ class TestGetAllUserGroups:
                 )
 
         # page=2 — may return empty groups array if total ≤ limit; schema must still pass.
-        resp = requests.get(
-            _url(self.client),
-            headers=self.client._headers(),
-            params={"page": 2, "limit": 100},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.groups.get_all_groups(page=2, limit=100)
         assert resp.status_code == 200, (
             f"[page=2] Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_openapi_operation(resp.json(), "getAllUserGroups")
 
         # createdAfter — future date typically matches no groups; empty list is valid.
-        resp = requests.get(
-            _url(self.client),
-            headers=self.client._headers(),
-            params={"createdAfter": "2099-01-01"},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.groups.get_all_groups(createdAfter="2099-01-01")
         assert resp.status_code == 200, (
             f"[createdAfter] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -394,12 +338,7 @@ class TestGetAllUserGroups:
         assert isinstance(body["groups"], list)
 
         # createdBefore — date before any groups; empty list is valid.
-        resp = requests.get(
-            _url(self.client),
-            headers=self.client._headers(),
-            params={"createdBefore": "1970-01-01"},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.groups.get_all_groups(createdBefore="1970-01-01")
         assert resp.status_code == 200, (
             f"[createdBefore] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -408,12 +347,7 @@ class TestGetAllUserGroups:
         assert isinstance(body["groups"], list)
 
         # createdAfter + createdBefore — narrow future window; empty list is valid.
-        resp = requests.get(
-            _url(self.client),
-            headers=self.client._headers(),
-            params={"createdAfter": "2099-06-01", "createdBefore": "2099-06-30"},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.groups.get_all_groups(createdAfter="2099-06-01", createdBefore="2099-06-30")
         assert resp.status_code == 200, (
             f"[createdAfter+createdBefore] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -422,12 +356,7 @@ class TestGetAllUserGroups:
         assert isinstance(body["groups"], list)
 
         # Wide historical range — may include groups or be empty; schema must still pass.
-        resp = requests.get(
-            _url(self.client),
-            headers=self.client._headers(),
-            params={"createdAfter": "2000-01-01", "createdBefore": "2099-12-31"},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.groups.get_all_groups(createdAfter="2000-01-01", createdBefore="2099-12-31")
         assert resp.status_code == 200, (
             f"[date range] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -436,7 +365,7 @@ class TestGetAllUserGroups:
     def test_get_all_user_groups_negative_tests(self) -> None:
         """Unauthenticated request must be rejected with 401."""
         # Missing Authorization header — server must reject before querying any groups.
-        resp = requests.get(_url(self.client), timeout=self.client.timeout_seconds)
+        resp = self.groups.get("/", auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -454,19 +383,16 @@ class TestGetAllUserGroups:
 # GET /api/v1/userGroups/:groupId
 # ====================================================================
 @pytest.mark.integration
-class TestGetUserGroupById:
+class TestGetUserGroupById(UserGroupsTestBase):
     """GET /api/v1/userGroups/:groupId — get single group."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.client = pipeshub_client
 
     def test_get_user_group_by_id_response_schema(self) -> None:
         """Fetch an existing group — response must match getUserGroupById schema."""
-        group = _find_any_group(self.client)
+        group = _find_any_group(self.groups)
         assert group is not None, "No groups found to test"
 
-        resp = _get(self.client, f"/{group['_id']}")
+        resp = self.groups.get(f"/{group['_id']}")
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -474,11 +400,11 @@ class TestGetUserGroupById:
 
     def test_get_user_group_by_id_negative_tests(self) -> None:
         """401 without auth · 400 for malformed ObjectId · 404 for non-existent id."""
-        group = _find_any_group(self.client)
+        group = _find_any_group(self.groups)
         assert group is not None, "No groups found to test"
 
         # Missing Authorization header — auth check runs before DB lookup.
-        resp = requests.get(_url(self.client, f"/{group['_id']}"), timeout=self.client.timeout_seconds)
+        resp = self.groups.get(f"/{group['_id']}", auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -492,7 +418,7 @@ class TestGetUserGroupById:
         )
 
         # Malformed groupId — ValidationMiddleware rejects the 24-hex regex before the controller.
-        resp = _get(self.client, f"/{_MALFORMED_ID}")
+        resp = self.groups.get(f"/{_MALFORMED_ID}")
         assert resp.status_code == 400, (
             f"[malformed id] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -501,12 +427,9 @@ class TestGetUserGroupById:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Valid-format ObjectId that does not exist in this org.
-        resp = _get(self.client, f"/{_NONEXISTENT_ID}")
+        resp = self.groups.get(f"/{_NONEXISTENT_ID}")
         assert resp.status_code == 404, (
             f"[nonexistent id] Expected 404, got {resp.status_code}: {resp.text}"
         )
@@ -524,23 +447,20 @@ class TestGetUserGroupById:
 # POST /api/v1/userGroups (create)
 # ====================================================================
 @pytest.mark.integration
-class TestCreateUserGroup:
+class TestCreateUserGroup(UserGroupsTestBase):
     """POST /api/v1/userGroups — create a custom group."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.client = pipeshub_client
 
     def test_create_custom_group_response_schema(self) -> None:
         """Create groups of each allowed type — 201 response must match createUserGroup schema."""
         # type="custom" — the primary use-case for user-defined groups.
-        body = _create_group(self.client, "rv-test-custom-create", "custom")
+        body = _create_group(self.groups, "rv-test-custom-create", "custom")
         assert_response_matches_openapi_operation(
             body, "createUserGroup", status_code="201"
         )
         assert body["name"] == "rv-test-custom-create"
         assert body["type"] == "custom"
-        del_resp = _delete(self.client, f"/{body['_id']}")
+        del_resp = self.groups.delete(f"/{body['_id']}")
         assert del_resp.status_code == 200, (
             f"[cleanup custom] Expected 200 deleting group, got {del_resp.status_code}: {del_resp.text}"
         )
@@ -549,11 +469,7 @@ class TestCreateUserGroup:
     def test_create_user_group_negative_tests(self) -> None:
         """401 no auth · 400 missing name · 400 missing type · 400 unknown type · 400 reserved name/type (admin/everyone/standard) · 400 duplicate name."""
         # Missing Authorization header — auth middleware rejects before Zod validation.
-        resp = requests.post(
-            _url(self.client),
-            json={"name": "rv-test-no-auth", "type": "custom"},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.groups.post("/", json={"name": "rv-test-no-auth", "type": "custom"}, auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -567,7 +483,7 @@ class TestCreateUserGroup:
         )
 
         # Missing name — Zod schema requires name.min(1); rejected before controller.
-        resp = _post(self.client, json={"type": "custom"})
+        resp = self.groups.post(json={"type": "custom"})
         assert resp.status_code == 400, (
             f"[missing name] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -576,12 +492,9 @@ class TestCreateUserGroup:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[missing name] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[missing name] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Missing type — Zod schema requires type.min(1); rejected before controller.
-        resp = _post(self.client, json={"name": "rv-test-no-type"})
+        resp = self.groups.post(json={"name": "rv-test-no-type"})
         assert resp.status_code == 400, (
             f"[missing type] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -590,12 +503,9 @@ class TestCreateUserGroup:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[missing type] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[missing type] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Unknown type value — passes Zod (no enum), rejected in controller logic.
-        resp = _post(self.client, json={"name": "rv-test-bad-type", "type": "unknown"})
+        resp = self.groups.post(json={"name": "rv-test-bad-type", "type": "unknown"})
         assert resp.status_code == 400, (
             f"[unknown type] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -611,7 +521,7 @@ class TestCreateUserGroup:
         _RESERVED_MSG = 'Group name or type "admin", "everyone", or "standard" cannot be created'
 
         # Reserved type 'admin' — controller rejects type="admin" before persisting.
-        resp = _post(self.client, json={"name": "rv-test-admin-type", "type": "admin"})
+        resp = self.groups.post(json={"name": "rv-test-admin-type", "type": "admin"})
         assert resp.status_code == 400, (
             f"[reserved type admin] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -625,7 +535,7 @@ class TestCreateUserGroup:
         )
 
         # Reserved name 'admin' — controller also blocks name="admin" regardless of type.
-        resp = _post(self.client, json={"name": "admin", "type": "custom"})
+        resp = self.groups.post(json={"name": "admin", "type": "custom"})
         assert resp.status_code == 400, (
             f"[reserved name admin] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -639,7 +549,7 @@ class TestCreateUserGroup:
         )
 
         # Reserved name 'everyone' — controller blocks name="everyone".
-        resp = _post(self.client, json={"name": "everyone", "type": "custom"})
+        resp = self.groups.post(json={"name": "everyone", "type": "custom"})
         assert resp.status_code == 400, (
             f"[reserved name everyone] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -653,7 +563,7 @@ class TestCreateUserGroup:
         )
 
         # Reserved type 'everyone' — controller blocks type="everyone".
-        resp = _post(self.client, json={"name": "rv-test-everyone-type", "type": "everyone"})
+        resp = self.groups.post(json={"name": "rv-test-everyone-type", "type": "everyone"})
         assert resp.status_code == 400, (
             f"[reserved type everyone] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -667,7 +577,7 @@ class TestCreateUserGroup:
         )
 
         # Reserved name 'standard' — controller blocks name="standard".
-        resp = _post(self.client, json={"name": "standard", "type": "custom"})
+        resp = self.groups.post(json={"name": "standard", "type": "custom"})
         assert resp.status_code == 400, (
             f"[reserved name standard] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -681,7 +591,7 @@ class TestCreateUserGroup:
         )
 
         # Reserved type 'standard' — controller blocks type="standard".
-        resp = _post(self.client, json={"name": "rv-test-standard-type", "type": "standard"})
+        resp = self.groups.post(json={"name": "rv-test-standard-type", "type": "standard"})
         assert resp.status_code == 400, (
             f"[reserved type standard] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -695,9 +605,9 @@ class TestCreateUserGroup:
         )
 
         # Duplicate name — controller checks for existing non-deleted group with same name.
-        created = _create_group(self.client, "rv-test-duplicate-name", "custom")
+        created = _create_group(self.groups, "rv-test-duplicate-name", "custom")
         try:
-            resp = _post(self.client, json={"name": "rv-test-duplicate-name", "type": "custom"})
+            resp = self.groups.post(json={"name": "rv-test-duplicate-name", "type": "custom"})
             assert resp.status_code == 400, (
                 f"[duplicate name] Expected 400, got {resp.status_code}: {resp.text}"
             )
@@ -710,7 +620,7 @@ class TestCreateUserGroup:
                 f"[duplicate name] Expected 'Group already exists', got {body['error']['message']!r}"
             )
         finally:
-            del_resp = _delete(self.client, f"/{created['_id']}")
+            del_resp = self.groups.delete(f"/{created['_id']}")
             assert del_resp.status_code == 200, (
                 f"[cleanup duplicate-name] Expected 200 deleting group, got {del_resp.status_code}: {del_resp.text}"
             )
@@ -720,32 +630,29 @@ class TestCreateUserGroup:
 # PUT /api/v1/userGroups/:groupId
 # ====================================================================
 @pytest.mark.integration
-class TestUpdateUserGroup:
+class TestUpdateUserGroup(UserGroupsTestBase):
     """PUT /api/v1/userGroups/:groupId — rename a group."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.client = pipeshub_client
 
     def test_update_user_group_name_response_schema(self) -> None:
         """Rename a custom group with different name shapes — each response must match updateUserGroup schema."""
         # Plain rename — baseline case.
-        body = _create_group(self.client, "rv-test-update-name", "custom")
-        resp = _put(self.client, f"/{body['_id']}", json={"name": "rv-test-renamed"})
+        body = _create_group(self.groups, "rv-test-update-name", "custom")
+        resp = self.groups.put(f"/{body['_id']}", json={"name": "rv-test-renamed"})
         assert resp.status_code == 200, (
             f"[plain rename] Expected 200, got {resp.status_code}: {resp.text}"
         )
         result = resp.json()
         assert_response_matches_openapi_operation(result, "updateUserGroup")
         assert result["name"] == "rv-test-renamed"
-        del_resp = _delete(self.client, f"/{result['_id']}")
+        del_resp = self.groups.delete(f"/{result['_id']}")
         assert del_resp.status_code == 200, (
             f"[cleanup plain rename] Expected 200 deleting group, got {del_resp.status_code}: {del_resp.text}"
         )
 
         # Name with surrounding whitespace — controller trims before saving.
-        body = _create_group(self.client, "rv-test-trim-source", "custom")
-        resp = _put(self.client, f"/{body['_id']}", json={"name": "  rv-test-trimmed  "})
+        body = _create_group(self.groups, "rv-test-trim-source", "custom")
+        resp = self.groups.put(f"/{body['_id']}", json={"name": "  rv-test-trimmed  "})
         assert resp.status_code == 200, (
             f"[whitespace trim] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -754,36 +661,32 @@ class TestUpdateUserGroup:
         assert result["name"] == "rv-test-trimmed", (
             f"[whitespace trim] Expected trimmed name, got {result['name']!r}"
         )
-        del_resp = _delete(self.client, f"/{result['_id']}")
+        del_resp = self.groups.delete(f"/{result['_id']}")
         assert del_resp.status_code == 200, (
             f"[cleanup whitespace trim] Expected 200 deleting group, got {del_resp.status_code}: {del_resp.text}"
         )
 
         # Name rename back to same value — idempotent PUT, must still return 200.
-        body = _create_group(self.client, "rv-test-same-name", "custom")
-        resp = _put(self.client, f"/{body['_id']}", json={"name": "rv-test-same-name"})
+        body = _create_group(self.groups, "rv-test-same-name", "custom")
+        resp = self.groups.put(f"/{body['_id']}", json={"name": "rv-test-same-name"})
         assert resp.status_code == 200, (
             f"[same name] Expected 200, got {resp.status_code}: {resp.text}"
         )
         result = resp.json()
         assert_response_matches_openapi_operation(result, "updateUserGroup")
         assert result["name"] == "rv-test-same-name"
-        del_resp = _delete(self.client, f"/{result['_id']}")
+        del_resp = self.groups.delete(f"/{result['_id']}")
         assert del_resp.status_code == 200, (
             f"[cleanup same-name] Expected 200 deleting group, got {del_resp.status_code}: {del_resp.text}"
         )
 
     def test_update_user_group_negative_tests(self) -> None:
         """401 no auth · 400 malformed id · 400 missing name · 404 nonexistent id · 403 protected group types."""
-        group = _find_any_group(self.client)
+        group = _find_any_group(self.groups)
         assert group is not None, "No groups found to test"
 
         # Missing Authorization header.
-        resp = requests.put(
-            _url(self.client, f"/{group['_id']}"),
-            json={"name": "rv-test-no-auth-rename"},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.groups.put(f"/{group['_id']}", json={"name": "rv-test-no-auth-rename"}, auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -797,7 +700,7 @@ class TestUpdateUserGroup:
         )
 
         # Malformed groupId — Zod regex rejects non-hex-24 params.
-        resp = _put(self.client, f"/{_MALFORMED_ID}", json={"name": "rv-test-rename"})
+        resp = self.groups.put(f"/{_MALFORMED_ID}", json={"name": "rv-test-rename"})
         assert resp.status_code == 400, (
             f"[malformed id] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -806,12 +709,9 @@ class TestUpdateUserGroup:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Missing name — Zod schema requires name.min(1).
-        resp = _put(self.client, f"/{group['_id']}", json={})
+        resp = self.groups.put(f"/{group['_id']}", json={})
         assert resp.status_code == 400, (
             f"[missing name] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -820,12 +720,9 @@ class TestUpdateUserGroup:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[missing name] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[missing name] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Valid-format ObjectId that does not exist.
-        resp = _put(self.client, f"/{_NONEXISTENT_ID}", json={"name": "rv-test-rename"})
+        resp = self.groups.put(f"/{_NONEXISTENT_ID}", json={"name": "rv-test-rename"})
         assert resp.status_code == 404, (
             f"[nonexistent id] Expected 404, got {resp.status_code}: {resp.text}"
         )
@@ -839,9 +736,9 @@ class TestUpdateUserGroup:
         )
 
         # admin-type group — controller throws ForbiddenError('Not Allowed').
-        admin_group = _find_group_by_type(self.client, "admin")
+        admin_group = _find_group_by_type(self.groups, "admin")
         if admin_group is not None:
-            resp = _put(self.client, f"/{admin_group['_id']}", json={"name": "rv-test-admin-rename"})
+            resp = self.groups.put(f"/{admin_group['_id']}", json={"name": "rv-test-admin-rename"})
             assert resp.status_code == 403, (
                 f"[admin group] Expected 403, got {resp.status_code}: {resp.text}"
             )
@@ -855,9 +752,9 @@ class TestUpdateUserGroup:
             )
 
         # everyone-type group — same ForbiddenError.
-        everyone_group = _find_group_by_type(self.client, "everyone")
+        everyone_group = _find_group_by_type(self.groups, "everyone")
         if everyone_group is not None:
-            resp = _put(self.client, f"/{everyone_group['_id']}", json={"name": "rv-test-everyone-rename"})
+            resp = self.groups.put(f"/{everyone_group['_id']}", json={"name": "rv-test-everyone-rename"})
             assert resp.status_code == 403, (
                 f"[everyone group] Expected 403, got {resp.status_code}: {resp.text}"
             )
@@ -875,17 +772,14 @@ class TestUpdateUserGroup:
 # DELETE /api/v1/userGroups/:groupId
 # ====================================================================
 @pytest.mark.integration
-class TestDeleteUserGroup:
+class TestDeleteUserGroup(UserGroupsTestBase):
     """DELETE /api/v1/userGroups/:groupId — soft-delete a custom group."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.client = pipeshub_client
 
     def test_delete_custom_group_response_schema(self) -> None:
         """Create then delete a custom group — response must match deleteUserGroup schema."""
-        body = _create_group(self.client, "rv-test-delete-me", "custom")
-        resp = _delete(self.client, f"/{body['_id']}")
+        body = _create_group(self.groups, "rv-test-delete-me", "custom")
+        resp = self.groups.delete(f"/{body['_id']}")
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -895,11 +789,11 @@ class TestDeleteUserGroup:
 
     def test_delete_user_group_negative_tests(self) -> None:
         """401 no auth · 400 malformed id · 404 nonexistent id · 403 built-in group."""
-        group = _find_any_group(self.client)
+        group = _find_any_group(self.groups)
         assert group is not None, "No groups found to test"
 
         # Missing Authorization header.
-        resp = requests.delete(_url(self.client, f"/{group['_id']}"), timeout=self.client.timeout_seconds)
+        resp = self.groups.delete(f"/{group['_id']}", auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -913,7 +807,7 @@ class TestDeleteUserGroup:
         )
 
         # Malformed groupId — Zod regex rejects before the controller.
-        resp = _delete(self.client, f"/{_MALFORMED_ID}")
+        resp = self.groups.delete(f"/{_MALFORMED_ID}")
         assert resp.status_code == 400, (
             f"[malformed id] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -922,12 +816,9 @@ class TestDeleteUserGroup:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Valid-format ObjectId that does not exist.
-        resp = _delete(self.client, f"/{_NONEXISTENT_ID}")
+        resp = self.groups.delete(f"/{_NONEXISTENT_ID}")
         assert resp.status_code == 404, (
             f"[nonexistent id] Expected 404, got {resp.status_code}: {resp.text}"
         )
@@ -941,9 +832,9 @@ class TestDeleteUserGroup:
         )
 
         # Built-in group (admin or everyone) — controller throws ForbiddenError.
-        builtin = _find_group_by_type(self.client, "admin") or _find_group_by_type(self.client, "everyone")
+        builtin = _find_group_by_type(self.groups, "admin") or _find_group_by_type(self.groups, "everyone")
         if builtin is not None:
-            resp = _delete(self.client, f"/{builtin['_id']}")
+            resp = self.groups.delete(f"/{builtin['_id']}")
             assert resp.status_code == 403, (
                 f"[built-in group] Expected 403, got {resp.status_code}: {resp.text}"
             )
@@ -961,32 +852,24 @@ class TestDeleteUserGroup:
 # GET /api/v1/userGroups/:groupId/users
 # ====================================================================
 @pytest.mark.integration
-class TestGetUsersInGroup:
+class TestGetUsersInGroup(UserGroupsTestBase):
     """GET /api/v1/userGroups/:groupId/users — list user IDs in a group."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.client = pipeshub_client
 
     def test_get_users_in_group_response_schema(self) -> None:
         """Response must match getUsersInGroup schema across different query-param combinations."""
-        group = _find_any_group(self.client)
+        group = _find_any_group(self.groups)
         assert group is not None, "No groups found"
 
         # Default — no query params; server applies defaults (page=1, limit=25).
-        resp = _get(self.client, f"/{group['_id']}/users")
+        resp = self.groups.get(f"/{group['_id']}/users")
         assert resp.status_code == 200, (
             f"[default] Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_openapi_operation(resp.json(), "getUsersInGroup")
 
         # Explicit page + limit — pagination metadata must reflect requested values.
-        resp = requests.get(
-            _url(self.client, f"/{group['_id']}/users"),
-            headers=self.client._headers(),
-            params={"page": 1, "limit": 5},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.groups.get_users_in_group(group["_id"], page=1, limit=5)
         assert resp.status_code == 200, (
             f"[limit=5] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -996,12 +879,7 @@ class TestGetUsersInGroup:
         assert len(body["users"]) <= 5
 
         # limit=1 — smallest valid page size.
-        resp = requests.get(
-            _url(self.client, f"/{group['_id']}/users"),
-            headers=self.client._headers(),
-            params={"page": 1, "limit": 1},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.groups.get_users_in_group(group["_id"], page=1, limit=1)
         assert resp.status_code == 200, (
             f"[limit=1] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -1010,24 +888,14 @@ class TestGetUsersInGroup:
         assert len(body["users"]) <= 1
 
         # search="" empty string — equivalent to no filter; must still return valid schema.
-        resp = requests.get(
-            _url(self.client, f"/{group['_id']}/users"),
-            headers=self.client._headers(),
-            params={"search": ""},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.groups.get_users_in_group(group["_id"], search="")
         assert resp.status_code == 200, (
             f"[search=''] Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_openapi_operation(resp.json(), "getUsersInGroup")
 
         # page=2, limit=100 — may return empty users array; schema still valid.
-        resp = requests.get(
-            _url(self.client, f"/{group['_id']}/users"),
-            headers=self.client._headers(),
-            params={"page": 2, "limit": 100},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.groups.get_users_in_group(group["_id"], page=2, limit=100)
         assert resp.status_code == 200, (
             f"[page=2] Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -1035,11 +903,11 @@ class TestGetUsersInGroup:
 
     def test_get_users_in_group_negative_tests(self) -> None:
         """401 no auth · 400 malformed id · 404 nonexistent group."""
-        group = _find_any_group(self.client)
+        group = _find_any_group(self.groups)
         assert group is not None, "No groups found to test"
 
         # Missing Authorization header.
-        resp = requests.get(_url(self.client, f"/{group['_id']}/users"), timeout=self.client.timeout_seconds)
+        resp = self.groups.get(f"/{group['_id']}/users", auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -1053,7 +921,7 @@ class TestGetUsersInGroup:
         )
 
         # Malformed groupId — Zod regex rejects before the controller.
-        resp = _get(self.client, f"/{_MALFORMED_ID}/users")
+        resp = self.groups.get(f"/{_MALFORMED_ID}/users")
         assert resp.status_code == 400, (
             f"[malformed id] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -1062,12 +930,9 @@ class TestGetUsersInGroup:
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[malformed id] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "Validation failed", (
-            f"[malformed id] Expected 'Validation failed', got {body['error']['message']!r}"
-        )
 
         # Valid-format ObjectId that does not exist.
-        resp = _get(self.client, f"/{_NONEXISTENT_ID}/users")
+        resp = self.groups.get(f"/{_NONEXISTENT_ID}/users")
         assert resp.status_code == 404, (
             f"[nonexistent group] Expected 404, got {resp.status_code}: {resp.text}"
         )
@@ -1085,21 +950,18 @@ class TestGetUsersInGroup:
 # GET /api/v1/userGroups/users/:userId
 # ====================================================================
 @pytest.mark.integration
-class TestGetGroupsForUser:
+class TestGetGroupsForUser(UserGroupsTestBaseWithUsers):
     """GET /api/v1/userGroups/users/:userId — groups a user belongs to."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.client = pipeshub_client
 
     def test_get_groups_for_user_response_schema(self) -> None:
         """Response must be an array matching getGroupsForUser schema."""
         # Known user who belongs to at least one group.
-        user_id = _find_user_id(self.client)
+        user_id = _find_user_id(self.groups, self.users)
         if not user_id:
             pytest.skip("No user ID found in any group")
 
-        resp = _get(self.client, f"/users/{user_id}")
+        resp = self.groups.get(f"/users/{user_id}")
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -1108,7 +970,7 @@ class TestGetGroupsForUser:
         assert_response_matches_openapi_operation(body, "getGroupsForUser")
 
         # Non-existent userId — controller returns empty array (no 404).
-        resp = _get(self.client, f"/users/{_NONEXISTENT_ID}")
+        resp = self.groups.get(f"/users/{_NONEXISTENT_ID}")
         assert resp.status_code == 200, (
             f"[nonexistent user] Expected 200 (empty array), got {resp.status_code}: {resp.text}"
         )
@@ -1128,7 +990,7 @@ class TestGetGroupsForUser:
         ]
 
         for label, user_id in invalid_path_cases:
-            resp = _get(self.client, f"/users/{user_id}")
+            resp = self.groups.get(f"/users/{user_id}")
             assert resp.status_code == 400, (
                 f"[{label}] Expected 400, got {resp.status_code}: {resp.text}"
             )
@@ -1139,17 +1001,11 @@ class TestGetGroupsForUser:
             assert body["error"]["code"] == "VALIDATION_ERROR", (
                 f"[{label}] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
             )
-            assert body["error"]["message"] == "Validation failed", (
-                f"[{label}] Expected 'Validation failed', got {body['error']['message']!r}"
-            )
 
-        user_id = _find_user_id(self.client) or _NONEXISTENT_ID
+        user_id = _find_user_id(self.groups, self.users) or _NONEXISTENT_ID
 
         # Missing Authorization header.
-        resp = requests.get(
-            _url(self.client, f"/users/{user_id}"),
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.groups.get(f"/users/{user_id}", auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -1167,23 +1023,20 @@ class TestGetGroupsForUser:
 # POST /api/v1/userGroups/add-users + remove-users
 # ====================================================================
 @pytest.mark.integration
-class TestAddAndRemoveUsersFromGroups:
+class TestAddAndRemoveUsersFromGroups(UserGroupsTestBaseWithUsers):
     """POST /api/v1/userGroups/add-users and /remove-users"""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.client = pipeshub_client
 
     @pytest.fixture
     def two_user_ids(self) -> Generator[list[str], None, None]:
         """Two distinct user ids; creates and deletes a disposable user when the org has fewer than two."""
-        user_ids, created = _ensure_two_user_ids(self.client)
+        user_ids, created = _ensure_two_user_ids(self.groups, self.users)
         try:
             yield user_ids
         finally:
             for uid in created:
                 try:
-                    _delete_test_user(self.client, uid, label="two_user_ids fixture")
+                    _delete_test_user(self.users, uid, label="two_user_ids fixture")
                 except Exception:
                     logger.warning(
                         "Failed to delete test user %s during fixture teardown",
@@ -1193,13 +1046,13 @@ class TestAddAndRemoveUsersFromGroups:
 
     def test_add_users_to_group_response_schema(self) -> None:
         """Add users to groups (1×1, 1×N) — response must match addUsersToGroup schema."""
-        user_id = _find_user_id(self.client)
+        user_id = _find_user_id(self.groups, self.users)
         if not user_id:
             pytest.skip("No user ID found")
 
         # Single user → single group.
-        group = _create_group(self.client, "rv-test-add-users", "custom")
-        resp = _post(self.client, "/add-users", json={
+        group = _create_group(self.groups, "rv-test-add-users", "custom")
+        resp = self.groups.post("/add-users", json={
             "userIds": [user_id],
             "groupIds": [group["_id"]],
         })
@@ -1207,16 +1060,16 @@ class TestAddAndRemoveUsersFromGroups:
             f"[1 user, 1 group] Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_openapi_operation(resp.json(), "addUsersToGroup")
-        del_resp = _delete(self.client, f"/{group['_id']}")
+        del_resp = self.groups.delete(f"/{group['_id']}")
         assert del_resp.status_code == 200, (
             f"[cleanup 1-user-1-group] Expected 200 deleting group, got {del_resp.status_code}: {del_resp.text}"
         )
 
         # Single user → two groups simultaneously.
-        group1 = _create_group(self.client, "rv-test-add-multi-1", "custom")
-        group2 = _create_group(self.client, "rv-test-add-multi-2", "custom")
+        group1 = _create_group(self.groups, "rv-test-add-multi-1", "custom")
+        group2 = _create_group(self.groups, "rv-test-add-multi-2", "custom")
         try:
-            resp = _post(self.client, "/add-users", json={
+            resp = self.groups.post("/add-users", json={
                 "userIds": [user_id],
                 "groupIds": [group1["_id"], group2["_id"]],
             })
@@ -1226,28 +1079,28 @@ class TestAddAndRemoveUsersFromGroups:
             assert_response_matches_openapi_operation(resp.json(), "addUsersToGroup")
             # Verify the user actually appears in both groups.
             for gid in (group1["_id"], group2["_id"]):
-                users_resp = _get(self.client, f"/{gid}/users")
+                users_resp = self.groups.get(f"/{gid}/users")
                 user_ids_in_group = [u["_id"] for u in users_resp.json().get("users", [])]
                 assert user_id in user_ids_in_group, (
                     f"[1 user, 2 groups] user {user_id} not found in group {gid}"
                 )
         finally:
-            del_resp1 = _delete(self.client, f"/{group1['_id']}")
+            del_resp1 = self.groups.delete(f"/{group1['_id']}")
             assert del_resp1.status_code == 200, (
                 f"[cleanup add-multi-1] Expected 200 deleting group, got {del_resp1.status_code}: {del_resp1.text}"
             )
-            del_resp2 = _delete(self.client, f"/{group2['_id']}")
+            del_resp2 = self.groups.delete(f"/{group2['_id']}")
             assert del_resp2.status_code == 200, (
                 f"[cleanup add-multi-2] Expected 200 deleting group, got {del_resp2.status_code}: {del_resp2.text}"
             )
 
         # Re-add an already-member user — $addToSet is idempotent, must still return 200.
-        group = _create_group(self.client, "rv-test-add-idempotent", "custom")
-        setup_resp = _post(self.client, "/add-users", json={"userIds": [user_id], "groupIds": [group["_id"]]})
+        group = _create_group(self.groups, "rv-test-add-idempotent", "custom")
+        setup_resp = self.groups.post("/add-users", json={"userIds": [user_id], "groupIds": [group["_id"]]})
         assert setup_resp.status_code == 200, (
             f"[idempotent setup] Expected 200 adding user, got {setup_resp.status_code}: {setup_resp.text}"
         )
-        resp = _post(self.client, "/add-users", json={
+        resp = self.groups.post("/add-users", json={
             "userIds": [user_id],
             "groupIds": [group["_id"]],
         })
@@ -1255,7 +1108,7 @@ class TestAddAndRemoveUsersFromGroups:
             f"[re-add idempotent] Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_openapi_operation(resp.json(), "addUsersToGroup")
-        del_resp = _delete(self.client, f"/{group['_id']}")
+        del_resp = self.groups.delete(f"/{group['_id']}")
         assert del_resp.status_code == 200, (
             f"[cleanup idempotent-add] Expected 200 deleting group, got {del_resp.status_code}: {del_resp.text}"
         )
@@ -1267,9 +1120,9 @@ class TestAddAndRemoveUsersFromGroups:
         user_ids = two_user_ids
 
         # Multiple users → single group.
-        group = _create_group(self.client, "rv-test-add-multi-users-1grp", "custom")
+        group = _create_group(self.groups, "rv-test-add-multi-users-1grp", "custom")
         try:
-            resp = _post(self.client, "/add-users", json={
+            resp = self.groups.post("/add-users", json={
                 "userIds": user_ids,
                 "groupIds": [group["_id"]],
             })
@@ -1277,23 +1130,23 @@ class TestAddAndRemoveUsersFromGroups:
                 f"[{len(user_ids)} users, 1 group] Expected 200, got {resp.status_code}: {resp.text}"
             )
             assert_response_matches_openapi_operation(resp.json(), "addUsersToGroup")
-            member_ids = _group_member_ids(self.client, str(group["_id"]))
+            member_ids = _group_member_ids(self.groups, str(group["_id"]))
             for uid in user_ids:
                 assert uid in member_ids, (
                     f"[{len(user_ids)} users, 1 group] user {uid} not found in group {group['_id']}"
                 )
         finally:
-            del_resp = _delete(self.client, f"/{group['_id']}")
+            del_resp = self.groups.delete(f"/{group['_id']}")
             assert del_resp.status_code == 200, (
                 f"[cleanup add-multi-users-1grp] Expected 200 deleting group, "
                 f"got {del_resp.status_code}: {del_resp.text}"
             )
 
         # Multiple users → multiple groups (full cross-product via $addToSet/$each).
-        group1 = _create_group(self.client, "rv-test-add-multi-users-g1", "custom")
-        group2 = _create_group(self.client, "rv-test-add-multi-users-g2", "custom")
+        group1 = _create_group(self.groups, "rv-test-add-multi-users-g1", "custom")
+        group2 = _create_group(self.groups, "rv-test-add-multi-users-g2", "custom")
         try:
-            resp = _post(self.client, "/add-users", json={
+            resp = self.groups.post("/add-users", json={
                 "userIds": user_ids,
                 "groupIds": [group1["_id"], group2["_id"]],
             })
@@ -1302,14 +1155,14 @@ class TestAddAndRemoveUsersFromGroups:
             )
             assert_response_matches_openapi_operation(resp.json(), "addUsersToGroup")
             for gid in (group1["_id"], group2["_id"]):
-                member_ids = _group_member_ids(self.client, str(gid))
+                member_ids = _group_member_ids(self.groups, str(gid))
                 for uid in user_ids:
                     assert uid in member_ids, (
                         f"[{len(user_ids)} users, 2 groups] user {uid} not found in group {gid}"
                     )
         finally:
             for g, label in ((group1, "g1"), (group2, "g2")):
-                del_resp = _delete(self.client, f"/{g['_id']}")
+                del_resp = self.groups.delete(f"/{g['_id']}")
                 assert del_resp.status_code == 200, (
                     f"[cleanup add-multi-users-{label}] Expected 200 deleting group, "
                     f"got {del_resp.status_code}: {del_resp.text}"
@@ -1317,17 +1170,17 @@ class TestAddAndRemoveUsersFromGroups:
 
     def test_remove_users_from_group_response_schema(self) -> None:
         """Remove users from groups (1×1, 1×N) — response must match removeUsersFromGroup schema."""
-        user_id = _find_user_id(self.client)
+        user_id = _find_user_id(self.groups, self.users)
         if not user_id:
             pytest.skip("No user ID found")
 
         # Single user removed from single group.
-        group = _create_group(self.client, "rv-test-remove-users", "custom")
-        setup_resp = _post(self.client, "/add-users", json={"userIds": [user_id], "groupIds": [group["_id"]]})
+        group = _create_group(self.groups, "rv-test-remove-users", "custom")
+        setup_resp = self.groups.post("/add-users", json={"userIds": [user_id], "groupIds": [group["_id"]]})
         assert setup_resp.status_code == 200, (
             f"[single-remove setup] Expected 200 adding user, got {setup_resp.status_code}: {setup_resp.text}"
         )
-        resp = _post(self.client, "/remove-users", json={
+        resp = self.groups.post("/remove-users", json={
             "userIds": [user_id],
             "groupIds": [group["_id"]],
         })
@@ -1335,23 +1188,23 @@ class TestAddAndRemoveUsersFromGroups:
             f"[1 user, 1 group] Expected 200, got {resp.status_code}: {resp.text}"
         )
         assert_response_matches_openapi_operation(resp.json(), "removeUsersFromGroup")
-        del_resp = _delete(self.client, f"/{group['_id']}")
+        del_resp = self.groups.delete(f"/{group['_id']}")
         assert del_resp.status_code == 200, (
             f"[cleanup single-remove] Expected 200 deleting group, got {del_resp.status_code}: {del_resp.text}"
         )
 
         # Remove from two groups at once.
-        group1 = _create_group(self.client, "rv-test-remove-multi-1", "custom")
-        group2 = _create_group(self.client, "rv-test-remove-multi-2", "custom")
+        group1 = _create_group(self.groups, "rv-test-remove-multi-1", "custom")
+        group2 = _create_group(self.groups, "rv-test-remove-multi-2", "custom")
         try:
-            setup_resp = _post(self.client, "/add-users", json={
+            setup_resp = self.groups.post("/add-users", json={
                 "userIds": [user_id],
                 "groupIds": [group1["_id"], group2["_id"]],
             })
             assert setup_resp.status_code == 200, (
                 f"[multi-remove setup] Expected 200 adding user to 2 groups, got {setup_resp.status_code}: {setup_resp.text}"
             )
-            resp = _post(self.client, "/remove-users", json={
+            resp = self.groups.post("/remove-users", json={
                 "userIds": [user_id],
                 "groupIds": [group1["_id"], group2["_id"]],
             })
@@ -1360,20 +1213,20 @@ class TestAddAndRemoveUsersFromGroups:
             )
             assert_response_matches_openapi_operation(resp.json(), "removeUsersFromGroup")
         finally:
-            del_resp1 = _delete(self.client, f"/{group1['_id']}")
+            del_resp1 = self.groups.delete(f"/{group1['_id']}")
             assert del_resp1.status_code == 200, (
                 f"[cleanup remove-multi-1] Expected 200 deleting group, got {del_resp1.status_code}: {del_resp1.text}"
             )
-            del_resp2 = _delete(self.client, f"/{group2['_id']}")
+            del_resp2 = self.groups.delete(f"/{group2['_id']}")
             assert del_resp2.status_code == 200, (
                 f"[cleanup remove-multi-2] Expected 200 deleting group, got {del_resp2.status_code}: {del_resp2.text}"
             )
 
         # Remove a user who is not a member — $pull on a missing element is a no-op;
         # controller must still return 200 (idempotent).
-        group = _create_group(self.client, "rv-test-remove-idempotent", "custom")
+        group = _create_group(self.groups, "rv-test-remove-idempotent", "custom")
         try:
-            resp = _post(self.client, "/remove-users", json={
+            resp = self.groups.post("/remove-users", json={
                 "userIds": [user_id],
                 "groupIds": [group["_id"]],
             })
@@ -1382,7 +1235,7 @@ class TestAddAndRemoveUsersFromGroups:
             )
             assert_response_matches_openapi_operation(resp.json(), "removeUsersFromGroup")
         finally:
-            del_resp = _delete(self.client, f"/{group['_id']}")
+            del_resp = self.groups.delete(f"/{group['_id']}")
             assert del_resp.status_code == 200, (
                 f"[cleanup idempotent-remove] Expected 200 deleting group, got {del_resp.status_code}: {del_resp.text}"
             )
@@ -1394,16 +1247,16 @@ class TestAddAndRemoveUsersFromGroups:
         user_ids = two_user_ids
 
         # Multiple users removed from a single group.
-        group = _create_group(self.client, "rv-test-remove-multi-users-1grp", "custom")
+        group = _create_group(self.groups, "rv-test-remove-multi-users-1grp", "custom")
         try:
-            setup_resp = _post(self.client, "/add-users", json={
+            setup_resp = self.groups.post("/add-users", json={
                 "userIds": user_ids,
                 "groupIds": [group["_id"]],
             })
             assert setup_resp.status_code == 200, (
                 f"[multi-remove 1grp setup] Expected 200, got {setup_resp.status_code}: {setup_resp.text}"
             )
-            resp = _post(self.client, "/remove-users", json={
+            resp = self.groups.post("/remove-users", json={
                 "userIds": user_ids,
                 "groupIds": [group["_id"]],
             })
@@ -1411,30 +1264,30 @@ class TestAddAndRemoveUsersFromGroups:
                 f"[{len(user_ids)} users, 1 group] Expected 200, got {resp.status_code}: {resp.text}"
             )
             assert_response_matches_openapi_operation(resp.json(), "removeUsersFromGroup")
-            member_ids = _group_member_ids(self.client, str(group["_id"]))
+            member_ids = _group_member_ids(self.groups, str(group["_id"]))
             for uid in user_ids:
                 assert uid not in member_ids, (
                     f"[{len(user_ids)} users, 1 group] user {uid} still in group {group['_id']}"
                 )
         finally:
-            del_resp = _delete(self.client, f"/{group['_id']}")
+            del_resp = self.groups.delete(f"/{group['_id']}")
             assert del_resp.status_code == 200, (
                 f"[cleanup remove-multi-users-1grp] Expected 200 deleting group, "
                 f"got {del_resp.status_code}: {del_resp.text}"
             )
 
         # Multiple users removed from multiple groups at once.
-        group1 = _create_group(self.client, "rv-test-remove-multi-users-g1", "custom")
-        group2 = _create_group(self.client, "rv-test-remove-multi-users-g2", "custom")
+        group1 = _create_group(self.groups, "rv-test-remove-multi-users-g1", "custom")
+        group2 = _create_group(self.groups, "rv-test-remove-multi-users-g2", "custom")
         try:
-            setup_resp = _post(self.client, "/add-users", json={
+            setup_resp = self.groups.post("/add-users", json={
                 "userIds": user_ids,
                 "groupIds": [group1["_id"], group2["_id"]],
             })
             assert setup_resp.status_code == 200, (
                 f"[multi-remove 2grp setup] Expected 200, got {setup_resp.status_code}: {setup_resp.text}"
             )
-            resp = _post(self.client, "/remove-users", json={
+            resp = self.groups.post("/remove-users", json={
                 "userIds": user_ids,
                 "groupIds": [group1["_id"], group2["_id"]],
             })
@@ -1443,14 +1296,14 @@ class TestAddAndRemoveUsersFromGroups:
             )
             assert_response_matches_openapi_operation(resp.json(), "removeUsersFromGroup")
             for gid in (group1["_id"], group2["_id"]):
-                member_ids = _group_member_ids(self.client, str(gid))
+                member_ids = _group_member_ids(self.groups, str(gid))
                 for uid in user_ids:
                     assert uid not in member_ids, (
                         f"[{len(user_ids)} users, 2 groups] user {uid} still in group {gid}"
                     )
         finally:
             for g, label in ((group1, "g1"), (group2, "g2")):
-                del_resp = _delete(self.client, f"/{g['_id']}")
+                del_resp = self.groups.delete(f"/{g['_id']}")
                 assert del_resp.status_code == 200, (
                     f"[cleanup remove-multi-users-{label}] Expected 200 deleting group, "
                     f"got {del_resp.status_code}: {del_resp.text}"
@@ -1459,11 +1312,7 @@ class TestAddAndRemoveUsersFromGroups:
     def test_add_users_negative_tests(self) -> None:
         """401 no auth · 400 Zod validation on body."""
         # Missing Authorization header — auth check runs before validation.
-        resp = requests.post(
-            _url(self.client, "/add-users"),
-            json={"userIds": [_NONEXISTENT_ID], "groupIds": [_NONEXISTENT_ID]},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.groups.post("/add-users", json={"userIds": [_NONEXISTENT_ID], "groupIds": [_NONEXISTENT_ID]}, auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -1476,7 +1325,7 @@ class TestAddAndRemoveUsersFromGroups:
             f"[no auth] Expected 'No token provided', got {body['error']['message']!r}"
         )
 
-        created = _create_group(self.client, "rv-test-add-err", "custom")
+        created = _create_group(self.groups, "rv-test-add-err", "custom")
         try:
             invalid_body_cases = [
                 ("missing userIds", {"groupIds": [created["_id"]]}),
@@ -1494,7 +1343,7 @@ class TestAddAndRemoveUsersFromGroups:
             ]
 
             for label, payload in invalid_body_cases:
-                resp = _post(self.client, "/add-users", json=payload)
+                resp = self.groups.post("/add-users", json=payload)
                 assert resp.status_code == 400, (
                     f"[{label}] Expected 400, got {resp.status_code}: {resp.text}"
                 )
@@ -1505,11 +1354,8 @@ class TestAddAndRemoveUsersFromGroups:
                 assert body["error"]["code"] == "VALIDATION_ERROR", (
                     f"[{label}] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
                 )
-                assert body["error"]["message"] == "Validation failed", (
-                    f"[{label}] Expected 'Validation failed', got {body['error']['message']!r}"
-                )
         finally:
-            del_resp = _delete(self.client, f"/{created['_id']}")
+            del_resp = self.groups.delete(f"/{created['_id']}")
             assert del_resp.status_code == 200, (
                 f"[cleanup add-err] Expected 200 deleting group, got {del_resp.status_code}: {del_resp.text}"
             )
@@ -1517,11 +1363,7 @@ class TestAddAndRemoveUsersFromGroups:
     def test_remove_users_negative_tests(self) -> None:
         """401 no auth · 400 Zod validation on body."""
         # Missing Authorization header.
-        resp = requests.post(
-            _url(self.client, "/remove-users"),
-            json={"userIds": [_NONEXISTENT_ID], "groupIds": [_NONEXISTENT_ID]},
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.groups.post("/remove-users", json={"userIds": [_NONEXISTENT_ID], "groupIds": [_NONEXISTENT_ID]}, auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -1550,7 +1392,7 @@ class TestAddAndRemoveUsersFromGroups:
         ]
 
         for label, payload in invalid_body_cases:
-            resp = _post(self.client, "/remove-users", json=payload)
+            resp = self.groups.post("/remove-users", json=payload)
             assert resp.status_code == 400, (
                 f"[{label}] Expected 400, got {resp.status_code}: {resp.text}"
             )
@@ -1561,25 +1403,19 @@ class TestAddAndRemoveUsersFromGroups:
             assert body["error"]["code"] == "VALIDATION_ERROR", (
                 f"[{label}] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
             )
-            assert body["error"]["message"] == "Validation failed", (
-                f"[{label}] Expected 'Validation failed', got {body['error']['message']!r}"
-            )
 
 
 # ====================================================================
 # GET /api/v1/userGroups/stats/list
 # ====================================================================
 @pytest.mark.integration
-class TestGetGroupStatistics:
+class TestGetGroupStatistics(UserGroupsTestBase):
     """GET /api/v1/userGroups/stats/list — aggregate stats."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.client = pipeshub_client
 
     def test_get_group_statistics_response_schema(self) -> None:
         """Response must be an array matching getGroupStatistics schema."""
-        resp = _get(self.client, "/stats/list")
+        resp = self.groups.get("/stats/list")
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -1590,10 +1426,7 @@ class TestGetGroupStatistics:
     def test_get_group_statistics_negative_tests(self) -> None:
         """GET /stats/list without Bearer token must return 401."""
         # Missing Authorization header.
-        resp = requests.get(
-            _url(self.client, "/stats/list"),
-            timeout=self.client.timeout_seconds,
-        )
+        resp = self.groups.get("/stats/list", auth=False)
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )

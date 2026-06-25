@@ -1,7 +1,7 @@
 """Shared fixtures for messaging integration tests.
 
 Env vars:
-  MESSAGE_BROKER           – "kafka" or "redis" (default: redis)
+  MESSAGE_BROKER           – "kafka" or "redis" (required; set in .env.local)
   KAFKA_BOOTSTRAP_SERVERS  – default localhost:9092
   REDIS_HOST               – default localhost
   REDIS_PORT               – default 6379
@@ -15,6 +15,7 @@ import os
 import uuid
 from typing import Any, AsyncGenerator
 
+import pytest
 import pytest_asyncio
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from redis.asyncio import Redis
@@ -143,7 +144,18 @@ _DEFAULT_EVENT_TIMEOUT = 30.0
 
 
 def _message_broker() -> str:
-    return os.getenv("MESSAGE_BROKER", "redis").lower()
+    broker = os.getenv("MESSAGE_BROKER")
+    if not broker:
+        raise RuntimeError(
+            "MESSAGE_BROKER must be set to 'kafka' or 'redis' (see integration-tests/.env.local)"
+        )
+    return broker.lower().strip()
+
+
+requires_kafka = pytest.mark.skipif(
+    (os.getenv("MESSAGE_BROKER") or "").lower().strip() != "kafka",
+    reason="MESSAGE_BROKER is not kafka (set MESSAGE_BROKER=kafka and start Kafka to run these tests)",
+)
 
 
 def _match_event(event: dict, event_type: str, record_id: str | None) -> bool:

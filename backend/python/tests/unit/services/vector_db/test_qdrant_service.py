@@ -622,6 +622,37 @@ class TestFilterCollection:
 
 
 # ---------------------------------------------------------------------------
+# count_points
+# ---------------------------------------------------------------------------
+
+
+class TestCountPoints:
+    @pytest.mark.asyncio
+    async def test_count_points_success(self, connected_service):
+        result_obj = MagicMock()
+        result_obj.count = 42
+        connected_service.client.count.return_value = result_obj
+        with patch("app.services.vector_db.qdrant.qdrant.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            count = await connected_service.count_points("col")
+        connected_service.client.count.assert_called_once_with("col", exact=False)
+        assert count == 42
+
+    @pytest.mark.asyncio
+    async def test_count_points_empty_collection(self, connected_service):
+        result_obj = MagicMock()
+        result_obj.count = 0
+        connected_service.client.count.return_value = result_obj
+        with patch("app.services.vector_db.qdrant.qdrant.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            count = await connected_service.count_points("col")
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_count_points_not_connected(self, service):
+        with pytest.raises(RuntimeError, match="Client not connected"):
+            await service.count_points("col")
+
+
+# ---------------------------------------------------------------------------
 # upsert_points
 # ---------------------------------------------------------------------------
 
@@ -646,8 +677,9 @@ class TestUpsertPoints:
     @pytest.mark.asyncio
     async def test_not_connected(self, service):
         points = [PointStruct(id=1, vector=[0.1], payload={})]
-        with pytest.raises(RuntimeError, match="Client not connected"):
-            await service.upsert_points("col", points)
+        with patch.object(service, "_ensure_connected", side_effect=RuntimeError("Client not connected. Call connect() first.")):
+            with pytest.raises(RuntimeError, match="Client not connected"):
+                await service.upsert_points("col", points)
 
     @pytest.mark.asyncio
     async def test_empty_points(self, connected_service):
@@ -712,8 +744,9 @@ class TestQueryNearestPoints:
 
     @pytest.mark.asyncio
     async def test_query_not_connected(self, service):
-        with pytest.raises(RuntimeError, match="Client not connected"):
-            await service.query_nearest_points("col", [])
+        with patch.object(service, "_ensure_connected", side_effect=RuntimeError("Client not connected. Call connect() first.")):
+            with pytest.raises(RuntimeError, match="Client not connected"):
+                await service.query_nearest_points("col", [])
 
 
 # ---------------------------------------------------------------------------
@@ -923,6 +956,19 @@ class TestAsyncClientPaths:
         result = await async_connected_service.query_nearest_points("col", requests)
         async_connected_service.client.query_batch_points.assert_awaited_once_with("col", requests)
         assert result == [[]]
+
+    # ------------------------------------------------------------------
+    # count_points (async)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_count_points_async(self, async_connected_service):
+        result_obj = MagicMock()
+        result_obj.count = 99
+        async_connected_service.client.count.return_value = result_obj
+        count = await async_connected_service.count_points("col")
+        async_connected_service.client.count.assert_awaited_once_with("col", exact=False)
+        assert count == 99
 
     # ------------------------------------------------------------------
     # upsert_points (async) — lines 440, 459-464

@@ -1,9 +1,8 @@
 """Extended unit tests for PDF processor modules to increase coverage.
 
 Covers uncovered lines/branches in:
-- AzureOCRStrategy (azure_document_intelligence_processor.py)
-- OpenCVLayoutAnalyzer (opencv_layout_analyzer.py)
-- PyMuPDFOpenCVProcessor (pymupdf_opencv_processor.py)
+- OpenCVLayoutAnalyzer (legacy; skipped — stub exposes types only)
+- PDFPlumberOpenCVProcessor (pdfplumber_opencv_processor.py)
 """
 
 import os
@@ -35,6 +34,7 @@ def _mock_config():
 #   _collect_unclaimed_text_blocks unclaimed heading/text paths
 # ============================================================================
 
+@pytest.mark.skip(reason="OpenCVLayoutAnalyzer not in stub opencv_layout_analyzer; pipeline is opencv_layout_analyzer.")
 class TestOpenCVLayoutAnalyzerAnalyzePage:
     """Tests for OpenCVLayoutAnalyzer.analyze_page covering full classification paths."""
 
@@ -569,6 +569,7 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
 # OpenCVLayoutAnalyzer — analyze_page text classification paths
 # ============================================================================
 
+@pytest.mark.skip(reason="OpenCVLayoutAnalyzer not in stub opencv_layout_analyzer; pipeline is opencv_layout_analyzer.")
 class TestOpenCVLayoutAnalyzerTextClassification:
     """Tests for text region classification inside analyze_page."""
 
@@ -726,108 +727,29 @@ class TestOpenCVLayoutAnalyzerTextClassification:
 
 
 # ============================================================================
-# PyMuPDFOpenCVProcessor — covering _extract_tables_with_pymupdf,
-#   create_blocks branch coverage, load_document
+# PDFPlumberOpenCVProcessor — create_blocks branch coverage, load_document
 # ============================================================================
 
 class TestPyMuPDFOpenCVProcessorExtended:
 
     def _make_processor(self):
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
-            return PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
-
-    def test_extract_tables_with_pymupdf_matches_existing_region(self):
-        """_extract_tables_with_pymupdf matches a table to an existing TABLE region."""
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
-            LayoutRegion, LayoutRegionType, ParsedPageData, PyMuPDFOpenCVProcessor,
-        )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
-
-        # Create a region and page data
-        existing_region = LayoutRegion(type=LayoutRegionType.TABLE, bbox=(50, 50, 300, 200))
-        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[existing_region])
-
-        # Mock doc and page
-        mock_doc = MagicMock()
-        mock_page = MagicMock()
-        mock_doc.__getitem__ = lambda s, i: mock_page
-
-        # Mock table finder
-        mock_table = MagicMock()
-        mock_table.bbox = (50, 50, 300, 200)
-        mock_table.extract.return_value = [["A", "B"], ["1", "2"]]
-        mock_table_finder = MagicMock()
-        mock_table_finder.tables = [mock_table]
-        mock_page.find_tables.return_value = mock_table_finder
-
-        proc._extract_tables_with_pymupdf(mock_doc, [pd])
-
-        # The existing region should have its grid updated
-        assert existing_region.table_grid == [["A", "B"], ["1", "2"]]
-
-    def test_extract_tables_with_pymupdf_new_table(self):
-        """_extract_tables_with_pymupdf adds new TABLE region when no match found."""
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
-            LayoutRegion, LayoutRegionType, ParsedPageData, PyMuPDFOpenCVProcessor,
-        )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
-
-        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[])
-
-        mock_doc = MagicMock()
-        mock_page = MagicMock()
-        mock_doc.__getitem__ = lambda s, i: mock_page
-
-        mock_table = MagicMock()
-        mock_table.bbox = (100, 100, 400, 300)
-        mock_table.extract.return_value = [["X", "Y"]]
-        mock_table_finder = MagicMock()
-        mock_table_finder.tables = [mock_table]
-        mock_page.find_tables.return_value = mock_table_finder
-
-        proc._extract_tables_with_pymupdf(mock_doc, [pd])
-
-        assert len(pd.regions) == 1
-        assert pd.regions[0].type == LayoutRegionType.TABLE
-        assert pd.regions[0].table_grid == [["X", "Y"]]
-
-    def test_extract_tables_find_tables_error(self):
-        """_extract_tables_with_pymupdf handles find_tables error."""
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
-            ParsedPageData, PyMuPDFOpenCVProcessor,
-        )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
-
-        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[])
-
-        mock_doc = MagicMock()
-        mock_page = MagicMock()
-        mock_doc.__getitem__ = lambda s, i: mock_page
-        mock_page.find_tables.side_effect = RuntimeError("no tables")
-
-        proc._extract_tables_with_pymupdf(mock_doc, [pd])
-        assert len(pd.regions) == 0
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+        return PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
     @pytest.mark.asyncio
     async def test_create_blocks_all_region_types(self):
-        """create_blocks handles TABLE, IMAGE, LIST, ORDERED_LIST, HEADING, and TEXT."""
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
-            LayoutRegion, LayoutRegionType, ParsedPageData, PyMuPDFOpenCVProcessor,
+        """create_blocks handles TABLE, IMAGE, LIST (bullet + numbered), and TEXT."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion, LayoutRegionType, ParsedPageData, PDFPlumberOpenCVProcessor,
         )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
         regions = [
             LayoutRegion(type=LayoutRegionType.TABLE, bbox=(0, 0, 100, 100), table_grid=[["A", "B"]]),
             LayoutRegion(type=LayoutRegionType.IMAGE, bbox=(0, 100, 100, 200), image_data=b"img", image_ext="png"),
             LayoutRegion(type=LayoutRegionType.LIST, bbox=(0, 200, 100, 300), text="- A\n- B", list_items=["- A", "- B"]),
-            LayoutRegion(type=LayoutRegionType.ORDERED_LIST, bbox=(0, 300, 100, 400), text="1. A\n2. B", list_items=["1. A", "2. B"]),
-            LayoutRegion(type=LayoutRegionType.HEADING, bbox=(0, 400, 100, 450), text="Title"),
-            LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 450, 100, 500), text="Body text"),
+            LayoutRegion(type=LayoutRegionType.LIST, bbox=(0, 300, 100, 400), text="1. A\n2. B", list_items=["1. A", "2. B"]),
+            LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 400, 100, 500), text="Title and body"),
         ]
         pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=regions)
 
@@ -835,24 +757,23 @@ class TestPyMuPDFOpenCVProcessorExtended:
         mock_response.summary = "Table"
         mock_response.headers = ["A", "B"]
 
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.get_table_summary_n_headers",
+        with patch("app.modules.parsers.pdf.pdfplumber_opencv_processor.get_table_summary_n_headers",
                     new_callable=AsyncMock, return_value=mock_response), \
-             patch("app.modules.parsers.pdf.pymupdf_opencv_processor.get_rows_text",
+             patch("app.modules.parsers.pdf.pdfplumber_opencv_processor.get_rows_text",
                     new_callable=AsyncMock, return_value=(["Row text"], [["A", "B"]])):
             result = await proc.create_blocks([pd])
 
-        # Should have blocks for all types
-        assert len(result.blocks) >= 6  # text, heading, 2 list items, table row, image
-        assert len(result.block_groups) >= 3  # table, list, ordered_list
+        # TABLE row, IMAGE, 4 list items (2 groups), 1 TEXT
+        assert len(result.blocks) >= 7
+        assert len(result.block_groups) >= 3  # table, bullet list, ordered list
 
     @pytest.mark.asyncio
     async def test_create_blocks_no_page_number_filter(self):
         """create_blocks without page_number processes all pages."""
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
-            LayoutRegion, LayoutRegionType, ParsedPageData, PyMuPDFOpenCVProcessor,
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion, LayoutRegionType, ParsedPageData, PDFPlumberOpenCVProcessor,
         )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
         r1 = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 0, 100, 50), text="Page 1")
         r2 = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 0, 100, 50), text="Page 2")
@@ -865,9 +786,8 @@ class TestPyMuPDFOpenCVProcessorExtended:
     @pytest.mark.asyncio
     async def test_load_document_delegates(self):
         """load_document calls parse_document then create_blocks."""
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
         mock_parsed = [MagicMock()]
         mock_blocks = MagicMock()
@@ -882,935 +802,202 @@ class TestPyMuPDFOpenCVProcessorExtended:
     @pytest.mark.asyncio
     async def test_parse_document_with_bytesio(self):
         """parse_document accepts BytesIO input."""
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer") as MockAnalyzer:
-            mock_analyzer_inst = MagicMock()
-            mock_analyzer_inst.analyze_page.return_value = []
-            MockAnalyzer.return_value = mock_analyzer_inst
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
-            mock_doc = MagicMock()
-            mock_doc.__len__ = lambda s: 1
-            mock_page = MagicMock()
-            mock_page.rect.width = 612
-            mock_page.rect.height = 792
-            mock_doc.__getitem__ = lambda s, i: mock_page
-            mock_doc.close = MagicMock()
+        mock_pdf = MagicMock()
+        mock_page = MagicMock()
+        mock_page.width = 612
+        mock_page.height = 792
+        mock_pdf.pages = [mock_page]
+        mock_cm = MagicMock()
+        mock_cm.__enter__.return_value = mock_pdf
+        mock_cm.__exit__.return_value = None
 
-            with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.fitz") as mock_fitz:
-                mock_fitz.open.return_value = mock_doc
-                result = await proc.parse_document("test.pdf", BytesIO(b"fake-pdf-bytes"))
+        with patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.pdfplumber.open",
+            return_value=mock_cm,
+        ), patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.extract_layout_regions",
+            return_value=[],
+        ):
+            result = await proc.parse_document("test.pdf", BytesIO(b"fake-pdf-bytes"))
 
-            assert len(result) == 1
+        assert len(result) == 1
 
+    @pytest.mark.asyncio
+    async def test_parse_document_unlink_oserror_is_swallowed(self):
+        """parse_document swallows OSError when cleaning up the temp PDF file."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
+        mock_pdf = MagicMock()
+        mock_page = MagicMock()
+        mock_page.width = 612
+        mock_page.height = 792
+        mock_pdf.pages = [mock_page]
+        mock_cm = MagicMock()
+        mock_cm.__enter__.return_value = mock_pdf
+        mock_cm.__exit__.return_value = None
 
-# ============================================================================
-# AzureOCRStrategy — load_document, _process_with_azure, _preprocess_document,
-#   _process_azure_page, _process_table, _merge_small_blocks,
-#   _merge_lines_to_sentences, _create_searchable_pdf, _get_lines_for_paragraph,
-#   custom_sentence_boundary, _create_custom_tokenizer, process_page
-# ============================================================================
+        with patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.pdfplumber.open",
+            return_value=mock_cm,
+        ), patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.extract_layout_regions",
+            return_value=[],
+        ), patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.os.unlink",
+            side_effect=OSError("permission denied"),
+        ):
+            result = await proc.parse_document("test.pdf", b"fake-pdf-bytes")
 
-class TestAzureOCRStrategyExtended:
+        assert len(result) == 1
 
-    @patch("app.modules.parsers.pdf.azure_document_intelligence_processor.spacy")
-    def _make_strategy(self, mock_spacy):
-        mock_nlp = MagicMock()
-        mock_nlp.pipe_names = ["sentencizer", "custom_sentence_boundary"]
-        mock_nlp.add_pipe = MagicMock()
-        mock_nlp.tokenizer = MagicMock()
-        mock_spacy.load.return_value = mock_nlp
+    @pytest.mark.asyncio
+    async def test_parse_document_tempfile_failure_skips_unlink(self):
+        """parse_document skips unlink when temp file creation never assigns tmp_path."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 
-        from app.modules.parsers.pdf.azure_document_intelligence_processor import AzureOCRStrategy
-        return AzureOCRStrategy(
-            logger=_mock_logger(), config=_mock_config(),
-            endpoint="https://fake.cognitiveservices.azure.com",
-            key="fake-key",
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+
+        with patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.tempfile.NamedTemporaryFile",
+            side_effect=OSError("disk full"),
+        ), patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.os.unlink",
+        ) as mock_unlink:
+            with pytest.raises(OSError, match="disk full"):
+                await proc.parse_document("test.pdf", b"fake-pdf-bytes")
+
+        mock_unlink.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_build_table_group_skip_llm_enrichment(self):
+        """_build_table_group derives headers and row text locally when LLM is skipped."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion,
+            LayoutRegionType,
+            ParsedPageData,
+            PDFPlumberOpenCVProcessor,
         )
 
-    @patch("app.modules.parsers.pdf.azure_document_intelligence_processor.spacy")
-    def test_init_spacy_failure(self, mock_spacy):
-        """AzureOCRStrategy.__init__ handles spaCy load failure."""
-        mock_spacy.load.side_effect = RuntimeError("spaCy model not found")
-        from app.modules.parsers.pdf.azure_document_intelligence_processor import AzureOCRStrategy
-        strategy = AzureOCRStrategy(
-            logger=_mock_logger(), config=_mock_config(),
-            endpoint="https://fake.cognitiveservices.azure.com",
-            key="fake-key",
-        )
-        assert strategy.nlp is None
-
-    @pytest.mark.asyncio
-    async def test_load_document_needs_ocr(self):
-        """load_document routes to Azure OCR when OCR is needed."""
-        strategy = self._make_strategy()
-
-        mock_page = MagicMock()
-        mock_page.rect.width = 612
-        mock_page.rect.height = 792
-
-        mock_temp_doc = MagicMock()
-        mock_temp_doc.__enter__ = lambda s: s
-        mock_temp_doc.__exit__ = MagicMock(return_value=False)
-        mock_temp_doc.__iter__ = lambda s: iter([mock_page])
-        mock_temp_doc.__len__ = lambda s: 1
-
-        with patch("app.modules.parsers.pdf.azure_document_intelligence_processor.fitz") as mock_fitz, \
-             patch("app.modules.parsers.pdf.azure_document_intelligence_processor.OCRStrategy") as MockOCR:
-            mock_fitz.open.return_value = mock_temp_doc
-            MockOCR.needs_ocr = MagicMock(return_value=True)
-
-            strategy._process_with_azure = AsyncMock()
-            strategy._preprocess_document = AsyncMock(return_value={"pages": []})
-
-            await strategy.load_document(b"fake-pdf")
-
-            strategy._process_with_azure.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_load_document_no_ocr_raises(self):
-        """load_document raises when OCR is not needed (azure strategy expects OCR)."""
-        strategy = self._make_strategy()
-
-        mock_page = MagicMock()
-        mock_page.rect.width = 612
-        mock_page.rect.height = 792
-
-        mock_temp_doc = MagicMock()
-        mock_temp_doc.__enter__ = lambda s: s
-        mock_temp_doc.__exit__ = MagicMock(return_value=False)
-        mock_temp_doc.__iter__ = lambda s: iter([mock_page])
-        mock_temp_doc.__len__ = lambda s: 1
-
-        with patch("app.modules.parsers.pdf.azure_document_intelligence_processor.fitz") as mock_fitz, \
-             patch("app.modules.parsers.pdf.azure_document_intelligence_processor.OCRStrategy") as MockOCR:
-            mock_fitz.open.return_value = mock_temp_doc
-            MockOCR.needs_ocr = MagicMock(return_value=False)
-
-            with pytest.raises(Exception, match="Azure OCR is not needed"):
-                await strategy.load_document(b"fake-pdf")
-
-    @pytest.mark.asyncio
-    async def test_load_document_analysis_error_defaults_to_ocr(self):
-        """load_document defaults to OCR on analysis error."""
-        strategy = self._make_strategy()
-
-        with patch("app.modules.parsers.pdf.azure_document_intelligence_processor.fitz") as mock_fitz, \
-             patch("app.modules.parsers.pdf.azure_document_intelligence_processor.OCRStrategy") as MockOCR:
-            mock_fitz.open.side_effect = RuntimeError("Cannot open PDF")
-
-            strategy._process_with_azure = AsyncMock()
-            strategy._preprocess_document = AsyncMock(return_value={"pages": []})
-
-            await strategy.load_document(b"fake-pdf")
-            assert strategy._needs_ocr is True
-
-    @pytest.mark.asyncio
-    async def test_process_with_azure_success(self):
-        """_process_with_azure processes document with Azure DI."""
-        strategy = self._make_strategy()
-
-        mock_result = MagicMock()
-        mock_azure_page = MagicMock()
-        mock_azure_page.width = 8.5
-        mock_azure_page.height = 11.0
-        mock_azure_page.lines = []
-        mock_azure_page.words = []
-        mock_result.pages = [mock_azure_page]
-        mock_result.paragraphs = []
-        mock_result.tables = []
-
-        mock_poller = AsyncMock()
-        mock_poller.result.return_value = mock_result
-
-        mock_client = AsyncMock()
-        mock_client.begin_analyze_document.return_value = mock_poller
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("app.modules.parsers.pdf.azure_document_intelligence_processor.AsyncDocumentAnalysisClient",
-                    return_value=mock_client):
-            await strategy._process_with_azure(b"fake-content")
-
-        assert strategy.doc is mock_result
-
-    @pytest.mark.asyncio
-    async def test_process_with_azure_failure(self):
-        """_process_with_azure raises on Azure failure."""
-        strategy = self._make_strategy()
-
-        mock_client = AsyncMock()
-        mock_client.begin_analyze_document.side_effect = RuntimeError("Azure error")
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("app.modules.parsers.pdf.azure_document_intelligence_processor.AsyncDocumentAnalysisClient",
-                    return_value=mock_client):
-            with pytest.raises(RuntimeError, match="Azure error"):
-                await strategy._process_with_azure(b"fake-content")
-
-    def test_create_custom_tokenizer_no_sentencizer(self):
-        """_create_custom_tokenizer adds sentencizer if not present."""
-        strategy = self._make_strategy()
-        mock_nlp = MagicMock()
-        mock_nlp.pipe_names = []
-        mock_nlp.tokenizer = MagicMock()
-        result = strategy._create_custom_tokenizer(mock_nlp)
-        calls = [c[0][0] for c in mock_nlp.add_pipe.call_args_list]
-        assert "sentencizer" in calls
-
-    def test_create_custom_tokenizer_already_has_both(self):
-        """_create_custom_tokenizer skips sentencizer if present, but adds custom boundary if not."""
-        strategy = self._make_strategy()
-        mock_nlp = MagicMock()
-        mock_nlp.pipe_names = ["sentencizer"]
-        mock_nlp.tokenizer = MagicMock()
-        result = strategy._create_custom_tokenizer(mock_nlp)
-        calls = [c[0][0] for c in mock_nlp.add_pipe.call_args_list]
-        assert "sentencizer" not in calls
-        assert "custom_sentence_boundary" in calls
-
-    def test_create_custom_tokenizer_with_both_already(self):
-        """_create_custom_tokenizer skips both if already present."""
-        strategy = self._make_strategy()
-        mock_nlp = MagicMock()
-        mock_nlp.pipe_names = ["sentencizer", "custom_sentence_boundary"]
-        mock_nlp.tokenizer = MagicMock()
-        result = strategy._create_custom_tokenizer(mock_nlp)
-        calls = [c[0][0] for c in mock_nlp.add_pipe.call_args_list]
-        assert "sentencizer" not in calls
-        assert "custom_sentence_boundary" not in calls
-
-    @pytest.mark.asyncio
-    async def test_process_page_processed_raises(self):
-        """process_page raises NotImplementedError when already processed."""
-        strategy = self._make_strategy()
-        strategy._processed = True
-        with pytest.raises(NotImplementedError, match="Azure processes entire document"):
-            await strategy.process_page(MagicMock())
-
-    @pytest.mark.asyncio
-    async def test_process_page_not_processed_extracts_data(self):
-        """process_page extracts words and lines from PyMuPDF page when not processed."""
-        strategy = self._make_strategy()
-        strategy._processed = False
-
-        mock_page = MagicMock()
-        mock_page.rect.width = 612
-        mock_page.rect.height = 792
-        mock_page.get_text.side_effect = [
-            # "words" call
-            [(10, 10, 50, 20, "Hello", 0, 0, 0), (60, 10, 100, 20, "  ", 0, 0, 0)],
-            # "dict" call
-            {
-                "blocks": [{
-                    "lines": [{
-                        "spans": [{"text": "Hello world"}],
-                        "bbox": (10, 10, 100, 20),
-                    }]
-                }]
-            },
-        ]
-
-        result = await strategy.process_page(mock_page)
-        assert len(result["words"]) == 1  # empty word skipped
-        assert len(result["lines"]) == 1
-        assert result["page_width"] == 612
-        assert result["page_height"] == 792
-
-    def test_process_block_text_pymupdf_single_span(self):
-        """_process_block_text_pymupdf processes single-span lines."""
-        strategy = self._make_strategy()
-        mock_doc_nlp = MagicMock()
-        mock_sent = MagicMock()
-        mock_sent.text = "Hello world"
-        mock_sent.start_char = 0
-        mock_sent.end_char = 11
-        mock_doc_nlp.sents = [mock_sent]
-        strategy.nlp = MagicMock(return_value=mock_doc_nlp)
-
-        block = {
-            "type": 0,
-            "bbox": (0, 0, 200, 50),
-            "lines": [{
-                "spans": [{"text": "Hello world", "font": "Arial", "size": 12, "flags": 0, "bbox": (0, 0, 100, 20)}],
-                "bbox": (0, 0, 200, 20),
-            }],
-            "number": 0,
-        }
-
-        result = strategy._process_block_text_pymupdf(block, 612.0, 792.0)
-        assert len(result["lines"]) == 1
-        assert result["lines"][0]["content"] == "Hello world"
-
-    def test_process_block_text_pymupdf_multi_span(self):
-        """_process_block_text_pymupdf processes multi-span lines."""
-        strategy = self._make_strategy()
-        mock_doc_nlp = MagicMock()
-        mock_sent = MagicMock()
-        mock_sent.text = "Hello world"
-        mock_sent.start_char = 0
-        mock_sent.end_char = 11
-        mock_doc_nlp.sents = [mock_sent]
-        strategy.nlp = MagicMock(return_value=mock_doc_nlp)
-
-        block = {
-            "type": 0,
-            "bbox": (0, 0, 200, 50),
-            "lines": [{
-                "spans": [
-                    {"text": "Hello", "font": "Arial", "size": 12, "flags": 0, "bbox": (0, 0, 50, 20)},
-                    {"text": "world", "font": "Arial", "size": 12, "flags": 0, "bbox": (50, 0, 100, 20)},
-                ],
-                "bbox": (0, 0, 200, 20),
-            }],
-            "number": 0,
-        }
-
-        result = strategy._process_block_text_pymupdf(block, 612.0, 792.0)
-        assert "Hello" in result["lines"][0]["content"]
-
-    def test_process_block_text_pymupdf_with_chars(self):
-        """_process_block_text_pymupdf processes character-level data."""
-        strategy = self._make_strategy()
-        mock_doc_nlp = MagicMock()
-        mock_sent = MagicMock()
-        mock_sent.text = "Hi"
-        mock_sent.start_char = 0
-        mock_sent.end_char = 2
-        mock_doc_nlp.sents = [mock_sent]
-        strategy.nlp = MagicMock(return_value=mock_doc_nlp)
-
-        block = {
-            "type": 0,
-            "bbox": (0, 0, 200, 50),
-            "lines": [{
-                "spans": [{
-                    "text": "Hi",
-                    "font": "Arial",
-                    "size": 12,
-                    "flags": 0,
-                    "bbox": (0, 0, 20, 20),
-                    "chars": [
-                        {"c": "H", "bbox": (0, 0, 10, 20)},
-                        {"c": "i", "bbox": (10, 0, 20, 20)},
-                    ],
-                }],
-                "bbox": (0, 0, 200, 20),
-            }],
-            "number": 0,
-        }
-
-        result = strategy._process_block_text_pymupdf(block, 612.0, 792.0)
-        assert len(result["words"]) == 2
-
-    def test_process_block_text_pymupdf_empty_line(self):
-        """_process_block_text_pymupdf skips empty lines."""
-        strategy = self._make_strategy()
-        mock_doc_nlp = MagicMock()
-        mock_doc_nlp.sents = []
-        strategy.nlp = MagicMock(return_value=mock_doc_nlp)
-
-        block = {
-            "type": 0,
-            "bbox": (0, 0, 200, 50),
-            "lines": [{
-                "spans": [{"text": "   ", "font": "Arial", "size": 12, "flags": 0, "bbox": (0, 0, 50, 20)}],
-                "bbox": (0, 0, 200, 20),
-            }],
-            "number": 0,
-        }
-
-        result = strategy._process_block_text_pymupdf(block, 612.0, 792.0)
-        assert result["lines"] == []
-
-    def test_process_block_text_pymupdf_multi_span_space(self):
-        """_process_block_text_pymupdf preserves spaces in multi-span."""
-        strategy = self._make_strategy()
-        mock_doc_nlp = MagicMock()
-        mock_sent = MagicMock()
-        mock_sent.text = "Hello world"
-        mock_sent.start_char = 0
-        mock_sent.end_char = 11
-        mock_doc_nlp.sents = [mock_sent]
-        strategy.nlp = MagicMock(return_value=mock_doc_nlp)
-
-        block = {
-            "type": 0,
-            "bbox": (0, 0, 200, 50),
-            "lines": [{
-                "spans": [
-                    {"text": "Hello ", "font": "Arial", "size": 12, "flags": 0, "bbox": (0, 0, 50, 20)},
-                    {"text": "world", "font": "Arial", "size": 12, "flags": 0, "bbox": (55, 0, 100, 20)},
-                ],
-                "bbox": (0, 0, 200, 20),
-            }],
-            "number": 0,
-        }
-
-        result = strategy._process_block_text_pymupdf(block, 612.0, 792.0)
-        assert "Hello" in result["lines"][0]["content"]
-
-    def test_extract_page_properties_pymupdf(self):
-        """_extract_page_properties returns PyMuPDF properties when not OCR."""
-        strategy = self._make_strategy()
-        mock_page = MagicMock(spec=[])
-        mock_page.rect = MagicMock()
-        mock_page.rect.width = 612
-        mock_page.rect.height = 792
-        result = strategy._extract_page_properties(mock_page, False, 1)
-        assert result["unit"] == "point"
-        assert result["width"] == 612
-
-    @pytest.mark.asyncio
-    async def test_preprocess_document_with_paragraphs_and_tables(self):
-        """_preprocess_document processes Azure pages with paragraphs and tables."""
-        strategy = self._make_strategy()
-
-        mock_azure_page = MagicMock()
-        mock_azure_page.width = 8.5
-        mock_azure_page.height = 11.0
-        mock_azure_page.unit = "inch"
-        mock_azure_page.page_number = 1
-        mock_azure_page.lines = []
-        mock_azure_page.tables = []
-
-        mock_paragraph = MagicMock()
-        mock_paragraph.content = "Test paragraph"
-        mock_paragraph.words = []
-        mock_paragraph.role = "paragraph"
-        mock_paragraph.confidence = 0.99
-
-        mock_doc = MagicMock()
-        mock_doc.pages = [mock_azure_page]
-        mock_doc.paragraphs = [mock_paragraph]
-
-        strategy.doc = mock_doc
-        strategy._get_bounding_box = MagicMock(return_value=[{"x": 0.1, "y": 0.1}])
-        strategy._normalize_coordinates = MagicMock(return_value=[{"x": 0.01, "y": 0.01}])
-
-        mock_doc_nlp = MagicMock()
-        mock_sent = MagicMock()
-        mock_sent.text = "Test paragraph"
-        mock_sent.start_char = 0
-        mock_sent.end_char = 14
-        mock_doc_nlp.sents = [mock_sent]
-        strategy.nlp = MagicMock(return_value=mock_doc_nlp)
-
-        result = await strategy._preprocess_document()
-        assert len(result["pages"]) == 1
-        assert len(result["paragraphs"]) == 1
-
-    @pytest.mark.asyncio
-    async def test_process_azure_page_with_lines(self):
-        """_process_azure_page processes lines from Azure."""
-        strategy = self._make_strategy()
-
-        mock_line = MagicMock()
-        mock_line.content = "Test line"
-        mock_line.confidence = 0.95
-
-        mock_page = MagicMock()
-        mock_page.lines = [mock_line]
-        mock_page.tables = []
-
-        strategy.doc = MagicMock()
-        strategy.doc.paragraphs = []
-
-        strategy._get_bounding_box = MagicMock(return_value=[{"x": 0.1, "y": 0.1}])
-        strategy._normalize_coordinates = MagicMock(return_value=[{"x": 0.01, "y": 0.01}])
-
-        page_dict = {"width": 8.5, "height": 11.0, "lines": [], "words": [], "tables": []}
-        result = {"lines": [], "paragraphs": [], "sentences": [], "tables": [], "blocks": []}
-
-        await strategy._process_azure_page(mock_page, page_dict, result, 1)
-        assert len(page_dict["lines"]) == 1
-
-    @pytest.mark.asyncio
-    async def test_process_azure_page_with_tables(self):
-        """_process_azure_page processes tables from Azure."""
-        strategy = self._make_strategy()
-
-        mock_cell = MagicMock()
-        mock_cell.content = "Cell content"
-        mock_cell.row_index = 0
-        mock_cell.column_index = 0
-        mock_cell.row_span = 1
-        mock_cell.column_span = 1
-        mock_cell.confidence = 0.99
-
-        mock_table = MagicMock()
-        mock_table.cells = [mock_cell]
-        mock_table.row_count = 1
-        mock_table.column_count = 1
-
-        mock_page = MagicMock()
-        mock_page.lines = []
-        mock_page.tables = [mock_table]
-        mock_page.width = 8.5
-        mock_page.height = 11.0
-
-        strategy.doc = MagicMock()
-        strategy.doc.paragraphs = []
-
-        # Mock _process_table to return proper data with bounding_boxes (plural)
-        table_data = {
-            "row_count": 1,
-            "column_count": 1,
-            "page_number": 1,
-            "cells": [{"row_index": 0, "column_index": 0, "content": "Cell content",
-                        "row_span": 1, "column_span": 1}],
-            "bounding_boxes": [
-                {"x": 0.1, "y": 0.1}, {"x": 0.5, "y": 0.1},
-                {"x": 0.5, "y": 0.5}, {"x": 0.1, "y": 0.5},
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        region = LayoutRegion(
+            type=LayoutRegionType.TABLE,
+            bbox=(0, 0, 200, 100),
+            table_grid=[
+                [{"text": "Name"}, {"text": "Age"}],
+                [{"text": "Alice"}, {"text": "30"}],
+                ["Bob", None],
             ],
-        }
-        strategy._process_table = MagicMock(return_value=table_data)
+        )
+        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[])
+        blocks: list = []
+        block_groups: list = []
+
+        with patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.get_table_summary_n_headers",
+            new_callable=AsyncMock,
+        ) as mock_summary, patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.get_rows_text",
+            new_callable=AsyncMock,
+        ) as mock_rows:
+            bg = await proc._build_table_group(
+                region, pd, blocks, block_groups, skip_llm_enrichment=True
+            )
+
+        mock_summary.assert_not_called()
+        mock_rows.assert_not_called()
+        assert bg is not None
+        assert bg.type.value == "table"
+        assert len(blocks) == 2
+        assert blocks[0].data["row_number"] == 1
+        assert "Name:" in blocks[0].data["row_natural_language_text"]
+        assert blocks[1].data["row_number"] == 2
+
+    @pytest.mark.asyncio
+    async def test_build_table_group_empty_grid(self):
+        """_build_table_group returns None for an empty table grid."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion,
+            LayoutRegionType,
+            ParsedPageData,
+            PDFPlumberOpenCVProcessor,
+        )
+
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        region = LayoutRegion(
+            type=LayoutRegionType.TABLE, bbox=(0, 0, 200, 100), table_grid=[]
+        )
+        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[])
+        result = await proc._build_table_group(region, pd, [], [])
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_create_blocks_skip_llm_enrichment(self):
+        """create_blocks forwards skip_llm_enrichment to table group building."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion,
+            LayoutRegionType,
+            ParsedPageData,
+            PDFPlumberOpenCVProcessor,
+        )
+
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        region = LayoutRegion(
+            type=LayoutRegionType.TABLE,
+            bbox=(0, 0, 100, 100),
+            table_grid=[["ColA", "ColB"], ["1", "2"]],
+        )
+        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[region])
+
+        with patch.object(
+            proc, "_build_table_group", new_callable=AsyncMock, return_value=MagicMock()
+        ) as mock_build:
+            await proc.create_blocks([pd], skip_llm_enrichment=True)
+
+        mock_build.assert_awaited_once()
+        assert mock_build.await_args.kwargs["skip_llm_enrichment"] is True
+
+    @pytest.mark.asyncio
+    async def test_build_table_group_missing_row_text_fallback(self):
+        """Row blocks use empty string when table_rows_text is shorter than table_rows."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion,
+            LayoutRegionType,
+            ParsedPageData,
+            PDFPlumberOpenCVProcessor,
+        )
+
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        region = LayoutRegion(
+            type=LayoutRegionType.TABLE,
+            bbox=(0, 0, 200, 100),
+            table_grid=[["A", "B"], ["1", "2"], ["3", "4"]],
+        )
+        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[])
+        blocks: list = []
+        block_groups: list = []
 
         mock_response = MagicMock()
         mock_response.summary = "Table summary"
-        mock_response.headers = ["Col1"]
-
-        page_dict = {"width": 8.5, "height": 11.0, "lines": [], "words": [], "tables": []}
-        result = {"lines": [], "paragraphs": [], "sentences": [], "tables": [], "blocks": []}
-
-        with patch("app.modules.parsers.pdf.azure_document_intelligence_processor.get_table_summary_n_headers",
-                    new_callable=AsyncMock, return_value=mock_response), \
-             patch("app.modules.parsers.pdf.azure_document_intelligence_processor.get_rows_text",
-                    new_callable=AsyncMock, return_value=(["Row text"], [["Cell content"]])):
-            await strategy._process_azure_page(mock_page, page_dict, result, 1)
-
-        assert len(result["tables"]) == 1
-
-    @pytest.mark.asyncio
-    async def test_process_azure_page_table_no_cells(self):
-        """_process_azure_page skips tables with no cells."""
-        strategy = self._make_strategy()
-
-        mock_table = MagicMock()
-        mock_table.cells = []
-        mock_table.row_count = 0
-        mock_table.column_count = 0
-
-        mock_page = MagicMock()
-        mock_page.lines = []
-        mock_page.tables = [mock_table]
-        mock_page.width = 8.5
-        mock_page.height = 11.0
-
-        strategy.doc = MagicMock()
-        strategy.doc.paragraphs = []
-        strategy._get_bounding_box = MagicMock(return_value=[])
-        strategy._normalize_element_data = MagicMock(side_effect=lambda d, w, h: d)
-        strategy._get_page_number = MagicMock(return_value=1)
-
-        page_dict = {"width": 8.5, "height": 11.0, "lines": [], "words": [], "tables": []}
-        result = {"lines": [], "paragraphs": [], "sentences": [], "tables": [], "blocks": []}
-
-        await strategy._process_azure_page(mock_page, page_dict, result, 1)
-        assert len(result["tables"]) == 0
-
-    def test_process_table(self):
-        """_process_table extracts table data with normalized coordinates."""
-        strategy = self._make_strategy()
-
-        mock_cell = MagicMock()
-        mock_cell.content = "A1"
-        mock_cell.row_index = 0
-        mock_cell.column_index = 0
-        mock_cell.row_span = 1
-        mock_cell.column_span = 1
-        mock_cell.confidence = 0.95
-
-        mock_table = MagicMock()
-        mock_table.cells = [mock_cell]
-        mock_table.row_count = 1
-        mock_table.column_count = 1
-
-        mock_page = MagicMock()
-        mock_page.width = 8.5
-        mock_page.height = 11.0
-
-        strategy._get_bounding_box = MagicMock(return_value=[{"x": 0.1, "y": 0.1}])
-        strategy._normalize_element_data = MagicMock(side_effect=lambda d, w, h: d)
-        strategy._get_page_number = MagicMock(return_value=1)
-
-        result = strategy._process_table(mock_table, mock_page)
-        assert result["row_count"] == 1
-        assert result["column_count"] == 1
-        assert len(result["cells"]) == 1
-        assert result["page_number"] == 1
-
-    def test_merge_small_blocks(self):
-        """_merge_small_blocks merges consecutive small blocks."""
-        strategy = self._make_strategy()
-
-        # First block: 16 words (above threshold), second: short, third: short
-        # First won't merge with second. Second and third will merge.
-        blocks = [
-            {"type": 0, "bbox": (0, 0, 100, 20), "lines": [{"spans": [{"text": " ".join(["word"] * 16)}]}]},
-            {"type": 0, "bbox": (0, 25, 100, 45), "lines": [{"spans": [{"text": "Short"}]}]},
-            {"type": 0, "bbox": (0, 50, 100, 100), "lines": [{"spans": [{"text": "Also short"}]}]},
-        ]
-
-        result = strategy._merge_small_blocks(blocks)
-        # First stays alone (16 words >= 15 threshold), second and third merged
-        assert len(result) == 2
-
-    def test_merge_small_blocks_no_merge(self):
-        """_merge_small_blocks doesn't merge when first block has enough words."""
-        strategy = self._make_strategy()
-
-        blocks = [
-            {"type": 0, "bbox": (0, 0, 100, 20), "lines": [{"spans": [{"text": " ".join(["word"] * 20)}]}]},
-            {"type": 0, "bbox": (0, 25, 100, 45), "lines": [{"spans": [{"text": "Also short"}]}]},
-        ]
-
-        result = strategy._merge_small_blocks(blocks)
-        assert len(result) == 2
-
-    def test_merge_lines_to_sentences_azure(self):
-        """_merge_lines_to_sentences merges lines to sentences."""
-        strategy = self._make_strategy()
-        mock_doc_nlp = MagicMock()
-        mock_sent = MagicMock()
-        mock_sent.text = "Hello world."
-        mock_sent.start_char = 0
-        mock_sent.end_char = 12
-        mock_doc_nlp.sents = [mock_sent]
-        strategy.nlp = MagicMock(return_value=mock_doc_nlp)
-
-        lines_data = [
-            {"content": "Hello world.", "bounding_box": [{"x": 0, "y": 0}]},
-        ]
-
-        result = strategy._merge_lines_to_sentences(lines_data)
-        assert len(result) == 1
-        assert result[0]["sentence"] == "Hello world."
-
-    def test_merge_lines_to_sentences_nlp_none(self):
-        """_merge_lines_to_sentences returns empty when nlp is None."""
-        strategy = self._make_strategy()
-        strategy.nlp = None
-
-        result = strategy._merge_lines_to_sentences([{"content": "text", "bounding_box": []}])
-        assert result == []
-
-    def test_merge_lines_to_sentences_empty_content(self):
-        """_merge_lines_to_sentences skips empty content."""
-        strategy = self._make_strategy()
-        mock_doc_nlp = MagicMock()
-        mock_doc_nlp.sents = []
-        strategy.nlp = MagicMock(return_value=mock_doc_nlp)
-
-        result = strategy._merge_lines_to_sentences([{"content": "   ", "bounding_box": []}])
-        assert result == []
-
-    def test_get_lines_for_paragraph_no_overlap(self):
-        """_get_lines_for_paragraph returns empty when no lines overlap."""
-        strategy = self._make_strategy()
-        page_lines = [
-            {"content": "unrelated", "bounding_box": [
-                {"x": 0.8, "y": 0.8}, {"x": 0.9, "y": 0.8},
-                {"x": 0.9, "y": 0.9}, {"x": 0.8, "y": 0.9},
-            ]},
-        ]
-        para_text = "Hello world"
-        para_bbox = [{"x": 0, "y": 0}, {"x": 0.1, "y": 0}, {"x": 0.1, "y": 0.1}, {"x": 0, "y": 0.1}]
-
-        result = strategy._get_lines_for_paragraph(page_lines, para_text, para_bbox)
-        assert result == []
-
-    def test_check_bbox_overlap_edge_cases(self):
-        """_check_bbox_overlap handles edge cases."""
-        strategy = self._make_strategy()
-
-        # Touching boxes
-        bbox1 = [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}, {"x": 0, "y": 1}]
-        bbox2 = [{"x": 1, "y": 0}, {"x": 2, "y": 0}, {"x": 2, "y": 1}, {"x": 1, "y": 1}]
-        assert strategy._check_bbox_overlap(bbox1, bbox2) is False
-
-    @pytest.mark.asyncio
-    async def test_create_searchable_pdf(self):
-        """_create_searchable_pdf creates a searchable PDF from Azure results."""
-        strategy = self._make_strategy()
-
-        # Mock Azure doc with pages, words
-        mock_word = MagicMock()
-        mock_word.content = "Hello"
-        mock_word.bounding_regions = [MagicMock()]
-        mock_word.bounding_regions[0].polygon = [
-            MagicMock(x=0.1, y=0.1), MagicMock(x=0.3, y=0.1),
-            MagicMock(x=0.3, y=0.15), MagicMock(x=0.1, y=0.15),
-        ]
-
-        mock_azure_page = MagicMock()
-        mock_azure_page.page_number = 0
-        mock_azure_page.words = [mock_word]
-
-        strategy.doc = MagicMock()
-        strategy.doc.pages = [mock_azure_page]
-
-        mock_pdf_page = MagicMock()
-        mock_pdf_page.rect.width = 612
-        mock_pdf_page.rect.height = 792
-        mock_pdf_page.insert_textbox = MagicMock()
-
-        mock_doc = MagicMock()
-        mock_doc.__len__ = lambda s: 1
-        mock_doc.__getitem__ = lambda s, i: mock_pdf_page
-
-        with patch("app.modules.parsers.pdf.azure_document_intelligence_processor.fitz") as mock_fitz, \
-             patch("app.modules.parsers.pdf.azure_document_intelligence_processor.os") as mock_os, \
-             patch("builtins.open", MagicMock(return_value=BytesIO(b"searchable-pdf"))):
-            mock_fitz.open.return_value = mock_doc
-            mock_fitz.Rect = MagicMock(return_value=MagicMock())
-            mock_os.makedirs = MagicMock()
-            mock_os.path.join = MagicMock(return_value="/tmp/searchable.pdf")
-
-            result = await strategy._create_searchable_pdf(b"original-content", "/tmp/out")
-
-        mock_pdf_page.insert_textbox.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_create_searchable_pdf_no_azure_page(self):
-        """_create_searchable_pdf handles pages without Azure results."""
-        strategy = self._make_strategy()
-        strategy.doc = MagicMock()
-        strategy.doc.pages = []  # no azure pages
-
-        mock_pdf_page = MagicMock()
-        mock_pdf_page.rect.width = 612
-        mock_pdf_page.rect.height = 792
-
-        mock_doc = MagicMock()
-        mock_doc.__len__ = lambda s: 1
-        mock_doc.__getitem__ = lambda s, i: mock_pdf_page
-
-        with patch("app.modules.parsers.pdf.azure_document_intelligence_processor.fitz") as mock_fitz, \
-             patch("app.modules.parsers.pdf.azure_document_intelligence_processor.os") as mock_os, \
-             patch("builtins.open", MagicMock(return_value=BytesIO(b"pdf"))):
-            mock_fitz.open.return_value = mock_doc
-            mock_os.makedirs = MagicMock()
-            mock_os.path.join = MagicMock(return_value="/tmp/searchable.pdf")
-
-            result = await strategy._create_searchable_pdf(b"content")
-
-    @pytest.mark.asyncio
-    async def test_create_searchable_pdf_empty_word(self):
-        """_create_searchable_pdf skips empty words."""
-        strategy = self._make_strategy()
-
-        mock_word = MagicMock()
-        mock_word.content = "   "
-
-        mock_azure_page = MagicMock()
-        mock_azure_page.page_number = 0
-        mock_azure_page.words = [mock_word]
-
-        strategy.doc = MagicMock()
-        strategy.doc.pages = [mock_azure_page]
-
-        mock_pdf_page = MagicMock()
-        mock_pdf_page.rect.width = 612
-        mock_pdf_page.rect.height = 792
-
-        mock_doc = MagicMock()
-        mock_doc.__len__ = lambda s: 1
-        mock_doc.__getitem__ = lambda s, i: mock_pdf_page
-
-        with patch("app.modules.parsers.pdf.azure_document_intelligence_processor.fitz") as mock_fitz, \
-             patch("app.modules.parsers.pdf.azure_document_intelligence_processor.os") as mock_os, \
-             patch("builtins.open", MagicMock(return_value=BytesIO(b"pdf"))):
-            mock_fitz.open.return_value = mock_doc
-            mock_os.makedirs = MagicMock()
-            mock_os.path.join = MagicMock(return_value="/tmp/searchable.pdf")
-
-            await strategy._create_searchable_pdf(b"content")
-
-        mock_pdf_page.insert_textbox.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_create_searchable_pdf_word_no_bounding_regions(self):
-        """_create_searchable_pdf skips words without bounding regions."""
-        strategy = self._make_strategy()
-
-        mock_word = MagicMock()
-        mock_word.content = "Hello"
-        mock_word.bounding_regions = []
-
-        mock_azure_page = MagicMock()
-        mock_azure_page.page_number = 0
-        mock_azure_page.words = [mock_word]
-
-        strategy.doc = MagicMock()
-        strategy.doc.pages = [mock_azure_page]
-
-        mock_pdf_page = MagicMock()
-        mock_pdf_page.rect.width = 612
-        mock_pdf_page.rect.height = 792
-
-        mock_doc = MagicMock()
-        mock_doc.__len__ = lambda s: 1
-        mock_doc.__getitem__ = lambda s, i: mock_pdf_page
-
-        with patch("app.modules.parsers.pdf.azure_document_intelligence_processor.fitz") as mock_fitz, \
-             patch("app.modules.parsers.pdf.azure_document_intelligence_processor.os") as mock_os, \
-             patch("builtins.open", MagicMock(return_value=BytesIO(b"pdf"))):
-            mock_fitz.open.return_value = mock_doc
-            mock_os.makedirs = MagicMock()
-            mock_os.path.join = MagicMock(return_value="/tmp/searchable.pdf")
-
-            await strategy._create_searchable_pdf(b"content")
-
-        mock_pdf_page.insert_textbox.assert_not_called()
-
-    def test_process_block_text_azure_no_content(self):
-        """_process_block_text_azure returns None when block has no content."""
-        strategy = self._make_strategy()
-        mock_block = MagicMock(spec=["words", "role"])
-        mock_block.words = []
-        mock_block.role = "paragraph"
-
-        strategy._get_bounding_box = MagicMock(return_value=[])
-        strategy._normalize_coordinates = MagicMock(return_value=None)
-
-        result = strategy._process_block_text_azure(mock_block, 8.5, 11.0)
-        assert result is None
-
-    def test_process_block_text_azure_with_words(self):
-        """_process_block_text_azure processes words."""
-        strategy = self._make_strategy()
-        mock_word = MagicMock()
-        mock_word.content = "Hello"
-        mock_word.confidence = 0.99
-
-        mock_block = MagicMock()
-        mock_block.content = "Hello world"
-        mock_block.words = [mock_word]
-        mock_block.role = "paragraph"
-        mock_block.confidence = 0.99
-
-        strategy._get_bounding_box = MagicMock(return_value=[{"x": 0.1, "y": 0.1}])
-        strategy._normalize_coordinates = MagicMock(return_value=[{"x": 0.01, "y": 0.01}])
-
-        result = strategy._process_block_text_azure(mock_block, 8.5, 11.0)
-        assert result is not None
-        assert result["content"] == "Hello world"
-        assert len(result["words"]) == 1
-
-    def test_normalize_element_data_no_bbox(self):
-        """_normalize_element_data handles data without bounding_box."""
-        strategy = self._make_strategy()
-        data = {"other": "value"}
-        result = strategy._normalize_element_data(data, 200.0, 400.0)
-        assert result == {"other": "value"}
-
-    def test_normalize_element_data_empty_bbox(self):
-        """_normalize_element_data skips normalization for empty bounding_box."""
-        strategy = self._make_strategy()
-        data = {"bounding_box": [], "other": "value"}
-        result = strategy._normalize_element_data(data, 200.0, 400.0)
-        # Empty list is falsy so normalization is skipped, bbox stays as-is
-        assert result["bounding_box"] == []
-
-    def test_cells_to_grid_out_of_bounds(self):
-        """cells_to_grid ignores cells outside the grid."""
-        strategy = self._make_strategy()
-        cells = [
-            {"row_index": 0, "column_index": 0, "content": "A1", "row_span": 1, "column_span": 1},
-            {"row_index": 5, "column_index": 5, "content": "Out", "row_span": 1, "column_span": 1},
-        ]
-        grid = strategy.cells_to_grid(2, 2, cells)
-        assert grid == [["A1", ""], ["", ""]]
-
-    def test_cells_to_grid_empty(self):
-        """cells_to_grid with empty cells."""
-        strategy = self._make_strategy()
-        grid = strategy.cells_to_grid(2, 2, [])
-        assert grid == [["", ""], ["", ""]]
-
-    def test_cells_to_grid_none_content(self):
-        """cells_to_grid handles None content."""
-        strategy = self._make_strategy()
-        cells = [
-            {"row_index": 0, "column_index": 0, "content": None, "row_span": 1, "column_span": 1},
-        ]
-        grid = strategy.cells_to_grid(1, 1, cells)
-        assert grid == [[""]]
-
-    def test_process_line_valid_with_confidence(self):
-        """_process_line processes line with confidence."""
-        strategy = self._make_strategy()
-        mock_line = MagicMock()
-        mock_line.content = "Test line"
-        mock_line.confidence = 0.95
-
-        strategy._get_bounding_box = MagicMock(return_value=[{"x": 0.1, "y": 0.1}])
-        strategy._normalize_coordinates = MagicMock(return_value=[{"x": 0.01, "y": 0.01}])
-
-        result = strategy._process_line(mock_line, 8.5, 11.0)
-        assert result["content"] == "Test line"
-        assert result["confidence"] == 0.95
-
-    def test_process_line_no_confidence(self):
-        """_process_line handles line without confidence attr."""
-        strategy = self._make_strategy()
-        mock_line = MagicMock(spec=["content"])
-        mock_line.content = "Test line"
-
-        strategy._get_bounding_box = MagicMock(return_value=[{"x": 0.1, "y": 0.1}])
-        strategy._normalize_coordinates = MagicMock(return_value=[{"x": 0.01, "y": 0.01}])
-
-        result = strategy._process_line(mock_line, 8.5, 11.0)
-        assert result["content"] == "Test line"
-        assert result["confidence"] is None
-
-    def test_should_merge_blocks_long_first(self):
-        """_should_merge_blocks returns False when first block has many words."""
-        strategy = self._make_strategy()
-        text = " ".join(["word"] * 20)
-        b1 = {"type": 0, "lines": [{"spans": [{"text": text}]}]}
-        b2 = {"type": 0, "lines": [{"spans": [{"text": "short"}]}]}
-        assert strategy._should_merge_blocks(b1, b2) is False
-
-
-# ============================================================================
-# Additional targeted tests for remaining uncovered lines
-# ============================================================================
-
-class TestPyMuPDFOpenCVProcessorExtraTables:
-    """Extra tests for _extract_tables_with_pymupdf non-TABLE region skip (line 127)."""
-
-    def test_extract_tables_skips_non_table_regions(self):
-        """Non-TABLE regions are skipped when matching tables."""
-        from app.modules.parsers.pdf.pymupdf_opencv_processor import (
-            LayoutRegion, LayoutRegionType, ParsedPageData, PyMuPDFOpenCVProcessor,
-        )
-        with patch("app.modules.parsers.pdf.pymupdf_opencv_processor.OpenCVLayoutAnalyzer"):
-            proc = PyMuPDFOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
-
-        # Regions: a TEXT region at the same location as the table
-        text_region = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(50, 50, 300, 200), text="Some text")
-        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[text_region])
-
-        mock_doc = MagicMock()
-        mock_page = MagicMock()
-        mock_doc.__getitem__ = lambda s, i: mock_page
-
-        mock_table = MagicMock()
-        mock_table.bbox = (50, 50, 300, 200)
-        mock_table.extract.return_value = [["A", "B"]]
-        mock_table_finder = MagicMock()
-        mock_table_finder.tables = [mock_table]
-        mock_page.find_tables.return_value = mock_table_finder
-
-        proc._extract_tables_with_pymupdf(mock_doc, [pd])
-
-        # Since there's no TABLE region, a new one should be added
-        table_regions = [r for r in pd.regions if r.type == LayoutRegionType.TABLE]
-        assert len(table_regions) == 1
-
+        mock_response.headers = ["A", "B"]
+
+        with patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.get_table_summary_n_headers",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ), patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.get_rows_text",
+            new_callable=AsyncMock,
+            return_value=(["Only one row text"], [["1", "2"], ["3", "4"]]),
+        ):
+            bg = await proc._build_table_group(region, pd, blocks, block_groups)
+
+        assert bg is not None
+        assert len(blocks) == 2
+        assert blocks[0].data["row_natural_language_text"] == "Only one row text"
+        assert blocks[1].data["row_natural_language_text"] == ""

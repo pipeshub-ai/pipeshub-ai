@@ -6,6 +6,8 @@ indexing and query services can share a single in-process model load.
 
 from __future__ import annotations
 
+import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
+
 import asyncio
 import base64
 import os
@@ -35,7 +37,7 @@ DEFAULT_NORMALIZE = os.getenv("EMBEDDING_SERVER_NORMALIZE", "true").lower() in (
     "true",
     "yes",
 )
-MAX_CONCURRENT_EMBEDDINGS = int(os.getenv("EMBEDDING_SERVER_MAX_CONCURRENCY", "4"))
+MAX_CONCURRENT_EMBEDDINGS = int(os.getenv("EMBEDDING_SERVER_MAX_CONCURRENCY", "2"))
 
 # Bound any Hub HTTP call so a slow/blocked network can never hang model load
 # indefinitely. huggingface_hub reads this on import, so set it before the
@@ -265,12 +267,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Shutting down embedding server")
 
 
+from app.api.middlewares.request_context import RequestContextMiddleware
+from app.utils.request_context import set_service_suffix
+
+set_service_suffix("-es")
+
 app = FastAPI(
     title="Embedding Server API",
     description="OpenAI-compatible API for local dense embedding models",
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Trace context — outermost.
+app.add_middleware(RequestContextMiddleware)
 
 
 @app.get("/health")

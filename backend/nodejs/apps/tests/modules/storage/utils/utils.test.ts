@@ -304,8 +304,8 @@ describe('storage/utils/utils', () => {
       expect(() => validateFileAndDocumentName('pdf', 'my/doc', 'file.pdf')).to.throw(BadRequestError)
     })
 
-    it('should throw when document name contains a file extension', () => {
-      expect(() => validateFileAndDocumentName('pdf', 'myDoc.pdf', 'file.pdf')).to.throw(BadRequestError)
+    it('should not throw when document name contains an extension-like segment (multi-dot filenames allowed)', () => {
+      expect(() => validateFileAndDocumentName('pdf', 'myDoc.pdf', 'file.pdf')).to.not.throw()
     })
 
     it('should not throw for undefined document name', () => {

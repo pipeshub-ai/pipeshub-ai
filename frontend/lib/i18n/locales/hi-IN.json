@@ -32,6 +32,8 @@
   "uploadProgress": {
     "uploadFailedDefault": "अपलोड असफल",
     "uploadIncomplete": "अपलोड अधूरा",
+    "serverError": "सर्वर पर अपलोड असफल",
+    "skippedFolderFailed": "छोड़ा गया: फ़ोल्डर निर्माण असफल",
     "genericFailureHint": "अपलोड असफल। फिर से कोशिश करें या समर्थित फ़ाइल प्रकार उपयोग करें।",
     "ariaFailed": "{{name}}, अपलोड असफल",
     "ariaFailedWithDetail": "{{name}}, अपलोड असफल। {{detail}}",
@@ -39,6 +41,12 @@
     "sizeWithFailed": "{{size}} · असफल",
     "headerCompletedAndFailed": "{{completed}} पूर्ण · {{failed}} असफल",
     "headerFailuresOnly": "{{count}} असफल",
+    "failedSectionTitle": "असफल ({{count}})",
+    "tab_all": "सभी",
+    "tab_completed": "पूर्ण",
+    "tab_failed": "असफल",
+    "emptyTab": "यहाँ अभी कुछ नहीं है",
+    "uploadedAndFailedSize": "{{uploaded}} अपलोड · {{failed}} असफल",
     "headerAllComplete": "{{completed}}/{{total}} अपलोड पूर्ण",
     "sessionFilesAndSize": "{{count}} फ़ाइलें · {{size}}",
     "totalSizeLabel": "कुल: {{size}}",
@@ -47,6 +55,34 @@
       "uploading": "अपलोड हो रहा है",
       "completed": "पूर्ण",
       "failed": "असफल"
+    },
+    "rejectionToast": {
+      "title_one": "{{count}} फ़ाइल अपलोड नहीं हो सकती",
+      "title_other": "{{count}} फ़ाइलें अपलोड नहीं हो सकतीं",
+      "sizeLimitTitle_one": "{{count}} फ़ाइल आकार सीमा से अधिक है",
+      "sizeLimitTitle_other": "{{count}} फ़ाइलें आकार सीमा से अधिक हैं",
+      "sizeLimitDescription": "सीमा प्रति फ़ाइल {{maxMb}} MB है। उच्च सीमा के लिए अपने व्यवस्थापक से संपर्क करें।",
+      "sizeLimitDescriptionAdmin": "सीमा प्रति फ़ाइल {{maxMb}} MB है। आप Workspace Labs में इसे बढ़ा सकते हैं।",
+      "unsupportedDescription": "असमर्थित फ़ाइल प्रकार।",
+      "duplicateDescription": "इस नाम की फ़ाइल यहाँ पहले से मौजूद है।",
+      "trackerHint": "विवरण नीचे अपलोड पैनल में हैं।",
+      "openLabs": "Labs खोलें"
+    },
+    "rejectionSummary": {
+      "tooLarge_one": "{{count}} {{maxMb}} MB से अधिक",
+      "tooLarge_other": "{{count}} {{maxMb}} MB से अधिक",
+      "unsupported_one": "{{count}} असमर्थित प्रकार",
+      "unsupported_other": "{{count}} असमर्थित प्रकार",
+      "duplicate_one": "{{count}} डुप्लिकेट नाम",
+      "duplicate_other": "{{count}} डुप्लिकेट नाम",
+      "other_one": "{{count}} अन्य त्रुटि",
+      "other_other": "{{count}} अन्य त्रुटियाँ"
+    },
+    "reasons": {
+      "tooLarge": "{{maxMb}} MB आकार सीमा से अधिक",
+      "unsupportedType": "असमर्थित फ़ाइल प्रकार",
+      "duplicateName": "इस नाम की फ़ाइल पहले से मौजूद है",
+      "rejected": "फ़ाइल अस्वीकृत"
     }
   },
   "onboarding": {
@@ -159,7 +195,30 @@
     "moreConnectors": "अधिक कनेक्टर्स",
     "all": "सभी",
     "agents": "एजेंट",
-    "searchChats": "चैट खोजें"
+    "searchChats": "चैट खोजें",
+    "inbox": "इनबॉक्स",
+    "notifications": "सूचनाएँ"
+  },
+  "notifications": {
+    "title": "सूचनाएँ",
+    "loading": "लोड हो रहा है…",
+    "empty": "अभी तक कोई सूचना नहीं",
+    "emptyUnread": "कोई अपठित सूचना नहीं",
+    "emptyArchived": "कोई संग्रहित सूचना नहीं",
+    "markRead": "पढ़ा हुआ मार्क करें",
+    "markUnread": "अपठित मार्क करें",
+    "markAllRead": "सभी को पढ़ा हुआ मार्क करें",
+    "archive": "संग्रहित करें",
+    "unarchive": "संग्रह से निकालें",
+    "dismiss": "खारिज करें",
+    "filter": "सूचनाएँ फ़िल्टर करें",
+    "filterAll": "सभी",
+    "filterOnlyUnread": "अपठित",
+    "filterArchived": "संग्रहित",
+    "filterTooltip": "फ़िल्टर: {{filter}}",
+    "loadFailed": "सूचनाएँ लोड करने में विफल",
+    "updateFailed": "सूचना अपडेट नहीं हो सकी",
+    "removeFailed": "सूचना हटाने में विफल"
   },
   "action": {
     "find": "खोजें",
@@ -451,6 +510,9 @@
     "micTooltip": "वॉइस इनपुट",
     "uploadYourFile": "अपनी फ़ाइल अपलोड करें",
     "supportsFileTypes": "सपोर्टेड: {{types}}.",
+    "uploadFilesLimit": "प्रति संदेश {{count}} फ़ाइलें तक",
+    "uploadFilesRemaining": "{{total}} में से {{remaining}} फ़ाइलें शेष",
+    "dropFilesHere": "फ़ाइलें यहाँ छोड़ें",
     "loadingConversation": "कन्वर्सेशन लोड हो रहा है...",
     "recents": "हाल के",
     "sharedChats": "साझा किए गए चैट",
@@ -1111,6 +1173,7 @@
       "toastDefaultError": "डिफ़ॉल्ट मॉडल सेट नहीं हो सका",
       "toastDeleted": "{{name}} हटाया गया",
       "toastDeleteError": "मॉडल हटाया नहीं जा सका",
+      "toastSentenceTransformerDownloading": "मॉडल बैकग्राउंड में डाउनलोड हो रहा है, उपलब्ध होने में कुछ मिनट लग सकते हैं",
       "configAddModel": "मॉडल जोड़ें",
       "configUpdateModel": "मॉडल अपडेट करें",
       "configFillRequiredTooltip": "सभी आवश्यक फ़ील्ड भरें",
@@ -1767,10 +1830,10 @@
         },
         "sync": {
           "kind": "Sync",
-          "syncing": "सिंक हो रहा है",
-          "syncingTooltip": "इस इंस्टेंस के लिए सिंक जॉब चल रही है।",
-          "fullSyncing": "पूर्ण सिंक",
-          "fullSyncingTooltip": "इस इंस्टेंस के लिए पूर्ण सिंक चल रही है।",
+          "syncing": "सिंक प्रगति पर है",
+          "syncingTooltip": "यह कनेक्टर नई और अपडेट की गई सामग्री सिंक कर रहा है।",
+          "fullSyncing": "पूर्ण सिंक प्रगति पर है",
+          "fullSyncingTooltip": "यह कनेक्टर स्रोत से पूर्ण पुनः-सिंक चला रहा है।",
           "removing": "हटाया जा रहा है",
           "removingTooltip": "यह इंस्टेंस हटाई जा रही है।"
         }
@@ -2111,7 +2174,9 @@
     "page": "पृष्ठ {{number}}",
     "paragraph": "अनुच्छेद {{number}}",
     "showMore": "अधिक दिखाएं",
-    "showLess": "कम दिखाएं"
+    "showLess": "कम दिखाएं",
+    "lockZoom": "ज़ूम स्तर लॉक करें",
+    "unlockZoom": "ज़ूम स्तर अनलॉक करें"
   },
   "agentBuilder": {
     "goBack": "वापस जाएं",

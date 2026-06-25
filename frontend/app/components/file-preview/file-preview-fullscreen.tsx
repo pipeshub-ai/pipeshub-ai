@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
@@ -10,7 +11,7 @@ import { FilePreviewRenderer } from './renderers/file-preview-renderer';
 import { CitationsPanel } from './citations-panel';
 import { useCitationSync } from './use-citation-sync';
 import { usePdfZoom } from './use-pdf-zoom';
-import { downloadPreviewFile, shouldShowPagination } from './utils';
+import { downloadPreviewFile, shouldShowPagination, resolvePreviewIconExtension } from './utils';
 import {
   PDF_ZOOM_MAX,
   PDF_ZOOM_MIN,
@@ -33,6 +34,7 @@ export function FilePreviewFullscreen({
   initialCitationId,
   showDownload,
 }: FilePreviewProps) {
+  const { t } = useTranslation();
   const hasCitations = citations && citations.length > 0;
   const hasError = !isLoading && !!error;
   const canDownload =
@@ -40,11 +42,8 @@ export function FilePreviewFullscreen({
   const { citationsWidthPx, beginCitationsSplitResize } = useCitationsColumnResize();
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
-  const { pdfScale, setPdfScale, handlePdfZoomIn, handlePdfZoomOut } = usePdfZoom(
-    file.id,
-    file.url,
-    initialPage,
-  );
+  const { pdfScale, setPdfScale, handlePdfZoomIn, handlePdfZoomOut, isZoomLocked, toggleZoomLock } =
+    usePdfZoom(file.id, file.url, initialPage);
 
   // Calculate pagination visibility
   const paginationVisibility = shouldShowPagination(
@@ -83,6 +82,7 @@ export function FilePreviewFullscreen({
   // Bidirectional citation ↔ page sync
   const {
     activeCitationId,
+    citationClickVersion,
     highlightBox: syncHighlightBox,
     highlightPage: syncHighlightPage,
     handleCitationClick,
@@ -139,6 +139,7 @@ export function FilePreviewFullscreen({
       >
         <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
           <FileIcon
+            extension={resolvePreviewIconExtension(_recordDetails, file.type)}
             filename={file.name}
             mimeType={file.type}
             size={16}
@@ -257,6 +258,7 @@ export function FilePreviewFullscreen({
                 highlightPage={hasCitations ? syncHighlightPage : undefined}
                 citations={hasCitations ? citations : undefined}
                 activeCitationId={hasCitations ? activeCitationId : undefined}
+                citationClickVersion={hasCitations ? citationClickVersion : undefined}
                 onHighlightClick={hasCitations ? handleHighlightClick : undefined}
               />
             </Box>
@@ -328,6 +330,27 @@ export function FilePreviewFullscreen({
                 aria-label="Zoom in"
               >
                 <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
+              </IconButton>
+
+              <IconButton
+                variant="ghost"
+                color="gray"
+                size="1"
+                onClick={toggleZoomLock}
+                style={{
+                  width: '24px',
+                  height: '24px',
+                  padding: 0,
+                }}
+                title={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
+                aria-label={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
+                aria-pressed={isZoomLocked}
+              >
+                <MaterialIcon
+                  name={isZoomLocked ? 'lock' : 'lock_open'}
+                  size={ICON_SIZES.SECONDARY}
+                  color={isZoomLocked ? 'var(--accent-9)' : undefined}
+                />
               </IconButton>
 
               <Box

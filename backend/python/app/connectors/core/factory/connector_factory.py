@@ -13,7 +13,6 @@ from app.connectors.core.registry.connector import (
     DocsConnector,
     FormsConnector,
     MeetConnector,
-    SlackConnector,
     SlidesConnector,
     ZendeskConnector,
 )
@@ -24,6 +23,9 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
 )
 from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     ConfluenceDataCenterConnector,
+)
+from app.connectors.sources.atlassian.confluence_datacenter_personal.connector import (
+    ConfluenceDataCenterPersonalConnector,
 )
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.connectors.sources.atlassian.jira_cloud_personal.connector import (
@@ -70,10 +72,13 @@ from app.connectors.sources.notion.connector import NotionConnector
 from app.connectors.sources.rss.connector import RSSConnector
 from app.connectors.sources.s3.connector import S3Connector
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
+from app.connectors.sources.slack.team.connector import SlackConnector
 from app.connectors.sources.web.connector import WebConnector
 from app.connectors.sources.zammad.connector import ZammadConnector
 from app.connectors.sources.zoom.connector import ZoomConnector
 from app.connectors.sources.salesforce.connector import SalesforceConnector
+from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
+from app.connectors.sources.slack.team.connector import SlackConnector
 
 from app.connectors.sources.gitlab.connector import GitLabConnector
 from app.connectors.sources.gitlab_personal.connector import GitLabPersonalConnector
@@ -93,6 +98,7 @@ class ConnectorFactory:
         "outlookpersonal": OutlookIndividualConnector,
         "confluence": ConfluenceConnector,
         "confluencedatacenter": ConfluenceDataCenterConnector,
+        "confluencedatacenterpersonal": ConfluenceDataCenterPersonalConnector,
         "jira": JiraConnector,
         "jiracloudpersonal": JiraCloudPersonalConnector,
         "jiradatacenter": JiraDataCenterConnector,
@@ -126,19 +132,20 @@ class ConnectorFactory:
         "gitlab": GitLabConnector,
         "gitlabpersonal": GitLabPersonalConnector,
         "mariadb": MariaDBConnector,
+        "slackworkspace": SlackConnector,
+        # "slack": SlackIndividualConnector,
     }
 
     # Beta connector definitions - single source of truth
     # Maps registry key to connector class
     _beta_connector_definitions: dict[str, type[BaseConnector]] = {
-        "slack": SlackConnector,
-        "calendar": CalendarConnector,
-        "meet": MeetConnector,
-        "forms": FormsConnector,
-        "slides": SlidesConnector,
-        "docs": DocsConnector,
-        "zendesk": ZendeskConnector,
-        "airtable": AirtableConnector,
+        'calendar': CalendarConnector,
+        'meet': MeetConnector,
+        'forms': FormsConnector,
+        'slides': SlidesConnector,
+        'docs': DocsConnector,
+        'zendesk': ZendeskConnector,
+        'airtable': AirtableConnector,
     }
 
     @classmethod
@@ -196,6 +203,7 @@ class ConnectorFactory:
             return None
 
         try:
+            notification_service = kwargs.pop("notification_service", None)
             connector = await connector_class.create_connector(
                 logger=logger,
                 data_store_provider=data_store_provider,
@@ -205,6 +213,8 @@ class ConnectorFactory:
                 created_by=created_by,
                 **kwargs,
             )
+            if connector is not None and notification_service is not None:
+                connector._notification_service = notification_service
             logger.info(f"Created {name} {connector_id} connector successfully")
             return connector
         except Exception as e:

@@ -19,6 +19,8 @@ class OAuthConfigKeys:
     SCOPES = "scopes"  # OAuth permission scopes (plural, different from connector scope)
     TOKEN_ACCESS_TYPE = "tokenAccessType"
     ADDITIONAL_PARAMS = "additionalParams"
+    SCOPE_PARAMETER_NAME = "scopeParameterName"
+    TOKEN_RESPONSE_PATH = "tokenResponsePath"
 
 
 class AuthFieldKeys:

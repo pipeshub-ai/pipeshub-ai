@@ -468,6 +468,14 @@ class TestTextBlocks:
         warnings = _validator().validate(container)
         assert "TEXT_FORMAT_MISSING" in _warning_codes(warnings)
 
+    def test_valid_code_format(self):
+        container = _container(blocks=[_text_block(0, fmt=DataFormat.CODE)])
+        assert _validator().validate(container) == []
+
+    def test_valid_html_format(self):
+        container = _container(blocks=[_text_block(0, fmt=DataFormat.HTML)])
+        assert _validator().validate(container) == []
+
     def test_text_format_unexpected_warns(self):
         container = _container(blocks=[_text_block(0, fmt=DataFormat.JSON)])
         warnings = _validator().validate(container)

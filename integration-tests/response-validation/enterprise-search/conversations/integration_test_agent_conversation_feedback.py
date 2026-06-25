@@ -19,18 +19,18 @@ import pytest
 import requests
 
 _ROOT = Path(__file__).resolve().parents[3]
-_HELPER = _ROOT / "helper"
 _RV_HELPER = _ROOT / "response-validation" / "helper"
-for _p in (_ROOT, _HELPER, _RV_HELPER):
+for _p in (_ROOT, _RV_HELPER):
     s = str(_p)
     if s not in sys.path:
         sys.path.insert(0, s)
 
+from helper.clients.conversations_client import AgentConversationsClient
 from openapi_schema_validator import (
     assert_request_body_matches_openapi_operation,
     assert_response_matches_openapi_operation,
+    assert_response_matches_openapi_ref,
 )
-from pipeshub_client import PipeshubClient
 
 _SSE_MAX_EVENTS = 10_000
 _SSEEnvelope = dict[str, str]
@@ -142,17 +142,16 @@ class TestAgentConversationMessageFeedbackOpenApiRequestContract:
             )
 
 
-@pytest.mark.integration
-class TestAgentConversationMessageFeedback:
+class AgentConversationsTestBase:
+    """Shared agent_conversations_client fixture and stream helpers."""
+
     @pytest.fixture(autouse=True)
     def _setup(
         self,
-        pipeshub_client: PipeshubClient,
+        agent_conversations_client: AgentConversationsClient,
         agent_session: dict[str, Any],
     ) -> None:
-        self.client = pipeshub_client
-        self.base_url = pipeshub_client.base_url
-        self.headers = pipeshub_client.auth_headers
+        self.conversations = agent_conversations_client
         self.timeout = int(os.getenv("PIPESHUB_TEST_TIMEOUT", "60"))
         stream_override = os.getenv("PIPESHUB_TEST_STREAM_TIMEOUT", "").strip()
         self.stream_timeout = (
@@ -163,42 +162,20 @@ class TestAgentConversationMessageFeedback:
         self.primary_agent = agent_session["primary_agent"]
 
     @pytest.fixture
-    def created_conversations(self):
+    def created_conversations(self) -> Iterator[list[tuple[str, str]]]:
         created: list[tuple[str, str]] = []
         yield created
         for agent_key, conversation_id in reversed(created):
             try:
-                resp = requests.delete(
-                    self._conversation_url(agent_key, conversation_id),
-                    headers=self.headers,
+                resp = self.conversations.delete_conversation(
+                    agent_key,
+                    conversation_id,
                     timeout=self.timeout,
                 )
-                assert resp.status_code < 300, (
-                    f"Conversation delete failed for {conversation_id}: "
-                    f"HTTP {resp.status_code} {resp.text[:300]}"
-                )
+                if resp.status_code >= 300:
+                    pass
             except Exception:
                 pass
-
-    def _stream_url(self, agent_key: str) -> str:
-        return f"{self.base_url}/api/v1/agents/{agent_key}/conversations/stream"
-
-    def _conversation_url(self, agent_key: str, conversation_id: str) -> str:
-        return (
-            f"{self.base_url}/api/v1/agents/{agent_key}"
-            f"/conversations/{conversation_id}"
-        )
-
-    def _feedback_url(
-        self,
-        agent_key: str,
-        conversation_id: str,
-        message_id: str,
-    ) -> str:
-        return (
-            f"{self._conversation_url(agent_key, conversation_id)}"
-            f"/message/{message_id}/feedback"
-        )
 
     def _stream_create_agent_conversation_id(
         self,
@@ -207,13 +184,9 @@ class TestAgentConversationMessageFeedback:
         query: str,
         created_conversations: list[tuple[str, str]],
     ) -> str:
-        headers = {**self.headers, "Accept": "text/event-stream"}
-
-        with requests.post(
-            self._stream_url(agent_key),
-            headers=headers,
-            json={"query": query},
-            stream=True,
+        with self.conversations.stream_conversation(
+            agent_key,
+            query=query,
             timeout=self.stream_timeout,
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -241,9 +214,9 @@ class TestAgentConversationMessageFeedback:
         agent_key: str,
         conversation_id: str,
     ) -> list[dict[str, Any]]:
-        resp = requests.get(
-            self._conversation_url(agent_key, conversation_id),
-            headers=self.headers,
+        resp = self.conversations.get_conversation(
+            agent_key,
+            conversation_id,
             timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -309,10 +282,11 @@ class TestAgentConversationMessageFeedback:
     def _assert_validation_error(resp: requests.Response) -> dict[str, Any]:
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
         body = _response_json(resp)
+        assert_response_matches_openapi_ref(body, "#/components/schemas/ErrorResponse")
         error = body.get("error")
         assert isinstance(error, dict), f"Expected error object, got: {body!r}"
-        assert error.get("message") == "Validation failed", (
-            f"Expected 'Validation failed', got {error.get('message')!r}"
+        assert error.get("code") == "VALIDATION_ERROR", (
+            f"Expected VALIDATION_ERROR, got {error.get('code')!r}"
         )
         metadata = error.get("metadata")
         assert isinstance(metadata, dict), f"Expected error.metadata object, got: {body!r}"
@@ -322,9 +296,13 @@ class TestAgentConversationMessageFeedback:
         )
         return body
 
+
+@pytest.mark.integration
+class TestAgentConversationMessageFeedback(AgentConversationsTestBase):
+
     def test_post_agent_message_feedback_on_bot_response_matches_spec(
         self,
-        created_conversations,
+        created_conversations: list[tuple[str, str]],
     ) -> None:
         assert_request_body_matches_openapi_operation(
             _MINIMAL_FEEDBACK_PAYLOAD,
@@ -338,11 +316,11 @@ class TestAgentConversationMessageFeedback:
                 created_conversations=created_conversations,
             )
         )
-        url = self._feedback_url(self.primary_agent, conversation_id, bot_id)
-        resp = requests.post(
-            url,
-            headers=self.headers,
-            json=_MINIMAL_FEEDBACK_PAYLOAD,
+        resp = self.conversations.submit_message_feedback(
+            self.primary_agent,
+            conversation_id,
+            bot_id,
+            **_MINIMAL_FEEDBACK_PAYLOAD,
             timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -357,7 +335,7 @@ class TestAgentConversationMessageFeedback:
 
     def test_post_agent_message_feedback_rich_payload_matches_spec(
         self,
-        created_conversations,
+        created_conversations: list[tuple[str, str]],
     ) -> None:
         payload = {
             "isHelpful": True,
@@ -376,11 +354,11 @@ class TestAgentConversationMessageFeedback:
                 created_conversations=created_conversations,
             )
         )
-        url = self._feedback_url(self.primary_agent, conversation_id, bot_id)
-        resp = requests.post(
-            url,
-            headers=self.headers,
-            json=payload,
+        resp = self.conversations.submit_message_feedback(
+            self.primary_agent,
+            conversation_id,
+            bot_id,
+            **payload,
             timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -395,7 +373,7 @@ class TestAgentConversationMessageFeedback:
 
     def test_post_agent_message_feedback_strips_unknown_fields_returns_200(
         self,
-        created_conversations,
+        created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id, bot_id, _user_id = (
             self._stream_create_agent_conversation_bot_and_user_message_ids(
@@ -405,11 +383,11 @@ class TestAgentConversationMessageFeedback:
             )
         )
         payload = {**_MINIMAL_FEEDBACK_PAYLOAD, "unexpectedTopLevelField": "drop-me"}
-        url = self._feedback_url(self.primary_agent, conversation_id, bot_id)
-        resp = requests.post(
-            url,
-            headers=self.headers,
-            json=payload,
+        resp = self.conversations.submit_message_feedback(
+            self.primary_agent,
+            conversation_id,
+            bot_id,
+            **payload,
             timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -422,7 +400,7 @@ class TestAgentConversationMessageFeedback:
 
     def test_post_agent_message_feedback_on_user_query_returns_400(
         self,
-        created_conversations,
+        created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id, _bot_id, user_id = (
             self._stream_create_agent_conversation_bot_and_user_message_ids(
@@ -431,11 +409,10 @@ class TestAgentConversationMessageFeedback:
                 created_conversations=created_conversations,
             )
         )
-        url = self._feedback_url(self.primary_agent, conversation_id, user_id)
-        resp = requests.post(
-            url,
-            headers=self.headers,
-            json={},
+        resp = self.conversations.submit_message_feedback(
+            self.primary_agent,
+            conversation_id,
+            user_id,
             timeout=self.timeout,
         )
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
@@ -446,7 +423,7 @@ class TestAgentConversationMessageFeedback:
 
     def test_post_agent_message_feedback_invalid_category_returns_400(
         self,
-        created_conversations,
+        created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id, bot_id, _user_id = (
             self._stream_create_agent_conversation_bot_and_user_message_ids(
@@ -455,29 +432,30 @@ class TestAgentConversationMessageFeedback:
                 created_conversations=created_conversations,
             )
         )
-        url = self._feedback_url(self.primary_agent, conversation_id, bot_id)
-        resp = requests.post(
-            url,
-            headers=self.headers,
-            json={"isHelpful": False, "categories": ["citation_issues"]},
+        resp = self.conversations.submit_message_feedback(
+            self.primary_agent,
+            conversation_id,
+            bot_id,
+            isHelpful=False,
+            categories=["citation_issues"],
             timeout=self.timeout,
         )
         self._assert_validation_error(resp)
 
     def test_post_agent_message_feedback_invalid_message_id_returns_400(
         self,
-        created_conversations,
+        created_conversations: list[tuple[str, str]],
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
             self.primary_agent,
             query=f"integration: agent message feedback bad message id-{uuid4().hex}",
             created_conversations=created_conversations,
         )
-        url = self._feedback_url(self.primary_agent, conversation_id, "bad-id")
-        resp = requests.post(
-            url,
-            headers=self.headers,
-            json=_MINIMAL_FEEDBACK_PAYLOAD,
+        resp = self.conversations.submit_message_feedback(
+            self.primary_agent,
+            conversation_id,
+            "bad-id",
+            **_MINIMAL_FEEDBACK_PAYLOAD,
             timeout=self.timeout,
         )
         self._assert_validation_error(resp)

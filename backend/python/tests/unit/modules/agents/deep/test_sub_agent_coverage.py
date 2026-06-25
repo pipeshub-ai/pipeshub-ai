@@ -26,13 +26,16 @@ from app.modules.agents.deep.sub_agent import (
     _detect_status,
     _extract_response,
     _extract_tool_results,
+    _format_task_scope_block,
     _format_tools_for_prompt,
     _make_budgeted_coro,
     _prewarm_clients,
+    _rebind_tool_state,
     _SubAgentStreamingCallback,
     _ToolCallBudget,
     _wrap_retrieval_tools_for_context_efficiency,
     _wrap_tools_with_budget,
+    execute_sub_agents_node,
 )
 
 
@@ -435,8 +438,10 @@ class TestPrewarmClientsCoverage:
     @pytest.mark.asyncio
     async def test_prewarm_skips_already_cached(self):
         """Pre-warm skips domains that already have cached clients (line 1247)."""
-        state = _mock_state()
-        state["_client_cache"] = {("jira", "default", "default"): MagicMock()}
+        toolset_id = "jid-1"
+        cache_key = ("jira", toolset_id, "default")
+        state = _mock_state(tool_to_toolset_map={"jira.search": toolset_id})
+        state["_client_cache"] = {cache_key: MagicMock()}
         state["_client_cache_locks"] = {}
         log = _mock_log()
 
@@ -444,23 +449,25 @@ class TestPrewarmClientsCoverage:
             {"task_id": "t1", "tools": ["jira.search"]},
         ]
 
-        with patch("app.agents.tools.factories.registry.ClientFactoryRegistry") as mock_cfr:
-            mock_factory = MagicMock()
-            mock_cfr.get_factory.return_value = mock_factory
-            with patch("app.agents.tools.wrapper.ToolInstanceCreator") as mock_tic:
-                mock_creator = MagicMock()
-                mock_creator._client_cache = state["_client_cache"]
-                mock_creator._cache_locks = state["_client_cache_locks"]
-                mock_creator._get_toolset_config.return_value = None
-                mock_tic.return_value = mock_creator
-                await _prewarm_clients(tasks, state, log)
-                # Factory create_client should not be called because client is cached
-                mock_factory.create_client.assert_not_called()
+        mock_factory = MagicMock()
+        mock_cfr = MagicMock()
+        mock_cfr.get_factory.return_value = mock_factory
+        mock_creator = MagicMock()
+        mock_creator._client_cache = state["_client_cache"]
+        mock_creator._cache_locks = state["_client_cache_locks"]
+        mock_creator._get_toolset_config.return_value = None
+        mock_tic = MagicMock(return_value=mock_creator)
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": MagicMock(ClientFactoryRegistry=mock_cfr),
+            "app.agents.tools.wrapper": MagicMock(ToolInstanceCreator=mock_tic),
+        }):
+            await _prewarm_clients(tasks, state, log)
+            mock_factory.create_client.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_prewarm_no_factory_skips(self):
         """Pre-warm skips domains without a factory (line 1237)."""
-        state = _mock_state()
+        state = _mock_state(tool_to_toolset_map={"unknown.tool": "ts1"})
         state["_client_cache"] = {}
         state["_client_cache_locks"] = {}
         log = _mock_log()
@@ -469,20 +476,23 @@ class TestPrewarmClientsCoverage:
             {"task_id": "t1", "tools": ["unknown.tool"]},
         ]
 
-        with patch("app.agents.tools.factories.registry.ClientFactoryRegistry") as mock_cfr:
-            mock_cfr.get_factory.return_value = None  # No factory
-            with patch("app.agents.tools.wrapper.ToolInstanceCreator") as mock_tic:
-                mock_creator = MagicMock()
-                mock_creator._client_cache = state["_client_cache"]
-                mock_creator._cache_locks = state["_client_cache_locks"]
-                mock_creator._get_toolset_config.return_value = None
-                mock_tic.return_value = mock_creator
-                await _prewarm_clients(tasks, state, log)
+        mock_cfr = MagicMock()
+        mock_cfr.get_factory.return_value = None
+        mock_creator = MagicMock()
+        mock_creator._client_cache = state["_client_cache"]
+        mock_creator._cache_locks = state["_client_cache_locks"]
+        mock_creator._get_toolset_config.return_value = None
+        mock_tic = MagicMock(return_value=mock_creator)
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": MagicMock(ClientFactoryRegistry=mock_cfr),
+            "app.agents.tools.wrapper": MagicMock(ToolInstanceCreator=mock_tic),
+        }):
+            await _prewarm_clients(tasks, state, log)
 
     @pytest.mark.asyncio
     async def test_prewarm_exception_does_not_crash(self):
         """Pre-warm handles exceptions gracefully."""
-        state = _mock_state()
+        state = _mock_state(tool_to_toolset_map={"slack.send": "ts1"})
         state["_client_cache"] = {}
         state["_client_cache_locks"] = {}
         log = _mock_log()
@@ -491,18 +501,20 @@ class TestPrewarmClientsCoverage:
             {"task_id": "t1", "tools": ["slack.send"]},
         ]
 
-        with patch("app.agents.tools.factories.registry.ClientFactoryRegistry") as mock_cfr:
-            mock_factory = MagicMock()
-            mock_factory.create_client = AsyncMock(side_effect=Exception("auth failed"))
-            mock_cfr.get_factory.return_value = mock_factory
-            with patch("app.agents.tools.wrapper.ToolInstanceCreator") as mock_tic:
-                mock_creator = MagicMock()
-                mock_creator._client_cache = {}
-                mock_creator._cache_locks = {}
-                mock_creator._get_toolset_config.return_value = None
-                mock_tic.return_value = mock_creator
-                # Should not raise
-                await _prewarm_clients(tasks, state, log)
+        mock_factory = MagicMock()
+        mock_factory.create_client = AsyncMock(side_effect=Exception("auth failed"))
+        mock_cfr = MagicMock()
+        mock_cfr.get_factory.return_value = mock_factory
+        mock_creator = MagicMock()
+        mock_creator._client_cache = {}
+        mock_creator._cache_locks = {}
+        mock_creator._get_toolset_config.return_value = None
+        mock_tic = MagicMock(return_value=mock_creator)
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": MagicMock(ClientFactoryRegistry=mock_cfr),
+            "app.agents.tools.wrapper": MagicMock(ToolInstanceCreator=mock_tic),
+        }):
+            await _prewarm_clients(tasks, state, log)
 
 
 # ============================================================================
@@ -1526,7 +1538,7 @@ class TestPrewarmClientsLocking:
     @pytest.mark.asyncio
     async def test_prewarm_creates_lock_and_caches(self):
         """Pre-warm creates lock, caches client (lines 1250-1258)."""
-        state = _mock_state()
+        state = _mock_state(tool_to_toolset_map={"jira.search": "jid-1"})
         log = _mock_log()
 
         tasks = [
@@ -1534,20 +1546,21 @@ class TestPrewarmClientsLocking:
         ]
 
         mock_client = MagicMock()
-
-        with patch("app.agents.tools.factories.registry.ClientFactoryRegistry") as mock_cfr:
-            mock_factory = MagicMock()
-            mock_factory.create_client = AsyncMock(return_value=mock_client)
-            mock_cfr.get_factory.return_value = mock_factory
-            with patch("app.agents.tools.wrapper.ToolInstanceCreator") as mock_tic:
-                mock_creator = MagicMock()
-                mock_creator._client_cache = {}
-                mock_creator._cache_locks = {}
-                mock_creator._get_toolset_config.return_value = {"key": "val"}
-                mock_tic.return_value = mock_creator
-                await _prewarm_clients(tasks, state, log)
-                # Client should be cached
-                assert len(mock_creator._client_cache) == 1
+        mock_factory = MagicMock()
+        mock_factory.create_client = AsyncMock(return_value=mock_client)
+        mock_cfr = MagicMock()
+        mock_cfr.get_factory.return_value = mock_factory
+        mock_creator = MagicMock()
+        mock_creator._client_cache = {}
+        mock_creator._cache_locks = {}
+        mock_creator._get_toolset_config.return_value = {"key": "val"}
+        mock_tic = MagicMock(return_value=mock_creator)
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": MagicMock(ClientFactoryRegistry=mock_cfr),
+            "app.agents.tools.wrapper": MagicMock(ToolInstanceCreator=mock_tic),
+        }):
+            await _prewarm_clients(tasks, state, log)
+            assert len(mock_creator._client_cache) == 1
 
     @pytest.mark.asyncio
     async def test_prewarm_empty_tasks(self):
@@ -1557,35 +1570,39 @@ class TestPrewarmClientsLocking:
 
         tasks = [{"task_id": "t1", "tools": []}]
 
-        with patch("app.agents.tools.factories.registry.ClientFactoryRegistry"):
-            with patch("app.agents.tools.wrapper.ToolInstanceCreator"):
-                await _prewarm_clients(tasks, state, log)
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": MagicMock(),
+            "app.agents.tools.wrapper": MagicMock(),
+        }):
+            await _prewarm_clients(tasks, state, log)
 
     @pytest.mark.asyncio
     async def test_prewarm_double_check_after_lock(self):
         """Pre-warm checks cache again after acquiring lock (line 1254)."""
-        state = _mock_state()
+        toolset_id = "jid-1"
+        cache_key = ("jira", toolset_id, "default")
+        state = _mock_state(tool_to_toolset_map={"jira.search": toolset_id})
         log = _mock_log()
 
         tasks = [
             {"task_id": "t1", "tools": ["jira.search"]},
         ]
 
-        with patch("app.agents.tools.factories.registry.ClientFactoryRegistry") as mock_cfr:
-            mock_factory = MagicMock()
-            mock_factory.create_client = AsyncMock(return_value=MagicMock())
-            mock_cfr.get_factory.return_value = mock_factory
-            with patch("app.agents.tools.wrapper.ToolInstanceCreator") as mock_tic:
-                mock_creator = MagicMock()
-                # Pre-populate lock and cache to test double-check
-                cache_key = ("jira", "default", "default")
-                mock_creator._cache_locks = {cache_key: asyncio.Lock()}
-                mock_creator._client_cache = {cache_key: MagicMock()}  # Already cached
-                mock_creator._get_toolset_config.return_value = None
-                mock_tic.return_value = mock_creator
-                await _prewarm_clients(tasks, state, log)
-                # Should not call create_client since already cached
-                mock_factory.create_client.assert_not_called()
+        mock_factory = MagicMock()
+        mock_factory.create_client = AsyncMock(return_value=MagicMock())
+        mock_cfr = MagicMock()
+        mock_cfr.get_factory.return_value = mock_factory
+        mock_creator = MagicMock()
+        mock_creator._cache_locks = {cache_key: asyncio.Lock()}
+        mock_creator._client_cache = {cache_key: MagicMock()}
+        mock_creator._get_toolset_config.return_value = None
+        mock_tic = MagicMock(return_value=mock_creator)
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": MagicMock(ClientFactoryRegistry=mock_cfr),
+            "app.agents.tools.wrapper": MagicMock(ToolInstanceCreator=mock_tic),
+        }):
+            await _prewarm_clients(tasks, state, log)
+            mock_factory.create_client.assert_not_called()
 
 
 # ============================================================================
@@ -1926,26 +1943,708 @@ class TestPrewarmClientsLockAndLog:
     async def test_prewarm_creates_lock_and_caches(self):
         """Pre-warm creates lock, caches client, and logs when above threshold."""
         log = _mock_log()
-        state = _mock_state()
+        state = _mock_state(tool_to_toolset_map={"jira.create": "ts1"})
+
+        mock_client = MagicMock()
+        tasks = [{"task_id": "t1", "domains": ["jira"], "tools": ["jira.create"]}]
+
+        mock_factory = MagicMock()
+        mock_factory.create_client = AsyncMock(return_value=mock_client)
+
+        mock_cfr = MagicMock()
+        mock_cfr.get_factory.return_value = mock_factory
 
         mock_creator = MagicMock()
         mock_creator._client_cache = {}
         mock_creator._cache_locks = {}
-        mock_factory = AsyncMock()
-        mock_factory.create_client = AsyncMock(return_value="client_obj")
+        mock_creator._get_toolset_config.return_value = {}
 
-        tasks = [{"task_id": "t1", "domains": ["jira"], "tools": ["jira.create"]}]
+        mock_tic = MagicMock(return_value=mock_creator)
 
-        with patch("app.modules.agents.deep.sub_agent.get_tools_for_sub_agent") as mock_get_tools, \
-             patch("app.modules.agents.deep.sub_agent._WARM_LOG_THRESHOLD_MS", -1):
-            mock_tool = MagicMock()
-            mock_tool.name = "jira.create"
-            mock_tool._creator = mock_creator
-            mock_tool._factory = mock_factory
-            mock_tool._app_name = "jira"
-            mock_tool._toolset_id = "ts1"
-            mock_tool._config = {}
-            mock_get_tools.return_value = [mock_tool]
+        mock_registry_mod = MagicMock(ClientFactoryRegistry=mock_cfr)
+        mock_wrapper_mod = MagicMock(ToolInstanceCreator=mock_tic)
 
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": mock_registry_mod,
+            "app.agents.tools.wrapper": mock_wrapper_mod,
+        }), patch("app.modules.agents.deep.sub_agent._WARM_LOG_THRESHOLD_MS", -1):
             await _prewarm_clients(tasks, state, log)
         log.info.assert_called()
+
+
+# ============================================================================
+# _resolve_sub_agent_attachments — lines 85-130
+# ============================================================================
+
+
+class TestResolveSubAgentAttachments:
+    """Cover attachment resolution: images, PDFs, fetch failures, multimodal."""
+
+    @pytest.mark.asyncio
+    async def test_empty_attachments_returns_empty(self):
+        from app.modules.agents.deep.sub_agent import _resolve_sub_agent_attachments
+        state = _mock_state(attachments=[])
+        result = await _resolve_sub_agent_attachments(state)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_skip_attachment_without_virtual_record_id(self):
+        """Line 94-95 — no virtualRecordId skips."""
+        from app.modules.agents.deep.sub_agent import _resolve_sub_agent_attachments
+        state = _mock_state(attachments=[
+            {"mimeType": "image/png", "recordName": "photo.png"},
+        ])
+        result = await _resolve_sub_agent_attachments(state)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_skip_non_image_non_pdf(self):
+        """Line 99-100 — skip unsupported mime types."""
+        from app.modules.agents.deep.sub_agent import _resolve_sub_agent_attachments
+        state = _mock_state(attachments=[
+            {"mimeType": "text/plain", "recordName": "doc.txt", "virtualRecordId": "vr1"},
+        ])
+        result = await _resolve_sub_agent_attachments(state)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_image_record_from_state_map(self):
+        """Lines 103-104 — record from virtual_record_id_to_result."""
+        from app.modules.agents.deep.sub_agent import _resolve_sub_agent_attachments
+        mock_record = {"content": b"fake_img_data"}
+        state = _mock_state(
+            attachments=[{"mimeType": "image/png", "recordName": "pic.png", "virtualRecordId": "vr1"}],
+            virtual_record_id_to_result={"vr1": mock_record},
+            is_multimodal_llm=False,
+        )
+        result = await _resolve_sub_agent_attachments(state)
+        assert len(result) == 1
+        assert "[Image attached by user: pic.png]" in result[0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_image_multimodal_calls_extract(self):
+        """Lines 123-124 — multimodal image uses _extract_image_blocks."""
+        from app.modules.agents.deep.sub_agent import _resolve_sub_agent_attachments
+        mock_record = {"content": b"img_data"}
+        state = _mock_state(
+            attachments=[{"mimeType": "image/png", "recordName": "pic.png", "virtualRecordId": "vr1"}],
+            virtual_record_id_to_result={"vr1": mock_record},
+            is_multimodal_llm=True,
+        )
+        with patch("app.utils.attachment_utils._extract_image_blocks", return_value=[{"type": "image"}]) as mock_extract:
+            result = await _resolve_sub_agent_attachments(state)
+        mock_extract.assert_called_once()
+        assert result == [{"type": "image"}]
+
+    @pytest.mark.asyncio
+    async def test_pdf_record_resolved(self):
+        """Lines 127-128 — PDF resolves via resolve_pdf_blocks_simple."""
+        from app.modules.agents.deep.sub_agent import _resolve_sub_agent_attachments
+        mock_record = {"content": b"pdf_data"}
+        state = _mock_state(
+            attachments=[{"mimeType": "application/pdf", "recordName": "doc.pdf", "virtualRecordId": "vr1"}],
+            virtual_record_id_to_result={"vr1": mock_record},
+        )
+        with patch("app.utils.attachment_utils.resolve_pdf_blocks_simple", return_value=[{"type": "text", "text": "pdf content"}]):
+            result = await _resolve_sub_agent_attachments(state)
+        assert len(result) == 1
+        assert "pdf content" in result[0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_blob_store_fetch_on_cache_miss(self):
+        """Lines 106-113 — fetches from blob_store when not in map."""
+        from app.modules.agents.deep.sub_agent import _resolve_sub_agent_attachments
+        mock_blob_store = AsyncMock()
+        mock_blob_store.get_record_from_storage = AsyncMock(return_value={"content": b"data"})
+        state = _mock_state(
+            attachments=[{"mimeType": "image/jpeg", "recordName": "img.jpg", "virtualRecordId": "vr1"}],
+            blob_store=mock_blob_store,
+            org_id="org1",
+            is_multimodal_llm=False,
+        )
+        result = await _resolve_sub_agent_attachments(state)
+        mock_blob_store.get_record_from_storage.assert_awaited_once()
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_blob_store_fetch_exception_yields_placeholder(self):
+        """Lines 112-113 — exception on blob fetch, then 115-119 placeholder."""
+        from app.modules.agents.deep.sub_agent import _resolve_sub_agent_attachments
+        mock_blob_store = AsyncMock()
+        mock_blob_store.get_record_from_storage = AsyncMock(side_effect=RuntimeError("storage down"))
+        state = _mock_state(
+            attachments=[{"mimeType": "application/pdf", "recordName": "doc.pdf", "virtualRecordId": "vr1"}],
+            blob_store=mock_blob_store,
+            org_id="org1",
+        )
+        result = await _resolve_sub_agent_attachments(state)
+        assert len(result) == 1
+        assert "[PDF attached by user: doc.pdf]" in result[0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_missing_record_image_non_multimodal_placeholder(self):
+        """Lines 116-117 — image placeholder for non-multimodal."""
+        from app.modules.agents.deep.sub_agent import _resolve_sub_agent_attachments
+        state = _mock_state(
+            attachments=[{"mimeType": "image/png", "recordName": "photo.png", "virtualRecordId": "vr1"}],
+            is_multimodal_llm=False,
+        )
+        result = await _resolve_sub_agent_attachments(state)
+        assert len(result) == 1
+        assert "Image attached" in result[0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_missing_record_image_multimodal_no_placeholder(self):
+        """Line 116 false branch — multimodal image with no record yields nothing."""
+        from app.modules.agents.deep.sub_agent import _resolve_sub_agent_attachments
+        state = _mock_state(
+            attachments=[{"mimeType": "image/png", "recordName": "photo.png", "virtualRecordId": "vr1"}],
+            is_multimodal_llm=True,
+        )
+        result = await _resolve_sub_agent_attachments(state)
+        assert len(result) == 0
+
+
+# ============================================================================
+# execute_sub_agents_node — lines 206->204, 249->247, 280->259, 291
+# ============================================================================
+
+
+class TestExecuteSubAgentsNodeEdgeCases:
+    """Cover edge cases in the aggregation loop."""
+
+    @pytest.mark.asyncio
+    async def test_prior_task_without_task_id(self):
+        """Line 206->204 — completed task with empty task_id."""
+        state = _mock_state(
+            sub_agent_tasks=[{"task_id": "t1", "description": "do stuff", "domains": ["jira"]}],
+            completed_tasks=[{"status": "success", "result": {"response": "done"}}],
+        )
+        with patch("app.modules.agents.deep.sub_agent._prewarm_clients", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.sub_agent._execute_single_sub_agent", new_callable=AsyncMock,
+                   return_value={"task_id": "t1", "status": "success", "result": {"response": "ok"}, "domains": ["jira"]}):
+            result = await execute_sub_agents_node(state, _mock_config(), _mock_writer())
+        assert "sub_agent_analyses" in result
+
+    @pytest.mark.asyncio
+    async def test_non_dict_result_in_tool_results_aggregation(self):
+        """Line 249->247 — task result is not a dict."""
+        state = _mock_state(
+            sub_agent_tasks=[{"task_id": "t1", "description": "do it", "domains": ["jira"]}],
+            completed_tasks=[],
+        )
+        with patch("app.modules.agents.deep.sub_agent._prewarm_clients", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.sub_agent._execute_single_sub_agent", new_callable=AsyncMock,
+                   return_value={"task_id": "t1", "status": "success", "result": "plain string", "domains": ["jira"]}):
+            result = await execute_sub_agents_node(state, _mock_config(), _mock_writer())
+        assert result["all_tool_results"] == []
+
+    @pytest.mark.asyncio
+    async def test_success_with_non_dict_result_skipped_in_analysis(self):
+        """Line 280->259 — success + non-dict result skipped."""
+        state = _mock_state(
+            sub_agent_tasks=[{"task_id": "t1", "description": "x", "domains": ["jira"]}],
+            completed_tasks=[],
+        )
+        with patch("app.modules.agents.deep.sub_agent._prewarm_clients", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.sub_agent._execute_single_sub_agent", new_callable=AsyncMock,
+                   return_value={"task_id": "t1", "status": "success", "result": ["not", "a", "dict"], "domains": []}):
+            result = await execute_sub_agents_node(state, _mock_config(), _mock_writer())
+        assert result["sub_agent_analyses"] == []
+
+    @pytest.mark.asyncio
+    async def test_success_with_empty_response_warns(self):
+        """Line 291 — success but empty response text."""
+        log = _mock_log()
+        state = _mock_state(
+            sub_agent_tasks=[{"task_id": "t1", "description": "x", "domains": ["jira"]}],
+            completed_tasks=[],
+            logger=log,
+        )
+        with patch("app.modules.agents.deep.sub_agent._prewarm_clients", new_callable=AsyncMock), \
+             patch("app.modules.agents.deep.sub_agent._execute_single_sub_agent", new_callable=AsyncMock,
+                   return_value={"task_id": "t1", "status": "success", "result": {"response": "", "tool_results": []}, "domains": ["jira"]}):
+            result = await execute_sub_agents_node(state, _mock_config(), log)
+        log.warning.assert_called()
+        assert result["sub_agent_analyses"] == []
+
+
+# ============================================================================
+# _rebind_tool_state — lines 1295, 1296->1298
+# ============================================================================
+
+
+class TestRebindToolState:
+    """Cover the tool state rebinding helper."""
+
+    def test_tool_without_wrapper_skips(self):
+        """Line 1295 — no _tool_wrapper."""
+        tool = MagicMock(spec=[])
+        _rebind_tool_state([tool], {"new": "state"})
+
+    def test_tool_with_wrapper_rebinds_instance_creator(self):
+        """Line 1296->1298 — wrapper with instance_creator."""
+        wrapper = MagicMock()
+        wrapper.instance_creator = MagicMock()
+        wrapper.instance_creator.state = {"old": True}
+        tool = MagicMock()
+        tool._tool_wrapper = wrapper
+        new_state = {"new": True}
+        _rebind_tool_state([tool], new_state)
+        assert wrapper.instance_creator.state is new_state
+        assert wrapper.chat_state is new_state
+
+    def test_tool_with_wrapper_no_instance_creator(self):
+        """Line 1296 false branch — wrapper without instance_creator."""
+        wrapper = MagicMock()
+        wrapper.instance_creator = None
+        tool = MagicMock()
+        tool._tool_wrapper = wrapper
+        new_state = {"new": True}
+        _rebind_tool_state([tool], new_state)
+        assert wrapper.chat_state is new_state
+
+
+# ============================================================================
+# _format_task_scope_block — line 1579
+# ============================================================================
+
+
+class TestFormatTaskScopeBlock:
+    """Cover the task scope block formatter."""
+
+    def test_empty_returns_empty(self):
+        assert _format_task_scope_block({}) == ""
+
+    def test_whitespace_only_returns_empty(self):
+        assert _format_task_scope_block({"scoped_instructions": "   "}) == ""
+
+    def test_nonempty_returns_formatted_block(self):
+        """Line 1579 — non-empty scoped_instructions."""
+        result = _format_task_scope_block({"scoped_instructions": "Be concise."})
+        assert "## Task-scoped agent guidance" in result
+        assert "Be concise." in result
+
+
+# ============================================================================
+# _build_sub_agent_tool_guidance — line 1701
+# ============================================================================
+
+
+class TestBuildSubAgentToolGuidanceWebSearch:
+    """Cover the web search tools guidance branch."""
+
+    def test_web_search_tool_guidance(self):
+        """Line 1701 — web_search in tools triggers web search rules."""
+        state = _mock_state()
+        task = {"task_id": "t1", "domains": ["web"], "tools": ["web_search", "fetch_url"]}
+        result = _build_sub_agent_tool_guidance(task, state)
+        assert "Web Search Rules" in result
+
+    def test_no_web_tools_no_web_guidance(self):
+        state = _mock_state()
+        task = {"task_id": "t1", "domains": ["jira"], "tools": ["jira.search"]}
+        result = _build_sub_agent_tool_guidance(task, state)
+        assert "Web Search Rules" not in result
+
+
+# ============================================================================
+# _extract_response — lines 1172->1160, 1177->1174, 1179->1160
+# ============================================================================
+
+
+class TestExtractResponseListBranches:
+    """Cover list content edge cases in _extract_response."""
+
+    def test_list_with_non_text_dict_skipped(self):
+        """Line 1177->1174 — dict part with type != text skipped."""
+        log = _mock_log()
+        msgs = [AIMessage(content=[
+            {"type": "image_url", "url": "http://example.com/img.png"},
+            {"type": "text", "text": "The answer is 42."},
+        ])]
+        result = _extract_response(msgs, log)
+        assert "42" in result
+
+    def test_list_with_only_non_text_dicts_falls_through(self):
+        """Line 1179->1160 — list of non-text dicts, text_parts empty."""
+        log = _mock_log()
+        msgs = [AIMessage(content=[
+            {"type": "image_url", "url": "http://example.com/img.png"},
+        ])]
+        result = _extract_response(msgs, log)
+        assert result == ""
+
+    def test_list_with_empty_text_parts(self):
+        """Line 1179->1160 — text parts present but all whitespace."""
+        log = _mock_log()
+        msgs = [AIMessage(content=[
+            {"type": "text", "text": ""},
+            {"type": "text", "text": "   "},
+        ])]
+        result = _extract_response(msgs, log)
+        assert result == ""
+
+    def test_ai_message_non_list_non_string_continues(self):
+        """Line 1172->1160 — content is neither string nor list."""
+        log = _mock_log()
+        msg = MagicMock()
+        msg.content = 12345
+        msgs = [msg]
+        result = _extract_response(msgs, log)
+        assert result == ""
+
+
+# ============================================================================
+# _extract_tool_results — lines 1235->1226, 1249->1257, 1263, 1266->1272
+# ============================================================================
+
+
+class TestExtractToolResultsRetrievalBranches:
+    """Cover retrieval processing branches in _extract_tool_results."""
+
+    def test_json_string_parsed_to_dict(self):
+        """Line 1249->1257 — JSON string successfully parsed."""
+        log = _mock_log()
+        state = _mock_state()
+        msgs = [ToolMessage(content='{"status": "ok", "data": []}', name="jira.search", tool_call_id="tc1")]
+        result = _extract_tool_results(msgs, state, log)
+        assert result[0]["result"] == {"status": "ok", "data": []}
+
+    def test_non_string_content_skips_json_parse(self):
+        """Line 1249->1257 FALSE — content not a string, skip JSON parse."""
+        log = _mock_log()
+        state = _mock_state()
+        msg = MagicMock(spec=ToolMessage)
+        msg.content = {"final_results": []}
+        msg.name = "jira.search"
+        msg.tool_call_id = "tc1"
+        result = _extract_tool_results([msg], state, log)
+        assert result[0]["result"] == {"final_results": []}
+
+    def test_retrieval_tool_dict_content_no_buffer(self):
+        """Line 1266->1272 — retrieval tool with dict content, no buffer."""
+        log = _mock_log()
+        state = _mock_state()
+        msg = MagicMock(spec=ToolMessage)
+        msg.content = {"final_results": [{"text": "data"}]}
+        msg.name = "retrieval_search"
+        msg.tool_call_id = "tc1"
+        mock_proc = MagicMock()
+        with patch.dict("sys.modules", {"app.modules.agents.qna.nodes": MagicMock(_process_retrieval_output=mock_proc)}):
+            result = _extract_tool_results([msg], state, log)
+        assert result[0]["tool_name"] == "retrieval_search"
+        mock_proc.assert_called_once()
+
+    def test_retrieval_tool_json_string_inner_parse_success(self):
+        """Line 1263 — retrieval tool, string content, inner JSON parse succeeds."""
+        log = _mock_log()
+        state = _mock_state()
+        msgs = [ToolMessage(content='{"blocks": []}', name="retrieval_search", tool_call_id="tc1")]
+        mock_proc = MagicMock()
+        with patch.dict("sys.modules", {"app.modules.agents.qna.nodes": MagicMock(_process_retrieval_output=mock_proc)}):
+            result = _extract_tool_results(msgs, state, log)
+        assert result[0]["tool_name"] == "retrieval_search"
+        mock_proc.assert_called()
+
+    def test_buffer_dict_entry_processed(self):
+        """Line 1235->1226 TRUE — dict in deep buffer."""
+        log = _mock_log()
+        state = _mock_state()
+        state["_deep_retrieval_buffer"] = [{"final_results": []}]
+        msgs = []
+        mock_proc = MagicMock()
+        with patch.dict("sys.modules", {"app.modules.agents.qna.nodes": MagicMock(_process_retrieval_output=mock_proc)}):
+            result = _extract_tool_results(msgs, state, log)
+        mock_proc.assert_called_once()
+
+    def test_buffer_non_string_non_dict_entry(self):
+        """Line 1235->1226 FALSE — buffer entry is neither string nor dict."""
+        log = _mock_log()
+        state = _mock_state()
+        state["_deep_retrieval_buffer"] = [42, None, ["list"]]
+        msgs = []
+        mock_proc = MagicMock()
+        with patch.dict("sys.modules", {"app.modules.agents.qna.nodes": MagicMock(_process_retrieval_output=mock_proc)}):
+            _extract_tool_results(msgs, state, log)
+        mock_proc.assert_not_called()
+
+    def test_retrieval_tool_list_content_neither_path(self):
+        """Line 1266->1272 FALSE — result is a list (not str, not dict)."""
+        log = _mock_log()
+        state = _mock_state()
+        msg = MagicMock(spec=ToolMessage)
+        msg.content = [{"a": 1}, {"b": 2}]
+        msg.name = "retrieval_search"
+        msg.tool_call_id = "tc1"
+        mock_proc = MagicMock()
+        with patch.dict("sys.modules", {"app.modules.agents.qna.nodes": MagicMock(_process_retrieval_output=mock_proc)}):
+            result = _extract_tool_results([msg], state, log)
+        mock_proc.assert_not_called()
+        assert result[0]["tool_name"] == "retrieval_search"
+
+    def test_retrieval_tool_json_string_parses_to_list(self):
+        """json.loads returns list → passes through retrieval block without processing."""
+        log = _mock_log()
+        state = _mock_state()
+        msgs = [ToolMessage(content='[1, 2, 3]', name="retrieval_search", tool_call_id="tc1")]
+        mock_proc = MagicMock()
+        with patch.dict("sys.modules", {"app.modules.agents.qna.nodes": MagicMock(_process_retrieval_output=mock_proc)}):
+            result = _extract_tool_results(msgs, state, log)
+        mock_proc.assert_not_called()
+
+
+# ============================================================================
+# _wrap_tools_with_budget — line 1370->1372
+# ============================================================================
+
+
+class TestWrapToolsBudgetMetadata:
+    """Cover metadata preservation on wrapped tools."""
+
+    def test_preserves_tool_wrapper_attribute(self):
+        """Lines 1366-1372 — both _original_name and _tool_wrapper copied."""
+        log = _mock_log()
+        budget = _ToolCallBudget(5)
+        tool = MagicMock()
+        tool.name = "search"
+        tool.coroutine = AsyncMock()
+        tool.func = None
+        tool.description = "d"
+        tool.args_schema = None
+        tool.return_direct = False
+        tool._original_name = "search_original"
+        tool._tool_wrapper = MagicMock()
+
+        with patch("langchain_core.tools.StructuredTool") as MockST:
+            new_tool = MagicMock()
+            MockST.from_function.return_value = new_tool
+            result = _wrap_tools_with_budget([tool], budget, log)
+        assert new_tool._original_name == "search_original"
+        assert new_tool._tool_wrapper is tool._tool_wrapper
+
+    def test_no_metadata_attributes(self):
+        """Line 1370->1372 FALSE — tool without _original_name or _tool_wrapper."""
+        log = _mock_log()
+        budget = _ToolCallBudget(5)
+        tool = MagicMock()
+        tool.name = "search"
+        tool.coroutine = AsyncMock()
+        tool.func = None
+        tool.description = "d"
+        tool.args_schema = None
+        tool.return_direct = False
+        del tool._original_name
+        del tool._tool_wrapper
+
+        with patch("langchain_core.tools.StructuredTool") as MockST:
+            new_tool = MagicMock()
+            MockST.from_function.return_value = new_tool
+            result = _wrap_tools_with_budget([tool], budget, log)
+        assert len(result) == 1
+
+
+# ============================================================================
+# _wrap_retrieval_tools_for_context_efficiency inner coro — lines 1426-1438,
+# 1449->1455, 1455->1457
+# ============================================================================
+
+
+class TestWrapRetrievalToolsInnerCoro:
+    """Cover the inner coroutine execution and metadata preservation."""
+
+    @pytest.mark.asyncio
+    async def test_wrapped_coro_buffers_result(self):
+        """Lines 1426-1435 — inner coro executes and buffers result."""
+        log = _mock_log()
+        state = _mock_state()
+
+        orig_coro = AsyncMock(return_value="retrieval_data")
+
+        tool = MagicMock()
+        tool.name = "retrieval_search"
+        tool.coroutine = orig_coro
+        tool.func = None
+        tool.description = "search"
+        tool.args_schema = None
+        tool.return_direct = False
+        tool._original_name = "retrieval_search_orig"
+        tool._tool_wrapper = MagicMock()
+
+        result = _wrap_retrieval_tools_for_context_efficiency([tool], state, log)
+        assert len(result) == 1
+        wrapped_tool = result[0]
+
+        coro_fn = wrapped_tool.coroutine
+        out = await coro_fn(query="test")
+        assert out == "retrieval_data"
+        assert state["_deep_retrieval_buffer"] == ["retrieval_data"]
+        assert wrapped_tool._original_name == "retrieval_search_orig"
+        assert wrapped_tool._tool_wrapper is tool._tool_wrapper
+
+    @pytest.mark.asyncio
+    async def test_wrapped_coro_uses_func_fallback(self):
+        """Line 1426 — falls back to func when no coroutine."""
+        log = _mock_log()
+        state = _mock_state()
+
+        orig_func = MagicMock(return_value="func_data")
+
+        tool = MagicMock()
+        tool.name = "retrieval_search"
+        tool.coroutine = None
+        tool.func = orig_func
+        tool.description = "search"
+        tool.args_schema = None
+        tool.return_direct = False
+
+        result = _wrap_retrieval_tools_for_context_efficiency([tool], state, log)
+        wrapped_tool = result[0]
+
+        coro_fn = wrapped_tool.coroutine
+        out = await coro_fn(query="test")
+        assert out == "func_data"
+        assert state["_deep_retrieval_buffer"] == ["func_data"]
+
+    @pytest.mark.asyncio
+    async def test_wrapped_coro_buffer_already_exists(self):
+        """Line 1433->1435 FALSE — buffer already exists, skip creation."""
+        log = _mock_log()
+        state = _mock_state()
+        state["_deep_retrieval_buffer"] = ["prior_data"]
+
+        orig_coro = AsyncMock(return_value="new_data")
+
+        tool = MagicMock()
+        tool.name = "retrieval_search"
+        tool.coroutine = orig_coro
+        tool.func = None
+        tool.description = "search"
+        tool.args_schema = None
+        tool.return_direct = False
+
+        result = _wrap_retrieval_tools_for_context_efficiency([tool], state, log)
+        coro_fn = result[0].coroutine
+        out = await coro_fn(query="test")
+        assert out == "new_data"
+        assert state["_deep_retrieval_buffer"] == ["prior_data", "new_data"]
+
+    @pytest.mark.asyncio
+    async def test_wrapped_coro_buffer_exception(self):
+        """Lines 1436-1437 — buffer write fails gracefully."""
+        log = _mock_log()
+
+        class ReadOnlyState(dict):
+            def __setitem__(self, key, val):
+                if key == "_deep_retrieval_buffer":
+                    raise RuntimeError("readonly")
+                super().__setitem__(key, val)
+
+        state = ReadOnlyState(_mock_state())
+        orig_coro = AsyncMock(return_value="data")
+
+        tool = MagicMock()
+        tool.name = "retrieval_search"
+        tool.coroutine = orig_coro
+        tool.func = None
+        tool.description = "search"
+        tool.args_schema = None
+        tool.return_direct = False
+
+        result = _wrap_retrieval_tools_for_context_efficiency([tool], state, log)
+        coro_fn = result[0].coroutine
+        out = await coro_fn(query="test")
+        assert out == "data"
+        log.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_no_metadata_attributes_on_tool(self):
+        """Lines 1449->1455, 1455->1457 FALSE — tool without metadata attrs."""
+        log = _mock_log()
+        state = _mock_state()
+
+        orig_coro = AsyncMock(return_value="data")
+
+        tool = MagicMock()
+        tool.name = "retrieval_search"
+        tool.coroutine = orig_coro
+        tool.func = None
+        tool.description = "search"
+        tool.args_schema = None
+        tool.return_direct = False
+        del tool._original_name
+        del tool._tool_wrapper
+
+        result = _wrap_retrieval_tools_for_context_efficiency([tool], state, log)
+        assert len(result) == 1
+
+
+# ============================================================================
+# _prewarm_clients — lines 1545->1547, 1549
+# ============================================================================
+
+
+class TestPrewarmClientsLockCreation:
+    """Cover lock creation and race-condition double-check."""
+
+    @pytest.mark.asyncio
+    async def test_prewarm_skips_when_already_cached(self):
+        """Line 1541 — outer check finds cache populated, returns early."""
+        log = _mock_log()
+        state = _mock_state(tool_to_toolset_map={"jira.create": "ts1"})
+        tasks = [{"task_id": "t1", "domains": ["jira"], "tools": ["jira.create"]}]
+
+        mock_factory = MagicMock()
+        mock_factory.create_client = AsyncMock(return_value=MagicMock())
+
+        mock_cfr = MagicMock()
+        mock_cfr.get_factory.return_value = mock_factory
+
+        cache_key = ("jira", "ts1", "default")
+        mock_creator = MagicMock()
+        mock_creator._client_cache = {cache_key: MagicMock()}
+        mock_creator._cache_locks = {}
+        mock_creator._get_toolset_config.return_value = {}
+
+        mock_tic = MagicMock(return_value=mock_creator)
+
+        mock_registry_mod = MagicMock(ClientFactoryRegistry=mock_cfr)
+        mock_wrapper_mod = MagicMock(ToolInstanceCreator=mock_tic)
+
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": mock_registry_mod,
+            "app.agents.tools.wrapper": mock_wrapper_mod,
+        }):
+            await _prewarm_clients(tasks, state, log)
+        mock_factory.create_client.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_prewarm_lock_creation_cold_cache(self):
+        """Line 1545->1547 — new lock created for cold cache key."""
+        log = _mock_log()
+        state = _mock_state(tool_to_toolset_map={"jira.create": "ts1"})
+        tasks = [{"task_id": "t1", "domains": ["jira"], "tools": ["jira.create"]}]
+
+        mock_client = MagicMock()
+        mock_factory = MagicMock()
+        mock_factory.create_client = AsyncMock(return_value=mock_client)
+
+        mock_cfr = MagicMock()
+        mock_cfr.get_factory.return_value = mock_factory
+
+        mock_creator = MagicMock()
+        mock_creator._client_cache = {}
+        mock_creator._cache_locks = {}
+        mock_creator._get_toolset_config.return_value = {}
+
+        mock_tic = MagicMock(return_value=mock_creator)
+
+        mock_registry_mod = MagicMock(ClientFactoryRegistry=mock_cfr)
+        mock_wrapper_mod = MagicMock(ToolInstanceCreator=mock_tic)
+
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": mock_registry_mod,
+            "app.agents.tools.wrapper": mock_wrapper_mod,
+        }):
+            await _prewarm_clients(tasks, state, log)
+        mock_factory.create_client.assert_awaited_once()

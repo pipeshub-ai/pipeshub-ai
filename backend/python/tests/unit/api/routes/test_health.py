@@ -140,13 +140,14 @@ class TestHandleModelChange:
 
     @pytest.mark.asyncio
     async def test_model_change_with_data_raises(self):
+        """Model name change with existing data should be rejected."""
         retrieval_svc = AsyncMock()
         logger = MagicMock()
 
         from app.api.routes.health import handle_model_change
         with pytest.raises(HTTPException) as exc_info:
             await handle_model_change(retrieval_svc, "model-a", "model-b", 768, 100, 512, logger)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_model_change_empty_collection_recreates(self):
@@ -164,7 +165,7 @@ class TestHandleModelChange:
         logger = MagicMock()
 
         from app.api.routes.health import handle_model_change
-        await handle_model_change(retrieval_svc, None, "model-b", 768, 0, 512, logger)
+        await handle_model_change(retrieval_svc, None, "model-b", 768, 0, 768, logger)
 
     @pytest.mark.asyncio
     async def test_no_change_when_new_is_none(self):
@@ -172,7 +173,7 @@ class TestHandleModelChange:
         logger = MagicMock()
 
         from app.api.routes.health import handle_model_change
-        await handle_model_change(retrieval_svc, "model-a", None, 768, 0, 512, logger)
+        await handle_model_change(retrieval_svc, "model-a", None, 768, 0, 768, logger)
 
     @pytest.mark.asyncio
     async def test_strips_models_prefix(self):
@@ -189,6 +190,65 @@ class TestHandleModelChange:
 
         from app.api.routes.health import handle_model_change
         await handle_model_change(retrieval_svc, "Model-A", "model-a", 768, 100, 768, logger)
+
+    @pytest.mark.asyncio
+    async def test_same_model_different_provider_allowed_with_data(self):
+        """Same model served by different providers (org prefix differs) is NOT a
+        breaking change when dimensions also match."""
+        retrieval_svc = AsyncMock()
+        logger = MagicMock()
+
+        from app.api.routes.health import handle_model_change
+        await handle_model_change(
+            retrieval_svc, "nomic-ai/nomic-embed-text", "nomic-embed-text", 768, 100, 768, logger
+        )
+        retrieval_svc.vector_db_service.delete_collection.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_different_model_with_data_raises(self):
+        """Different model with data in collection should be rejected."""
+        retrieval_svc = AsyncMock()
+        logger = MagicMock()
+
+        from app.api.routes.health import handle_model_change
+        with pytest.raises(HTTPException) as exc_info:
+            await handle_model_change(
+                retrieval_svc, "nomic-ai/nomic-embed-text", "BAAI/bge-large-en-v1.5", 768, 100, 1024, logger
+            )
+        assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_dimension_mismatch_same_name_empty_recreates(self):
+        """Same model name but different dimensions on empty collection should recreate."""
+        retrieval_svc = AsyncMock()
+        logger = MagicMock()
+
+        with patch(f"{MODULE}.recreate_collection", new_callable=AsyncMock) as mock_recreate:
+            from app.api.routes.health import handle_model_change
+            await handle_model_change(retrieval_svc, "model-a", "model-a", 768, 0, 1024, logger)
+            mock_recreate.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_dimension_mismatch_same_name_with_data_raises(self):
+        """Same model name but different dimensions with data should be rejected."""
+        retrieval_svc = AsyncMock()
+        logger = MagicMock()
+
+        from app.api.routes.health import handle_model_change
+        with pytest.raises(HTTPException) as exc_info:
+            await handle_model_change(retrieval_svc, "model-a", "model-a", 768, 50, 1024, logger)
+        assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_dimension_mismatch_null_name_empty_recreates(self):
+        """Unknown current model but mismatched dimensions on empty collection should recreate."""
+        retrieval_svc = AsyncMock()
+        logger = MagicMock()
+
+        with patch(f"{MODULE}.recreate_collection", new_callable=AsyncMock) as mock_recreate:
+            from app.api.routes.health import handle_model_change
+            await handle_model_change(retrieval_svc, None, "model-b", 768, 0, 512, logger)
+            mock_recreate.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_zero_qdrant_vector_size_no_recreate(self):
@@ -763,12 +823,14 @@ class TestCheckCollectionInfoExtraEdgeCases:
         assert "Unexpected gRPC error" in str(exc_info.value.detail)
 
     @pytest.mark.asyncio
-    async def test_http_exception_reraise(self):
-        """Cover line 247: HTTPException raised by handle_model_change is re-raised."""
+    async def test_model_change_with_data_raises_via_check_collection_info(self):
+        """Model change with data is rejected via check_collection_info."""
+        import grpc  # noqa: F401
+        from grpc._channel import _InactiveRpcError  # noqa: F401
+
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
 
-        # Setup collection info so handle_model_change gets called
         dense_vec_mock = MagicMock()
         dense_vec_mock.size = 768
         vectors_mock = MagicMock()
@@ -787,8 +849,7 @@ class TestCheckCollectionInfoExtraEdgeCases:
         from app.api.routes.health import check_collection_info
         with pytest.raises(HTTPException) as exc_info:
             await check_collection_info(retrieval_svc, dense_embeddings, 768, logger)
-        assert exc_info.value.status_code == 500
-        assert "Policy Rejection" in str(exc_info.value.detail)
+        assert exc_info.value.status_code == 400
 
 
 class TestPerformEmbeddingHealthCheckExtraEdgeCases:
@@ -1091,7 +1152,7 @@ class TestHandleModelChangeFullCoverage:
         from app.api.routes.health import handle_model_change
         with pytest.raises(HTTPException) as exc_info:
             await handle_model_change(retrieval_svc, "model-a", "model-b", 768, 100, 512, logger)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_model_change_empty_collection_recreates(self):
@@ -1109,7 +1170,7 @@ class TestHandleModelChangeFullCoverage:
         logger = MagicMock()
 
         from app.api.routes.health import handle_model_change
-        await handle_model_change(retrieval_svc, None, "model-b", 768, 0, 512, logger)
+        await handle_model_change(retrieval_svc, None, "model-b", 768, 0, 768, logger)
 
     @pytest.mark.asyncio
     async def test_no_change_when_new_is_none(self):
@@ -1117,7 +1178,7 @@ class TestHandleModelChangeFullCoverage:
         logger = MagicMock()
 
         from app.api.routes.health import handle_model_change
-        await handle_model_change(retrieval_svc, "model-a", None, 768, 0, 512, logger)
+        await handle_model_change(retrieval_svc, "model-a", None, 768, 0, 768, logger)
 
     @pytest.mark.asyncio
     async def test_strips_models_prefix(self):
@@ -1134,6 +1195,26 @@ class TestHandleModelChangeFullCoverage:
 
         from app.api.routes.health import handle_model_change
         await handle_model_change(retrieval_svc, "Model-A", "model-a", 768, 100, 768, logger)
+
+    @pytest.mark.asyncio
+    async def test_dimension_mismatch_same_name_empty_recreates(self):
+        retrieval_svc = AsyncMock()
+        logger = MagicMock()
+
+        with patch(f"{MODULE}.recreate_collection", new_callable=AsyncMock) as mock_recreate:
+            from app.api.routes.health import handle_model_change
+            await handle_model_change(retrieval_svc, "model-a", "model-a", 768, 0, 1024, logger)
+            mock_recreate.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_dimension_mismatch_same_name_with_data_raises(self):
+        retrieval_svc = AsyncMock()
+        logger = MagicMock()
+
+        from app.api.routes.health import handle_model_change
+        with pytest.raises(HTTPException) as exc_info:
+            await handle_model_change(retrieval_svc, "model-a", "model-a", 768, 50, 1024, logger)
+        assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_zero_qdrant_vector_size_no_recreate(self):

@@ -18,7 +18,7 @@ import unicodedata
 import uuid
 from collections import defaultdict
 from logging import Logger
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Optional, Dict
 
 from fastapi import Request
 from app.config.configuration_service import ConfigurationService
@@ -45,6 +45,7 @@ from app.models.entities import (
     LinkRecord,
     MailRecord,
     MeetingRecord,
+    MessageRecord,
     Person,
     ProductRecord,
     ProjectRecord,
@@ -72,6 +73,7 @@ from app.schema.arango.documents import (
     link_record_schema,
     mail_record_schema,
     meeting_record_schema,
+    message_record_schema,
     orgs_schema,
     people_schema,
     product_record_schema,
@@ -128,6 +130,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.FILES.value, file_record_schema),
     (CollectionNames.LINKS.value, link_record_schema),
     (CollectionNames.MAILS.value, mail_record_schema),
+    (CollectionNames.MESSAGES.value, message_record_schema),
     (CollectionNames.WEBPAGES.value, webpage_record_schema),
     (CollectionNames.COMMENTS.value, comment_record_schema),
     (CollectionNames.PEOPLE.value, people_schema),
@@ -1866,6 +1869,74 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Update node failed: {str(e)}")
             raise
 
+    async def batch_update_nodes(
+        self,
+        nodes: list[dict],
+        collection: str,
+        transaction: str | None = None
+    ) -> bool | None:
+        """
+        Batch update existing nodes only - FULLY ASYNC.
+        
+        This method ONLY updates nodes that already exist. It does NOT create new nodes.
+        Uses ArangoDB UPDATE (not UPSERT) to ensure no accidental record creation.
+
+        Args:
+            nodes: List of node documents in generic format (with 'id' or '_key' field)
+            collection: Collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[bool]: True if successful, False if any updates failed
+        """
+        try:
+            if not nodes:
+                return True
+
+            # Translate nodes from generic format to ArangoDB format
+            arango_nodes = self._translate_nodes_to_arango(nodes)
+
+            # Build AQL query for batch UPDATE (not UPSERT)
+            # This will only update existing documents and skip non-existent ones
+            bind_vars = {
+                "collection": collection,
+                "nodes": arango_nodes
+            }
+
+            aql_query = f"""
+                FOR doc IN @nodes
+                    UPDATE doc IN @@collection
+                    OPTIONS {{ ignoreErrors: true }}
+                    RETURN NEW
+            """
+
+            bind_vars["@collection"] = collection
+
+            if transaction:
+                result = await self.http_client.execute_transaction_query(
+                    transaction, aql_query, bind_vars
+                )
+            else:
+                result = await self.http_client.execute_aql(aql_query, bind_vars)
+
+            # Check if all updates succeeded
+            if result and isinstance(result, list):
+                # Filter out None values (failed updates)
+                successful_updates = [r for r in result if r is not None]
+                if len(successful_updates) != len(arango_nodes):
+                    self.logger.warning(
+                        f"⚠️ Batch update failed: {len(successful_updates)}/{len(arango_nodes)} nodes updated. "
+                        f"{len(arango_nodes) - len(successful_updates)} nodes may not exist in the database."
+                    )
+                    return False  # Return False if not all updates succeeded
+                return True  # All updates succeeded
+            
+            return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Batch update failed: {str(e)}")
+            raise
+
     # ==================== Edge Operations ====================
 
     async def batch_create_edges(
@@ -2786,6 +2857,54 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get record by external ID failed: {str(e)}")
             return None
 
+    async def find_slack_burst_record_by_ts(
+        self,
+        connector_id: str,
+        channel_id: str,
+        ts: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[MessageRecord]:
+        """
+        Find the Slack burst MessageRecord whose startTs <= ts <= endTs.
+
+        Joins the MESSAGES collection (which holds startTs / endTs / isReply)
+        with the RECORDS collection (which holds connectorId / externalGroupId) via
+        the shared document _key.
+
+        Returns the first matching MessageRecord, or None.
+        """
+        query = f"""
+            FOR m IN {CollectionNames.MESSAGES.value}
+                FILTER m.startTs != null
+                AND    m.endTs   != null
+                AND    m.startTs <= @ts
+                AND    m.endTs   >= @ts
+                AND    m.startTs != m.endTs
+                LET r = DOCUMENT({CollectionNames.RECORDS.value}, m._key)
+                FILTER r != null
+                AND    r.connectorId     == @connector_id
+                AND    r.externalGroupId == @channel_id
+                LIMIT 1
+                RETURN {{message: m, record: r}}
+        """
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "connector_id": connector_id,
+                    "channel_id": channel_id,
+                    "ts": ts,
+                },
+                txn_id=transaction,
+            )
+            if not results:
+                return None
+            row = results[0]
+            return MessageRecord.from_arango_record(row["message"], row["record"])
+        except Exception as exc:
+            self.logger.error(f"❌ find_slack_burst_record_by_ts({ts}) failed: {exc}")
+            return None
+
     async def get_record_path(
         self,
         record_id: str,
@@ -3698,6 +3817,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return FileRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.MAILS.value:
                 return MailRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.MESSAGES.value:
+                return MessageRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.WEBPAGES.value:
                 return WebpageRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.TICKETS.value:
@@ -5125,6 +5246,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             for queued_record in queued_records:
                 doc = dict(queued_record)
+                record_key = doc.get("_key") or doc.get("id")
+                if not record_key:
+                    continue
 
                 # Map indexing status to extraction status
                 # For EMPTY status, extraction status should also be EMPTY, not FAILED
@@ -5135,19 +5259,27 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 else:
                     extraction_status = ProgressStatus.FAILED.value
 
-                update_data = {
+                updated_records.append({
+                    "id": record_key,
                     "indexingStatus": new_indexing_status,
                     "lastIndexTimestamp": current_timestamp,
                     "isDirty": False,
                     "virtualRecordId": virtual_record_id,
                     "extractionStatus": extraction_status,
-                }
+                })
 
-                doc.update(update_data)
-                updated_records.append(doc)
+            if not updated_records:
+                return 0
 
-            # Batch update all queued records
-            await self.batch_upsert_nodes(updated_records, CollectionNames.RECORDS.value, transaction)
+            success = await self.batch_update_nodes(
+                updated_records, CollectionNames.RECORDS.value, transaction
+            )
+            if not success:
+                self.logger.warning(
+                    "⚠️ Failed to update queued duplicate records for %s - some records may not exist",
+                    record_id,
+                )
+                return -1
 
             self.logger.debug(
                 f"✅ Successfully updated {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
@@ -7305,6 +7437,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 CollectionNames.TICKETS.value,
                 CollectionNames.MEETINGS.value,
                 CollectionNames.LINKS.value,
+                CollectionNames.MESSAGES.value,
                 CollectionNames.PROJECTS.value,
                 CollectionNames.PULLREQUESTS.value,
                 CollectionNames.CODE_FILES.value,
@@ -8085,57 +8218,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 f"❌ Failed to get related mails by messageIdHeader: {str(e)}"
             )
             return []
-
-    async def batch_update_nodes(
-        self,
-        node_ids: list[str],
-        updates: dict[str, Any],
-        collection: str,
-        transaction: str | None = None
-    ) -> bool:
-        """
-        Batch update multiple nodes with the same updates.
-
-        Args:
-            node_ids (List[str]): List of node IDs to update
-            updates (Dict[str, Any]): Dictionary of fields to update
-            collection (str): Collection name
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            self.logger.debug(f"🚀 Batch updating {len(node_ids)} nodes in {collection}")
-
-            query = f"""
-            FOR doc IN {collection}
-                FILTER doc._key IN @keys
-                UPDATE doc WITH @updates IN {collection}
-                RETURN NEW
-            """
-
-            bind_vars = {
-                "keys": node_ids,
-                "updates": updates
-            }
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars=bind_vars,
-                txn_id=transaction
-            )
-
-            if results:
-                self.logger.debug(f"✅ Successfully batch updated {len(results)} nodes")
-                return True
-            else:
-                self.logger.warning("⚠️ No nodes were updated")
-                return False
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to batch update nodes: {str(e)}")
-            return False
 
     async def count_connector_instances_by_scope(
         self,
@@ -10335,85 +10417,73 @@ class ArangoHTTPProvider(IGraphDBProvider):
             nfd = nfc
         return [nfc.lower(), nfd.lower()]
 
-    async def _check_name_conflict_in_parent(
+    async def _fetch_existing_file_names_in_parent(
         self,
         kb_id: str,
         parent_folder_id: str | None,
-        item_name: str,
-        mime_type: str | None = None,
         transaction: str | None = None,
-    ) -> dict:
-        """Check if an item (folder or file) name already exists in the target parent."""
+    ) -> set[tuple[str, str]]:
+        """Return (name_lower, mime_type_str) tuples for all non-deleted file
+        records that are immediate children of *parent_folder_id* (or KB root
+        when None).  Called once before the per-file loop so duplicate-name
+        detection is O(1) per file instead of one DB round-trip per file.
+        """
         try:
-            name_variants = self._normalized_name_variants_lower(item_name)
-            parent_from = (
-                f"{CollectionNames.RECORDS.value}/{parent_folder_id}"
-                if parent_folder_id
-                else f"{CollectionNames.RECORD_GROUPS.value}/{kb_id}"
-            )
-            bind_vars: dict[str, Any] = {
-                "parent_from": parent_from,
-                "name_variants": name_variants,
-                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
-                "@files_collection": CollectionNames.FILES.value,
-            }
-            if mime_type:
+            if parent_folder_id:
+                parent_from = f"{CollectionNames.RECORDS.value}/{parent_folder_id}"
                 query = """
                 FOR edge IN @@record_relations
                     FILTER edge._from == @parent_from
                     FILTER edge.relationshipType == "PARENT_CHILD"
                     FILTER edge._to LIKE "records/%"
                     LET child = DOCUMENT(edge._to)
-                    FILTER child != null
-                    FILTER child.recordName != null
-                    FILTER child.mimeType == @mime_type
-                    LET child_name_l = LOWER(child.recordName)
-                    FILTER child_name_l IN @name_variants
+                    FILTER child != null AND child.recordName != null
+                    FILTER child.isDeleted != true
                     LET file_doc = DOCUMENT(@@files_collection, child._key)
                     FILTER file_doc != null AND file_doc.isFile == true
-                    RETURN {
-                        id: child._key,
-                        name: child.recordName,
-                        type: "record",
-                        document_type: "records",
-                        mimeType: file_doc.mimeType
-                    }
+                    RETURN {name_lower: LOWER(child.recordName), mime_type: file_doc.mimeType}
                 """
-                bind_vars["mime_type"] = mime_type
+                bind_vars: dict[str, Any] = {
+                    "parent_from": parent_from,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    "@files_collection": CollectionNames.FILES.value,
+                }
             else:
+                parent_from = f"{CollectionNames.RECORD_GROUPS.value}/{kb_id}"
                 query = """
-                FOR edge IN @@record_relations
-                    FILTER edge._from == @parent_from
-                    FILTER edge.relationshipType == "PARENT_CHILD"
-                    FILTER edge._to LIKE "records/%"
-                    LET folder_record = DOCUMENT(edge._to)
-                    FILTER folder_record != null
-                    LET folder_file = FIRST(
-                        FOR isEdge IN @@is_of_type
-                            FILTER isEdge._from == folder_record._id
-                            LET f = DOCUMENT(isEdge._to)
-                            FILTER f != null AND f.isFile == false
-                            RETURN f
+                FOR edge IN @@belongs_to
+                    FILTER edge._to == @parent_from
+                    FILTER edge._from LIKE "records/%"
+                    LET child = DOCUMENT(edge._from)
+                    FILTER child != null AND child.recordName != null
+                    FILTER child.isDeleted != true
+                    LET file_doc = DOCUMENT(@@files_collection, child._key)
+                    FILTER file_doc != null AND file_doc.isFile == true
+                    LET parent_edge = FIRST(
+                        FOR pc IN @@record_relations
+                            FILTER pc._to == child._id
+                            FILTER pc.relationshipType == "PARENT_CHILD"
+                            LIMIT 1
+                            RETURN 1
                     )
-                    FILTER folder_file != null
-                    LET child_name = folder_record.recordName
-                    FILTER child_name != null
-                    LET child_name_l = LOWER(child_name)
-                    FILTER child_name_l IN @name_variants
-                    RETURN {
-                        id: folder_record._key,
-                        name: child_name,
-                        type: "folder",
-                        document_type: "records"
-                    }
+                    FILTER parent_edge == null
+                    RETURN {name_lower: LOWER(child.recordName), mime_type: file_doc.mimeType}
                 """
-                bind_vars["@is_of_type"] = CollectionNames.IS_OF_TYPE.value
+                bind_vars = {
+                    "parent_from": parent_from,
+                    "@belongs_to": CollectionNames.BELONGS_TO.value,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    "@files_collection": CollectionNames.FILES.value,
+                }
             results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
-            conflicts = list(results) if results else []
-            return {"has_conflict": len(conflicts) > 0, "conflicts": conflicts}
+            return {
+                (r["name_lower"], str(r.get("mime_type") or ""))
+                for r in (results or [])
+                if r.get("name_lower")
+            }
         except Exception as e:
-            self.logger.error(f"❌ Failed to check name conflict: {str(e)}")
-            return {"has_conflict": False, "conflicts": []}
+            self.logger.error(f"❌ Failed to fetch existing file names: {str(e)}")
+            return set()
 
     async def kb_exists(self, kb_id: str) -> bool:
         """Return True if a KB document with this id exists, regardless of permissions.
@@ -10881,9 +10951,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "origin": record_doc.get("origin"),
                 "extension": file_doc.get("extension", ""),
                 "mimeType": file_doc.get("mimeType", ""),
-                "createdAtTimestamp": str(record_doc.get("createdAtTimestamp", timestamp)),
-                "updatedAtTimestamp": str(record_doc.get("updatedAtTimestamp", timestamp)),
-                "sourceCreatedAtTimestamp": str(record_doc.get("sourceCreatedAtTimestamp", record_doc.get("createdAtTimestamp", timestamp))),
+                "createdAtTimestamp": str(record_doc.get("createdAtTimestamp") or timestamp),
+                "updatedAtTimestamp": str(record_doc.get("updatedAtTimestamp") or timestamp),
+                "sourceCreatedAtTimestamp": str(
+                    record_doc.get("sourceCreatedAtTimestamp")
+                    or record_doc.get("createdAtTimestamp")
+                    or timestamp
+                ),
             }
 
         except Exception as e:
@@ -10902,7 +10976,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             endpoints = await self.config_service.get_config(
                 config_node_constants.ENDPOINTS.value
             )
-            storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+            storage_url = (endpoints or {}).get("storage", {}).get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
 
             signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
 
@@ -10950,10 +11024,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             signed_url_route = ""
             file_content = ""
             if record.get("origin") == OriginTypes.UPLOAD.value:
-                storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+                storage_url = (endpoints or {}).get("storage", {}).get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
                 signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
             else:
-                connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+                connector_url = (endpoints or {}).get("connectors", {}).get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
                 signed_url_route = f"{connector_url}/api/v1/{record.get('orgId')}/{user_id}/{record.get('connectorName', '').lower()}/record/{record_key}/signedUrl"
 
                 if record.get("recordType") == "MAIL":
@@ -10970,9 +11044,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             "mimeType": mime_type,
                             "body": file_content,
                             "connectorId": record.get("connectorId", ""),
-                            "createdAtTimestamp": str(record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())),
+                            "createdAtTimestamp": str(record.get("createdAtTimestamp") or get_epoch_timestamp_in_ms()),
                             "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
-                            "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())))
+                            "sourceCreatedAtTimestamp": str(
+                                record.get("sourceCreatedAtTimestamp")
+                                or record.get("createdAtTimestamp")
+                                or get_epoch_timestamp_in_ms()
+                            )
                         }
                     except Exception as decode_error:
                         self.logger.warning(f"Failed to decode file content as UTF-8: {str(decode_error)}")
@@ -10989,9 +11067,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "mimeType": mime_type,
                 "body": file_content,
                 "connectorId": record.get("connectorId", ""),
-                "createdAtTimestamp": str(record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())),
+                "createdAtTimestamp": str(record.get("createdAtTimestamp") or get_epoch_timestamp_in_ms()),
                 "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
-                "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())))
+                "sourceCreatedAtTimestamp": str(
+                    record.get("sourceCreatedAtTimestamp")
+                    or record.get("createdAtTimestamp")
+                    or get_epoch_timestamp_in_ms()
+                )
             }
 
         except Exception as e:
@@ -11689,7 +11771,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             event_data = None
             try:
                 # Get file record for event payload
-                file_record = await self.get_document(record_id, CollectionNames.FILES.value)
+                file_record = await self.get_document(
+                    record_id, CollectionNames.FILES.value, transaction=transaction
+                )
 
                 # Determine if content changed (if file metadata provided, content likely changed)
                 content_changed = file_metadata is not None
@@ -12773,11 +12857,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         total_created = result.get("total_created", 0)
         folders_created = result.get("folders_created", 0)
         failed_count = len(result.get("failed_files", []))
+        skipped_count = len(result.get("skipped_files", []))
         message = f"Successfully uploaded {total_created} file{'s' if total_created != 1 else ''} to {upload_type}"
         if folders_created > 0:
             message += f" with {folders_created} new subfolder{'s' if folders_created != 1 else ''} created"
         if failed_count > 0:
             message += f". {failed_count} file{'s' if failed_count != 1 else ''} failed to upload"
+        if skipped_count > 0:
+            message += f". {skipped_count} file{'s' if skipped_count != 1 else ''} skipped (name already exists)"
         return message + "."
 
     async def _create_files_batch(
@@ -12787,38 +12874,61 @@ class ArangoHTTPProvider(IGraphDBProvider):
         parent_folder_id: str | None,
         transaction: str | None,
         timestamp: int,
-    ) -> list[dict]:
-        """Create a batch of file records and edges; skip name conflicts."""
+    ) -> tuple[list[dict], list[dict]]:
+        """Create a batch of file records and edges.
+
+        Files whose name already exists in the target parent (or collides with an
+        earlier file in this same batch) are SKIPPED, not created. Returns a tuple
+        of (created_files, skipped_files) where each skipped entry is
+        {"filePath", "name", "reason": "DUPLICATE_NAME"} so the caller can report
+        the skip back to the user instead of silently dropping it.
+        """
         if not files:
-            return []
+            return [], []
         valid_files: list[dict] = []
+        skipped_files: list[dict] = []
+        # Pre-fetch all existing (name_lower, mime_str) pairs for this parent
+        # in one query so the per-file conflict check is an O(1) set lookup
+        # instead of one DB round-trip per file.
+        existing_name_mime_set = await self._fetch_existing_file_names_in_parent(
+            kb_id=kb_id, parent_folder_id=parent_folder_id, transaction=transaction
+        )
+        # Track names accepted in THIS batch so intra-batch duplicates are
+        # caught. The DB check can't see writes made earlier in the same
+        # transaction because writes are batched after this loop.
+        seen_in_batch: set[tuple[str, str]] = set()
         for file_data in files:
             file_record = file_data.get("fileRecord") or {}
             record = file_data.get("record") or {}
             file_name = self._normalize_name(file_record.get("name") or record.get("recordName")) or ""
             mime_type = file_record.get("mimeType")
-            conflict_result = await self._check_name_conflict_in_parent(
-                kb_id=kb_id,
-                parent_folder_id=parent_folder_id,
-                item_name=file_name,
-                mime_type=mime_type,
-                transaction=transaction,
+            batch_key = (file_name.lower(), str(mime_type or ""))
+
+            # Check against the pre-fetched set (all name-variant forms) and
+            # against intra-batch names accepted earlier in this loop.
+            name_variants = self._normalized_name_variants_lower(file_name)
+            has_db_conflict = any(
+                (v, str(mime_type or "")) in existing_name_mime_set for v in name_variants
             )
-            if conflict_result.get("has_conflict"):
-                conflicts = conflict_result.get("conflicts", [])
-                conflict_names = [c.get("name", "") for c in conflicts]
+            is_conflict = has_db_conflict or batch_key in seen_in_batch
+            if is_conflict:
                 self.logger.warning(
-                    "⚠️ Skipping file due to name conflict: '%s' conflicts with %s",
+                    "⚠️ Skipping file due to name conflict: '%s'",
                     file_name,
-                    conflict_names,
                 )
+                skipped_files.append({
+                    "filePath": file_data.get("filePath", ""),
+                    "name": file_name,
+                    "reason": "DUPLICATE_NAME",
+                })
                 continue
+            seen_in_batch.add(batch_key)
             file_record["name"] = file_name
             if record and "recordName" not in record:
                 record["recordName"] = file_name
             valid_files.append(file_data)
         if not valid_files:
-            return []
+            return [], skipped_files
 
         # Enrich records with KB-specific fields
         records = []
@@ -12901,7 +13011,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             await self.batch_create_edges(belongs_to, CollectionNames.BELONGS_TO.value, transaction=transaction)
         if inherit_permission:
             await self.batch_create_edges(inherit_permission, CollectionNames.INHERIT_PERMISSIONS.value, transaction=transaction)
-        return valid_files
+        return valid_files, skipped_files
 
     async def _create_files_in_kb_root(
         self,
@@ -12909,7 +13019,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         files: list[dict],
         transaction: str | None,
         timestamp: int,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], list[dict]]:
         """Create files directly in KB root."""
         return await self._create_files_batch(
             kb_id=kb_id,
@@ -12926,7 +13036,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         files: list[dict],
         transaction: str | None,
         timestamp: int,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], list[dict]]:
         """Create files in a specific folder."""
         return await self._create_files_batch(
             kb_id=kb_id,
@@ -12947,6 +13057,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Create all file records and relationships from upload."""
         total_created = 0
         failed_files: list[str] = []
+        skipped_files: list[dict] = []
         created_files_data: list[dict] = []
         root_files: list[tuple[dict, str | None]] = []
         folder_files: dict[str, list[dict]] = {}
@@ -12968,20 +13079,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 parent_folder_files_map.setdefault(fid, []).append(file_data)
         if kb_root_files:
             try:
-                successful = await self._create_files_in_kb_root(
+                successful, skipped = await self._create_files_in_kb_root(
                     kb_id=kb_id,
                     files=kb_root_files,
                     transaction=transaction,
                     timestamp=timestamp,
                 )
                 created_files_data.extend(successful)
+                skipped_files.extend(skipped)
                 total_created += len(successful)
             except Exception as e:
                 self.logger.error("❌ Failed to create root files: %s", str(e))
                 failed_files.extend(f[0].get("filePath", "") for f in root_files if f[1] is None)
         for fid, file_list in parent_folder_files_map.items():
             try:
-                successful = await self._create_files_in_folder(
+                successful, skipped = await self._create_files_in_folder(
                     kb_id=kb_id,
                     folder_id=fid,
                     files=file_list,
@@ -12989,13 +13101,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     timestamp=timestamp,
                 )
                 created_files_data.extend(successful)
+                skipped_files.extend(skipped)
                 total_created += len(successful)
             except Exception as e:
                 self.logger.error("❌ Failed to create parent folder files: %s", str(e))
                 failed_files.extend(f.get("filePath", "") for f in file_list)
         for folder_id, file_list in folder_files.items():
             try:
-                successful = await self._create_files_in_folder(
+                successful, skipped = await self._create_files_in_folder(
                     kb_id=kb_id,
                     folder_id=folder_id,
                     files=file_list,
@@ -13003,6 +13116,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     timestamp=timestamp,
                 )
                 created_files_data.extend(successful)
+                skipped_files.extend(skipped)
                 total_created += len(successful)
             except Exception as e:
                 self.logger.error("❌ Failed to create subfolder files: %s", str(e))
@@ -13010,6 +13124,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         return {
             "total_created": total_created,
             "failed_files": failed_files,
+            "skipped_files": skipped_files,
             "created_files_data": created_files_data,
         }
 
@@ -13060,6 +13175,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         "folders_created": len(folder_map),
                         "created_folders": [{"id": fid} for fid in folder_map.values()],
                         "failed_files": creation_result["failed_files"],
+                        "skipped_files": creation_result.get("skipped_files", []),
                         "created_files_data": creation_result["created_files_data"],
                     }
                 await self.rollback_transaction(txn_id)
@@ -13069,6 +13185,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "folders_created": 0,
                     "created_folders": [],
                     "failed_files": creation_result["failed_files"],
+                    "skipped_files": creation_result.get("skipped_files", []),
                     "created_files_data": [],
                 }
             except Exception as e:
@@ -13123,7 +13240,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         endpoints = await self.config_service.get_config(
                             config_node_constants.ENDPOINTS.value
                         )
-                        storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+                        storage_url = (endpoints or {}).get("storage", {}).get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
 
                         for file_data in created_files_data:
                             record_doc = file_data.get("record")
@@ -13150,6 +13267,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "foldersCreated": result["folders_created"],
                     "createdFolders": result["created_folders"],
                     "failedFiles": result["failed_files"],
+                    "skippedFiles": result.get("skipped_files", []),
                     "kbId": kb_id,
                     "parentFolderId": parent_folder_id,
                     "eventData": event_data
@@ -14183,6 +14301,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         // Single inherit traversal from all seed recordGroups
         LET inherited_items = (
             FOR seed IN seed_rgs
+                FILTER seed.hideChildren != true
                 FOR inherited_node, edge IN 1..@inherit_max_depth INBOUND seed._id inheritPermissions
                     PRUNE inherited_node.orgId != @org_id
                     OPTIONS {{ bfs: true, uniqueVertices: "global" }}
@@ -16023,7 +16142,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET u = DOCUMENT("users", @user_key)
         FILTER u != null
 
-        LET child_rgs = rg.isInternal == true ? [] : (
+        LET child_rgs = (rg.isInternal == true OR rg.hideChildren == true) ? [] : (
             FOR edge IN belongsTo
                 FILTER edge._to == rg._id AND STARTS_WITH(edge._from, "recordGroups/")
                 LET node = DOCUMENT(edge._from)
@@ -16116,7 +16235,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET u = DOCUMENT("users", @user_key)
         FILTER u != null
 
-        LET direct_records = rg.isInternal == true ? [] : (
+        LET direct_records = (rg.isInternal == true OR rg.hideChildren == true) ? [] : (
             FOR edge IN belongsTo
                 FILTER edge._to == @rg_doc_id AND STARTS_WITH(edge._from, "records/")
                 LET record = DOCUMENT(edge._from)
@@ -16926,7 +17045,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                                 : role_target_perm.role
             )
 
-            // Path 4: User -> Team -> target (MIN of user->team and team->target roles)
+            // Path 4: User -> Team -> target (uses user->team role only; TEAM edge is access grant)
             LET path4_roles = (
                 FOR target_id IN permission_targets
                     FOR user_team_perm IN permission
@@ -16939,12 +17058,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER team_target_perm._from == user_team_perm._to
                             AND team_target_perm._to == target_id
                             AND team_target_perm.type == "TEAM"
-                            AND team_target_perm.role != null
-                            AND team_target_perm.role != ""
-                            // MIN of user->team and team->target roles
-                            RETURN (role_priority[user_team_perm.role] < role_priority[team_target_perm.role])
-                                ? user_team_perm.role
-                                : team_target_perm.role
+                            RETURN user_team_perm.role
             )
 
             // Path 5: User -> Org -> target

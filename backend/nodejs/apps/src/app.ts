@@ -23,6 +23,10 @@ import {
 } from './modules/enterprise_search/routes/es.routes';
 import { EnterpriseSearchAgentContainer } from './modules/enterprise_search/container/es.container';
 import { requestContextMiddleware } from './libs/middlewares/request.context';
+import {
+  runWithRequestContext,
+  newSystemRoot,
+} from './libs/context/request-context';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 
 import { createUserAccountRouter } from './modules/auth/routes/userAccount.routes';
@@ -43,6 +47,8 @@ import { createOAuthRouter } from './modules/tokens_manager/routes/oauth.routes'
 import { PrometheusService } from './libs/services/prometheus/prometheus.service';
 import { StorageContainer } from './modules/storage/container/storage.container';
 import { NotificationContainer } from './modules/notification/container/notification.container';
+import { NotificationConsumer } from './modules/notification/service/notification.consumer';
+import { createNotificationRouter } from './modules/notification/routes/notification.routes';
 import {
   loadAppConfig,
   AppConfig,
@@ -262,6 +268,8 @@ export class Application {
         this.desktopProxyContainer.get(DesktopProxySocketGateway);
       this.desktopProxySocketGateway.initialize(this.server);
 
+      this.bootstrapNotificationBrokerConsumer();
+
       // Serve static frontend files\
       this.app.use(express.static(path.join(__dirname, 'public')));
       // SPA fallback route\
@@ -376,7 +384,7 @@ export class Application {
         credentials: true,
         exposedHeaders: ['x-session-token', 'content-disposition'],
         methods: [HttpMethod.DELETE, HttpMethod.GET, HttpMethod.OPTIONS, HttpMethod.PATCH, HttpMethod.POST, HttpMethod.PUT],
-        allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token']
+        allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token', 'x-request-id']
       }),
     );
 
@@ -486,7 +494,12 @@ export class Application {
     // knowledge base routes
     this.app.use(
       '/api/v1/knowledgeBase',
-      createKnowledgeBaseRouter(this.knowledgeBaseContainer, this.notificationContainer),
+      createKnowledgeBaseRouter(this.knowledgeBaseContainer),
+    );
+
+    this.app.use(
+      '/api/v1/notifications',
+      createNotificationRouter(this.entityManagerContainer),
     );
 
     // configuration manager routes
@@ -545,6 +558,26 @@ export class Application {
     this.app.use(ErrorMiddleware.handleError());
   }
 
+  /** Starts Kafka/Redis notification consumer in the background (does not block init). */
+  private bootstrapNotificationBrokerConsumer(): void {
+    void (async () => {
+      try {
+        const consumer = this.notificationContainer.get<NotificationConsumer>(
+          NotificationConsumer,
+        );
+        await consumer.start();
+        await consumer.subscribe(['notification'], false);
+        await consumer.consume(async () => {
+          /* persist + WebSocket delivery implemented in NotificationConsumer */
+        });
+      } catch (error) {
+        this.logger.error('Notification broker consumer failed to start', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  }
+
   async start(): Promise<void> {
     try {
       await new Promise<void>((resolve) => {
@@ -568,6 +601,17 @@ export class Application {
   async stop(): Promise<void> {
     try {
       this.logger.info('Shutting down application...');
+      try {
+        const notificationConsumer =
+          this.notificationContainer.get<NotificationConsumer>(
+            NotificationConsumer,
+          );
+        await notificationConsumer.stop();
+      } catch (err) {
+        this.logger.warn('NotificationConsumer not available during shutdown', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       try {
         this.desktopProxySocketGateway?.shutdown();
         this.desktopProxySocketGateway = null;
@@ -608,6 +652,9 @@ export class Application {
     // are logged but never crash the process — startup must succeed even
     // if a migration cannot run this boot.
     setImmediate(async () => {
+      await runWithRequestContext(
+        { rootId: newSystemRoot() },
+        async () => {
       try {
         this.logger.info('Running migration...');
         const scheduler =
@@ -624,6 +671,8 @@ export class Application {
           error: error instanceof Error ? error.message : 'Unknown error',
         });
       }
+        },
+      );
     });
   }
 

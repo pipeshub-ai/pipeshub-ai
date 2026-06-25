@@ -9,6 +9,7 @@ import pytest
 from app.config.constants.arangodb import (
     CollectionNames,
     EventTypes,
+    MimeTypes,
     OriginTypes,
     ProgressStatus,
     RecordTypes,
@@ -31,6 +32,8 @@ def _make_handler(logger=None, config_service=None, event_processor=None):
 
     # Ensure event_processor has the nested objects the handler expects
     if not hasattr(event_processor, "graph_provider") or event_processor.graph_provider is None:
+        event_processor.graph_provider = AsyncMock()
+    elif not isinstance(event_processor.graph_provider, AsyncMock):
         event_processor.graph_provider = AsyncMock()
     if not hasattr(event_processor, "processor") or event_processor.processor is None:
         event_processor.processor = MagicMock()
@@ -89,7 +92,7 @@ class TestBulkDeleteEvent:
         handler = _make_handler()
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock(
-            return_value={"deleted_count": 5, "virtual_record_ids_processed": 3}
+            return_value={"virtual_record_ids_processed": 3}
         )
 
         payload = {"virtualRecordIds": ["vr1", "vr2", "vr3"]}
@@ -107,7 +110,7 @@ class TestBulkDeleteEvent:
         handler = _make_handler()
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock(
-            return_value={"deleted_count": 0, "virtual_record_ids_processed": 0}
+            return_value={"virtual_record_ids_processed": 0}
         )
 
         payload = {"virtualRecordIds": []}
@@ -130,7 +133,9 @@ class TestDeleteRecordEvent:
         gp = handler.event_processor.graph_provider
         gp.get_document = AsyncMock(return_value={"_key": "r1", "virtualRecordId": "vr1"})
         pipeline = handler.event_processor.processor.indexing_pipeline
-        pipeline.delete_embeddings = AsyncMock()
+        pipeline.bulk_delete_embeddings = AsyncMock(
+            return_value={"virtual_record_ids_processed": 1, "success": True}
+        )
 
         payload = {"recordId": "r1", "virtualRecordId": "vr1"}
         events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, payload)
@@ -139,7 +144,7 @@ class TestDeleteRecordEvent:
         assert events[0].event == "parsing_complete"
         assert events[0].data.record_id == "r1"
         assert events[1].event == "indexing_complete"
-        pipeline.delete_embeddings.assert_awaited_once_with("r1", "vr1")
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"])
 
     @pytest.mark.asyncio
     async def test_delete_record_no_virtual_record_id(self):
@@ -147,13 +152,15 @@ class TestDeleteRecordEvent:
         gp = handler.event_processor.graph_provider
         gp.get_document = AsyncMock(return_value={"_key": "r1"})
         pipeline = handler.event_processor.processor.indexing_pipeline
-        pipeline.delete_embeddings = AsyncMock()
+        pipeline.bulk_delete_embeddings = AsyncMock(
+            return_value={"virtual_record_ids_processed": 0, "success": True}
+        )
 
         payload = {"recordId": "r1"}
         events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, payload)
 
         assert len(events) == 2
-        pipeline.delete_embeddings.assert_awaited_once_with("r1", None)
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with([None])
 
 
 # ===================================================================
@@ -271,7 +278,7 @@ class TestConnectorActiveCheck:
         # First call: record, second call: connector, third call: __update_document_status,
         # fourth call: finally block record fetch
         gp.get_document = AsyncMock(side_effect=[record, connector_instance, record, record])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
         gp.update_queued_duplicates_status = AsyncMock()
 
         payload = {"recordId": "r1", "mimeType": "application/pdf", "extension": "pdf"}
@@ -279,7 +286,7 @@ class TestConnectorActiveCheck:
 
         assert len(events) == 2
         # Verify status update was called
-        gp.batch_upsert_nodes.assert_awaited()
+        gp.batch_update_nodes.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_connector_active_proceeds_normally(self):
@@ -386,7 +393,9 @@ class TestUpdateRecordEvent:
         gp.update_queued_duplicates_status = AsyncMock()
 
         pipeline = handler.event_processor.processor.indexing_pipeline
-        pipeline.delete_embeddings = AsyncMock()
+        pipeline.bulk_delete_embeddings = AsyncMock(
+            return_value={"virtual_record_ids_processed": 1, "success": True}
+        )
 
         ep = handler.event_processor
         ep.on_event = MagicMock(return_value=_async_gen_events([
@@ -407,7 +416,7 @@ class TestUpdateRecordEvent:
             mock_dl.return_value = b"file content"
             events = await _collect_events(handler, EventTypes.UPDATE_RECORD.value, payload)
 
-        pipeline.delete_embeddings.assert_awaited_once_with("r1", "vr1")
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"])
         assert len(events) == 2
 
 
@@ -430,7 +439,7 @@ class TestUnsupportedFileType:
         }
         # First call: record, second call: finally block
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
         gp.update_queued_duplicates_status = AsyncMock()
 
         payload = {
@@ -442,9 +451,9 @@ class TestUnsupportedFileType:
 
         assert len(events) == 2
         # Should update record with FILE_TYPE_NOT_SUPPORTED
-        gp.batch_upsert_nodes.assert_awaited()
+        gp.batch_update_nodes.assert_awaited()
         # First call is the unsupported status update
-        call_args = gp.batch_upsert_nodes.call_args_list[0]
+        call_args = gp.batch_update_nodes.call_args_list[0]
         docs = call_args[0][0]
         assert docs[0]["indexingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
         assert docs[0]["extractionStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
@@ -852,7 +861,7 @@ class TestConnectorStreamingPath:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
 
         handler._trigger_next_queued_duplicate = AsyncMock()
 
@@ -893,7 +902,7 @@ class TestProcessEventErrors:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
 
         handler._trigger_next_queued_duplicate = AsyncMock()
 
@@ -927,7 +936,7 @@ class TestProcessEventErrors:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(return_value=record)
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
         gp.find_next_queued_duplicate = AsyncMock(return_value=None)
 
         payload = {
@@ -949,9 +958,9 @@ class TestProcessEventErrors:
                     await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
         # The finally block should have called __update_document_status
-        # which calls get_document and batch_upsert_nodes
+        # which calls get_document and batch_update_nodes
         assert gp.get_document.await_count >= 2
-        assert gp.batch_upsert_nodes.awaited
+        assert gp.batch_update_nodes.awaited
 
     @pytest.mark.asyncio
     async def test_finally_block_completed_status_updates_queued_duplicates(self):
@@ -1122,7 +1131,9 @@ class TestProcessEventErrors:
         gp.update_queued_duplicates_status = AsyncMock()
 
         pipeline = handler.event_processor.processor.indexing_pipeline
-        pipeline.delete_embeddings = AsyncMock()
+        pipeline.bulk_delete_embeddings = AsyncMock(
+            return_value={"virtual_record_ids_processed": 1, "success": True}
+        )
 
         payload = {"recordId": "r1", "virtualRecordId": "vr1"}
         events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, payload)
@@ -1228,7 +1239,7 @@ class TestUpdateDocumentStatus:
             "extractionStatus": ProgressStatus.NOT_STARTED.value,
         }
         gp.get_document = AsyncMock(return_value=record)
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
 
         result = await handler._RecordEventHandler__update_document_status(
             record_id="r1",
@@ -1238,8 +1249,8 @@ class TestUpdateDocumentStatus:
         )
 
         assert result is not None
-        gp.batch_upsert_nodes.assert_awaited_once()
-        call_args = gp.batch_upsert_nodes.call_args
+        gp.batch_update_nodes.assert_awaited_once()
+        call_args = gp.batch_update_nodes.call_args
         doc = call_args[0][0][0]
         assert doc["indexingStatus"] == ProgressStatus.FAILED.value
         assert doc["extractionStatus"] == ProgressStatus.FAILED.value
@@ -1270,7 +1281,7 @@ class TestUpdateDocumentStatus:
             "extractionStatus": ProgressStatus.COMPLETED.value,
         }
         gp.get_document = AsyncMock(return_value=record)
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
 
         await handler._RecordEventHandler__update_document_status(
             record_id="r1",
@@ -1278,7 +1289,7 @@ class TestUpdateDocumentStatus:
             extraction_status=ProgressStatus.FAILED.value,
         )
 
-        call_args = gp.batch_upsert_nodes.call_args
+        call_args = gp.batch_update_nodes.call_args
         doc = call_args[0][0][0]
         # Extraction should remain COMPLETED
         assert doc["extractionStatus"] == ProgressStatus.COMPLETED.value
@@ -1293,7 +1304,7 @@ class TestUpdateDocumentStatus:
             "extractionStatus": ProgressStatus.NOT_STARTED.value,
         }
         gp.get_document = AsyncMock(return_value=record)
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
 
         await handler._RecordEventHandler__update_document_status(
             record_id="r1",
@@ -1302,7 +1313,7 @@ class TestUpdateDocumentStatus:
             reason=None,
         )
 
-        call_args = gp.batch_upsert_nodes.call_args
+        call_args = gp.batch_update_nodes.call_args
         doc = call_args[0][0][0]
         assert "reason" not in doc
 
@@ -1574,6 +1585,475 @@ class TestFullHappyPath:
 
 
 # ===================================================================
+# Folder record skip
+# ===================================================================
+
+class TestFolderRecordSkip:
+    """Folder / tree-node records are marked COMPLETED without indexing."""
+
+    @pytest.mark.asyncio
+    async def test_folder_mime_type_skips_indexing(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": MimeTypes.FOLDER.value,
+            "isFile": True,
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record, record])
+        gp.batch_update_nodes = AsyncMock(return_value=True)
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        payload = {
+            "recordId": "r1",
+            "mimeType": MimeTypes.FOLDER.value,
+            "extension": "unknown",
+        }
+        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 2
+        gp.batch_update_nodes.assert_awaited()
+        doc = gp.batch_update_nodes.call_args[0][0][0]
+        assert doc["indexingStatus"] == ProgressStatus.COMPLETED.value
+        assert doc["reason"] == "Folder record — no content to index"
+
+    @pytest.mark.asyncio
+    async def test_google_drive_folder_mime_skips_indexing(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record, record])
+        gp.batch_update_nodes = AsyncMock(return_value=True)
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        payload = {
+            "recordId": "r1",
+            "mimeType": MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+            "extension": "unknown",
+        }
+        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 2
+
+    @pytest.mark.asyncio
+    async def test_is_file_false_skips_indexing(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "application/pdf",
+            "isFile": False,
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record, record])
+        gp.batch_update_nodes = AsyncMock(return_value=True)
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        payload = {
+            "recordId": "r1",
+            "mimeType": "application/pdf",
+            "extension": "pdf",
+        }
+        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 2
+        gp.batch_update_nodes.assert_awaited()
+
+
+# ===================================================================
+# CODE_FILE handling
+# ===================================================================
+
+class TestCodeFileHandling:
+    """Tests for CODE_FILE record type extension gating."""
+
+    @pytest.mark.asyncio
+    async def test_unsupported_code_file_extension(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "recordType": RecordTypes.CODE_FILE.value,
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "text/plain",
+            "recordName": "legacy.cobol",
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.batch_update_nodes = AsyncMock(return_value=True)
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        payload = {
+            "recordId": "r1",
+            "mimeType": "text/plain",
+            "extension": "unknown",
+            "recordName": "legacy.cobol",
+        }
+        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 2
+        doc = gp.batch_update_nodes.call_args[0][0][0]
+        assert doc["indexingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+
+    @pytest.mark.asyncio
+    async def test_supported_code_file_proceeds_to_indexing(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "recordType": RecordTypes.CODE_FILE.value,
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "text/plain",
+            "recordName": "main.py",
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+            {"event": "indexing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "orgId": "org-1",
+            "mimeType": "text/plain",
+            "extension": "unknown",
+            "recordName": "main.py",
+            "signedUrl": "https://example.com/main.py",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"print('hello')"
+            events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 2
+        mock_dl.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_code_file_extension_from_db_record_name(self):
+        """Extension derived from record.recordName when payload omits recordName."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "recordType": RecordTypes.CODE_FILE.value,
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "text/plain",
+            "recordName": "index.ts",
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "orgId": "org-1",
+            "mimeType": "text/plain",
+            "extension": "unknown",
+            "signedUrl": "https://example.com/index.ts",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"export {}"
+            events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) >= 1
+
+
+class TestKbUploadedCodeFileHandling:
+    """KB uploads arrive as recordType=FILE with code-specific MIME types."""
+
+    @pytest.mark.asyncio
+    async def test_file_record_with_code_mime_proceeds_to_indexing(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "recordType": RecordTypes.FILE.value,
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "text/x-python",
+            "recordName": "main.py",
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+            {"event": "indexing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "orgId": "org-1",
+            "mimeType": "text/x-python",
+            "extension": "py",
+            "recordName": "main.py",
+            "signedUrl": "https://example.com/main.py",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"print('hello')"
+            events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 2
+        mock_dl.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_code_mime_passes_even_with_wrong_extension(self):
+        """Gate is MIME-driven: supported code MIME passes despite bogus extension."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "recordType": RecordTypes.FILE.value,
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "text/x-python",
+            "recordName": "main.py",
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+            {"event": "indexing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "orgId": "org-1",
+            "mimeType": "text/x-python",
+            "extension": "exe",
+            "recordName": "main.py",
+            "signedUrl": "https://example.com/main.py",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"print('hello')"
+            events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 2
+        mock_dl.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_code_extension_passes_with_unsupported_mime(self):
+        """Supported code extension passes the gate even when MIME is unrecognized."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "recordType": RecordTypes.FILE.value,
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "application/x-msdownload",
+            "recordName": "main.py",
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+            {"event": "indexing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "orgId": "org-1",
+            "mimeType": "application/x-msdownload",
+            "extension": "py",
+            "recordName": "main.py",
+            "signedUrl": "https://example.com/main.py",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"print('hello')"
+            events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 2
+        mock_dl.assert_awaited_once()
+        gp.batch_update_nodes.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_code_mime_still_rejected(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "recordType": RecordTypes.FILE.value,
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "application/x-msdownload",
+            "recordName": "setup.exe",
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.batch_update_nodes = AsyncMock(return_value=True)
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        payload = {
+            "recordId": "r1",
+            "mimeType": "application/x-msdownload",
+            "extension": "exe",
+            "recordName": "setup.exe",
+        }
+        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 2
+        doc = gp.batch_update_nodes.call_args[0][0][0]
+        assert doc["indexingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+
+
+# ===================================================================
+# Reconciliation-enabled update/reindex
+# ===================================================================
+
+class TestReconciliationPath:
+    """UPDATE/REINDEX events skip embedding deletion for reconciliation types."""
+
+    @pytest.mark.asyncio
+    async def test_reindex_reconciliation_mime_skips_delete(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        sql_mime = MimeTypes.SQL_TABLE.value
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": sql_mime,
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "orgId": "org-1",
+            "mimeType": sql_mime,
+            "extension": "sql_table",
+            "signedUrl": "https://example.com/table",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"data"
+            await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
+
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reindex_non_reconciliation_deletes_embeddings(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        pptx_mime = MimeTypes.PPTX.value
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": pptx_mime,
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "virtualRecordId": "vr1",
+            "orgId": "org-1",
+            "mimeType": pptx_mime,
+            "extension": "pptx",
+            "signedUrl": "https://example.com/file.pptx",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"pptx"
+            await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
+
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"])
+
+
+# ===================================================================
+# Signed URL exception fallback (not just None return)
+# ===================================================================
+
+class TestSignedUrlExceptionFallback:
+    """Signed URL download exception falls through to connector streaming."""
+
+    @pytest.mark.asyncio
+    async def test_signed_url_exception_falls_back_to_connector(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "application/pdf",
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+            {"event": "indexing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "virtualRecordId": "vr1",
+            "orgId": "org-1",
+            "mimeType": "application/pdf",
+            "extension": "pdf",
+            "signedUrl": "https://example.com/file.pdf",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.side_effect = RuntimeError("signed url timeout")
+            with patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock) as mock_jwt:
+                mock_jwt.return_value = "token"
+                with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as mock_api:
+                    mock_api.return_value = {"data": b"fallback bytes"}
+                    handler.config_service.get_config = AsyncMock(
+                        return_value={"connectors": {"endpoint": "http://localhost:8088"}}
+                    )
+                    events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 2
+        mock_api.assert_awaited_once()
+
+
+# ===================================================================
 # Additional coverage: IndexingError, large chunk logging,
 # ClientConnectorError, record_name fallback edge cases
 # ===================================================================
@@ -1583,14 +2063,12 @@ class TestAdditionalCoverage:
 
     @pytest.mark.asyncio
     async def test_indexing_error_caught_directly(self):
-        """IndexingError raised at the top level of process_event (lines 362-365)."""
+        """IndexingError on get_document is handled gracefully when status update cannot complete."""
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
+        handler._trigger_next_queued_duplicate = AsyncMock()
 
-        # Make get_document raise IndexingError directly
         gp.get_document = AsyncMock(side_effect=IndexingError("parse fail", record_id="r1"))
-        gp.batch_upsert_nodes = AsyncMock()
-        gp.find_next_queued_duplicate = AsyncMock(return_value=None)
 
         payload = {
             "recordId": "r1",
@@ -1599,8 +2077,10 @@ class TestAdditionalCoverage:
             "extension": "pdf",
         }
 
-        with pytest.raises(Exception, match="parse fail"):
-            await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert events == []
+        handler._trigger_next_queued_duplicate.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_record_name_without_dot_does_not_derive_extension(self):
@@ -1615,7 +2095,7 @@ class TestAdditionalCoverage:
         }
         # record + finally
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
         gp.update_queued_duplicates_status = AsyncMock()
 
         payload = {
@@ -1628,7 +2108,7 @@ class TestAdditionalCoverage:
 
         # Should fall through to unsupported file type
         assert len(events) == 2
-        gp.batch_upsert_nodes.assert_awaited()
+        gp.batch_update_nodes.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_record_name_missing_does_not_derive_extension(self):
@@ -1642,7 +2122,7 @@ class TestAdditionalCoverage:
             "mimeType": "application/x-weird",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
         gp.update_queued_duplicates_status = AsyncMock()
 
         payload = {

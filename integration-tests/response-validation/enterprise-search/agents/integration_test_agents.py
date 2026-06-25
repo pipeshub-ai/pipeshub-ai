@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from uuid import uuid4
 
 import pytest
@@ -35,13 +35,12 @@ from openapi_schema_validator import (
     assert_request_body_matches_openapi_operation,
     assert_response_matches_openapi_operation,
 )
+from helper.clients.agents_client import AgentsClient
 from pipeshub_client import PipeshubClient
 
 logger = logging.getLogger(__name__)
 
-_AGENTS_CREATE_PATH = "/api/v1/agents/create"
-_AGENTS_LIST_PATH = "/api/v1/agents"
-_AGENTS_DETAIL_PATH = "/api/v1/agents/{agent_key}"
+_AGENT_NOT_FOUND_MESSAGE = "Agent not found or you don't have access to it"
 
 
 def _valid_toolset_entry(
@@ -198,44 +197,46 @@ def _response_text_fragments(resp: requests.Response) -> str:
     return " ".join(fragments).lower()
 
 
-@pytest.mark.integration
-class TestCreateAgent:
+def _assert_agent_not_found_error(body: dict[str, Any], *, label: str) -> None:
+    assert isinstance(body, dict) and "error" in body, (
+        f"[{label}] Expected error envelope, got {body!r}"
+    )
+    error = body["error"]
+    assert isinstance(error, dict), f"[{label}] Expected error object, got {body!r}"
+    assert error.get("code") == "HTTP_NOT_FOUND", (
+        f"[{label}] Expected HTTP_NOT_FOUND, got {error.get('code')!r}"
+    )
+    assert error.get("message") == _AGENT_NOT_FOUND_MESSAGE, (
+        f"[{label}] Unexpected not-found message: {error.get('message')!r}"
+    )
+
+
+class AgentsTestBase:
+    """Shared agents_client fixture and agent create/cleanup helpers."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
+    def _setup(self, agents_client: AgentsClient, pipeshub_client: PipeshubClient) -> None:
+        self.agents = agents_client
         self.client = pipeshub_client
-        self.base_url = pipeshub_client.base_url
-        self.headers = pipeshub_client.auth_headers
         self.org_id = pipeshub_client.org_id
-        self.timeout = pipeshub_client.timeout_seconds
 
     @pytest.fixture
-    def created_agent_keys(self):
+    def created_agent_keys(self) -> Iterator[list[str]]:
         created: list[str] = []
         yield created
         for agent_key in reversed(created):
             try:
-                resp = requests.delete(
-                    f"{self.base_url}/api/v1/agents/{agent_key}",
-                    headers=self.headers,
-                    timeout=self.timeout,
-                )
+                resp = self.agents.delete_agent(agent_key)
                 if resp.status_code >= 300:
                     logger.warning(
                         "Agent delete failed for %s: HTTP %s %s",
-                        agent_key, resp.status_code, resp.text[:300]
+                        agent_key, resp.status_code, resp.text[:300],
                     )
             except Exception:
-                # Best-effort cleanup in teardown: preserve the original test failure.
                 pass
 
     def _create_agent_raw(self, payload: dict[str, Any]) -> requests.Response:
-        return requests.post(
-            f"{self.base_url}{_AGENTS_CREATE_PATH}",
-            headers=self.headers,
-            json=payload,
-            timeout=self.timeout,
-        )
+        return self.agents.create_agent(**payload)
 
     @staticmethod
     def _created_agent_key(resp_json: dict[str, Any]) -> str:
@@ -246,6 +247,10 @@ class TestCreateAgent:
             f"Expected response.agent._key, got: {resp_json!r}"
         )
         return agent_key
+
+
+@pytest.mark.integration
+class TestCreateAgent(AgentsTestBase):
 
     def test_create_agent_minimal_valid_body(
         self,
@@ -521,41 +526,7 @@ class TestCreateAgentOpenApiRequestContract:
 
 
 @pytest.mark.integration
-class TestListAgents:
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.client = pipeshub_client
-        self.base_url = pipeshub_client.base_url
-        self.headers = pipeshub_client.auth_headers
-        self.timeout = pipeshub_client.timeout_seconds
-
-    @pytest.fixture
-    def created_agent_keys(self):
-        created: list[str] = []
-        yield created
-        for agent_key in reversed(created):
-            try:
-                resp = requests.delete(
-                    f"{self.base_url}/api/v1/agents/{agent_key}",
-                    headers=self.headers,
-                    timeout=self.timeout,
-                )
-                if resp.status_code >= 300:
-                    logger.warning(
-                        "Agent delete failed for %s: HTTP %s %s",
-                        agent_key, resp.status_code, resp.text[:300]
-                    )
-            except Exception:
-                pass
-
-    def _create_agent_raw(self, payload: dict[str, Any]) -> requests.Response:
-        return requests.post(
-            f"{self.base_url}{_AGENTS_CREATE_PATH}",
-            headers=self.headers,
-            json=payload,
-            timeout=self.timeout,
-        )
+class TestListAgents(AgentsTestBase):
 
     def _create_agent_for_list_test(
         self,
@@ -576,7 +547,7 @@ class TestListAgents:
         assert resp.status_code == 201, f"Agent create failed: {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
-        agent_key = TestCreateAgent._created_agent_key(body)
+        agent_key = self._created_agent_key(body)
         created_agent_keys.append(agent_key)
         return agent_key
 
@@ -586,12 +557,10 @@ class TestListAgents:
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return requests.get(
-            f"{self.base_url}{_AGENTS_LIST_PATH}",
-            headers=headers if headers is not None else self.headers,
-            params=params,
-            timeout=self.timeout,
-        )
+        list_kwargs = dict(params or {})
+        if headers is not None:
+            return self.agents.list_agents(**list_kwargs, auth=False, headers=headers)
+        return self.agents.list_agents(**list_kwargs)
 
     def test_list_agents_returns_paginated_envelope(self, agent_session: dict[str, Any]) -> None:
         resp = self._list_agents_raw()
@@ -694,15 +663,11 @@ class TestListAgents:
         )
 
         body = _response_json(resp)
-        assert isinstance(body, dict) and "error" in body, (
-            f"[{label}] Expected error envelope, got {body!r}"
+        assert_response_matches_openapi_operation(
+            body, "listAgents", status_code="400"
         )
-        error = body["error"]
-        assert error["code"] == "VALIDATION_ERROR", (
-            f"[{label}] Expected VALIDATION_ERROR, got {error['code']!r}"
-        )
-        assert error["message"] == "Validation failed", (
-            f"[{label}] Expected 'Validation failed', got {error['message']!r}"
+        assert body["error"]["code"] == "VALIDATION_ERROR", (
+            f"[{label}] Expected VALIDATION_ERROR, got {body['error']['code']!r}"
         )
 
     def test_list_agents_requires_auth(self) -> None:
@@ -719,41 +684,7 @@ class TestListAgents:
 
 
 @pytest.mark.integration
-class TestGetAgent:
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.client = pipeshub_client
-        self.base_url = pipeshub_client.base_url
-        self.headers = pipeshub_client.auth_headers
-        self.timeout = pipeshub_client.timeout_seconds
-
-    @pytest.fixture
-    def created_agent_keys(self):
-        created: list[str] = []
-        yield created
-        for agent_key in reversed(created):
-            try:
-                resp = requests.delete(
-                    f"{self.base_url}/api/v1/agents/{agent_key}",
-                    headers=self.headers,
-                    timeout=self.timeout,
-                )
-                if resp.status_code >= 300:
-                    logger.warning(
-                        "Agent delete failed for %s: HTTP %s %s",
-                        agent_key, resp.status_code, resp.text[:300]
-                    )
-            except Exception:
-                pass
-
-    def _create_agent_raw(self, payload: dict[str, Any]) -> requests.Response:
-        return requests.post(
-            f"{self.base_url}{_AGENTS_CREATE_PATH}",
-            headers=self.headers,
-            json=payload,
-            timeout=self.timeout,
-        )
+class TestGetAgent(AgentsTestBase):
 
     def _create_agent_for_get_test(
         self,
@@ -776,7 +707,7 @@ class TestGetAgent:
         assert resp.status_code == 201, f"Agent create failed: {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
-        agent_key = TestCreateAgent._created_agent_key(body)
+        agent_key = self._created_agent_key(body)
         created_agent_keys.append(agent_key)
         return agent_key
 
@@ -787,12 +718,16 @@ class TestGetAgent:
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return requests.get(
-            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
-            headers=headers if headers is not None else self.headers,
-            params=params,
-            timeout=self.timeout,
-        )
+        if headers is not None:
+            return self.agents.get_agent(
+                agent_key,
+                auth=False,
+                headers=headers,
+                params=params,
+            )
+        if params:
+            return self.agents.get_agent(agent_key, params=params)
+        return self.agents.get_agent(agent_key)
 
     @staticmethod
     def _assert_get_agent_response_shape(
@@ -863,7 +798,7 @@ class TestGetAgent:
             created_agent_keys=created_agent_keys,
             knowledge=[
                 {
-                    "connectorId": f"knowledgeBase_{self.client.org_id}",
+                    "connectorId": f"knowledgeBase_{self.org_id}",
                     "filters": {"recordGroups": [session_kb["kb_id"]], "records": []},
                 }
             ],
@@ -925,7 +860,7 @@ class TestGetAgent:
             description="openapi GET with KB knowledge",
             knowledge=[
                 {
-                    "connectorId": f"knowledgeBase_{self.client.org_id}",
+                    "connectorId": f"knowledgeBase_{self.org_id}",
                     "filters": {
                         "recordGroups": [session_kb["kb_id"]],
                         "records": [],
@@ -960,17 +895,13 @@ class TestGetAgent:
         missing_agent_key = f"missing-agent-{uuid4().hex[:12]}"
 
         resp = self._get_agent_raw(missing_agent_key)
-        assert resp.status_code == 500, (
-            f"Expected current 500 error for unknown agent key, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 404, (
+            f"Expected 404 for unknown agent key, got {resp.status_code}: {resp.text}"
         )
 
         body = _response_json(resp)
-        assert_response_matches_openapi_operation(body, "getAgent", status_code="500")
-
-        error_text = _response_text_fragments(resp)
-        assert "not found" in error_text or "agent" in error_text, (
-            f"unexpected error payload: {resp.text}"
-        )
+        assert_response_matches_openapi_operation(body, "getAgent", status_code="404")
+        _assert_agent_not_found_error(body, label="unknown get")
 
     def test_get_agent_requires_auth(self, agent_session: dict[str, Any]) -> None:
         resp = self._get_agent_raw(agent_session["primary_agent"], headers={})
@@ -987,42 +918,7 @@ class TestGetAgent:
 
 
 @pytest.mark.integration
-class TestUpdateAgent:
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.client = pipeshub_client
-        self.base_url = pipeshub_client.base_url
-        self.headers = pipeshub_client.auth_headers
-        self.org_id = pipeshub_client.org_id
-        self.timeout = pipeshub_client.timeout_seconds
-
-    @pytest.fixture
-    def created_agent_keys(self):
-        created: list[str] = []
-        yield created
-        for agent_key in reversed(created):
-            try:
-                resp = requests.delete(
-                    f"{self.base_url}/api/v1/agents/{agent_key}",
-                    headers=self.headers,
-                    timeout=self.timeout,
-                )
-                if resp.status_code >= 300:
-                    logger.warning(
-                        "Agent delete failed for %s: HTTP %s %s",
-                        agent_key, resp.status_code, resp.text[:300]
-                    )
-            except Exception:
-                pass
-
-    def _create_agent_raw(self, payload: dict[str, Any]) -> requests.Response:
-        return requests.post(
-            f"{self.base_url}{_AGENTS_CREATE_PATH}",
-            headers=self.headers,
-            json=payload,
-            timeout=self.timeout,
-        )
+class TestUpdateAgent(AgentsTestBase):
 
     def _create_agent_for_update_test(
         self,
@@ -1041,7 +937,7 @@ class TestUpdateAgent:
         assert resp.status_code == 201, f"Agent create failed: {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
-        agent_key = TestCreateAgent._created_agent_key(body)
+        agent_key = self._created_agent_key(body)
         created_agent_keys.append(agent_key)
         return agent_key
 
@@ -1054,24 +950,21 @@ class TestUpdateAgent:
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        request_headers = dict(headers if headers is not None else self.headers)
+        kwargs: dict[str, Any] = {}
+        if json_body is not None:
+            kwargs["json"] = json_body
         if data is not None:
-            request_headers.setdefault("Content-Type", "application/json")
-        return requests.put(
-            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
-            headers=request_headers,
-            json=json_body,
-            data=data,
-            params=params,
-            timeout=self.timeout,
-        )
+            kwargs["data"] = data
+        if params is not None:
+            kwargs["params"] = params
+        if headers is not None:
+            if data is not None:
+                headers = {**headers, "Content-Type": headers.get("Content-Type", "application/json")}
+            return self.agents.put(f"/{agent_key}", auth=False, headers=headers, **kwargs)
+        return self.agents.put(f"/{agent_key}", **kwargs)
 
     def _get_agent_raw(self, agent_key: str) -> requests.Response:
-        return requests.get(
-            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
-            headers=self.headers,
-            timeout=self.timeout,
-        )
+        return self.agents.get_agent(agent_key)
 
     def test_update_agent_empty_body_matches_openapi(
         self,
@@ -1413,14 +1306,13 @@ class TestUpdateAgent:
             missing_agent_key,
             json_body={"name": f"ghost-{uuid4().hex[:8]}"},
         )
-        assert resp.status_code == 500, (
-            f"Expected current 500 error for unknown agent key, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 404, (
+            f"Expected 404 for unknown agent key, got {resp.status_code}: {resp.text}"
         )
 
-        error_text = _response_text_fragments(resp)
-        assert "not found" in error_text or "agent" in error_text, (
-            f"unexpected error payload: {resp.text}"
-        )
+        body = _response_json(resp)
+        assert_response_matches_openapi_operation(body, "updateAgent", status_code="404")
+        _assert_agent_not_found_error(body, label="unknown update")
 
     def test_update_agent_rejects_malformed_json_body(
         self,
@@ -1469,41 +1361,7 @@ class TestUpdateAgentOpenApiRequestContract:
 
 
 @pytest.mark.integration
-class TestDeleteAgent:
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.client = pipeshub_client
-        self.base_url = pipeshub_client.base_url
-        self.headers = pipeshub_client.auth_headers
-        self.timeout = pipeshub_client.timeout_seconds
-
-    @pytest.fixture
-    def created_agent_keys(self):
-        created: list[str] = []
-        yield created
-        for agent_key in reversed(created):
-            try:
-                resp = requests.delete(
-                    f"{self.base_url}/api/v1/agents/{agent_key}",
-                    headers=self.headers,
-                    timeout=self.timeout,
-                )
-                if resp.status_code >= 300:
-                    logger.warning(
-                        "Agent delete failed for %s: HTTP %s %s",
-                        agent_key, resp.status_code, resp.text[:300]
-                    )
-            except Exception:
-                pass
-
-    def _create_agent_raw(self, payload: dict[str, Any]) -> requests.Response:
-        return requests.post(
-            f"{self.base_url}{_AGENTS_CREATE_PATH}",
-            headers=self.headers,
-            json=payload,
-            timeout=self.timeout,
-        )
+class TestDeleteAgent(AgentsTestBase):
 
     def _create_agent_for_delete_test(
         self,
@@ -1524,7 +1382,7 @@ class TestDeleteAgent:
         assert resp.status_code == 201, f"Agent create failed: {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
-        agent_key = TestCreateAgent._created_agent_key(body)
+        agent_key = self._created_agent_key(body)
         created_agent_keys.append(agent_key)
         return agent_key
 
@@ -1534,11 +1392,9 @@ class TestDeleteAgent:
         *,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return requests.get(
-            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
-            headers=headers if headers is not None else self.headers,
-            timeout=self.timeout,
-        )
+        if headers is not None:
+            return self.agents.get_agent(agent_key, auth=False, headers=headers)
+        return self.agents.get_agent(agent_key)
 
     def _delete_agent_raw(
         self,
@@ -1546,35 +1402,27 @@ class TestDeleteAgent:
         *,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return requests.delete(
-            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
-            headers=headers if headers is not None else self.headers,
-            timeout=self.timeout,
-        )
+        if headers is not None:
+            return self.agents.delete_agent(agent_key, auth=False, headers=headers)
+        return self.agents.delete_agent(agent_key)
 
     def _list_agents_raw(
         self,
         *,
         params: dict[str, Any] | None = None,
     ) -> requests.Response:
-        return requests.get(
-            f"{self.base_url}{_AGENTS_LIST_PATH}",
-            headers=self.headers,
-            params=params,
-            timeout=self.timeout,
-        )
+        return self.agents.list_agents(**(params or {}))
 
     @staticmethod
     def _assert_get_agent_not_available_after_delete(resp: requests.Response) -> None:
         """Document current gateway behavior for soft-deleted / missing agents."""
-        assert resp.status_code == 500, (
-            f"Expected current 500 after delete (same as unknown GET), "
+        assert resp.status_code == 404, (
+            f"Expected 404 after delete (same as unknown GET), "
             f"got {resp.status_code}: {resp.text}"
         )
-        error_text = _response_text_fragments(resp)
-        assert "not found" in error_text or "agent" in error_text, (
-            f"unexpected error payload: {resp.text}"
-        )
+        body = _response_json(resp)
+        assert_response_matches_openapi_operation(body, "getAgent", status_code="404")
+        _assert_agent_not_found_error(body, label="get after delete")
 
     def test_delete_agent_lifecycle(
         self,
@@ -1652,17 +1500,13 @@ class TestDeleteAgent:
         missing_agent_key = f"missing-agent-{uuid4().hex[:12]}"
 
         resp = self._delete_agent_raw(missing_agent_key)
-        assert resp.status_code == 500, (
-            f"Expected current 500 error for unknown agent key, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 404, (
+            f"Expected 404 for unknown agent key, got {resp.status_code}: {resp.text}"
         )
 
         body = _response_json(resp)
-        assert_response_matches_openapi_operation(body, "deleteAgent", status_code="500")
-
-        error_text = _response_text_fragments(resp)
-        assert "not found" in error_text or "agent" in error_text, (
-            f"unexpected error payload: {resp.text}"
-        )
+        assert_response_matches_openapi_operation(body, "deleteAgent", status_code="404")
+        _assert_agent_not_found_error(body, label="unknown delete")
 
     def test_delete_agent_twice(
         self,
@@ -1684,15 +1528,12 @@ class TestDeleteAgent:
             created_agent_keys.remove(agent_key)
 
         second = self._delete_agent_raw(agent_key)
-        assert second.status_code == 500, (
-            f"Expected current 500 on second delete, got {second.status_code}: {second.text}"
+        assert second.status_code == 404, (
+            f"Expected 404 on second delete, got {second.status_code}: {second.text}"
         )
         second_body = _response_json(second)
-        assert_response_matches_openapi_operation(second_body, "deleteAgent", status_code="500")
-        error_text = _response_text_fragments(second)
-        assert "not found" in error_text or "agent" in error_text, (
-            f"unexpected error payload: {second.text}"
-        )
+        assert_response_matches_openapi_operation(second_body, "deleteAgent", status_code="404")
+        _assert_agent_not_found_error(second_body, label="second delete")
 
     def test_delete_agent_empty_key_returns_404(self) -> None:
         """Express routing catches missing path segments before Zod runs.
@@ -1701,12 +1542,7 @@ class TestDeleteAgent:
         Express param requires at least one segment, so Express itself returns
         404 HTML (not a JSON validation error).
         """
-        resp = requests.delete(
-            f"{self.base_url}/api/v1/agents/",
-            headers=self.headers,
-            timeout=self.timeout,
-            allow_redirects=False,
-        )
+        resp = self.agents.delete("/", allow_redirects=False)
         assert resp.status_code == 404, (
             f"Expected 404 for empty agent key (Express route mismatch), "
             f"got {resp.status_code}: {resp.text}"
@@ -1722,11 +1558,7 @@ class TestDeleteAgent:
             seeded_model=reasoning_multimodal_llm_model,
             created_agent_keys=created_agent_keys,
         )
-        resp = requests.delete(
-            f"{self.base_url}/api/v1/agents/{agent_key}/extra",
-            headers=self.headers,
-            timeout=self.timeout,
-        )
+        resp = self.agents.delete(f"/{agent_key}/extra")
         assert resp.status_code == 404, (
             f"Expected 404 for extra path segment, got {resp.status_code}: {resp.text}"
         )
@@ -1741,10 +1573,9 @@ class TestDeleteAgent:
             seeded_model=reasoning_multimodal_llm_model,
             created_agent_keys=created_agent_keys,
         )
-        resp = requests.delete(
-            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}?foo=bar&baz=qux",
-            headers=self.headers,
-            timeout=self.timeout,
+        resp = self.agents.delete(
+            f"/{agent_key}",
+            params={"foo": "bar", "baz": "qux"},
         )
         assert resp.status_code == 200, (
             f"Expected 200 with ignored query params, got {resp.status_code}: {resp.text}"
@@ -1765,12 +1596,7 @@ class TestDeleteAgent:
             seeded_model=reasoning_multimodal_llm_model,
             created_agent_keys=created_agent_keys,
         )
-        resp = requests.delete(
-            f"{self.base_url}{_AGENTS_DETAIL_PATH.format(agent_key=agent_key)}",
-            headers=self.headers,
-            json={"should": "be", "ignored": True},
-            timeout=self.timeout,
-        )
+        resp = self.agents.delete(f"/{agent_key}", json={"should": "be", "ignored": True})
         assert resp.status_code == 200, (
             f"Expected 200 with ignored body, got {resp.status_code}: {resp.text}"
         )

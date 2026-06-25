@@ -8,9 +8,14 @@ userAccount route tests and orgAuthConfig admin routes.
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING
 
 import pytest
 import requests
+
+if TYPE_CHECKING:
+    from helper.clients.auth_client import UserAccountClient
+    from helper.pipeshub_client import PipeshubClient
 
 __all__ = [
     "authenticate_password",
@@ -20,6 +25,14 @@ __all__ = [
     "require_test_user_credentials",
     "session_headers",
 ]
+
+
+def _account_client(client: "PipeshubClient | UserAccountClient") -> "UserAccountClient":
+    from helper.clients.auth_client import UserAccountClient
+
+    if isinstance(client, UserAccountClient):
+        return client
+    return UserAccountClient(client)
 
 
 def session_headers(access_token: str) -> dict[str, str]:
@@ -50,12 +63,13 @@ def require_test_user_credentials() -> tuple[str, str]:
 
 
 def obtain_session_access_token(
-    base_url: str,
-    timeout: int = 30,
+    client: "PipeshubClient | UserAccountClient",
+    timeout: int | None = None,
 ) -> str:
     """
     Read env creds; pytest.skip if missing; initAuth + authenticate; return access only.
     """
+    _ = timeout  # legacy; HTTP timeout comes from the client
     creds = _test_user_credentials_from_env()
     if creds is None:
         pytest.skip(
@@ -63,44 +77,41 @@ def obtain_session_access_token(
             "for orgAuthConfig tests (session-based JWT auth)"
         )
     email, password = creds
-    access_token, _ = login_with_user(base_url, email, password, timeout)
+    access_token, _ = login_with_user(client, email, password)
     return access_token
 
 
-def init_auth(base_url: str, email: str, timeout: int) -> requests.Response:
+def init_auth(
+    client: "PipeshubClient | UserAccountClient",
+    email: str,
+    timeout: int | None = None,
+) -> requests.Response:
     """POST /api/v1/userAccount/initAuth and return the raw response."""
-    return requests.post(
-        f"{base_url}/api/v1/userAccount/initAuth",
-        json={"email": email},
-        timeout=timeout,
-    )
+    _ = timeout
+    return _account_client(client).init_auth(email)
 
 
 def authenticate_password(
-    base_url: str,
+    client: "PipeshubClient | UserAccountClient",
     session_token: str,
     email: str,
     password: str,
-    timeout: int,
+    timeout: int | None = None,
+    *,
+    extra_json: dict | None = None,
 ) -> requests.Response:
     """POST /api/v1/userAccount/authenticate and return the raw response."""
-    return requests.post(
-        f"{base_url}/api/v1/userAccount/authenticate",
-        headers={"x-session-token": session_token},
-        json={
-            "method": "password",
-            "credentials": {"password": password},
-            "email": email,
-        },
-        timeout=timeout,
+    _ = timeout
+    return _account_client(client).authenticate(
+        session_token, email, password, extra_json=extra_json
     )
 
 
 def login_with_user(
-    base_url: str,
+    client: "PipeshubClient | UserAccountClient",
     email: str,
     password: str,
-    timeout: int,
+    timeout: int | None = None,
 ) -> tuple[str, str]:
     """initAuth + authenticate; return (accessToken, refreshToken).
 
@@ -108,16 +119,16 @@ def login_with_user(
 
     Raises AssertionError if any step fails.
     """
-    init_resp = init_auth(base_url, email, timeout)
+    _ = timeout
+    account = _account_client(client)
+    init_resp = account.init_auth(email)
     assert init_resp.status_code == 200, (
         f"initAuth failed: {init_resp.status_code}: {init_resp.text}"
     )
     session_token = init_resp.headers.get("x-session-token")
     assert session_token, "initAuth did not return x-session-token"
 
-    auth_resp = authenticate_password(
-        base_url, session_token, email, password, timeout,
-    )
+    auth_resp = account.authenticate(session_token, email, password)
     assert auth_resp.status_code == 200, (
         f"authenticate failed: {auth_resp.status_code}: {auth_resp.text}"
     )

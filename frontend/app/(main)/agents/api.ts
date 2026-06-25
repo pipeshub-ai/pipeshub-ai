@@ -26,6 +26,8 @@ import type {
   KnowledgeBaseForBuilder,
   KnowledgeBaseListApiResponse,
   KnowledgeBasesForBuilderResult,
+  KnowledgeHubAppNode,
+  KnowledgeHubNodesApiResponse,
   UpdateAgentApiResponse,
 } from './types';
 import type { AgentFormPayload } from './agent-builder/types';
@@ -639,6 +641,56 @@ export const AgentsApi = {
     }
     return { knowledgeBases: all };
   },
+
+  /**
+   * GET /api/v1/knowledgeBase/knowledge-hub/nodes — fetch root app nodes for agent builder.
+   * Supports pagination, search, and sorting.
+   */
+  async getKnowledgeHubAppNodes(params?: {
+    page?: number;
+    limit?: number;
+    q?: string;
+    sortBy?: string;
+    sortOrder?: 'asc' | 'desc';
+  }): Promise<{ nodes: KnowledgeHubAppNode[]; hasNext: boolean }> {
+    const query: Record<string, string | number> = {};
+    query.page = params?.page ?? 1;
+    query.limit = params?.limit ?? 100;
+    query.sortBy = params?.sortBy ?? 'updatedAt';
+    query.sortOrder = params?.sortOrder ?? 'desc';
+    if (params?.q) query.q = params.q;
+
+    const { data } = await apiClient.get<KnowledgeHubNodesApiResponse>(
+      '/api/v1/knowledgeBase/knowledge-hub/nodes',
+      { params: query }
+    );
+
+    const items = (data?.items ?? []).filter(
+      (node) => node?.id && !node.id.startsWith('knowledgeBase_')
+    );
+
+    return {
+      nodes: items,
+      hasNext: data?.pagination?.hasNext ?? false,
+    };
+  },
+
+  /**
+   * Paginate through all knowledge-hub root nodes (excluding knowledgeBase_ items).
+   * Used by the agent builder to populate the apps palette.
+   */
+  async getAllKnowledgeHubAppNodes(): Promise<KnowledgeHubAppNode[]> {
+    const all: KnowledgeHubAppNode[] = [];
+    let page = 1;
+    for (;;) {
+      const { nodes, hasNext } = await this.getKnowledgeHubAppNodes({ page, limit: 100 });
+      all.push(...nodes);
+      if (!hasNext) break;
+      page += 1;
+      if (page > 100) break;
+    }
+    return all;
+  },
 };
 
-export type { AgentToolsListRow, KnowledgeBaseForBuilder } from './types';
+export type { AgentToolsListRow, KnowledgeBaseForBuilder, KnowledgeHubAppNode } from './types';

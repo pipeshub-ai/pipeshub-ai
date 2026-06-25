@@ -59,7 +59,9 @@ describe('CrawlingWorkerService', () => {
         updateProgress: sinon.stub().resolves(),
       }
 
-      // Call processJob directly on prototype with bound context
+      // Call processJob directly on prototype with bound context.
+      // processJob is a thin wrapper that opens a request-context and delegates
+      // to this.processJobInContext, so the bound context must expose it too.
       const processJob = (CrawlingWorkerService.prototype as any).processJob
       const context = {
         logger: {
@@ -69,6 +71,7 @@ describe('CrawlingWorkerService', () => {
           warn: sinon.stub(),
         },
         taskService: mockTaskService,
+        processJobInContext: (CrawlingWorkerService.prototype as any).processJobInContext,
       }
 
       await processJob.call(context, mockJob)
@@ -105,6 +108,7 @@ describe('CrawlingWorkerService', () => {
           warn: sinon.stub(),
         },
         taskService: mockTaskService,
+        processJobInContext: (CrawlingWorkerService.prototype as any).processJobInContext,
       }
 
       try {

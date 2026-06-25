@@ -107,17 +107,23 @@ class ContainerUtils:
         blob_storage = BlobStorage(logger, config_service, graph_provider)
         return blob_storage
 
-    async def create_parsers(self, logger: Logger) -> dict:
+    async def create_parsers(
+        self, logger: Logger, config_service: ConfigurationService
+    ) -> dict:
         """Async factory for Parsers"""
         image_parser = ImageParser(logger)
 
         parsers = {
             ExtensionTypes.DOCX.value: DocxParser(),
             ExtensionTypes.DOC.value: DocParser(),
-            ExtensionTypes.PPTX.value: PPTXParser(),
             ExtensionTypes.PPT.value: PPTParser(),
-            ExtensionTypes.HTML.value: HTMLParser(),
-            ExtensionTypes.MD.value: MarkdownParser(),
+            ExtensionTypes.PPTX.value: PPTXParser(),
+            ExtensionTypes.HTML.value: HTMLParser(
+                logger=logger, config_service=config_service
+            ),
+            ExtensionTypes.MD.value: MarkdownParser(
+                logger=logger, config_service=config_service
+            ),
             ExtensionTypes.MDX.value: MDXParser(),
             ExtensionTypes.CSV.value: CSVParser(),
             ExtensionTypes.TSV.value: CSVParser(delimiter="\t"),

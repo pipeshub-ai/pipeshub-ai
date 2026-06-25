@@ -61,9 +61,7 @@ api_key = os.getenv("OPIK_API_KEY")
 workspace = os.getenv("OPIK_WORKSPACE")
 if api_key and workspace:
     try:
-        from opik import configure
         from opik.integrations.langchain import OpikTracer
-        configure(use_local=False, api_key=api_key, workspace=workspace)
         opik_tracer = OpikTracer()
     except Exception as e:
         logger.warning(f"Error configuring Opik: {e}")
@@ -764,7 +762,15 @@ async def execute_tool_calls(
         messages.extend(tool_msgs)
         if has_content_handler_this_hop and not tool_instructions_added:
             has_sql_connector = tool_runtime_kwargs.get("has_sql_connector", False)
-            instructions = ContentHandler.build_tool_instructions(has_sql_connector)
+            has_jira = any(
+                tr.get("has_jira_tickets_in_context")
+                for tr in tool_results_inner
+                if tr.get("ok")
+            )
+            instructions = ContentHandler.build_tool_instructions(
+                has_sql_connector,
+                has_jira_tickets_in_context=has_jira,
+            )
             ai_idx = len(messages) - len(tool_msgs) - 1
             inserted = False
             for i in range(ai_idx - 1, -1, -1):

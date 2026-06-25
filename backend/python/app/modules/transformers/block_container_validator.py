@@ -32,7 +32,12 @@ class BlockContainerValidator:
     ``validate()`` — no other changes required.
     """
 
-    _TEXT_FORMATS = {DataFormat.TXT.value, DataFormat.MARKDOWN.value}
+    _TEXT_FORMATS = {
+        DataFormat.TXT.value,
+        DataFormat.MARKDOWN.value,
+        DataFormat.CODE.value,
+        DataFormat.HTML.value,
+    }
 
     def __init__(
         self,
@@ -284,14 +289,14 @@ class BlockContainerValidator:
                 issues.append(ValidationIssue(
                     severity=Severity.WARNING,
                     code="TEXT_FORMAT_MISSING",
-                    message="format is missing; expected 'txt' or 'markdown'",
+                    message="format is missing; expected one of 'txt', 'markdown', 'code', 'html'",
                     location=loc,
                 ))
             elif fmt not in self._TEXT_FORMATS:
                 issues.append(ValidationIssue(
                     severity=Severity.WARNING,
                     code="TEXT_FORMAT_UNEXPECTED",
-                    message=f"format='{fmt}' is unusual for a text block; expected 'txt' or 'markdown'",
+                    message=f"format='{fmt}' is unusual for a text block; expected one of 'txt', 'markdown', 'code', 'html'",
                     location=loc,
                 ))
 

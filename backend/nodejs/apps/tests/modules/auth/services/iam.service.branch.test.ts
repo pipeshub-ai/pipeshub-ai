@@ -7,7 +7,7 @@ import { InternalServerError, NotFoundError } from '../../../../src/libs/errors/
 
 describe('IamService - branch coverage', () => {
   let iamService: IamService
-  const mockConfig = { iamBackend: 'http://iam-backend:3000' } as any
+  const mockConfig = { iamBackend: 'http://127.0.0.1:13000' } as any
   const mockLogger = {
     info: sinon.stub(),
     debug: sinon.stub(),

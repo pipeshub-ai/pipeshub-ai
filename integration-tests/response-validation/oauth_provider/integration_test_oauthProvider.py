@@ -24,7 +24,8 @@ Routes covered:
   GET    /api/v1/oauth2/userinfo                    — oauthUserInfo
 
 Auth:
-  Uses the standard IT ``pipeshub_client`` fixture from the root ``conftest.py``.
+  Uses the session ``oauth_provider_client`` fixture from the root ``conftest.py``,
+  backed by ``PipeshubClient`` OAuth credentials (``POST /api/v1/oauth2/token``).
 """
 
 from __future__ import annotations
@@ -45,19 +46,29 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
+from helper.clients.oauth_client import OAuthProviderClient  # noqa: E402
+from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
 )
-from helper.pipeshub_client import PipeshubClient  # noqa: E402
 
 _logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------ #
+# Base test class
+# ------------------------------------------------------------------ #
+class OAuthProviderTestBase:
+    """Base class with shared oauth_provider_client fixture."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, oauth_provider_client: OAuthProviderClient) -> None:
+        self.oauth = oauth_provider_client
+
+
+# ------------------------------------------------------------------ #
 # Module-scoped token fixture
 # ------------------------------------------------------------------ #
-
-
 @pytest.fixture(scope="module")
 def oauth_credentials(
     pipeshub_client: PipeshubClient,
@@ -76,28 +87,21 @@ def oauth_credentials(
 # ====================================================================
 @pytest.mark.integration
 @pytest.mark.oauth_provider
-class TestOIDCDiscovery:
+class TestOIDCDiscovery(OAuthProviderTestBase):
     """/.well-known/* — OIDC discovery and JWKS endpoints."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.base_url = pipeshub_client.base_url
-        self.timeout = pipeshub_client.timeout_seconds
 
     def test_discovery_endpoints(self) -> None:
         """All discovery endpoints return 200 and valid schema."""
         tests = [
-            ("/.well-known/openid-configuration", "openidConfiguration"),
-            ("/.well-known/oauth-authorization-server", "oauthAuthorizationServerMetadata"),
-            ("/.well-known/jwks.json", "jwks"),
-            ("/.well-known/oauth-protected-resource/mcp", "oauthProtectedResource"),
+            (self.oauth.openid_configuration, "openidConfiguration"),
+            (self.oauth.oauth_authorization_server_metadata, "oauthAuthorizationServerMetadata"),
+            (self.oauth.jwks, "jwks"),
+            (lambda: self.oauth.oauth_protected_resource("mcp"), "oauthProtectedResource"),
         ]
-        for path, operation_id in tests:
-            resp = requests.get(
-                f"{self.base_url}{path}", timeout=self.timeout,
-            )
+        for call, operation_id in tests:
+            resp = call()
             assert resp.status_code == 200, (
-                f"Expected 200 for {path}, got {resp.status_code}: {resp.text}"
+                f"Expected 200 for {operation_id}, got {resp.status_code}: {resp.text}"
             )
             assert_response_matches_openapi_operation(resp.json(), operation_id)
 
@@ -107,19 +111,12 @@ class TestOIDCDiscovery:
 # ====================================================================
 @pytest.mark.integration
 @pytest.mark.oauth_provider
-class TestOAuthAuthorize:
+class TestOAuthAuthorize(OAuthProviderTestBase):
     """GET /api/v1/oauth2/authorize — initiate OAuth flow."""
 
     @pytest.fixture(autouse=True)
-    def _setup(
-        self,
-        pipeshub_client: PipeshubClient,
-        oauth_credentials: dict,
-    ) -> None:
-        self.base_url = pipeshub_client.base_url
-        self.timeout = pipeshub_client.timeout_seconds
+    def _setup_credentials(self, oauth_credentials: dict) -> None:
         self.client_id = oauth_credentials["client_id"]
-        self.url = f"{self.base_url}/api/v1/oauth2/authorize"
 
     def test_response(self) -> None:
         """Valid params return frontend authorize page (200/302).
@@ -129,16 +126,12 @@ class TestOAuthAuthorize:
         JSON error responses.  Validation errors (400) are unreachable without
         a browser session behind the redirect middleware.
         """
-        resp = requests.get(
-            self.url,
-            params={
-                "response_type": "code",
-                "client_id": self.client_id,
-                "redirect_uri": "http://localhost/callback",
-                "scope": "openid",
-                "state": "teststate123",
-            },
-            timeout=self.timeout,
+        resp = self.oauth.authorize(
+            response_type="code",
+            client_id=self.client_id,
+            redirect_uri="http://localhost/callback",
+            scope="openid",
+            state="teststate123",
             allow_redirects=False,
         )
         assert resp.status_code in (200, 302, 303), (
@@ -151,44 +144,27 @@ class TestOAuthAuthorize:
 # ====================================================================
 @pytest.mark.integration
 @pytest.mark.oauth_provider
-class TestOAuthAuthorizeConsent:
+class TestOAuthAuthorizeConsent(OAuthProviderTestBase):
     """POST /api/v1/oauth2/authorize — submit consent (requires auth)."""
 
     @pytest.fixture(autouse=True)
-    def _setup(
-        self,
-        pipeshub_client: PipeshubClient,
-        oauth_credentials: dict,
-    ) -> None:
-        self.base_url = pipeshub_client.base_url
-        self.timeout = pipeshub_client.timeout_seconds
-        self.headers = pipeshub_client._headers()
+    def _setup_credentials(self, oauth_credentials: dict) -> None:
         self.client_id = oauth_credentials["client_id"]
-        self.url = f"{self.base_url}/api/v1/oauth2/authorize"
 
     def test_response_and_errors(self) -> None:
         """401 missing auth, 400 invalid consent body."""
-        resp = requests.post(
-            self.url,
-            json={
-                "client_id": self.client_id,
-                "redirect_uri": "http://localhost/callback",
-                "scope": "openid",
-                "state": "test",
-                "consent": "denied",
-            },
-            timeout=self.timeout,
+        resp = self.oauth.authorize_consent(
+            client_id=self.client_id,
+            redirect_uri="http://localhost/callback",
+            scope="openid",
+            state="test",
+            consent="denied",
         )
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
         )
 
-        resp = requests.post(
-            self.url,
-            headers=self.headers,
-            json={"consent": "denied"},
-            timeout=self.timeout,
-        )
+        resp = self.oauth.authorize_consent(consent="denied", auth=True)
         assert resp.status_code == 400, (
             f"Expected 400 for missing fields, got {resp.status_code}: {resp.text}"
         )
@@ -202,31 +178,20 @@ class TestOAuthAuthorizeConsent:
 # ====================================================================
 @pytest.mark.integration
 @pytest.mark.oauth_provider
-class TestOAuthToken:
+class TestOAuthToken(OAuthProviderTestBase):
     """POST /api/v1/oauth2/token — token exchange."""
 
     @pytest.fixture(autouse=True)
-    def _setup(
-        self,
-        pipeshub_client: PipeshubClient,
-        oauth_credentials: dict,
-    ) -> None:
-        self.base_url = pipeshub_client.base_url
-        self.timeout = pipeshub_client.timeout_seconds
+    def _setup_credentials(self, oauth_credentials: dict) -> None:
         self.client_id = oauth_credentials["client_id"]
         self.client_secret = oauth_credentials["client_secret"]
-        self.url = f"{self.base_url}/api/v1/oauth2/token"
 
     def test_response_schema(self) -> None:
         """client_credentials grant returns valid OAuthTokenResponse."""
-        resp = requests.post(
-            self.url,
-            json={
-                "grant_type": "client_credentials",
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-            },
-            timeout=self.timeout,
+        resp = self.oauth.token(
+            grant_type="client_credentials",
+            client_id=self.client_id,
+            client_secret=self.client_secret,
         )
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
@@ -235,14 +200,10 @@ class TestOAuthToken:
 
     def test_error_responses(self) -> None:
         """400 unsupported grant, 400 missing grant_type, 401 bad client."""
-        resp = requests.post(
-            self.url,
-            json={
-                "grant_type": "unsupported_grant",
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-            },
-            timeout=self.timeout,
+        resp = self.oauth.token(
+            grant_type="unsupported_grant",
+            client_id=self.client_id,
+            client_secret=self.client_secret,
         )
         assert resp.status_code == 400, (
             f"Expected 400, got {resp.status_code}: {resp.text}"
@@ -251,11 +212,7 @@ class TestOAuthToken:
             resp.json(), "oauthToken", status_code="400"
         )
 
-        resp = requests.post(
-            self.url,
-            json={"client_id": self.client_id},
-            timeout=self.timeout,
-        )
+        resp = self.oauth.token(client_id=self.client_id)
         assert resp.status_code == 400, (
             f"Expected 400 missing grant_type, got {resp.status_code}: {resp.text}"
         )
@@ -263,14 +220,10 @@ class TestOAuthToken:
             resp.json(), "oauthToken", status_code="400"
         )
 
-        resp = requests.post(
-            self.url,
-            json={
-                "grant_type": "client_credentials",
-                "client_id": "bad_client_id_000000",
-                "client_secret": "bad_secret",
-            },
-            timeout=self.timeout,
+        resp = self.oauth.token(
+            grant_type="client_credentials",
+            client_id="bad_client_id_000000",
+            client_secret="bad_secret",
         )
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
@@ -285,32 +238,21 @@ class TestOAuthToken:
 # ====================================================================
 @pytest.mark.integration
 @pytest.mark.oauth_provider
-class TestOAuthIntrospect:
+class TestOAuthIntrospect(OAuthProviderTestBase):
     """POST /api/v1/oauth2/introspect — token introspection."""
 
     @pytest.fixture(autouse=True)
-    def _setup(
-        self,
-        pipeshub_client: PipeshubClient,
-        oauth_credentials: dict,
-    ) -> None:
-        self.base_url = pipeshub_client.base_url
-        self.timeout = pipeshub_client.timeout_seconds
+    def _setup_credentials(self, oauth_credentials: dict) -> None:
         self.client_id = oauth_credentials["client_id"]
         self.client_secret = oauth_credentials["client_secret"]
         self.access_token = oauth_credentials["access_token"]
-        self.url = f"{self.base_url}/api/v1/oauth2/introspect"
 
     def test_response_and_errors(self) -> None:
         """Valid token → active=true, invalid token → active=false, bad client → 401."""
-        resp = requests.post(
-            self.url,
-            json={
-                "token": self.access_token,
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-            },
-            timeout=self.timeout,
+        resp = self.oauth.introspect(
+            token=self.access_token,
+            client_id=self.client_id,
+            client_secret=self.client_secret,
         )
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
@@ -319,14 +261,10 @@ class TestOAuthIntrospect:
         assert_response_matches_openapi_operation(body, "oauthIntrospect")
         assert body["active"] is True, f"Expected active=true, got {body}"
 
-        resp = requests.post(
-            self.url,
-            json={
-                "token": "invalid_token_000000000000000000",
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-            },
-            timeout=self.timeout,
+        resp = self.oauth.introspect(
+            token="invalid_token_000000000000000000",
+            client_id=self.client_id,
+            client_secret=self.client_secret,
         )
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
@@ -335,14 +273,10 @@ class TestOAuthIntrospect:
         assert_response_matches_openapi_operation(body, "oauthIntrospect")
         assert body["active"] is False, f"Expected active=false, got {body}"
 
-        resp = requests.post(
-            self.url,
-            json={
-                "token": self.access_token,
-                "client_id": "bad_client_id_000000",
-                "client_secret": "bad_secret",
-            },
-            timeout=self.timeout,
+        resp = self.oauth.introspect(
+            token=self.access_token,
+            client_id="bad_client_id_000000",
+            client_secret="bad_secret",
         )
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
@@ -357,47 +291,36 @@ class TestOAuthIntrospect:
 # ====================================================================
 @pytest.mark.integration
 @pytest.mark.oauth_provider
-class TestOAuthRevoke:
+class TestOAuthRevoke(OAuthProviderTestBase):
     """POST /api/v1/oauth2/revoke — token revocation."""
 
     @pytest.fixture(autouse=True)
-    def _setup(
+    def _setup_credentials(
         self,
         pipeshub_client: PipeshubClient,
         oauth_credentials: dict,
     ) -> None:
-        self.base_url = pipeshub_client.base_url
-        self.timeout = pipeshub_client.timeout_seconds
         self.client_id = oauth_credentials["client_id"]
         self.client_secret = oauth_credentials["client_secret"]
         self.access_token = oauth_credentials["access_token"]
         self.pipeshub_client = pipeshub_client
-        self.url = f"{self.base_url}/api/v1/oauth2/revoke"
         self.oauth_credentials = oauth_credentials
 
     def test_response_and_errors(self) -> None:
         """Revoke valid token → 200, bad client → 401."""
-        resp = requests.post(
-            self.url,
-            json={
-                "token": self.access_token,
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-            },
-            timeout=self.timeout,
+        resp = self.oauth.revoke(
+            token=self.access_token,
+            client_id=self.client_id,
+            client_secret=self.client_secret,
         )
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
 
-        resp = requests.post(
-            self.url,
-            json={
-                "token": self.access_token,
-                "client_id": "bad_client_id_000000",
-                "client_secret": "bad_secret",
-            },
-            timeout=self.timeout,
+        resp = self.oauth.revoke(
+            token=self.access_token,
+            client_id="bad_client_id_000000",
+            client_secret="bad_secret",
         )
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
@@ -414,32 +337,21 @@ class TestOAuthRevoke:
 # ====================================================================
 @pytest.mark.integration
 @pytest.mark.oauth_provider
-class TestOAuthUserInfo:
+class TestOAuthUserInfo(OAuthProviderTestBase):
     """GET /api/v1/oauth2/userinfo — OpenID Connect UserInfo."""
 
     @pytest.fixture(autouse=True)
-    def _setup(
-        self,
-        pipeshub_client: PipeshubClient,
-        oauth_credentials: dict,
-    ) -> None:
-        self.base_url = pipeshub_client.base_url
-        self.timeout = pipeshub_client.timeout_seconds
+    def _setup_credentials(self, oauth_credentials: dict) -> None:
         self.access_token = oauth_credentials["access_token"]
-        self.url = f"{self.base_url}/api/v1/oauth2/userinfo"
 
     def test_error_responses(self) -> None:
         """401 missing auth, 403 with client_credentials token (no openid scope)."""
-        resp = requests.get(self.url, timeout=self.timeout)
+        resp = self.oauth.get("/api/v1/oauth2/userinfo", auth=False)
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
         )
 
-        resp = requests.get(
-            self.url,
-            headers={"Authorization": f"Bearer {self.access_token}"},
-            timeout=self.timeout,
-        )
+        resp = self.oauth.userinfo(self.access_token)
         assert resp.status_code in (401, 403), (
             f"Expected 401 or 403, got {resp.status_code}: {resp.text}"
         )
@@ -450,17 +362,11 @@ class TestOAuthUserInfo:
 # ====================================================================
 @pytest.mark.integration
 @pytest.mark.oauth_provider
-class TestOAuthProviderRateLimiting:
+class TestOAuthProviderRateLimiting(OAuthProviderTestBase):
     """Rate-limited token/introspect/revoke routes return 429 on burst."""
 
     @pytest.fixture(autouse=True)
-    def _setup(
-        self,
-        pipeshub_client: PipeshubClient,
-        oauth_credentials: dict,
-    ) -> None:
-        self.base_url = pipeshub_client.base_url
-        self.timeout = pipeshub_client.timeout_seconds
+    def _setup_credentials(self, oauth_credentials: dict) -> None:
         self.client_id = oauth_credentials["client_id"]
         self.client_secret = oauth_credentials["client_secret"]
         self.access_token = oauth_credentials["access_token"]
@@ -470,14 +376,10 @@ class TestOAuthProviderRateLimiting:
         TOTAL = 1010
         rate_limited: list[requests.Response] = []
         for _ in range(TOTAL):
-            resp = requests.post(
-                f"{self.base_url}/api/v1/oauth2/introspect",
-                json={
-                    "token": self.access_token,
-                    "client_id": self.client_id,
-                    "client_secret": self.client_secret,
-                },
-                timeout=self.timeout,
+            resp = self.oauth.introspect(
+                token=self.access_token,
+                client_id=self.client_id,
+                client_secret=self.client_secret,
             )
             if resp.status_code == 429:
                 rate_limited.append(resp)

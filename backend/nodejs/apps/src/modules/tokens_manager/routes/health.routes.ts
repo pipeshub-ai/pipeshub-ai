@@ -13,68 +13,6 @@ const logger = Logger.getInstance({
   service: 'HealthStatus'
 });
 
-/**
- * Convert a Neo4j Bolt/routing URI into the HTTP(S) discovery endpoint used
- * for the health probe. Handles every scheme the Neo4j driver supports
- * (`bolt`, `bolt+s`, `bolt+ssc`, `neo4j`, `neo4j+s`, `neo4j+ssc`), the
- * presence/absence of an explicit port, embedded credentials, and TLS.
- *
- * Mapping rules:
- *   - `bolt`, `neo4j`                         → `http://host:<httpPort>`
- *   - `bolt+s`, `neo4j+s`, `+ssc` variants    → `https://host:<httpPort>`
- *   - `http(s)://…` passed through unchanged (already an HTTP URL)
- *   - Port: explicit port → Bolt default 7687 mapped to 7474; any other
- *           Bolt port is passed through (user must expose matching HTTP port);
- *           no port → stock HTTP port (7474 / 7473)
- */
-function buildNeo4jHttpUrl(uri: string): string {
-  // Split scheme manually — `new URL('bolt+s://…')` throws in some Node builds.
-  const match = uri.match(/^([a-z0-9+]+):\/\/(.*)$/i);
-  if (!match || !match[1] || match[2] === undefined) {
-    return uri; // give up; let axios fail and the catch block mark unhealthy
-  }
-  const scheme = match[1].toLowerCase();
-  const rest = match[2];
-
-  if (scheme === 'http' || scheme === 'https') {
-    return uri;
-  }
-
-  const secure = scheme.endsWith('+s') || scheme.endsWith('+ssc');
-  const httpScheme = secure ? 'https' : 'http';
-
-  // Strip any embedded credentials so we don't leak them into the health URL;
-  // the axios `auth` option below handles auth explicitly.
-  const authStripped = rest.replace(/^[^@/]*@/, '');
-
-  // Separate host[:port] from the (unused) path. `split` always returns at
-  // least one element, but `noUncheckedIndexedAccess` still types the index
-  // access as possibly undefined; fall back to an empty string to satisfy TS.
-  const hostPort = authStripped.split('/', 1)[0] ?? '';
-  const lastColon = hostPort.lastIndexOf(':');
-  const closingBracket = hostPort.lastIndexOf(']'); // IPv6 literal
-  let host: string;
-  let port: string | null;
-  if (lastColon > closingBracket) {
-    host = hostPort.slice(0, lastColon);
-    port = hostPort.slice(lastColon + 1);
-  } else {
-    host = hostPort;
-    port = null;
-  }
-
-  // Bolt default 7687 -> HTTP 7474 / HTTPS 7473. Other Bolt ports are passed
-  // through unchanged (users with custom ports must expose matching HTTP).
-  let httpPort: string;
-  if (port === '7687' || port === null) {
-    httpPort = secure ? '7473' : '7474';
-  } else {
-    httpPort = port;
-  }
-
-  return `${httpScheme}://${host}:${httpPort}`;
-}
-
 const TYPES = {
   MongoService: 'MongoService',
   RedisService: 'RedisService',
@@ -204,42 +142,20 @@ export function createHealthRouter(
         // Python backend hasn't written dataStoreType to KV store yet
         services.graphDb = 'pending';
         logger.info('dataStoreType not yet available in deployment config — Python backend may not have started');
-      } else if (deployment.dataStoreType === 'neo4j') {
+      } else if (deployment.dataStoreType === 'neo4j' || deployment.dataStoreType === 'arangodb') {
         try {
-          const neo4jHttpUrl = buildNeo4jHttpUrl(
-            process.env.NEO4J_URI || 'bolt://localhost:7687',
+          // Delegate to the Python connector service which probes the graph DB
+          // using the same driver the application uses (Bolt for Neo4j,
+          // python-arango for ArangoDB). This avoids the Node.js layer having
+          // to manage DB credentials or knowing which HTTP ports to probe —
+          // both of which break for managed cloud deployments (e.g. Neo4j Aura
+          // doesn't expose the HTTP discovery ports 7474/7473).
+          const graphDbResp = await axios.get(
+            `${appConfig.connectorBackend}/health/graph-db`,
+            { timeout: 5000, validateStatus: () => true },
           );
-          const neo4jUser = process.env.NEO4J_USERNAME || 'neo4j';
-          const neo4jPass = process.env.NEO4J_PASSWORD;
-          const neo4jResp = await axios.get(neo4jHttpUrl, {
-            timeout: 3000,
-            auth: neo4jPass ? { username: neo4jUser, password: neo4jPass } : undefined,
-            validateStatus: () => true,
-          });
-          services.graphDb = neo4jResp.status === 200 ? 'healthy' : 'unhealthy';
-          if (neo4jResp.status !== 200) overallHealthy = false;
-        } catch (error) {
-          services.graphDb = 'unhealthy';
-          overallHealthy = false;
-        }
-      } else {
-        try {
-          // Arango's /_api/version requires Basic Auth when server authentication
-          // is enabled (the default). Without credentials it returns 401 and the
-          // probe falsely reports unhealthy even though the DB is fine.
-          const arangoResp = await axios.get(`${appConfig.arango.url}/_api/version`, {
-            timeout: 3000,
-            auth:
-              appConfig.arango.username || appConfig.arango.password
-                ? {
-                    username: appConfig.arango.username,
-                    password: appConfig.arango.password,
-                  }
-                : undefined,
-            validateStatus: () => true,
-          });
-          services.graphDb = arangoResp.status === 200 ? 'healthy' : 'unhealthy';
-          if (arangoResp.status !== 200) overallHealthy = false;
+          services.graphDb = graphDbResp.status === 200 ? 'healthy' : 'unhealthy';
+          if (graphDbResp.status !== 200) overallHealthy = false;
         } catch (error) {
           services.graphDb = 'unhealthy';
           overallHealthy = false;

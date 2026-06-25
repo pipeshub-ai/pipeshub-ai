@@ -177,8 +177,8 @@ class TestListBetaConnectors:
 
     def test_contains_known_beta_connectors(self):
         result = ConnectorFactory.list_beta_connectors()
-        assert "slack" in result
         assert "calendar" in result
+        assert "airtable" in result
 
     def test_modifying_copy_does_not_affect_definitions(self):
         result = ConnectorFactory.list_beta_connectors()

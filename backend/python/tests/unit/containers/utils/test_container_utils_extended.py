@@ -84,7 +84,7 @@ class TestCreateParsersExtended:
              patch("app.containers.utils.utils.ExcelParser"), \
              patch("app.containers.utils.utils.XLSParser"), \
              patch("app.containers.utils.utils.ImageParser"):
-            parsers = await cu.create_parsers(MagicMock())
+            parsers = await cu.create_parsers(MagicMock(), MagicMock())
 
             expected_keys = [
                 "docx", "doc", "pptx", "ppt", "html", "md", "mdx",
@@ -111,7 +111,7 @@ class TestCreateParsersExtended:
              patch("app.containers.utils.utils.ImageParser") as MockImg:
                 mock_img = MagicMock()
                 MockImg.return_value = mock_img
-                parsers = await cu.create_parsers(MagicMock())
+                parsers = await cu.create_parsers(MagicMock(), MagicMock())
 
                 image_exts = ["png", "jpg", "jpeg", "webp", "svg", "heic", "heif"]
                 for ext in image_exts:

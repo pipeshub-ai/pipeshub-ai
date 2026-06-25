@@ -306,14 +306,9 @@ class TestGetLlmInstance:
 
 class TestGetEmbeddingModelInstance:
     @pytest.mark.asyncio
-    async def test_returns_default_model(self, retrieval_service):
-        from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
-        retrieval_service.get_current_embedding_model_name = AsyncMock(
-            return_value=DEFAULT_EMBEDDING_MODEL
-        )
-        # Reset cached model to force re-creation
-        retrieval_service.embedding_model = None
-        retrieval_service.embedding_model_instance = None
+    async def test_uses_default_when_no_embedding_config(self, retrieval_service, mock_config_service):
+        """With no embedding config present, falls back to the built-in default model."""
+        mock_config_service.get_config.return_value = {"embedding": []}
         with patch("app.modules.retrieval.retrieval_service.get_default_embedding_model") as mock_def:
             mock_def.return_value = MagicMock()
             result = await retrieval_service.get_embedding_model_instance()
@@ -321,27 +316,77 @@ class TestGetEmbeddingModelInstance:
             mock_def.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_caches_embedding_model(self, retrieval_service):
-        retrieval_service.get_current_embedding_model_name = AsyncMock(return_value="cached-model")
-        retrieval_service.embedding_model = "cached-model"
-        cached = MagicMock()
-        retrieval_service.embedding_model_instance = cached
-        result = await retrieval_service.get_embedding_model_instance()
-        assert result is cached
+    async def test_caches_model_when_config_unchanged(self, retrieval_service, mock_config_service):
+        """The model is cached and reused when the embedding config hasn't changed."""
+        mock_config_service.get_config.return_value = {
+            "embedding": [
+                {"provider": "openai", "isDefault": True,
+                 "configuration": {"model": "text-embedding-3-small"}}
+            ]
+        }
+        with patch("app.modules.retrieval.retrieval_service.get_embedding_model") as mock_emb:
+            mock_emb.return_value = MagicMock()
+            first = await retrieval_service.get_embedding_model_instance()
+            second = await retrieval_service.get_embedding_model_instance()
+            # Cached: config read twice (to check for changes), model built once.
+            assert mock_emb.call_count == 1
+            assert first is second
+        assert mock_config_service.get_config.await_count >= 2
 
     @pytest.mark.asyncio
-    async def test_returns_none_on_error(self, retrieval_service):
-        retrieval_service.get_current_embedding_model_name = AsyncMock(
-            side_effect=Exception("error")
-        )
+    async def test_rebuilds_model_when_config_changes(self, retrieval_service, mock_config_service):
+        """The cached model is invalidated when the embedding config changes."""
+        mock_config_service.get_config.return_value = {
+            "embedding": [
+                {"provider": "openai", "isDefault": True,
+                 "configuration": {"model": "text-embedding-3-small"}}
+            ]
+        }
+        with patch("app.modules.retrieval.retrieval_service.get_embedding_model") as mock_emb:
+            model_a = MagicMock()
+            model_b = MagicMock()
+            mock_emb.side_effect = [model_a, model_b]
+            first = await retrieval_service.get_embedding_model_instance()
+            # Change the config
+            mock_config_service.get_config.return_value = {
+                "embedding": [
+                    {"provider": "cohere", "isDefault": True,
+                     "configuration": {"model": "embed-english-v3.0"}}
+                ]
+            }
+            second = await retrieval_service.get_embedding_model_instance()
+            assert mock_emb.call_count == 2
+            assert first is model_a
+            assert second is model_b
+
+    @pytest.mark.asyncio
+    async def test_prefers_is_default_config(self, retrieval_service, mock_config_service):
+        """When multiple embedding configs exist, the isDefault one is selected
+        (matching the indexing pipeline), regardless of ordering."""
+        mock_config_service.get_config.return_value = {
+            "embedding": [
+                {"provider": "openai", "isDefault": False,
+                 "configuration": {"model": "first-model"}},
+                {"provider": "cohere", "isDefault": True,
+                 "configuration": {"model": "default-model"}},
+            ]
+        }
+        with patch("app.modules.retrieval.retrieval_service.get_embedding_model") as mock_emb:
+            mock_emb.return_value = MagicMock()
+            await retrieval_service.get_embedding_model_instance()
+            provider_arg = mock_emb.call_args[0][0]
+            selected_cfg = mock_emb.call_args[0][1]
+            assert provider_arg == "cohere"
+            assert selected_cfg["configuration"]["model"] == "default-model"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_error(self, retrieval_service, mock_config_service):
+        mock_config_service.get_config.side_effect = Exception("error")
         result = await retrieval_service.get_embedding_model_instance()
         assert result is None
 
     @pytest.mark.asyncio
     async def test_custom_embedding_model(self, retrieval_service, mock_config_service):
-        retrieval_service.get_current_embedding_model_name = AsyncMock(
-            return_value="custom-embed-model"
-        )
         mock_config_service.get_config.return_value = {
             "embedding": [
                 {"provider": "openai", "isDefault": True,

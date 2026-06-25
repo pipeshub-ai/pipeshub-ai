@@ -68,7 +68,7 @@ services:
       - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
       
       # Message broker config
-      - MESSAGE_BROKER=${MESSAGE_BROKER:-kafka}
+      - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
 
       # Kafka config
@@ -115,6 +115,9 @@ services:
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
       
+      # ML thread limit — caps PyTorch / OpenBLAS / MKL threads per operation.
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
+
       # Indexing service config
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-5}
@@ -131,11 +134,12 @@ services:
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
       - BOT_TOKEN=${BOT_TOKEN:-}
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
+
+      - ENABLE_PDFPLUMBER_PROCESSOR=true
+
     depends_on:
       qdrant:
         condition: service_healthy
-      kafka-1:
-        condition: service_started
       redis:
         condition: service_started
       mongodb:
@@ -214,6 +218,7 @@ services:
       start_period: 30s
 
   zookeeper:
+    profiles: ["kafka"]
     image: confluentinc/cp-zookeeper:7.9.0
     restart: always
     ports:
@@ -221,12 +226,19 @@ services:
     environment:
       - ZOOKEEPER_CLIENT_PORT=2181
       - ZOOKEEPER_TICK_TIME=2000
+    healthcheck:
+      test: ["CMD-SHELL", "echo srvr | nc localhost 2181 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   kafka-1:
+    profiles: ["kafka"]
     image: confluentinc/cp-kafka:7.9.0
     restart: always
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
       - "9092:9092"
       - "29092:29092"
@@ -245,6 +257,12 @@ services:
       - KAFKA_LOG_RETENTION_HOURS=24
       - KAFKA_NUM_NETWORK_THREADS=3
       - KAFKA_NUM_IO_THREADS=8
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
   qdrant:
     image: qdrant/qdrant:v1.15

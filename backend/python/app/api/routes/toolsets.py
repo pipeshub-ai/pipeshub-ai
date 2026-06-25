@@ -37,7 +37,7 @@ from app.connectors.core.base.token_service.oauth_service import (
 from app.connectors.core.registry.auth_builder import OAuthScopeType
 from app.containers.connector import ConnectorAppContainer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.utils.oauth_config import get_oauth_config
+from app.utils.oauth_config import extract_oauth_error_message, get_oauth_config
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = logging.getLogger(__name__)
@@ -421,6 +421,7 @@ def _has_oauth_credentials(auth_config: dict[str, Any]) -> bool:
 # ============================================================================
 # Helper Functions
 # ============================================================================
+
 
 def _get_user_context(request: Request) -> dict[str, Any]:
     """Extract and validate user context from request"""
@@ -2408,12 +2409,29 @@ async def handle_toolset_oauth_callback(
     except (ToolsetError, OAuthConfigError, InvalidAuthConfigError) as e:
         error_detail = getattr(e, 'detail', str(e))
         logger.error(f"OAuth callback error: {error_detail}")
-        return {"success": False, "error": type(e).__name__, "redirect_url": f"{base_url}/tools?oauth_error={type(e).__name__}"}
-    except HTTPException:
-        return {"success": False, "error": "auth_failed", "redirect_url": f"{base_url}/tools?oauth_error=auth_failed"}
+        return {
+            "success": False,
+            "error": type(e).__name__,
+            "error_message": error_detail or "OAuth configuration error. Please contact your administrator.",
+            "redirect_url": f"{base_url}/tools?oauth_error={type(e).__name__}"
+        }
+    except HTTPException as e:
+        logger.error(f"OAuth callback HTTP error: {e.detail}")
+        return {
+            "success": False,
+            "error": "auth_failed",
+            "error_message": "Authentication failed. You may not have permission to complete this action.",
+            "redirect_url": f"{base_url}/tools?oauth_error=auth_failed"
+        }
     except Exception as e:
         logger.error(f"Error handling OAuth callback: {e}", exc_info=True)
-        return {"success": False, "error": "server_error", "redirect_url": f"{base_url}/tools?oauth_error=server_error"}
+        error_message = extract_oauth_error_message(e)
+        return {
+            "success": False,
+            "error": "server_error",
+            "error_message": error_message,
+            "redirect_url": f"{base_url}/tools?oauth_error=server_error"
+        }
 
 
 # ============================================================================

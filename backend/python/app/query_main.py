@@ -1,3 +1,5 @@
+import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
+
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -9,6 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.middlewares.auth import authMiddleware
+from app.api.middlewares.request_context import RequestContextMiddleware
+from app.utils.request_context import set_service_suffix
+
+set_service_suffix("-qs")
 from app.api.routes.agent import router as agent_router
 from app.api.routes.chatbot import router as chatbot_router
 from app.api.routes.health import router as health_router
@@ -220,6 +226,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error closing configuration service: {e}")
 
+    try:
+        from app.modules.parsers.pdf.pdf_rasterizer import shutdown_pdf_raster_pool
+        if shutdown_pdf_raster_pool():
+            logger.info("✅ PDF rasterization process pool shut down")
+    except Exception as e:
+        logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
+
 
 # Create FastAPI app with lifespan
 app = FastAPI(
@@ -265,6 +278,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Trace context — outermost, before auth.
+app.add_middleware(RequestContextMiddleware)
 
 
 @app.get("/health")

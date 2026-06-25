@@ -54,6 +54,7 @@ from app.models.entities import (
     MeetingRecord,
     Person,
     ProductRecord,
+    MessageRecord,
     ProjectRecord,
     PullRequestRecord,
     Record,
@@ -544,6 +545,22 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Mail) ON (n.threadId, n.conversationIndex)"
         )
 
+        # ==================== MESSAGE INDEXES (Medium Priority) ====================
+
+        # SINGLE: threadId (for thread-based queries and conversation threading)
+        # Pattern: MATCH (r:Record)-[:IS_OF_TYPE]->(m:Message {threadId: $tid})
+        indexes.append(
+            "CREATE INDEX message_thread_id IF NOT EXISTS "
+            "FOR (n:Message) ON (n.threadId)"
+        )
+
+        # COMPOSITE: Record recordType + externalGroupId (for channel-based message queries)
+        # Pattern: MATCH (r:Record {recordType: "MESSAGE", externalGroupId: $channelId})
+        indexes.append(
+            "CREATE INDEX record_message_channel IF NOT EXISTS "
+            "FOR (n:Record) ON (n.recordType, n.externalGroupId)"
+        )
+
         return indexes
 
     def _generate_required_field_constraints(self) -> list[str]:
@@ -1012,6 +1029,70 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Update node failed: {str(e)}")
+            raise
+
+    async def batch_update_nodes(
+        self,
+        nodes: list[dict],
+        collection: str,
+        transaction: str | None = None
+    ) -> bool | None:
+        """
+        Batch update existing nodes only.
+        
+        This method ONLY updates nodes that already exist. It does NOT create new nodes.
+        Uses Neo4j MATCH + SET to ensure no accidental node creation.
+
+        Args:
+            nodes: List of node documents (with 'id' or '_key' field)
+            collection: Collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[bool]: True if successful, False if any updates failed
+        """
+        try:
+            if not nodes:
+                return True
+
+            label = collection_to_label(collection)
+            
+            # Convert nodes to Neo4j format and validate
+            neo4j_nodes = []
+            for node in nodes:
+                neo4j_node = self._arango_to_neo4j_node(node, collection)
+                self.validator.validate_node_update(collection, neo4j_node)
+                neo4j_nodes.append(neo4j_node)
+
+            # Use UNWIND to batch update multiple nodes
+            # MATCH ensures we only update existing nodes (no CREATE)
+            query = f"""
+            UNWIND $nodes AS node_data
+            MATCH (n:{label} {{id: node_data.id}})
+            SET n += node_data
+            RETURN n
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"nodes": neo4j_nodes},
+                txn_id=transaction
+            )
+
+            # Check if all updates succeeded
+            if results is not None and isinstance(results, list):
+                if len(results) != len(neo4j_nodes):
+                    self.logger.warning(
+                        f"⚠️ Batch update failed: {len(results)}/{len(neo4j_nodes)} nodes updated. "
+                        f"{len(neo4j_nodes) - len(results)} nodes may not exist in the database."
+                    )
+                    return False  # Return False if not all updates succeeded
+                return True  # All updates succeeded
+            
+            return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Batch update nodes failed: {str(e)}")
             raise
 
     # ==================== Edge Operations ====================
@@ -1969,6 +2050,23 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get record by external ID failed: {str(e)}")
             return None
 
+    async def find_slack_burst_record_by_ts(
+        self,
+        connector_id: str,
+        channel_id: str,
+        ts: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[Record]:
+        """
+        Find the Slack burst MessageRecord whose startTs <= ts <= endTs.
+
+        NOTE: Neo4j implementation is not yet supported. Returns None.
+        """
+        self.logger.warning(
+            "find_slack_burst_record_by_ts is not implemented for Neo4j provider"
+        )
+        return None
+
     async def get_record_key_by_external_id(
         self,
         external_id: str,
@@ -2203,6 +2301,8 @@ class Neo4jProvider(IGraphDBProvider):
                 return FileRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.MAILS.value:
                 return MailRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.MESSAGES.value:
+                return MessageRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.WEBPAGES.value:
                 return WebpageRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.TICKETS.value:
@@ -3566,6 +3666,9 @@ class Neo4jProvider(IGraphDBProvider):
 
             for queued_record in queued_records:
                 doc = dict(queued_record)
+                record_key = doc.get("_key") or doc.get("id")
+                if not record_key:
+                    continue
 
                 # Map indexing status to extraction status
                 # For EMPTY status, extraction status should also be EMPTY, not FAILED
@@ -3576,19 +3679,27 @@ class Neo4jProvider(IGraphDBProvider):
                 else:
                     extraction_status = ProgressStatus.FAILED.value
 
-                update_data = {
+                updated_records.append({
+                    "id": record_key,
                     "indexingStatus": new_indexing_status,
                     "lastIndexTimestamp": current_timestamp,
                     "isDirty": False,
                     "virtualRecordId": virtual_record_id,
                     "extractionStatus": extraction_status,
-                }
+                })
 
-                doc.update(update_data)
-                updated_records.append(doc)
+            if not updated_records:
+                return 0
 
-            # Batch update all queued records
-            await self.batch_upsert_nodes(updated_records, CollectionNames.RECORDS.value, transaction)
+            success = await self.batch_update_nodes(
+                updated_records, CollectionNames.RECORDS.value, transaction
+            )
+            if not success:
+                self.logger.warning(
+                    "⚠️ Failed to update queued duplicate records for %s - some records may not exist",
+                    record_id,
+                )
+                return -1
 
             self.logger.debug(
                 f"✅ Successfully updated {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
@@ -6762,64 +6873,6 @@ class Neo4jProvider(IGraphDBProvider):
             # On error, allow the operation (fail-open to avoid blocking)
             return True
 
-    async def batch_update_nodes(
-        self,
-        node_ids: list[str],
-        updates: dict[str, Any],
-        collection: str,
-        transaction: str | None = None
-    ) -> bool:
-        """
-        Batch update multiple nodes with the same updates.
-
-        Args:
-            node_ids (List[str]): List of node IDs to update
-            updates (Dict[str, Any]): Dictionary of fields to update
-            collection (str): Collection name
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            self.logger.debug(f"🚀 Batch updating {len(node_ids)} nodes in {collection}")
-
-            label = self._get_label(collection)
-
-            # Build SET clause from updates
-            set_clauses = []
-            parameters = {"node_ids": node_ids}
-            for i, (key, value) in enumerate(updates.items()):
-                param_name = f"update_{i}"
-                set_clauses.append(f"doc.{key} = ${param_name}")
-                parameters[param_name] = value
-
-            set_clause = ", ".join(set_clauses)
-
-            query = f"""
-            MATCH (doc:{label})
-            WHERE doc.id IN $node_ids
-            SET {set_clause}
-            RETURN doc.id AS id
-            """
-
-            results = await self.client.execute_query(
-                query,
-                parameters=parameters,
-                txn_id=transaction
-            )
-
-            if results:
-                self.logger.debug(f"✅ Successfully batch updated {len(results)} nodes")
-                return True
-            else:
-                self.logger.warning("⚠️ No nodes were updated")
-                return False
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to batch update nodes: {str(e)}")
-            return False
-
     async def get_connector_instances_with_filters(
         self,
         collection: str,
@@ -9724,6 +9777,47 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to find folder by name: {str(e)}")
             return None
 
+    async def _fetch_existing_file_names_in_parent(
+        self,
+        kb_id: str,
+        parent_folder_id: str | None,
+        transaction: str | None = None,
+    ) -> set[tuple[str, str]]:
+        """Return (name_lower, mime_type_str) tuples for all non-deleted file
+        records that are immediate children of *parent_folder_id* (or KB root
+        when None).  Called once per unique parent before the per-file loop so
+        duplicate-name detection is O(1) per file instead of one DB round-trip.
+        """
+        try:
+            if parent_folder_id is None:
+                query = """
+                MATCH (rec:Record)-[:BELONGS_TO]->(kb:RecordGroup {id: $kb_id})
+                MATCH (rec)-[:IS_OF_TYPE]->(file:File {isFile: true})
+                WHERE rec.isDeleted <> true
+                  AND NOT (rec)<-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]-(:Record)
+                RETURN toLower(rec.recordName) AS name_lower, file.mimeType AS mime_type
+                """
+                params: dict = {"kb_id": kb_id}
+            else:
+                query = """
+                MATCH (parent:Record {id: $parent_folder_id})
+                      -[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->
+                      (rec:Record)
+                MATCH (rec)-[:IS_OF_TYPE]->(file:File {isFile: true})
+                WHERE rec.isDeleted <> true
+                RETURN toLower(rec.recordName) AS name_lower, file.mimeType AS mime_type
+                """
+                params = {"parent_folder_id": parent_folder_id}
+            results = await self.client.execute_query(query, parameters=params, txn_id=transaction)
+            return {
+                (r.get("name_lower"), str(r.get("mime_type") or ""))
+                for r in (results or [])
+                if r.get("name_lower")
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch existing file names: {str(e)}")
+            return set()
+
     async def validate_folder_exists_in_kb(
         self,
         kb_id: str,
@@ -9862,6 +9956,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "foldersCreated": result["folders_created"],
                     "createdFolders": result["created_folders"],
                     "failedFiles": result["failed_files"],
+                    "skippedFiles": result.get("skipped_files", []),
                     "kbId": kb_id,
                     "parentFolderId": parent_folder_id,
                     "eventData": result.get("eventData"),
@@ -10133,6 +10228,7 @@ class Neo4jProvider(IGraphDBProvider):
                         for folder_id in folder_map.values()
                     ],
                     "failed_files": creation_result["failed_files"],
+                    "skipped_files": creation_result.get("skipped_files", []),
                     "eventData": event_data,
                 }
             else:
@@ -10145,6 +10241,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "folders_created": 0,
                     "created_folders": [],
                     "failed_files": creation_result["failed_files"],
+                    "skipped_files": creation_result.get("skipped_files", []),
                 }
 
         except Exception as e:
@@ -10233,9 +10330,33 @@ class Neo4jProvider(IGraphDBProvider):
         """Create all records and relationships"""
         total_created = 0
         failed_files = []
+        skipped_files: list[dict] = []
         created_files_data = []  # For event publishing
+        # Tracks names accepted in THIS batch. The pre-fetched existing-name
+        # sets are built before the loop and do not reflect files written during
+        # iteration, so intra-batch duplicates must still be caught here.
+        # Keyed by (parent_folder_id, name_lower, mime_str).
+        seen_in_batch: set[tuple[str, str, str]] = set()
 
         kb_connector_id = f"knowledgeBase_{org_id}"
+
+        # Pre-compute unique parent IDs so we issue one query per parent instead
+        # of one per file.
+        unique_parent_ids: set[str | None] = set()
+        for idx in range(len(files)):
+            dest = folder_analysis["file_destinations"][idx]
+            if dest["type"] == "root":
+                unique_parent_ids.add(folder_analysis.get("parent_folder_id"))
+            else:
+                pid = dest.get("folder_id")
+                if pid:
+                    unique_parent_ids.add(pid)
+
+        existing_names_per_parent: dict[str | None, set[tuple[str, str]]] = {}
+        for pid in unique_parent_ids:
+            existing_names_per_parent[pid] = await self._fetch_existing_file_names_in_parent(
+                kb_id=kb_id, parent_folder_id=pid, transaction=transaction
+            )
 
         for index, file_data in enumerate(files):
             try:
@@ -10253,6 +10374,31 @@ class Neo4jProvider(IGraphDBProvider):
                 # Extract data from file_data
                 record_data = file_data["record"].copy()
                 file_record_data = file_data["fileRecord"].copy()
+
+                # Skip files whose name+mime already exists in the target parent
+                # (pre-fetched set) or collides with an earlier file in this batch.
+                conflict_name = file_record_data.get("name") or record_data.get("recordName") or ""
+                conflict_mime = file_record_data.get("mimeType")
+                batch_key = (
+                    str(parent_folder_id or ""),
+                    conflict_name.lower(),
+                    str(conflict_mime or ""),
+                )
+                name_mime_key = (conflict_name.lower(), str(conflict_mime or ""))
+                has_db_conflict = name_mime_key in existing_names_per_parent.get(
+                    parent_folder_id, set()
+                )
+                if has_db_conflict or batch_key in seen_in_batch:
+                    self.logger.warning(
+                        "⚠️ Skipping file due to name conflict: '%s'", conflict_name
+                    )
+                    skipped_files.append({
+                        "filePath": file_data.get("filePath", ""),
+                        "name": conflict_name,
+                        "reason": "DUPLICATE_NAME",
+                    })
+                    continue
+                seen_in_batch.add(batch_key)
 
                 # Enrich record with KB-specific fields
                 external_parent_id = parent_folder_id if parent_folder_id else None
@@ -10361,6 +10507,7 @@ class Neo4jProvider(IGraphDBProvider):
         return {
             "total_created": total_created,
             "failed_files": failed_files,
+            "skipped_files": skipped_files,
             "created_files_data": created_files_data
         }
 
@@ -10369,6 +10516,7 @@ class Neo4jProvider(IGraphDBProvider):
         total_created = result["total_created"]
         folders_created = result["folders_created"]
         failed_files = len(result.get("failed_files", []))
+        skipped_files = len(result.get("skipped_files", []))
 
         message = f"Successfully uploaded {total_created} file{'s' if total_created != 1 else ''} to {upload_type}"
 
@@ -10377,6 +10525,9 @@ class Neo4jProvider(IGraphDBProvider):
 
         if failed_files > 0:
             message += f". {failed_files} file{'s' if failed_files != 1 else ''} failed to upload"
+
+        if skipped_files > 0:
+            message += f". {skipped_files} file{'s' if skipped_files != 1 else ''} skipped (name already exists)"
 
         return message + "."
 
@@ -10452,9 +10603,13 @@ class Neo4jProvider(IGraphDBProvider):
                 "origin": record_doc.get("origin"),
                 "extension": file_doc.get("extension", ""),
                 "mimeType": file_doc.get("mimeType", ""),
-                "createdAtTimestamp": str(record_doc.get("createdAtTimestamp", timestamp)),
-                "updatedAtTimestamp": str(record_doc.get("updatedAtTimestamp", timestamp)),
-                "sourceCreatedAtTimestamp": str(record_doc.get("sourceCreatedAtTimestamp", record_doc.get("createdAtTimestamp", timestamp))),
+                "createdAtTimestamp": str(record_doc.get("createdAtTimestamp") or timestamp),
+                "updatedAtTimestamp": str(record_doc.get("updatedAtTimestamp") or timestamp),
+                "sourceCreatedAtTimestamp": str(
+                    record_doc.get("sourceCreatedAtTimestamp")
+                    or record_doc.get("createdAtTimestamp")
+                    or timestamp
+                ),
             }
 
         except Exception:
@@ -10463,6 +10618,48 @@ class Neo4jProvider(IGraphDBProvider):
                 exc_info=True
             )
             return {}
+
+    async def _create_update_record_event_payload(
+        self,
+        record: dict,
+        file_record: dict | None = None,
+        *,
+        content_changed: bool = True,
+    ) -> dict | None:
+        """Create update record event payload matching Node.js format for reindexing."""
+        try:
+            endpoints = await self.config_service.get_config(
+                config_node_constants.ENDPOINTS.value
+            )
+            storage_url = (endpoints or {}).get("storage", {}).get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+
+            record_id = record.get("_key") or record.get("id")
+            signed_url_route = f"{storage_url}/api/v1/document/internal/{record.get('externalRecordId')}/download"
+
+            extension = ""
+            mime_type = ""
+            if file_record:
+                extension = file_record.get("extension", "")
+                mime_type = file_record.get("mimeType", "")
+
+            return {
+                "orgId": record.get("orgId"),
+                "recordId": record_id,
+                "version": record.get("version", 1),
+                "extension": extension,
+                "mimeType": mime_type,
+                "signedUrlRoute": signed_url_route,
+                "updatedAtTimestamp": str(record.get("updatedAtTimestamp") or get_epoch_timestamp_in_ms()),
+                "sourceLastModifiedTimestamp": str(
+                    record.get("sourceLastModifiedTimestamp")
+                    or record.get("updatedAtTimestamp")
+                    or get_epoch_timestamp_in_ms()
+                ),
+                "contentChanged": content_changed,
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create update record event payload: {str(e)}")
+            return None
 
     async def reset_indexing_status_to_queued_for_record_ids(self, record_ids: list[str]) -> None:
         """
@@ -10533,10 +10730,10 @@ class Neo4jProvider(IGraphDBProvider):
             file_content = ""
 
             if record.get("origin") == OriginTypes.UPLOAD.value:
-                storage_url = endpoints.get("storage", {}).get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+                storage_url = (endpoints or {}).get("storage", {}).get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
                 signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
             else:
-                connector_url = endpoints.get("connectors", {}).get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+                connector_url = (endpoints or {}).get("connectors", {}).get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
                 signed_url_route = f"{connector_url}/api/v1/{record.get('orgId')}/{user_id}/{record.get('connectorName', '').lower()}/record/{record_key}/signedUrl"
 
                 if record.get("recordType") == "MAIL":
@@ -10554,9 +10751,13 @@ class Neo4jProvider(IGraphDBProvider):
                             "mimeType": mime_type,
                             "body": file_content,
                             "connectorId": record.get("connectorId", ""),
-                            "createdAtTimestamp": str(record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())),
+                            "createdAtTimestamp": str(record.get("createdAtTimestamp") or get_epoch_timestamp_in_ms()),
                             "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
-                            "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())))
+                            "sourceCreatedAtTimestamp": str(
+                                record.get("sourceCreatedAtTimestamp")
+                                or record.get("createdAtTimestamp")
+                                or get_epoch_timestamp_in_ms()
+                            )
                         }
                     except Exception as decode_error:
                         self.logger.warning(f"Failed to decode file content as UTF-8: {str(decode_error)}")
@@ -10574,9 +10775,13 @@ class Neo4jProvider(IGraphDBProvider):
                 "mimeType": mime_type,
                 "body": file_content,
                 "connectorId": record.get("connectorId", ""),
-                "createdAtTimestamp": str(record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())),
+                "createdAtTimestamp": str(record.get("createdAtTimestamp") or get_epoch_timestamp_in_ms()),
                 "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
-                "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())))
+                "sourceCreatedAtTimestamp": str(
+                    record.get("sourceCreatedAtTimestamp")
+                    or record.get("createdAtTimestamp")
+                    or get_epoch_timestamp_in_ms()
+                )
             }
 
         except Exception as e:
@@ -12585,23 +12790,33 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def batch_update_connector_status(
         self,
-        connector_ids: list[str],
+        collection: str,
+        connector_keys: list[str],
         *,
         is_active: bool,
+        is_agent_active: bool,
         transaction: str | None = None,
     ) -> int:
-        """Batch update connector status."""
+        """Batch update isActive and isAgentActive status for multiple connectors."""
         try:
-            query = """
+            if not connector_keys:
+                return 0
+
+            label = self._get_label(collection)
+            query = f"""
             UNWIND $connector_ids AS connector_id
-            MATCH (app:App {id: connector_id})
-            SET app.isActive = $is_active
+            MATCH (app:{label} {{id: connector_id}})
+            SET app.isActive = $is_active, app.isAgentActive = $is_agent_active
             RETURN count(app) as updated_count
             """
             results = await self.client.execute_query(
                 query,
-                parameters={"connector_ids": connector_ids, "is_active": is_active},
-                txn_id=transaction
+                parameters={
+                    "connector_ids": connector_keys,
+                    "is_active": is_active,
+                    "is_agent_active": is_agent_active,
+                },
+                txn_id=transaction,
             )
             return results[0].get("updated_count", 0) if results else 0
         except Exception as e:
@@ -13219,10 +13434,12 @@ class Neo4jProvider(IGraphDBProvider):
         file_metadata: dict | None = None,
         transaction: str | None = None
     ) -> dict | None:
-        """Update a record."""
+        """Update a record by ID with automatic event payload generation for reindexing."""
         try:
-            # Add timestamp
-            updates["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
+            timestamp = get_epoch_timestamp_in_ms()
+            processed_updates = {**updates, "updatedAtTimestamp": timestamp}
+            if file_metadata:
+                processed_updates.setdefault("sourceLastModifiedTimestamp", file_metadata.get("lastModified", timestamp))
 
             query = """
             MATCH (r:Record {id: $record_id})
@@ -13231,16 +13448,41 @@ class Neo4jProvider(IGraphDBProvider):
             """
             results = await self.client.execute_query(
                 query,
-                parameters={"record_id": record_id, "updates": updates},
+                parameters={"record_id": record_id, "updates": processed_updates},
                 txn_id=transaction
             )
-            if results:
-                return {
-                    "success": True,
-                    "updatedRecord": results[0].get("r", {}),
-                    "recordId": record_id
-                }
-            return {"success": False, "code": 404, "reason": "Record not found"}
+            if not results:
+                return {"success": False, "code": 404, "reason": "Record not found"}
+
+            updated_record = results[0].get("r", {})
+
+            # Create event payload for router to publish (after successful update)
+            event_data = None
+            try:
+                file_record = await self.get_document(
+                    record_id, CollectionNames.FILES.value, transaction=transaction
+                )
+                content_changed = file_metadata is not None
+
+                update_payload = await self._create_update_record_event_payload(
+                    updated_record, file_record, content_changed=content_changed
+                )
+                if update_payload:
+                    event_data = {
+                        "eventType": "updateRecord",
+                        "topic": "record-events",
+                        "payload": update_payload
+                    }
+            except Exception as event_error:
+                self.logger.error(f"❌ Failed to create update event payload: {str(event_error)}")
+
+            return {
+                "success": True,
+                "updatedRecord": updated_record,
+                "recordId": record_id,
+                "timestamp": timestamp,
+                "eventData": event_data
+            }
         except Exception as e:
             self.logger.error(f"❌ Update record failed: {str(e)}")
             return {"success": False, "code": 500, "reason": str(e)}
@@ -14399,7 +14641,8 @@ class Neo4jProvider(IGraphDBProvider):
         MATCH (u:User {{id: $user_key}})
 
         WITH rg, u, $parent_id AS parent_id, $org_id AS org_id, (rg.connectorName = 'KB') AS is_kb_rg,
-             coalesce(rg.isInternal, false) AS is_internal
+             coalesce(rg.isInternal, false) AS is_internal,
+             coalesce(rg.hideChildren, false) AS hide_children
 
         // ============================================
         // SPECIAL CASE: Internal RecordGroups
@@ -14466,7 +14709,7 @@ class Neo4jProvider(IGraphDBProvider):
             }}) AS internal_records
         }}
 
-        WITH rg, u, parent_id, org_id, is_kb_rg, is_internal,
+        WITH rg, u, parent_id, org_id, is_kb_rg, is_internal, hide_children,
              coalesce(internal_records, []) AS internal_records
 
         // ============================================
@@ -14474,9 +14717,9 @@ class Neo4jProvider(IGraphDBProvider):
         // ============================================
         // Get child recordGroups via BELONGS_TO (skip if internal)
         CALL {{
-            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal
-            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal
-            WHERE is_internal = false
+            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal, hide_children
+            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal, hide_children
+            WHERE is_internal = false AND hide_children = false
 
             OPTIONAL MATCH (child_rg:RecordGroup)-[:BELONGS_TO]->(rg)
             WHERE ((is_kb_rg AND child_rg.connectorName = 'KB' AND child_rg.orgId = org_id)
@@ -14557,17 +14800,17 @@ class Neo4jProvider(IGraphDBProvider):
             }}) AS child_rgs
         }}
 
-        WITH rg, u, parent_id, org_id, is_kb_rg, is_internal, internal_records,
+        WITH rg, u, parent_id, org_id, is_kb_rg, is_internal, hide_children, internal_records,
              coalesce(child_rgs, []) AS child_rgs
 
         // ============================================
         // NORMAL CASE: Direct Child Records
         // ============================================
-        // Get direct child records via BELONGS_TO (skip if internal)
+        // Get direct child records via BELONGS_TO (skip if internal or hideChildren)
         CALL {{
-            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal
-            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal
-            WHERE is_internal = false
+            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal, hide_children
+            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal, hide_children
+            WHERE is_internal = false AND hide_children = false
 
             OPTIONAL MATCH (record:Record)-[:BELONGS_TO]->(rg)
             WHERE record.orgId = org_id
@@ -15411,10 +15654,12 @@ class Neo4jProvider(IGraphDBProvider):
         WITH u, user_accessible_app_ids,
              path1_rgs + path2_rgs + path3_rgs + path4_rgs AS all_parent_rgs
 
-        // Find nested RecordGroups via INHERIT_PERMISSIONS
+        // Find nested RecordGroups via INHERIT_PERMISSIONS (skip parents with hideChildren)
         CALL {
             WITH all_parent_rgs, user_accessible_app_ids
             UNWIND all_parent_rgs AS parent_rg
+            WITH parent_rg, user_accessible_app_ids
+            WHERE coalesce(parent_rg.hideChildren, false) = false
             MATCH (parent_rg)<-[:INHERIT_PERMISSIONS*1..5]-(rg:RecordGroup)
             WHERE rg.orgId = $org_id
               AND (rg.connectorName = 'KB' OR rg.connectorId IN user_accessible_app_ids)
@@ -15426,12 +15671,14 @@ class Neo4jProvider(IGraphDBProvider):
         WITH u, user_accessible_app_ids,
              all_parent_rgs + (CASE WHEN nested_rgs IS NOT NULL THEN nested_rgs ELSE [] END) AS all_accessible_rgs
 
-        // Find all Records that inherit from accessible RecordGroups
+        // Find all Records that inherit from accessible RecordGroups (skip hideChildren parents)
         WITH u, user_accessible_app_ids, all_accessible_rgs,
              [rg IN all_accessible_rgs |
-               [(record:Record)-[:INHERIT_PERMISSIONS]->(rg)
+               CASE WHEN coalesce(rg.hideChildren, false) = true THEN []
+               ELSE [(record:Record)-[:INHERIT_PERMISSIONS]->(rg)
                 WHERE record.orgId = $org_id
                | record]
+               END
              ] AS records_lists
 
         // Flatten and deduplicate records from RecordGroups
@@ -18637,14 +18884,15 @@ class Neo4jProvider(IGraphDBProvider):
             app = await self.get_document(connector_id, CollectionNames.APPS.value, transaction=transaction)
             if not app:
                 return None
-            user_id = app.get("createdBy")
-            if user_id is None:
+            created_by = app.get("createdBy")
+            if not created_by:
                 return None
-            user_doc  =  await self.get_user_by_user_id(user_id)
-            if user_doc is None:
+            user_doc = await self.get_user_by_user_id(
+                user_id=created_by
+            )
+            if not user_doc:
                 return None
-            # NOTE: This conversion of type can be removed once get_user_by_user_id returns User object
-            return  User.from_arango_user(user_doc) if isinstance(user_doc, dict) else user_doc
+            return User.from_arango_user(user_doc)
         except Exception as e:
             self.logger.error("❌ Failed to get app creator user: %s", str(e))
             return None

@@ -26,15 +26,17 @@ import pytest
 import requests
 
 _ROOT = Path(__file__).resolve().parents[3]
-_HELPER = _ROOT / "helper"
 _RV_HELPER = _ROOT / "response-validation" / "helper"
-for _p in (_ROOT, _HELPER, _RV_HELPER):
+for _p in (_ROOT, _RV_HELPER):
     s = str(_p)
     if s not in sys.path:
         sys.path.insert(0, s)
 
-from openapi_schema_validator import assert_response_matches_openapi_operation
-from pipeshub_client import PipeshubClient
+from helper.clients.conversations_client import AgentConversationsClient
+from openapi_schema_validator import (
+    assert_response_matches_openapi_operation,
+    assert_response_matches_openapi_ref,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,12 +105,10 @@ class TestAgentConversationListing:
     @pytest.fixture(autouse=True)
     def _setup(
         self,
-        pipeshub_client: PipeshubClient,
+        agent_conversations_client: AgentConversationsClient,
         agent_session: dict[str, Any],
     ) -> None:
-        self.client = pipeshub_client
-        self.base_url = pipeshub_client.base_url
-        self.headers = pipeshub_client.auth_headers
+        self.conversations = agent_conversations_client
         self.timeout = int(os.getenv("PIPESHUB_TEST_TIMEOUT", "60"))
         stream_override = os.getenv("PIPESHUB_TEST_STREAM_TIMEOUT", "").strip()
         self.stream_timeout = (
@@ -125,12 +125,9 @@ class TestAgentConversationListing:
         yield created
         for agent_key, conversation_id in reversed(created):
             try:
-                resp = requests.delete(
-                    (
-                        f"{self.base_url}/api/v1/agents/{agent_key}"
-                        f"/conversations/{conversation_id}"
-                    ),
-                    headers=self.headers,
+                resp = self.conversations.delete_conversation(
+                    agent_key,
+                    conversation_id,
                     timeout=self.timeout,
                 )
                 if resp.status_code >= 300:
@@ -141,34 +138,6 @@ class TestAgentConversationListing:
             except Exception:
                 pass
 
-    def _list_url(self, agent_key: str) -> str:
-        return f"{self.base_url}/api/v1/agents/{agent_key}/conversations"
-
-    def _stream_url(self, agent_key: str) -> str:
-        return f"{self.base_url}/api/v1/agents/{agent_key}/conversations/stream"
-
-    def _conversation_url(self, agent_key: str, conversation_id: str) -> str:
-        return (
-            f"{self.base_url}/api/v1/agents/{agent_key}"
-            f"/conversations/{conversation_id}"
-        )
-
-    def _grouped_archives_url(self) -> str:
-        return f"{self.base_url}/api/v1/agents/conversations/show/archives"
-
-    def _agent_archives_url(self, agent_key: str) -> str:
-        return f"{self.base_url}/api/v1/agents/{agent_key}/conversations/show/archives"
-
-    def _archive_agent_conversation_url(
-        self,
-        agent_key: str,
-        conversation_id: str,
-    ) -> str:
-        return (
-            f"{self.base_url}/api/v1/agents/{agent_key}"
-            f"/conversations/{conversation_id}/archive"
-        )
-
     def _archive_agent_conversation(
         self,
         agent_key: str,
@@ -176,10 +145,13 @@ class TestAgentConversationListing:
         *,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return requests.post(
-            self._archive_agent_conversation_url(agent_key, conversation_id),
-            headers=headers or self.headers,
-            timeout=self.timeout,
+        options: dict[str, Any] = {"timeout": self.timeout}
+        if headers is not None:
+            options["headers"] = headers
+        return self.conversations.archive_conversation(
+            agent_key,
+            conversation_id,
+            **options,
         )
 
     def _create_agent_conversation_id(
@@ -189,13 +161,9 @@ class TestAgentConversationListing:
         query: str,
         created_conversations: list[tuple[str, str]],
     ) -> str:
-        headers = {**self.headers, "Accept": "text/event-stream"}
-
-        with requests.post(
-            self._stream_url(agent_key),
-            headers=headers,
-            json={"query": query},
-            stream=True,
+        with self.conversations.stream_conversation(
+            agent_key,
+            query=query,
             timeout=self.stream_timeout,
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -225,17 +193,10 @@ class TestAgentConversationListing:
         *,
         query: str,
     ) -> None:
-        headers = {**self.headers, "Accept": "text/event-stream"}
-        url = (
-            f"{self.base_url}/api/v1/agents/{agent_key}"
-            f"/conversations/{conversation_id}/messages/stream"
-        )
-
-        with requests.post(
-            url,
-            headers=headers,
-            json={"query": query},
-            stream=True,
+        with self.conversations.stream_message(
+            agent_key,
+            conversation_id,
+            query=query,
             timeout=self.stream_timeout,
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -258,12 +219,12 @@ class TestAgentConversationListing:
         params: Any | None = None,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return requests.get(
-            self._list_url(agent_key),
-            headers=headers or self.headers,
-            params=params,
-            timeout=self.timeout,
-        )
+        options: dict[str, Any] = {"timeout": self.timeout}
+        if params is not None:
+            options["params"] = params
+        if headers is not None:
+            options["headers"] = headers
+        return self.conversations.list_conversations(agent_key, **options)
 
     def _get_agent_conversation(
         self,
@@ -273,11 +234,15 @@ class TestAgentConversationListing:
         params: Any | None = None,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return requests.get(
-            self._conversation_url(agent_key, conversation_id),
-            headers=headers or self.headers,
-            params=params,
-            timeout=self.timeout,
+        options: dict[str, Any] = {"timeout": self.timeout}
+        if params is not None:
+            options["params"] = params
+        if headers is not None:
+            options["headers"] = headers
+        return self.conversations.get_conversation(
+            agent_key,
+            conversation_id,
+            **options,
         )
 
     def _list_grouped_archived_agent_conversations(
@@ -286,12 +251,12 @@ class TestAgentConversationListing:
         params: Any | None = None,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return requests.get(
-            self._grouped_archives_url(),
-            headers=headers or self.headers,
-            params=params,
-            timeout=self.timeout,
-        )
+        options: dict[str, Any] = {"timeout": self.timeout}
+        if params is not None:
+            options["params"] = params
+        if headers is not None:
+            options["headers"] = headers
+        return self.conversations.list_grouped_archives(**options)
 
     def _list_archived_agent_conversations(
         self,
@@ -300,12 +265,12 @@ class TestAgentConversationListing:
         params: Any | None = None,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        return requests.get(
-            self._agent_archives_url(agent_key),
-            headers=headers or self.headers,
-            params=params,
-            timeout=self.timeout,
-        )
+        options: dict[str, Any] = {"timeout": self.timeout}
+        if params is not None:
+            options["params"] = params
+        if headers is not None:
+            options["headers"] = headers
+        return self.conversations.list_archived_conversations(agent_key, **options)
 
     @staticmethod
     def _all_returned_conversation_ids(body: dict[str, Any]) -> set[str]:
@@ -374,10 +339,11 @@ class TestAgentConversationListing:
     def _assert_validation_error(resp: requests.Response) -> dict[str, Any]:
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
         body = _response_json(resp)
+        assert_response_matches_openapi_ref(body, "#/components/schemas/ErrorResponse")
         error = body.get("error")
         assert isinstance(error, dict), f"Expected error object, got: {body!r}"
-        assert error.get("message") == "Validation failed", (
-            f"Expected 'Validation failed', got {error.get('message')!r}"
+        assert error.get("code") == "VALIDATION_ERROR", (
+            f"Expected VALIDATION_ERROR, got {error.get('code')!r}"
         )
         metadata = error.get("metadata")
         assert isinstance(metadata, dict), f"Expected error.metadata object, got: {body!r}"
@@ -511,7 +477,11 @@ class TestAgentConversationListing:
             )
 
     def test_list_agent_conversations_without_auth_returns_401(self) -> None:
-        resp = requests.get(self._list_url(self.primary_agent), timeout=self.timeout)
+        resp = self.conversations.list_conversations(
+            self.primary_agent,
+            auth=False,
+            timeout=self.timeout,
+        )
         assert resp.status_code == 401, f"{resp.status_code}: {resp.text}"
 
     @pytest.mark.parametrize(
@@ -832,8 +802,12 @@ class TestAgentConversationListing:
     def test_list_grouped_archived_agent_conversations_without_auth_returns_401(
         self,
     ) -> None:
-        resp = requests.get(self._grouped_archives_url(), timeout=self.timeout)
+        resp = self.conversations.list_grouped_archives(
+            auth=False,
+            timeout=self.timeout,
+        )
         assert resp.status_code == 401, f"{resp.status_code}: {resp.text}"
+
     def test_list_archived_agent_conversations_default_returns_archived_results(
         self,
         created_conversations: list[tuple[str, str]],
@@ -1087,8 +1061,9 @@ class TestAgentConversationListing:
         )
 
     def test_list_archived_agent_conversations_without_auth_returns_401(self) -> None:
-        resp = requests.get(
-            self._agent_archives_url(self.primary_agent),
+        resp = self.conversations.list_archived_conversations(
+            self.primary_agent,
+            auth=False,
             timeout=self.timeout,
         )
         assert resp.status_code == 401, f"{resp.status_code}: {resp.text}"
@@ -1291,8 +1266,10 @@ class TestAgentConversationListing:
         assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
 
     def test_get_agent_conversation_by_id_without_auth_returns_401(self) -> None:
-        resp = requests.get(
-            self._conversation_url(self.primary_agent, "0" * 24),
+        resp = self.conversations.get_conversation(
+            self.primary_agent,
+            "0" * 24,
+            auth=False,
             timeout=self.timeout,
         )
         assert resp.status_code == 401, f"{resp.status_code}: {resp.text}"

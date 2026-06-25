@@ -32,6 +32,8 @@
   "uploadProgress": {
     "uploadFailedDefault": "Upload fehlgeschlagen",
     "uploadIncomplete": "Upload unvollständig",
+    "serverError": "Upload auf dem Server fehlgeschlagen",
+    "skippedFolderFailed": "Übersprungen: Ordnererstellung fehlgeschlagen",
     "genericFailureHint": "Upload fehlgeschlagen. Versuchen Sie es erneut oder verwenden Sie einen unterstützten Dateityp.",
     "ariaFailed": "{{name}}, Upload fehlgeschlagen",
     "ariaFailedWithDetail": "{{name}}, Upload fehlgeschlagen. {{detail}}",
@@ -39,6 +41,12 @@
     "sizeWithFailed": "{{size}} · fehlgeschlagen",
     "headerCompletedAndFailed": "{{completed}} abgeschlossen · {{failed}} fehlgeschlagen",
     "headerFailuresOnly": "{{count}} fehlgeschlagen",
+    "failedSectionTitle": "Fehlgeschlagen ({{count}})",
+    "tab_all": "Alle",
+    "tab_completed": "Abgeschlossen",
+    "tab_failed": "Fehlgeschlagen",
+    "emptyTab": "Noch nichts hier",
+    "uploadedAndFailedSize": "{{uploaded}} hochgeladen · {{failed}} fehlgeschlagen",
     "headerAllComplete": "{{completed}}/{{total}} Uploads abgeschlossen",
     "sessionFilesAndSize": "{{count}} Dateien · {{size}}",
     "totalSizeLabel": "Gesamt: {{size}}",
@@ -47,6 +55,34 @@
       "uploading": "wird hochgeladen",
       "completed": "abgeschlossen",
       "failed": "fehlgeschlagen"
+    },
+    "rejectionToast": {
+      "title_one": "{{count}} Datei kann nicht hochgeladen werden",
+      "title_other": "{{count}} Dateien können nicht hochgeladen werden",
+      "sizeLimitTitle_one": "{{count}} Datei überschreitet das Größenlimit",
+      "sizeLimitTitle_other": "{{count}} Dateien überschreiten das Größenlimit",
+      "sizeLimitDescription": "Limit {{maxMb}} MB pro Datei. Wenden Sie sich an Ihren Administrator, um ein höheres Limit anzufragen.",
+      "sizeLimitDescriptionAdmin": "Limit {{maxMb}} MB pro Datei. Sie können es in Workspace Labs erhöhen.",
+      "unsupportedDescription": "Nicht unterstützter Dateityp.",
+      "duplicateDescription": "Eine Datei mit diesem Namen existiert hier bereits.",
+      "trackerHint": "Details im Upload-Panel unten.",
+      "openLabs": "Labs öffnen"
+    },
+    "rejectionSummary": {
+      "tooLarge_one": "{{count}} über {{maxMb}} MB",
+      "tooLarge_other": "{{count}} über {{maxMb}} MB",
+      "unsupported_one": "{{count}} nicht unterstützter Typ",
+      "unsupported_other": "{{count}} nicht unterstützte Typen",
+      "duplicate_one": "{{count}} doppelter Name",
+      "duplicate_other": "{{count}} doppelte Namen",
+      "other_one": "{{count}} anderer Fehler",
+      "other_other": "{{count}} andere Fehler"
+    },
+    "reasons": {
+      "tooLarge": "Überschreitet das {{maxMb}} MB Größenlimit",
+      "unsupportedType": "Nicht unterstützter Dateityp",
+      "duplicateName": "Eine Datei mit diesem Namen existiert bereits",
+      "rejected": "Datei abgelehnt"
     }
   },
   "onboarding": {
@@ -159,7 +195,30 @@
     "moreConnectors": "Weitere Konnektoren",
     "all": "Alle",
     "agents": "Agenten",
-    "searchChats": "Chats suchen"
+    "searchChats": "Chats suchen",
+    "inbox": "Posteingang",
+    "notifications": "Benachrichtigungen"
+  },
+  "notifications": {
+    "title": "Benachrichtigungen",
+    "loading": "Wird geladen…",
+    "empty": "Noch keine Benachrichtigungen",
+    "emptyUnread": "Keine ungelesenen Benachrichtigungen",
+    "emptyArchived": "Keine archivierten Benachrichtigungen",
+    "markRead": "Als gelesen markieren",
+    "markUnread": "Als ungelesen markieren",
+    "markAllRead": "Alle als gelesen markieren",
+    "archive": "Archivieren",
+    "unarchive": "Dearchivieren",
+    "dismiss": "Verwerfen",
+    "filter": "Benachrichtigungen filtern",
+    "filterAll": "Alle",
+    "filterOnlyUnread": "Ungelesen",
+    "filterArchived": "Archiviert",
+    "filterTooltip": "Filter: {{filter}}",
+    "loadFailed": "Benachrichtigungen konnten nicht geladen werden",
+    "updateFailed": "Benachrichtigung konnte nicht aktualisiert werden",
+    "removeFailed": "Benachrichtigung konnte nicht entfernt werden"
   },
   "action": {
     "find": "Finden",
@@ -451,6 +510,9 @@
     "micTooltip": "Spracheingabe",
     "uploadYourFile": "Datei hochladen",
     "supportsFileTypes": "Unterstützt: {{types}}.",
+    "uploadFilesLimit": "Bis zu {{count}} Dateien pro Nachricht",
+    "uploadFilesRemaining": "{{remaining}} von {{total}} Dateien verbleibend",
+    "dropFilesHere": "Dateien hier ablegen",
     "loadingConversation": "Gespräch wird geladen...",
     "recents": "Kürzlich",
     "sharedChats": "Geteilte Chats",
@@ -1108,6 +1170,7 @@
       "toastDefaultError": "Standardmodell konnte nicht gesetzt werden",
       "toastDeleted": "{{name}} gelöscht",
       "toastDeleteError": "Modell konnte nicht gelöscht werden",
+      "toastSentenceTransformerDownloading": "Das Modell wird im Hintergrund heruntergeladen und ist möglicherweise erst in einigen Minuten verfügbar",
       "configAddModel": "Modell hinzufügen",
       "configUpdateModel": "Modell aktualisieren",
       "configFillRequiredTooltip": "Alle Pflichtfelder ausfüllen",
@@ -1769,10 +1832,10 @@
         },
         "sync": {
           "kind": "Sync",
-          "syncing": "Synchronisiert",
-          "syncingTooltip": "Ein Sync-Job läuft für diese Instanz.",
-          "fullSyncing": "Vollsync",
-          "fullSyncingTooltip": "Ein vollständiger Sync läuft für diese Instanz.",
+          "syncing": "Synchronisierung läuft",
+          "syncingTooltip": "Dieser Connector synchronisiert neue und aktualisierte Inhalte.",
+          "fullSyncing": "Vollständiger Sync läuft",
+          "fullSyncingTooltip": "Dieser Connector führt eine vollständige Neusynchronisierung von der Quelle durch.",
           "removing": "Entfernen",
           "removingTooltip": "Diese Instanz wird gelöscht."
         }
@@ -2113,7 +2176,9 @@
     "page": "Seite {{number}}",
     "paragraph": "Absatz {{number}}",
     "showMore": "Mehr anzeigen",
-    "showLess": "Weniger anzeigen"
+    "showLess": "Weniger anzeigen",
+    "lockZoom": "Zoomstufe sperren",
+    "unlockZoom": "Zoomstufe entsperren"
   },
   "agentBuilder": {
     "goBack": "Zurück",

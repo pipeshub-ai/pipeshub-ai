@@ -1,6 +1,7 @@
 """Generic Event Service for handling connector-specific events"""
 
 import logging
+import time
 from typing import Any
 
 from dependency_injector import providers
@@ -126,6 +127,7 @@ class EventService:
                 connector_id=connector_id,
                 scope=scope,
                 created_by=created_by,
+                notification_service=self.app_container.connector_notification_service(),
             )
 
             if not connector:
@@ -210,7 +212,8 @@ class EventService:
                 config_service=config_service,
                 connector_id=connector_id,
                 scope=scope,
-                created_by=created_by
+                created_by=created_by,
+                notification_service=self.app_container.connector_notification_service(),
             )
 
             if not connector:
@@ -357,9 +360,16 @@ class EventService:
 
     async def _run_sync_and_clear_status(self, connector: BaseConnector, connector_id: str) -> None:
         """Wrap run_sync() so that status is cleared to null when the task finishes."""
+        start = time.monotonic()
         try:
             await connector.run_sync()
         finally:
+            elapsed = time.monotonic() - start
+            mins, secs = divmod(elapsed, 60)
+            elapsed_str = f"{int(mins)}m {secs:.1f}s" if mins else f"{secs:.1f}s"
+            self.logger.info(
+                f"✅ Sync finished for connector {connector_id} — total time: {elapsed_str}"
+            )
             try:
                 await self._update_app_status(connector_id, status=AppStatus.IDLE.value)
                 self.logger.info(f"✅ Cleared status for connector {connector_id} after sync")

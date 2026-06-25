@@ -3552,12 +3552,12 @@ export const updateDefaultAIModel =
       }
 
       // Run a health check on the target model BEFORE promoting it to default.
-      // This is critical for `embedding`: switching the default to a model with a
-      // different vector dimension or model identity while the collection already
-      // contains points would corrupt retrieval. The Python
-      // `/api/v1/health-check/embedding` endpoint enforces that policy.
-      // For other model types (llm, ocr, slm, reasoning, multiModal) we also
-      // verify the model is reachable/credentials work before flipping the flag.
+      // For `embedding` we use the `/embedding-health-check` endpoint which
+      // validates the model AND manages the Qdrant collection lifecycle
+      // (deletes + recreates when the vector dimension or model identity
+      // changes). For other model types we use the generic per-model
+      // `/health-check/{type}` endpoint which validates reachability and
+      // credentials.
       const healthCheckSupportedTypes = [
         'llm',
         'embedding',
@@ -3583,11 +3583,16 @@ export const updateDefaultAIModel =
           }),
         };
 
+        // Embedding uses the collection-managing endpoint; all others use the
+        // generic per-model health check.
+        const isEmbedding = targetModelType === 'embedding';
         const aiCommandOptions: AICommandOptions = {
-          uri: `${appConfig.aiBackend}/api/v1/health-check/${targetModelType}`,
+          uri: isEmbedding
+            ? `${appConfig.aiBackend}/api/v1/embedding-health-check`
+            : `${appConfig.aiBackend}/api/v1/health-check/${targetModelType}`,
           method: HttpMethod.POST,
           headers: req.headers as Record<string, string>,
-          body: healthCheckPayload,
+          body: isEmbedding ? [healthCheckPayload] : healthCheckPayload,
         };
 
         logger.debug(
@@ -3601,7 +3606,9 @@ export const updateDefaultAIModel =
         if (!aiResponseData?.data || aiResponseData?.statusCode !== 200) {
           const errData: any = aiResponseData?.data ?? {};
           const reasonMessage =
-            (errData && (errData.message ?? errData.error?.message)) ??
+            errData.message ??
+            errData.error?.message ??
+            (typeof errData.error === 'string' ? errData.error : null) ??
             `Failed health check while setting default ${targetModelType} model. ` +
               `Refusing to change default to prevent breaking the system.`;
 

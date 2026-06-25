@@ -1,5 +1,6 @@
 from typing import Literal
 
+from jinja2 import Template
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
@@ -87,6 +88,45 @@ block_group_prompt = """* Block Group Index: {{block_group_index}}
 {% endfor %}
 """
 
+qna_fetch_full_record_tool_block = """
+  <tool>
+  **YOU MUST USE the "fetch_full_record" tool to retrieve full record content when the provided blocks are not enough to fully answer the query.**
+
+  This is a critical tool. Do NOT skip it when you need more information. Calling this tool is ALWAYS better than giving an incomplete or uncertain answer.
+
+  **RULE: If the provided blocks are sufficient to fully answer the query, answer directly. Otherwise, you MUST call fetch_full_record BEFORE answering.**
+
+  **You MUST call fetch_full_record when ANY of these are true:**
+  1. The blocks contain only partial information — there are gaps or missing sections
+  2. The query asks for comprehensive, full, or complete details about a topic
+  3. You are not confident you can give a thorough answer from the blocks alone
+  4. The user asks about a specific document and you only have a few blocks from it
+  5. **DEFAULT BEHAVIOR: When in doubt, CALL THE TOOL. An incomplete answer is worse than making a tool call.**
+{% if has_jira_tickets_in_context %}
+  6. For **Jira tickets** in context, call fetch_full_record when the query needs live fields (e.g. story points, sprint, current status) that may not be current in record metadata.
+{% endif %}
+
+  **How to call fetch_full_record:**
+  - The Record ID for each record is shown in the `Record ID :` line at the top of each `<record>` section in the context above.
+  - Pass a LIST of those exact Record IDs: fetch_full_record(record_ids=["<Record ID from context>", ...])
+  - **CRITICAL: Use ONLY the exact Record IDs shown in the context above. Do NOT invent, guess, or use example IDs.**
+  - Include a reason explaining why you need the full records
+  - **CRITICAL: Pass ALL record IDs in a SINGLE call. Do NOT make multiple separate calls.**
+  - The tool returns the complete content of all requested records
+
+  **DO NOT answer with partial information when you could call fetch_full_record to get the full picture.**
+  </tool>
+"""
+
+
+def render_fetch_full_record_tool_block(
+    has_jira_tickets_in_context: bool = False,
+) -> str:
+    return Template(qna_fetch_full_record_tool_block).render(
+        has_jira_tickets_in_context=has_jira_tickets_in_context,
+    )
+
+
 qna_prompt_instructions_1 = """
 <task>
   You are an expert AI assistant within an enterprise who can answer any query based on the company's knowledge sources and user information.
@@ -101,30 +141,7 @@ qna_prompt_instructions_1 = """
 </task>
 
 <tools>
-  <tool>
-  **YOU MUST USE the "fetch_full_record" tool to retrieve full record content when the provided blocks are not enough to fully answer the query.**
-
-  This is a critical tool. Do NOT skip it when you need more information. Calling this tool is ALWAYS better than giving an incomplete or uncertain answer.
-
-  **RULE: If the provided blocks are sufficient to fully answer the query, answer directly. Otherwise, you MUST call fetch_full_record BEFORE answering.**
-
-  **You MUST call fetch_full_record when ANY of these are true:**
-  1. The blocks contain only partial information — there are gaps or missing sections
-  2. The query asks for comprehensive, full, or complete details about a topic
-  3. You are not confident you can give a thorough answer from the blocks alone
-  4. The user asks about a specific document and you only have a few blocks from it
-  5. **DEFAULT BEHAVIOR: When in doubt, CALL THE TOOL. An incomplete answer is worse than making a tool call.**
-
-  **How to call fetch_full_record:**
-  - The Record ID for each record is shown in the `Record ID :` line at the top of each `<record>` section in the context above.
-  - Pass a LIST of those exact Record IDs: fetch_full_record(record_ids=["<Record ID from context>", ...])
-  - **CRITICAL: Use ONLY the exact Record IDs shown in the context above. Do NOT invent, guess, or use example IDs.**
-  - Include a reason explaining why you need the full records
-  - **CRITICAL: Pass ALL record IDs in a SINGLE call. Do NOT make multiple separate calls.**
-  - The tool returns the complete content of all requested records
-
-  **DO NOT answer with partial information when you could call fetch_full_record to get the full picture.**
-  </tool>
+{{ fetch_full_record_tool_block }}
 {% if has_sql_connector %}
   <tool>
     You also have access to a tool called "execute_sql_query" that allows you to execute SQL queries against external data sources.
@@ -149,6 +166,57 @@ qna_prompt_instructions_1 = """
     - The user wants to see data results.. Formulate the query internally and execute it via the tool.
     - After receiving results, present them in a clear markdown format (tables, lists, summaries).
     - If required tables belong to different connector_id values or databases/connectors, do NOT attempt a cross-source JOIN in one SQL. Execute separate queries per source and aggregate results in the final answer.
+  </tool>
+{% endif %}
+{% if has_slack_connector %}
+  <tool>
+    You also have access to a tool called "fetch_slack_thread" that returns every message and file inside a Slack thread.
+
+    **When to use fetch_slack_thread:**
+    - The retrieved context includes a Slack record whose metadata shows `recordGroupType: SLACK_THREAD` (a thread-burst record), AND the user is asking about the thread's discussion, decisions, conclusion, or any reply you cannot see in the provided blocks.
+    - The retrieved context includes a Slack channel message with replies (`hasReplies: true`), AND the user is asking about what was discussed in that thread.
+    - Without expanding the thread you would only have a partial view of the conversation.
+
+    **When NOT to use:**
+    - The record is a regular Slack channel message (`recordGroupType: SLACK_CHANNEL`) without replies — there is no thread to expand.
+    - The provided blocks already contain enough of the thread to answer the query.
+
+    **How to use:**
+    - record_id: The exact `Record ID :` value of a Slack thread record (or a channel message with replies) from the context. Do NOT invent or guess IDs.
+    - reason: Brief explanation of why the full thread is needed.
+
+    **CRITICAL RULES:**
+    - Pass the Record ID exactly as shown in the context.
+    - One call per thread. Do not call again for the same thread in the same turn.
+    - If the tool returns `ok: false`, the record is not a Slack thread — do not retry, just answer from the blocks you already have.
+    - Returned records share the same Record ID / Citation ID conventions as the records in the original context, so cite them the same way.
+  </tool>
+
+  <tool>
+    You also have access to a tool called "fetch_slack_nearby_messages" that fetches live Slack channel messages via the Slack API: messages immediately before (`before`) or after (`after`) an ISO anchor timestamp, inclusive of the anchor timestamp. Use `limit` (default 5, max 50). To page further in the same direction, call again with `timestamp` set to `new_anchor_iso_timestamp` from the prior response.
+
+    **When to use fetch_slack_nearby_messages:**
+    - Use the tool when additional channel context is required to accurately handle the conversation.
+    - Use the tool when the available context is incomplete or insufficient to answer the user's query.
+
+    **When NOT to use:**
+    - The user wants the full thread or thread replies — use `fetch_slack_thread` instead.
+    - The provided blocks already contain enough nearby context.
+
+    **How to use:**
+    - timestamp: ISO-8601 anchor time. For indexed Slack records use `Start Message ID` / `End Message ID` from context (`before` → start, `after` → end).
+    - timezone: IANA timezone (e.g. `UTC`, `America/New_York`) only when timestamp has no offset.
+    - direction: `before` or `after`. Call twice if you need both directions.
+    - channel_id: Slack channel id from the record's external group metadata (SLACK_CHANNEL records only).
+    - connector_id: Connector ID from the indexed Slack record metadata (Message Details).
+    - limit: How many messages to fetch (default 5, max 50).
+    - reason: Brief explanation of why nearby context is needed.
+
+    **CRITICAL RULES:**
+    - Pass `connector_id` exactly as shown in the indexed Slack record metadata (Connector ID).
+    - Results come from Slack live API (`source: slack_api`); they do not have Citation IDs — summarize them in prose, do not cite as indexed records.
+    - Each returned message includes `timestamp` / `iso_timestamp` in UTC.
+    - One direction per call; use a second call with the other direction only when both windows are needed.
   </tool>
 {% endif %}
 </tools>

@@ -94,6 +94,7 @@ from app.models.blocks import (
 from app.models.entities import (
     AppUser,
     AppUserGroup,
+    CommentRecord,
     FileRecord,
     Record,
     RecordGroup,
@@ -3444,6 +3445,17 @@ class ConfluenceConnector(BaseConnector):
             self.logger.info(f"📥 Streaming record: {record.record_name} ({record.external_record_id})")
 
             if record.record_type in [RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST]:
+                # Check if this is a legacy record with HTML mime type
+                if record.mime_type == MimeTypes.HTML.value:
+                    # Fetch and stream HTML content for legacy records
+                    html_content = await self._fetch_page_content(record.external_record_id, record.record_type)
+                    
+                    return StreamingResponse(
+                        iter([html_content.encode('utf-8')]),
+                        media_type=MimeTypes.HTML.value,
+                        headers={"Content-Disposition": f'inline; filename="{record.external_record_id}.html"'}
+                    )
+                
                 # Page or blogpost - fetch ADF content and convert to BlocksContainer
                 page_data = await self._fetch_page_data_with_adf(record.external_record_id, record.record_type)
 
@@ -3521,6 +3533,27 @@ class ConfluenceConnector(BaseConnector):
                     filename=filename,
                     mime_type=record.mime_type,
                     fallback_filename=f"record_{record.id}"
+                )
+
+            elif record.record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT]:
+                # Comment record - fetch comment content
+                comment_data = await self._fetch_comment_data(record)
+                if not comment_data:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Comment {record.external_record_id} not found"
+                    )
+                
+                # Extract comment content
+                body = comment_data.get("body", {})
+                storage_content = body.get("storage", {})
+                comment_html = storage_content.get("value", "")
+                
+                # Return as HTML streaming response
+                return StreamingResponse(
+                    iter([comment_html.encode('utf-8')]),
+                    media_type=MimeTypes.HTML.value,
+                    headers={"Content-Disposition": f'inline; filename="{record.external_record_id}.html"'}
                 )
 
             else:
@@ -3732,6 +3765,11 @@ class ConfluenceConnector(BaseConnector):
 
             # Extract MIME type - check top level first, then metadata object as fallback
             mime_type = target_attachment.get("mediaType") or "image/png"
+
+            # Only process image types - return None for non-images (PDFs, videos, etc.)
+            if not mime_type.startswith("image/"):
+                self.logger.debug(f"Skipping non-image media type: {mime_type} for {media_alt}")
+                return None
 
             # Stream attachment content
             content_bytes = b""
@@ -4130,13 +4168,28 @@ class ConfluenceConnector(BaseConnector):
                 comment_type="inline"
             )
 
-        # 3. Attach inline comments to blocks
+        # 3. Collect all unique author IDs from both inline and footer comments for batch fetching
+        # Collect unique author IDs from both inline and footer comments
+        author_ids_to_fetch = {
+            comment.get("version", {}).get("authorId")
+            for comment in (inline_comments or []) + (footer_comments or [])
+        }
+        author_ids_to_fetch.discard(None)
+        author_ids_to_fetch.discard("Unknown")
+
+        # Batch fetch user display names
+        user_display_names: dict[str, str] = await self._batch_fetch_user_display_names(
+            author_ids_to_fetch
+        )
+
+        # Attach inline comments to blocks with user display names
         if inline_comments:
             await parser.attach_inline_comments_to_blocks(
                 blocks=blocks,
                 inline_comments=inline_comments,
                 media_fetcher=self._create_comment_media_fetcher(page_id, content_type),
                 parent_page_url=weburl,
+                user_display_names=user_display_names,
             )
 
         # 4. Process footer comments as COMMENT_THREAD/COMMENT BlockGroups
@@ -4186,11 +4239,53 @@ class ConfluenceConnector(BaseConnector):
                         self.logger.warning(f"Failed to parse ADF for comment {comment_id}")
                         continue
 
-                    # Convert ADF comment body to markdown
-                    comment_body = parser._adf_to_markdown_simple(comment_body_adf)
+                    # Parse comment ADF directly to Blocks
+                    comment_blocks, comment_block_groups = await parser.parse_adf(
+                        adf_content=comment_body_adf,
+                        media_fetcher=self._create_comment_media_fetcher(page_id, content_type),
+                        parent_page_url=weburl,
+                        page_id=page_id,
+                        page_title=None  # Don't add title for comments
+                    )
 
-                    if not comment_body:
+                    if not comment_blocks and not comment_block_groups:
                         continue
+
+                    # Add comment blocks to main container (adjusting indices)
+                    block_start_index = len(blocks)
+                    block_group_index_offset = len(block_groups)
+                    
+                    for i, comment_block in enumerate(comment_blocks):
+                        comment_block.index = block_start_index + i  # Update block index
+                        
+                        # Shift parent_index if it points to a BlockGroup
+                        if comment_block.parent_index is not None:
+                            comment_block.parent_index += block_group_index_offset
+                        # else: Will be set to COMMENT group later
+                        
+                        blocks.append(comment_block)
+                    block_end_index = len(blocks) - 1
+
+                    # Add any block groups from comment (tables, etc.)
+                    for comment_bg in comment_block_groups:
+                        # Shift parent_index to account for existing block groups
+                        if comment_bg.parent_index is not None:
+                            comment_bg.parent_index += block_group_index_offset
+                        
+                        # Shift all indices in children
+                        if comment_bg.children:
+                            # Shift block indices in children
+                            for block_range in comment_bg.children.block_ranges:
+                                block_range.start += block_start_index
+                                block_range.end += block_start_index
+                            # Shift block group indices in children
+                            for bg_range in comment_bg.children.block_group_ranges:
+                                bg_range.start += block_group_index_offset
+                                bg_range.end += block_group_index_offset
+                        
+                        # Update the block group's own index
+                        comment_bg.index = len(block_groups)
+                        block_groups.append(comment_bg)
 
                     # Build comment weburl
                     links = comment.get("_links", {})
@@ -4219,11 +4314,12 @@ class ConfluenceConnector(BaseConnector):
                             if not is_image_attachment(attachment_id):
                                 comment_children.append(attachment_children_map[attachment_id])
 
-                    # Create BlockComment for parser
+                    # Create BlockComment for metadata only
                     block_comment = BlockComment(
-                        text=comment_body,
+                        text="",
                         format=DataFormat.MARKDOWN,
                         author_id=author_id,
+                        author_name=user_display_names.get(author_id, "Unknown"),
                         thread_id=thread_id,
                         weburl=parser._normalize_url(comment_weburl),
                         created_at=parser._parse_confluence_timestamp(comment.get("createdAt")),
@@ -4237,8 +4333,21 @@ class ConfluenceConnector(BaseConnector):
                         parent_group_index=thread_group_index,
                         source_id=comment_id,
                         children_records=comment_children if comment_children else None,
+                        block_indices=(block_start_index, block_end_index),
                     )
                     block_groups.append(comment_group)
+
+                    # Set parent_index on top-level comment blocks (those without a parent yet)
+                    # Blocks belonging to nested BlockGroups already have their parent set
+                    for i in range(block_start_index, block_end_index + 1):
+                        if blocks[i].parent_index is None:
+                            blocks[i].parent_index = comment_group_index
+
+                    # Set parent_index on top-level comment BlockGroups (tables, panels, etc.)
+                    # that don't already have a parent (nested structures already have parent set)
+                    for i in range(block_group_index_offset, comment_group_index):
+                        if block_groups[i].parent_index is None:
+                            block_groups[i].parent_index = comment_group_index
 
         # 5. Track attachments used in inline comments
         for block in blocks:
@@ -4531,10 +4640,18 @@ class ConfluenceConnector(BaseConnector):
 
                 self.logger.info(f"Published update events for {len(updated_records)} records that changed at source")
 
-            # Publish reindex events for non-updated records
+            # Fix legacy mime types for pages/blogposts before reindexing
             if non_updated_records:
-                await self.data_entities_processor.reindex_existing_records(non_updated_records)
-                self.logger.info(f"Published reindex events for {len(non_updated_records)} non-updated records")
+                fixed_records, ok_records = await self._fix_legacy_mime_types(non_updated_records)
+                
+                all_reindex_records = fixed_records + ok_records
+                
+                if all_reindex_records:
+                    await self.data_entities_processor.reindex_existing_records(all_reindex_records)
+                    self.logger.info(
+                        f"Published reindex events for {len(all_reindex_records)} non-updated records "
+                        f"({len(fixed_records)} mime type fixes, {len(ok_records)} unchanged)"
+                    )
         except Exception as e:
             self.logger.error(f"Error during Confluence reindex: {e}", exc_info=True)
             raise
@@ -4544,7 +4661,7 @@ class ConfluenceConnector(BaseConnector):
     ) -> tuple[Record, list[Permission]] | None:
         """Fetch record from source and return data for reindexing.
 
-        Supports: pages, blogposts, and attachments.
+        Supports: pages, blogposts, attachments, and comments.
 
         Args:
             org_id: Organization ID
@@ -4560,6 +4677,8 @@ class ConfluenceConnector(BaseConnector):
                 return await self._check_and_fetch_updated_blogpost(org_id, record)
             elif record.record_type == RecordType.FILE:
                 return await self._check_and_fetch_updated_attachment(org_id, record)
+            elif record.record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT]:
+                return await self._check_and_fetch_updated_comment(org_id, record)
             else:
                 self.logger.warning(f"Unsupported record type for reindex: {record.record_type}")
                 return None
@@ -5093,6 +5212,317 @@ class ConfluenceConnector(BaseConnector):
             has_more=next_cursor is not None,
             cursor=next_cursor
         )
+
+    async def _fetch_comment_data(self, record: Record) -> dict[str, Any] | None:
+        """Fetch comment data from Confluence API.
+        
+        Args:
+            record: CommentRecord to fetch
+            
+        Returns:
+            Comment data dict or None if not found
+        """
+        try:
+            comment_id = record.external_record_id
+            comment_type = record.record_type
+            
+            datasource = await self._get_fresh_datasource()
+            
+            # Determine which API to call based on comment type
+            if comment_type == RecordType.COMMENT:
+                # Footer comment
+                response = await datasource.get_footer_comment_by_id(
+                    comment_id=int(comment_id),
+                    body_format="storage"
+                )
+            elif comment_type == RecordType.INLINE_COMMENT:
+                # Inline comment
+                response = await datasource.get_inline_comment_by_id(
+                    comment_id=int(comment_id),
+                    body_format="storage"
+                )
+            else:
+                self.logger.error(f"Unsupported comment type: {comment_type}")
+                return None
+            
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
+                self.logger.warning(f"Comment {comment_id} not found at source")
+                return None
+            
+            return response.json()
+            
+        except Exception as e:
+            self.logger.error(f"Failed to fetch comment {record.external_record_id}: {e}")
+            return None
+
+    async def _batch_fetch_user_display_names(
+        self, 
+        author_ids: set[str]
+    ) -> dict[str, str]:
+        """
+        Batch fetch user display names for a set of author IDs.
+        
+        Args:
+            author_ids: Set of Confluence account IDs (authorId values)
+            
+        Returns:
+            Dictionary mapping author_id -> display_name
+        """
+        user_map: dict[str, str] = {}
+        
+        if not author_ids:
+            return user_map
+        
+        # Get fresh datasource instance
+        datasource = await self._get_fresh_datasource()
+        
+        # Fetch users in parallel
+        tasks = []
+        for author_id in author_ids:
+            task = datasource.get_user_v1(account_id=author_id)
+            tasks.append((author_id, task))
+        
+        results = await asyncio.gather(
+            *[task for _, task in tasks], 
+            return_exceptions=True
+        )
+        
+        for (author_id, _), result in zip(tasks, results):
+            if isinstance(result, Exception):
+                self.logger.warning(f"Failed to fetch user {author_id}: {result}")
+                user_map[author_id] = "Unknown"
+                continue
+            
+            try:
+                if result.status == HttpStatusCode.SUCCESS.value:
+                    user_data = result.json()
+                    display_name = user_data.get("displayName", "Unknown")
+                    user_map[author_id] = display_name
+                else:
+                    self.logger.warning(f"Failed to fetch user {author_id}: HTTP {result.status}")
+                    user_map[author_id] = "Unknown"
+            except Exception as e:
+                self.logger.warning(f"Failed to parse user data for {author_id}: {e}")
+                user_map[author_id] = "Unknown"
+        
+        return user_map
+    
+    async def _check_and_fetch_updated_comment(
+        self, org_id: str, record: Record
+    ) -> tuple[Record, list[Permission]] | None:
+        """Fetch comment from source for reindexing.
+        
+        Args:
+            org_id: Organization ID
+            record: Comment record to check
+            
+        Returns:
+            Tuple of (CommentRecord, permissions) if updated, None otherwise
+        """
+        try:
+            comment_data = await self._fetch_comment_data(record)
+            if not comment_data:
+                self.logger.warning(f"Comment {record.external_record_id} not found at source, may have been deleted")
+                return None
+            
+            # Check if version changed
+            current_version = comment_data.get("version", {}).get("number")
+            if current_version is None:
+                self.logger.warning(f"Comment {record.external_record_id} has no version number")
+                return None
+            
+            # Compare versions
+            if record.external_revision_id and str(current_version) == record.external_revision_id:
+                self.logger.debug(f"Comment {record.external_record_id} has not changed at source (version {current_version})")
+                return None
+            
+            self.logger.info(f"Comment {record.external_record_id} has changed at source (version {record.external_revision_id} -> {current_version})")
+            
+            # Transform comment to CommentRecord with existing record context
+            comment_record = self._transform_to_comment_record(
+                comment_data,
+                record.parent_external_record_id,
+                record.external_record_group_id,
+                "footer" if record.record_type == RecordType.COMMENT else "inline",
+                None,  # parent_comment_id not needed for reindex
+                existing_record=record,
+                parent_node_id=record.parent_node_id
+            )
+            
+            if not comment_record:
+                return None
+            
+            # Comments inherit permissions from parent page
+            # Fetch parent page permissions if available
+            permissions = []
+            if record.parent_external_record_id:
+                try:
+                    permissions = await self._fetch_page_permissions(record.parent_external_record_id)
+                except Exception as e:
+                    self.logger.warning(f"Failed to fetch parent page permissions for comment: {e}")
+            
+            return (comment_record, permissions)
+            
+        except Exception as e:
+            self.logger.error(f"Error fetching comment {record.external_record_id}: {e}")
+            return None
+    
+    async def _fix_legacy_mime_types(self, records: list[Record]) -> tuple[list[Record], list[Record]]:
+        """
+        Fix legacy records with text/html mime type by updating to application/blocks.
+        
+        Pages and blogposts created before the ADF-to-blocks migration have text/html
+        stored in the DB. When stream_record is called, it returns blocks JSON, but the
+        Kafka payload uses the stored mime type, causing indexing to treat blocks as HTML.
+        
+        Args:
+            records: List of records to check and fix
+            
+        Returns:
+            Tuple of (records_needing_fix, records_not_needing_fix)
+        """
+        records_to_fix = []
+        records_ok = []
+        
+        for record in records:
+            # Check if this is a page/blogpost with legacy HTML mime type
+            is_page_or_blogpost = record.record_type in [
+                RecordType.CONFLUENCE_PAGE,
+                RecordType.CONFLUENCE_BLOGPOST
+            ]
+            has_html_mime = record.mime_type == MimeTypes.HTML.value
+            
+            if is_page_or_blogpost and has_html_mime:
+                self.logger.info(
+                    f"Detected legacy HTML mime type for {record.record_type.value} "
+                    f"{record.record_name} ({record.external_record_id}), updating to BLOCKS"
+                )
+                # Update the mime type to match what stream_record returns
+                record.mime_type = MimeTypes.BLOCKS.value
+                records_to_fix.append(record)
+            else:
+                records_ok.append(record)
+        
+        # Persist the mime type updates to database
+        if records_to_fix:
+            self.logger.info(f"Updating {len(records_to_fix)} legacy records to application/blocks mime type")
+            async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+                await tx_store.batch_upsert_records(records_to_fix)
+            self.logger.info(f"Successfully updated mime types for {len(records_to_fix)} records")
+        
+        return records_to_fix, records_ok
+    
+    def _transform_to_comment_record(
+        self,
+        comment_data: dict[str, Any],
+        page_id: str,
+        parent_space_id: Optional[str],
+        comment_type: str,
+        parent_comment_id: Optional[str],
+        base_url: Optional[str] = None,
+        existing_record: Optional[Record] = None,
+        parent_node_id: Optional[str] = None
+    ) -> Optional[CommentRecord]:
+        """Transform Confluence comment data to CommentRecord entity.
+
+        Args:
+            comment_data: Raw comment data from Confluence API
+            page_id: Parent page external_record_id
+            parent_space_id: Space ID from parent page
+            comment_type: "footer" or "inline"
+            parent_comment_id: Parent comment ID (None for top-level comments)
+            base_url: Base URL from response level (v2 API) - if None, will extract from _links.self (v1 API)
+            existing_record: Optional existing record to check for updates
+            parent_node_id: Internal record ID of parent page
+
+        Returns:
+            CommentRecord object or None if transformation fails
+        """
+        try:
+            comment_id = comment_data.get("id")
+            title = comment_data.get("title", "")
+
+            if not comment_id:
+                return None
+
+            # Extract author accountId
+            author = comment_data.get("version", {}).get("authorId")
+            if not author:
+                self.logger.warning(f"Comment {comment_id} has no author - skipping")
+                return None
+
+            # Parse timestamps
+            source_created_at = None
+
+            created_at_str = comment_data.get("version", {}).get("createdAt")
+            if created_at_str:
+                source_created_at = self._parse_confluence_datetime(created_at_str)
+
+            # Extract resolution status (for inline comments)
+            resolution_status = None
+            if comment_type == "inline":
+                is_resolved = comment_data.get("resolutionStatus", False)
+                resolution_status = "resolved" if is_resolved else "open"
+
+            # Extract inline original selection (for inline comments)
+            inline_original_selection = None
+            if comment_type == "inline":
+                inline_properties = comment_data.get("properties", {})
+                if inline_properties:
+                    inline_original_selection = inline_properties.get("inlineOriginalSelection")
+
+            # Determine parent record ID and type
+            parent_external_record_id = parent_comment_id if parent_comment_id else page_id
+            parent_record_type = RecordType.COMMENT if parent_comment_id else RecordType.WEBPAGE
+
+            # Determine record ID and version
+            is_new = existing_record is None
+            comment_record_id = str(uuid.uuid4()) if is_new else existing_record.id
+
+            version_number = comment_data.get("version", {}).get("number", 0)
+
+            # Calculate version based on changes
+            record_version = 0
+            if not is_new:
+                # Check if content changed (version number changed)
+                if str(version_number) != existing_record.external_revision_id:
+                    record_version = existing_record.version + 1
+                else:
+                    record_version = existing_record.version
+
+            # Construct web URL for comment
+            links = comment_data.get("_links", {})
+            web_url = self._construct_web_url(links, base_url)
+
+            return CommentRecord(
+                id=comment_record_id,
+                org_id=self.data_entities_processor.org_id,
+                record_name=title,
+                record_type=RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT,
+                external_record_id=comment_id,
+                external_revision_id=str(version_number) if version_number else None,
+                version=record_version,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.CONFLUENCE,
+                connector_id=self.connector_id,
+                mime_type=MimeTypes.HTML.value,
+                parent_external_record_id=parent_external_record_id,
+                parent_record_type=parent_record_type,
+                external_record_group_id=parent_space_id,
+                record_group_type=RecordGroupType.CONFLUENCE_SPACES,
+                source_created_at=source_created_at,
+                source_updated_at=source_created_at,
+                weburl=web_url,
+                author_source_id=author,
+                resolution_status=resolution_status,
+                comment_selection=inline_original_selection,
+                is_dependent_node=True,
+                parent_node_id=parent_node_id,
+            )
+
+        except Exception as e:
+            self.logger.error(f"Failed to transform comment: {e}")
+            return None
 
     async def handle_webhook_notification(self, notification: dict) -> None:
         """Handle webhook notifications (not implemented)."""

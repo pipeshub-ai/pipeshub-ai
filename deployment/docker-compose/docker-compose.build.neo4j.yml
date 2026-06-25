@@ -19,11 +19,12 @@ services:
     deploy:
       resources:
         limits:
-          memory: 12G
+          memory: 10G
     shm_size: 2gb
     init: true
     logging:
       driver: local
+      
       options:
         max-size: "${LOG_MAX_SIZE:-20m}"
         max-file: "${LOG_MAX_FILE:-15}"
@@ -64,7 +65,7 @@ services:
       
       # Message broker config
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
-      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-100000}
 
       # Kafka config
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
@@ -101,7 +102,7 @@ services:
       - MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE=${MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE:-1000}
 
       # Set to true to replace secrets in config API responses with **** markers
-      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
+      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-true}
 
       # MCP OAuth scopes
       - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read}
@@ -110,6 +111,9 @@ services:
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
       
+      # ML thread limit — caps PyTorch / OpenBLAS / MKL threads per operation.
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
+
       # Indexing service config
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-5}

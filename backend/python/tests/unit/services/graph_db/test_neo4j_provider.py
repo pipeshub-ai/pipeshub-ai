@@ -2526,7 +2526,7 @@ class TestDuplicateAndSyncOperations:
         neo4j_provider._neo4j_to_arango_node = MagicMock(  # type: ignore[method-assign]
             side_effect=[{"_key": "rec-2"}, {"_key": "rec-3"}]
         )
-        neo4j_provider.batch_upsert_nodes = AsyncMock()  # type: ignore[method-assign]
+        neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
         with patch("app.services.graph_db.neo4j.neo4j_provider.get_epoch_timestamp_in_ms", return_value=101):
             updated_count = await neo4j_provider.update_queued_duplicates_status(
@@ -2537,13 +2537,13 @@ class TestDuplicateAndSyncOperations:
             )
 
         assert updated_count == 2
-        payload = neo4j_provider.batch_upsert_nodes.await_args.args[0]
+        payload = neo4j_provider.batch_update_nodes.await_args.args[0]
         assert payload[0]["indexingStatus"] == "COMPLETED"
         assert payload[0]["extractionStatus"] == "COMPLETED"
         assert payload[0]["virtualRecordId"] == "v-1"
         assert payload[1]["lastIndexTimestamp"] == 101
-        assert neo4j_provider.batch_upsert_nodes.await_args.args[1] == "records"
-        assert neo4j_provider.batch_upsert_nodes.await_args.args[2] == "txn-upd"
+        assert neo4j_provider.batch_update_nodes.await_args.args[1] == "records"
+        assert neo4j_provider.batch_update_nodes.await_args.args[2] == "txn-upd"
 
     @pytest.mark.asyncio
     async def test_update_queued_duplicates_status_maps_failed_and_empty(self, neo4j_provider: Neo4jProvider):
@@ -2556,14 +2556,14 @@ class TestDuplicateAndSyncOperations:
             ]
         )
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "rec-2"})  # type: ignore[method-assign]
-        neo4j_provider.batch_upsert_nodes = AsyncMock()  # type: ignore[method-assign]
+        neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
         await neo4j_provider.update_queued_duplicates_status("rec-1", "FAILED")
-        failed_payload = neo4j_provider.batch_upsert_nodes.await_args_list[0].args[0]
+        failed_payload = neo4j_provider.batch_update_nodes.await_args_list[0].args[0]
         assert failed_payload[0]["extractionStatus"] == "FAILED"
 
         await neo4j_provider.update_queued_duplicates_status("rec-1", "EMPTY")
-        empty_payload = neo4j_provider.batch_upsert_nodes.await_args_list[1].args[0]
+        empty_payload = neo4j_provider.batch_update_nodes.await_args_list[1].args[0]
         assert empty_payload[0]["extractionStatus"] == "EMPTY"
 
     @pytest.mark.asyncio
@@ -3896,3 +3896,256 @@ class TestValidateFolderForUpload:
 
         assert result["valid"] is False
         assert result["code"] == 500
+
+
+class TestCreateRecordsDuplicateName:
+    """Regression tests for in-batch duplicate-name dedup in ``_create_records``.
+
+    The dedup key is scoped by destination parent folder, so the same file name
+    in DIFFERENT folders within a single upload batch must NOT be skipped, while a
+    true same-folder repeat IS skipped. This mirrors the per-folder scoping the
+    Arango provider gets for free by calling ``_create_files_batch`` once per
+    folder; Neo4j processes the whole batch in one loop, so the folder dimension
+    must live in the key. Guards against a regression where two files named e.g.
+    ``README.md`` in different subfolders were silently dropped as duplicates.
+    """
+
+    @staticmethod
+    def _file(key: str, name: str, path: str, mime: str = "text/markdown") -> dict:
+        return {
+            "filePath": path,
+            "record": {"_key": key, "recordName": name},
+            "fileRecord": {
+                "_key": f"f-{key}",
+                "name": name,
+                "mimeType": mime,
+                "isFile": True,
+            },
+        }
+
+    @pytest.fixture
+    def provider_no_db_conflict(
+        self, neo4j_provider: Neo4jProvider
+    ) -> Neo4jProvider:
+        # Isolate the in-batch dedup: the DB has no existing conflicts (empty
+        # pre-fetched set), and node/edge writes are stubbed.
+        neo4j_provider._fetch_existing_file_names_in_parent = AsyncMock(
+            return_value=set()
+        )
+        neo4j_provider.batch_upsert_nodes = AsyncMock()
+        neo4j_provider.batch_create_edges = AsyncMock()
+        return neo4j_provider
+
+    @pytest.mark.asyncio
+    async def test_same_name_different_folders_both_created(
+        self, provider_no_db_conflict: Neo4jProvider
+    ):
+        provider = provider_no_db_conflict
+        files = [
+            self._file("r1", "README.md", "folderA/README.md"),
+            self._file("r2", "README.md", "folderB/README.md"),
+        ]
+        folder_analysis = {
+            "file_destinations": {
+                0: {"type": "folder", "folder_id": "folderA-id"},
+                1: {"type": "folder", "folder_id": "folderB-id"},
+            },
+            "parent_folder_id": None,
+        }
+
+        result = await provider._create_records(
+            kb_id="kb1",
+            org_id="org1",
+            files=files,
+            folder_analysis=folder_analysis,
+            transaction="txn1",
+            timestamp=1000,
+        )
+
+        assert result["total_created"] == 2
+        assert result["skipped_files"] == []
+        assert result["failed_files"] == []
+
+    @pytest.mark.asyncio
+    async def test_same_name_same_folder_second_skipped(
+        self, provider_no_db_conflict: Neo4jProvider
+    ):
+        provider = provider_no_db_conflict
+        files = [
+            self._file("r1", "README.md", "folderA/README.md"),
+            self._file("r2", "README.md", "folderA/README.md"),
+        ]
+        folder_analysis = {
+            "file_destinations": {
+                0: {"type": "folder", "folder_id": "folderA-id"},
+                1: {"type": "folder", "folder_id": "folderA-id"},
+            },
+            "parent_folder_id": None,
+        }
+
+        result = await provider._create_records(
+            kb_id="kb1",
+            org_id="org1",
+            files=files,
+            folder_analysis=folder_analysis,
+            transaction="txn1",
+            timestamp=1000,
+        )
+
+        assert result["total_created"] == 1
+        assert len(result["skipped_files"]) == 1
+        assert result["skipped_files"][0]["reason"] == "DUPLICATE_NAME"
+        assert result["skipped_files"][0]["filePath"] == "folderA/README.md"
+
+    @pytest.mark.asyncio
+    async def test_same_name_root_and_folder_both_created(
+        self, provider_no_db_conflict: Neo4jProvider
+    ):
+        # KB root and a folder are different parents, so the same name in each is
+        # allowed (root parent resolves to "" via parent_folder_id).
+        provider = provider_no_db_conflict
+        files = [
+            self._file("r1", "data.csv", "data.csv", mime="text/csv"),
+            self._file("r2", "data.csv", "sub/data.csv", mime="text/csv"),
+        ]
+        folder_analysis = {
+            "file_destinations": {
+                0: {"type": "root"},
+                1: {"type": "folder", "folder_id": "sub-id"},
+            },
+            "parent_folder_id": None,
+        }
+
+        result = await provider._create_records(
+            kb_id="kb1",
+            org_id="org1",
+            files=files,
+            folder_analysis=folder_analysis,
+            transaction="txn1",
+            timestamp=1000,
+        )
+
+        assert result["total_created"] == 2
+        assert result["skipped_files"] == []
+
+    @pytest.mark.asyncio
+    async def test_existing_db_conflict_skips_file(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        # A name that already exists in the DB (pre-fetched name set) is
+        # skipped even when it is the only file in the batch.
+        neo4j_provider._fetch_existing_file_names_in_parent = AsyncMock(
+            return_value={("readme.md", "text/markdown")}
+        )
+        neo4j_provider.batch_upsert_nodes = AsyncMock()
+        neo4j_provider.batch_create_edges = AsyncMock()
+        files = [self._file("r1", "README.md", "README.md")]
+        folder_analysis = {
+            "file_destinations": {0: {"type": "root"}},
+            "parent_folder_id": None,
+        }
+
+        result = await neo4j_provider._create_records(
+            kb_id="kb1",
+            org_id="org1",
+            files=files,
+            folder_analysis=folder_analysis,
+            transaction="txn1",
+            timestamp=1000,
+        )
+
+        assert result["total_created"] == 0
+        assert len(result["skipped_files"]) == 1
+        assert result["skipped_files"][0]["reason"] == "DUPLICATE_NAME"
+class TestBatchUpdateConnectorStatus:
+    @pytest.mark.asyncio
+    async def test_empty_keys_skips_query(self, neo4j_provider: Neo4jProvider):
+        result = await neo4j_provider.batch_update_connector_status(
+            collection="apps",
+            connector_keys=[],
+            is_active=False,
+            is_agent_active=False,
+        )
+
+        assert result == 0
+        neo4j_provider.client.execute_query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_success_returns_updated_count(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"updated_count": 2}]
+        )
+
+        result = await neo4j_provider.batch_update_connector_status(
+            collection="apps",
+            connector_keys=["c1", "c2"],
+            is_active=False,
+            is_agent_active=False,
+        )
+
+        assert result == 2
+        neo4j_provider.client.execute_query.assert_awaited_once()
+        call_args = neo4j_provider.client.execute_query.call_args
+        query = call_args[0][0]
+        call_kwargs = call_args.kwargs
+        assert call_kwargs["parameters"] == {
+            "connector_ids": ["c1", "c2"],
+            "is_active": False,
+            "is_agent_active": False,
+        }
+        assert "MATCH (app:App" in query
+        assert "isAgentActive" in query
+        assert call_kwargs["txn_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_uses_label_from_collection(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"updated_count": 1}]
+        )
+
+        with patch.object(neo4j_provider, "_get_label", return_value="CustomLabel") as mock_get_label:
+            await neo4j_provider.batch_update_connector_status(
+                collection="apps",
+                connector_keys=["c1"],
+                is_active=False,
+                is_agent_active=False,
+            )
+
+        query = neo4j_provider.client.execute_query.call_args[0][0]
+        assert "MATCH (app:CustomLabel" in query
+        mock_get_label.assert_called_once_with("apps")
+
+    @pytest.mark.asyncio
+    async def test_passes_transaction_id(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"updated_count": 1}]
+        )
+
+        await neo4j_provider.batch_update_connector_status(
+            collection="apps",
+            connector_keys=["c1"],
+            is_active=True,
+            is_agent_active=True,
+            transaction="txn-123",
+        )
+
+        call_kwargs = neo4j_provider.client.execute_query.call_args.kwargs
+        assert call_kwargs["txn_id"] == "txn-123"
+        assert call_kwargs["parameters"]["is_active"] is True
+        assert call_kwargs["parameters"]["is_agent_active"] is True
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_zero(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=Exception("neo4j error")
+        )
+
+        result = await neo4j_provider.batch_update_connector_status(
+            collection="apps",
+            connector_keys=["c1"],
+            is_active=False,
+            is_agent_active=False,
+        )
+
+        assert result == 0
+        neo4j_provider.logger.error.assert_called_once()

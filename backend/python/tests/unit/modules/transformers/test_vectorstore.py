@@ -435,6 +435,102 @@ class TestDeleteEmbeddings:
 
 
 # ===================================================================
+# _cleanup_orphaned_embeddings_if_needed
+# ===================================================================
+
+class TestCleanupOrphanedEmbeddings:
+    """Tests for VectorStore._cleanup_orphaned_embeddings_if_needed."""
+
+    @pytest.mark.asyncio
+    async def test_record_exists_skips_cleanup(self):
+        """No cleanup when record is still present in graph DB."""
+        vs = _make_vectorstore()
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
+        vs.delete_embeddings = AsyncMock()
+
+        await vs._cleanup_orphaned_embeddings_if_needed("rec-1", "vr-1")
+
+        vs.delete_embeddings.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_missing_record_with_md5_duplicate_keeps_embeddings(self):
+        """Keeps embeddings when record is gone but an MD5 duplicate exists."""
+        from app.models.entities import Record, RecordType
+        from app.config.constants.arangodb import Connectors, OriginTypes
+
+        vs = _make_vectorstore()
+        vs.graph_provider.get_document = AsyncMock(return_value=None)
+        vs.graph_provider.find_duplicate_records = AsyncMock(
+            return_value=[{"id": "rec-dup", "md5Checksum": "abc123"}]
+        )
+        vs.delete_embeddings = AsyncMock()
+
+        record = Record(
+            id="rec-1",
+            org_id="org-1",
+            record_name="test.pdf",
+            record_type=RecordType.FILE,
+            external_record_id="ext-1",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.GOOGLE_DRIVE,
+            connector_id="conn-1",
+            md5_hash="abc123",
+            size_in_bytes=100,
+        )
+
+        await vs._cleanup_orphaned_embeddings_if_needed("rec-1", "vr-1", record)
+
+        vs.graph_provider.find_duplicate_records.assert_awaited_once_with(
+            record_key="rec-1",
+            md5_checksum="abc123",
+            record_type=RecordType.FILE.value,
+            size_in_bytes=100,
+        )
+        vs.delete_embeddings.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_missing_record_without_duplicates_deletes_embeddings(self):
+        """Deletes embeddings when record is gone and no MD5 duplicate exists."""
+        from app.models.entities import Record, RecordType
+        from app.config.constants.arangodb import Connectors, OriginTypes
+
+        vs = _make_vectorstore()
+        vs.graph_provider.get_document = AsyncMock(return_value=None)
+        vs.graph_provider.find_duplicate_records = AsyncMock(return_value=[])
+        vs.delete_embeddings = AsyncMock()
+
+        record = Record(
+            id="rec-1",
+            org_id="org-1",
+            record_name="test.pdf",
+            record_type=RecordType.FILE,
+            external_record_id="ext-1",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.GOOGLE_DRIVE,
+            connector_id="conn-1",
+            md5_hash="abc123",
+        )
+
+        await vs._cleanup_orphaned_embeddings_if_needed("rec-1", "vr-1", record)
+
+        vs.delete_embeddings.assert_awaited_once_with("vr-1")
+
+    @pytest.mark.asyncio
+    async def test_missing_record_without_md5_deletes_embeddings(self):
+        """Deletes embeddings when record is gone and MD5 is unavailable."""
+        vs = _make_vectorstore()
+        vs.graph_provider.get_document = AsyncMock(return_value=None)
+        vs.delete_embeddings = AsyncMock()
+
+        await vs._cleanup_orphaned_embeddings_if_needed("rec-1", "vr-1")
+
+        vs.graph_provider.find_duplicate_records.assert_not_called()
+        vs.delete_embeddings.assert_awaited_once_with("vr-1")
+
+
+# ===================================================================
 # _process_image_embeddings (dispatch)
 # ===================================================================
 
@@ -447,8 +543,26 @@ class TestProcessImageEmbeddings:
         vs = _make_vectorstore()
         vs.embedding_provider = "UNSUPPORTED_PROVIDER"
 
-        result = await vs._process_image_embeddings([], [])
+        result = await vs._process_image_embeddings([], [], "test-record")
 
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_record_not_found_skips_embedding(self):
+        """Skips image embedding when record is not found in graph database."""
+        from app.utils.aimodels import EmbeddingProvider
+
+        vs = _make_vectorstore()
+        vs.embedding_provider = EmbeddingProvider.COHERE.value
+        vs.graph_provider.get_document = AsyncMock(return_value=None)
+        vs._process_image_embeddings_cohere = AsyncMock(return_value=[])
+
+        result = await vs._process_image_embeddings(
+            [{"metadata": {}}], ["data:image/png;base64,abc"], "missing-record"
+        )
+
+        vs.graph_provider.get_document.assert_awaited_once()
+        vs._process_image_embeddings_cohere.assert_not_awaited()
         assert result == []
 
     @pytest.mark.asyncio
@@ -459,7 +573,7 @@ class TestProcessImageEmbeddings:
         vs.embedding_provider = EmbeddingProvider.COHERE.value
         vs._process_image_embeddings_cohere = AsyncMock(return_value=[])
 
-        await vs._process_image_embeddings([], [])
+        await vs._process_image_embeddings([], [], "test-record")
 
         vs._process_image_embeddings_cohere.assert_awaited_once()
 
@@ -471,7 +585,7 @@ class TestProcessImageEmbeddings:
         vs.embedding_provider = EmbeddingProvider.VOYAGE.value
         vs._process_image_embeddings_voyage = AsyncMock(return_value=[])
 
-        await vs._process_image_embeddings([], [])
+        await vs._process_image_embeddings([], [], "test-record")
 
         vs._process_image_embeddings_voyage.assert_awaited_once()
 
@@ -483,7 +597,7 @@ class TestProcessImageEmbeddings:
         vs.embedding_provider = EmbeddingProvider.AWS_BEDROCK.value
         vs._process_image_embeddings_bedrock = AsyncMock(return_value=[])
 
-        await vs._process_image_embeddings([], [])
+        await vs._process_image_embeddings([], [], "test-record")
 
         vs._process_image_embeddings_bedrock.assert_awaited_once()
 
@@ -495,7 +609,7 @@ class TestProcessImageEmbeddings:
         vs.embedding_provider = EmbeddingProvider.JINA_AI.value
         vs._process_image_embeddings_jina = AsyncMock(return_value=[])
 
-        await vs._process_image_embeddings([], [])
+        await vs._process_image_embeddings([], [], "test-record")
 
         vs._process_image_embeddings_jina.assert_awaited_once()
 
@@ -578,7 +692,7 @@ class TestProcessDocumentChunks:
         vs.vector_store.aadd_documents = AsyncMock()
 
         chunks = [Document(page_content="test", metadata={})]
-        await vs._process_document_chunks(chunks)
+        await vs._process_document_chunks(chunks, "test-record")
 
         vs.vector_store.aadd_documents.assert_awaited()
 
@@ -593,9 +707,26 @@ class TestProcessDocumentChunks:
         vs.vector_store.aadd_documents = AsyncMock()
 
         chunks = [Document(page_content=f"test {i}", metadata={}) for i in range(5)]
-        await vs._process_document_chunks(chunks)
+        await vs._process_document_chunks(chunks, "test-record")
 
         vs.vector_store.aadd_documents.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_record_not_found_skips_embedding(self):
+        """Skips embedding when record is not found in graph database."""
+        from langchain_core.documents import Document
+
+        vs = _make_vectorstore()
+        vs.embedding_provider = None
+        vs.vector_store = AsyncMock()
+        vs.vector_store.aadd_documents = AsyncMock()
+        vs.graph_provider.get_document = AsyncMock(return_value=None)
+
+        chunks = [Document(page_content="test", metadata={})]
+        await vs._process_document_chunks(chunks, "missing-record")
+
+        vs.graph_provider.get_document.assert_awaited_once()
+        vs.vector_store.aadd_documents.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_local_batch_failure_raises(self):
@@ -610,7 +741,7 @@ class TestProcessDocumentChunks:
 
         chunks = [Document(page_content="test", metadata={})]
         with pytest.raises(VectorStoreError):
-            await vs._process_document_chunks(chunks)
+            await vs._process_document_chunks(chunks, "test-record")
 
 
 # ===================================================================
@@ -1392,7 +1523,7 @@ class TestProcessImageEmbeddings:
         vs = _make_vectorstore()
         vs.embedding_provider = "cohere"
         vs._process_image_embeddings_cohere = AsyncMock(return_value=[])
-        result = await vs._process_image_embeddings([], [])
+        result = await vs._process_image_embeddings([], [], "test-record")
         vs._process_image_embeddings_cohere.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1401,7 +1532,7 @@ class TestProcessImageEmbeddings:
         vs = _make_vectorstore()
         vs.embedding_provider = "voyage"
         vs._process_image_embeddings_voyage = AsyncMock(return_value=[])
-        result = await vs._process_image_embeddings([], [])
+        result = await vs._process_image_embeddings([], [], "test-record")
         vs._process_image_embeddings_voyage.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1410,7 +1541,7 @@ class TestProcessImageEmbeddings:
         vs = _make_vectorstore()
         vs.embedding_provider = "bedrock"
         vs._process_image_embeddings_bedrock = AsyncMock(return_value=[])
-        result = await vs._process_image_embeddings([], [])
+        result = await vs._process_image_embeddings([], [], "test-record")
         vs._process_image_embeddings_bedrock.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1419,7 +1550,7 @@ class TestProcessImageEmbeddings:
         vs = _make_vectorstore()
         vs.embedding_provider = "jinaAI"
         vs._process_image_embeddings_jina = AsyncMock(return_value=[])
-        result = await vs._process_image_embeddings([], [])
+        result = await vs._process_image_embeddings([], [], "test-record")
         vs._process_image_embeddings_jina.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1427,7 +1558,7 @@ class TestProcessImageEmbeddings:
         """Unsupported provider should return empty list."""
         vs = _make_vectorstore()
         vs.embedding_provider = "unknown_provider"
-        result = await vs._process_image_embeddings([], [])
+        result = await vs._process_image_embeddings([], [], "test-record")
         assert result == []
 
 
@@ -1503,7 +1634,7 @@ class TestProcessDocumentChunks:
         vs.vector_store.aadd_documents = AsyncMock()
 
         docs = [Document(page_content="text", metadata={})]
-        await vs._process_document_chunks(docs)
+        await vs._process_document_chunks(docs, "test-record")
         vs.vector_store.aadd_documents.assert_awaited()
 
     @pytest.mark.asyncio
@@ -1516,7 +1647,7 @@ class TestProcessDocumentChunks:
         vs.vector_store.aadd_documents = AsyncMock()
 
         docs = [Document(page_content=f"text {i}", metadata={}) for i in range(5)]
-        await vs._process_document_chunks(docs)
+        await vs._process_document_chunks(docs, "test-record")
         vs.vector_store.aadd_documents.assert_awaited()
 
     @pytest.mark.asyncio
@@ -1531,7 +1662,7 @@ class TestProcessDocumentChunks:
 
         docs = [Document(page_content="text", metadata={})]
         with pytest.raises(VectorStoreError, match="Failed to store document batch"):
-            await vs._process_document_chunks(docs)
+            await vs._process_document_chunks(docs, "test-record")
 
     @pytest.mark.asyncio
     async def test_remote_batch_failure_raises(self):
@@ -1545,7 +1676,7 @@ class TestProcessDocumentChunks:
 
         docs = [Document(page_content="text", metadata={})]
         with pytest.raises(VectorStoreError, match="Failed to store document batch"):
-            await vs._process_document_chunks(docs)
+            await vs._process_document_chunks(docs, "test-record")
 
 
 # ===================================================================
@@ -2100,7 +2231,7 @@ class TestProcessDocumentChunksRemoteFailure:
 
         chunks = [Document(page_content="test", metadata={})]
         with pytest.raises(VectorStoreError):
-            await vs._process_document_chunks(chunks)
+            await vs._process_document_chunks(chunks, "test-record")
 
 
 # ===================================================================

@@ -3678,27 +3678,100 @@ class TestFetchIssuesBatchedFilters:
 
 class TestFallbackPermissionsForForbiddenSchemeCloud:
 
-    def test_returns_user_permission_when_email_set(self):
+    @pytest.mark.asyncio
+    async def test_returns_user_permission_when_email_set(self):
         conn = _make_connector()
         conn.creator_email = "owner@example.com"
-        result = conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
+        result = await conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
         assert len(result) == 1
         assert result[0].entity_type == EntityType.USER
         assert result[0].email == "owner@example.com"
         assert result[0].type == PermissionType.READ
 
-    def test_returns_empty_when_no_email(self):
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_email(self):
         conn = _make_connector()
         conn.creator_email = None
-        assert conn._fallback_permissions_for_forbidden_scheme("PROJ", 401, "permission scheme") == []
+        assert await conn._fallback_permissions_for_forbidden_scheme("PROJ", 401, "permission scheme") == []
 
-    def test_works_for_both_401_and_403(self):
+    @pytest.mark.asyncio
+    async def test_works_for_both_401_and_403(self):
         conn = _make_connector()
         conn.creator_email = "e@x.com"
         for status in (401, 403):
-            result = conn._fallback_permissions_for_forbidden_scheme("P", status, "grants")
+            result = await conn._fallback_permissions_for_forbidden_scheme("P", status, "grants")
             assert len(result) == 1
             assert result[0].entity_type == EntityType.USER
+
+    def test_cache_authenticated_jira_email_from_myself_response(self):
+        conn = _make_connector()
+        response = _make_mock_response(
+            200,
+            {"emailAddress": "  dev@jira.com  ", "accountId": "acc-1"},
+        )
+        conn._cache_authenticated_jira_email(response)
+        assert conn._authenticated_jira_email == "dev@jira.com"
+
+    def test_cache_authenticated_jira_email_ignores_non_ok(self):
+        conn = _make_connector()
+        response = _make_mock_response(401, {})
+        conn._cache_authenticated_jira_email(response)
+        assert conn._authenticated_jira_email is None
+
+    def test_cache_authenticated_jira_email_ignores_none_response(self):
+        conn = _make_connector()
+        conn._cache_authenticated_jira_email(None)
+        assert conn._authenticated_jira_email is None
+
+    @pytest.mark.asyncio
+    async def test_notify_message_uses_cached_myself_email_not_creator_email(self):
+        conn = _make_connector()
+        conn.creator_email = "admin@pipes.com"
+        conn._authenticated_jira_email = "dev@jira.com"
+        conn.site_url = "https://example.atlassian.net"
+        conn.notify = AsyncMock()
+        result = await conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
+        conn.notify.assert_called_once()
+        message = conn.notify.call_args.kwargs["message"]
+        assert "dev@jira.com" in message
+        assert "admin@pipes.com" not in message
+        assert len(result) == 1
+        assert result[0].email == "admin@pipes.com"
+
+    @pytest.mark.asyncio
+    async def test_notify_message_generic_when_myself_email_not_cached(self):
+        conn = _make_connector()
+        conn.creator_email = "admin@pipes.com"
+        conn._authenticated_jira_email = None
+        conn.site_url = "https://example.atlassian.net"
+        conn.notify = AsyncMock()
+        await conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
+        message = conn.notify.call_args.kwargs["message"]
+        assert "admin@pipes.com" not in message
+        assert "authenticated Jira sync user" in message
+        assert "PROJ" in message
+
+    @pytest.mark.asyncio
+    async def test_init_caches_myself_email(self):
+        conn = _make_connector()
+        mock_myself = _make_mock_response(200, {"emailAddress": "sync@jira.com"})
+
+        with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
+            mock_client = MagicMock()
+            MockJiraClient.build_from_services = AsyncMock(return_value=mock_client)
+
+            conn.config_service.get_config = AsyncMock(return_value={
+                "auth": {"authType": "API_TOKEN", "baseUrl": "https://mycompany.atlassian.net"},
+            })
+
+            with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraDataSource") as MockDS:
+                mock_ds_instance = MagicMock()
+                mock_ds_instance.get_current_user = AsyncMock(return_value=mock_myself)
+                MockDS.return_value = mock_ds_instance
+
+                assert await conn.init() is True
+                assert conn._authenticated_jira_email == "sync@jira.com"
+                mock_ds_instance.get_current_user.assert_called_once()
 
 
 # ===========================================================================

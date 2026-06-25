@@ -1,6 +1,6 @@
 /**
  * Tests for the KB/folder existence + write-permission pre-checks added to
- * uploadRecordsToKB and uploadRecordsToFolder (Blockers 1–2 fix).
+ * uploadRecords (Blockers 1–2 fix).
  *
  * Critical invariants tested:
  *   - 404 from the KB endpoint → NotFoundError BEFORE any storage interaction
@@ -21,8 +21,7 @@ import sinon from 'sinon'
 import { ConnectorServiceCommand } from '../../../../src/libs/commands/connector_service/connector.service.command'
 import * as kbUtils from '../../../../src/modules/knowledge_base/utils/utils'
 import {
-  uploadRecordsToKB,
-  uploadRecordsToFolder,
+  uploadRecords,
 } from '../../../../src/modules/knowledge_base/controllers/kb_controllers'
 import {
   ForbiddenError,
@@ -42,6 +41,9 @@ function createMockRequest(overrides: Record<string, any> = {}): any {
     query: {},
     user: { userId: 'user-1', orgId: 'org-1', email: 'test@test.com', fullName: 'Test User' },
     context: { requestId: 'req-123' },
+    // Streaming upload clears the per-response socket timeout and listens for close.
+    socket: { setTimeout: sinon.stub() },
+    on: sinon.stub(),
     ...overrides,
   }
 }
@@ -57,11 +59,16 @@ function createMockResponse(): any {
     getHeader: sinon.stub(),
     headersSent: false,
     pipe: sinon.stub(),
+    // Streaming upload (SSE) response surface.
+    writeHead: sinon.stub(),
+    write: sinon.stub(),
+    flush: sinon.stub(),
   }
   res.status.returns(res)
   res.json.returns(res)
   res.end.returns(res)
   res.send.returns(res)
+  res.writeHead.returns(res)
   return res
 }
 
@@ -115,10 +122,10 @@ function stubConnectorCalls(responses: Array<{ statusCode: number; data?: any }>
 }
 
 // ---------------------------------------------------------------------------
-// uploadRecordsToKB — KB pre-check tests
+// uploadRecords — KB pre-check tests
 // ---------------------------------------------------------------------------
 
-describe('uploadRecordsToKB — KB existence and write-permission pre-check', () => {
+describe('uploadRecords — KB existence and write-permission pre-check', () => {
   afterEach(() => {
     sinon.restore()
   })
@@ -128,7 +135,7 @@ describe('uploadRecordsToKB — KB existence and write-permission pre-check', ()
   it('throws NotFoundError when KB endpoint returns 404', async () => {
     stubConnectorCalls([{ statusCode: 404 }])
 
-    const handler = uploadRecordsToKB(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: { kbId: 'kb-missing' },
       body: { fileBuffers: SINGLE_FILE },
@@ -145,7 +152,7 @@ describe('uploadRecordsToKB — KB existence and write-permission pre-check', ()
     stubConnectorCalls([{ statusCode: 404 }])
     const placeholderStub = sinon.stub(kbUtils, 'createPlaceholderDocument')
 
-    const handler = uploadRecordsToKB(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: { kbId: 'kb-missing' },
       body: { fileBuffers: SINGLE_FILE },
@@ -161,7 +168,7 @@ describe('uploadRecordsToKB — KB existence and write-permission pre-check', ()
   it('throws ForbiddenError when KB endpoint returns 403', async () => {
     stubConnectorCalls([{ statusCode: 403 }])
 
-    const handler = uploadRecordsToKB(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: { kbId: 'kb-1' },
       body: { fileBuffers: SINGLE_FILE },
@@ -179,7 +186,7 @@ describe('uploadRecordsToKB — KB existence and write-permission pre-check', ()
   it('throws InternalServerError when KB endpoint returns 500', async () => {
     stubConnectorCalls([{ statusCode: 500 }])
 
-    const handler = uploadRecordsToKB(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: { kbId: 'kb-1' },
       body: { fileBuffers: SINGLE_FILE },
@@ -195,7 +202,7 @@ describe('uploadRecordsToKB — KB existence and write-permission pre-check', ()
   it('throws InternalServerError when KB endpoint returns 503', async () => {
     stubConnectorCalls([{ statusCode: 503 }])
 
-    const handler = uploadRecordsToKB(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: { kbId: 'kb-1' },
       body: { fileBuffers: SINGLE_FILE },
@@ -213,7 +220,7 @@ describe('uploadRecordsToKB — KB existence and write-permission pre-check', ()
   it('throws ForbiddenError when userRole is READER (200 but read-only)', async () => {
     stubConnectorCalls([{ statusCode: 200, data: { userRole: 'READER' } }])
 
-    const handler = uploadRecordsToKB(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: { kbId: 'kb-1' },
       body: { fileBuffers: SINGLE_FILE },
@@ -230,7 +237,7 @@ describe('uploadRecordsToKB — KB existence and write-permission pre-check', ()
     stubConnectorCalls([{ statusCode: 200, data: { userRole: 'READER' } }])
     const placeholderStub = sinon.stub(kbUtils, 'createPlaceholderDocument')
 
-    const handler = uploadRecordsToKB(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: { kbId: 'kb-1' },
       body: { fileBuffers: SINGLE_FILE },
@@ -244,7 +251,7 @@ describe('uploadRecordsToKB — KB existence and write-permission pre-check', ()
   it('throws ForbiddenError when userRole is COMMENTER', async () => {
     stubConnectorCalls([{ statusCode: 200, data: { userRole: 'COMMENTER' } }])
 
-    const handler = uploadRecordsToKB(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: { kbId: 'kb-1' },
       body: { fileBuffers: SINGLE_FILE },
@@ -260,7 +267,7 @@ describe('uploadRecordsToKB — KB existence and write-permission pre-check', ()
   it('throws ForbiddenError when userRole is absent from response body', async () => {
     stubConnectorCalls([{ statusCode: 200, data: {} }])
 
-    const handler = uploadRecordsToKB(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: { kbId: 'kb-1' },
       body: { fileBuffers: SINGLE_FILE },
@@ -276,7 +283,7 @@ describe('uploadRecordsToKB — KB existence and write-permission pre-check', ()
   it('throws ForbiddenError when response data is null', async () => {
     stubConnectorCalls([{ statusCode: 200, data: null }])
 
-    const handler = uploadRecordsToKB(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: { kbId: 'kb-1' },
       body: { fileBuffers: SINGLE_FILE },
@@ -293,7 +300,7 @@ describe('uploadRecordsToKB — KB existence and write-permission pre-check', ()
     // ORGANIZER is a valid role but not in the write-permitted set [OWNER, WRITER]
     stubConnectorCalls([{ statusCode: 200, data: { userRole: 'ORGANIZER' } }])
 
-    const handler = uploadRecordsToKB(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: { kbId: 'kb-1' },
       body: { fileBuffers: SINGLE_FILE },
@@ -316,7 +323,7 @@ describe('uploadRecordsToKB — KB existence and write-permission pre-check', ()
     })
     sinon.stub(kbUtils, 'processUploadsInBackground').resolves()
 
-    const handler = uploadRecordsToKB(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: { kbId: 'kb-1' },
       body: { fileBuffers: SINGLE_FILE },
@@ -339,7 +346,7 @@ describe('uploadRecordsToKB — KB existence and write-permission pre-check', ()
     })
     sinon.stub(kbUtils, 'processUploadsInBackground').resolves()
 
-    const handler = uploadRecordsToKB(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: { kbId: 'kb-1' },
       body: { fileBuffers: SINGLE_FILE },
@@ -352,27 +359,51 @@ describe('uploadRecordsToKB — KB existence and write-permission pre-check', ()
     const errorCallArgs = next.args.find((a: any[]) => a[0] instanceof Error)
     expect(errorCallArgs).to.be.undefined
   })
+
+  it('defaults isVersioned to true when omitted from request body', async () => {
+    stubConnectorCalls([{ statusCode: 200, data: { userRole: 'OWNER' } }])
+    const placeholderStub = sinon.stub(kbUtils, 'createPlaceholderDocument').resolves({
+      documentId: 'doc-1',
+      documentName: 'test',
+    })
+    sinon.stub(kbUtils, 'processUploadsInBackground').resolves()
+
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
+    const req = createMockRequest({
+      params: { kbId: 'kb-1' },
+      body: { fileBuffers: SINGLE_FILE },
+    })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(placeholderStub.calledOnce).to.be.true
+    expect(placeholderStub.firstCall.args[3]).to.be.true
+  })
 })
 
 // ---------------------------------------------------------------------------
-// uploadRecordsToFolder — KB + folder pre-check tests
+// uploadRecords — KB + folder pre-check tests
 // ---------------------------------------------------------------------------
 
-describe('uploadRecordsToFolder — KB and folder pre-check', () => {
+describe('uploadRecords — KB and folder pre-check', () => {
   afterEach(() => {
     sinon.restore()
   })
 
-  const REQ_PARAMS = { kbId: 'kb-1', folderId: 'folder-1' }
+  const REQ_PARAMS = { kbId: 'kb-1' }
+  const REQ_QUERY = { folderId: 'folder-1' }
 
-  // -- KB checks (same as uploadRecordsToKB) -------------------------------
+  // -- KB checks (same as uploadRecords) -------------------------------
 
   it('throws NotFoundError when KB endpoint returns 404', async () => {
     stubConnectorCalls([{ statusCode: 404 }])
 
-    const handler = uploadRecordsToFolder(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: REQ_PARAMS,
+      query: REQ_QUERY,
       body: { fileBuffers: SINGLE_FILE },
     })
     const next = createMockNext()
@@ -386,9 +417,10 @@ describe('uploadRecordsToFolder — KB and folder pre-check', () => {
   it('throws ForbiddenError when KB endpoint returns 403', async () => {
     stubConnectorCalls([{ statusCode: 403 }])
 
-    const handler = uploadRecordsToFolder(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: REQ_PARAMS,
+      query: REQ_QUERY,
       body: { fileBuffers: SINGLE_FILE },
     })
     const next = createMockNext()
@@ -401,9 +433,10 @@ describe('uploadRecordsToFolder — KB and folder pre-check', () => {
   it('throws InternalServerError when KB endpoint returns non-200/404/403', async () => {
     stubConnectorCalls([{ statusCode: 502 }])
 
-    const handler = uploadRecordsToFolder(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: REQ_PARAMS,
+      query: REQ_QUERY,
       body: { fileBuffers: SINGLE_FILE },
     })
     const next = createMockNext()
@@ -416,9 +449,10 @@ describe('uploadRecordsToFolder — KB and folder pre-check', () => {
   it('throws ForbiddenError when KB returns 200 but userRole is READER', async () => {
     stubConnectorCalls([{ statusCode: 200, data: { userRole: 'READER' } }])
 
-    const handler = uploadRecordsToFolder(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: REQ_PARAMS,
+      query: REQ_QUERY,
       body: { fileBuffers: SINGLE_FILE },
     })
     const next = createMockNext()
@@ -432,9 +466,10 @@ describe('uploadRecordsToFolder — KB and folder pre-check', () => {
     stubConnectorCalls([{ statusCode: 200, data: { userRole: 'READER' } }])
     const placeholderStub = sinon.stub(kbUtils, 'createPlaceholderDocument')
 
-    const handler = uploadRecordsToFolder(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: REQ_PARAMS,
+      query: REQ_QUERY,
       body: { fileBuffers: SINGLE_FILE },
     })
 
@@ -452,9 +487,10 @@ describe('uploadRecordsToFolder — KB and folder pre-check', () => {
       { statusCode: 404 },
     ])
 
-    const handler = uploadRecordsToFolder(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: REQ_PARAMS,
+      query: REQ_QUERY,
       body: { fileBuffers: SINGLE_FILE },
     })
     const next = createMockNext()
@@ -472,9 +508,10 @@ describe('uploadRecordsToFolder — KB and folder pre-check', () => {
     ])
     const placeholderStub = sinon.stub(kbUtils, 'createPlaceholderDocument')
 
-    const handler = uploadRecordsToFolder(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: REQ_PARAMS,
+      query: REQ_QUERY,
       body: { fileBuffers: SINGLE_FILE },
     })
 
@@ -489,9 +526,10 @@ describe('uploadRecordsToFolder — KB and folder pre-check', () => {
       { statusCode: 403 },
     ])
 
-    const handler = uploadRecordsToFolder(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: REQ_PARAMS,
+      query: REQ_QUERY,
       body: { fileBuffers: SINGLE_FILE },
     })
     const next = createMockNext()
@@ -507,9 +545,10 @@ describe('uploadRecordsToFolder — KB and folder pre-check', () => {
       { statusCode: 500 },
     ])
 
-    const handler = uploadRecordsToFolder(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: REQ_PARAMS,
+      query: REQ_QUERY,
       body: { fileBuffers: SINGLE_FILE },
     })
     const next = createMockNext()
@@ -530,9 +569,10 @@ describe('uploadRecordsToFolder — KB and folder pre-check', () => {
     })
     sinon.stub(kbUtils, 'processUploadsInBackground').resolves()
 
-    const handler = uploadRecordsToFolder(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: REQ_PARAMS,
+      query: REQ_QUERY,
       body: { fileBuffers: SINGLE_FILE },
     })
     const res = createMockResponse()
@@ -555,9 +595,10 @@ describe('uploadRecordsToFolder — KB and folder pre-check', () => {
     })
     sinon.stub(kbUtils, 'processUploadsInBackground').resolves()
 
-    const handler = uploadRecordsToFolder(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: REQ_PARAMS,
+      query: REQ_QUERY,
       body: { fileBuffers: SINGLE_FILE },
     })
     const res = createMockResponse()
@@ -576,9 +617,10 @@ describe('uploadRecordsToFolder — KB and folder pre-check', () => {
       { statusCode: 200, data: { userRole: 'READER' } },
     ])
 
-    const handler = uploadRecordsToFolder(createMockKeyValueStore(), createMockAppConfig())
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
       params: REQ_PARAMS,
+      query: REQ_QUERY,
       body: { fileBuffers: SINGLE_FILE },
     })
 

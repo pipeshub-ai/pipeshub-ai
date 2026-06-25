@@ -1,4 +1,4 @@
-"""Unit tests for app.modules.parsers.pdf.docling.DoclingProcessor."""
+"""Unit tests for app.modules.parsers.pdf.docling_processor.DoclingProcessor."""
 
 import asyncio
 from io import BytesIO
@@ -23,13 +23,13 @@ def _make_mock_logger():
 
 def _make_processor():
     """Create a DoclingProcessor with a mocked converter (bypass real docling init)."""
-    with patch("app.modules.parsers.pdf.docling.DocumentConverter") as MockConverter, \
-         patch("app.modules.parsers.pdf.docling.PdfFormatOption"), \
-         patch("app.modules.parsers.pdf.docling.WordFormatOption"), \
-         patch("app.modules.parsers.pdf.docling.MarkdownFormatOption"), \
-         patch("app.modules.parsers.pdf.docling.PdfPipelineOptions"), \
-         patch("app.modules.parsers.pdf.docling.PyPdfiumDocumentBackend"):
-        from app.modules.parsers.pdf.docling import DoclingProcessor
+    with patch("app.modules.parsers.pdf.docling_processor.DocumentConverter") as MockConverter, \
+         patch("app.modules.parsers.pdf.docling_processor.PdfFormatOption"), \
+         patch("app.modules.parsers.pdf.docling_processor.WordFormatOption"), \
+         patch("app.modules.parsers.pdf.docling_processor.MarkdownFormatOption"), \
+         patch("app.modules.parsers.pdf.docling_processor.PdfPipelineOptions"), \
+         patch("app.modules.parsers.pdf.docling_processor.PyPdfiumDocumentBackend"):
+        from app.modules.parsers.pdf.docling_processor import DoclingProcessor
         processor = DoclingProcessor(_make_mock_logger(), _make_mock_config())
     return processor
 
@@ -49,13 +49,13 @@ class TestDoclingProcessorInit:
 
     def test_init_stores_config(self):
         """Config dict is stored as-is."""
-        with patch("app.modules.parsers.pdf.docling.DocumentConverter"), \
-             patch("app.modules.parsers.pdf.docling.PdfFormatOption"), \
-             patch("app.modules.parsers.pdf.docling.WordFormatOption"), \
-             patch("app.modules.parsers.pdf.docling.MarkdownFormatOption"), \
-             patch("app.modules.parsers.pdf.docling.PdfPipelineOptions"), \
-             patch("app.modules.parsers.pdf.docling.PyPdfiumDocumentBackend"):
-            from app.modules.parsers.pdf.docling import DoclingProcessor
+        with patch("app.modules.parsers.pdf.docling_processor.DocumentConverter"), \
+             patch("app.modules.parsers.pdf.docling_processor.PdfFormatOption"), \
+             patch("app.modules.parsers.pdf.docling_processor.WordFormatOption"), \
+             patch("app.modules.parsers.pdf.docling_processor.MarkdownFormatOption"), \
+             patch("app.modules.parsers.pdf.docling_processor.PdfPipelineOptions"), \
+             patch("app.modules.parsers.pdf.docling_processor.PyPdfiumDocumentBackend"):
+            from app.modules.parsers.pdf.docling_processor import DoclingProcessor
             config = {"ocr": True, "model": "fast"}
             processor = DoclingProcessor(_make_mock_logger(), config)
             assert processor.config is config
@@ -77,7 +77,7 @@ class TestDoclingProcessorParseDocument:
         mock_conv_result.status.value = "success"
         mock_conv_result.document = mock_doc
 
-        with patch("app.modules.parsers.pdf.docling.LOCAL_DOCLING_PARSE_WORKERS", 1), \
+        with patch("app.modules.parsers.pdf.docling_processor.LOCAL_DOCLING_PARSE_WORKERS", 1), \
              patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
             result = await processor.parse_document("test.pdf", b"fake pdf content")
             assert result is mock_doc
@@ -92,7 +92,7 @@ class TestDoclingProcessorParseDocument:
         mock_conv_result.status.value = "success"
         mock_conv_result.document = mock_doc
 
-        with patch("app.modules.parsers.pdf.docling.LOCAL_DOCLING_PARSE_WORKERS", 1), \
+        with patch("app.modules.parsers.pdf.docling_processor.LOCAL_DOCLING_PARSE_WORKERS", 1), \
              patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
             content = BytesIO(b"fake pdf content")
             result = await processor.parse_document("test.pdf", content)
@@ -106,7 +106,7 @@ class TestDoclingProcessorParseDocument:
         mock_conv_result = MagicMock()
         mock_conv_result.status.value = "failure"
 
-        with patch("app.modules.parsers.pdf.docling.LOCAL_DOCLING_PARSE_WORKERS", 1), \
+        with patch("app.modules.parsers.pdf.docling_processor.LOCAL_DOCLING_PARSE_WORKERS", 1), \
              patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
             with pytest.raises(ValueError, match="Failed to parse document"):
                 await processor.parse_document("test.pdf", b"bad content")
@@ -121,8 +121,8 @@ class TestDoclingProcessorParseDocument:
         mock_conv_result.status.value = "success"
         mock_conv_result.document = mock_doc
 
-        with patch("app.modules.parsers.pdf.docling.LOCAL_DOCLING_PARSE_WORKERS", 1), \
-             patch("app.modules.parsers.pdf.docling.DocumentStream") as MockStream, \
+        with patch("app.modules.parsers.pdf.docling_processor.LOCAL_DOCLING_PARSE_WORKERS", 1), \
+             patch("app.modules.parsers.pdf.docling_processor.DocumentStream") as MockStream, \
              patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
             await processor.parse_document("my_report.pdf", b"content")
             MockStream.assert_called_once()
@@ -140,8 +140,8 @@ class TestDoclingProcessorParseDocument:
         mock_conv_result.status.value = "success"
         mock_conv_result.document = mock_doc
 
-        with patch("app.modules.parsers.pdf.docling.LOCAL_DOCLING_PARSE_WORKERS", 1), \
-             patch("app.modules.parsers.pdf.docling.DocumentStream") as MockStream, \
+        with patch("app.modules.parsers.pdf.docling_processor.LOCAL_DOCLING_PARSE_WORKERS", 1), \
+             patch("app.modules.parsers.pdf.docling_processor.DocumentStream") as MockStream, \
              patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
             await processor.parse_document("test.pdf", b"raw bytes")
             call_kwargs = MockStream.call_args
@@ -161,8 +161,8 @@ class TestDoclingProcessorParseDocument:
 
         original_stream = BytesIO(b"pre-wrapped content")
 
-        with patch("app.modules.parsers.pdf.docling.LOCAL_DOCLING_PARSE_WORKERS", 1), \
-             patch("app.modules.parsers.pdf.docling.DocumentStream") as MockStream, \
+        with patch("app.modules.parsers.pdf.docling_processor.LOCAL_DOCLING_PARSE_WORKERS", 1), \
+             patch("app.modules.parsers.pdf.docling_processor.DocumentStream") as MockStream, \
              patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
             await processor.parse_document("test.pdf", original_stream)
             call_kwargs = MockStream.call_args
@@ -183,7 +183,7 @@ class TestDoclingProcessorCreateBlocks:
         processor = _make_processor()
         mock_blocks_container = MagicMock()
 
-        with patch("app.modules.parsers.pdf.docling.DoclingDocToBlocksConverter") as MockBlockConverter:
+        with patch("app.modules.parsers.pdf.docling_processor.DoclingDocToBlocksConverter") as MockBlockConverter:
             mock_converter_instance = MagicMock()
             mock_converter_instance.convert = AsyncMock(return_value=mock_blocks_container)
             MockBlockConverter.return_value = mock_converter_instance
@@ -199,7 +199,7 @@ class TestDoclingProcessorCreateBlocks:
         processor = _make_processor()
         mock_blocks_container = MagicMock()
 
-        with patch("app.modules.parsers.pdf.docling.DoclingDocToBlocksConverter") as MockBlockConverter:
+        with patch("app.modules.parsers.pdf.docling_processor.DoclingDocToBlocksConverter") as MockBlockConverter:
             mock_converter_instance = MagicMock()
             mock_converter_instance.convert = AsyncMock(return_value=mock_blocks_container)
             MockBlockConverter.return_value = mock_converter_instance
@@ -213,7 +213,7 @@ class TestDoclingProcessorCreateBlocks:
         """create_blocks creates DoclingDocToBlocksConverter with correct logger and config."""
         processor = _make_processor()
 
-        with patch("app.modules.parsers.pdf.docling.DoclingDocToBlocksConverter") as MockBlockConverter:
+        with patch("app.modules.parsers.pdf.docling_processor.DoclingDocToBlocksConverter") as MockBlockConverter:
             mock_converter_instance = MagicMock()
             mock_converter_instance.convert = AsyncMock(return_value=MagicMock())
             MockBlockConverter.return_value = mock_converter_instance
@@ -228,7 +228,7 @@ class TestDoclingProcessorCreateBlocks:
         """Default page_number is None."""
         processor = _make_processor()
 
-        with patch("app.modules.parsers.pdf.docling.DoclingDocToBlocksConverter") as MockBlockConverter:
+        with patch("app.modules.parsers.pdf.docling_processor.DoclingDocToBlocksConverter") as MockBlockConverter:
             mock_converter_instance = MagicMock()
             mock_converter_instance.convert = AsyncMock(return_value=MagicMock())
             MockBlockConverter.return_value = mock_converter_instance

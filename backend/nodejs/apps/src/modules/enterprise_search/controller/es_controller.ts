@@ -29,11 +29,13 @@ import {
   BadRequestError,
   InternalServerError,
   NotFoundError,
+  HttpError,
   UnauthorizedError,
   ForbiddenError,
   ServiceUnavailableError,
   BadGatewayError,
   GatewayTimeoutError,
+  UnprocessableEntityError,
 } from '../../../libs/errors/http.errors';
 import {
   AICommandOptions,
@@ -346,6 +348,9 @@ const hydrateScopedRequestAsUser = async (
 };
 
   const handleBackendError = (error: any, operation: string): Error => {
+    const resolveErrorMessage = (err: any): string =>
+      err?.message || err?.msg || 'Unknown error';
+
     // Network/connection failure handling first
     if (
       (error?.cause && error.cause.code === 'ECONNREFUSED') ||
@@ -355,10 +360,14 @@ const hydrateScopedRequestAsUser = async (
       return new ServiceUnavailableError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
     }
 
+    if (error instanceof HttpError) {
+      return error;
+    }
+
     if (error.response) {
       const { status, data } = error.response;
       const errorDetail =
-        data?.detail || data?.reason || data?.message || 'Unknown error';
+        data?.detail || data?.reason || data?.message || error.msg || 'Unknown error';
   
       logger.error(`Backend error during ${operation}`, {
         status,
@@ -375,6 +384,8 @@ const hydrateScopedRequestAsUser = async (
           return new ForbiddenError(errorDetail);
         case 404:
           return new NotFoundError(errorDetail);
+        case 422:
+          return new UnprocessableEntityError(errorDetail);
         case 500:
           return new InternalServerError(errorDetail);
         case 502:
@@ -393,11 +404,39 @@ const hydrateScopedRequestAsUser = async (
       return new ServiceUnavailableError('Backend service unavailable');
     }
 
-  if (error.detail) {
+    // Handle AIServiceResponse format { statusCode, data, msg } from AIServiceCommand.execute()
+    if (typeof error.statusCode === 'number' && error.statusCode >= 400) {
+      const data = error.data as Record<string, unknown> | undefined;
+      const errorDetail = String(data?.detail || data?.reason || data?.message || error.msg || 'Unknown error');
+      switch (error.statusCode) {
+        case 400:
+          return new BadRequestError(errorDetail);
+        case 401:
+          return new UnauthorizedError(errorDetail);
+        case 403:
+          return new ForbiddenError(errorDetail);
+        case 404:
+          return new NotFoundError(errorDetail);
+        case 422:
+          return new UnprocessableEntityError(errorDetail);
+        case 500:
+          return new InternalServerError(errorDetail);
+        case 502:
+          return new BadGatewayError(errorDetail);
+        case 503:
+          return new ServiceUnavailableError(errorDetail);
+        case 504:
+          return new GatewayTimeoutError(errorDetail);
+        default:
+          return new InternalServerError(`Backend error: ${errorDetail}`);
+      }
+    }
+
+    if (error.detail) {
       return new BadRequestError(error.detail);
     }
-  
-    return new InternalServerError(`${operation} failed: ${error.message}`);
+
+    return new InternalServerError(`${operation} failed: ${resolveErrorMessage(error)}`);
   };
   
   // Common helper to start AI streams with consistent error mapping and logging
@@ -4923,7 +4962,7 @@ export const createAgent =
         throw new InternalServerError('Failed to get response from AI service');
       }
       if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Create Agent');
+        throw handleBackendError(aiResponse, 'Create Agent');
       }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.CREATED).json(agent);
@@ -4966,7 +5005,7 @@ export const getAgent =
         throw new InternalServerError('Failed to get response from AI service');
       }
       if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Get Agent');
+        throw handleBackendError(aiResponse, 'Get Agent');
       }
       const responsePayload = aiResponse.data as Record<string, unknown>;
       if (
@@ -5017,7 +5056,7 @@ export const checkServiceAccountAccess =
         return false;
       }
       if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Check Service Account Access');
+        throw handleBackendError(aiResponse, 'Check Service Account Access');
       }
       const response = aiResponse.data as { isServiceAccount: boolean };
       const serviceAccountResponse = response.isServiceAccount;
@@ -5206,7 +5245,7 @@ export const updateAgent =
         throw new InternalServerError('Failed to get response from AI service');
       }
       if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Update Agent');
+        throw handleBackendError(aiResponse, 'Update Agent');
       }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agent);
@@ -5249,7 +5288,7 @@ export const deleteAgent =
         throw new InternalServerError('Failed to get response from AI service');
       }
       if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(aiResponse.data, 'Delete Agent');
+        throw handleBackendError(aiResponse, 'Delete Agent');
       }
       const agent = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agent);

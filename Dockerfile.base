@@ -8,6 +8,18 @@
 # CI: integration tests pull pipeshubai/pipeshub-ai-base:{python-deps,runtime} before
 # building the app image; avoid unconditional Dockerfile.base builds in CI (slow).
 #
+# Incremental rebuild (when only a few packages change in pyproject.toml):
+#   Pass the currently-published image as PYTHON_DEPS_BASE so uv skips already-satisfied
+#   packages (fast no-op) and only downloads/compiles the delta.  ML model downloads
+#   (spaCy, NLTK, HuggingFace, fastembed) are also no-ops when already present.
+#
+#   docker buildx build -f Dockerfile.base --target python-deps \
+#     --build-arg PYTHON_DEPS_BASE=pipeshubai/pipeshub-ai-base:python-deps \
+#     -t pipeshubai/pipeshub-ai-base:python-deps --platform linux/amd64,linux/arm64 --push .
+#
+#   For a full rebuild from scratch (e.g. major dependency overhaul or first-time setup),
+#   omit PYTHON_DEPS_BASE or set it to "build-base" (the default).
+#
 # Image size diagnostics (app image or local tag):
 #   docker history --human pipeshub-ai:latest
 #   docker run --rm pipeshub-ai:latest sh -c 'du -sh /usr/local/lib/python3.12/site-packages /root/.cache/huggingface /root/.cache/fastembed /usr/lib/libreoffice 2>/dev/null || true'
@@ -55,6 +67,12 @@ ARG BUNDLE_BGE_EMBEDDING=1
 ARG TORCH_VERSION=2.12.0
 ARG TORCHVISION_VERSION=0.27.0
 
+# Base for the python-deps stage.  Default builds from scratch using the local
+# build-base stage.  Override with the previously-published image for incremental
+# rebuilds — uv skips already-satisfied packages and ML model downloads are no-ops:
+#   --build-arg PYTHON_DEPS_BASE=pipeshubai/pipeshub-ai-base:python-deps
+ARG PYTHON_DEPS_BASE=build-base
+
 # -----------------------------------------------------------------------------
 # Stage: Build Base - Contains all build tools (NOT in final app image)
 # -----------------------------------------------------------------------------
@@ -98,7 +116,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 # -----------------------------------------------------------------------------
 # Target: python-deps — publish as pipeshubai/pipeshub-ai-base:python-deps
 # -----------------------------------------------------------------------------
-FROM build-base AS python-deps
+FROM ${PYTHON_DEPS_BASE} AS python-deps
 ARG BUNDLE_BGE_EMBEDDING
 ARG TORCH_VERSION
 ARG TORCHVISION_VERSION

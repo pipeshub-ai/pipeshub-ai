@@ -15,9 +15,10 @@ import {
   FullSyncButton,
 } from './primitives';
 import { InlineEditableName } from '../inline-editable-name';
-import { InstanceSyncOperationPill, InstanceSetupStatusRow } from './instance-status-badges';
+import { InstanceSyncOperationIndicator, InstanceSetupStatusRow } from './instance-status-badges';
 import { deriveSyncStatusState, getSyncStrategyLabel, getSyncIntervalLabel } from './utils';
 import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
+import { usePollInstanceWhileSyncing } from '../../utils/use-poll-instance-while-syncing';
 import type { ConnectorInstance, ConnectorConfig, ConnectorScope } from '../../types';
 
 // ========================================
@@ -62,6 +63,8 @@ export function InstanceCard({
   const [syncToggleBusy, setSyncToggleBusy] = useState(false);
 
   const updatedByEntry = useUserDirectoryEntry(instance.updatedBy);
+
+  usePollInstanceWhileSyncing(instance._key, instance.status);
 
   useEffect(() => {
     setIdentityIconError(false);
@@ -188,8 +191,6 @@ export function InstanceCard({
             truncate
             style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}
           />
-
-          <InstanceSyncOperationPill instance={instance} />
 
           {onRefresh ? (
             <IconButton
@@ -340,6 +341,7 @@ export function InstanceCard({
           >
             <SyncButton connectorId={instance._key} connectorType={instance.type} />
             <FullSyncButton connectorId={instance._key} connectorType={instance.type} />
+            <InstanceSyncOperationIndicator instance={instance} />
           </Flex>
         )}
       </Flex>

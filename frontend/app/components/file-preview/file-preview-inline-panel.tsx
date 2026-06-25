@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
@@ -12,7 +13,7 @@ import { FileDetailsTab } from './file-details-tab';
 import { CitationsPanel } from './citations-panel';
 import { useCitationSync } from './use-citation-sync';
 import { usePdfZoom } from './use-pdf-zoom';
-import { downloadPreviewFile, getTabsForSource, shouldShowPagination } from './utils';
+import { downloadPreviewFile, getTabsForSource, shouldShowPagination, resolvePreviewIconExtension } from './utils';
 import { PDF_ZOOM_MAX, PDF_ZOOM_MIN } from './types';
 import type { FilePreviewProps, FilePreviewTab, PaginationControls } from './types';
 import { useCitationsColumnResize } from './use-citations-column-resize';
@@ -65,6 +66,7 @@ export function FilePreviewInlinePanel({
   onPointerDownLeftEdgeResize,
   style,
 }: FilePreviewInlinePanelProps) {
+  const { t } = useTranslation();
   const hasCitations = citations && citations.length > 0;
   const hasError = !isLoading && !!error;
   const canDownload =
@@ -76,11 +78,8 @@ export function FilePreviewInlinePanel({
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
 
-  const { pdfScale, setPdfScale, handlePdfZoomIn, handlePdfZoomOut } = usePdfZoom(
-    file.id,
-    file.url,
-    initialPage,
-  );
+  const { pdfScale, setPdfScale, handlePdfZoomIn, handlePdfZoomOut, isZoomLocked, toggleZoomLock } =
+    usePdfZoom(file.id, file.url, initialPage);
 
   const tabs = useMemo(
     () => getTabsForSource(source, { hideFileDetails }),
@@ -132,6 +131,7 @@ export function FilePreviewInlinePanel({
   // Bidirectional citation ↔ page sync
   const {
     activeCitationId,
+    citationClickVersion,
     highlightBox: syncHighlightBox,
     highlightPage: syncHighlightPage,
     handleCitationClick,
@@ -177,6 +177,7 @@ export function FilePreviewInlinePanel({
       >
         <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
           <FileIcon
+            extension={resolvePreviewIconExtension(recordDetails, file.type)}
             filename={file.name}
             mimeType={file.type}
             size={ICON_SIZES.FILE_ICON_LARGE}
@@ -324,6 +325,7 @@ export function FilePreviewInlinePanel({
                   highlightPage={hasCitations ? syncHighlightPage : undefined}
                   citations={hasCitations ? citations : undefined}
                   activeCitationId={hasCitations ? activeCitationId : undefined}
+                  citationClickVersion={hasCitations ? citationClickVersion : undefined}
                   onHighlightClick={
                     hasCitations
                       ? (id: string) => {
@@ -387,6 +389,23 @@ export function FilePreviewInlinePanel({
                   aria-label="Zoom in"
                 >
                   <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
+                </IconButton>
+
+                <IconButton
+                  variant="ghost"
+                  color="gray"
+                  size="1"
+                  onClick={toggleZoomLock}
+                  style={{ width: '24px', height: '24px', padding: 0 }}
+                  title={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
+                  aria-label={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
+                  aria-pressed={isZoomLocked}
+                >
+                  <MaterialIcon
+                    name={isZoomLocked ? 'lock' : 'lock_open'}
+                    size={ICON_SIZES.SECONDARY}
+                    color={isZoomLocked ? 'var(--accent-9)' : undefined}
+                  />
                 </IconButton>
 
                 <Box

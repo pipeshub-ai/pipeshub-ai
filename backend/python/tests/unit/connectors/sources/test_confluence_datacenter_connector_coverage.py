@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 pytestmark = pytest.mark.confluence_datacenter
@@ -36,6 +37,7 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.http.http_response import HTTPResponse
 
 
 # ===========================================================================
@@ -85,6 +87,25 @@ def _resp(status=200, data=None):
     r.json = MagicMock(return_value=data or {})
     r.text = MagicMock(return_value="")
     return r
+
+
+def _http_resp(status=200, data=None, error_text=None):
+    """HTTPResponse wrapper for tests that exercise call_with_retry."""
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = status
+    mock_response.headers = {}
+    mock_response.json.return_value = data or {}
+    # Add text for error responses
+    if error_text:
+        mock_response.text = error_text
+    elif status >= 400:
+        mock_response.text = f"HTTP {status} Error"
+    else:
+        mock_response.text = ""
+    http_resp = HTTPResponse(mock_response)
+    # Make text() callable for HTTPResponse
+    http_resp.text = lambda: mock_response.text
+    return http_resp
 
 
 # ===========================================================================
@@ -1344,38 +1365,111 @@ class TestFetchPageContent:
             await c._fetch_page_content("p1", RecordType.TICKET)
         assert exc_info.value.status_code == 400
 
+    @pytest.mark.asyncio
+    async def test_retry_on_503_then_success(self):
+        """Test that _fetch_page_content retries on 503 and succeeds on 2nd attempt."""
+        c = _conn()
+        mock_ds = MagicMock()
+        # First call returns 503, second call succeeds
+        mock_ds.get_content_v1 = AsyncMock(side_effect=[
+            _http_resp(503),
+            _resp(200, {
+                "body": {"export_view": {"value": "<h1>Retry Success</h1>"}},
+            }),
+        ])
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        result = await c._fetch_page_content("p1", RecordType.CONFLUENCE_PAGE)
+        assert result == "<h1>Retry Success</h1>"
+        assert mock_ds.get_content_v1.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_exhausted_retries_preserves_status_code(self):
+        """Test that when 503 exhausts retries, HTTPException has status_code=503 and concise message."""
+        c = _conn()
+        mock_ds = MagicMock()
+        # All attempts return 503
+        mock_ds.get_content_v1 = AsyncMock(side_effect=[
+            _http_resp(503),
+            _http_resp(503),
+            _http_resp(503),
+        ])
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        
+        with pytest.raises(HTTPException) as exc_info:
+            await c._fetch_page_content("p1", RecordType.CONFLUENCE_PAGE)
+        
+        # Verify status code is preserved (503, not 500)
+        assert exc_info.value.status_code == 503
+        # Verify message is concise (under 600 chars - includes 500 char error body limit)
+        assert len(exc_info.value.detail) < 600
+        # Verify all 3 attempts were made
+        assert mock_ds.get_content_v1.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_exhausted_retries_includes_confluence_error_message(self):
+        """Test that Confluence API error message is included in the final HTTPException detail."""
+        c = _conn()
+        mock_ds = MagicMock()
+        confluence_error_msg = "Confluence is currently in maintenance mode. Please try again later."
+        # All attempts return 503 with error message
+        mock_ds.get_content_v1 = AsyncMock(side_effect=[
+            _http_resp(503, error_text=confluence_error_msg),
+            _http_resp(503, error_text=confluence_error_msg),
+            _http_resp(503, error_text=confluence_error_msg),
+        ])
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        
+        with pytest.raises(HTTPException) as exc_info:
+            await c._fetch_page_content("p1", RecordType.CONFLUENCE_PAGE)
+        
+        # Verify status code is preserved
+        assert exc_info.value.status_code == 503
+        # Verify the Confluence error message is included in the detail
+        assert "maintenance mode" in exc_info.value.detail
+        # Verify all 3 attempts were made
+        assert mock_ds.get_content_v1.call_count == 3
+
 
 # ===========================================================================
 # _fetch_comment_content
 # ===========================================================================
 
 
+def _mock_comment_record(record_type: RecordType, external_id: str, record_name: str = "") -> MagicMock:
+    record = MagicMock()
+    record.record_type = record_type
+    record.external_record_id = external_id
+    record.record_name = record_name
+    return record
+
+
+def _mock_comment_datasource(body: dict) -> MagicMock:
+    mock_ds = MagicMock()
+    mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, body))
+    mock_ds.fetch_authenticated_binary = AsyncMock(return_value=None)
+    return mock_ds
+
+
 class TestFetchCommentContent:
     @pytest.mark.asyncio
     async def test_footer_comment(self):
         c = _conn()
-        mock_ds = MagicMock()
-        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Footer</p>"}},
-        }))
+        mock_ds = _mock_comment_datasource({
+            "body": {"export_view": {"value": "<p>Footer</p>"}},
+        })
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.COMMENT
-        record.external_record_id = "123"
+        record = _mock_comment_record(RecordType.COMMENT, "123")
         result = await c._fetch_comment_content(record)
         assert result == "<p>Footer</p>"
 
     @pytest.mark.asyncio
     async def test_inline_comment(self):
         c = _conn()
-        mock_ds = MagicMock()
-        mock_ds.get_content_v1 = AsyncMock(return_value=_resp(200, {
-            "body": {"storage": {"value": "<p>Inline</p>"}},
-        }))
+        mock_ds = _mock_comment_datasource({
+            "body": {"export_view": {"value": "<p>Inline</p>"}},
+        })
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        record = MagicMock()
-        record.record_type = RecordType.INLINE_COMMENT
-        record.external_record_id = "456"
+        record = _mock_comment_record(RecordType.INLINE_COMMENT, "456")
         result = await c._fetch_comment_content(record)
         assert result == "<p>Inline</p>"
 

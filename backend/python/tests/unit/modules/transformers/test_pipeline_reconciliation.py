@@ -52,7 +52,7 @@ def _pipeline(blob_meta=None):
     doc_extraction = AsyncMock()
     doc_extraction.graph_provider = AsyncMock()
     doc_extraction.graph_provider.get_document = AsyncMock(return_value={})
-    doc_extraction.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+    doc_extraction.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
 
     sink = AsyncMock()
     sink.blob_storage = AsyncMock()
@@ -325,7 +325,7 @@ class TestApplyEmptyCleanup:
         await pipeline.apply(ctx)
 
         # The regular "mark EMPTY" batch upsert still runs
-        pipeline.document_extraction.graph_provider.batch_upsert_nodes.assert_awaited_once()
+        pipeline.document_extraction.graph_provider.batch_update_nodes.assert_awaited_once()
 
 
 class TestApplyReconciliationContextBuildsWhenNone:

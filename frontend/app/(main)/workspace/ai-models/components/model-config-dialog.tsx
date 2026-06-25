@@ -10,6 +10,7 @@ import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
 import type { SchemaField } from '@/app/(main)/workspace/connectors/types';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
+import { toast } from '@/lib/store/toast-store';
 import { aiModelsCapabilityLabel } from '../capability-i18n';
 import type { AIModelProvider, AIModelProviderField, ConfiguredModel } from '../types';
 import { CAPABILITY_TO_MODEL_TYPE } from '../types';
@@ -301,6 +302,12 @@ export function ModelConfigDialog({
         // set-default endpoint runs a health check to prevent that, so the
         // only way to actually switch the default is via the explicit button.
         const shouldAutoDefault = existingModelsCount === 0;
+        if (provider.providerId === 'sentenceTransformers') {
+          toast.info(
+            t('workspace.aiModels.toastSentenceTransformerDownloading'),
+            { duration: 8000 }
+          );
+        }
         await AIModelsApi.addProvider({
           modelType,
           provider: provider.providerId,

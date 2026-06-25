@@ -1,3 +1,5 @@
+import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
+
 import asyncio
 import traceback
 from collections.abc import AsyncGenerator
@@ -9,6 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.middlewares.auth import authMiddleware
+from app.api.middlewares.request_context import RequestContextMiddleware
+from app.utils.request_context import set_service_suffix
+
+set_service_suffix("-cs")
 from app.api.routes.entity import router as entity_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.config.constants.arangodb import AccountType
@@ -151,6 +157,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                         connector_id=connector_id,
                         scope=scope,
                         created_by=created_by,
+                        notification_service=app_container.connector_notification_service(),
                     )
                 except Exception as e:
                     logger.error(
@@ -464,10 +471,11 @@ app = FastAPI(
 # List of paths to exclude from authentication (public endpoints)
 # All other paths will require authentication by default
 EXCLUDE_PATHS = [
-    "/health",  # Health check endpoint
-    "/drive/webhook",  # Google Drive webhook (has its own WebhookAuthVerifier)
-    "/gmail/webhook",  # Gmail webhook (uses Google Pub/Sub authentication)
-    "/admin/webhook",  # Admin webhook (has its own WebhookAuthVerifier)
+    "/health",          # Basic health check endpoint
+    "/health/graph-db", # Graph DB connectivity probe (called by Node.js health route)
+    "/drive/webhook",   # Google Drive webhook (has its own WebhookAuthVerifier)
+    "/gmail/webhook",   # Gmail webhook (uses Google Pub/Sub authentication)
+    "/admin/webhook",   # Admin webhook (has its own WebhookAuthVerifier)
 ]
 
 @app.middleware("http")
@@ -528,6 +536,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Trace context — outermost, before auth.
+app.add_middleware(RequestContextMiddleware)
+
 
 @router.get("/health")
 async def health_check() -> JSONResponse:
@@ -549,6 +560,109 @@ async def health_check() -> JSONResponse:
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
+
+
+@router.get("/health/graph-db")
+async def graph_db_health_check(request: Request) -> JSONResponse:
+    """Probe the configured graph database using the same driver the app uses.
+
+    Handles both ArangoDB and Neo4j so that the Node.js health endpoint can
+    delegate the graph-DB check here for both database types instead of
+    performing its own probes (which fail for managed deployments like Neo4j
+    Aura that don't expose HTTP discovery ports 7474/7473).
+    """
+    import asyncio
+    import os
+
+    data_store = os.getenv("DATA_STORE", "arangodb").lower()
+
+    # ── ArangoDB ──────────────────────────────────────────────────────────────
+    if data_store == "arangodb":
+        try:
+            from app.config.constants.service import config_node_constants
+
+            container = request.app.container  # type: ignore[attr-defined]
+            config_service = container.config_service()
+            arangodb_config = await config_service.get_config(
+                config_node_constants.ARANGODB.value
+            )
+            username = arangodb_config["username"]
+            password = arangodb_config["password"]
+
+            client = await container.arango_client()
+            # python-arango is synchronous; offload so the event loop stays free.
+            sys_db = await asyncio.to_thread(
+                client.db, "_system", username=username, password=password
+            )
+            await asyncio.to_thread(sys_db.version)
+
+            return JSONResponse(
+                status_code=200,
+                content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()},
+            )
+        except Exception as e:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "unhealthy",
+                    "error": f"ArangoDB health check failed: {str(e)}",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
+
+    # ── Neo4j ─────────────────────────────────────────────────────────────────
+    if data_store == "neo4j":
+        from neo4j import AsyncGraphDatabase
+        from neo4j.exceptions import AuthError, ServiceUnavailable
+
+        uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+        username = os.getenv("NEO4J_USERNAME", "neo4j")
+        password = os.getenv("NEO4J_PASSWORD", "")
+
+        driver = None
+        try:
+            driver = AsyncGraphDatabase.driver(uri, auth=(username, password))
+            await driver.verify_connectivity()
+            return JSONResponse(
+                status_code=200,
+                content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()},
+            )
+        except AuthError as e:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "unhealthy",
+                    "error": f"Neo4j auth failed: {str(e)}",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
+        except ServiceUnavailable as e:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "unhealthy",
+                    "error": f"Neo4j unavailable: {str(e)}",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
+        except Exception as e:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "unhealthy", "error": str(e), "timestamp": get_epoch_timestamp_in_ms()},
+            )
+        finally:
+            if driver:
+                await driver.close()
+
+    # Unknown DATA_STORE value — treat as healthy so we don't block deployments.
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "healthy",
+            "message": f"graph-db health check not implemented for DATA_STORE={data_store}",
+            "timestamp": get_epoch_timestamp_in_ms(),
+        },
+    )
 
 
 # Include routes - more specific routes first

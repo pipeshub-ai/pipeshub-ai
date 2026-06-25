@@ -17,6 +17,7 @@ from app.config.constants.service import (
 )
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.request_context import inject_request_headers
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -65,7 +66,7 @@ class BlobStorage(Transformer):
             raise ValueError("Missing scoped JWT secret")
 
         jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
-        headers = {"Authorization": f"Bearer {jwt_token}"}
+        headers = inject_request_headers({"Authorization": f"Bearer {jwt_token}"})
 
         endpoints = await self.config_service.get_config(
             config_node_constants.ENDPOINTS.value
@@ -999,7 +1000,7 @@ class BlobStorage(Transformer):
                 str: The content of the record if found, else an empty string.
             """
             overall_start_time = time.time()
-            self.logger.info("🔍 Retrieving record from storage for virtual_record_id: %s", virtual_record_id)
+            self.logger.debug("🔍 Retrieving record from storage for virtual_record_id: %s", virtual_record_id)
             try:
                 headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
 

@@ -47,6 +47,7 @@ NODE_COLLECTION_SCHEMAS: dict[str, dict] = {
     CollectionNames.SQL_TABLES.value: documents.sql_table_record_schema,
     CollectionNames.SQL_VIEWS.value: documents.sql_view_record_schema,
     CollectionNames.CODE_FILES.value: documents.code_file_record_schema,
+    CollectionNames.MESSAGES.value: documents.message_record_schema,
 }
 
 
@@ -87,6 +88,7 @@ class TestDocumentSchemaInventory:
             "ticket_record_schema",
             "project_record_schema",
             "meeting_record_schema",
+            "message_record_schema",
             "pull_request_record_schema",
             "sql_table_record_schema",
             "sql_view_record_schema",

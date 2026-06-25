@@ -28,6 +28,7 @@ class Topic(str, Enum):
     AI_CONFIG_EVENTS = "ai-config-events"
     SYNC_EVENTS = "sync-events"
     HEALTH_CHECK = "health-check"
+    NOTIFICATION = "notification"
 
 
 REQUIRED_TOPICS: list[str] = [t.value for t in Topic]
@@ -52,6 +53,8 @@ class StreamMessage(BaseModel):
     eventType: str
     payload: dict[str, JsonValue]
     timestamp: Optional[int] = None
+    # Trace id propagated from the producer; optional so legacy messages parse.
+    requestId: Optional[str] = None
 
 
 class PipelineEventData(BaseModel):

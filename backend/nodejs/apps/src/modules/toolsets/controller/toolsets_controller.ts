@@ -628,7 +628,19 @@ export const handleOAuthCallback =
           if (!isValidRedirectUrl(redirectUrlFromJson)) {
             throw new BadRequestError('Invalid redirect URL from backend');
           }
-          res.status(200).json({ redirectUrl: redirectUrlFromJson });
+          const result: Record<string, unknown> = { redirectUrl: redirectUrlFromJson };
+          if (responseData.success === true) {
+            result.success = true;
+          } else if (responseData.success === false) {
+            result.success = false;
+            if (responseData.error) {
+              result.error = responseData.error;
+            }
+            if (responseData.error_message) {
+              result.errorMessage = responseData.error_message;
+            }
+          }
+          res.status(200).json(result);
           return;
         }
       }

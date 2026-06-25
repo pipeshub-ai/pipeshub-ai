@@ -130,6 +130,8 @@ tags:
     description: Organization management operations
   - name: User Groups
     description: User group management operations
+  - name: Notifications
+    description: In-app notifications for the signed-in user (connector errors, warnings, and related alerts)
 
   # Storage
   - name: Document Management
@@ -1956,6 +1958,25 @@ components:
               type: object
               description: Optional; may appear in non-production for some errors.
               additionalProperties: true
+
+    RateLimitErrorResponse:
+      type: object
+      description: Rate-limit error payload (shape differs from standard error responses).
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Error code.
+            message:
+              type: string
+            retryAfter:
+              type: integer
+              nullable: true
+              description: Suggested seconds to wait before retrying.
+      required:
+        - error
 
     OAuthTokenListItem:
       type: object
@@ -3959,27 +3980,136 @@ components:
           example: 31457280
           description: Maximum file size in bytes (default 30MB when platform settings unavailable)
 
-    UploadResult:
+    FileRejectionReason:
+      type: string
+      description: |
+        Stable, machine-readable code describing why a file was rejected or
+        skipped. Clients use it to localize/group failures. Absent when the
+        failure originated elsewhere (e.g. a storage-upload error or a
+        downstream indexing error with no specific code).
+
+        - `EXCEEDS_SIZE_LIMIT` / `UNSUPPORTED_TYPE` — rejected up front by the
+          file processor.
+        - `DUPLICATE_NAME` — skipped because a record with the same name already
+          exists in the target KB/folder (or collided with another file in the
+          same upload). The file was not added.
+      enum:
+        - EXCEEDS_SIZE_LIMIT
+        - UNSUPPORTED_TYPE
+        - DUPLICATE_NAME
+
+    UploadFailedFileDetail:
       type: object
-      description: Result of a file upload operation
+      description: |
+        Decoded payload of a `file:failed` stream event. A single file that was
+        rejected up front (size/type), failed the storage upload, or could not be
+        created by the indexing service.
       properties:
-        message:
+        fileName:
           type: string
-          example: "Files uploaded successfully"
-        uploadResults:
+          example: "huge.zip"
+        filePath:
+          type: string
+          example: "reports/huge.zip"
+        extension:
+          type: string
+          description: Lower-cased file extension (no dot), when derivable. Used by clients to render a file-type icon.
+          example: "zip"
+        errors:
           type: array
+          description: Failure message(s) for this file (canonical; there is no singular `error`).
           items:
-            type: object
-            properties:
-              recordId:
-                type: string
-              recordName:
-                type: string
-              status:
-                type: string
-                enum: [success, failed]
-              error:
-                type: string
+            type: string
+          example:
+            - "File exceeds the 30 MB size limit"
+        reason:
+          $ref: '#/components/schemas/FileRejectionReason'
+        recordId:
+          type: string
+          description: Present only if a placeholder record was created before the failure.
+        stage:
+          type: string
+          description: Where the failure occurred.
+          enum:
+            - upload
+            - index
+          example: upload
+
+    UploadSucceededFileDetail:
+      type: object
+      description: Decoded payload of a `file:succeeded` stream event. Content indexing continues asynchronously after this event.
+      properties:
+        recordId:
+          type: string
+          example: "rec_01H..."
+        fileName:
+          type: string
+          example: "report.pdf"
+        filePath:
+          type: string
+          example: "docs/report.pdf"
+        extension:
+          type: string
+          description: Lower-cased file extension (no dot), when derivable.
+          example: "pdf"
+
+    UploadDoneSummary:
+      type: object
+      description: Decoded payload of the terminal `done` stream event.
+      properties:
+        summary:
+          type: object
+          properties:
+            total:
+              type: integer
+              example: 5
+            succeeded:
+              type: integer
+              example: 3
+            failed:
+              type: integer
+              example: 2
+
+    UploadStreamSSEEvent:
+      type: object
+      description: |
+        Server-Sent Event envelope for the KB streaming upload endpoint
+        (`POST /knowledgeBase/{kbId}/upload`, with optional `folderId` query param).
+
+        These endpoints respond with `Content-Type: text/event-stream`: the upload
+        and its per-file progress are a single request. The body streams one
+        terminal event per file, then a final `done` summary, then closes. `data`
+        is a JSON-encoded string whose decoded shape depends on `event`:
+
+        - `file:succeeded` — see `UploadSucceededFileDetail`. The file was
+          uploaded and its record created; content indexing then continues
+          asynchronously.
+        - `file:failed` — see `UploadFailedFileDetail`. Covers files rejected up
+          front (oversize / unsupported type — these carry `reason`), files that
+          failed the storage upload (`stage: "upload"`), and files the indexing
+          service could not create (`stage: "index"`).
+        - `done` — see `UploadDoneSummary`. Final event; the stream closes after it.
+        - `error` — `{ "message": string }`. Emitted only on a catastrophic
+          mid-stream failure (after the 200 headers were already sent), then the
+          stream closes. Clients MUST treat any file without a terminal
+          `file:succeeded` / `file:failed` as failed when this is received.
+
+        The stream also emits SSE comment heartbeats (`: keepalive`) roughly every
+        1s during slow work; these carry no `event`/`data` and should be ignored.
+        Authentication, permission, and request-shape failures occur BEFORE the
+        stream starts and are returned as ordinary 4xx JSON errors (not stream
+        events).
+      properties:
+        event:
+          type: string
+          enum:
+            - file:succeeded
+            - file:failed
+            - done
+            - error
+        data:
+          type: string
+          description: JSON-encoded event payload. Shape depends on `event`.
 
     IndexingStatusFilter:
       type: string
@@ -5479,7 +5609,10 @@ components:
           description: References to source documents used in the response
         confidence:
           type: string
-          description: AI's confidence level in the response
+          nullable: true
+          description: |
+            AI confidence in the answer. Present only on `bot_response` messages,
+            and only when the model emitted a trailing confidence block.
         followUpQuestions:
           type: array
           items:
@@ -9197,6 +9330,10 @@ components:
         confidence:
           type: string
           enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
+          nullable: true
+          description: |
+            AI confidence in the answer. Present only on `bot_response` messages,
+            and only when the model emitted a trailing confidence block.
         followUpQuestions:
           type: array
           items:
@@ -12474,6 +12611,103 @@ components:
       required:
         - link
 
+    InAppNotification:
+      type: object
+      description: |
+        A user notification record persisted by `NotificationConsumer` in MongoDB
+        (`notification.schema.ts`). The document is scoped to a single user via
+        `assignedTo` and expires automatically after 30 days (TTL index).
+      required:
+        - _id
+        - orgId
+        - type
+        - status
+        - assignedTo
+        - isDeleted
+        - createdAt
+        - updatedAt
+      properties:
+        _id:
+          type: string
+          format: objectId
+          description: MongoDB ObjectId of the notification document
+          example: "507f1f77bcf86cd799439011"
+        orgId:
+          type: string
+          format: objectId
+          description: Organisation the notification belongs to
+          example: "507f191e810c19729de860ea"
+        type:
+          type: string
+          description: |
+            Notification type discriminator. Connector-originated values include
+            `CONNECTOR_AUTH_ERROR`, `CONNECTOR_SYNC_ERROR`, `CONNECTOR_WARNING`,
+            `CONNECTOR_INFO`, `CONNECTOR_SUCCESS`, etc.
+          example: "CONNECTOR_SYNC_ERROR"
+        title:
+          type: string
+          description: Short human-readable heading
+          example: "S3: Bucket access denied"
+        message:
+          type: string
+          description: Full notification body text
+          example: "The S3 connector could not access bucket 'my-bucket'. Check IAM permissions."
+        severity:
+          type: string
+          enum: [info, warning, error, critical, success]
+          description: Visual severity level
+          example: "error"
+        status:
+          type: string
+          enum: [read, unread, archived]
+          default: unread
+          description: Read/unread state of the notification for this user
+          example: "unread"
+        originService:
+          type: string
+          enum:
+            - Connector Service
+            - Indexing Service
+            - AI Service
+            - External Service
+          description: Service that generated the notification
+          example: "Connector Service"
+        assignedTo:
+          type: string
+          format: objectId
+          description: MongoDB ObjectId of the user this notification is assigned to
+          example: "507f1f77bcf86cd799439011"
+        redirectLink:
+          type: string
+          description: Optional deep-link URL the user should be sent to when clicking the notification
+          example: "/connectors/workspace/?connectorType=Gmail"
+        payload:
+          type: object
+          additionalProperties: true
+          description: |
+            Arbitrary structured data attached by the originating service.
+            Connector notifications typically include `connectorId`, `connectorName`,
+            and `errorCode` keys.
+          example:
+            connectorId: "conn-abc123"
+            connectorName: "S3"
+            errorCode: "FORBIDDEN"
+        isDeleted:
+          type: boolean
+          default: false
+          description: Soft-delete flag; deleted notifications are excluded from all list queries
+        deletedBy:
+          type: string
+          format: objectId
+          description: ObjectId of the user who dismissed the notification (set on soft-delete)
+        createdAt:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp — documents are TTL-expired 30 days after this value
+        updatedAt:
+          type: string
+          format: date-time
+
     # ==================== PAGINATION ====================
     PaginationInfo:
       type: object
@@ -12496,6 +12730,421 @@ security:
   - oauth2: []
 
 paths:
+  # ==================== IN-APP NOTIFICATIONS ====================
+  /notifications:
+    get:
+      tags:
+        - Notifications
+      summary: List in-app notifications for the current user
+      description: |
+        Returns a cursor-paginated list of notifications assigned to the authenticated user
+        from the last 30 days. Default page size is 20 (max 50).
+      operationId: listInAppNotifications
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: |
+            Filter by notification status. When omitted (or any value other than
+            `read`, `unread`, or `archived`), all non-deleted notifications are returned.
+          schema:
+            type: string
+            enum: [read, unread, archived]
+        - name: limit
+          in: query
+          required: false
+          description: Page size (default 20, max 50)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque base64url cursor from a previous response's `cursor` field
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Notifications retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - notifications
+                  - hasMore
+                properties:
+                  notifications:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/InAppNotification'
+                  cursor:
+                    type: string
+                    nullable: true
+                    description: Pass as cursor query param to fetch the next page
+                  hasMore:
+                    type: boolean
+        '400':
+          description: Invalid cursor
+        '401':
+          description: Unauthorized — missing or invalid access token
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /notifications/stats:
+    get:
+      tags:
+        - Notifications
+      summary: Get notification counts for the current user
+      description: |
+        Returns per-status notification counts for the authenticated user within the
+        30-day retention window. Counts are always global — independent of the `status`
+        filter used on the list endpoint.
+      operationId: getNotificationStats
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Counts retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - unreadCount
+                  - readCount
+                  - archivedCount
+                properties:
+                  unreadCount:
+                    type: integer
+                    description: Notifications with status `unread` within the retention window
+                  readCount:
+                    type: integer
+                    description: Notifications with status `read` within the retention window
+                  archivedCount:
+                    type: integer
+                    description: Notifications with status `archived` within the retention window
+        '401':
+          description: Unauthorized — missing or invalid access token
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /notifications/read-all:
+    patch:
+      tags:
+        - Notifications
+      summary: Mark all unread notifications as read
+      description: |
+        Marks every unread notification assigned to the authenticated user within the
+        30-day retention window as read.
+      operationId: markAllInAppNotificationsRead
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Notifications updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - modifiedCount
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  modifiedCount:
+                    type: integer
+                    description: Number of notifications updated
+        '401':
+          description: Unauthorized — missing or invalid access token
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /notifications/{id}/read:
+    patch:
+      tags:
+        - Notifications
+      summary: Mark a notification as read
+      description: |
+        Marks a single notification as read when it belongs to the authenticated user.
+      operationId: markInAppNotificationRead
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Notification document ID (MongoDB ObjectId)
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+      responses:
+        '200':
+          description: Notification updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - notification
+                properties:
+                  notification:
+                    $ref: '#/components/schemas/InAppNotification'
+        '400':
+          description: Invalid user or notification id
+        '401':
+          description: Unauthorized — missing or invalid access token
+        '404':
+          description: Notification not found
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /notifications/{id}/unread:
+    patch:
+      tags:
+        - Notifications
+      summary: Mark a notification as unread
+      description: |
+        Marks a single notification as unread when it belongs to the authenticated user.
+      operationId: markInAppNotificationUnread
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Notification document ID (MongoDB ObjectId)
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+      responses:
+        '200':
+          description: Notification updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - notification
+                properties:
+                  notification:
+                    $ref: '#/components/schemas/InAppNotification'
+        '400':
+          description: Invalid user or notification id
+        '401':
+          description: Unauthorized — missing or invalid access token
+        '404':
+          description: Notification not found
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /notifications/{id}/archive:
+    patch:
+      tags:
+        - Notifications
+      summary: Archive a notification
+      description: |
+        Moves a single non-archived notification to `archived` status.
+        Archived notifications are excluded from the default list query and counts but
+        can be retrieved by passing `status=archived`.
+      operationId: archiveInAppNotification
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Notification document ID (MongoDB ObjectId)
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+      responses:
+        '200':
+          description: Notification archived
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - notification
+                properties:
+                  notification:
+                    $ref: '#/components/schemas/InAppNotification'
+        '400':
+          description: Invalid user or notification id
+        '401':
+          description: Unauthorized — missing or invalid access token
+        '404':
+          description: Notification not found (or already archived)
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /notifications/{id}/unarchive:
+    patch:
+      tags:
+        - Notifications
+      summary: Unarchive a notification
+      description: |
+        Restores an archived notification to `read` status.
+        Because the original pre-archive status is not stored, unarchived notifications
+        always land in `read` rather than `unread`.
+      operationId: unarchiveInAppNotification
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Notification document ID (MongoDB ObjectId)
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+      responses:
+        '200':
+          description: Notification unarchived (status set to `read`)
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - notification
+                properties:
+                  notification:
+                    $ref: '#/components/schemas/InAppNotification'
+        '400':
+          description: Invalid user or notification id
+        '401':
+          description: Unauthorized — missing or invalid access token
+        '404':
+          description: Notification not found or not currently archived
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /notifications/{id}:
+    delete:
+      tags:
+        - Notifications
+      summary: Dismiss (soft-delete) a notification
+      description: Soft-deletes the notification for the current user.
+      operationId: dismissInAppNotification
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Notification document ID (MongoDB ObjectId)
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+      responses:
+        '200':
+          description: Notification dismissed
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+        '400':
+          description: Invalid user or notification id
+        '401':
+          description: Unauthorized — missing or invalid access token
+        '404':
+          description: Notification not found
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   # ==================== OAUTH PROVIDER ENDPOINTS ====================
   /oauth2/authorize:
     get:
@@ -16641,7 +17290,7 @@ paths:
             type: string
             minLength: 1
             maxLength: 1000
-          description: Search team names (trimmed; blank-after-trim rejected)
+          description: Search team names; empty or whitespace-only values are ignored (no filter)
         - in: query
           name: created_by
           required: false
@@ -20186,24 +20835,42 @@ paths:
     post:
       tags:
         - Upload
-      summary: Upload files to knowledge base
+      summary: Upload files to knowledge base or folder
       description: |
-        Upload one or more files directly to a knowledge base.<br><br>
-        <b>Overview:</b><br>
-        Batch upload multiple files in a single request. Each file becomes a new record in the KB with automatic content indexing.<br><br>
-        <b>Upload Limits:</b><br>
-        <ul>
-        <li><b>Max files per request:</b> 1000</li>
-        <li><b>Default max file size:</b> 30MB (configurable via platform settings)</li>
-        <li>Use <code>GET /knowledgeBase/limits</code> to check current limits</li>
-        </ul>
-        <b>Supported File Types:</b><br>
-        Documents (PDF, DOCX, TXT), Images (PNG, JPG), Videos (MP4), and more.<br><br>
-        <b>File Metadata:</b><br>
-        Use <code>files_metadata</code> to provide additional info like file paths and last modified timestamps.<br><br>
-        <b>Versioning:</b><br>
-        Set <code>isVersioned: true</code> to enable version tracking for uploaded files.
-      operationId: uploadRecordsToKB
+        Upload one or more files to a knowledge base root or to a specific folder.
+
+        **Overview**
+
+        Batch upload multiple files in a single request. Each file becomes a new record with automatic content indexing.
+        Omit the `folderId` query parameter to upload to the KB root; include it to upload into that folder.
+
+        **Upload Limits**
+
+        - **Max files per request:** 1000
+        - **Default max file size:** 30MB (configurable via platform settings)
+        - Use `GET /knowledgeBase/limits` to check current limits
+
+        **Supported File Types**
+
+        Documents (PDF, DOCX, DOC, XLS, XLSX, PPT, PPTX, TXT, CSV, MD), Images (PNG, JPG, JPEG, SVG, WebP), Web (HTML, HTM), and Google Workspace formats.
+
+        **File Metadata**
+
+        Use `files_metadata` to provide additional info like file paths and last modified timestamps.
+
+        **Versioning**
+
+        Set `isVersioned: true` to enable version tracking for uploaded files.
+
+        **Streaming response**
+
+        This endpoint responds with `Content-Type: text/event-stream`.
+        The upload and its per-file progress are a single request: the body streams
+        a `file:succeeded` or `file:failed` event per file
+        (including files rejected up front for size/type), followed by a final
+        `done` summary, then closes. See the
+        `UploadStreamSSEEvent` schema for the event/payload contract.
+      operationId: uploadRecords
       security:
         - bearerAuth: []
         - oauth2: [kb:upload]
@@ -20212,6 +20879,12 @@ paths:
           in: path
           required: true
           description: Knowledge base ID
+          schema:
+            type: string
+        - name: folderId
+          in: query
+          required: false
+          description: Target folder ID. Omit to upload to the KB root.
           schema:
             type: string
       requestBody:
@@ -20244,11 +20917,14 @@ paths:
                 - files
       responses:
         '200':
-          description: Files uploaded successfully
+          description: |
+            SSE stream (`text/event-stream`) of per-file upload outcomes. The
+            stream emits `file:succeeded` / `file:failed` per file and a final
+            `done` summary, then closes. See `UploadStreamSSEEvent`.
           content:
-            application/json:
+            text/event-stream:
               schema:
-                $ref: '#/components/schemas/UploadResult'
+                $ref: '#/components/schemas/UploadStreamSSEEvent'
         '400':
           description: Invalid request - Check file types and sizes
         '401':
@@ -20256,72 +20932,11 @@ paths:
         '403':
           description: Insufficient permissions (requires WRITER or higher)
         '404':
-          description: Knowledge base not found
+          description: Knowledge base or folder not found
         '413':
           description: File size exceeds maximum allowed
-        '500':
-          description: Failed to verify knowledge base access
-
-  /knowledgeBase/{kbId}/folder/{folderId}/upload:
-    post:
-      tags:
-        - Upload
-      summary: Upload files to folder
-      description: |
-        Upload files directly to a specific folder within a knowledge base.<br><br>
-        <b>Same as KB upload</b> but files are placed in the specified folder instead of KB root.
-      operationId: uploadRecordsToFolder
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:upload]
-      parameters:
-        - name: kbId
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: folderId
-          in: path
-          required: true
-          description: Target folder ID
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              properties:
-                files:
-                  type: array
-                  items:
-                    type: string
-                    format: binary
-                files_metadata:
-                  type: string
-                  description: JSON array with file metadata
-                isVersioned:
-                  type: boolean
-                  default: true
-              required:
-                - files
-      responses:
-        '200':
-          description: Files uploaded successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UploadResult'
-        '400':
-          description: Invalid request
-        '401':
-          description: Unauthorized
-        '403':
-          description: Insufficient permissions
-        '404':
-          description: Folder or knowledge base not found
+        '429':
+          description: Too many upload requests, or too many concurrent uploads for this user
         '500':
           description: Failed to verify knowledge base or folder access
 
@@ -24355,6 +24970,7 @@ paths:
                               default: MARKDOWN
                             confidence:
                               type: string
+                              nullable: true
                               description: |
                                 AI confidence in the answer. Present only on
                                 `bot_response` messages, and only when the
@@ -26372,11 +26988,10 @@ paths:
       description: |
         Retrieve agent details by its unique key.
 
-        **Observed gateway behavior (localhost integration tests):**
+        **Gateway not-found behavior:**
         Unknown `agentKey`, lookup after soft-delete, and other AI-backend failures
-        currently return **HTTP 500** with an `ErrorResponse` body (message often
-        mentions the agent or "not found"), not 404. The Python query service may
-        return 404 when called directly; the Node proxy surfaces 500 instead.
+        that return 404 from the Python query service are surfaced by the Node
+        gateway as **HTTP 404** with an `ErrorResponse` body.
       operationId: getAgent
       x-pipeshub-sdk: true
       security:
@@ -26418,11 +27033,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Agent not found, inaccessible, or previously deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Agent not found, post-delete lookup, permission or lookup failure, or other
-            AI-backend error forwarded by the gateway (observed for unknown key and GET
-            after delete on localhost).
+          description: Unexpected AI-backend or gateway failure.
           content:
             application/json:
               schema:
@@ -26514,11 +27132,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Agent not found or inaccessible.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            AI-backend or gateway failure. Returned for unknown `agentKey`,
-            permission errors, and other non-200 responses from the Python agent
-            service via the Node proxy.
+          description: Unexpected AI-backend or gateway failure.
           content:
             application/json:
               schema:
@@ -26542,11 +27163,9 @@ paths:
         **Warning:**
         All conversations with this agent will become inaccessible.
 
-        **Observed gateway behavior (localhost integration tests):**
+        **Gateway not-found behavior:**
         Unknown `agentKey`, deleting an already-deleted agent, and `GET /agents/{agentKey}`
-        after delete currently return **HTTP 500** with an `ErrorResponse` body (message
-        often mentions the agent or "not found"), not 404. The Python backend raises 404
-        for not-found when called directly; the Node proxy may surface 500 instead.
+        after delete return **HTTP 404** with an `ErrorResponse` body.
       operationId: deleteAgent
       x-pipeshub-sdk: true
       security:
@@ -26574,11 +27193,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Agent not found, inaccessible, or already deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: |
-            Agent not found, already deleted, permission or lookup failure, or other
-            backend error forwarded by the gateway (observed for unknown key, second
-            delete, and GET after delete on localhost).
+          description: Unexpected AI-backend or gateway failure.
           content:
             application/json:
               schema:

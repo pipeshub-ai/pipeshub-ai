@@ -127,7 +127,27 @@ export const extensionToMimeType: Record<string, string> = {
   py: 'text/x-python',
   java: 'text/x-java-source',
   c: 'text/x-c',
+  h: 'text/x-c',
   cpp: 'text/x-c++',
+  cc: 'text/x-c++',
+  cxx: 'text/x-c++',
+  hpp: 'text/x-c++',
+  hxx: 'text/x-c++',
+  cs: 'text/x-csharp',
+  jsx: 'application/javascript',
+  mjs: 'application/javascript',
+  cjs: 'application/javascript',
+  ts: 'application/typescript',
+  tsx: 'application/typescript',
+  go: 'text/x-go',
+  rs: 'text/x-rust',
+  rb: 'text/x-ruby',
+  swift: 'text/x-swift',
+  kt: 'text/x-kotlin',
+  kts: 'text/x-kotlin',
+  dart: 'application/dart',
+  sh: 'application/x-sh',
+  bash: 'application/x-sh',
   php: 'text/x-php',
   sql: 'application/sql',
   yaml: 'application/x-yaml',
@@ -183,6 +203,7 @@ export const extensionToMimeType: Record<string, string> = {
   numbers: 'application/x-iwork-numbers-sffnumbers',
   key: 'application/x-iwork-keynote-sffkey',
 };
+
 
 // Helper function to get mimetype
 export const getMimeType = (extension: string): string => {

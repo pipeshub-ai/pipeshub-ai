@@ -128,32 +128,16 @@ class ContentHandler(ToolResultHandler):
         return messages
 
     @staticmethod
-    def build_tool_instructions(has_sql_connector: bool = False) -> str:
-        instructions = """<tools>
-  <tool>
-  **YOU MUST USE the "fetch_full_record" tool to retrieve full record content when the provided blocks are not enough to fully answer the query.**
+    def build_tool_instructions(
+        has_sql_connector: bool = False,
+        has_jira_tickets_in_context: bool = False,
+    ) -> str:
+        from app.modules.qna.prompt_templates import render_fetch_full_record_tool_block
 
-  This is a critical tool. Do NOT skip it when you need more information. Calling this tool is ALWAYS better than giving an incomplete or uncertain answer.
-
-  **RULE: If the provided blocks are sufficient to fully answer the query, answer directly. Otherwise, you MUST call fetch_full_record BEFORE answering.**
-
-  **You MUST call fetch_full_record when ANY of these are true:**
-  1. The blocks contain only partial information — there are gaps or missing sections
-  2. The query asks for comprehensive, full, or complete details about a topic
-  3. You are not confident you can give a thorough answer from the blocks alone
-  4. The user asks about a specific document and you only have a few blocks from it
-  5. **DEFAULT BEHAVIOR: When in doubt, CALL THE TOOL. An incomplete answer is worse than making a tool call.**
-
-  **How to call fetch_full_record:**
-  - The Record ID for each record is shown in the `Record ID :` line at the top of each `<record>` section in the context above.
-  - Pass a LIST of those exact Record IDs: fetch_full_record(record_ids=["<Record ID from context>", ...])
-  - **CRITICAL: Use ONLY the exact Record IDs shown in the context above. Do NOT invent, guess, or use example IDs.**
-  - Include a reason explaining why you need the full records
-  - **CRITICAL: Pass ALL record IDs in a SINGLE call. Do NOT make multiple separate calls.**
-  - The tool returns the complete content of all requested records
-
-  **DO NOT answer with partial information when you could call fetch_full_record to get the full picture.**
-  </tool>"""
+        fetch_block = render_fetch_full_record_tool_block(has_jira_tickets_in_context)
+        instructions = f"""<tools>
+{fetch_block}
+"""
 
         if has_sql_connector:
             instructions += """

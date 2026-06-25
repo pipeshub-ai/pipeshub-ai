@@ -5,6 +5,10 @@ import { RedisConfig } from '../../../libs/types/redis.types';
 import { CrawlingJobData } from '../schema/interface';
 import { ConnectorsCrawlingService } from './connectors/connectors';
 import { ICrawlingTaskService } from './task/crawling_task_service';
+import {
+  runWithRequestContext,
+  newSystemRoot,
+} from '../../../libs/context/request-context';
 
 @injectable()
 export class CrawlingWorkerService {
@@ -41,6 +45,14 @@ export class CrawlingWorkerService {
   }
 
   private async processJob(job: Job<CrawlingJobData>): Promise<void> {
+    // Scheduled crawl tick — seed a fresh trace root.
+    return runWithRequestContext(
+      { rootId: newSystemRoot() },
+      () => this.processJobInContext(job),
+    );
+  }
+
+  private async processJobInContext(job: Job<CrawlingJobData>): Promise<void> {
     const {  orgId, userId, scheduleConfig, connector, connectorId } = job.data;
 
     this.logger.info('Processing crawling job', {

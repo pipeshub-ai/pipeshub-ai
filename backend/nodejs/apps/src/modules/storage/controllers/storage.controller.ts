@@ -231,7 +231,7 @@ export class StorageController {
       if (!orgId) {
         throw new BadRequestError('OrgId not found in AuthToken');
       }
-      if (hasExtension(documentName)) {
+      if (hasExtension(documentName, extension)) {
         throw new BadRequestError(
           'The name of the document cannot have extensions',
         );

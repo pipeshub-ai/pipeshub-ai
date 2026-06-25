@@ -2885,17 +2885,44 @@ class TestBatchUpdateNodes:
     async def test_no_updates(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = []
         result = await connected_provider.batch_update_nodes(
-            ["missing"], {"indexingStatus": "COMPLETED"}, "records"
+            [{"id": "missing", "indexingStatus": "COMPLETED"}], "records"
         )
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
+    async def test_partial_update_returns_false(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [
+            {"_key": "r1", "indexingStatus": "COMPLETED"},
+            None,
+        ]
         result = await connected_provider.batch_update_nodes(
-            ["r1"], {"status": "OK"}, "records"
+            [
+                {"id": "r1", "indexingStatus": "COMPLETED"},
+                {"id": "missing", "indexingStatus": "COMPLETED"},
+            ],
+            "records",
         )
         assert result is False
+        aql_query = connected_provider.http_client.execute_aql.call_args[0][0]
+        assert "ignoreErrors: true" in aql_query
+
+    @pytest.mark.asyncio
+    async def test_all_updates_succeed(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [
+            {"_key": "r1", "indexingStatus": "COMPLETED"},
+        ]
+        result = await connected_provider.batch_update_nodes(
+            [{"id": "r1", "indexingStatus": "COMPLETED"}], "records"
+        )
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_exception(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.batch_update_nodes(
+                [{"id": "r1", "status": "OK"}], "records"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -3910,7 +3937,7 @@ class TestUpdateQueuedDuplicatesStatus:
             [{"_key": "r2", "md5Checksum": "abc123"}],  # queued duplicate
         ]
         with patch.object(
-            connected_provider, "batch_upsert_nodes",
+            connected_provider, "batch_update_nodes",
             new_callable=AsyncMock, return_value=True
         ):
             result = await connected_provider.update_queued_duplicates_status(
@@ -3925,12 +3952,12 @@ class TestUpdateQueuedDuplicatesStatus:
             [{"_key": "r2", "md5Checksum": "abc123"}],
         ]
         with patch.object(
-            connected_provider, "batch_upsert_nodes",
+            connected_provider, "batch_update_nodes",
             new_callable=AsyncMock, return_value=True
-        ) as mock_upsert:
+        ) as mock_update:
             await connected_provider.update_queued_duplicates_status("r1", "EMPTY")
             # Verify extraction status is EMPTY
-            call_args = mock_upsert.call_args[0][0]
+            call_args = mock_update.call_args[0][0]
             assert call_args[0]["extractionStatus"] == "EMPTY"
 
     @pytest.mark.asyncio
@@ -11844,13 +11871,9 @@ class TestCheckRecordPermissionsExpanded:
 
 class TestBatchUpdateNodesExpanded:
     @pytest.mark.asyncio
-    async def test_empty_keys(self, connected_provider):
-        connected_provider.http_client.execute_aql.return_value = []
-        result = await connected_provider.batch_update_nodes(
-            [], {"status": "OK"}, "records"
-        )
-        # Empty keys may still execute query but return no updates
-        assert isinstance(result, bool)
+    async def test_empty_nodes(self, connected_provider):
+        result = await connected_provider.batch_update_nodes([], "records")
+        assert result is True
 
 
 # ---------------------------------------------------------------------------
@@ -12638,56 +12661,6 @@ class TestNormalizedNameVariantsLower:
     def test_unicode_variants(self, connected_provider):
         variants = connected_provider._normalized_name_variants_lower("caf\u00e9")
         assert len(variants) == 2
-
-
-# ---------------------------------------------------------------------------
-# _check_name_conflict_in_parent
-# ---------------------------------------------------------------------------
-
-
-class TestCheckNameConflictInParent:
-    @pytest.mark.asyncio
-    async def test_no_conflict(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[])
-        result = await connected_provider._check_name_conflict_in_parent(
-            "kb1", None, "New Folder"
-        )
-        assert result["has_conflict"] is False
-        assert result["conflicts"] == []
-
-    @pytest.mark.asyncio
-    async def test_has_conflict(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(
-            return_value=[{"id": "f1", "name": "New Folder", "type": "folder"}]
-        )
-        result = await connected_provider._check_name_conflict_in_parent(
-            "kb1", None, "New Folder"
-        )
-        assert result["has_conflict"] is True
-
-    @pytest.mark.asyncio
-    async def test_with_mime_type(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[])
-        result = await connected_provider._check_name_conflict_in_parent(
-            "kb1", "parent1", "file.pdf", mime_type="application/pdf"
-        )
-        assert result["has_conflict"] is False
-
-    @pytest.mark.asyncio
-    async def test_with_parent_folder(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[])
-        result = await connected_provider._check_name_conflict_in_parent(
-            "kb1", "parentfolder1", "My Folder"
-        )
-        assert result["has_conflict"] is False
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(side_effect=Exception("err"))
-        result = await connected_provider._check_name_conflict_in_parent(
-            "kb1", None, "Folder"
-        )
-        assert result["has_conflict"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -15712,7 +15685,7 @@ class TestCreateFilesInFolder:
 class TestCreateRecords:
     @pytest.mark.asyncio
     async def test_root_files(self, connected_provider):
-        connected_provider._create_files_in_kb_root = AsyncMock(return_value=[{"record": {}}])
+        connected_provider._create_files_in_kb_root = AsyncMock(return_value=([{"record": {}}], []))
         folder_analysis = {
             "file_destinations": {0: {"type": "root"}},
             "parent_folder_id": None,
@@ -15721,10 +15694,11 @@ class TestCreateRecords:
             "kb1", [{"filePath": "file.pdf"}], folder_analysis, "txn1", 1000
         )
         assert result["total_created"] == 1
+        assert result["skipped_files"] == []
 
     @pytest.mark.asyncio
     async def test_folder_files(self, connected_provider):
-        connected_provider._create_files_in_folder = AsyncMock(return_value=[{"record": {}}])
+        connected_provider._create_files_in_folder = AsyncMock(return_value=([{"record": {}}], []))
         folder_analysis = {
             "file_destinations": {0: {"type": "folder", "folder_id": "f1"}},
             "parent_folder_id": None,
@@ -15747,7 +15721,7 @@ class TestCreateRecords:
 
     @pytest.mark.asyncio
     async def test_parent_folder_files(self, connected_provider):
-        connected_provider._create_files_in_folder = AsyncMock(return_value=[{"record": {}}])
+        connected_provider._create_files_in_folder = AsyncMock(return_value=([{"record": {}}], []))
         folder_analysis = {
             "file_destinations": {0: {"type": "root"}},
             "parent_folder_id": "parent1",
@@ -15894,23 +15868,45 @@ class TestCreateFilesBatch:
     @pytest.mark.asyncio
     async def test_empty_files(self, connected_provider):
         result = await connected_provider._create_files_batch("kb1", [], None, "txn1", 1000)
-        assert result == []
+        assert result == ([], [])
 
     @pytest.mark.asyncio
     async def test_conflict_skipped(self, connected_provider):
-        connected_provider._check_name_conflict_in_parent = AsyncMock(
-            return_value={"has_conflict": True, "conflicts": [{"name": "file.pdf"}]}
+        # Simulate an existing file in the DB with the same name+mime.
+        connected_provider._fetch_existing_file_names_in_parent = AsyncMock(
+            return_value={("file.pdf", "")}
         )
-        result = await connected_provider._create_files_batch(
-            "kb1", [{"fileRecord": {"name": "file.pdf"}, "record": {"_key": "r1", "recordName": "file.pdf"}}],
+        created, skipped = await connected_provider._create_files_batch(
+            "kb1", [{"filePath": "file.pdf", "fileRecord": {"name": "file.pdf"}, "record": {"_key": "r1", "recordName": "file.pdf"}}],
             None, "txn1", 1000
         )
-        assert result == []
+        assert created == []
+        assert len(skipped) == 1
+        assert skipped[0]["reason"] == "DUPLICATE_NAME"
+        assert skipped[0]["filePath"] == "file.pdf"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_within_batch_skipped(self, connected_provider):
+        # No DB conflict, but two files in the same batch share a name+mime ->
+        # the second is skipped as an intra-batch duplicate.
+        connected_provider._fetch_existing_file_names_in_parent = AsyncMock(
+            return_value=set()
+        )
+        connected_provider.batch_upsert_nodes = AsyncMock()
+        connected_provider.batch_create_edges = AsyncMock()
+        files = [
+            {"filePath": "a/test.pdf", "fileRecord": {"_key": "f1", "name": "test.pdf", "mimeType": "application/pdf", "isFile": True}, "record": {"_key": "r1", "recordName": "test.pdf"}},
+            {"filePath": "b/test.pdf", "fileRecord": {"_key": "f2", "name": "test.pdf", "mimeType": "application/pdf", "isFile": True}, "record": {"_key": "r2", "recordName": "test.pdf"}},
+        ]
+        created, skipped = await connected_provider._create_files_batch("kb1", files, None, "txn1", 1000)
+        assert len(created) == 1
+        assert len(skipped) == 1
+        assert skipped[0]["reason"] == "DUPLICATE_NAME"
 
     @pytest.mark.asyncio
     async def test_success(self, connected_provider):
-        connected_provider._check_name_conflict_in_parent = AsyncMock(
-            return_value={"has_conflict": False, "conflicts": []}
+        connected_provider._fetch_existing_file_names_in_parent = AsyncMock(
+            return_value=set()
         )
         connected_provider.batch_upsert_nodes = AsyncMock()
         connected_provider.batch_create_edges = AsyncMock()
@@ -15918,13 +15914,14 @@ class TestCreateFilesBatch:
             "fileRecord": {"_key": "f1", "name": "test.pdf", "mimeType": "application/pdf", "isFile": True},
             "record": {"_key": "r1", "recordName": "test.pdf", "orgId": "o1"},
         }]
-        result = await connected_provider._create_files_batch("kb1", files, None, "txn1", 1000)
-        assert len(result) == 1
+        created, skipped = await connected_provider._create_files_batch("kb1", files, None, "txn1", 1000)
+        assert len(created) == 1
+        assert skipped == []
 
     @pytest.mark.asyncio
     async def test_with_parent_folder(self, connected_provider):
-        connected_provider._check_name_conflict_in_parent = AsyncMock(
-            return_value={"has_conflict": False, "conflicts": []}
+        connected_provider._fetch_existing_file_names_in_parent = AsyncMock(
+            return_value=set()
         )
         connected_provider.batch_upsert_nodes = AsyncMock()
         connected_provider.batch_create_edges = AsyncMock()
@@ -15932,8 +15929,8 @@ class TestCreateFilesBatch:
             "fileRecord": {"_key": "f1", "name": "test.pdf", "mimeType": "application/pdf", "isFile": True},
             "record": {"_key": "r1", "recordName": "test.pdf", "orgId": "o1"},
         }]
-        result = await connected_provider._create_files_batch("kb1", files, "parent1", "txn1", 1000)
-        assert len(result) == 1
+        created, skipped = await connected_provider._create_files_batch("kb1", files, "parent1", "txn1", 1000)
+        assert len(created) == 1
 
 
 # ---------------------------------------------------------------------------

@@ -1,3 +1,4 @@
+﻿import difflib
 import json
 import logging
 import re
@@ -43,6 +44,14 @@ class CreateIssueInput(BaseModel):
     labels: list[str] | None = Field(default=None, description="List of labels")
     components: list[str] | None = Field(default=None, description="List of component names")
     parent_key: str | None = Field(default=None, description="Parent issue key")
+    custom_fields: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Required or optional project-specific fields as {field_id: value}. "
+            "Call get_create_issue_fields first to discover required field IDs and value formats. "
+            "Example: {'customfield_10016': 5, 'duedate': '2026-06-30'}"
+        )
+    )
 
     @model_validator(mode='before')
     @classmethod
@@ -173,6 +182,7 @@ class UpdateIssueInput(BaseModel):
     issue_key: str = Field(description="Issue key (e.g., 'PA-123')")
     summary: Optional[str] = Field(default=None, description="Issue summary")
     description: Optional[str] = Field(default=None, description="Issue description")
+    issue_type_name: Optional[str] = Field(default=None, description="New issue type (e.g., 'Story', 'Bug') — call get_create_issue_fields first to discover required fields for the target type")
     assignee_account_id: Optional[str] = Field(default=None, description="Assignee account ID")
     assignee_query: Optional[str] = Field(default=None, description="Name or email to resolve assignee")
     reporter_account_id: Optional[str] = Field(default=None, description="Reporter account ID")
@@ -181,6 +191,15 @@ class UpdateIssueInput(BaseModel):
     labels: list[str] | None = Field(default=None, description="List of labels")
     components: list[str] | None = Field(default=None, description="List of component names")
     status: str | None = Field(default=None, description="Issue status (e.g., 'In Progress', 'Done')")
+    custom_fields: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Required or optional fields as {field_id: value}. "
+            "Needed when changing issue type — call get_create_issue_fields first to discover "
+            "which fields are required for the target type. "
+            "Example: {'customfield_10016': 5, 'duedate': '2026-06-30'}"
+        )
+    )
 
     @model_validator(mode='before')
     @classmethod
@@ -197,44 +216,54 @@ class UpdateIssueInput(BaseModel):
                     if key != 'issue_key':
                         normalized.pop(key, None)
 
+            # Fields that map directly to top-level schema fields
+            _top_level = [
+                'assignee_account_id', 'assignee_query', 'reporter_account_id',
+                'reporter_query', 'priority_name', 'labels', 'components',
+                'status', 'issue_type_name', 'custom_fields',
+            ]
+
+            # Handle issue_type_name variations
+            for key in ['issuetype', 'issue_type', 'issueType']:
+                if key in normalized:
+                    if 'issue_type_name' not in normalized:
+                        val = normalized[key]
+                        if isinstance(val, dict):
+                            normalized['issue_type_name'] = val.get('name', str(val))
+                        else:
+                            normalized['issue_type_name'] = str(val)
+                    normalized.pop(key, None)
+
             # Handle direct 'fields' key (LLM sometimes sends this directly, not nested in update/updateData)
             if 'fields' in normalized and isinstance(normalized['fields'], dict):
                 fields = normalized['fields']
-                # Map common field names from fields dict to top-level
                 if 'summary' in fields:
                     normalized['summary'] = fields['summary']
                 if 'description' in fields:
                     normalized['description'] = fields['description']
-                # Copy other fields
-                for field in ['assignee_account_id', 'assignee_query', 'reporter_account_id', 'reporter_query', 'priority_name', 'labels', 'components', 'status']:
+                for field in _top_level:
                     if field in fields:
                         normalized[field] = fields[field]
-                # Remove the fields wrapper after extraction
                 normalized.pop('fields', None)
 
             # Handle update/updateData wrapper
             update_wrapper = normalized.get('update') or normalized.get('updateData')
             if update_wrapper and isinstance(update_wrapper, dict):
-                # Extract fields from nested structure
                 if 'fields' in update_wrapper:
                     fields = update_wrapper['fields']
                     if isinstance(fields, dict):
-                        # Map common field names
                         if 'summary' in fields:
                             normalized['summary'] = fields['summary']
                         if 'description' in fields:
                             normalized['description'] = fields['description']
-                        # Copy other fields
-                        for field in ['assignee_account_id', 'assignee_query', 'reporter_account_id', 'reporter_query', 'priority_name', 'labels', 'components', 'status']:
+                        for field in _top_level:
                             if field in fields:
                                 normalized[field] = fields[field]
-                # Extract issue_key from update wrapper if not already set
                 if 'issue_key' not in normalized:
                     for key in ['issueId', 'issueIdOrKey', 'issue_id', 'issue_key', 'issueKey']:
                         if key in update_wrapper:
                             normalized['issue_key'] = update_wrapper[key]
                             break
-                # Remove wrapper keys
                 normalized.pop('update', None)
                 normalized.pop('updateData', None)
 
@@ -278,6 +307,37 @@ class ConvertTextToAdfInput(BaseModel):
 class GetCommentsInput(BaseModel):
     """Schema for getting a specific JIRA comment"""
     issue_key: str = Field(description="Issue key (e.g., 'PA-123')")
+
+
+class GetCreateIssueFieldsInput(BaseModel):
+    """Schema for fetching create-issue field metadata for a project and issue type"""
+    project_key: str = Field(description="Project key (e.g., 'PA')")
+    issue_type_name: str = Field(description="Issue type name (e.g., 'Task', 'Bug', 'Story')")
+
+    @model_validator(mode='before')
+    @classmethod
+    def normalize(cls, data: dict) -> dict:
+        if isinstance(data, dict):
+            normalized = dict(data)
+            for key in ['project', 'projectKey', 'project_key']:
+                if key in normalized:
+                    if 'project_key' not in normalized:
+                        normalized['project_key'] = normalized[key]
+                    if key != 'project_key':
+                        normalized.pop(key, None)
+            for key in ['issueType', 'issue_type', 'issuetype']:
+                if key in normalized:
+                    if 'issue_type_name' not in normalized:
+                        normalized['issue_type_name'] = normalized[key]
+                    if key != 'issue_type_name':
+                        normalized.pop(key, None)
+            return normalized
+        return data
+
+    class Config:
+        populate_by_name = True
+        extra = 'ignore'
+
 
 # Register JIRA toolset
 @ToolsetBuilder("Jira")\
@@ -376,6 +436,7 @@ class Jira:
         self.client = JiraDataSource(client)
         self._site_url = None  # Cache for site URL
         self._field_schema_cache: Optional[dict[str, dict[str, str]]] = None  # Cache for field schema mapping
+        self._create_fields_cache: dict[str, list[dict[str, Any]]] = {}  # Cache for create-field metadata per project+issue type
 
     def _handle_response(
         self,
@@ -771,6 +832,156 @@ class Jira:
             self._field_schema_cache = {}
             return self._field_schema_cache
 
+    def _parse_allowed_values(self, raw: list[Any]) -> list[dict[str, Any]]:
+        """Normalise the allowedValues list from a createmeta field response."""
+        result: list[dict[str, Any]] = []
+        for av in raw[:20]:
+            if not isinstance(av, dict):
+                continue
+            entry: dict[str, Any] = {}
+            if av.get("id"):
+                entry["id"] = str(av["id"])
+            label = av.get("name") or av.get("value")
+            if label:
+                entry["name"] = str(label)
+            if entry:
+                result.append(entry)
+        return result
+
+    async def _fetch_create_fields(
+        self,
+        project_key: str,
+        issue_type_name: str,
+    ) -> tuple[list[dict[str, Any]], Optional[str]]:
+        """Fetch and cache create-field metadata for a specific project + issue type.
+
+        Two targeted calls — no instance-wide fetches:
+
+        1. GET /rest/api/3/issue/createmeta/{project}/issuetypes
+           Resolves the issue type name to its ID and collects available names for
+           error messages, all in a single request.
+
+        2. GET /rest/api/3/issue/createmeta/{project}/issuetypes/{id}  (paginated)
+           Returns all fields for this exact project+issue type combination with
+           accurate required/optional flags and allowed values.  Pagination is driven
+           by the 'total' field so every field is fetched regardless of page size.
+
+        Returns:
+            (fields, error_message) — error_message is None on success.
+        """
+        cache_key = f"{project_key.upper()}:{issue_type_name.lower()}"
+        if cache_key in self._create_fields_cache:
+            return self._create_fields_cache[cache_key], None
+
+        # Step 1: resolve issue type name -> ID for this project.
+        # Tries exact case-insensitive match first, then fuzzy fallback so that
+        # LLM-supplied names like "story", "user-story", or "bug report" map to
+        # the correct Jira issue type without requiring exact spelling.
+        issue_type_id: Optional[str] = None
+        available_types: list[str] = []
+        issue_types_raw: list[dict[str, Any]] = []
+        try:
+            r = await self.client.get_create_issue_meta_issue_types(projectIdOrKey=project_key)
+            if r.status == HttpStatusCode.SUCCESS.value:
+                issue_types_raw = r.json().get("issueTypes", [])
+                for it in issue_types_raw:
+                    name = it.get("name", "")
+                    if name:
+                        available_types.append(name)
+                    if name.lower() == issue_type_name.lower():
+                        issue_type_id = it.get("id")
+        except Exception as e:
+            logger.warning(f"Error fetching issue types for {project_key}: {e}")
+
+        # Fuzzy fallback: LLM may pass an approximate name (e.g. "story" for "User Story").
+        # difflib.get_close_matches returns the best match above the cutoff threshold.
+        if not issue_type_id and available_types:
+            fuzzy = difflib.get_close_matches(
+                issue_type_name.lower(),
+                [n.lower() for n in available_types],
+                n=1,
+                cutoff=0.6,
+            )
+            if fuzzy:
+                for it in issue_types_raw:
+                    if it.get("name", "").lower() == fuzzy[0]:
+                        issue_type_id = it.get("id")
+                        logger.info(
+                            f"Fuzzy matched issue type '{issue_type_name}' -> "
+                            f"'{it.get('name')}' in project '{project_key}'"
+                        )
+                        break
+
+        if not issue_type_id:
+            msg = f"Issue type '{issue_type_name}' not found in project '{project_key}'."
+            if available_types:
+                msg += f" Available: {', '.join(available_types)}"
+            return [], msg
+
+        # Step 2: paginate through all fields for this project+issue type.
+        # The 'total' field in each response gives the authoritative count so we stop
+        # exactly when all fields have been fetched — no extra request needed.
+        fields_by_id: dict[str, dict[str, Any]] = {}
+        start_at = 0
+        page_size = 50
+
+        while True:
+            try:
+                response = await self.client.get_create_issue_meta_issue_type_id(
+                    projectIdOrKey=project_key,
+                    issueTypeId=issue_type_id,
+                    startAt=start_at,
+                    maxResults=page_size,
+                )
+            except Exception as e:
+                logger.error(f"createmeta fields error for {project_key}/{issue_type_name}: {e}")
+                break
+
+            if response.status != HttpStatusCode.SUCCESS.value:
+                logger.warning(
+                    f"createmeta HTTP {response.status} for {project_key}/{issue_type_name}"
+                )
+                break
+
+            try:
+                data = response.json()
+            except Exception:
+                break
+
+            page_fields = data.get("fields", [])
+            if not isinstance(page_fields, list):
+                break
+
+            for f in page_fields:
+                field_id = f.get("fieldId") or f.get("key") or f.get("id")
+                if not field_id:
+                    continue
+                meta_schema = f.get("schema") or {}
+                fields_by_id[field_id] = {
+                    "field_id": field_id,
+                    "name": f.get("name", field_id),
+                    "required": bool(f.get("required", False)),
+                    "schema_type": meta_schema.get("type", "string"),
+                    "allowed_values": self._parse_allowed_values(f.get("allowedValues") or []),
+                    "has_default_value": bool(f.get("hasDefaultValue", False)),
+                    "operations": f.get("operations") or [],
+                }
+
+            fetched = start_at + len(page_fields)
+            total = data.get("total", 0)
+            if not page_fields or fetched >= total:
+                break
+            start_at = fetched
+
+        fields = list(fields_by_id.values())
+        logger.info(
+            f"create fields for {project_key}/{issue_type_name}: "
+            f"{sum(1 for f in fields if f['required'])} required, "
+            f"{sum(1 for f in fields if not f['required'])} optional "
+            f"({len(fields)} total)"
+        )
+        self._create_fields_cache[cache_key] = fields
+        return fields, None
     def _clean_issue_fields(self, issue: dict[str, Any]) -> dict[str, Any]:
         """Clean issue fields by removing unnecessary data and simplifying nested structures.
 
@@ -1261,25 +1472,198 @@ class Jira:
 
     @tool(
         app_name="jira",
-        tool_name="create_issue",
-        description="Create a new issue in JIRA",
-        args_schema=CreateIssueInput,  # NEW: Pydantic schema
-        returns="Created issue details",
+        tool_name="get_create_issue_fields",
+        description="Get all fields required to create a Jira issue for a project and issue type.",
+        args_schema=GetCreateIssueFieldsInput,
+        returns="Required and optional fields with their IDs, types, value formats, and allowed values",
+        llm_description=(
+            "Returns all fields (required and optional) for a specific issue type in a Jira project, "
+            "including field IDs, types, allowed values, and whether each field has a default value.\n"
+            "\n"
+            "Call this before create_issue and before update_issue when changing the issue type. "
+            "Projects often have required custom fields (Story Points, Sprint, Due Date, etc.) "
+            "that are not standard parameters — submitting without them causes HTTP 400 failures.\n"
+            "\n"
+            "For every required field where has_default_value=false: check whether the user already "
+            "stated a value in the conversation. If they did not, ask them before proceeding. "
+            "Never assume or invent values for required fields — guessing creates incorrect data in Jira.\n"
+            "\n"
+            "Standard fields (summary, description, etc) "
+            "are passed as named parameters to create_issue or update_issue. All other fields — "
+            "especially required custom fields — are passed via custom_fields using the field_id as key "
+            "and value_format from this response as a guide."
+        ),
         when_to_use=[
-            "User wants to create a Jira ticket/issue",
-            "User mentions 'Jira' + wants to create ticket",
-            "User asks to create a new issue"
+            "ALWAYS before calling create_issue — mandatory pre-step",
+            "ALWAYS before calling update_issue when changing issue type or other fields",
+            "User wants to create a Jira ticket in any project",
+            "User wants to move/convert an issue to a different issue type or other fields",
+            "Need to know what fields are required for a project and issue type",
         ],
         when_not_to_use=[
+            "Already called this for the same project+issue type in this session and fields are known",
+            "User wants to search, update, or comment on issues",
+            "No Jira mention",
+        ],
+        primary_intent=ToolIntent.UTILITY,
+        typical_queries=[
+            "Create a Jira ticket",
+            "Create a bug report in project PA",
+            "Open a new issue in Jira",
+        ],
+        category=ToolCategory.PROJECT_MANAGEMENT
+    )
+    async def get_create_issue_fields(
+        self, project_key: str, issue_type_name: str
+    ) -> tuple[bool, str]:
+        """Fetch field metadata for creating an issue — mandatory pre-step before create_issue."""
+        try:
+            fields, error_msg = await self._fetch_create_fields(project_key, issue_type_name)
+
+            if error_msg:
+                return False, json.dumps({
+                    "error": error_msg,
+                    "guidance": (
+                        "Verify the project key and issue type name. "
+                        "Use get_projects to list available projects and get_project_metadata "
+                        "to list available issue types for a project."
+                    ),
+                })
+
+            # Fields always handled internally by create_issue — never surface to the LLM
+            internally_managed = {"issuetype", "project"}
+
+            # Standard fields exposed through named parameters, not custom_fields
+            standard_field_ids = {
+                "summary", "description", "assignee", "reporter", "priority",
+                "labels", "components", "issuetype", "project", "parent",
+            }
+
+            # Fields that add noise without being actionable by the LLM
+            always_skip = {
+                "attachment", "worklog", "issuelinks", "subtasks", "watches", "votes",
+            }
+
+            # Required fields the LLM must fill:
+            # - exclude internally managed ones (issuetype, project — always set by create_issue)
+            # - exclude reporter when Jira will auto-fill it (has_default_value=True means current
+            #   user is the default, which create_issue does not override anyway)
+            required_fields = [
+                f for f in fields
+                if f["required"]
+                and f["field_id"] not in internally_managed
+                and f["field_id"] not in always_skip
+                and not (f["field_id"] == "reporter" and f.get("has_default_value"))
+            ]
+            optional_fields = [
+                f for f in fields
+                if not f["required"]
+                and f["field_id"] not in internally_managed
+                and f["field_id"] not in always_skip
+            ]
+
+            def format_hint(f: dict[str, Any]) -> str:
+                t = f["schema_type"]
+                avs = f.get("allowed_values") or []
+                if avs:
+                    first_id = avs[0].get("id", "") if avs else ""
+                    return (
+                        f"object with 'id' from the allowed_values list, "
+                        f"e.g. {{'id': '{first_id}'}}"
+                    )
+                if t == "number":
+                    return "numeric value, e.g. 5"
+                if t == "date":
+                    return "ISO date string, e.g. '2026-06-30'"
+                if t == "datetime":
+                    return "ISO datetime string, e.g. '2026-06-30T10:00:00.000+0000'"
+                if t == "array":
+                    return (
+                        "list — e.g. [{'id': '...'}] for option arrays "
+                        "or ['tag1', 'tag2'] for string arrays"
+                    )
+                if t == "user":
+                    return "use assignee_account_id named parameter; or {'accountId': '<id>'}"
+                return "string value"
+
+            def clean_field(f: dict[str, Any]) -> dict[str, Any]:
+                out: dict[str, Any] = {
+                    "field_id": f["field_id"],
+                    "name": f["name"],
+                    "schema_type": f["schema_type"],
+                    "value_format": format_hint(f),
+                    "pass_via": (
+                        "named_parameter"
+                        if f["field_id"] in standard_field_ids
+                        else "custom_fields"
+                    ),
+                }
+                avs = f.get("allowed_values") or []
+                if avs:
+                    out["allowed_values"] = avs
+                if f.get("has_default_value"):
+                    out["has_default_value"] = True
+                    out["note"] = "Jira will auto-fill this field if not provided"
+                return out
+
+            optional_out = [clean_field(f) for f in optional_fields]
+
+            return True, json.dumps({
+                "message": "Field metadata fetched successfully",
+                "project_key": project_key,
+                "issue_type_name": issue_type_name,
+                "instructions": (
+                    "Pass standard fields (summary, description, assignee_account_id, priority_name, "
+                    "labels, components, parent_key) as named parameters to create_issue. "
+                    "Pass ALL other fields — especially required ones — via the custom_fields dict "
+                    "using the field_id as the key and value_format as a guide for the value."
+                ),
+                "required_fields": [clean_field(f) for f in required_fields],
+                "optional_fields": optional_out,
+            })
+
+        except Exception as e:
+            logger.error(f"Error getting create issue fields: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="jira",
+        tool_name="create_issue",
+        description="Create a new issue in JIRA.",
+        args_schema=CreateIssueInput,
+        returns="Created issue details",
+        llm_description=(
+            "Create a new JIRA issue. Call get_create_issue_fields first to discover "
+            "required fields for the target project and issue type — projects often have mandatory "
+            "custom fields (Story Points, Sprint, Due Date, etc.) that are not standard parameters, "
+            "and omitting them causes HTTP 400 failures.\n"
+            "\n"
+            "For every required field where has_default_value=false: check whether the user stated "
+            "a value in the conversation. If not, ask them before calling this tool. "
+            "Never assume or guess required field values.\n"
+            "\n"
+            "Pass standard fields (summary, description, assignee, priority, labels, components, "
+            "parent_key) as named parameters. Pass all other fields via custom_fields using field IDs "
+            "and value formats from get_create_issue_fields.\n"
+            "\n"
+            "Do not use this tool when the user wants to modify an existing issue — use update_issue instead."
+        ),
+        when_to_use=[
+            "User explicitly wants to create a brand-new Jira issue",
+            "After calling get_create_issue_fields and collecting all required field values from the user",
+        ],
+        when_not_to_use=[
+            "User says 'update this to X', 'change type to X', 'convert to X' — use update_issue instead",
+            "get_create_issue_fields has NOT been called yet for this project+issue type",
             "User wants to search issues (use search_issues)",
             "User wants info ABOUT Jira (use retrieval)",
-            "No Jira mention"
+            "No Jira mention",
         ],
         primary_intent=ToolIntent.ACTION,
         typical_queries=[
             "Create a Jira ticket",
             "Open a new issue in Jira",
-            "Create a bug report"
+            "Create a bug report",
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
@@ -1294,7 +1678,8 @@ class Jira:
         priority_name: str | None = None,
         labels: list[str] | None = None,
         components: list[str] | None = None,
-        parent_key: str | None = None
+        parent_key: str | None = None,
+        custom_fields: dict[str, Any] | None = None,
     ) -> tuple[bool, str]:
         """Create a new JIRA issue"""
         try:
@@ -1329,6 +1714,14 @@ class Jira:
 
             if parent_key:
                 fields["parent"] = {"key": parent_key}
+
+            # Merge project-specific required/optional custom fields
+            if custom_fields:
+                for field_id, field_value in custom_fields.items():
+                    if field_id not in fields:
+                        fields[field_id] = field_value
+                    else:
+                        logger.debug(f"custom_fields skipped override of standard field: {field_id}")
 
             # Validate fields
             is_valid, validation_msg = self._validate_issue_fields(fields)
@@ -1386,6 +1779,34 @@ class Jira:
                     "message": "Issue created successfully",
                     "data": cleaned_data
                 })
+            elif response.status == HttpStatusCode.BAD_REQUEST.value:
+                # Translate field IDs to human-readable names and guide LLM to retry correctly
+                try:
+                    error_body = response.json()
+                    field_errors = error_body.get("errors", {})
+                    if field_errors:
+                        field_schema = await self._fetch_and_cache_field_schema()
+                        readable_errors: dict[str, str] = {}
+                        for fid, emsg in field_errors.items():
+                            fname = field_schema.get(fid, {}).get("name", fid)
+                            readable_errors[f"{fname} ({fid})"] = emsg
+                        return False, json.dumps({
+                            "error": "Issue creation failed — required fields are missing or have invalid values",
+                            "field_errors": readable_errors,
+                            "guidance": (
+                                f"Call get_create_issue_fields(project_key='{project_key}', "
+                                f"issue_type_name='{issue_type_name}') to see all required fields "
+                                "and their expected value formats, then retry create_issue with the "
+                                "missing fields supplied via the custom_fields parameter."
+                            ),
+                        })
+                except Exception:
+                    pass
+                return self._handle_response(
+                    response,
+                    "Issue created successfully",
+                    include_guidance=True
+                )
             else:
                 return self._handle_response(
                     response,
@@ -1400,28 +1821,49 @@ class Jira:
     @tool(
         app_name="jira",
         tool_name="update_issue",
-        description="Update an existing JIRA issue. Can update summary, description, assignee, reporter, priority, labels, components, and status.",
-        args_schema=UpdateIssueInput,  # NEW: Pydantic schema
+        description=(
+            "Update an existing JIRA issue."
+        ),
+        llm_description=(
+            "Modify one or more fields on an existing Jira issue. Supports any combination of: "
+            "summary, description, issue type, assignee, reporter, priority, labels, components, "
+            "status, and project-specific custom fields.\n"
+            "\n"
+            "issue_type_name changes the type of the issue (e.g. Bug → Story). "
+            "The target type may have required custom fields — use get_create_issue_fields to discover "
+            "them, collect any missing values from the user, then pass them via custom_fields. "
+            "Do not assume values for required fields.\n"
+            "\n"
+            "custom_fields accepts any field the user explicitly provides that is not covered by "
+            "the named parameters. Use get_create_issue_fields for the correct field IDs and value formats.\n"
+            "\n"
+            "Status changes are resolved through Jira workflow transitions automatically.\n"
+            "\n"
+            "Always include at least one field to change alongside issue_key."
+        ),
+        args_schema=UpdateIssueInput,
         returns="Updated issue details",
         when_to_use=[
             "User wants to update/edit a Jira ticket",
             "User mentions 'Jira' + wants to modify issue",
             "User asks to change issue details/status",
-            "User wants to change the reporter or assignee of an issue"
+            "User wants to change the reporter or assignee of an issue",
+            "User wants to move/convert an issue to a different issue type",
         ],
         when_not_to_use=[
             "User wants to create issue (use create_issue)",
             "User wants to search issues (use search_issues)",
             "User wants info ABOUT Jira (use retrieval)",
-            "No Jira mention"
+            "No Jira mention",
         ],
         primary_intent=ToolIntent.ACTION,
         typical_queries=[
             "Update Jira ticket PA-123",
             "Change issue status to Done",
-            "Edit Jira issue",
+            "Convert PA-123 from Task to Story",
+            "Update this to a Story",
+            "Move this issue to Bug type",
             "Make X the reporter of PA-123",
-            "Set reporter to John"
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
@@ -1430,6 +1872,7 @@ class Jira:
         issue_key: str,
         summary: Optional[str] = None,
         description: Optional[str] = None,
+        issue_type_name: Optional[str] = None,
         assignee_account_id: Optional[str] = None,
         assignee_query: Optional[str] = None,
         reporter_account_id: Optional[str] = None,
@@ -1437,22 +1880,31 @@ class Jira:
         priority_name: str | None = None,
         labels: list[str] | None = None,
         components: list[str] | None = None,
-        status: str | None = None
+        status: str | None = None,
+        custom_fields: dict[str, Any] | None = None,
     ) -> tuple[bool, str]:
         """Update an existing JIRA issue"""
         try:
-            # Build fields dictionary with only provided values
+            # Fetch the issue first to get the authoritative project key from the data
+            project_key = ""
+            try:
+                existing = await self.client.get_issue(issueIdOrKey=issue_key)
+                if existing.status == HttpStatusCode.SUCCESS.value:
+                    project_key = (
+                        existing.json().get("fields", {}).get("project", {}).get("key", "")
+                    )
+            except Exception as e:
+                logger.warning(f"Could not fetch issue {issue_key} for project key: {e}")
+
             fields: dict[str, object] = {}
 
             if summary:
                 fields["summary"] = summary
 
             if description:
-                # Convert plain text description to ADF format if it's a string
                 if isinstance(description, str):
                     fields["description"] = self._convert_text_to_adf(description)
                 elif isinstance(description, dict):
-                    # Already in ADF format
                     fields["description"] = description
                 else:
                     return False, json.dumps({
@@ -1460,33 +1912,61 @@ class Jira:
                         "guidance": "Provide description as plain text (string) or ADF format (dict)"
                     })
 
-            # Resolve assignee
-            if assignee_query and not assignee_account_id:
-                # Get project key from issue to resolve assignee
-                issue_response = await self.client.get_issue(issueIdOrKey=issue_key)
-                if issue_response.status == HttpStatusCode.SUCCESS.value:
-                    issue_data = issue_response.json()
-                    project_key = issue_data.get("fields", {}).get("project", {}).get("key")
-                    if project_key:
-                        assignee_account_id = await self._resolve_user_to_account_id(
-                            project_key,
-                            assignee_query
+            if issue_type_name:
+                resolved_type = issue_type_name
+                if project_key:
+                    try:
+                        r = await self.client.get_create_issue_meta_issue_types(
+                            projectIdOrKey=project_key
                         )
+                        if r.status == HttpStatusCode.SUCCESS.value:
+                            available_names = [
+                                it.get("name", "")
+                                for it in r.json().get("issueTypes", [])
+                                if it.get("name")
+                            ]
+                            exact = next(
+                                (n for n in available_names if n.lower() == issue_type_name.lower()),
+                                None,
+                            )
+                            if exact:
+                                resolved_type = exact
+                            else:
+                                fuzzy = difflib.get_close_matches(
+                                    issue_type_name.lower(),
+                                    [n.lower() for n in available_names],
+                                    n=1,
+                                    cutoff=0.6,
+                                )
+                                if fuzzy:
+                                    for n in available_names:
+                                        if n.lower() == fuzzy[0]:
+                                            resolved_type = n
+                                            logger.info(
+                                                f"Fuzzy matched issue type '{issue_type_name}' -> "
+                                                f"'{resolved_type}' for update on {issue_key}"
+                                            )
+                                            break
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not resolve issue type for update on {issue_key}: {e}"
+                        )
+                fields["issuetype"] = {"name": resolved_type}
+
+            if assignee_query and not assignee_account_id:
+                if project_key:
+                    assignee_account_id = await self._resolve_user_to_account_id(
+                        project_key, assignee_query
+                    )
 
             if assignee_account_id:
                 fields["assignee"] = {"accountId": assignee_account_id}
 
-            # Resolve reporter
             if reporter_query and not reporter_account_id:
-                issue_response = await self.client.get_issue(issueIdOrKey=issue_key)
-                if issue_response.status == HttpStatusCode.SUCCESS.value:
-                    issue_data = issue_response.json()
-                    project_key = issue_data.get("fields", {}).get("project", {}).get("key")
-                    if project_key:
-                        reporter_account_id = await self._resolve_user_to_account_id(
-                            project_key,
-                            reporter_query
-                        )
+                if project_key:
+                    reporter_account_id = await self._resolve_user_to_account_id(
+                        project_key, reporter_query
+                    )
 
             if reporter_account_id:
                 fields["reporter"] = {"accountId": reporter_account_id}
@@ -1500,103 +1980,137 @@ class Jira:
             if components:
                 fields["components"] = [{"name": comp} for comp in components]
 
-            # Handle status transition if provided
-            # Note: Status changes in JIRA must be done via transitions, not directly in fields
+            if custom_fields:
+                for field_id, field_value in custom_fields.items():
+                    if field_id not in fields:
+                        fields[field_id] = field_value
+
             transition = None
             if status:
                 try:
-                    # Get available transitions for the issue
                     transitions_response = await self.client.get_transitions(issueIdOrKey=issue_key)
                     if transitions_response.status == HttpStatusCode.SUCCESS.value:
-                        transitions_data = transitions_response.json()
-                        transitions = transitions_data.get("transitions", [])
-                        # Find transition matching the status name (case-insensitive)
+                        transitions = transitions_response.json().get("transitions", [])
                         for trans in transitions:
                             if trans.get("to", {}).get("name", "").lower() == status.lower():
                                 transition = {"id": trans.get("id")}
                                 break
                         if not transition:
-                            logger.warning(f"Status transition '{status}' not found. Available transitions: {[t.get('to', {}).get('name') for t in transitions]}")
-                            # Don't fail, just log warning - fields update will still work
+                            logger.warning(
+                                f"Status transition '{status}' not found for {issue_key}. "
+                                f"Available: {[t.get('to', {}).get('name') for t in transitions]}"
+                            )
                 except Exception as e:
-                    logger.warning(f"Could not get transitions for issue {issue_key}: {e}. Status update will be skipped.")
+                    logger.warning(f"Could not get transitions for {issue_key}: {e}")
 
-            # Validate that at least one update is being performed
             if not fields and not transition:
                 return False, json.dumps({
                     "error": "No updates provided",
-                    "guidance": "Provide at least one field to update (summary, description, assignee, reporter, priority, labels, components) or a status to transition to"
+                    "guidance": (
+                        "Provide at least one field to update (summary, description, issue_type_name, "
+                        "assignee, reporter, priority, labels, components, custom_fields) "
+                        "or a status to transition to"
+                    ),
                 })
 
-            # Step 1: Update fields (if any) - Jira transitions must be done separately via POST
             if fields:
-                response = await self.client.edit_issue(
-                    issueIdOrKey=issue_key,
-                    fields=fields,
-                    transition=None  # Don't pass transition here - it's ignored by PUT endpoint
-                )
+                # Jira validates custom fields against the current issue type at request time.
+                # When changing type + setting custom fields in one request, the custom fields
+                # are checked against the original type and silently dropped or rejected.
+                # Fix: send the issuetype change first, then the remaining fields separately.
+                if "issuetype" in fields and len(fields) > 1:
+                    type_resp = await self.client.edit_issue(
+                        issueIdOrKey=issue_key,
+                        fields={"issuetype": fields.pop("issuetype")},
+                        transition=None,
+                    )
+                    if type_resp.status not in [
+                        HttpStatusCode.SUCCESS.value, HttpStatusCode.NO_CONTENT.value
+                    ]:
+                        return self._handle_response(
+                            type_resp, "Issue updated successfully", include_guidance=True
+                        )
 
-                # Retry without reporter field if Jira rejects it (some instances don't allow reporter changes)
-                if response.status == HttpStatusCode.BAD_REQUEST.value and "reporter" in fields:
-                    try:
-                        error_body = response.json()
-                        errors = error_body.get("errors", {})
-                        if "reporter" in errors:
-                            logger.info("Retrying update without reporter field (not permitted by this Jira instance)")
-                            fields_without_reporter = {k: v for k, v in fields.items() if k != "reporter"}
-                            if fields_without_reporter:
-                                response = await self.client.edit_issue(
-                                    issueIdOrKey=issue_key,
-                                    fields=fields_without_reporter,
-                                    transition=None
-                                )
-                    except Exception:
-                        pass
-
-                if response.status not in [HttpStatusCode.SUCCESS.value, HttpStatusCode.NO_CONTENT.value]:
-                    return self._handle_response(
-                        response,
-                        "Issue updated successfully",
-                        include_guidance=True
+                if fields:
+                    response = await self.client.edit_issue(
+                        issueIdOrKey=issue_key,
+                        fields=fields,
+                        transition=None,
                     )
 
-            # Step 2: Perform transition separately (if needed) - requires POST to /transitions endpoint
+                    if response.status == HttpStatusCode.BAD_REQUEST.value and "reporter" in fields:
+                        try:
+                            errors = response.json().get("errors", {})
+                            if "reporter" in errors:
+                                logger.info(
+                                    "Retrying update without reporter field "
+                                    "(not permitted by this Jira instance)"
+                                )
+                                fields_no_reporter = {k: v for k, v in fields.items() if k != "reporter"}
+                                if fields_no_reporter:
+                                    response = await self.client.edit_issue(
+                                        issueIdOrKey=issue_key,
+                                        fields=fields_no_reporter,
+                                        transition=None,
+                                    )
+                        except Exception:
+                            pass
+
+                    if response.status == HttpStatusCode.BAD_REQUEST.value:
+                        try:
+                            field_errors = response.json().get("errors", {})
+                            if field_errors:
+                                field_schema = await self._fetch_and_cache_field_schema()
+                                readable: dict[str, str] = {
+                                    f"{field_schema.get(fid, {}).get('name', fid)} ({fid})": emsg
+                                    for fid, emsg in field_errors.items()
+                                }
+                                if issue_type_name and project_key:
+                                    guidance = (
+                                        f"You are changing the issue type to '{issue_type_name}'. "
+                                        f"Call get_create_issue_fields(project_key='{project_key}', "
+                                        f"issue_type_name='{issue_type_name}') to see all required fields "
+                                        "for the target type, then retry update_issue with the missing "
+                                        "fields supplied via the custom_fields parameter."
+                                    )
+                                else:
+                                    guidance = (
+                                        "One or more fields have invalid or missing values. "
+                                        "Check the field_errors for details and correct the values."
+                                    )
+                                return False, json.dumps({
+                                    "error": "Issue update failed — required fields are missing or invalid",
+                                    "field_errors": readable,
+                                    "guidance": guidance,
+                                })
+                        except Exception:
+                            pass
+
+                    if response.status not in [HttpStatusCode.SUCCESS.value, HttpStatusCode.NO_CONTENT.value]:
+                        return self._handle_response(response, "Issue updated successfully", include_guidance=True)
+
             transition_success = True
             transition_error = None
             if transition:
                 try:
-                    transition_response = await self.client.do_transition(
-                        issueIdOrKey=issue_key,
-                        transition=transition
-                    )
-                    if transition_response.status not in [
-                        HttpStatusCode.SUCCESS.value,
-                        HttpStatusCode.NO_CONTENT.value
-                    ]:
+                    tr = await self.client.do_transition(issueIdOrKey=issue_key, transition=transition)
+                    if tr.status not in [HttpStatusCode.SUCCESS.value, HttpStatusCode.NO_CONTENT.value]:
                         transition_success = False
-                        transition_error = f"HTTP {transition_response.status}"
+                        transition_error = f"HTTP {tr.status}"
                         try:
-                            error_data = transition_response.json()
-                            if isinstance(error_data, dict) and "errorMessages" in error_data:
-                                transition_error = "; ".join(error_data.get("errorMessages", []))
-                        except:
+                            err_data = tr.json()
+                            if isinstance(err_data, dict) and "errorMessages" in err_data:
+                                transition_error = "; ".join(err_data.get("errorMessages", []))
+                        except Exception:
                             pass
-                        logger.warning(
-                            f"Transition to '{status}' failed for issue {issue_key}: {transition_error}"
-                        )
+                        logger.warning(f"Transition to '{status}' failed for {issue_key}: {transition_error}")
                 except Exception as e:
                     transition_success = False
                     transition_error = str(e)
-                    logger.warning(
-                        f"Exception during transition to '{status}' for issue {issue_key}: {e}"
-                    )
+                    logger.warning(f"Exception during transition to '{status}' for {issue_key}: {e}")
 
-            # Step 3: Fetch the updated issue to return complete state
             issue_response = await self.client.get_issue(issueIdOrKey=issue_key)
-            if issue_response.status == HttpStatusCode.SUCCESS.value:
-                data = issue_response.json()
-            else:
-                # If we can't fetch the issue, return minimal success response
+            if issue_response.status != HttpStatusCode.SUCCESS.value:
                 site_url = await self._get_site_url()
                 url = f"{site_url}/browse/{issue_key}" if site_url else None
                 message = "Issue updated successfully"
@@ -1604,12 +2118,11 @@ class Jira:
                     message += f" (but status transition failed: {transition_error})"
                 return True, json.dumps({
                     "message": message,
-                    "data": {"key": issue_key, "url": url} if url else {"key": issue_key}
+                    "data": {"key": issue_key, "url": url} if url else {"key": issue_key},
                 })
 
-            # Clean response: remove redundant fields
             cleaned_data = (
-                ResponseTransformer(data)
+                ResponseTransformer(issue_response.json())
                 .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
                         "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
                         "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
@@ -1617,24 +2130,18 @@ class Jira:
                 .clean()
             )
 
-            # Add web URL if available
-            issue_key_from_data = cleaned_data.get("key") or issue_key
+            issue_key_out = cleaned_data.get("key") or issue_key
             site_url = await self._get_site_url()
-            if issue_key_from_data and site_url:
-                cleaned_data["url"] = f"{site_url}/browse/{issue_key_from_data}"
-            # Add URLs to Epic Links and other issue references in custom fields
+            if issue_key_out and site_url:
+                cleaned_data["url"] = f"{site_url}/browse/{issue_key_out}"
             if site_url:
                 self._add_urls_to_issue_references(cleaned_data, site_url)
 
-            # Build success message
             message = "Issue updated successfully"
             if transition and not transition_success:
                 message += f" (but status transition failed: {transition_error})"
 
-            return True, json.dumps({
-                "message": message,
-                "data": cleaned_data
-            })
+            return True, json.dumps({"message": message, "data": cleaned_data})
 
         except Exception as e:
             logger.error(f"Error updating issue: {e}")

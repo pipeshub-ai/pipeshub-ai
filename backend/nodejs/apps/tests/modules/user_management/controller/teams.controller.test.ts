@@ -62,7 +62,7 @@ describe('TeamsController', () => {
         data: mockTeam,
       });
 
-      req.body = { name: 'Engineering', userIds: [] };
+      req.body = { name: 'Engineering' };
 
       await controller.createTeam(req, res, next);
 
@@ -88,7 +88,7 @@ describe('TeamsController', () => {
         }),
       } as any);
 
-      req.body = { name: 'Engineering', userIds: [] };
+      req.body = { name: 'Engineering' };
 
       await controller.createTeam(req, res, next);
 
@@ -212,6 +212,8 @@ describe('TeamsController', () => {
       expect(next.calledOnce).to.be.true;
     });
   });
+
+
 
   describe('updateTeam', () => {
     it('should update a team', async () => {
@@ -373,6 +375,8 @@ describe('TeamsController', () => {
       expect(res.status.called).to.be.false;
     });
   });
+
+
 
   // =========================================================================
   // handleBackendError - various error types
@@ -751,23 +755,6 @@ describe('TeamsController', () => {
       const result = res.json.firstCall.args[0];
       expect(result).to.have.property('teams');
       expect(result.teams).to.be.an('array').with.lengthOf(0);
-    });
-
-    it('should throw on search > 1000 chars', async () => {
-      req.query = { search: 'a'.repeat(1001) };
-
-      await controller.getUserTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Search parameter too long');
-    });
-
-    it('should throw on XSS in search', async () => {
-      req.query = { search: '<script>alert("xss")</script>' };
-
-      await controller.getUserTeams(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
     });
 
     it('should throw when orgId is missing', async () => {

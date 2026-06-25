@@ -149,8 +149,8 @@ class RecordEventHandler(BaseEventService):
                 )
 
                 self.logger.info(
-                    f"✅ Bulk deletion complete: {result.get('deleted_count', 0)} embeddings deleted "
-                    f"for {result.get('virtual_record_ids_processed', 0)} virtual record IDs"
+                    f"✅ Bulk deletion complete: embeddings deleted for "
+                    f"{result.get('virtual_record_ids_processed', 0)} virtual record IDs"
                 )
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
@@ -166,7 +166,9 @@ class RecordEventHandler(BaseEventService):
             if not record_id:
                 self.logger.error(f"Missing record_id in message {payload}")
                 return
-            asyncio.get_event_loop
+
+        
+
             record = await self.event_processor.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
@@ -179,7 +181,7 @@ class RecordEventHandler(BaseEventService):
 
             # Handle delete event - no parsing/indexing phases
             if event_type == EventTypes.DELETE_RECORD.value:
-                await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([ virtual_record_id])
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -208,7 +210,7 @@ class RecordEventHandler(BaseEventService):
                         f"skipping full embedding deletion"
                     )
                 else:
-                    await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+                    await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([virtual_record_id])
 
             doc = dict(record)
 
@@ -329,9 +331,14 @@ class RecordEventHandler(BaseEventService):
                         "extractionStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
                     }
                 )
-                await self.event_processor.graph_provider.batch_upsert_nodes(
+                success = await self.event_processor.graph_provider.batch_update_nodes(
                     [doc], CollectionNames.RECORDS.value
                 )
+                if not success:
+                    self.logger.warning(
+                        "⚠️ Failed to update CODE_FILE record %s status - record may not exist",
+                        record_id,
+                    )
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
@@ -362,6 +369,21 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.TSV.value,
                 MimeTypes.SQL_TABLE.value,
                 MimeTypes.SQL_VIEW.value,
+                MimeTypes.PYTHON.value,
+                MimeTypes.JAVA_SOURCE.value,
+                MimeTypes.C_SOURCE.value,
+                MimeTypes.CPP.value,
+                MimeTypes.PHP.value,
+                MimeTypes.JAVASCRIPT.value,
+                MimeTypes.TYPESCRIPT.value,
+                MimeTypes.CSHARP.value,
+                MimeTypes.GO.value,
+                MimeTypes.RUST.value,
+                MimeTypes.RUBY.value,
+                MimeTypes.SWIFT.value,
+                MimeTypes.KOTLIN.value,
+                MimeTypes.DART.value,
+                MimeTypes.SHELL.value,
             ]
 
             supported_extensions = [
@@ -385,6 +407,33 @@ class RecordEventHandler(BaseEventService):
                 ExtensionTypes.TSV.value,
                 ExtensionTypes.SQL_TABLE.value,
                 ExtensionTypes.SQL_VIEW.value,
+                ExtensionTypes.PY.value,
+                ExtensionTypes.JS.value,
+                ExtensionTypes.JSX.value,
+                ExtensionTypes.MJS.value,
+                ExtensionTypes.CJS.value,
+                ExtensionTypes.TS.value,
+                ExtensionTypes.TSX.value,
+                ExtensionTypes.JAVA.value,
+                ExtensionTypes.C.value,
+                ExtensionTypes.H.value,
+                ExtensionTypes.CPP.value,
+                ExtensionTypes.CC.value,
+                ExtensionTypes.CXX.value,
+                ExtensionTypes.HPP.value,
+                ExtensionTypes.HXX.value,
+                ExtensionTypes.CS.value,
+                ExtensionTypes.GO.value,
+                ExtensionTypes.RS.value,
+                ExtensionTypes.RB.value,
+                ExtensionTypes.PHP.value,
+                ExtensionTypes.SWIFT.value,
+                ExtensionTypes.KT.value,
+                ExtensionTypes.KTS.value,
+                ExtensionTypes.DART.value,
+                ExtensionTypes.SH.value,
+                ExtensionTypes.BASH.value,
+                ExtensionTypes.HTM.value,
             ]
 
             if (
@@ -402,9 +451,14 @@ class RecordEventHandler(BaseEventService):
                     }
                 )
                 docs = [doc]
-                await self.event_processor.graph_provider.batch_upsert_nodes(
+                success = await self.event_processor.graph_provider.batch_update_nodes(
                     docs, CollectionNames.RECORDS.value
                 )
+                if not success:
+                    self.logger.warning(
+                        "⚠️ Failed to update unsupported file record %s status - record may not exist",
+                        record_id,
+                    )
 
                 # Yield both events for unsupported file types
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -530,7 +584,9 @@ class RecordEventHandler(BaseEventService):
                     extraction_status=ProgressStatus.FAILED.value,
                     reason=error_msg,
                 )
-                virtual_record_id = record.get("virtualRecordId") if record else None
+                if record is None:
+                    return
+                virtual_record_id = record.get("virtualRecordId")
                 self.logger.info(f"🔄 Current record {record_id} has failed, triggering next queued duplicate")
                 await self._trigger_next_queued_duplicate(record_id,virtual_record_id)
             elif record is not None and event_type != EventTypes.DELETE_RECORD.value:
@@ -580,9 +636,15 @@ class RecordEventHandler(BaseEventService):
                 doc["reason"] = reason
 
             docs = [doc]
-            await self.event_processor.graph_provider.batch_upsert_nodes(
+            success = await self.event_processor.graph_provider.batch_update_nodes(
                 docs, CollectionNames.RECORDS.value
             )
+            if not success:
+                self.logger.warning(
+                    "⚠️ Failed to update document status for record %s - record may not exist",
+                    record_id,
+                )
+                return None
             self.logger.info(f"✅ Updated document status for record {record_id}")
             return record
         except Exception as e:

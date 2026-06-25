@@ -99,17 +99,20 @@ class ConfluenceDataSource:
         """Stream bytes from a download URL using the configured client auth headers."""
         if self._client is None:
             raise ValueError("HTTP client is not initialized")
-        auth_headers = self._client.headers.copy()
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            async with client.stream(
-                "GET",
-                download_url,
-                headers=auth_headers,
-                timeout=300.0,
-            ) as response:
-                response.raise_for_status()
-                async for chunk in response.aiter_bytes(chunk_size=chunk_size):
-                    yield chunk
+        
+        # Reuse the existing httpx client to avoid creating new connections for each download
+        httpx_client = await self._client._ensure_client()
+        
+        async with httpx_client.stream(
+            "GET",
+            download_url,
+            headers=self._client.headers,
+            follow_redirects=True,
+            timeout=httpx.Timeout(connect=30.0, read=600.0, write=30.0, pool=30.0),
+        ) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+                yield chunk
 
     async def download_attachment(
         self,
@@ -157,6 +160,75 @@ class ConfluenceDataSource:
         download_url = self._resolve_attachment_download_url(download_path)
         async for chunk in self._stream_download_url(download_url, chunk_size=chunk_size):
             yield chunk
+
+    async def fetch_authenticated_binary(
+        self,
+        url: str,
+        *,
+        max_bytes: int = 10_485_760,  # 10 MiB
+        timeout: float = 30.0,
+    ) -> tuple[bytes, str] | None:
+        """Fetch binary content from a URL using authenticated client headers.
+
+        Used for inline image embedding in streamed HTML content.
+        Reuses the existing httpx client connection pool for efficiency.
+
+        Args:
+            url: Absolute URL to fetch (must be same-origin as Confluence instance)
+            max_bytes: Maximum allowed response size in bytes (default 10 MiB)
+            timeout: Request timeout in seconds (default 30s)
+
+        Returns:
+            Tuple of (binary_content, content_type) on success, None on failure.
+            content_type is the raw Content-Type header value stripped of parameters.
+
+        Note:
+            Does not raise on HTTP errors - returns None to allow caller to handle
+            per-image failures gracefully without interrupting the overall stream.
+        """
+        if self._client is None:
+            return None
+        
+        # Reuse the existing httpx client to avoid creating new connections for each image
+        httpx_client = await self._client._ensure_client()
+        
+        try:
+            async with httpx_client.stream(
+                "GET",
+                url,
+                headers=self._client.headers,
+                follow_redirects=True,
+                timeout=timeout,
+            ) as response:
+                response.raise_for_status()
+                
+                # Get content type before reading body
+                content_type_header = response.headers.get('content-type', '')
+                content_type = content_type_header.split(';')[0].strip()
+                
+                # Read with size cap
+                chunks: list[bytes] = []
+                total_bytes = 0
+                
+                async for chunk in response.aiter_bytes(chunk_size=8192):
+                    total_bytes += len(chunk)
+                    if total_bytes > max_bytes:
+                        # Exceeded limit, abort
+                        return None
+                    chunks.append(chunk)
+                
+                content = b''.join(chunks)
+                return (content, content_type)
+                
+        except httpx.HTTPStatusError:
+            # HTTP error (4xx, 5xx) - log handled by caller
+            return None
+        except httpx.TimeoutException:
+            # Timeout - log handled by caller
+            return None
+        except Exception:
+            # Other network errors - log handled by caller
+            return None
 
     # -------------------------------------------------------------------------
     # Confluence REST v1 helpers (Cloud + Data Center path; see TODO-DC in docstrings)

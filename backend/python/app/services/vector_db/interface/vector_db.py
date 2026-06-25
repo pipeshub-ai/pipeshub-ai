@@ -94,6 +94,11 @@ class IVectorDBService(ABC):
         raise NotImplementedError("query_nearest_points() is not implemented")
 
     @abstractmethod
+    async def count_points(self, collection_name: str) -> int:
+        """Return the number of points in a collection."""
+        raise NotImplementedError("count_points() is not implemented")
+
+    @abstractmethod
     async def upsert_points(
         self,
         collection_name: str,

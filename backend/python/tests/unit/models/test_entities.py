@@ -1,12 +1,15 @@
 """Tests for entities module: Record, TicketRecord, ProjectRecord, FileRecord, MailRecord, LinkRecord, ProductRecord, DealRecord."""
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import jsonschema
 import pytest
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus, RecordRelations
+from app.config.constants.arangodb import CollectionNames, Connectors, MimeTypes, OriginTypes, ProgressStatus, RecordRelations
+from app.schema.node_schema_registry import get_node_schema
 from app.models.blocks import Block, BlockGroup, BlocksContainer, BlockType, GroupType, BlockGroupChildren, IndexRange
 from app.models.entities import (
     CodeFileRecord,
@@ -16,6 +19,7 @@ from app.models.entities import (
     LinkRecord,
     LlmTextContent,
     MailRecord,
+    MessageRecord,
     ProductRecord,
     ProjectRecord,
     Record,
@@ -456,6 +460,57 @@ class TestTicketRecord:
         assert "Reporter" in ctx
         assert "Creator" in ctx
         assert "Delivery Status" in ctx
+
+    def test_to_llm_context_includes_labels(self):
+        rec = TicketRecord(**_record_kwargs(
+            record_type=RecordType.TICKET,
+            connector_name=Connectors.JIRA,
+            labels=["bug", "backend"],
+        ))
+        ctx = rec.to_llm_context()
+        assert "* Labels: bug, backend" in ctx
+
+    @pytest.mark.asyncio
+    async def test_to_llm_context_with_live_fields_delegates_to_enrichment(self):
+        rec = TicketRecord(**_record_kwargs(
+            record_type=RecordType.TICKET,
+            connector_name=Connectors.JIRA,
+        ))
+
+        with patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service.enrich_ticket_llm_context",
+            new=AsyncMock(return_value="merged context"),
+        ) as mock_enrich:
+            ctx = await rec.to_llm_context_with_live_fields(config_service=AsyncMock())
+
+        assert ctx == "merged context"
+        mock_enrich.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_to_llm_context_with_live_fields_falls_back_on_error(self):
+        rec = TicketRecord(**_record_kwargs(
+            record_type=RecordType.TICKET,
+            connector_name=Connectors.JIRA,
+            status="OPEN",
+        ))
+
+        with patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service.enrich_ticket_llm_context",
+            new=AsyncMock(side_effect=RuntimeError("boom")),
+        ):
+            ctx = await rec.to_llm_context_with_live_fields(config_service=AsyncMock())
+
+        assert "Status" in ctx
+        assert ctx == rec.to_llm_context()
+
+    @pytest.mark.asyncio
+    async def test_to_llm_context_with_live_fields_skips_without_config_service(self):
+        rec = TicketRecord(**_record_kwargs(
+            record_type=RecordType.TICKET,
+            connector_name=Connectors.JIRA,
+        ))
+        ctx = await rec.to_llm_context_with_live_fields(config_service=None)
+        assert ctx == rec.to_llm_context()
 
     def test_to_arango_record(self):
         rec = TicketRecord(**_record_kwargs(
@@ -3287,3 +3342,274 @@ class TestMeetingRecordCoverage:
             self._record_doc(connectorName="NOT_VALID"),
         )
         assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+# ============================================================================
+# MessageRecord — _parse_json_field, new enum, new fields, serialisation
+# ============================================================================
+
+import json as _json
+
+
+def _msg_base_args(**overrides):
+    defaults = {
+        "org_id": "org-1",
+        "record_name": "general_2021-05-03_00-00-00",
+        "record_type": RecordType.MESSAGE,
+        "external_record_id": "1620000000.000100",
+        "version": 1,
+        "origin": OriginTypes.CONNECTOR,
+        "connector_name": Connectors.SLACK_WORKSPACE,
+        "connector_id": "conn-123",
+        "mime_type": MimeTypes.BLOCKS.value,
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def _make_msg(**overrides) -> MessageRecord:
+    return MessageRecord(**_msg_base_args(**overrides))
+
+
+def _slack_ts_iso(ts: str) -> str:
+    dt = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+class TestParseJsonField:
+    """_parse_json_field module-level helper."""
+
+    @pytest.fixture
+    def fn(self):
+        from app.models.entities import _parse_json_field
+        return _parse_json_field
+
+    def test_none_returns_default(self, fn):
+        assert fn(None, []) == []
+        assert fn(None, None) is None
+
+    def test_valid_json_string_parsed(self, fn):
+        assert fn('[{"name":"thumbsup"}]', []) == [{"name": "thumbsup"}]
+
+    def test_already_parsed_list_returned_directly(self, fn):
+        data = [{"name": "wave"}]
+        assert fn(data, []) is data
+
+    def test_invalid_json_string_returns_default(self, fn):
+        assert fn("not valid json", []) == []
+
+    def test_dict_string_parsed(self, fn):
+        result = fn('{"key": "value"}', None)
+        assert result == {"key": "value"}
+
+    def test_already_parsed_dict_returned_directly(self, fn):
+        d = {"a": 1}
+        assert fn(d, None) is d
+
+    def test_empty_string_returns_default(self, fn):
+        assert fn("", []) == []
+
+
+class TestRecordGroupTypeSlackThread:
+    def test_slack_thread_enum_value(self):
+        assert RecordGroupType.SLACK_THREAD == "SLACK_THREAD"
+
+    def test_slack_channel_still_present(self):
+        assert RecordGroupType.SLACK_CHANNEL == "SLACK_CHANNEL"
+
+
+class TestRecordFetchSignedUrl:
+    def test_default_is_none(self):
+        assert _make_msg().fetch_signed_url is None
+
+    def test_can_set_value(self):
+        assert _make_msg(fetch_signed_url="https://api.example.com/sign").fetch_signed_url == "https://api.example.com/sign"
+
+
+class TestMessageRecordDefaults:
+    def test_content_defaults_to_none(self):
+        assert _make_msg().content is None
+
+    def test_has_replies_default_false(self):
+        assert _make_msg().has_replies is False
+
+    def test_is_reply_default_false(self):
+        assert _make_msg().is_reply is False
+
+    def test_mentioned_user_ids_default_empty(self):
+        assert _make_msg().mentioned_user_ids == []
+
+    def test_is_edited_default_false(self):
+        assert _make_msg().is_edited is False
+
+    def test_involved_user_source_ids_default_empty(self):
+        assert _make_msg().involved_user_source_ids == []
+
+
+class TestMessageRecordToArangoRecord:
+    def test_basic_fields(self):
+        msg = _make_msg(content="Hello", author_id="U123")
+        doc = msg.to_arango_record()
+        assert doc["_key"] == msg.id
+        assert doc["orgId"] == "org-1"
+        assert "content" not in doc
+        assert doc["authorId"] == "U123"
+
+    def test_is_edited(self):
+        msg = _make_msg(is_edited=True)
+        doc = msg.to_arango_record()
+        assert doc["isEdited"] is True
+
+    def test_is_reply(self):
+        msg = _make_msg(is_reply=True)
+        doc = msg.to_arango_record()
+        assert doc["isReply"] is True
+
+    def test_to_arango_record_matches_messages_schema(self):
+        """All persisted message fields must be declared in message_record_schema."""
+        schema = get_node_schema(CollectionNames.MESSAGES.value)
+        msg = _make_msg(
+            author_email="alice@example.com",
+            start_ts="1620000000.000100",
+            end_ts="1620000000.000200",
+        )
+        doc = {k: v for k, v in msg.to_arango_record().items() if k != "_key"}
+        jsonschema.validate(instance=doc, schema=schema)
+
+        doc["unexpectedField"] = "nope"
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(instance=doc, schema=schema)
+
+
+class TestMessageRecordFromArangoRecord:
+    def _record_doc(self, **overrides):
+        base = {
+            "id": "msg-key-1",
+            "_key": "msg-key-1",
+            "orgId": "org-1",
+            "recordName": "general_2021-05-03_00-00-00",
+            "recordType": RecordType.MESSAGE.value,
+            "externalRecordId": "1620000000.000100",
+            "version": 1,
+            "origin": OriginTypes.CONNECTOR.value,
+            "connectorName": Connectors.SLACK_WORKSPACE.value,
+            "connectorId": "conn-123",
+            "createdAtTimestamp": 1620000000000,
+            "updatedAtTimestamp": 1620000000000,
+        }
+        base.update(overrides)
+        return base
+
+    def _msg_doc(self, **overrides):
+        base = {"threadId": None, "hasReplies": False, "authorId": "U123"}
+        base.update(overrides)
+        return base
+
+    def test_basic_round_trip(self):
+        rec = MessageRecord.from_arango_record(self._msg_doc(), self._record_doc())
+        assert rec.org_id == "org-1"
+        assert rec.content is None
+        assert rec.author_id == "U123"
+
+    def test_start_ts_end_ts(self):
+        rec = MessageRecord.from_arango_record(
+            self._msg_doc(startTs="1620000000.000000", endTs="1620000300.000000"),
+            self._record_doc(),
+        )
+        assert rec.start_ts == "1620000000.000000"
+
+    def test_unknown_connector_name_falls_back(self):
+        rec = MessageRecord.from_arango_record(
+            self._msg_doc(), self._record_doc(connectorName="UnknownConnector")
+        )
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+    def test_is_edited_propagated(self):
+        rec = MessageRecord.from_arango_record(
+            self._msg_doc(isEdited=True),
+            self._record_doc(),
+        )
+        assert rec.is_edited is True
+
+
+class TestMessageRecordToKafkaRecord:
+    def test_basic_fields_present(self):
+        msg = _make_msg()
+        payload = msg.to_kafka_record()
+        assert "recordId" in payload
+        assert payload["orgId"] == "org-1"
+        assert payload["recordType"] == RecordType.MESSAGE.value
+        assert payload["connectorName"] == Connectors.SLACK_WORKSPACE.value
+
+    def test_mime_type_present(self):
+        assert "mimeType" in _make_msg().to_kafka_record()
+
+    def test_blocks_mime_type_in_kafka_payload(self):
+        """Blocks records expose ``application/blocks`` on the Kafka payload (buffer is attached downstream)."""
+        bc = MagicMock()
+        bc.model_dump = MagicMock(return_value={"groups": []})
+        msg = _make_msg()
+        msg.mime_type = MimeTypes.BLOCKS.value
+        msg.block_containers = bc
+        payload = msg.to_kafka_record()
+        assert payload["mimeType"] == MimeTypes.BLOCKS.value
+        assert "buffer" not in payload
+
+    def test_non_blocks_mime_type_no_buffer(self):
+        assert "buffer" not in _make_msg(mime_type=MimeTypes.MARKDOWN.value).to_kafka_record()
+
+
+class TestMessageRecordToLlmContext:
+    def test_includes_base_context(self):
+        ctx = _make_msg(content="test content").to_llm_context()
+        assert isinstance(ctx, str) and len(ctx) > 0
+
+    def test_start_and_end_message_ids_in_iso(self):
+        start_ts = "1700000000.000000"
+        end_ts = "1700000060.000000"
+        ctx = _make_msg(start_ts=start_ts, end_ts=end_ts).to_llm_context()
+        assert f"* Start Message ID: {_slack_ts_iso(start_ts)}" in ctx
+        assert f"* End Message ID: {_slack_ts_iso(end_ts)}" in ctx
+
+    def test_start_message_id_only(self):
+        start_ts = "1620000000.000100"
+        ctx = _make_msg(start_ts=start_ts).to_llm_context()
+        assert f"* Start Message ID: {_slack_ts_iso(start_ts)}" in ctx
+        assert "End Message ID" not in ctx
+
+    def test_end_message_id_only(self):
+        end_ts = "1620000300.000000"
+        ctx = _make_msg(end_ts=end_ts).to_llm_context()
+        assert f"* End Message ID: {_slack_ts_iso(end_ts)}" in ctx
+        assert "Start Message ID" not in ctx
+
+    def test_omits_message_ids_without_timestamps(self):
+        ctx = _make_msg().to_llm_context()
+        assert "Start Message ID" not in ctx
+        assert "End Message ID" not in ctx
+
+    def test_no_optional_fields_no_crash(self):
+        assert isinstance(_make_msg().to_llm_context(), str)
+
+
+class TestFileRecordSignedUrlRoute:
+    def _make_file(self, **kwargs) -> FileRecord:
+        return FileRecord(
+            org_id="org-1",
+            record_name="file.pdf",
+            record_type=RecordType.FILE,
+            external_record_id="F123",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id="conn-1",
+            is_file=True,
+            **kwargs,
+        )
+
+    def test_signed_url_route_in_to_kafka_record(self):
+        payload = self._make_file(fetch_signed_url="https://api.example.com/sign/F123").to_kafka_record()
+        assert payload["signedUrlRoute"] == "https://api.example.com/sign/F123"
+
+    def test_signed_url_route_defaults_to_none(self):
+        assert self._make_file().to_kafka_record().get("signedUrlRoute") is None
+

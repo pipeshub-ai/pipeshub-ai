@@ -270,6 +270,26 @@ async def verify_embedding_health(dense_embeddings, logger) -> int:
 
     return embedding_size
 
+def normalize_embedding_model_name(name: str | None) -> str | None:
+    """Normalize an embedding model name so the *same* model is comparable across providers.
+
+    The identical underlying model is referenced differently depending on the
+    serving provider, e.g. ``nomic-ai/nomic-embed-text`` (sentence-transformers)
+    vs ``nomic-embed-text`` (Ollama), or ``models/text-embedding-004`` (Gemini).
+    These all produce the same embeddings/dimension, so switching the provider
+    for the same model must NOT be treated as a breaking model change.
+
+    We lowercase and strip any provider/org namespace prefix (the part before the
+    last ``/``, which also covers the ``models/`` prefix).
+    """
+    if name is None:
+        return None
+    normalized = name.strip().lower()
+    if "/" in normalized:
+        normalized = normalized.rsplit("/", 1)[-1]
+    return normalized
+
+
 async def handle_model_change(
     retrieval_service,
     current_model_name: str,
@@ -280,32 +300,53 @@ async def handle_model_change(
     logger
 ) -> None:
     """Handle embedding model changes and collection recreation if needed."""
-    if current_model_name is not None:
-        current_model_name = current_model_name.removeprefix("models/")
-    if new_model_name is not None:
-        new_model_name = new_model_name.removeprefix("models/")
+    current_model_name = normalize_embedding_model_name(current_model_name)
+    new_model_name = normalize_embedding_model_name(new_model_name)
 
-    if (current_model_name is not None and
-        new_model_name is not None and
-        current_model_name.lower() != new_model_name.lower()):
+    model_name_changed = (
+        current_model_name is not None
+        and new_model_name is not None
+        and current_model_name != new_model_name
+    )
+    dimension_mismatch = (
+        qdrant_vector_size != 0 and qdrant_vector_size != embedding_size
+    )
 
+    if not model_name_changed and not dimension_mismatch:
+        return
 
+    if model_name_changed:
+        logger.warning(
+            f"Detected embedding model change: '{current_model_name}' -> '{new_model_name}'"
+        )
+    if dimension_mismatch:
+        logger.warning(
+            f"Detected vector dimension mismatch: collection has {qdrant_vector_size}, "
+            f"new model produces {embedding_size}"
+        )
 
-        logger.warning("Detected embedding model change attempt")
+    if points_count > 0:
+        logger.error(
+            f"Rejected embedding change: collection "
+            f"'{retrieval_service.collection_name}' contains {points_count} "
+            f"point(s) indexed with the previous model."
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": "not healthy",
+                "error": (
+                    "Embedding model cannot be changed while the vector store "
+                    "contains data indexed with a different model. Please "
+                    "remove existing indexed documents first, then change the "
+                    "embedding model."
+                ),
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
 
-        if qdrant_vector_size != 0 and points_count > 0:
-            logger.error("Rejected embedding model change due to non-empty existing collection")
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "status": "not healthy",
-                    "error": "Policy Rejection: Embedding model configuration cannot be changed while vector store collection contains data. Please ensure you are using the original embedding configuration.",
-                    "timestamp": get_epoch_timestamp_in_ms(),
-                }
-            )
-
-        if qdrant_vector_size != 0 and points_count == 0:
-            await recreate_collection(retrieval_service, embedding_size, logger)
+    if qdrant_vector_size != 0:
+        await recreate_collection(retrieval_service, embedding_size, logger)
 
 async def recreate_collection(retrieval_service, embedding_size, logger) -> None:
     """Recreate the collection with new parameters."""
@@ -396,6 +437,7 @@ async def check_collection_info(
 @router.post("/embedding-health-check")
 async def embedding_health_check(request: Request, embedding_configs: list[dict] = Body(...)) -> JSONResponse:
     """Health check endpoint to validate embedding configurations."""
+    logger = None
     try:
         # Initialize components
         dense_embeddings, retrieval_service, logger = await initialize_embedding_model(request, embedding_configs)
@@ -421,14 +463,20 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
         )
 
     except HTTPException as he:
-        return JSONResponse(status_code=he.status_code, content=he.detail)
+        detail = he.detail
+        if isinstance(detail, dict) and "error" in detail and "message" not in detail:
+            detail = {**detail, "message": detail["error"]}
+        return JSONResponse(status_code=he.status_code, content=detail)
     except Exception as e:
-        logger.error(f"Embedding health check failed: {str(e)}", exc_info=True)
+        if logger:
+            logger.error(f"Embedding health check failed: {str(e)}", exc_info=True)
+        error_msg = f"Embedding model health check failed: {str(e)}"
         return JSONResponse(
             status_code=500,
             content={
                 "status": "not healthy",
-                "error": f"Embedding model health check failed: {str(e)}",
+                "error": error_msg,
+                "message": error_msg,
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -694,8 +742,8 @@ async def perform_embedding_health_check(
                         new_model = model_name
 
                         if current_model_name:
-                            current_normalized = current_model_name.removeprefix("models/").strip().lower()
-                            new_normalized = (new_model or "").removeprefix("models/").strip().lower()
+                            current_normalized = normalize_embedding_model_name(current_model_name)
+                            new_normalized = normalize_embedding_model_name(new_model)
 
                             if current_normalized and new_normalized and current_normalized != new_normalized:
                                 return JSONResponse(

@@ -1,0 +1,369 @@
+MERIDIAN SOLUTIONS PVT. LTD.
+EMPLOYEE HANDBOOK & POLICY DOCUMENT
+Version 3.2 | Effective Date: January 1, 2025
+Approved by: HR Director, Legal Affairs, and Executive Committee
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+
+1. Introduction and Company Overview
+2. Employment Policies
+3. Code of Conduct
+4. Leave and Attendance
+5. Compensation and Benefits
+6. Performance Management
+7. Grievance Redressal
+8. Separation Policy
+
+================================================================================
+SECTION 1: INTRODUCTION AND COMPANY OVERVIEW
+================================================================================
+
+1.1 About Meridian Solutions
+
+Meridian Solutions Pvt. Ltd. was founded in 2009 with the mission to deliver
+end-to-end business process outsourcing and technology consulting services to
+mid-sized enterprises across South and Southeast Asia. Headquartered in Pune,
+Maharashtra, with regional offices in Bengaluru, Chennai, Hyderabad, and
+Singapore, the company employs over 4,200 professionals across disciplines
+including software development, data analytics, finance & accounting, and
+customer experience management.
+
+1.2 Purpose of this Handbook
+
+This handbook serves as the definitive reference guide for all employees of
+Meridian Solutions. It outlines the rights, responsibilities, and expectations
+that govern the employment relationship. All employees are required to read
+this document in full upon joining and to review updated versions as they are
+released. Acknowledgement of receipt and understanding is mandatory and must
+be submitted to HR within 7 working days of joining or of receiving an update.
+
+1.3 Applicability
+
+These policies apply to all full-time employees, part-time employees, and
+contractual staff engaged directly by Meridian Solutions. Consultants, vendors,
+and third-party contractors are governed by their respective agreements but
+are expected to comply with the Code of Conduct outlined in Section 3 while
+on company premises or representing the company in any capacity.
+
+================================================================================
+SECTION 2: EMPLOYMENT POLICIES
+================================================================================
+
+2.1 Equal Opportunity Employment
+
+Meridian Solutions is an equal opportunity employer. We do not discriminate
+on the basis of gender, age, caste, religion, sexual orientation, disability,
+marital status, or any other characteristic protected by applicable law.
+This commitment extends to all phases of employment including recruitment,
+selection, placement, transfer, promotion, compensation, and termination.
+
+2.2 Probationary Period
+
+All new hires, unless otherwise specified in their offer letter, are subject
+to a probationary period of six (6) months from the date of joining. During
+this period:
+
+  - Performance will be reviewed at the end of Month 3 (mid-probation check)
+    and at the end of Month 6 (final confirmation review).
+  - Either party may terminate the employment with a notice period of
+    fifteen (15) days.
+  - Benefits such as gratuity accrual and certain insurance coverages begin
+    only upon successful confirmation.
+
+Employees may be granted an extension of the probationary period of up to
+three (3) additional months based on the discretion of the reporting manager
+and HR, in cases where performance has been inconsistent but shows potential.
+
+2.3 Transfers and Relocations
+
+The company reserves the right to transfer employees across departments,
+business units, or office locations based on operational requirements.
+Employees will be given a minimum of four (4) weeks' notice before any
+mandatory relocation. Relocation assistance, including travel reimbursement
+and a temporary accommodation allowance, will be provided as per the
+Relocation Policy document (HR-REL-2024-01).
+
+2.4 Background Verification
+
+All employment offers are conditional upon successful completion of background
+verification, which includes:
+
+  - Identity and address verification
+  - Educational qualification check (highest degree)
+  - Employment history verification (last two employers)
+  - Criminal record check (as permissible by applicable law)
+  - Reference checks from at least two professional references
+
+Background verification is conducted by an empanelled third-party agency.
+Any discrepancy found during or after this process may result in withdrawal
+of the offer or termination of employment.
+
+================================================================================
+SECTION 3: CODE OF CONDUCT
+================================================================================
+
+3.1 Professional Behaviour
+
+Employees are expected to conduct themselves with integrity, respect, and
+professionalism at all times — whether in the office, at client sites, during
+business travel, or on official communication channels (email, instant
+messaging, video calls). This includes:
+
+  - Treating colleagues, clients, and vendors with dignity
+  - Maintaining confidentiality of sensitive information
+  - Avoiding conflicts of interest
+  - Not engaging in or tolerating harassment of any form
+
+3.2 Conflict of Interest
+
+Employees must disclose any situation that creates, or could reasonably be
+perceived to create, a conflict between their personal interests and the
+interests of Meridian Solutions. Common examples include:
+
+  - Holding a financial stake in a competitor or client organisation
+  - Employing or directly supervising a close family member
+  - Receiving gifts or hospitality from vendors above the threshold of
+    INR 2,500 per instance (or equivalent in other currencies)
+
+Disclosures must be submitted to HR using Form COI-01, and will be reviewed
+by the Ethics Committee within 15 working days.
+
+3.3 Use of Company Resources
+
+Company-issued equipment, software licenses, internet connectivity, and
+facilities are provided solely for business purposes. Personal use is
+permitted on a limited, incidental basis provided it does not:
+
+  - Interfere with work performance
+  - Involve accessing, downloading, or distributing content that is illegal,
+    offensive, or in violation of third-party intellectual property rights
+  - Consume excessive bandwidth or storage
+  - Expose company systems to security risks
+
+The IT department conducts periodic audits of device usage and network access
+logs. Employees have no expectation of privacy with respect to activities
+conducted on company-owned systems.
+
+3.4 Social Media Policy
+
+Employees may maintain personal social media accounts but must:
+
+  - Not share confidential company information, client data, or internal
+    communications on public platforms
+  - Not make disparaging, defamatory, or false statements about Meridian
+    Solutions, its leadership, employees, clients, or partners
+  - Clearly distinguish personal opinions from official company positions
+    when posting about industry topics
+
+Violations of the social media policy may result in disciplinary action up
+to and including termination, and may also give rise to legal liability.
+
+================================================================================
+SECTION 4: LEAVE AND ATTENDANCE
+================================================================================
+
+4.1 Leave Entitlements (per calendar year)
+
+  Privilege Leave (PL)          : 18 days
+  Sick Leave (SL)               : 10 days
+  Casual Leave (CL)             :  8 days
+  Maternity Leave (as per law)  : 26 weeks (for first two children)
+  Paternity Leave               :  5 days (within 3 months of child's birth)
+  Bereavement Leave             :  3 days (immediate family)
+  Compensatory Off (Comp-Off)   : Accrued for approved weekend/holiday work
+
+PL can be carried forward up to a maximum of 30 days at the end of a
+calendar year. Any excess above 30 days will lapse. SL and CL cannot be
+carried forward or encashed.
+
+4.2 Leave Application Process
+
+All leave requests must be submitted through the HR portal (portal.meridian.in)
+at least 48 hours in advance for planned leave. In cases of unforeseen absence
+(illness, emergency), the employee must notify their reporting manager via
+phone or message before 9:30 AM on the day of absence, and apply for leave
+on the portal within 24 hours of return.
+
+Unapproved absences exceeding two consecutive working days without communication
+will be treated as Loss of Pay (LOP) and may be subject to disciplinary review.
+
+4.3 Attendance and Work Hours
+
+Standard working hours are 9:00 AM to 6:00 PM, Monday through Friday, with
+a one-hour lunch break. Employees are expected to maintain a minimum attendance
+of 95% in any given month excluding approved leave.
+
+Flexible working arrangements (staggered shifts or work from home) may be
+approved at the discretion of the department head and HR, subject to the
+nature of the role and business requirements.
+
+================================================================================
+SECTION 5: COMPENSATION AND BENEFITS
+================================================================================
+
+5.1 Salary Structure
+
+Gross salary is structured as follows (indicative, actual may vary by band):
+
+  Basic Salary              : 40% of Gross CTC
+  House Rent Allowance      : 20% of Gross CTC
+  Special Allowance         : Variable (balancing component)
+  Provident Fund (Employer) :  3.67% of Basic (12% total, employee matches)
+  Gratuity Provision        : As per Payment of Gratuity Act, 1972
+  Medical Insurance Premium : As per group policy (employer-funded)
+
+5.2 Increment and Bonus Cycles
+
+  Annual Increment    : Effective April 1 each year, based on performance rating
+  Performance Bonus   : Paid in Q1 of the following year; up to 15% of annual
+                        CTC for "Exceeds Expectations" rating
+  Retention Bonus     : Offered selectively for critical roles; terms
+                        communicated via individual letters
+
+5.3 Insurance Benefits
+
+All confirmed employees (post-probation) are covered under:
+
+  - Group Mediclaim: INR 5,00,000 per family (self, spouse, up to 2 children)
+  - Group Personal Accident cover: 3x annual CTC
+  - Group Term Life Insurance: 3x annual CTC
+  - Optional top-up plans available at employee cost via payroll deduction
+
+================================================================================
+SECTION 6: PERFORMANCE MANAGEMENT
+================================================================================
+
+6.1 Performance Review Cycle
+
+Meridian Solutions follows a bi-annual performance review process:
+
+  Mid-Year Review   : July–August (developmental, no rating)
+  Annual Review     : January–February (evaluative, rating-linked)
+
+Ratings are on a five-point scale:
+  5 - Outstanding
+  4 - Exceeds Expectations
+  3 - Meets Expectations
+  2 - Partially Meets Expectations
+  1 - Does Not Meet Expectations
+
+Ratings of 1 or 2 for two consecutive cycles trigger a Performance Improvement
+Plan (PIP) as outlined in Section 6.3.
+
+6.2 Goal Setting (OKR Framework)
+
+Each employee sets objectives at the beginning of the review cycle in alignment
+with their team and organisational goals. Goals should be:
+
+  - Specific and measurable
+  - Achievable within the cycle
+  - Relevant to the role and department strategy
+  - Time-bound (milestone-based where applicable)
+
+Goals are documented on the HR portal and require manager sign-off within the
+first three weeks of a new cycle.
+
+6.3 Performance Improvement Plan (PIP)
+
+A PIP is a structured 60-day plan designed to provide clear guidance and
+measurable targets to an underperforming employee. It includes:
+
+  - Documented expectations and success criteria
+  - Weekly check-ins with the reporting manager and HR
+  - Access to any required training or support resources
+  - Clear consequence statement if targets are not met
+
+An employee under a PIP is not eligible for promotion, lateral transfers,
+or discretionary bonuses during the plan period.
+
+================================================================================
+SECTION 7: GRIEVANCE REDRESSAL
+================================================================================
+
+7.1 Raising a Grievance
+
+Employees are encouraged to first attempt to resolve concerns informally
+with the concerned party or with their reporting manager. If this is not
+feasible or does not yield resolution, a formal grievance may be submitted
+in writing to the HR department via grievance@meridian.in.
+
+7.2 Resolution Timeline
+
+  Acknowledgement           : Within 2 working days of receipt
+  Investigation completed   : Within 15 working days
+  Resolution communicated   : Within 21 working days
+
+Complex cases involving legal considerations or multiple parties may take
+up to 45 working days. The employee will be kept informed of the status.
+
+7.3 Non-Retaliation
+
+Meridian Solutions strictly prohibits retaliation against any employee who
+raises a genuine grievance in good faith. Any act of retaliation will itself
+be treated as a disciplinary violation.
+
+================================================================================
+SECTION 8: SEPARATION POLICY
+================================================================================
+
+8.1 Notice Period
+
+  Probationary employees    : 15 days (either side)
+  Band 1–3 (confirmed)      : 30 days
+  Band 4–6 (senior roles)   : 60 days
+  Band 7 and above          : 90 days
+
+Notice periods may be waived in full or part at the company's discretion.
+Notice pay in lieu may be accepted subject to approval by the HR Director.
+
+8.2 Exit Process
+
+Upon resignation or termination, employees must complete the following:
+
+  - Return all company assets (laptop, access cards, documents)
+  - Complete knowledge transfer as directed by the manager
+  - Complete the exit interview with HR
+  - Obtain No Dues clearance from all departments
+
+Full and final settlement will be processed within 45 days of the last
+working day, subject to clearance of all dues and return of company property.
+
+8.3 Termination for Cause
+
+The company reserves the right to terminate employment immediately and without
+notice in cases of gross misconduct, which includes but is not limited to:
+
+  - Theft, fraud, or financial dishonesty
+  - Sexual harassment
+  - Willful destruction of company property
+  - Sharing confidential information with competitors
+  - Serious insubordination or threatening behavior
+
+Termination for cause will be preceded by a show-cause notice and a fair
+opportunity for the employee to present their case, except where immediate
+separation is required for safety or security reasons.
+
+================================================================================
+ACKNOWLEDGEMENT
+================================================================================
+
+I, the undersigned, confirm that I have received, read, and understood the
+contents of this Employee Handbook (Version 3.2). I agree to abide by the
+policies and guidelines set forth herein.
+
+Employee Name    : _________________________
+Employee ID      : _________________________
+Department       : _________________________
+Date of Joining  : _________________________
+Signature        : _________________________
+Date             : _________________________
+
+(Please submit the signed copy to HR within 7 working days of joining.)
+
+================================================================================
+END OF DOCUMENT
+HR Department | Meridian Solutions Pvt. Ltd.
+Last Revised: December 2024 | Next Review Due: December 2025
+================================================================================
