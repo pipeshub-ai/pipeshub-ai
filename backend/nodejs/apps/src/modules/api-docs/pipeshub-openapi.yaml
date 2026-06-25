@@ -20600,7 +20600,7 @@ paths:
         - Spaces and special characters allowed
         - Duplicate names rejected within the same parent (`409`)
 
-        **Response:** Returns `id`, `name`, and `webUrl` for the created folder.
+        **Response:** Returns `id` and `name` for the created folder.
       operationId: createFolder
       x-pipeshub-sdk: true
       security:
