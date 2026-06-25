@@ -1208,8 +1208,8 @@ class TestHandleWebhookNotification:
 
 class TestGetFilterOptions:
     @pytest.mark.asyncio
-    async def test_raises_not_implemented(self, connector):
-        with pytest.raises(NotImplementedError):
+    async def test_raises_for_unknown_key(self, connector):
+        with pytest.raises(ValueError, match="Unsupported filter key"):
             await connector.get_filter_options("key")
 
 
