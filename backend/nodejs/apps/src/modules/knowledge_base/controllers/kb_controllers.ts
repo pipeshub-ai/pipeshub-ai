@@ -1269,6 +1269,13 @@ export const getRecordById =
         responseForClient.data.record = { ...responseForClient.data.record };
         // TODO: Move this response shaping into a typed mapper once the connector contract drops record._id.
         delete responseForClient.data.record._id;
+        delete responseForClient.data.record._rev;
+        if (responseForClient.data.record.fileRecord) {
+          responseForClient.data.record.fileRecord = {
+            ...responseForClient.data.record.fileRecord,
+          };
+          delete responseForClient.data.record.fileRecord._rev;
+        }
       }
 
       handleConnectorResponse(

@@ -3707,9 +3707,6 @@ components:
           properties:
             id:
               type: string
-            _rev:
-              type: string
-              nullable: true
             orgId:
               type: string
             recordName:
@@ -3725,7 +3722,7 @@ components:
             connectorId:
               type: string
             connectorName:
-              type: string
+              $ref: '#/components/schemas/ConnectorNameEnum'
             recordType:
               $ref: '#/components/schemas/RecordTypeEnum'
             origin:
@@ -3800,9 +3797,6 @@ components:
                   type: string
                 _id:
                   type: string
-                _rev:
-                  type: string
-                  nullable: true
                 orgId:
                   type: string
                 name:
