@@ -28785,7 +28785,6 @@ paths:
       operationId: getConnectorStats
       security:
         - bearerAuth: []
-        - oauth2: [connector:read]
         - oauth2: [kb:read]
       parameters:
         - name: connectorId
@@ -28819,7 +28818,6 @@ paths:
       operationId: reindexFailedRecords
       security:
         - bearerAuth: []
-        - oauth2: [connector:write]
         - oauth2: [kb:write]
       parameters:
         - name: connectorId
@@ -28869,7 +28867,6 @@ paths:
       operationId: resyncConnector
       security:
         - bearerAuth: []
-        - oauth2: [connector:write]
         - oauth2: [kb:write]
       parameters:
         - name: connectorId

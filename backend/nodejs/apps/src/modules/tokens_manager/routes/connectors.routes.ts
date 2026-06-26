@@ -539,7 +539,7 @@ export function createConnectorRouter(
   router.get(
     '/:connectorId/stats',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONNECTOR_READ, OAuthScopeNames.KB_READ),
+    requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(getConnectorStatsSchema),
     getConnectorStats(config),
@@ -552,7 +552,7 @@ export function createConnectorRouter(
   router.post(
     '/:connectorId/reindex-failed',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONNECTOR_WRITE, OAuthScopeNames.KB_WRITE),
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(reindexFailedRecordSchema),
     reindexFailedRecords(recordRelationService, config),
@@ -565,7 +565,7 @@ export function createConnectorRouter(
   router.post(
     '/:connectorId/resync',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONNECTOR_WRITE, OAuthScopeNames.KB_WRITE),
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(resyncConnectorSchema),
     resyncConnectorRecords(recordRelationService, config),
