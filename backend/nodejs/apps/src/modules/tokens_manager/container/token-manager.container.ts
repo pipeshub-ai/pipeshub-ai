@@ -165,6 +165,23 @@ export class TokenManagerContainer {
           ? this.instance.get<IMessageProducer>('MessageProducer')
           : null;
 
+        const recordsEventProducer = this.instance.isBound(
+          'RecordsEventProducer',
+        )
+          ? this.instance.get<RecordsEventProducer>('RecordsEventProducer')
+          : null;
+
+        const syncEventProducer = this.instance.isBound('SyncEventProducer')
+          ? this.instance.get<SyncEventProducer>('SyncEventProducer')
+          : null;
+
+        if (recordsEventProducer) {
+          await recordsEventProducer.stop();
+        }
+        if (syncEventProducer) {
+          await syncEventProducer.stop();
+        }
+
         if (redisService && redisService.isConnected()) {
           await redisService.disconnect();
         }

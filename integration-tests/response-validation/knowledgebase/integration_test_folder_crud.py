@@ -64,7 +64,6 @@ class TestFolderCrud:
 
         assert body["name"] == folder_name
         assert isinstance(body["id"], str) and body["id"]
-        assert body["webUrl"] == f"/kb/{kb_id}/folder/{body['id']}"
 
     def test_create_root_folder_negative(
         self, six_kb_records: dict[str, object]
@@ -195,7 +194,6 @@ class TestFolderCrud:
 
         assert body["name"] == folder_name
         assert isinstance(body["id"], str) and body["id"]
-        assert body["webUrl"] == f"/kb/{kb_id}/folder/{body['id']}"
 
     def test_create_subfolder_negative(
         self, six_kb_records: dict[str, object]

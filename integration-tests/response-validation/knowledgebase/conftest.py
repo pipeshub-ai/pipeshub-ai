@@ -24,6 +24,7 @@ from messaging.test_e2e_record_pipeline import (  # noqa: E402
     _extract_record_id,
     poll_until,
 )
+from helper.kb_upload_sse import parse_kb_upload_response  # noqa: E402
 
 _ASANA_PDF_BLOB_URL = (
     "https://github.com/pipeshub-ai/integration-test/blob/main/"
@@ -295,14 +296,14 @@ def six_kb_records(pipeshub_client: PipeshubClient) -> Generator[SixKbRecords, N
             files = [
                 ("files", (record_name, io.BytesIO(pdf_buffer), pdf_mimetype)),
             ]
-            upload_resp = requests.post(
+            with requests.post(
                 upload_url,
                 headers=upload_headers,
                 files=files,
                 timeout=timeout,
-            )
-            upload_resp.raise_for_status()
-            return _extract_record_id(upload_resp.json())
+                stream=True,
+            ) as upload_resp:
+                return _extract_record_id(parse_kb_upload_response(upload_resp))
 
         with ThreadPoolExecutor(max_workers=_RECORD_COUNT) as pool:
             record_ids = list(pool.map(_upload_one, record_names))

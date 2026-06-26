@@ -205,6 +205,18 @@ export const getKnowledgeBase =
         req.headers as Record<string, string>,
       );
 
+      if (response?.data && typeof response.data === 'object') {
+        const data = response.data as Record<string, unknown>;
+        const folders = data.folders;
+        if (Array.isArray(folders)) {
+          for (const folder of folders) {
+            if (folder && typeof folder === 'object') {
+              delete (folder as Record<string, unknown>).webUrl;
+            }
+          }
+        }
+      }
+
       handleConnectorResponse(
         response,
         res,
@@ -349,6 +361,23 @@ export const listKnowledgeBases =
         HttpMethod.GET,
         req.headers as Record<string, string>,
       );
+
+      if (response?.data && typeof response.data === 'object') {
+        const data = response.data as Record<string, unknown>;
+        const knowledgeBases = data.knowledgeBases;
+        if (Array.isArray(knowledgeBases)) {
+          for (const kb of knowledgeBases) {
+            if (!kb || typeof kb !== 'object') continue;
+            const folders = (kb as Record<string, unknown>).folders;
+            if (!Array.isArray(folders)) continue;
+            for (const folder of folders) {
+              if (folder && typeof folder === 'object') {
+                delete (folder as Record<string, unknown>).webUrl;
+              }
+            }
+          }
+        }
+      }
 
       handleConnectorResponse(
         response,

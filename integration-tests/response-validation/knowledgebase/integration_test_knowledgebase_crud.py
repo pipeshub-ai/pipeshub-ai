@@ -265,7 +265,7 @@ class TestKnowledgeBaseCrud:
             assert body["connectorId"] is None
             assert len(body["folders"]) >= 1
             folder = body["folders"][0]
-            for key in ("id", "name", "createdAtTimestamp", "webUrl"):
+            for key in ("id", "name", "createdAtTimestamp"):
                 assert key in folder
         finally:
             requests.delete(

@@ -3143,9 +3143,6 @@ components:
                       format: int64
                     path:
                       type: string
-                    webUrl:
-                      type: string
-                      nullable: true
         pagination:
           type: object
           additionalProperties: false
@@ -3279,10 +3276,6 @@ components:
                 type: integer
                 format: int64
                 description: Creation timestamp in milliseconds
-              webUrl:
-                type: string
-                nullable: true
-                description: Relative web URL for the folder in the UI
 
     UpdateKnowledgeBaseById:
       type: object
@@ -4273,21 +4266,31 @@ components:
       type: object
       required:
         - app
-        - connectorId
       properties:
         app:
           type: string
           description: Connector app name (e.g. `KB`, `GOOGLE_DRIVE`).
           example: "GOOGLE_DRIVE"
-        connectorId:
-          type: string
-          description: Connector instance ID.
         statusFilters:
           type: array
           items:
             $ref: '#/components/schemas/IndexingStatusFilter'
           description: |
             Statuses to reindex. Defaults to `FAILED` when omitted (connector-wide reindex).
+
+    ResyncConnectorRequestBody:
+      type: object
+      required:
+        - connectorName
+      properties:
+        connectorName:
+          type: string
+          description: Connector type name (e.g. `Google Drive`, `GOOGLE_DRIVE`).
+          example: "GOOGLE_DRIVE"
+        fullSync:
+          type: boolean
+          description: When true, triggers a full sync instead of incremental.
+          default: false
 
     ConnectorStats:
       type: object
@@ -4953,11 +4956,6 @@ components:
         - teamIds
 
     # ==================== ENTERPRISE SEARCH SCHEMAS ====================
-    AppType:
-      type: string
-      enum: [drive, gmail, onedrive, sharepointOnline, bookstack, confluence, jira, slack, dropbox, outlook, servicenow, web, local]
-      description: Supported application/connector types
-
     Filters:
       type: object
       additionalProperties: false
@@ -21295,114 +21293,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-  /knowledgeBase/resync/connector:
-    post:
-      tags:
-        - Connector
-      summary: Resync connector
-      description: |
-        Trigger a full resync of all records from a connector.<br><br>
-        <b>Overview:</b><br>
-        Fetches all content from the external source and updates local records. Use when you suspect data is out of sync.<br><br>
-        <b>Warning:</b> This can be resource-intensive for large connectors.
-      operationId: resyncConnector
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:write]
-      requestBody:
-        required: true
-        description: "Request body for Resync connector"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                connectorName:
-                  type: string
-                  description: Connector type name
-                  example: "GOOGLE_DRIVE"
-                connectorId:
-                  type: string
-                  description: Connector instance ID
-              required:
-                - connectorName
-                - connectorId
-      responses:
-        '200':
-          description: Resync initiated
-        '400':
-          description: Invalid connector parameters
-        '401':
-          description: Unauthorized
-        '409':
-          description: Conflict — the connector instance is disabled. Enable it from Connector Settings and try again.
-
-  /knowledgeBase/stats/{connectorId}:
-    get:
-      tags:
-        - Connector
-      summary: Get connector statistics
-      description: |
-        Retrieve statistics for a specific connector including record counts, indexing status breakdown, and sync information.
-      operationId: getConnectorStats
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:read]
-      parameters:
-        - name: connectorId
-          in: path
-          required: true
-          description: Connector ID
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Connector statistics
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ConnectorStats'
-        '401':
-          description: Unauthorized
-        '404':
-          description: Connector not found
-
-  /knowledgeBase/reindex-failed/connector:
-    post:
-      tags:
-        - Knowledge Bases
-      summary: Reindex failed records for connector
-      description: |
-        Trigger reindexing for a connector instance, scoped by indexing status. When
-        `statusFilters` is omitted, only `FAILED` records are reindexed.
-      operationId: reindexFailedRecords
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:write]
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ReindexFailedConnectorRequestBody'
-      responses:
-        '200':
-          description: Reindex triggered successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  reindexResponse:
-                    type: object
-                    description: Connector reindex job acknowledgement from the relation service.
-        '401':
-          description: Unauthorized
-        '404':
-          description: Connector not found
-        '409':
-          description: Conflict — the connector instance is disabled. Enable it from Connector Settings and try again.
 
   /knowledgeBase/{kbId}/record/{recordId}/move:
     put:
@@ -28883,6 +28773,135 @@ paths:
           description: Permission denied
         '404':
           description: Connector not found
+
+  /connectors/{connectorId}/stats:
+    get:
+      tags:
+        - Connector Instances
+      summary: Get connector statistics
+      description: |
+        Retrieve statistics for a specific connector instance including record counts,
+        indexing status breakdown, and sync information.
+      operationId: getConnectorStats
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+        - oauth2: [kb:read]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Connector statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorStats'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Insufficient OAuth scope or no access to connector stats
+        '404':
+          description: Connector not found
+
+  /connectors/{connectorId}/reindex-failed:
+    post:
+      tags:
+        - Connector Instances
+      summary: Reindex failed records for connector
+      description: |
+        Trigger reindexing for a connector instance, scoped by indexing status. When
+        `statusFilters` is omitted, only `FAILED` records are reindexed.
+      operationId: reindexFailedRecords
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+        - oauth2: [kb:write]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: Request payload
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReindexFailedConnectorRequestBody'
+      responses:
+        '200':
+          description: Reindex triggered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reindexResponse:
+                    type: object
+                    description: Connector reindex job acknowledgement from the relation service.
+        '401':
+          description: Unauthorized
+        '404':
+          description: Connector not found
+        '409':
+          description: Conflict — the connector instance is disabled or locked.
+
+  /connectors/{connectorId}/resync:
+    post:
+      tags:
+        - Connector Instances
+      summary: Resync connector
+      description: |
+        Trigger a resync of records from a connector instance.
+
+        **Overview:**
+
+        Fetches content from the external source and updates local records. Use when you suspect data is out of sync.
+
+        **Warning:** This can be resource-intensive for large connectors.
+      operationId: resyncConnector
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+        - oauth2: [kb:write]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: Request body for resync connector
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResyncConnectorRequestBody'
+      responses:
+        '200':
+          description: Resync initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resyncConnectorResponse:
+                    type: object
+                    description: Connector resync job acknowledgement from the relation service.
+        '400':
+          description: Invalid connector parameters
+        '401':
+          description: Unauthorized
+        '409':
+          description: Conflict — the connector instance is disabled or locked.
 
   /connectors/{connectorId}/name:
     put:
