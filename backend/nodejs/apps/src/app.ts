@@ -7,7 +7,6 @@ import http from 'http';
 import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
 import { TokenManagerContainer } from './modules/tokens_manager/container/token-manager.container';
-import { ConnectorContainer } from './modules/tokens_manager/container/connector.container';
 import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
@@ -89,7 +88,6 @@ export class Application {
   private app: Express;
   private server: http.Server;
   private tokenManagerContainer!: Container;
-  private connectorContainer!: Container;
   private storageServiceContainer!: Container;
   private esAgentContainer!: Container;
   private logger!: Logger;
@@ -137,7 +135,6 @@ export class Application {
       this.tokenManagerContainer = await TokenManagerContainer.initialize(
         configurationManagerConfig,
       );
-      this.connectorContainer = await ConnectorContainer.initialize(appConfig);
 
       this.configurationManagerContainer =
         await ConfigurationManagerContainer.initialize(
@@ -483,7 +480,6 @@ export class Application {
       createConnectorRouter(
         this.tokenManagerContainer,
         this.crawlingManagerContainer,
-        this.connectorContainer,
       ),
     );
 
@@ -629,7 +625,6 @@ export class Application {
       await UserManagerContainer.dispose();
       await AuthServiceContainer.dispose();
       await EnterpriseSearchAgentContainer.dispose();
-      await ConnectorContainer.dispose();
       await TokenManagerContainer.dispose();
       await KnowledgeBaseContainer.dispose();
       await ConfigurationManagerContainer.dispose();

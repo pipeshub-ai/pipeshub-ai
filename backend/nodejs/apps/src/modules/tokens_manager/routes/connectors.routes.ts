@@ -366,13 +366,11 @@ const getConnectorStatsSchema = z.object({
  * @param container - Tokens-manager DI container for existing connector route
  *   dependencies: auth, app config, entity events, metrics, and storage.
  * @param crawlingContainer - Crawling-manager DI container for the scheduler.
- * @param connectorContainer - Connector DI container for record/sync producers.
  * @returns Configured Express router
  */
 export function createConnectorRouter(
   container: Container,
   crawlingContainer: Container,
-  connectorContainer: Container,
 ): Router {
   const router = Router();
   let config = container.get<AppConfig>('AppConfig');
@@ -384,11 +382,11 @@ export function createConnectorRouter(
   const localFsUploadMiddleware = createLocalFsConnectorFileEventsUploadMiddleware(
     container.get<KeyValueStoreService>('KeyValueStoreService'),
   );
-  const recordsEventProducer = connectorContainer.get<RecordsEventProducer>(
+  const recordsEventProducer = container.get<RecordsEventProducer>(
     'RecordsEventProducer',
   );
   const syncEventProducer =
-    connectorContainer.get<SyncEventProducer>('SyncEventProducer');
+    container.get<SyncEventProducer>('SyncEventProducer');
   const recordRelationService = new RecordRelationService(
     recordsEventProducer,
     syncEventProducer,
@@ -541,7 +539,7 @@ export function createConnectorRouter(
   router.get(
     '/:connectorId/stats',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    requireScopes(OAuthScopeNames.CONNECTOR_READ, OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(getConnectorStatsSchema),
     getConnectorStats(config),
@@ -554,7 +552,7 @@ export function createConnectorRouter(
   router.post(
     '/:connectorId/reindex-failed',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE, OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(reindexFailedRecordSchema),
     reindexFailedRecords(recordRelationService, config),
@@ -567,7 +565,7 @@ export function createConnectorRouter(
   router.post(
     '/:connectorId/resync',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE, OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(resyncConnectorSchema),
     resyncConnectorRecords(recordRelationService, config),

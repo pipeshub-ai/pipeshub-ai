@@ -66,6 +66,14 @@ describe('Connector Routes', () => {
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
     container.bind<any>('AppConfig').toConstantValue(mockConfig)
     container.bind<any>('EntitiesEventProducer').toConstantValue(mockEventService)
+    container.bind<any>('RecordsEventProducer').toConstantValue({
+      start: sinon.stub().resolves(),
+      publishEvent: sinon.stub().resolves(),
+    })
+    container.bind<any>('SyncEventProducer').toConstantValue({
+      start: sinon.stub().resolves(),
+      publishEvent: sinon.stub().resolves(),
+    })
 
     const mockPrometheusService = {
       recordActivity: sinon.stub(),

@@ -10,6 +10,8 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { EntitiesEventProducer } from '../services/entity_event.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
+import { RecordsEventProducer } from '../../knowledge_base/services/records_events.service';
+import { SyncEventProducer } from '../../knowledge_base/services/sync_events.service';
 import {
   resolveMessageBrokerConfig,
   createMessageProducer,
@@ -100,6 +102,24 @@ export class TokenManagerContainer {
       container
         .bind<EntitiesEventProducer>('EntitiesEventProducer')
         .toConstantValue(entityEventsService);
+
+      const recordsEventProducer = new RecordsEventProducer(
+        messageProducer,
+        container.get('Logger'),
+      );
+      await recordsEventProducer.start();
+      container
+        .bind<RecordsEventProducer>('RecordsEventProducer')
+        .toConstantValue(recordsEventProducer);
+
+      const syncEventProducer = new SyncEventProducer(
+        messageProducer,
+        container.get('Logger'),
+      );
+      await syncEventProducer.start();
+      container
+        .bind<SyncEventProducer>('SyncEventProducer')
+        .toConstantValue(syncEventProducer);
 
       const jwtSecret = config.jwtSecret;
       const scopedJwtSecret = config.scopedJwtSecret;
