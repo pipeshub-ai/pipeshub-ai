@@ -311,6 +311,7 @@ class LinearExpected:
         connector_id: str,
         datasource: Any,
         team_id: str,
+        parent_node_id: Optional[str] = None,
     ) -> LinkRecord:
         """Build a ``LinkRecord`` from live Linear attachment JSON."""
         resp = await datasource.attachment(id=attachment_id)
@@ -359,7 +360,7 @@ class LinearExpected:
             updated_at=updated_at,
             preview_renderable=False,
             is_dependent_node=True,
-            parent_node_id=None,
+            parent_node_id=parent_node_id,
             inherit_permissions=True,
         )
 
@@ -372,6 +373,7 @@ class LinearExpected:
         team_id: str,
         parent_external_id: Optional[str] = None,
         parent_record_type: RecordType = RecordType.TICKET,
+        parent_node_id: Optional[str] = None,
     ) -> WebpageRecord:
         """Build a ``WebpageRecord`` from live Linear document JSON."""
         resp = await datasource.document(id=document_id)
@@ -419,7 +421,7 @@ class LinearExpected:
             updated_at=updated_at,
             preview_renderable=False,
             is_dependent_node=True,
-            parent_node_id=None,
+            parent_node_id=parent_node_id,
             inherit_permissions=True,
         )
 

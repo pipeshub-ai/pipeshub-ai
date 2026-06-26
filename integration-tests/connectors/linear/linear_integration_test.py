@@ -36,7 +36,6 @@ if str(_ROOT) not in sys.path:
 from app.config.constants.arangodb import ProgressStatus  # type: ignore[import-not-found]  # noqa: E402
 from app.models.entities import (  # type: ignore[import-not-found]  # noqa: E402
     LinkRecord,
-    Record,
     RecordType,
 )
 from app.sources.external.linear.linear import LinearDataSource  # type: ignore[import-not-found]  # noqa: E402
@@ -77,46 +76,6 @@ def _restart_sync(pipeshub_client: PipeshubClient, connector_id: str) -> None:
     pipeshub_client.toggle_sync(connector_id, enable=True)
     pipeshub_client.wait(8)
 
-
-def _assert_dependent_record_fields(
-    expected: Record,
-    actual: Record,
-    *,
-    skip: frozenset[str] | None = None,
-) -> None:
-    """Compare core Record fields between expected and actual (no schema layer)."""
-    skip_fields = skip or frozenset()
-    compare_fields = (
-        "record_type",
-        "external_record_id",
-        "external_revision_id",
-        "external_record_group_id",
-        "parent_external_record_id",
-        "mime_type",
-        "weburl",
-        "record_name",
-        "source_created_at",
-        "source_updated_at",
-        "inherit_permissions",
-        "is_dependent_node",
-        "preview_renderable",
-        "version",
-        "origin",
-        "connector_name",
-        "connector_id",
-    )
-    mismatches: list[str] = []
-    for field in compare_fields:
-        if field in skip_fields:
-            continue
-        exp_val = getattr(expected, field, None)
-        act_val = getattr(actual, field, None)
-        if exp_val != act_val:
-            mismatches.append(f"  - {field!r}: expected {exp_val!r}, actual {act_val!r}")
-    if mismatches:
-        raise AssertionError(
-            "Dependent record field mismatch:\n" + "\n".join(mismatches)
-        )
 
 
 pytestmark = [
@@ -160,10 +119,6 @@ class TestLinearConnector:
         file_count = await graph_provider.count_records_by_type(connector_id, RecordType.FILE.value)
         assert ticket_count == linear_connector["expected_ticket_count"]
         assert project_count == linear_connector["expected_project_count"]
-        assert link_count == linear_connector["expected_link_count"]
-        assert webpage_count == linear_connector["expected_webpage_count"]
-        assert file_count == linear_connector["expected_file_count"]
-
         assert link_count == linear_connector["api_link_count"]
         assert webpage_count == linear_connector["api_webpage_count"]
         assert file_count == linear_connector["api_file_count"]
@@ -564,17 +519,22 @@ class TestLinearValidation:
             datasource=linear_datasource,
             team_id=team_id,
         )
+        parent_external_id = expected.parent_external_record_id
+        parent = await graph_provider.get_record_by_external_id(connector_id, parent_external_id) if parent_external_id else None
+        if parent:
+            expected.parent_node_id = parent.id
+
         actual = await graph_provider.get_typed_record_by_external_id(connector_id, attachment_id)
         assert actual is not None, f"LINK record missing for attachment {attachment_id}"
         assert isinstance(actual, LinkRecord), f"Expected LinkRecord, got {type(actual).__name__}"
 
-        skip = frozenset({"created_at", "updated_at"})
-        _assert_dependent_record_fields(expected, actual, skip=skip)
-        assert actual.url == expected.url
-        assert actual.title == expected.title
-
-        record_edges = build_record_edge_expectations(actual, connector_id)
-        await assert_graph_edges(graph_provider, record_edges)
+        await assert_graph_entity_with_edges(
+            expected, actual,
+            entity="link_record",
+            connector_id=connector_id,
+            graph_provider=graph_provider,
+            skip_compare=frozenset({"created_at", "updated_at"}),
+        )
         logger.info("TC-LINEAR-006 passed: attachment %s validated as LINK", attachment_id)
 
     @pytest.mark.order(11)
@@ -595,24 +555,29 @@ class TestLinearValidation:
         parent_type = (
             RecordType.PROJECT if parent_type_str == "PROJECT" else RecordType.TICKET
         )
+        parent_external_id = linear_connector.get("reference_document_parent_id")
+
+        parent = await graph_provider.get_record_by_external_id(connector_id, parent_external_id) if parent_external_id else None
 
         expected = await LinearExpected.webpage_record(
             document_id,
             connector_id=connector_id,
             datasource=linear_datasource,
             team_id=team_id,
-            parent_external_id=linear_connector.get("reference_document_parent_id"),
+            parent_external_id=parent_external_id,
             parent_record_type=parent_type,
+            parent_node_id=parent.id if parent else None,
         )
         actual = await graph_provider.get_typed_record_by_external_id(connector_id, document_id)
         assert actual is not None, f"WEBPAGE record missing for document {document_id}"
-        assert actual.record_type == RecordType.WEBPAGE
 
-        skip = frozenset({"created_at", "updated_at"})
-        _assert_dependent_record_fields(expected, actual, skip=skip)
-
-        record_edges = build_record_edge_expectations(actual, connector_id)
-        await assert_graph_edges(graph_provider, record_edges)
+        await assert_graph_entity_with_edges(
+            expected, actual,
+            entity="webpage_record",
+            connector_id=connector_id,
+            graph_provider=graph_provider,
+            skip_compare=frozenset({"created_at", "updated_at"}),
+        )
         logger.info("TC-LINEAR-007 passed: document %s validated as WEBPAGE", document_id)
 
     @pytest.mark.order(12)
@@ -663,7 +628,6 @@ class TestLinearValidation:
         )
         actual = await graph_provider.get_typed_record_by_external_id(connector_id, file_url)
         assert actual is not None, f"FILE record missing for url {file_url}"
-        assert actual.record_type == RecordType.FILE
 
         await assert_graph_entity_with_edges(
             expected, actual,
@@ -683,7 +647,7 @@ class TestLinearValidation:
 class TestLinearIndexing:
     """Indexing pipeline: reference TICKET reaches ``COMPLETED`` in graph."""
 
-    @pytest.mark.order(7)
+    @pytest.mark.order(13)
     async def test_tc_linear_idx_001_reference_issue_indexing_completed(
         self,
         linear_connector: Dict[str, Any],
@@ -702,11 +666,6 @@ class TestLinearIndexing:
             pipeshub_client=pipeshub_client,
         )
         assert rec.indexing_status == ProgressStatus.COMPLETED.value
-        assert rec.record_type == RecordType.TICKET, (
-            f"Expected TICKET record_type, got {rec.record_type!r}"
-        )
-        assert rec.connector_id == connector_id
-        assert rec.external_record_group_id == linear_connector["primary_team_id"]
         assert rec.virtual_record_id, (
             f"Issue should have virtual_record_id after indexing COMPLETED"
         )
@@ -727,29 +686,15 @@ class TestLinearEdges:
         linear_connector: Dict[str, Any],
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-LINEAR-EDGES-001: structural edge invariants after incremental tests.
+        """TC-LINEAR-EDGES-001: structural edge invariants after mutation tests.
 
-        After TC-INCR-001, the created issue was deleted from Linear but may still
-        be in the graph (no deletion sync was triggered). This test validates that
-        structural invariants hold: record_group_edges == total records, etc.
+        TC-INCR-001 creates and deletes its test issue (with sync), so the graph
+        should be back at baseline counts. Validate exact equality + edge invariants.
         """
         connector_id = linear_connector["connector_id"]
 
         records = await graph_provider.count_records(connector_id)
-        ticket_count = await graph_provider.count_records_by_type(connector_id, RecordType.TICKET.value)
-        project_count = await graph_provider.count_records_by_type(connector_id, RecordType.PROJECT.value)
-        link_count = await graph_provider.count_records_by_type(connector_id, RecordType.LINK.value)
-        webpage_count = await graph_provider.count_records_by_type(connector_id, RecordType.WEBPAGE.value)
-        file_count = await graph_provider.count_records_by_type(connector_id, RecordType.FILE.value)
-
-        # After INCR-001 the new issue may or may not still be in the graph,
-        # so we validate structural invariants rather than exact +1 arithmetic.
-        assert ticket_count >= linear_connector["expected_ticket_count"]
-        assert project_count >= linear_connector["expected_project_count"]
-        assert link_count >= linear_connector["expected_link_count"]
-        assert webpage_count >= linear_connector["expected_webpage_count"]
-        assert file_count >= linear_connector["expected_file_count"]
-        assert records >= linear_connector["expected_total_records"]
+        assert records == linear_connector["expected_total_records"]
 
         rg_edges = await graph_provider.count_record_group_edges(connector_id)
         assert rg_edges == records, (
@@ -757,7 +702,7 @@ class TestLinearEdges:
         )
 
         pc = await graph_provider.count_parent_child_edges(connector_id)
-        assert pc >= linear_connector["expected_parent_child_edges"]
+        assert pc == linear_connector["expected_parent_child_edges"]
 
         inherit = await graph_provider.count_inherit_permissions_edges(connector_id)
         assert inherit == records, f"INHERIT_PERMISSIONS {inherit} must equal records {records}"

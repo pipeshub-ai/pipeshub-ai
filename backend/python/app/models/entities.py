@@ -944,6 +944,7 @@ class WebpageRecord(Record):
             virtual_record_id=record_doc.get("virtualRecordId"),
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId"),
         )
 
 class LinkRecord(Record):
@@ -1049,6 +1050,7 @@ class LinkRecord(Record):
             linked_record_id=link_doc.get("linkedRecordId"),
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId"),
         )
 
 class CommentRecord(Record):
