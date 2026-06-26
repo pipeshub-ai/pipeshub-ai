@@ -38,12 +38,16 @@ class TestKnowledgeBaseCrud:
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert_response_matches_openapi_operation(body, "createKnowledgeBase")
-        requests.delete(
-            f"{self.url}{body['id']}",
-            headers=self.headers,
-            timeout=self.client.timeout_seconds,
-        )
+        kb_id = body.get("id") if isinstance(body, dict) else None
+        try:
+            assert_response_matches_openapi_operation(body, "createKnowledgeBase")
+        finally:
+            if kb_id:
+                requests.delete(
+                    f"{self.url}{kb_id}",
+                    headers=self.headers,
+                    timeout=self.client.timeout_seconds,
+                )
 
     def test_create_knowledge_base_negative(self) -> None:
         resp = requests.post(

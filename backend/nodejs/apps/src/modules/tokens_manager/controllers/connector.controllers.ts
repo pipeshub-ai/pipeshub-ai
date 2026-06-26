@@ -1907,7 +1907,7 @@ export const getConnectorStats =
       }
     } catch (error: any) {
       logger.error('Error getting connector stats', {
-        recordId: req.params.recordId,
+        connectorId: req.params.connectorId,
         error,
       });
       next(error);

@@ -113,25 +113,26 @@ class TestKBPermissionCreate:
             json={"userIds": [grantee_id], "teamIds": [], "role": "READER"},
             timeout=self.client.timeout_seconds,
         )
-        assert resp.status_code == 201, resp.text
-        body = resp.json()
-        assert_response_matches_openapi_operation(
-            body, "createKBPermission", status_code="201"
-        )
-        assert body["kbId"] == kb_id
-        assert body.get("permissionResult") is not None
-        assert _granted_count(body) >= 1, (
-            "Permission create returned grantedCount=0 — grantee Mongo userId "
-            "not found in graph yet"
-        )
-
-        _remove_permission(
-            self.base_url,
-            self.headers,
-            kb_id,
-            user_ids=[grantee_id],
-            timeout=self.client.timeout_seconds,
-        )
+        try:
+            assert resp.status_code == 201, resp.text
+            body = resp.json()
+            assert_response_matches_openapi_operation(
+                body, "createKBPermission", status_code="201"
+            )
+            assert body["kbId"] == kb_id
+            assert body.get("permissionResult") is not None
+            assert _granted_count(body) >= 1, (
+                "Permission create returned grantedCount=0 — grantee Mongo userId "
+                "not found in graph yet"
+            )
+        finally:
+            _remove_permission(
+                self.base_url,
+                self.headers,
+                kb_id,
+                user_ids=[grantee_id],
+                timeout=self.client.timeout_seconds,
+            )
 
     def test_create_kb_permission_success_team(
         self,
@@ -147,21 +148,22 @@ class TestKBPermissionCreate:
             json={"userIds": [], "teamIds": [team_id]},
             timeout=self.client.timeout_seconds,
         )
-        assert resp.status_code == 201, resp.text
-        body = resp.json()
-        assert_response_matches_openapi_operation(
-            body, "createKBPermission", status_code="201"
-        )
-        assert body["kbId"] == kb_id
-        assert body.get("permissionResult") is not None
-
-        _remove_permission(
-            self.base_url,
-            self.headers,
-            kb_id,
-            team_ids=[team_id],
-            timeout=self.client.timeout_seconds,
-        )
+        try:
+            assert resp.status_code == 201, resp.text
+            body = resp.json()
+            assert_response_matches_openapi_operation(
+                body, "createKBPermission", status_code="201"
+            )
+            assert body["kbId"] == kb_id
+            assert body.get("permissionResult") is not None
+        finally:
+            _remove_permission(
+                self.base_url,
+                self.headers,
+                kb_id,
+                team_ids=[team_id],
+                timeout=self.client.timeout_seconds,
+            )
 
     def test_create_kb_permission_negative(
         self,
@@ -389,33 +391,34 @@ class TestKBPermissionUpdate:
             json={"userIds": [grantee_id], "teamIds": [], "role": "READER"},
             timeout=self.client.timeout_seconds,
         )
-        assert create_resp.status_code == 201, create_resp.text
-        assert _granted_count(create_resp.json()) >= 1, (
-            "Permission create returned grantedCount=0 — grantee Mongo userId "
-            "not found in graph yet"
-        )
+        try:
+            assert create_resp.status_code == 201, create_resp.text
+            assert _granted_count(create_resp.json()) >= 1, (
+                "Permission create returned grantedCount=0 — grantee Mongo userId "
+                "not found in graph yet"
+            )
 
-        resp = requests.put(
-            perms_url,
-            headers=self.headers,
-            json={"userIds": [grantee_id], "teamIds": [], "role": "WRITER"},
-            timeout=self.client.timeout_seconds,
-        )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "updateKBPermissions")
-        assert body["kbId"] == kb_id
-        assert grantee_graph_id in body["userIds"]
-        assert body.get("teamIds") == []
-        assert body["newRole"] == "WRITER"
-
-        _remove_permission(
-            self.base_url,
-            self.headers,
-            kb_id,
-            user_ids=[grantee_id],
-            timeout=self.client.timeout_seconds,
-        )
+            resp = requests.put(
+                perms_url,
+                headers=self.headers,
+                json={"userIds": [grantee_id], "teamIds": [], "role": "WRITER"},
+                timeout=self.client.timeout_seconds,
+            )
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert_response_matches_openapi_operation(body, "updateKBPermissions")
+            assert body["kbId"] == kb_id
+            assert grantee_graph_id in body["userIds"]
+            assert body.get("teamIds") == []
+            assert body["newRole"] == "WRITER"
+        finally:
+            _remove_permission(
+                self.base_url,
+                self.headers,
+                kb_id,
+                user_ids=[grantee_id],
+                timeout=self.client.timeout_seconds,
+            )
 
     def test_update_kb_permission_negative(
         self,
@@ -596,24 +599,33 @@ class TestKBPermissionDelete:
             json={"userIds": [grantee_id], "teamIds": [], "role": "READER"},
             timeout=self.client.timeout_seconds,
         )
-        assert create_resp.status_code == 201, create_resp.text
-        assert _granted_count(create_resp.json()) >= 1, (
-            "Permission create returned grantedCount=0 — grantee Mongo userId "
-            "not found in graph yet"
-        )
+        try:
+            assert create_resp.status_code == 201, create_resp.text
+            assert _granted_count(create_resp.json()) >= 1, (
+                "Permission create returned grantedCount=0 — grantee Mongo userId "
+                "not found in graph yet"
+            )
 
-        resp = requests.delete(
-            perms_url,
-            headers=self.headers,
-            json={"userIds": [grantee_id], "teamIds": []},
-            timeout=self.client.timeout_seconds,
-        )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "deleteKBPermissions")
-        assert body["kbId"] == kb_id
-        assert grantee_graph_id in body["userIds"]
-        assert body.get("teamIds") == []
+            resp = requests.delete(
+                perms_url,
+                headers=self.headers,
+                json={"userIds": [grantee_id], "teamIds": []},
+                timeout=self.client.timeout_seconds,
+            )
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert_response_matches_openapi_operation(body, "deleteKBPermissions")
+            assert body["kbId"] == kb_id
+            assert grantee_graph_id in body["userIds"]
+            assert body.get("teamIds") == []
+        finally:
+            _remove_permission(
+                self.base_url,
+                self.headers,
+                kb_id,
+                user_ids=[grantee_id],
+                timeout=self.client.timeout_seconds,
+            )
 
     def test_delete_kb_permission_success_team(
         self,
@@ -630,21 +642,30 @@ class TestKBPermissionDelete:
             json={"userIds": [], "teamIds": [team_id]},
             timeout=self.client.timeout_seconds,
         )
-        assert create_resp.status_code == 201, create_resp.text
-        assert create_resp.json().get("permissionResult") is not None
+        try:
+            assert create_resp.status_code == 201, create_resp.text
+            assert create_resp.json().get("permissionResult") is not None
 
-        resp = requests.delete(
-            perms_url,
-            headers=self.headers,
-            json={"userIds": [], "teamIds": [team_id]},
-            timeout=self.client.timeout_seconds,
-        )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "deleteKBPermissions")
-        assert body["kbId"] == kb_id
-        assert body.get("userIds") == []
-        assert team_id in body["teamIds"]
+            resp = requests.delete(
+                perms_url,
+                headers=self.headers,
+                json={"userIds": [], "teamIds": [team_id]},
+                timeout=self.client.timeout_seconds,
+            )
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert_response_matches_openapi_operation(body, "deleteKBPermissions")
+            assert body["kbId"] == kb_id
+            assert body.get("userIds") == []
+            assert team_id in body["teamIds"]
+        finally:
+            _remove_permission(
+                self.base_url,
+                self.headers,
+                kb_id,
+                team_ids=[team_id],
+                timeout=self.client.timeout_seconds,
+            )
 
     def test_delete_kb_permission_negative(
         self,
@@ -764,24 +785,33 @@ class TestKBPermissionDelete:
             json={"userIds": [grantee_id], "teamIds": [], "role": "READER"},
             timeout=self.client.timeout_seconds,
         )
-        assert create_resp.status_code == 201, create_resp.text
-        assert _granted_count(create_resp.json()) >= 1, create_resp.text
+        try:
+            assert create_resp.status_code == 201, create_resp.text
+            assert _granted_count(create_resp.json()) >= 1, create_resp.text
 
-        resp = requests.delete(
-            perms_url,
-            headers=self.headers,
-            json={"userIds": [grantee_id], "teamIds": []},
-            timeout=self.client.timeout_seconds,
-        )
-        assert resp.status_code == 200, resp.text
+            resp = requests.delete(
+                perms_url,
+                headers=self.headers,
+                json={"userIds": [grantee_id], "teamIds": []},
+                timeout=self.client.timeout_seconds,
+            )
+            assert resp.status_code == 200, resp.text
 
-        resp = requests.delete(
-            perms_url,
-            headers=self.headers,
-            json={"userIds": [], "teamIds": [team_id]},
-            timeout=self.client.timeout_seconds,
-        )
-        assert resp.status_code == 404, resp.text
-        assert_response_matches_openapi_operation(
-            resp.json(), "deleteKBPermissions", status_code="404"
-        )
+            resp = requests.delete(
+                perms_url,
+                headers=self.headers,
+                json={"userIds": [], "teamIds": [team_id]},
+                timeout=self.client.timeout_seconds,
+            )
+            assert resp.status_code == 404, resp.text
+            assert_response_matches_openapi_operation(
+                resp.json(), "deleteKBPermissions", status_code="404"
+            )
+        finally:
+            _remove_permission(
+                self.base_url,
+                self.headers,
+                kb_id,
+                user_ids=[grantee_id],
+                timeout=self.client.timeout_seconds,
+            )
