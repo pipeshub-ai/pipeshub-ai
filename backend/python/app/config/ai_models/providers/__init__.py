@@ -14,7 +14,9 @@ from .embedding_only import (
     VoyageProvider,
 )
 from .gemini import GeminiProvider
+from .litellm_proxy import LiteLLMProxyProvider
 from .llm_only import FireworksProvider, GroqProvider, MiniMaxProvider, XAIProvider
+from .lm_studio import LMStudioProvider
 from .mistral import MistralProvider
 from .ollama import OllamaProvider
 from .openai import OpenAIProvider
@@ -35,6 +37,8 @@ ALL_PROVIDER_CLASSES: list[type] = [
     AzureOpenAIProvider,
     BedrockProvider,
     OllamaProvider,
+    LMStudioProvider,
+    LiteLLMProxyProvider,
     VertexAIProvider,
     CohereProvider,
     TogetherProvider,

@@ -44,6 +44,8 @@ class EmbeddingProvider(Enum):
     GEMINI = "gemini"
     HUGGING_FACE = "huggingFace"
     JINA_AI = "jinaAI"
+    LITELLM_PROXY = "litellmProxy"
+    LM_STUDIO = "lmStudio"
     MISTRAL = "mistral"
     OLLAMA = "ollama"
     OPENAI = "openAI"
@@ -63,6 +65,8 @@ class LLMProvider(Enum):
     FIREWORKS = "fireworks"
     GEMINI = "gemini"
     GROQ = "groq"
+    LITELLM_PROXY = "litellmProxy"
+    LM_STUDIO = "lmStudio"
     MINIMAX = "minimax"
     MISTRAL = "mistral"
     OLLAMA = "ollama"
@@ -75,18 +79,21 @@ class LLMProvider(Enum):
 
 
 class ImageGenerationProvider(Enum):
+    LITELLM_PROXY = "litellmProxy"
     OPENAI = "openAI"
     GEMINI = "gemini"
     OPENROUTER = "openRouter"
 
 
 class TTSProvider(Enum):
+    LITELLM_PROXY = "litellmProxy"
     OPENAI = "openAI"
     GEMINI = "gemini"
     OPENROUTER = "openRouter"
 
 
 class STTProvider(Enum):
+    LITELLM_PROXY = "litellmProxy"
     OPENAI = "openAI"
     WHISPER = "whisper"
     WISPR = "wispr"
@@ -346,6 +353,30 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
         )
         _set_embedding_dimensions_kwarg(or_emb_kwargs, dimensions)
         return OpenAIEmbeddings(**or_emb_kwargs)
+
+    elif provider == EmbeddingProvider.LM_STUDIO.value:
+        from langchain_openai.embeddings import OpenAIEmbeddings
+
+        lms_emb_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            api_key=configuration.get("apiKey") or "lm-studio",
+            base_url=configuration["endpoint"],
+            check_embedding_ctx_length=False,
+        )
+        _set_embedding_dimensions_kwarg(lms_emb_kwargs, dimensions)
+        return OpenAIEmbeddings(**lms_emb_kwargs)
+
+    elif provider == EmbeddingProvider.LITELLM_PROXY.value:
+        from langchain_openai.embeddings import OpenAIEmbeddings
+
+        llp_emb_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            api_key=configuration['apiKey'],
+            base_url=configuration["endpoint"],
+            check_embedding_ctx_length=False,
+        )
+        _set_embedding_dimensions_kwarg(llp_emb_kwargs, dimensions)
+        return OpenAIEmbeddings(**llp_emb_kwargs)
 
     elif provider == EmbeddingProvider.TOGETHER.value:
         from app.utils.custom_embeddings import TogetherEmbeddings
@@ -697,6 +728,32 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
                 stream_usage=True,  # Enable token usage tracking for Opik
             )
 
+    elif provider == LLMProvider.LM_STUDIO.value:
+        from langchain_openai import ChatOpenAI
+        is_reasoning_model = config.get("isReasoning", False)
+        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
+        return ChatOpenAI(
+                model=model_name,
+                temperature=temperature,
+                timeout=DEFAULT_LLM_TIMEOUT,
+                api_key=configuration.get("apiKey") or "lm-studio",
+                base_url=configuration["endpoint"],
+                stream_usage=True,
+            )
+
+    elif provider == LLMProvider.LITELLM_PROXY.value:
+        from langchain_openai import ChatOpenAI
+        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
+        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
+        return ChatOpenAI(
+                model=model_name,
+                temperature=temperature,
+                timeout=DEFAULT_LLM_TIMEOUT,
+                api_key=configuration["apiKey"],
+                base_url=configuration["endpoint"],
+                stream_usage=True,
+            )
+
     elif provider == LLMProvider.OPENROUTER.value:
         from langchain_openai import ChatOpenAI
 
@@ -806,11 +863,14 @@ class _OpenAIImageAdapter(ImageGenerationAdapter):
         model: str,
         api_key: str,
         organization: str | None = None,
+        base_url: str | None = None,
+        provider_override: str | None = None,
     ) -> None:
-        self.provider = ImageGenerationProvider.OPENAI.value
+        self.provider = provider_override or ImageGenerationProvider.OPENAI.value
         self.model = model
         self._api_key = api_key
         self._organization = organization
+        self._base_url = base_url or None
 
     async def generate(
         self,
@@ -823,10 +883,13 @@ class _OpenAIImageAdapter(ImageGenerationAdapter):
 
         from openai import AsyncOpenAI
 
-        client = AsyncOpenAI(
-            api_key=self._api_key,
-            organization=self._organization,
-        )
+        client_kwargs: dict[str, Any] = {
+            "api_key": self._api_key,
+            "organization": self._organization,
+        }
+        if self._base_url:
+            client_kwargs["base_url"] = self._base_url
+        client = AsyncOpenAI(**client_kwargs)
 
         # The ``response_format`` parameter is **only** accepted by DALL-E
         # models; ``gpt-image-*`` rejects it with HTTP 400 ("Unknown parameter:
@@ -1063,6 +1126,14 @@ def get_image_generation_model(
         return _OpenRouterImageAdapter(
             model=model_name,
             api_key=configuration["apiKey"],
+        )
+
+    if provider == ImageGenerationProvider.LITELLM_PROXY.value:
+        return _OpenAIImageAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+            base_url=configuration["endpoint"],
+            provider_override=ImageGenerationProvider.LITELLM_PROXY.value,
         )
 
     raise ValueError(f"Unsupported image generation provider: {provider}")
@@ -1427,6 +1498,16 @@ def get_tts_model(
             provider_override=TTSProvider.OPENROUTER.value,
         )
 
+    if provider == TTSProvider.LITELLM_PROXY.value:
+        return _OpenAITTSAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+            default_voice=configuration.get("voice"),
+            default_format=configuration.get("responseFormat"),
+            base_url=configuration["endpoint"],
+            provider_override=TTSProvider.LITELLM_PROXY.value,
+        )
+
     raise ValueError(f"Unsupported TTS provider: {provider}")
 
 
@@ -1475,11 +1556,14 @@ class _OpenAISTTAdapter(STTAdapter):
         model: str,
         api_key: str,
         organization: str | None = None,
+        base_url: str | None = None,
+        provider_override: str | None = None,
     ) -> None:
-        self.provider = STTProvider.OPENAI.value
+        self.provider = provider_override or STTProvider.OPENAI.value
         self.model = model
         self._api_key = api_key
         self._organization = organization
+        self._base_url = base_url or None
 
     async def transcribe(
         self,
@@ -1491,10 +1575,13 @@ class _OpenAISTTAdapter(STTAdapter):
     ) -> str:
         from openai import AsyncOpenAI
 
-        client = AsyncOpenAI(
-            api_key=self._api_key,
-            organization=self._organization,
-        )
+        client_kwargs: Dict[str, Any] = {
+            "api_key": self._api_key,
+            "organization": self._organization,
+        }
+        if self._base_url:
+            client_kwargs["base_url"] = self._base_url
+        client = AsyncOpenAI(**client_kwargs)
         file_tuple = (
             _stt_filename_for_mime(mime, filename),
             audio,
@@ -2076,6 +2163,14 @@ def get_stt_model(
         return _OpenRouterSTTAdapter(
             model=model_name,
             api_key=configuration["apiKey"],
+        )
+
+    if provider == STTProvider.LITELLM_PROXY.value:
+        return _OpenAISTTAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+            base_url=configuration["endpoint"],
+            provider_override=STTProvider.LITELLM_PROXY.value,
         )
 
     raise ValueError(f"Unsupported STT provider: {provider}")
