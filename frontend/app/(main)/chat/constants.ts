@@ -14,6 +14,7 @@ export const PROVIDER_FRIENDLY_NAMES: Record<string, string> = {
   meta: 'Meta',
   cohere: 'Cohere',
   groq: 'Groq',
+  openRouter: 'OpenRouter',
 };
 
 /**

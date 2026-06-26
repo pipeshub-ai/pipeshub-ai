@@ -20,6 +20,7 @@ on:
             - s3
             - confluence
             - jira
+            - linear
             - gcs
             - azure_blob
             - azure_files
@@ -111,6 +112,8 @@ jobs:
       JIRA_TEST_BASE_URL: ${{ secrets.JIRA_TEST_BASE_URL }}
       JIRA_TEST_EMAIL: ${{ secrets.JIRA_TEST_EMAIL }}
       JIRA_TEST_API_TOKEN: ${{ secrets.JIRA_TEST_API_TOKEN }}
+      LINEAR_TEST_API_TOKEN: ${{ secrets.LINEAR_TEST_API_TOKEN }}
+      LINEAR_TEST_TEAM_IDS: ${{ secrets.LINEAR_TEST_TEAM_IDS }}
 
     steps:
       - name: Checkout code
