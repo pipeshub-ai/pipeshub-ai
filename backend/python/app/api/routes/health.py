@@ -913,13 +913,13 @@ async def perform_image_generation_health_check(
 
             async with httpx.AsyncClient(timeout=30.0) as http_client:
                 resp = await http_client.get(
-                    f"{OPENROUTER_BASE_URL}/models",
+                    f"{OPENROUTER_BASE_URL}/auth/key",
                     headers={"Authorization": f"Bearer {configuration['apiKey']}"},
                 )
-            if resp.status_code >= 400:
-                raise RuntimeError(
-                    f"OpenRouter models endpoint returned HTTP {resp.status_code}"
-                )
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"OpenRouter credential check returned HTTP {resp.status_code}"
+                    )
         else:
             return JSONResponse(
                 status_code=400,
@@ -1024,13 +1024,13 @@ async def perform_tts_health_check(
 
             async with httpx.AsyncClient(timeout=30.0) as http_client:
                 resp = await http_client.get(
-                    f"{OPENROUTER_BASE_URL}/models",
+                    f"{OPENROUTER_BASE_URL}/auth/key",
                     headers={"Authorization": f"Bearer {configuration['apiKey']}"},
                 )
-            if resp.status_code >= 400:
-                raise RuntimeError(
-                    f"OpenRouter models endpoint returned HTTP {resp.status_code}"
-                )
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"OpenRouter credential check returned HTTP {resp.status_code}"
+                    )
         else:
             return JSONResponse(
                 status_code=400,
@@ -1184,13 +1184,13 @@ async def perform_stt_health_check(
 
             async with httpx.AsyncClient(timeout=30.0) as http_client:
                 resp = await http_client.get(
-                    f"{OPENROUTER_BASE_URL}/models",
+                    f"{OPENROUTER_BASE_URL}/auth/key",
                     headers={"Authorization": f"Bearer {configuration['apiKey']}"},
                 )
-            if resp.status_code >= 400:
-                raise RuntimeError(
-                    f"OpenRouter models endpoint returned HTTP {resp.status_code}"
-                )
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"OpenRouter credential check returned HTTP {resp.status_code}"
+                    )
         else:
             return JSONResponse(
                 status_code=400,

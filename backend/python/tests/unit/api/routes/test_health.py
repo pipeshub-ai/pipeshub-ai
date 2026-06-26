@@ -1732,3 +1732,122 @@ class TestLoadTestImageFullCoverage:
             with pytest.raises(FileNotFoundError):
                 from app.api.routes.health import _load_test_image
                 _load_test_image()
+
+
+class TestPerformImageGenerationHealthCheck:
+    def _cfg(self, provider: str, model: str = "gpt-image-1", api_key: str = "sk-test") -> dict:
+        return {"provider": provider, "configuration": {"model": model, "apiKey": api_key}}
+
+    @pytest.mark.asyncio
+    async def test_no_model_names_returns_500(self):
+        logger = MagicMock()
+        from app.api.routes.health import perform_image_generation_health_check
+        resp = await perform_image_generation_health_check(
+            {"provider": "openAI", "configuration": {"model": "  ", "apiKey": "sk"}},
+            logger,
+        )
+        assert resp.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_unsupported_provider_returns_400(self):
+        logger = MagicMock()
+        mock_adapter = MagicMock()
+        with patch(f"{MODULE}.get_image_generation_model", return_value=mock_adapter):
+            from app.api.routes.health import perform_image_generation_health_check
+            resp = await perform_image_generation_health_check(
+                self._cfg("stability"), logger
+            )
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_adapter_build_failure_returns_500(self):
+        logger = MagicMock()
+        with patch(f"{MODULE}.get_image_generation_model", side_effect=ValueError("bad cfg")):
+            from app.api.routes.health import perform_image_generation_health_check
+            resp = await perform_image_generation_health_check(self._cfg("openAI"), logger)
+        assert resp.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_openai_success(self):
+        logger = MagicMock()
+        mock_adapter = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.models.list = AsyncMock(return_value=[])
+        mock_client.close = AsyncMock()
+
+        with patch(f"{MODULE}.get_image_generation_model", return_value=mock_adapter), \
+             patch("openai.AsyncOpenAI", return_value=mock_client), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[]):
+            from app.api.routes.health import perform_image_generation_health_check
+            resp = await perform_image_generation_health_check(self._cfg("openAI"), logger)
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_openai_probe_exception_returns_500(self):
+        logger = MagicMock()
+        mock_adapter = MagicMock()
+        with patch(f"{MODULE}.get_image_generation_model", return_value=mock_adapter), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, side_effect=RuntimeError("network error")):
+            from app.api.routes.health import perform_image_generation_health_check
+            resp = await perform_image_generation_health_check(self._cfg("openAI"), logger)
+        assert resp.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_openrouter_success(self):
+        logger = MagicMock()
+        mock_adapter = MagicMock()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        mock_http = AsyncMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+        mock_http.get = AsyncMock(return_value=mock_response)
+
+        with patch(f"{MODULE}.get_image_generation_model", return_value=mock_adapter), \
+             patch("httpx.AsyncClient", return_value=mock_http):
+            from app.api.routes.health import perform_image_generation_health_check
+            resp = await perform_image_generation_health_check(
+                self._cfg("openRouter", model="bytedance-seed/seedream-4.5"), logger
+            )
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_openrouter_bad_api_key_returns_500(self):
+        logger = MagicMock()
+        mock_adapter = MagicMock()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+
+        mock_http = AsyncMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+        mock_http.get = AsyncMock(return_value=mock_response)
+
+        with patch(f"{MODULE}.get_image_generation_model", return_value=mock_adapter), \
+             patch("httpx.AsyncClient", return_value=mock_http):
+            from app.api.routes.health import perform_image_generation_health_check
+            resp = await perform_image_generation_health_check(
+                self._cfg("openRouter", model="bytedance-seed/seedream-4.5"), logger
+            )
+        assert resp.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_openrouter_network_error_returns_500(self):
+        logger = MagicMock()
+        mock_adapter = MagicMock()
+
+        mock_http = AsyncMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=None)
+        mock_http.get = AsyncMock(side_effect=RuntimeError("connection refused"))
+
+        with patch(f"{MODULE}.get_image_generation_model", return_value=mock_adapter), \
+             patch("httpx.AsyncClient", return_value=mock_http):
+            from app.api.routes.health import perform_image_generation_health_check
+            resp = await perform_image_generation_health_check(
+                self._cfg("openRouter", model="bytedance-seed/seedream-4.5"), logger
+            )
+        assert resp.status_code == 500
