@@ -4269,8 +4269,8 @@ components:
       properties:
         app:
           type: string
-          description: Connector app name (e.g. `KB`, `GOOGLE_DRIVE`).
-          example: "GOOGLE_DRIVE"
+          description: Connector app name (e.g. `KB`, `DRIVE`).
+          example: "DRIVE"
         statusFilters:
           type: array
           items:
@@ -4285,8 +4285,8 @@ components:
       properties:
         connectorName:
           type: string
-          description: Connector type name (e.g. `Google Drive`, `GOOGLE_DRIVE`).
-          example: "GOOGLE_DRIVE"
+          description: Connector type name (e.g. `Google Drive`, `DRIVE`).
+          example: "DRIVE"
         fullSync:
           type: boolean
           description: When true, triggers a full sync instead of incremental.
