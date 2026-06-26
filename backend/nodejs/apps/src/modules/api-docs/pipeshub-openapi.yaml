@@ -20629,7 +20629,7 @@ paths:
         '200':
           description: File content stream
           content:
-            application/octet-stream:
+            '*/*':
               schema:
                 type: string
                 format: binary
