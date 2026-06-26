@@ -348,6 +348,13 @@ class _TokenWalker:
                             sub_type=BlockSubType.LIST_ITEM,
                         ):
                             self._add_block(image_block)
+                        else:
+                            self._emit_with_image_splits(
+                                block_type=BlockType.TEXT,
+                                sub_type=BlockSubType.LIST_ITEM,
+                                format=DataFormat.MARKDOWN,
+                                segments=segments,
+                            )
                     else:
                         self._emit_with_image_splits(
                             block_type=BlockType.TEXT,

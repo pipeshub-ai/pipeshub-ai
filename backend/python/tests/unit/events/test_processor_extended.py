@@ -910,7 +910,9 @@ class TestProcessHtmlInputHandling:
                 proc.process_html_document("test.html", "r1", "1", "src", "o1", html_str, "vr1")
             )
 
-        html_parser.parse.assert_awaited_once_with("<p>Hello</p>", caption_map=None)
+        html_parser.parse.assert_awaited_once_with(
+            "<p>Hello</p>", caption_map=None, name="test.html"
+        )
         assert any(e.event == "indexing_complete" for e in events)
 
 

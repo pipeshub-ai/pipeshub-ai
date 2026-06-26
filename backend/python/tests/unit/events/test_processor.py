@@ -972,7 +972,9 @@ class TestProcessHtmlDocument:
                 )
             )
 
-        mock_html_parser.parse.assert_awaited_once_with("<p>Test</p>", caption_map=None)
+        mock_html_parser.parse.assert_awaited_once_with(
+            "<p>Test</p>", caption_map=None, name="test.html"
+        )
         mock_pipeline.return_value.apply.assert_awaited_once()
         assert events[0].event == "parsing_complete"
         assert events[1].event == "indexing_complete"

@@ -377,7 +377,7 @@ class TestLists:
             if block.sub_type == BlockSubType.LIST_ITEM
         ]
         assert len(list_items) == 1
-        assert list_items[0].data == "- outer\n  - inner"
+        assert list_items[0].data == "outer\n  - inner"
         assert list_items[0].format == DataFormat.MARKDOWN
         assert list_items[0].parent_index == list_group.index
         assert _child_block_indices(list_group) == [list_items[0].index]
@@ -582,8 +582,7 @@ class TestImages:
         list_container = container.blocks[0]
         assert list_container.sub_type == BlockSubType.LIST_ITEM
         assert _is_empty_split_container(list_container)
-        assert _fragment_blocks(container, list_container.index)[0].data == "- "
-        assert _fragment_blocks(container, list_container.index)[0].sub_type is None
+        assert _fragment_blocks(container, list_container.index) == []
         assert list_container.parent_index == list_group.index
 
     def test_image_inside_list_with_caption_map_emits_image_block(
@@ -602,7 +601,7 @@ class TestImages:
         assert len(list_containers) == 1
         assert _is_empty_split_container(list_containers[0])
         fragments = _fragment_blocks(container, list_containers[0].index)
-        assert fragments[0].data == "- Available connectors: "
+        assert fragments[0].data == "Available connectors: "
         assert fragments[0].sub_type is None
         assert len(image_blocks) == 1
         assert image_blocks[0].data == {"uri": "data:image/png;base64,LISTIMG"}
@@ -949,6 +948,7 @@ class TestMarkdownItParserIntegration:
         parser._converter.convert.assert_called_once_with(
             "# Hello",
             caption_map={"Image_1": "uri"},
+            page_number=None,
         )
 
 
@@ -1122,7 +1122,7 @@ class TestSplitRawMarkdownIntoSegments:
 
 
 class TestImageSplitContainers:
-    def test_image_only_list_item_splits_into_container_and_image(
+    def test_image_only_list_item_emits_image_block_with_list_item_sub_type(
         self, converter: MarkdownToBlocksConverter
     ):
         container = converter.convert(
@@ -1132,13 +1132,11 @@ class TestImageSplitContainers:
         list_containers = _split_container_blocks(container, BlockSubType.LIST_ITEM)
         image_blocks = _blocks_by_type(container, BlockType.IMAGE)
 
-        assert len(list_containers) == 1
-        assert _is_empty_split_container(list_containers[0])
-        assert list_containers[0].data is None
+        assert list_containers == []
         assert len(image_blocks) == 1
-        assert image_blocks[0].parent_block_index == list_containers[0].index
-        fragments = _fragment_blocks(container, list_containers[0].index)
-        assert fragments[0].data == "- "
+        assert image_blocks[0].sub_type == BlockSubType.LIST_ITEM
+        assert image_blocks[0].parent_block_index is None
+        assert image_blocks[0].data == {"uri": "data:image/png;base64,LISTIMG"}
 
     def test_image_split_table_row_container_carries_only_row_number(
         self, converter: MarkdownToBlocksConverter
