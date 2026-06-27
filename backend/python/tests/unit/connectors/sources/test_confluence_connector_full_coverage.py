@@ -235,6 +235,7 @@ class TestTransformToWebpageRecord:
         rec = c._transform_to_webpage_record(data, RecordType.CONFLUENCE_PAGE)
         assert rec is not None
         assert rec.record_name == "Test Page"
+        assert rec.mime_type == MimeTypes.HTML.value
         assert rec.external_record_group_id == "100"
         assert rec.parent_external_record_id == "p0"
 
@@ -248,6 +249,7 @@ class TestTransformToWebpageRecord:
         }
         rec = c._transform_to_webpage_record(data, RecordType.CONFLUENCE_BLOGPOST)
         assert rec is not None
+        assert rec.mime_type == MimeTypes.HTML.value
         assert rec.parent_external_record_id == "parent1"
 
     def test_no_space(self):

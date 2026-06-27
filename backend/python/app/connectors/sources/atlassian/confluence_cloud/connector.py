@@ -2792,7 +2792,7 @@ class ConfluenceConnector(BaseConnector):
                 parent_external_record_id=parent_external_record_id,
                 parent_record_type=parent_record_type,
                 weburl=web_url,
-                mime_type=MimeTypes.BLOCKS.value,
+                mime_type=MimeTypes.HTML.value,
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
                 is_dependent_node=False,  # Pages are root nodes
@@ -4640,18 +4640,20 @@ class ConfluenceConnector(BaseConnector):
 
                 self.logger.info(f"Published update events for {len(updated_records)} records that changed at source")
 
-            # Fix legacy mime types for pages/blogposts before reindexing
+            # Reindex non-updated records (preserving existing mime types)
             if non_updated_records:
-                fixed_records, ok_records = await self._fix_legacy_mime_types(non_updated_records)
+                # DISABLED: Don't convert HTML to BLOCKS anymore to support HTML format for new records
+                # while preserving existing BLOCKS records
+                # fixed_records, ok_records = await self._fix_legacy_mime_types(non_updated_records)
+                # TODO: Uncomment this when we want to convert HTML to BLOCKS again
+                # all_reindex_records = fixed_records + ok_records
                 
-                all_reindex_records = fixed_records + ok_records
+                # Use records as-is (preserves existing BLOCKS, new ones are HTML)
+                all_reindex_records = non_updated_records
                 
                 if all_reindex_records:
                     await self.data_entities_processor.reindex_existing_records(all_reindex_records)
-                    self.logger.info(
-                        f"Published reindex events for {len(all_reindex_records)} non-updated records "
-                        f"({len(fixed_records)} mime type fixes, {len(ok_records)} unchanged)"
-                    )
+                    self.logger.info(f"Published reindex events for {len(all_reindex_records)} non-updated records")
         except Exception as e:
             self.logger.error(f"Error during Confluence reindex: {e}", exc_info=True)
             raise

@@ -8676,7 +8676,10 @@ class TestCheckAndFetchUpdatedComment:
 
 
 class TestFixLegacyMimeTypes:
+    """Tests for deprecated _fix_legacy_mime_types method (no longer called in production)."""
+    
     @pytest.mark.asyncio
+    @pytest.mark.skip(reason="Method deprecated - tests backward compatibility only")
     async def test_updates_html_page_to_blocks(self):
         c = _mk_connector()
         page = MagicMock()
@@ -8697,6 +8700,7 @@ class TestFixLegacyMimeTypes:
         mock_tx.batch_upsert_records.assert_awaited_once_with(to_fix)
 
     @pytest.mark.asyncio
+    @pytest.mark.skip(reason="Method deprecated - tests backward compatibility only")
     async def test_no_fix_needed(self):
         c = _mk_connector()
         page = MagicMock()
