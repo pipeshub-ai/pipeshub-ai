@@ -266,7 +266,7 @@ class MergeRequestsSync:
 
         if self._comments_indexing_enabled():
             comments_bg, remaining_attachments = await c.comments.build_merge_request_comment_blocks(
-                mr_url=record.weburl, parent_index=0, record=record
+                mr_url=record.weburl, parent_index=bg_0.index, record=record
             )
             block_groups.extend(comments_bg)
             block_group_number += len(comments_bg)
