@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.config.constants.ai_models import OCRProvider
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -351,7 +352,7 @@ class TestProcessImage:
         """No content raises an exception."""
         proc, _, _, _ = _make_processor()
 
-        with pytest.raises(Exception, match="No image data"):
+        with pytest.raises(DocumentProcessingError, match="No image data"):
             await _collect(proc.process_image("rec-1", None, "vr-1"))
 
     @pytest.mark.asyncio
@@ -359,7 +360,7 @@ class TestProcessImage:
         """Empty bytes raises an exception."""
         proc, _, _, _ = _make_processor()
 
-        with pytest.raises(Exception, match="No image data"):
+        with pytest.raises(DocumentProcessingError, match="No image data"):
             await _collect(proc.process_image("rec-1", b"", "vr-1"))
 
     @pytest.mark.asyncio
@@ -627,7 +628,7 @@ class TestProcessDocxDocument:
                 side_effect=RuntimeError("parse error")
             )
 
-            with pytest.raises(RuntimeError, match="parse error"):
+            with pytest.raises(DocumentProcessingError, match="parse error"):
                 await _collect(
                     proc.process_docx_document(
                         recordName="test.docx",
@@ -1159,7 +1160,7 @@ class TestProcessTxtDocument:
         bad_bytes = MagicMock()
         bad_bytes.decode = MagicMock(side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "bad"))
 
-        with pytest.raises(Exception):
+        with pytest.raises(DocumentProcessingError, match="Unable to decode"):
             await _collect(
                 proc.process_txt_document(
                     recordName="test.txt",
@@ -1441,7 +1442,7 @@ class TestProcessImageAdditional:
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict(mimeType="image/png")
 
-        with pytest.raises(Exception, match="No image data"):
+        with pytest.raises(DocumentProcessingError, match="No image data"):
             await _collect(proc.process_image("rec-1", None, "vr-1"))
 
     @pytest.mark.asyncio
@@ -1502,7 +1503,7 @@ class TestProcessImageAdditional:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
             with patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
                 mock_emb.return_value = {"isMultimodal": True}
-                with pytest.raises(Exception, match="No mime type"):
+                with pytest.raises(DocumentProcessingError, match="No mime type"):
                     await _collect(proc.process_image("rec-1", b"imgdata", "vr-1"))
 
     @pytest.mark.asyncio
@@ -1517,7 +1518,7 @@ class TestProcessImageAdditional:
             with patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
                 mock_emb.return_value = {"isMultimodal": True}
                 with patch("app.events.processor.get_extension_from_mimetype", return_value=".png"):
-                    with pytest.raises(Exception, match="Unsupported extension"):
+                    with pytest.raises(DocumentProcessingError, match="Unsupported extension"):
                         await _collect(proc.process_image("rec-1", b"imgdata", "vr-1"))
 
 
@@ -1634,7 +1635,7 @@ class TestProcessPdfWithDocling:
         proc.docling_client.parse_pdf = AsyncMock(return_value={"parsed": True})
         proc.docling_client.create_blocks = AsyncMock(return_value=None)
 
-        with pytest.raises(Exception, match="failed to create blocks"):
+        with pytest.raises(DocumentProcessingError, match="failed to create blocks"):
             await _collect(proc.process_pdf_with_docling(
                 "test.pdf", "rec-1", b"pdfdata", "vr-1"
             ))
@@ -1991,7 +1992,7 @@ class TestProcessTxtDocument:
         bad_binary = MagicMock()
         bad_binary.decode = MagicMock(side_effect=UnicodeDecodeError('utf-8', b'', 0, 1, 'bad'))
 
-        with pytest.raises(Exception):
+        with pytest.raises(DocumentProcessingError, match="Unable to decode"):
             await _collect(proc.process_txt_document(
                 "test.txt", "rec-1", 1, "upload", "org-1",
                 bad_binary, "vr-1", "FILE", "KB", "UPLOAD"
@@ -3157,7 +3158,7 @@ class TestProcessImageCoverage:
     @pytest.mark.asyncio
     async def test_no_content_raises(self):
         proc = _make_processor_cov()
-        with pytest.raises(Exception, match="No image data"):
+        with pytest.raises(DocumentProcessingError, match="No image data"):
             async for _ in proc.process_image("r1", None, "vr1"):
                 pass
 
@@ -3243,7 +3244,7 @@ class TestProcessPdfWithDoclingCoverage:
         proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
         proc.docling_client.create_blocks = AsyncMock(return_value=None)
 
-        with pytest.raises(Exception, match="failed to create blocks"):
+        with pytest.raises(DocumentProcessingError, match="failed to create blocks"):
             async for _ in proc.process_pdf_with_docling("test.pdf", "r1", b"pdf", "vr1"):
                 pass
 
@@ -3622,7 +3623,7 @@ class TestProcessSqlStructuredData:
         proc = _make_processor_cov()
         proc.parsers = {"sql_table": mock_parser}
 
-        with pytest.raises(RuntimeError, match="parse failed"):
+        with pytest.raises(DocumentProcessingError, match="parse failed"):
             await _collect_events(
                 proc.process_sql_structured_data(
                     "table1", "r1", b'{}', "vr1",

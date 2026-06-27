@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -108,7 +110,7 @@ class TestDoclingProcessorParseDocument:
 
         with patch("app.modules.parsers.pdf.docling_processor.LOCAL_DOCLING_PARSE_WORKERS", 1), \
              patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
-            with pytest.raises(ValueError, match="Failed to parse document"):
+            with pytest.raises(DocumentProcessingError, match="Failed to parse document"):
                 await processor.parse_document("test.pdf", b"bad content")
 
     @pytest.mark.asyncio
@@ -277,11 +279,11 @@ class TestDoclingProcessorLoadDocument:
         """If parse_document fails, load_document propagates the error."""
         processor = _make_processor()
         processor.parse_document = AsyncMock(
-            side_effect=ValueError("Failed to parse document: failure")
+            side_effect=DocumentProcessingError("Failed to parse document: failure")
         )
         processor.create_blocks = AsyncMock()
 
-        with pytest.raises(ValueError, match="Failed to parse"):
+        with pytest.raises(DocumentProcessingError, match="Failed to parse"):
             await processor.load_document("bad.pdf", b"bad content")
         processor.create_blocks.assert_not_awaited()
 

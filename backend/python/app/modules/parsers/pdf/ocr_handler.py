@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict
 
 from app.config.constants.ai_models import OCRProvider
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 
 
 class OCRStrategy(ABC):
@@ -88,7 +89,10 @@ class OCRHandler:
             )
         else:
             self.logger.error(f"❌ Unsupported OCR strategy: {strategy_type}")
-            raise ValueError(f"Unsupported OCR strategy: {strategy_type}")
+            raise DocumentProcessingError(
+                f"Unsupported OCR strategy: {strategy_type}",
+                details={"strategy": strategy_type},
+            )
 
     async def process_document(self, content: bytes) -> Dict[str, Any]:
         """

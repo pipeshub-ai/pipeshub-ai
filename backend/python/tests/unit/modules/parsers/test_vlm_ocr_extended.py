@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+
 from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
 
 
@@ -105,7 +107,7 @@ class TestGetMultimodalLLM:
         })
 
         strategy = VLMOCRStrategy(logger, config)
-        with pytest.raises(ValueError, match="No multimodal LLM found"):
+        with pytest.raises(DocumentProcessingError, match="No multimodal LLM found"):
             await strategy._get_multimodal_llm()
 
     @pytest.mark.asyncio
@@ -115,7 +117,7 @@ class TestGetMultimodalLLM:
         config.get_config = AsyncMock(return_value={"llm": []})
 
         strategy = VLMOCRStrategy(logger, config)
-        with pytest.raises(ValueError, match="No LLM configurations found"):
+        with pytest.raises(DocumentProcessingError, match="No LLM configurations found"):
             await strategy._get_multimodal_llm()
 
 

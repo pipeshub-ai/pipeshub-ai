@@ -55,7 +55,7 @@ def plain_config():
 
 @pytest.fixture
 def consumer(logger, plain_config):
-    return IndexingKafkaConsumer(logger, plain_config)
+    return IndexingKafkaConsumer(logger, plain_config, retry_manager=None, producer=None)
 
 
 def _make_message(topic="test-topic", partition=0, offset=0, value=None):
@@ -243,7 +243,7 @@ class TestProcessMessageWrapperExtended:
 
     @pytest.mark.asyncio
     async def test_unknown_event_type_ignored(self, logger, plain_config):
-        """Unknown event types are silently ignored."""
+        """Unknown event types are silently ignored without marking success."""
         consumer = IndexingKafkaConsumer(logger, plain_config)
         consumer.parsing_semaphore = asyncio.Semaphore(1)
         consumer.indexing_semaphore = asyncio.Semaphore(1)
@@ -255,7 +255,7 @@ class TestProcessMessageWrapperExtended:
         msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
 
         result = await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
-        assert result is True
+        assert result is False
 
         # Semaphores released in finally
         assert consumer.parsing_semaphore._value == 1

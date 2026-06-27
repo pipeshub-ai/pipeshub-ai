@@ -384,6 +384,8 @@ class TestStartKafkaConsumers:
 
         with (
             patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.connectors_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
@@ -409,6 +411,8 @@ class TestStartKafkaConsumers:
 
         with (
             patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.connectors_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, side_effect=RuntimeError("sync config fail")),
             patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
@@ -432,6 +436,8 @@ class TestStartKafkaConsumers:
 
         with (
             patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.connectors_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, side_effect=RuntimeError("config fail")),
             patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
@@ -439,6 +445,44 @@ class TestStartKafkaConsumers:
         ):
             with pytest.raises(RuntimeError, match="config fail"):
                 await start_kafka_consumers(mock_container, gp)
+
+    async def test_retry_manager_created_for_redis_broker(self):
+        """RetryManager is created and initialized for Redis broker."""
+        from app.connectors_main import start_kafka_consumers
+
+        mock_container = _make_container()
+        gp = _make_graph_provider()
+        mock_entity_consumer = MagicMock()
+        mock_entity_consumer.start = AsyncMock()
+        mock_sync_consumer = MagicMock()
+        mock_sync_consumer.start = AsyncMock()
+        mock_retry_manager = AsyncMock()
+        mock_retry_manager.initialize = AsyncMock()
+
+        with (
+            patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.REDIS),
+            patch("app.connectors_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_retry_manager", return_value=mock_retry_manager) as mock_create_rm,
+            patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.KafkaUtils.create_sync_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_consumer", side_effect=[mock_entity_consumer, mock_sync_consumer]) as mock_create_consumer,
+        ):
+            consumers = await start_kafka_consumers(mock_container, gp)
+
+        # Assert RetryManager was created and initialized
+        mock_create_rm.assert_called_once()
+        mock_retry_manager.initialize.assert_awaited_once()
+
+        # Assert both consumers were created with retry_manager
+        assert mock_create_consumer.call_count == 2
+        for call in mock_create_consumer.call_args_list:
+            assert call.kwargs["retry_manager"] is mock_retry_manager
+
+        assert len(consumers) == 2
+        assert consumers[0] == ("entity", mock_entity_consumer)
+        assert consumers[1] == ("sync", mock_sync_consumer)
 
 
 # ---------------------------------------------------------------------------

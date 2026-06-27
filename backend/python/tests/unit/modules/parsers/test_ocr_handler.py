@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+
 from app.config.constants.ai_models import OCRProvider
 from app.modules.parsers.pdf.ocr_handler import OCRHandler, OCRStrategy
 
@@ -167,7 +169,7 @@ class TestOCRHandlerInit:
 
     def test_init_unsupported_strategy_raises(self, logger):
         """Unsupported strategy type raises ValueError."""
-        with pytest.raises(ValueError, match="Unsupported OCR strategy"):
+        with pytest.raises(DocumentProcessingError, match="Unsupported OCR strategy"):
             OCRHandler(logger, "unknown_strategy")
 
 

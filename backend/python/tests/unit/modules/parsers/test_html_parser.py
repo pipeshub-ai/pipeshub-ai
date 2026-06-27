@@ -3,6 +3,8 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from bs4 import BeautifulSoup
 
 from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
@@ -73,7 +75,7 @@ class TestParseFile:
             return_value=mock_converter,
         ):
             parser = DoclingHtmlParser()
-            with pytest.raises(ValueError, match="Failed to parse HTML"):
+            with pytest.raises(DocumentProcessingError, match="Failed to parse HTML"):
                 parser.parse_file("/path/to/file.html")
 
 

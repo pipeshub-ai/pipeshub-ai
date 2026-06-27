@@ -150,7 +150,7 @@ spec:
             - name: MESSAGE_BROKER
               value: {{ .Values.messageBroker.type | default "kafka" | quote }}
             - name: REDIS_STREAMS_MAXLEN
-              value: {{ .Values.messageBroker.redisStreamsMaxLen | default "10000" | quote }}
+              value: {{ .Values.messageBroker.redisStreamsMaxLen | default "500000" | quote }}
 
             # Kafka config
             - name: KAFKA_BROKERS

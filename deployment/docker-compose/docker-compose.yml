@@ -102,7 +102,7 @@ services:
 
       # Message broker: "redis" (default, uses Redis Streams) | "kafka"
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
-      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
 
       # Kafka (active when MESSAGE_BROKER=kafka)
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}

@@ -247,13 +247,20 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_prov
     broker_type = get_message_broker_type()
 
     try:
+        # Create RetryManager for persistent failure retry tracking
+        redis_config = await MessagingUtils._get_redis_config(app_container)
+        retry_manager = MessagingFactory.create_retry_manager(logger, redis_config)
+        await retry_manager.initialize()
+        logger.info("✅ RetryManager initialized for %s consumers", broker_type.value)
+
         # 1. Create Entity Consumer
         logger.info(f"🚀 Starting Entity Consumer (broker: {broker_type})...")
         entity_config = await MessagingUtils.create_entity_consumer_config(app_container)
         entity_consumer = MessagingFactory.create_consumer(
             broker_type=broker_type,
             logger=logger,
-            config=entity_config
+            config=entity_config,
+            retry_manager=retry_manager
         )
         entity_message_handler = await KafkaUtils.create_entity_message_handler(app_container, graph_provider)
         await entity_consumer.start(entity_message_handler)
@@ -266,7 +273,8 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_prov
         sync_consumer = MessagingFactory.create_consumer(
             broker_type=broker_type,
             logger=logger,
-            config=sync_config
+            config=sync_config,
+            retry_manager=retry_manager
         )
         sync_message_handler = await KafkaUtils.create_sync_message_handler(app_container, graph_provider)
         await sync_consumer.start(sync_message_handler)
