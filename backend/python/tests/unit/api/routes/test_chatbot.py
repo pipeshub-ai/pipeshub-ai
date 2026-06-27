@@ -837,6 +837,7 @@ class TestAskAIStream:
     """Tests for the /chat/stream SSE endpoint (generate_stream coverage)."""
 
     @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot.enrich_records_with_graph_context", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.enrich_virtual_record_id_to_result_with_fk_children", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.create_execute_query_tool")
     @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
@@ -847,7 +848,7 @@ class TestAskAIStream:
     @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
     async def test_stream_happy_path(
         self, mock_get_llm, mock_stream, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich
+        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich, mock_graph_enrich
     ):
         """Full streaming flow emits status events and stream events."""
         from fastapi.responses import StreamingResponse
@@ -977,6 +978,7 @@ class TestAskAIStream:
 
     @pytest.mark.asyncio
     @patch("app.api.routes.chatbot.has_sql_connector_configured", new_callable=AsyncMock, return_value=False)
+    @patch("app.api.routes.chatbot.enrich_records_with_graph_context", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.enrich_virtual_record_id_to_result_with_fk_children", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.create_execute_query_tool")
     @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
@@ -987,7 +989,7 @@ class TestAskAIStream:
     @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
     async def test_stream_with_conversation_history(
         self, mock_get_llm, mock_stream, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich, mock_sql
+        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich, mock_graph_enrich, mock_sql
     ):
         """Stream endpoint handles follow-up queries using the tool retrieval path."""
         from app.api.routes.chatbot import askAIStream
@@ -1044,6 +1046,7 @@ class TestAskAIStream:
             assert len(events) > 0
 
     @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot.enrich_records_with_graph_context", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.enrich_virtual_record_id_to_result_with_fk_children", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.create_execute_query_tool")
     @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
@@ -1054,7 +1057,7 @@ class TestAskAIStream:
     @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
     async def test_stream_ollama_forces_simple_mode(
         self, mock_get_llm, mock_stream, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich
+        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich, mock_graph_enrich
     ):
         """Ollama provider forces simple mode in streaming."""
         from app.api.routes.chatbot import askAIStream
@@ -1104,6 +1107,7 @@ class TestAskAIStream:
         assert len(events) > 0
 
     @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot.enrich_records_with_graph_context", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.enrich_virtual_record_id_to_result_with_fk_children", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.create_execute_query_tool")
     @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
@@ -1114,7 +1118,7 @@ class TestAskAIStream:
     @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
     async def test_stream_with_custom_system_prompt(
         self, mock_get_llm, mock_stream, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich
+        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich, mock_graph_enrich
     ):
         """Custom system prompt overrides mode config."""
         from app.api.routes.chatbot import askAIStream
@@ -1164,6 +1168,7 @@ class TestAskAIStream:
         assert len(events) > 0
 
     @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot.enrich_records_with_graph_context", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.enrich_virtual_record_id_to_result_with_fk_children", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.create_execute_query_tool")
     @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
@@ -1174,7 +1179,7 @@ class TestAskAIStream:
     @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
     async def test_stream_enterprise_user_context(
         self, mock_get_llm, mock_stream, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich
+        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich, mock_graph_enrich
     ):
         """Enterprise/business user gets org context in stream."""
         from app.api.routes.chatbot import askAIStream
@@ -1224,6 +1229,7 @@ class TestAskAIStream:
         assert len(events) > 0
 
     @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot.enrich_records_with_graph_context", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.enrich_virtual_record_id_to_result_with_fk_children", new_callable=AsyncMock)
     @patch("app.api.routes.chatbot.create_execute_query_tool")
     @patch("app.api.routes.chatbot.create_fetch_full_record_tool")
@@ -1234,7 +1240,7 @@ class TestAskAIStream:
     @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
     async def test_stream_error_during_llm_streaming(
         self, mock_get_llm, mock_stream, mock_blob, mock_flatten,
-        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich
+        mock_content, mock_fetch_tool, mock_exec_tool, mock_enrich, mock_graph_enrich
     ):
         """Error during LLM streaming emits error event."""
         from app.api.routes.chatbot import askAIStream
@@ -1480,24 +1486,28 @@ class TestCreateInternalSearchTool:
                 "app.api.routes.chatbot.enrich_virtual_record_id_to_result_with_fk_children",
                 new_callable=AsyncMock,
             ):
-                with patch("app.api.routes.chatbot.build_message_content_array") as bmc:
-                    gf.return_value = flattened
-                    bmc.return_value = ([[{"type": "text", "text": "x"}]], ref_mapper)
+                with patch(
+                    "app.api.routes.chatbot.enrich_records_with_graph_context",
+                    new_callable=AsyncMock,
+                ):
+                    with patch("app.api.routes.chatbot.build_message_content_array") as bmc:
+                        gf.return_value = flattened
+                        bmc.return_value = ([[{"type": "text", "text": "x"}]], ref_mapper)
 
-                    tool_fn = create_internal_search_tool(
-                        retrieval,
-                        "org-1",
-                        "user-1",
-                        10,
-                        None,
-                        blob_store,
-                        False,
-                        virtual_record_id_to_result,
-                        graph_provider,
-                        ref_mapper,
-                        final_results,
-                    )
-                    out = await tool_fn.ainvoke({"query": "q", "reason": "r"})
+                        tool_fn = create_internal_search_tool(
+                            retrieval,
+                            "org-1",
+                            "user-1",
+                            10,
+                            None,
+                            blob_store,
+                            False,
+                            virtual_record_id_to_result,
+                            graph_provider,
+                            ref_mapper,
+                            final_results,
+                        )
+                        out = await tool_fn.ainvoke({"query": "q", "reason": "r"})
 
         assert out["ok"] is True
         assert out["result_type"] == "content"

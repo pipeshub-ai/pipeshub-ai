@@ -274,7 +274,7 @@ class Record(BaseModel):
             return f"{name} ({email})"
         return name or email or "N/A"
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         lines = [
             f"Record ID       : {self.id}",
             f"Name            : {self.record_name}",
@@ -299,9 +299,16 @@ class Record(BaseModel):
             lines.append(f"Web URL         : {weburl}")
 
         if self.semantic_metadata:
-            lines.extend(self.semantic_metadata.to_llm_context())
+            if include_full_semantic:
+                lines.extend(self.semantic_metadata.to_llm_context())
+            elif self.semantic_metadata.summary:
+                lines.append(f"Summary         : {self.semantic_metadata.summary}")
 
         return "\n".join(lines)
+
+    def to_llm_linked_context(self, frontend_url: str | None = None) -> str:
+        """Returns metadata + type-specific fields + Summary only (no Topics/Category)."""
+        return self.to_llm_context(frontend_url, include_full_semantic=False)
 
     def to_arango_base_record(self) -> dict:
         return {
@@ -405,9 +412,9 @@ class FileRecord(Record):
     sha1_hash: str | None = None
     sha256_hash: str | None = None
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted file-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -789,9 +796,9 @@ class MailRecord(Record):
     conversation_index: str | None = None
     label_ids: list[str] | None = None
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted email-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -958,9 +965,9 @@ class LinkRecord(Record):
     is_public: LinkPublicStatus = Field(description="Link public accessibility status")
     linked_record_id: str | None = Field(default=None, description="Internal record ID of linked record with same weburl")
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted link-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -1059,9 +1066,9 @@ class CommentRecord(Record):
     resolution_status: str | None = None
     comment_selection: str | None = None
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted comment-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -1155,9 +1162,9 @@ class TicketRecord(Record):
     assignee_source_id: list[str] | None = Field(default_factory=list) # this means reporters  source ids in the connector system
     reporter_source_id:str | None=None
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted ticket-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -1339,9 +1346,9 @@ class ProjectRecord(Record):
     lead_name: str | None = None
     lead_email: str | None = None
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted project-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -1511,9 +1518,11 @@ class ProductRecord(Record):
     def to_llm_context(
         self,
         frontend_url: str | None = None,
+        *,
+        include_full_semantic: bool = True,
     ) -> str:
         """Returns formatted product-specific metadata for LLM context."""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -1677,9 +1686,11 @@ class DealRecord(Record):
     def to_llm_context(
         self,
         frontend_url: str | None = None,
+        *,
+        include_full_semantic: bool = True,
     ) -> str:
         """Returns formatted deal/opportunity-specific metadata for LLM context."""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -2889,8 +2900,8 @@ class MeetingRecord(Record):
                     "Available only when cloud recording exists for the meeting.",
     )
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
-        base = super().to_llm_context(frontend_url=frontend_url)
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
         specific_lines = []
         if self.host_email:
