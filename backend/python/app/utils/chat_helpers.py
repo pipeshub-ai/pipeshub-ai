@@ -10,7 +10,8 @@ from uuid import uuid4
 
 from jinja2 import Template
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import CollectionNames, RecordRelations
 from app.config.constants.service import config_node_constants
 from app.models.blocks import BlockType, GroupSubType, GroupType, SemanticMetadata
 from app.modules.reconciliation.service import ReconciliationMetadata
@@ -265,6 +266,32 @@ logger = create_logger("chat_helpers")
 
 TEXT_FRAGMENT_DIRECTIVE_PREFIX = "#:~:text="
 
+GRAPH_CONTEXT_ENRICHMENT_CONNECTORS: frozenset[Connectors] = frozenset({
+    Connectors.JIRA,
+    Connectors.JIRA_PERSONAL,
+    Connectors.JIRA_DATA_CENTER,
+    Connectors.JIRA_DATA_CENTER_PERSONAL,
+    Connectors.LINEAR,
+})
+
+RECORD_RELATION_ENRICHMENT_TYPES: frozenset[RecordRelations] = frozenset({
+    RecordRelations.ATTACHMENT,
+    RecordRelations.PARENT_CHILD,
+})
+
+_GRAPH_TO_RECORD_FIELDS: dict[str, str] = {
+    "recordName": "record_name",
+    "recordType": "record_type",
+    "connectorName": "connector_name",
+    "connectorId": "connector_id",
+    "mimeType": "mime_type",
+    "externalRecordId": "external_record_id",
+    "webUrl": "weburl",
+    "origin": "origin",
+    "sourceCreatedAtTimestamp": "source_created_at",
+    "sourceLastModifiedTimestamp": "source_updated_at",
+}
+
 collection_map = {
                     RecordType.TICKET.value: "tickets",
                     RecordType.PROJECT.value: "projects",
@@ -302,8 +329,8 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 version=record_dict.get("version", 1),
                 origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
                 connector_id=record_dict.get("connector_id", ""),
-                source_created_at=record_dict.get("source_created_at", ""),
-                source_updated_at=record_dict.get("source_updated_at", ""),
+                source_created_at=record_dict.get("source_created_at") or None,
+                source_updated_at=record_dict.get("source_updated_at") or None,
                 semantic_metadata=SemanticMetadata(**record_dict.get("semantic_metadata", {})),
             )
 
@@ -319,8 +346,8 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
         "connector_name": Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
         "connector_id": record_dict.get("connector_id", ""),
         "mime_type": record_dict.get("mime_type", ""),
-        "source_created_at": record_dict.get("source_created_at", ""),
-        "source_updated_at": record_dict.get("source_updated_at", ""),
+        "source_created_at": record_dict.get("source_created_at") or None,
+        "source_updated_at": record_dict.get("source_updated_at") or None,
         "weburl": record_dict.get("weburl", ""),
         "semantic_metadata": SemanticMetadata(**record_dict.get("semantic_metadata", {})),
     }
@@ -429,6 +456,621 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
         logger.error(f"Error creating record instance: {str(e)}")
         return None
 
+
+# Connector rollout gates
+
+def _supports_graph_context_enrichment(connector_name: str | None) -> bool:
+    """Rollout gate for dependent parent + record relation enrichment."""
+    if not connector_name:
+        return False
+    try:
+        return Connectors(connector_name) in GRAPH_CONTEXT_ENRICHMENT_CONNECTORS
+    except ValueError:
+        return False
+
+# doc_index: record_id -> graph doc
+
+def _build_record_id_to_graph_doc_index(
+    virtual_to_record_map: dict[str, dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    """Index graph base docs by record id/_key for O(1) parent lookups."""
+    index: dict[str, dict[str, Any]] = {}
+    if not virtual_to_record_map:
+        return index
+    for doc in virtual_to_record_map.values():
+        if not isinstance(doc, dict):
+            continue
+        doc_id = doc.get("id")
+        doc_key = doc.get("_key")
+        if doc_id:
+            index.setdefault(doc_id, doc)
+        if doc_key:
+            index.setdefault(doc_key, doc)
+    return index
+
+def _extend_record_id_index_from_hit_records(
+    index: dict[str, dict[str, Any]],
+    virtual_record_id_to_result: dict[str, dict[str, Any]],
+) -> None:
+    for record in virtual_record_id_to_result.values():
+        if not record or not isinstance(record, dict):
+            continue
+        record_id = record.get("id")
+        if not record_id:
+            continue
+        if record_id not in index:
+            index[record_id] = {
+                "id": record_id,
+                "_key": record_id,
+                "recordName": record.get("record_name"),
+            }
+
+def _resolve_dependent_graph_fields(
+    vrid: str,
+    virtual_to_record_map: dict[str, dict[str, Any]] | None,
+) -> tuple[bool, str | None]:
+    """Read isDependentNode and parentNodeId from retrieval's virtual_to_record_map."""
+    graph_doc = (virtual_to_record_map or {}).get(vrid)
+    if not graph_doc or not isinstance(graph_doc, dict):
+        return False, None
+    return bool(graph_doc.get("isDependentNode", False)), graph_doc.get("parentNodeId") or None
+
+def _record_name_from_graph_doc(doc: dict[str, Any]) -> str:
+    name = doc.get("recordName") or doc.get("record_name")
+    if name:
+        return str(name)
+    external_id = doc.get("externalRecordId") or doc.get("external_record_id")
+    if external_id:
+        return str(external_id)
+    return "Unknown"
+
+# Linked record context (shared by dependent parent + record relations)
+
+def _merge_graph_into_blob_record(
+    blob_record: dict[str, Any],
+    base_doc: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge graph base doc fields into a blob record (blob values take priority via setdefault)."""
+    if not base_doc or not isinstance(base_doc, dict):
+        return blob_record
+    merged = dict(blob_record)
+    record_key = base_doc.get("id") or base_doc.get("_key")
+    if record_key:
+        merged["id"] = record_key
+    for graph_key, record_key_name in _GRAPH_TO_RECORD_FIELDS.items():
+        val = base_doc.get(graph_key)
+        if val:
+            merged.setdefault(record_key_name, val)
+    return merged
+
+def _build_record_dict_from_graph_base(base_doc: dict[str, Any]) -> dict[str, Any]:
+    """Convert a graph base doc (camelCase) to a blob-like record_dict (snake_case)."""
+    record_dict: dict[str, Any] = {
+        "id": base_doc.get("id") or base_doc.get("_key", ""),
+        "version": base_doc.get("version", 1),
+        "semantic_metadata": {},
+    }
+    for graph_key, record_key_name in _GRAPH_TO_RECORD_FIELDS.items():
+        record_dict[record_key_name] = base_doc.get(graph_key) or ""
+    record_dict["source_created_at"] = base_doc.get("sourceCreatedAtTimestamp")
+    record_dict["source_updated_at"] = base_doc.get("sourceLastModifiedTimestamp")
+    return record_dict
+
+async def _fetch_type_specific_doc(
+    graph_provider: IGraphDBProvider,
+    record_id: str,
+    record_type: str | None,
+) -> dict[str, Any] | None:
+    """Fetch the type-specific graph doc (tickets, mails, etc.) for a record."""
+    if not record_type or not record_id:
+        return None
+    collection = collection_map.get(record_type)
+    if not collection:
+        return None
+    try:
+        doc = await graph_provider.get_document(record_id, collection)
+        return doc if doc else None
+    except Exception:
+        return None
+
+def _base_record_context_metadata_from_graph(
+    base_graph_doc: dict[str, Any],
+    frontend_url: str | None = None,
+) -> str:
+    """Format metadata from the graph base record doc only (records collection)."""
+    record_id = base_graph_doc.get("id") or base_graph_doc.get("_key") or "N/A"
+    record_name = base_graph_doc.get("recordName") or "N/A"
+    connector_name = base_graph_doc.get("connectorName") or "N/A"
+    record_type = base_graph_doc.get("recordType") or "N/A"
+    external_id = base_graph_doc.get("externalRecordId") or "N/A"
+    connector_id = base_graph_doc.get("connectorId") or "N/A"
+    mime_type = base_graph_doc.get("mimeType")
+    web_url = base_graph_doc.get("webUrl")
+
+    lines = [
+        f"Record ID       : {record_id}",
+        f"Name            : {record_name}",
+        f"Connector       : {connector_name}",
+        f"Type            : {record_type}",
+        f"External ID     : {external_id}",
+        f"Connector ID    : {connector_id or 'N/A'}",
+    ]
+    if mime_type:
+        lines.append(f"MIME Type       : {mime_type}")
+    if web_url:
+        if not str(web_url).startswith("http") and frontend_url:
+            web_url = f"{frontend_url.rstrip('/')}{web_url}"
+        lines.append(f"Web URL         : {web_url}")
+    return "\n".join(lines)
+
+async def _build_linked_record_context_metadata(
+    record_id: str,
+    graph_provider: IGraphDBProvider,
+    doc_index: dict[str, dict[str, Any]],
+    frontend_url: str | None,
+    *,
+    vrid: str | None = None,
+    blob_store: Any = None,
+    org_id: str = "",
+) -> str | None:
+    """Build linked-record context (metadata + type fields + summary, no blocks).
+
+    2-tier resolution:
+      Tier 1: indexed (has vrid) → blob fetch + type-specific graph doc
+      Tier 2: graph only → base doc + type-specific graph doc, no summary
+    """
+    try:
+        # Tier 1: indexed, fetch from blob
+        if vrid and blob_store and org_id:
+            try:
+                blob_record = await blob_store.get_record_from_storage(vrid, org_id)
+                if blob_record and isinstance(blob_record, dict):
+                    base_doc = doc_index.get(record_id)
+                    if not base_doc:
+                        base_doc = await graph_provider.get_document(
+                            record_id, CollectionNames.RECORDS.value
+                        )
+                        if base_doc and isinstance(base_doc, dict):
+                            doc_index[record_id] = base_doc
+                    record_dict = _merge_graph_into_blob_record(blob_record, base_doc)
+                    record_type = record_dict.get("record_type")
+                    type_graph_doc = await _fetch_type_specific_doc(
+                        graph_provider, record_id, record_type
+                    )
+                    record_instance = create_record_instance_from_dict(record_dict, type_graph_doc)
+                    if record_instance:
+                        return record_instance.to_llm_linked_context(frontend_url)
+            except Exception as e:
+                logger.debug(
+                    "Linked record context: blob fetch failed for %s (vrid=%s): %s",
+                    record_id, vrid, e,
+                )
+
+        # Tier 2: graph only (no summary available)
+        base_doc = doc_index.get(record_id)
+        if not base_doc:
+            base_doc = await graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
+            if base_doc and isinstance(base_doc, dict):
+                doc_index[record_id] = base_doc
+        if not base_doc or not isinstance(base_doc, dict):
+            return None
+
+        record_dict = _build_record_dict_from_graph_base(base_doc)
+        record_type = record_dict.get("record_type")
+        type_graph_doc = await _fetch_type_specific_doc(
+            graph_provider, record_id, record_type
+        )
+        record_instance = create_record_instance_from_dict(record_dict, type_graph_doc)
+        if record_instance:
+            return record_instance.to_llm_linked_context(frontend_url)
+
+        return _base_record_context_metadata_from_graph(base_doc, frontend_url=frontend_url)
+    except Exception as e:
+        logger.warning(
+            "Linked record context: failed for %s: %s", record_id, str(e),
+        )
+        return None
+
+# Graph context enrichment (dependent parents + record relations)
+
+def _relation_display_label(relation: RecordRelations, outgoing: bool) -> str:
+    if relation == RecordRelations.ATTACHMENT:
+        return "ATTACHMENT" if outgoing else "PARENT"
+    if relation == RecordRelations.PARENT_CHILD:
+        return "CHILD" if outgoing else "PARENT"
+    return relation.value
+
+
+async def _fetch_edges_for_record(
+    graph_provider: IGraphDBProvider,
+    record_id: str,
+) -> list[tuple[str, str]]:
+    """Return (related_record_id, display_label) pairs from graph edges.
+
+    Graph API naming is edge-direction based, not familial role:
+      get_parent_record_ids → records this hit points to (_from == hit)
+      get_child_record_ids  → records pointing to this hit (_to == hit)
+    """
+    query_specs = [
+        (outgoing, relation)
+        for relation in RECORD_RELATION_ENRICHMENT_TYPES
+        for outgoing in (True, False)
+    ]
+    tasks = [
+        graph_provider.get_parent_record_ids_by_relation_type(record_id, rel.value)
+        if outgoing
+        else graph_provider.get_child_record_ids_by_relation_type(record_id, rel.value)
+        for outgoing, rel in query_specs
+    ]
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    edges: list[tuple[str, str]] = []
+    for (outgoing, relation), result in zip(query_specs, results):
+        if isinstance(result, Exception):
+            logger.warning(
+                "Graph context enrichment: edge query failed for %s (%s): %s",
+                record_id, relation.value, result,
+            )
+            continue
+        label = _relation_display_label(relation, outgoing)
+        for edge in result or []:
+            related_id = edge.get("record_id") if isinstance(edge, dict) else None
+            if related_id:
+                edges.append((related_id, label))
+    return edges
+
+
+async def _resolve_frontend_url(
+    config_service: ConfigurationService | None,
+) -> str | None:
+    """Resolve frontend public URL from config service."""
+    if not config_service:
+        return None
+    try:
+        endpoints_config = await config_service.get_config(
+            config_node_constants.ENDPOINTS.value, default={},
+        )
+        if isinstance(endpoints_config, dict):
+            return endpoints_config.get("frontend", {}).get("publicEndpoint")
+    except Exception:
+        pass
+    return None
+
+
+def _classify_hits(
+    virtual_record_id_to_result: dict[str, dict[str, Any]],
+    virtual_to_record_map: dict[str, dict[str, Any]] | None,
+) -> tuple[dict[str, str], list[tuple[str, str, dict[str, Any]]]]:
+    """Classify hits into dependent parents and relation-eligible records.
+
+    Returns:
+        (dependent_vrid_to_parent_id, relation_eligible list of (vrid, record_id, record))
+    """
+    dependent_vrid_to_parent_id: dict[str, str] = {}
+    relation_eligible: list[tuple[str, str, dict[str, Any]]] = []
+
+    for vrid, record in virtual_record_id_to_result.items():
+        if not record or not isinstance(record, dict):
+            continue
+        connector_name = record.get("connector_name")
+        if not connector_name and virtual_to_record_map:
+            connector_name = (virtual_to_record_map.get(vrid) or {}).get("connectorName")
+        if not _supports_graph_context_enrichment(connector_name):
+            continue
+
+        is_dependent, parent_id = _resolve_dependent_graph_fields(vrid, virtual_to_record_map)
+        if is_dependent and parent_id:
+            dependent_vrid_to_parent_id[vrid] = parent_id
+        elif not is_dependent:
+            hit_record_id = record.get("id")
+            if hit_record_id:
+                relation_eligible.append((vrid, hit_record_id, record))
+
+    return dependent_vrid_to_parent_id, relation_eligible
+
+
+def _build_relation_buckets(
+    relation_eligible: list[tuple[str, str, dict[str, Any]]],
+    edge_results: list,
+    flattened_results: list[dict[str, Any]],
+) -> tuple[list[tuple[str, dict[str, Any], dict[str, dict[str, Any]]]], set[str]]:
+    """Build per-record relation buckets from edge results.
+
+    Excludes self-references and already-annotated parents.
+    Returns (buckets, all_related_ids).
+    """
+    vrid_to_excluded_parent: dict[str, set[str]] = {}
+    for row in flattened_results:
+        vrid = row.get("virtual_record_id")
+        if not vrid:
+            continue
+        parent_rel = row.get("parent_node_relation")
+        if isinstance(parent_rel, dict) and parent_rel.get("record_id"):
+            vrid_to_excluded_parent.setdefault(vrid, set()).add(parent_rel["record_id"])
+
+    buckets: list[tuple[str, dict[str, Any], dict[str, dict[str, Any]]]] = []
+    all_related_ids: set[str] = set()
+
+    for (vrid, hit_record_id, record), edges in zip(relation_eligible, edge_results):
+        if isinstance(edges, Exception):
+            continue
+        exclude_ids = {hit_record_id} | vrid_to_excluded_parent.get(vrid, set())
+        bucket: dict[str, dict[str, Any]] = {}
+        for related_id, label in edges:
+            if related_id not in exclude_ids:
+                if related_id not in bucket:
+                    bucket[related_id] = {"record_id": related_id, "labels": set()}
+                bucket[related_id]["labels"].add(label)
+        if bucket:
+            all_related_ids.update(bucket)
+            buckets.append((vrid, record, bucket))
+
+    return buckets, all_related_ids
+
+
+async def _resolve_target_metadata(
+    all_target_ids: set[str],
+    doc_index: dict[str, dict[str, Any]],
+    graph_provider: IGraphDBProvider,
+    in_context_ids: set[str],
+    frontend_url: str | None,
+    blob_store: Any,
+    org_id: str,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Batch-resolve graph docs, vrids, and context for all target IDs.
+
+    Returns (id_to_vrid, context_map) where context_map has rendered metadata
+    for out-of-context records.
+    """
+    ids_needing_docs = [rid for rid in all_target_ids if rid not in doc_index]
+
+    async def _empty_list():
+        return []
+
+    doc_fetch_task = (
+        asyncio.gather(
+            *[graph_provider.get_document(rid, CollectionNames.RECORDS.value) for rid in ids_needing_docs],
+            return_exceptions=True,
+        )
+        if ids_needing_docs
+        else _empty_list()
+    )
+    vrid_fetch_task = graph_provider.get_virtual_record_ids_for_record_ids(list(all_target_ids))
+
+    batch_results = await asyncio.gather(doc_fetch_task, vrid_fetch_task, return_exceptions=True)
+
+    # Populate doc_index from fetched docs
+    doc_results = batch_results[0]
+    if ids_needing_docs and not isinstance(doc_results, Exception):
+        for rid, doc in zip(ids_needing_docs, doc_results):
+            if not isinstance(doc, Exception) and doc and isinstance(doc, dict):
+                doc_index[rid] = doc
+
+    # Build id -> vrid mapping
+    id_to_vrid: dict[str, str] = {}
+    vrid_result = batch_results[1]
+    if not isinstance(vrid_result, Exception) and isinstance(vrid_result, dict):
+        id_to_vrid = vrid_result
+
+    # Build context for out-of-context, non-deleted IDs
+    out_of_context_ids = [
+        rid for rid in all_target_ids
+        if rid not in in_context_ids
+        and doc_index.get(rid) and not doc_index.get(rid, {}).get("isDeleted")
+    ]
+
+    context_map: dict[str, str] = {}
+    if out_of_context_ids:
+        ctx_results = await asyncio.gather(
+            *[
+                _build_linked_record_context_metadata(
+                    rid, graph_provider, doc_index, frontend_url,
+                    vrid=id_to_vrid.get(rid),
+                    blob_store=blob_store if rid in id_to_vrid else None,
+                    org_id=org_id,
+                )
+                for rid in out_of_context_ids
+            ],
+            return_exceptions=True,
+        )
+        for rid, ctx in zip(out_of_context_ids, ctx_results):
+            if not isinstance(ctx, Exception) and ctx:
+                context_map[rid] = ctx
+
+    return id_to_vrid, context_map
+
+
+def _annotate_dependent_parents(
+    dependent_vrid_to_parent_id: dict[str, str],
+    flattened_results: list[dict[str, Any]],
+    in_context_ids: set[str],
+    doc_index: dict[str, dict[str, Any]],
+    context_map: dict[str, str],
+) -> None:
+    """Attach parent_node_relation to flattened_results for dependent records."""
+    unique_parent_ids = set(dependent_vrid_to_parent_id.values())
+    parent_id_to_metadata: dict[str, dict[str, Any]] = {}
+
+    for parent_id in unique_parent_ids:
+        if parent_id in in_context_ids:
+            doc = doc_index.get(parent_id)
+            record_name = _record_name_from_graph_doc(doc) if doc else "Unknown"
+            parent_id_to_metadata[parent_id] = {
+                "record_id": parent_id,
+                "record_name": record_name,
+            }
+        elif parent_id in context_map:
+            parent_id_to_metadata[parent_id] = {
+                "record_id": parent_id,
+                "context_metadata": context_map[parent_id],
+            }
+
+    annotated = 0
+    for result in flattened_results:
+        vrid = result.get("virtual_record_id")
+        if not vrid or vrid not in dependent_vrid_to_parent_id:
+            continue
+        parent_id = dependent_vrid_to_parent_id[vrid]
+        if parent_id in parent_id_to_metadata:
+            result["parent_node_relation"] = parent_id_to_metadata[parent_id]
+            annotated += 1
+
+    logger.info(
+        "Dependent parent enrichment: %d dependents, %d rows annotated",
+        len(dependent_vrid_to_parent_id), annotated,
+    )
+
+
+def _annotate_record_relations(
+    relation_buckets: list[tuple[str, dict[str, Any], dict[str, dict[str, Any]]]],
+    doc_index: dict[str, dict[str, Any]],
+    in_context_ids: set[str],
+    context_map: dict[str, str],
+) -> None:
+    """Attach record_relations to hit records from relation buckets."""
+    enriched_count = 0
+    for vrid, record, bucket in relation_buckets:
+        relations: list[dict[str, Any]] = []
+        for rid, entry in bucket.items():
+            doc = doc_index.get(rid)
+            if not doc or doc.get("isDeleted"):
+                continue
+            rel: dict[str, Any] = {
+                "record_id": rid,
+                "record_name": _record_name_from_graph_doc(doc),
+                "labels": sorted(entry["labels"]),
+            }
+            if rid not in in_context_ids and rid in context_map:
+                rel["context_metadata"] = context_map[rid]
+            relations.append(rel)
+        if relations:
+            record["record_relations"] = relations
+            enriched_count += 1
+
+    logger.info("Record relation enrichment: %d records enriched", enriched_count)
+
+
+async def enrich_records_with_graph_context(
+    virtual_record_id_to_result: dict[str, dict[str, Any]],
+    graph_provider: IGraphDBProvider | None = None,
+    flattened_results: list[dict[str, Any]] | None = None,
+    virtual_to_record_map: dict[str, dict[str, Any]] | None = None,
+    doc_index: dict[str, dict[str, Any]] | None = None,
+    blob_store: Any = None,
+    org_id: str = "",
+    config_service: "ConfigurationService | None" = None,
+) -> None:
+    """
+    Unified graph context enrichment for search results. Performs both:
+      1. Dependent parent annotation (isDependentNode -> parent metadata on flattened_results)
+      2. Record relation enrichment (graph edges -> record_relations on hit records)
+
+    All graph/blob calls are batched and deduplicated across both paths.
+    """
+    if not graph_provider or flattened_results is None:
+        return
+
+    if doc_index is None:
+        doc_index = _build_record_id_to_graph_doc_index(virtual_to_record_map)
+        _extend_record_id_index_from_hit_records(doc_index, virtual_record_id_to_result)
+
+    frontend_url = await _resolve_frontend_url(config_service)
+    in_context_ids: set[str] = {
+        rec["id"] for rec in virtual_record_id_to_result.values()
+        if isinstance(rec, dict) and rec.get("id")
+    }
+
+    # Step 1: Classify hits into dependent vs relation-eligible
+    dependent_vrid_to_parent_id, relation_eligible = _classify_hits(
+        virtual_record_id_to_result, virtual_to_record_map,
+    )
+    if not dependent_vrid_to_parent_id and not relation_eligible:
+        return
+
+    # Step 2: Fetch edges for relation-eligible hits
+    edge_results: list = []
+    if relation_eligible:
+        edge_results = await asyncio.gather(
+            *[_fetch_edges_for_record(graph_provider, rid) for _, rid, _ in relation_eligible],
+            return_exceptions=True,
+        )
+
+    # Step 3: Build relation buckets from edges
+    relation_buckets, all_related_ids = _build_relation_buckets(
+        relation_eligible, edge_results, flattened_results,
+    )
+
+    # Step 4: Collect all IDs needing resolution (parents + related)
+    all_target_ids = all_related_ids | set(dependent_vrid_to_parent_id.values())
+    if not all_target_ids:
+        return
+
+    # Step 5: Batch resolve docs, vrids, and build context metadata
+    _, context_map = await _resolve_target_metadata(
+        all_target_ids, doc_index, graph_provider,
+        in_context_ids, frontend_url, blob_store, org_id,
+    )
+
+    # Step 6: Distribute results
+    if dependent_vrid_to_parent_id:
+        _annotate_dependent_parents(
+            dependent_vrid_to_parent_id, flattened_results,
+            in_context_ids, doc_index, context_map,
+        )
+    if relation_buckets:
+        _annotate_record_relations(
+            relation_buckets, doc_index, in_context_ids, context_map,
+        )
+
+
+def build_parent_info(result: dict[str, Any]) -> str:
+    """Build parent record metadata string from a result's parent_node_relation."""
+    parent_rel = result.get("parent_node_relation")
+    if not parent_rel:
+        return ""
+
+    lines = ["\n* This record depends on:"]
+    context_metadata = parent_rel.get("context_metadata")
+    if context_metadata:
+        lines.append(context_metadata)
+    else:
+        record_id = parent_rel.get("record_id", "")
+        record_name = parent_rel.get("record_name", "Unknown")
+        lines.append(f"  Record ID: {record_id} | Name: {record_name}")
+
+    parent_info = "\n".join(lines) + "\n"
+    return parent_info
+
+def build_record_relations_info(record: dict[str, Any]) -> str:
+    """Build related records info with rich context metadata when available."""
+    relations = record.get("record_relations")
+    if not relations:
+        return ""
+
+    lines = ["\n* Related records:"]
+    for rel in relations:
+        if not isinstance(rel, dict):
+            continue
+        labels = rel.get("labels") or []
+        label_text = ", ".join(labels) if labels else "RELATED"
+        context_metadata = rel.get("context_metadata")
+        if context_metadata:
+            lines.append(f"  - {label_text}:")
+            for ctx_line in context_metadata.split("\n"):
+                lines.append(f"    {ctx_line}")
+        else:
+            record_id = rel.get("record_id", "")
+            record_name = rel.get("record_name", "Unknown")
+            lines.append(
+                f"  - {label_text} | Record ID: {record_id} | Name: {record_name}"
+            )
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines) + "\n"
+
+# FK table enrichment (runs before doc_index in chatbot; extends virtual_record_id_to_result)
 
 async def enrich_virtual_record_id_to_result_with_fk_children(
     virtual_record_id_to_result: Dict[str, Dict[str, Any]],
@@ -2542,9 +3184,16 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
             rendered_form = template.render(
                 context_metadata=record.get("context_metadata", ""),
             )
+            record_header_text = rendered_form
+            parent_info = build_parent_info(result)
+            if parent_info:
+                record_header_text = f"{record_header_text}{parent_info}"
+            relations_info = build_record_relations_info(record)
+            if relations_info:
+                record_header_text = f"{record_header_text}{relations_info}"
             content.append({
                 "type": "text",
-                "text": rendered_form
+                "text": record_header_text
             })
             record_page_url_for_summary = build_record_page_web_url(
                 current_frontend_url, current_record_id
@@ -2704,6 +3353,7 @@ def build_fk_info(result: dict[str, Any]) -> str:
                 fk_info += f"\n    - {child_table} (via source column:{source_col} -> target column:{target_col}) [record_id: {record_id}]"
         logger.debug(f"FK info: {fk_info}")
     return fk_info
+
 
 
 

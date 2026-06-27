@@ -48,7 +48,10 @@ from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
     context_includes_jira_tickets,
+    enrich_records_with_graph_context,
     enrich_virtual_record_id_to_result_with_fk_children,
+    _build_record_id_to_graph_doc_index,
+    _extend_record_id_index_from_hit_records,
     flattened_result_sort_key,
     get_flattened_results,
     get_message_content,
@@ -169,6 +172,18 @@ def create_internal_search_tool(
             )
             await enrich_virtual_record_id_to_result_with_fk_children(
                 virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
+            )
+            doc_index = _build_record_id_to_graph_doc_index(virtual_to_record_map)
+            _extend_record_id_index_from_hit_records(doc_index, virtual_record_id_to_result)
+            await enrich_records_with_graph_context(
+                virtual_record_id_to_result,
+                graph_provider,
+                flattened_results,
+                virtual_to_record_map,
+                doc_index=doc_index,
+                blob_store=blob_store,
+                org_id=org_id,
+                config_service=blob_store.config_service,
             )
 
             existing_keys = {
@@ -933,6 +948,18 @@ async def _generate_internal_search_stream(
                 )
                 await enrich_virtual_record_id_to_result_with_fk_children(
                     virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
+                )
+                doc_index = _build_record_id_to_graph_doc_index(virtual_to_record_map)
+                _extend_record_id_index_from_hit_records(doc_index, virtual_record_id_to_result)
+                await enrich_records_with_graph_context(
+                    virtual_record_id_to_result,
+                    graph_provider,
+                    flattened_results,
+                    virtual_to_record_map,
+                    doc_index=doc_index,
+                    blob_store=blob_store,
+                    org_id=org_id,
+                    config_service=blob_store.config_service,
                 )
 
                 final_results = sorted(flattened_results, key=flattened_result_sort_key)
