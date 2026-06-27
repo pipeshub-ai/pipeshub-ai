@@ -70,7 +70,12 @@ class LinearExpected:
 
         identifier = issue.get("identifier", "")
         title = issue.get("title", "")
-        record_name = title or identifier or issue_id
+        if identifier and title:
+            record_name = f"[{identifier}] {title}"
+        elif identifier:
+            record_name = identifier
+        else:
+            record_name = issue_id
 
         priority_num = issue.get("priority")
         if priority_num is None:
