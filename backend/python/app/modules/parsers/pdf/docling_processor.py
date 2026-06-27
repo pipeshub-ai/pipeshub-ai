@@ -21,6 +21,7 @@ from docling_core.types.doc.document import DoclingDocument
 if TYPE_CHECKING:
     from docling.datamodel.document import ConversionResult
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlocksContainer
 from app.utils.converters.docling_doc_to_blocks import DoclingDocToBlocksConverter
 
@@ -66,7 +67,10 @@ def _parse_document_in_worker(doc_name: str, content: bytes) -> str:
     source = DocumentStream(name=doc_name, stream=BytesIO(content))
     conv_res: ConversionResult = _get_converter().convert(source)
     if conv_res.status.value != SUCCESS_STATUS:
-        raise ValueError(f"Failed to parse document: {conv_res.status}")
+        raise DocumentProcessingError(
+            f"Failed to parse document: {conv_res.status}",
+            details={"status": str(conv_res.status)},
+        )
 
     return conv_res.document.model_dump_json()
 
@@ -96,7 +100,10 @@ class DoclingProcessor():
         source = DocumentStream(name=doc_name, stream=BytesIO(raw_content))
         conv_res: ConversionResult = await asyncio.to_thread(self.converter.convert, source)
         if conv_res.status.value != SUCCESS_STATUS:
-            raise ValueError(f"Failed to parse document: {conv_res.status}")
+            raise DocumentProcessingError(
+                f"Failed to parse document: {conv_res.status}",
+                details={"status": str(conv_res.status)},
+            )
 
         return conv_res.document
 

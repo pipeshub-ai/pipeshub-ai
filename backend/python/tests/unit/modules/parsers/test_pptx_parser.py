@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+
 from app.modules.parsers.pptx.pptx_parser import PPTXParser
 
 
@@ -78,7 +80,7 @@ class TestParseBinary:
         with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
             with patch("app.modules.parsers.pptx.pptx_parser.DocumentStream", return_value=MagicMock()):
                 parser = PPTXParser()
-                with pytest.raises(ValueError, match="Failed to parse PPTX"):
+                with pytest.raises(DocumentProcessingError, match="Failed to parse PPTX"):
                     parser.parse_binary(b"bad data")
 
     def test_converter_exception_propagates(self):
@@ -135,7 +137,7 @@ class TestParseFile:
 
         with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
             parser = PPTXParser()
-            with pytest.raises(ValueError, match="Failed to parse PPTX"):
+            with pytest.raises(DocumentProcessingError, match="Failed to parse PPTX"):
                 parser.parse_file("/path/to/bad.pptx")
 
     def test_file_not_found_propagates(self):
@@ -183,5 +185,5 @@ class TestParseFile:
 
             with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
                 parser = PPTXParser()
-                with pytest.raises(ValueError):
+                with pytest.raises(DocumentProcessingError):
                     parser.parse_file("/path/to/file.pptx")

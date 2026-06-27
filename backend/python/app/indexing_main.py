@@ -19,7 +19,7 @@ from app.config.constants.arangodb import (
 )
 from app.containers.indexing import IndexingAppContainer, initialize_container
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.messaging.config import ConsumerType, IndexingEvent, StreamMessage, get_message_broker_type
+from app.services.messaging.config import ConsumerType, IndexingEvent, MessageBrokerType, StreamMessage, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
@@ -247,11 +247,32 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> list[Any
         logger.info(f"🚀 Starting Record Consumer (broker: {broker_type})...")
         record_consumer_config = await MessagingUtils.create_record_consumer_config(app_container)
 
+        # Create RetryManager for persistent failure retry tracking
+        redis_config = await MessagingUtils._get_redis_config(app_container)
+        retry_manager = MessagingFactory.create_retry_manager(logger, redis_config)
+        await retry_manager.initialize()
+        logger.info("✅ RetryManager initialized for %s consumer", broker_type.value)
+
+        # Create producer for re-queueing failed messages
+        producer_config = await MessagingUtils.create_producer_config_from_service(
+            app_container.config_service(),
+            client_id="indexing_retry_producer",
+        )
+        retry_producer = MessagingFactory.create_producer(
+            logger=logger,
+            config=producer_config,
+            broker_type=broker_type,
+        )
+        await retry_producer.initialize()
+        logger.info("✅ Retry producer initialized for %s", broker_type.value)
+
         record_kafka_consumer = MessagingFactory.create_consumer(
             broker_type=broker_type,
             logger=logger,
             config=record_consumer_config,
-            consumer_type=ConsumerType.INDEXING
+            consumer_type=ConsumerType.INDEXING,
+            retry_manager=retry_manager,
+            producer=retry_producer,
         )
 
         # TODO: Remove this once the graph provider is fixed
@@ -284,32 +305,52 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> list[Any
 
         record_message_handler = await KafkaUtils.create_record_message_handler(app_container)
         await record_kafka_consumer.start(record_message_handler)  # type: ignore[arg-type]
-        consumers.append(("record", record_kafka_consumer))
+        consumers.append(("record", record_kafka_consumer, retry_producer))
         logger.info("✅ Record message consumer started")
 
         return consumers
     except Exception as e:
         logger.error(f"❌ Error starting message consumers: {str(e)}")
-        # Cleanup any started consumers
-        for name, consumer in consumers:
+        # Cleanup any started consumers and producers
+        for item in consumers:
+            name = item[0]
+            consumer = item[1]
+            producer = item[2] if len(item) > 2 else None
             try:
                 await consumer.stop()
                 logger.info(f"Stopped {name} consumer during cleanup")
             except Exception as cleanup_error:
                 logger.error(f"Error stopping {name} consumer during cleanup: {cleanup_error}")
+            if producer:
+                try:
+                    await producer.cleanup()
+                    logger.info(f"Stopped {name} retry producer during cleanup")
+                except Exception as cleanup_error:
+                    logger.error(f"Error stopping {name} retry producer during cleanup: {cleanup_error}")
         raise
 
 async def stop_kafka_consumers(container: IndexingAppContainer) -> None:
-    """Stop all Kafka consumers"""
+    """Stop all Kafka consumers and their associated producers"""
 
     logger = container.logger()
     consumers = getattr(container, 'kafka_consumers', [])
-    for name, consumer in consumers:
+    for item in consumers:
+        name = item[0]
+        consumer = item[1]
+        producer = item[2] if len(item) > 2 else None
+        
         try:
             await consumer.stop()
             logger.info(f"✅ {name.title()} message consumer stopped")
         except Exception as e:
             logger.error(f"❌ Error stopping {name} consumer: {str(e)}")
+        
+        if producer:
+            try:
+                await producer.cleanup()
+                logger.info(f"✅ {name.title()} retry producer stopped")
+            except Exception as e:
+                logger.error(f"❌ Error stopping {name} retry producer: {str(e)}")
 
     # Clear the consumers list
     if hasattr(container, 'kafka_consumers'):

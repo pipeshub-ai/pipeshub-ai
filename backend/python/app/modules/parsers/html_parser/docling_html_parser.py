@@ -21,6 +21,7 @@ from bs4 import BeautifulSoup
 from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlockType, BlocksContainer
 from app.modules.parsers.html_parser import url_utils
 
@@ -81,7 +82,10 @@ class DoclingHtmlParser:
         result = self.converter.convert(file_path)
 
         if result.status.value != "success":
-            raise ValueError(f"Failed to parse HTML: {result.status}")
+            raise DocumentProcessingError(
+                f"Failed to parse HTML: {result.status}",
+                details={"status": str(result.status)},
+            )
 
         return result.document
 

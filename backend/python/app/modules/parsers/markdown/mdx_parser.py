@@ -4,6 +4,8 @@ from typing import Any
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.services.parsing.interface import ParseResult
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+
 
 class MDXParser:
     """Parser for MDX files to convert them to regular Markdown"""
@@ -63,8 +65,12 @@ class MDXParser:
             return content.strip().encode('utf-8')
 
         except Exception as e:
-            raise Exception(f"Error converting MDX to Markdown: {str(e)}") from e
+            raise DocumentProcessingError(
+                f"Error converting MDX to Markdown: {str(e)}",
+                details={"error": str(e)},
+            ) from e
 
     async def parse(self, content: bytes, record_name: str, config: dict[str, Any] | None = None) -> ParseResult:
         md_bytes = self.convert_mdx_to_md(content)
         return await self.md_parser.parse(md_bytes, record_name, config)
+

@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+
 from app.modules.parsers.excel.excel_parser import (
     BUILTIN_DATE_FORMATS,
     COMMON_FORMAT_WHITELIST,
@@ -2153,7 +2155,7 @@ class TestGetTablesInSheet:
         ep = _make_excel_parser()
         ep.workbook = None
 
-        with pytest.raises(ValueError, match="Workbook not loaded"):
+        with pytest.raises(DocumentProcessingError, match="Workbook not loaded"):
             await ep.get_tables_in_sheet("Sheet1", AsyncMock())
 
     @pytest.mark.asyncio

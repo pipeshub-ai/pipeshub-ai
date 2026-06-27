@@ -11,6 +11,7 @@ from langchain_core.messages import HumanMessage
 from PIL import Image
 
 from app.config.constants.service import config_node_constants
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.modules.parsers.pdf.pdf_rasterizer import render_all_pages_from_path_sync
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.utils.aimodels import coerce_message_content_to_text, get_generator_model, is_multimodal_llm
@@ -146,7 +147,10 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             llm_configs = ai_models.get("llm", [])
 
             if not llm_configs:
-                raise ValueError("No LLM configurations found")
+                raise DocumentProcessingError(
+                    "No LLM configurations found",
+                    details={"required": "multimodal LLM"},
+                )
 
             default_config = None
             first_multimodal_config = None
@@ -182,11 +186,19 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 "VLM OCR requires a multimodal LLM. Please configure at least one multimodal LLM."
             )
             self.logger.error(error_msg)
-            raise ValueError(error_msg)
+            raise DocumentProcessingError(
+                error_msg,
+                details={"required": "multimodal LLM"},
+            )
 
+        except DocumentProcessingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error getting multimodal LLM: {str(e)}")
-            raise ValueError(f"Failed to get multimodal LLM: {str(e)}")
+            raise DocumentProcessingError(
+                f"Failed to get multimodal LLM: {str(e)}",
+                details={"error": str(e)},
+            ) from e
 
     def _render_all_pages_to_base64(self) -> Dict[int, str]:
         """Render every page via pdfplumber in an isolated worker process."""

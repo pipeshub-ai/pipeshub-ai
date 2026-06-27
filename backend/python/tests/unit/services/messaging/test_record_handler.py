@@ -14,8 +14,9 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordTypes,
 )
-from app.exceptions.indexing_exceptions import IndexingError
+from app.exceptions.indexing_exceptions import DocumentProcessingError, IndexingError
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
+from app.services.messaging.error_classifier import MessageErrorType
 
 
 # ---------------------------------------------------------------------------
@@ -892,7 +893,131 @@ class TestProcessEventErrors:
     """Tests for error handling and the finally block."""
 
     @pytest.mark.asyncio
-    async def test_indexing_error_re_raised_as_exception(self):
+    async def test_terminal_error_sets_failed_even_when_is_final_failure_false(self):
+        """Terminal errors must set FAILED on first attempt (is_final_failure=False)."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "image/svg+xml",
+        }
+        # First call: get record for processing, Second call: __update_document_status
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.batch_update_nodes = AsyncMock(return_value=True)
+        handler._trigger_next_queued_duplicate = AsyncMock()
+        
+        # Mock bulk_delete_embeddings for REINDEX_RECORD path
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock()
+
+        ep = handler.event_processor
+        
+        def _on_event_returns_failing_gen(event_data):
+            return _failing_async_gen(
+                DocumentProcessingError(
+                    "SVG conversion dependency missing: cairosvg is not installed",
+                    details={"dependency": "cairosvg"},
+                )
+            )
+        
+        ep.on_event = _on_event_returns_failing_gen
+
+        payload = {
+            "recordId": "r1",
+            "virtualRecordId": "vr1",
+            "orgId": "org-1",
+            "mimeType": "image/svg+xml",
+            "extension": "svg",
+            # No signedUrl - go straight to connector streaming path
+            "is_final_failure": False,
+        }
+
+        with patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock) as mock_jwt:
+            mock_jwt.return_value = "token"
+            with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as mock_api:
+                mock_api.return_value = {"data": b"<svg></svg>"}
+                handler.config_service.get_config = AsyncMock(
+                    return_value={"connectors": {"endpoint": "http://localhost:8088"}}
+                )
+                with patch(
+                    "app.services.messaging.kafka.handlers.record.MessageErrorClassifier.classify_by_exception",
+                    return_value=MessageErrorType.TERMINAL,
+                ):
+                    with pytest.raises(DocumentProcessingError):
+                        await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
+
+        gp.batch_update_nodes.assert_awaited()
+        doc = gp.batch_update_nodes.call_args[0][0][0]
+        assert doc["indexingStatus"] == ProgressStatus.FAILED.value
+        assert "cairosvg" in doc["reason"]
+
+    @pytest.mark.asyncio
+    async def test_terminal_error_record_not_found_skips_trigger_duplicate(self):
+        """When __update_document_status returns None, _trigger_next_queued_duplicate should not be called."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "image/svg+xml",
+        }
+        
+        # First call: get record for processing (returns record)
+        # Second call: __update_document_status tries to get record (returns None - record was deleted)
+        gp.get_document = AsyncMock(side_effect=[record, None])
+        gp.batch_update_nodes = AsyncMock(return_value=False)
+        handler._trigger_next_queued_duplicate = AsyncMock()
+        
+        # Mock bulk_delete_embeddings for REINDEX_RECORD path
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock()
+
+        ep = handler.event_processor
+        
+        def _on_event_returns_failing_gen(event_data):
+            return _failing_async_gen(
+                DocumentProcessingError(
+                    "SVG conversion dependency missing: cairosvg is not installed",
+                    details={"dependency": "cairosvg"},
+                )
+            )
+        
+        ep.on_event = _on_event_returns_failing_gen
+
+        payload = {
+            "recordId": "r1",
+            "virtualRecordId": "vr1",
+            "orgId": "org-1",
+            "mimeType": "image/svg+xml",
+            "extension": "svg",
+            # No signedUrl - go straight to connector streaming path
+            "is_final_failure": True,
+        }
+
+        with patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock) as mock_jwt:
+            mock_jwt.return_value = "token"
+            with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as mock_api:
+                mock_api.return_value = {"data": b"<svg></svg>"}
+                handler.config_service.get_config = AsyncMock(
+                    return_value={"connectors": {"endpoint": "http://localhost:8088"}}
+                )
+                with patch(
+                    "app.services.messaging.kafka.handlers.record.MessageErrorClassifier.classify_by_exception",
+                    return_value=MessageErrorType.TERMINAL,
+                ):
+                    with pytest.raises(DocumentProcessingError):
+                        await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
+
+        # __update_document_status should have been called but returned None
+        # So _trigger_next_queued_duplicate should NOT have been called
+        handler._trigger_next_queued_duplicate.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_transient_error_skips_failed_when_is_final_failure_false(self):
+        """Transient errors on first attempt should not set FAILED."""
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         record = {
@@ -912,18 +1037,22 @@ class TestProcessEventErrors:
             "orgId": "org-1",
             "mimeType": "application/pdf",
             "extension": "pdf",
-            "signedUrl": "https://example.com/file.pdf",
+            "is_final_failure": False,
         }
 
-        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
-            mock_dl.side_effect = IndexingError("Indexing failed")
-            with patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock) as mock_jwt:
-                mock_jwt.side_effect = Exception("jwt fail too")
+        with patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock) as mock_jwt:
+            mock_jwt.return_value = "token"
+            with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as mock_api:
+                mock_api.side_effect = ConnectionError("connection refused")
                 handler.config_service.get_config = AsyncMock(
                     return_value={"connectors": {"endpoint": "http://localhost:8088"}}
                 )
-                with pytest.raises(Exception):
+                with pytest.raises(Exception, match="connection refused"):
                     await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        for call in gp.batch_update_nodes.call_args_list:
+            doc = call[0][0][0]
+            assert doc.get("indexingStatus") != ProgressStatus.FAILED.value
 
     @pytest.mark.asyncio
     async def test_error_updates_document_status_to_failed(self):
@@ -2153,12 +2282,12 @@ class TestAdditionalCoverage:
 
     @pytest.mark.asyncio
     async def test_indexing_error_caught_directly(self):
-        """IndexingError on get_document is handled gracefully when status update cannot complete."""
+        """IndexingError on get_document propagates to the caller."""
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
-        handler._trigger_next_queued_duplicate = AsyncMock()
 
-        gp.get_document = AsyncMock(side_effect=IndexingError("parse fail", record_id="r1"))
+        # IndexingError is raised on the first get_document call
+        gp.get_document = AsyncMock(side_effect=[IndexingError("parse fail", record_id="r1")])
 
         payload = {
             "recordId": "r1",
@@ -2167,10 +2296,8 @@ class TestAdditionalCoverage:
             "extension": "pdf",
         }
 
-        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
-
-        assert events == []
-        handler._trigger_next_queued_duplicate.assert_not_awaited()
+        with pytest.raises(IndexingError, match="parse fail"):
+            await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
     @pytest.mark.asyncio
     async def test_record_name_without_dot_does_not_derive_extension(self):
@@ -2357,6 +2484,13 @@ class TestAdditionalCoverage:
 # ===================================================================
 # Helpers for async generators and context managers
 # ===================================================================
+
+async def _failing_async_gen(exc: Exception):
+    """Async generator that raises on first iteration (simulates on_event failure)."""
+    if False:
+        yield  # pragma: no cover - makes this an async generator
+    raise exc
+
 
 async def _async_gen_events(events):
     """Create an async generator that yields PipelineEvent objects.

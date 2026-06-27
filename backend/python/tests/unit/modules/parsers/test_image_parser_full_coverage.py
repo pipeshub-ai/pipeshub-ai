@@ -26,6 +26,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+
 from app.modules.parsers.image_parser.image_parser import ImageParser
 
 
@@ -592,7 +594,7 @@ class TestSvgBase64ToPngBase64Errors:
         raw_bytes = b"\x80\x81\x82\x83"
         b64_str = base64.b64encode(raw_bytes).decode("ascii")
 
-        with pytest.raises(ValueError, match="Cannot decode SVG content"):
+        with pytest.raises(DocumentProcessingError, match="Cannot decode SVG content"):
             ImageParser.svg_base64_to_png_base64(b64_str)
 
     def test_svg2png_conversion_error(self):
@@ -604,7 +606,7 @@ class TestSvgBase64ToPngBase64Errors:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             side_effect=RuntimeError("cairo error"),
         ):
-            with pytest.raises(Exception, match="SVG to PNG conversion failed"):
+            with pytest.raises(DocumentProcessingError, match="SVG to PNG conversion failed"):
                 ImageParser.svg_base64_to_png_base64(svg_b64)
 
     def test_xml_only_content_recognized(self):

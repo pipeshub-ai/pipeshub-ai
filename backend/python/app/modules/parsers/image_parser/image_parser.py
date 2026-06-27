@@ -7,6 +7,7 @@ from http import HTTPStatus
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.utils.image_utils import get_extension_from_mimetype
 from app.services.parsing.interface import ParseResult
 
@@ -51,7 +52,10 @@ class ImageParser:
                 base64_image = f"data:image/png;base64,{png_base64}"
             except Exception as e:
                 self.logger.warning(f"Failed to convert SVG to PNG: {e}")
-                raise ValueError(f"Failed to convert SVG to PNG: {e}") from e
+                raise DocumentProcessingError(
+                    f"Failed to convert SVG to PNG: {e}",
+                    details={"error": str(e)},
+                ) from e
         else:
             base64_image = f"data:image/{extension};base64,{base64_encoded_content}"
 
@@ -393,7 +397,10 @@ class ImageParser:
             # Verify it's actually SVG content
             svg_str = svg_data.decode('utf-8')
             if not ('<svg' in svg_str.lower() or '<?xml' in svg_str.lower()):
-                raise ValueError("Decoded content does not appear to be valid SVG")
+                raise DocumentProcessingError(
+                    "Decoded content does not appear to be valid SVG",
+                    details={"content_preview": svg_str[:100]},
+                )
 
             # Extract dimensions from SVG if not provided
             final_width = output_width
@@ -421,7 +428,10 @@ class ImageParser:
             # Convert SVG to PNG using cairosvg
             # cairosvg requires explicit dimensions when SVG doesn't have them
             if svg2png is None:
-                raise Exception("import from cairosvg failed")
+                raise DocumentProcessingError(
+                    "SVG conversion dependency missing: cairosvg is not installed",
+                    details={"dependency": "cairosvg"},
+                )
             png_data = svg2png(
                 bytestring=sanitized_svg_data,
                 output_width=final_width,
@@ -436,10 +446,21 @@ class ImageParser:
             return png_base64
 
         except base64.binascii.Error as e:
-            raise ValueError(f"Invalid base64 input: {e}")
+            raise DocumentProcessingError(
+                f"Invalid base64 input: {e}",
+                details={"error": str(e)},
+            ) from e
         except UnicodeDecodeError as e:
-            raise ValueError(f"Cannot decode SVG content: {e}")
+            raise DocumentProcessingError(
+                f"Cannot decode SVG content: {e}",
+                details={"error": str(e)},
+            ) from e
+        except DocumentProcessingError:
+            raise
         except Exception as e:
-            raise Exception(f"SVG to PNG conversion failed: {e}") from e
+            raise DocumentProcessingError(
+                f"SVG to PNG conversion failed: {e}",
+                details={"error": str(e)},
+            ) from e
 
 

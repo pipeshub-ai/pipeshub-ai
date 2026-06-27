@@ -70,7 +70,7 @@ def config():
 
 @pytest.fixture
 def consumer(logger, config):
-    return IndexingRedisStreamsConsumer(logger, config)
+    return IndexingRedisStreamsConsumer(logger, config, retry_manager=None, producer=None)
 
 
 def _valid_fields(event_type="test", payload=None):
@@ -1176,12 +1176,12 @@ class TestDrainPending:
 
 
 # ===================================================================
-# _exceeds_max_retries  (dead-letter logic)
+# _should_dead_letter  (dead-letter logic)
 # ===================================================================
 
 
 class TestExceedsMaxRetries:
-    """Tests for _exceeds_max_retries() — dead-letter logic for poison messages."""
+    """Tests for _should_dead_letter() — dead-letter logic for poison messages."""
 
     @pytest.mark.asyncio
     async def test_under_limit_returns_false(self, consumer):
@@ -1198,7 +1198,7 @@ class TestExceedsMaxRetries:
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
-            result = await consumer._exceeds_max_retries("topic-a", "1-0")
+            result = await consumer._should_dead_letter("topic-a", "1-0")
 
         assert result is False
         consumer.redis.xack.assert_not_awaited()
@@ -1219,7 +1219,7 @@ class TestExceedsMaxRetries:
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
-            result = await consumer._exceeds_max_retries("topic-a", "1-0")
+            result = await consumer._should_dead_letter("topic-a", "1-0")
 
         assert result is True
         consumer.redis.xack.assert_awaited_once_with(
@@ -1239,7 +1239,7 @@ class TestExceedsMaxRetries:
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
-            result = await consumer._exceeds_max_retries("topic-a", "1-0")
+            result = await consumer._should_dead_letter("topic-a", "1-0")
 
         assert result is False
 
@@ -1258,13 +1258,13 @@ class TestExceedsMaxRetries:
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
-            result = await consumer._exceeds_max_retries("topic-a", "1-0")
+            result = await consumer._should_dead_letter("topic-a", "1-0")
 
         assert result is False
 
     @pytest.mark.asyncio
     async def test_drain_phase1_skips_poison_message(self, consumer):
-        """Phase 1 should skip dispatch when _exceeds_max_retries returns True."""
+        """Phase 1 should skip dispatch when _should_dead_letter returns True."""
         consumer.running = True
         consumer.redis = AsyncMock()
         consumer.redis.xautoclaim = AsyncMock(
@@ -1273,7 +1273,7 @@ class TestExceedsMaxRetries:
         consumer.redis.xreadgroup = AsyncMock(return_value=None)
 
         with patch.object(
-            consumer, "_exceeds_max_retries", new_callable=AsyncMock, return_value=True
+            consumer, "_should_dead_letter", new_callable=AsyncMock, return_value=True
         ):
             with patch.object(
                 consumer, "_start_processing_task", new_callable=AsyncMock
@@ -1284,7 +1284,7 @@ class TestExceedsMaxRetries:
 
     @pytest.mark.asyncio
     async def test_drain_phase2_skips_poison_message(self, consumer):
-        """Phase 2 should skip dispatch when _exceeds_max_retries returns True."""
+        """Phase 2 should skip dispatch when _should_dead_letter returns True."""
         first_topic = consumer.config.topics[0]
         consumer.running = True
         consumer.redis = AsyncMock()
@@ -1298,7 +1298,7 @@ class TestExceedsMaxRetries:
         )
 
         with patch.object(
-            consumer, "_exceeds_max_retries", new_callable=AsyncMock, return_value=True
+            consumer, "_should_dead_letter", new_callable=AsyncMock, return_value=True
         ):
             with patch.object(
                 consumer, "_start_processing_task", new_callable=AsyncMock

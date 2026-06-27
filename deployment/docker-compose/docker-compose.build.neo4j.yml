@@ -68,7 +68,7 @@ services:
       
       # Message broker config
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
-      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-100000}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
 
       # Kafka config
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}

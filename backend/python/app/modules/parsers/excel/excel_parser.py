@@ -22,6 +22,8 @@ from tenacity import (
     wait_exponential,
 )
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+
 from app.models.blocks import (
     Block,
     BlockGroup,
@@ -1246,7 +1248,10 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         self.logger.info(f"Getting tables in sheet: {sheet_name}")
         try:
             if not self.workbook:
-                raise ValueError("Workbook not loaded")
+                raise DocumentProcessingError(
+                    "Workbook not loaded",
+                    details={"method": "get_tables_in_sheet"},
+                )
 
             if sheet_name not in self.workbook.sheetnames:
                 self.logger.warning(f"Sheet '{sheet_name}' not found in workbook")
