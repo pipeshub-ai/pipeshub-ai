@@ -136,7 +136,7 @@ tags:
   # Storage
   - name: Document Management
     description: Document CRUD and retrieval operations
-  - name: Knowledge Bases
+  - name: Knowledge Base
     description: Knowledge base management operations
   - name: Knowledge Hub
     description: Unified browse API for root and child nodes (apps, record groups, folders, records) with filtering and search
@@ -3002,7 +3002,6 @@ components:
           description: Last update timestamp in milliseconds
         userRole:
           type: string
-          nullable: true
           enum: [OWNER, WRITER, READER]
           description: User's role in this knowledge base
       required:
@@ -3010,6 +3009,7 @@ components:
         - name
         - createdAtTimestamp
         - updatedAtTimestamp
+        - userRole
 
     FolderCreateResponseSchema:
       type: object
@@ -17285,7 +17285,6 @@ paths:
         **Observed behavior:**
         Returns `{ status, message, data }` where `data` is the created team. Node enriches `createdByUser` and member `profilePicture` when present.
       operationId: createTeam
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:write]
@@ -17356,7 +17355,6 @@ paths:
         **Observed behavior:**
         On non-200 from the Python service, the Node gateway may return HTTP 200 with `{ teams: [], pagination: { page: 1, limit: 10, total: 0, pages: 0 } }`. Successful responses include `status` and `message` from Python plus enriched `createdByUser` / member `profilePicture` when applicable.
       operationId: getUserTeams
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:read]
@@ -17473,7 +17471,6 @@ paths:
         **Observed behavior:**
         Returns `{ status, message, team }`. Node enriches member and `createdByUser` `profilePicture` when present.
       operationId: getTeamById
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:read]
@@ -17563,7 +17560,6 @@ paths:
         **Observed behavior:**
         Returns `{ status, message, team }`. Node enriches `createdByUser` and member `profilePicture` when present.
       operationId: updateTeam
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:write]
@@ -17662,7 +17658,6 @@ paths:
         **Observed behavior:**
         Returns `{ status, message }` on success.
       operationId: deleteTeam
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:write]
@@ -17725,7 +17720,6 @@ paths:
         **Observed behavior:**
         Returns `{ status, message, team, pagination }` where `pagination` includes `totalCount`, `hasNextPage`, and `hasPrevPage`. Node enriches member `profilePicture` on the nested `team` object.
       operationId: getTeamUsers
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:read]
@@ -19855,7 +19849,7 @@ paths:
   /knowledgeBase:
     post:
       tags:
-        - Knowledge Bases
+        - Knowledge Base
       summary: Create a new knowledge base
       description: |
         Create a new knowledge base for organizing and managing documents within your organization.
@@ -19956,7 +19950,7 @@ paths:
 
     get:
       tags:
-        - Knowledge Bases
+        - Knowledge Base
       summary: List all knowledge bases
       description: |
         Retrieve a paginated list of all knowledge bases accessible to the authenticated user.
@@ -20101,7 +20095,7 @@ paths:
   /knowledgeBase/{kbId}:
     get:
       tags:
-        - Knowledge Bases
+        - Knowledge Base
       summary: Get knowledge base by ID
       description: |
         Retrieve detailed information about a specific knowledge base.
@@ -20176,7 +20170,7 @@ paths:
 
     put:
       tags:
-        - Knowledge Bases
+        - Knowledge Base
       summary: Update knowledge base
       description: |
         Update a knowledge base's name.
@@ -20282,7 +20276,7 @@ paths:
 
     delete:
       tags:
-        - Knowledge Bases
+        - Knowledge Base
       summary: Delete knowledge base
       description: |
         Permanently delete a knowledge base and all its contents.
@@ -20365,7 +20359,7 @@ paths:
   /knowledgeBase/record/{recordId}:
     get:
       tags:
-        - Records
+        - Knowledge Base
       summary: Get record by ID
       description: |
         Retrieve detailed information about a specific record.
@@ -20441,7 +20435,7 @@ paths:
 
     put:
       tags:
-        - Records
+        - Knowledge Base
       summary: Update record
       description: |
         Update a record's name and/or file content.
@@ -20516,7 +20510,7 @@ paths:
 
     delete:
       tags:
-        - Records
+        - Knowledge Base
       summary: Delete record
       description: |
         Permanently delete a record from the knowledge base.
@@ -20680,7 +20674,7 @@ paths:
   /knowledgeBase/{kbId}/folder:
     post:
       tags:
-        - Folders
+        - Knowledge Base
       summary: Create folder
       description: |
         Create a folder in a knowledge base. Omit `folderId` to create at the KB root;
@@ -20787,7 +20781,7 @@ paths:
   /knowledgeBase/{kbId}/folder/{folderId}:
     put:
       tags:
-        - Folders
+        - Knowledge Base
       summary: Update folder
       description: |
         Rename a folder.
@@ -20872,7 +20866,7 @@ paths:
 
     delete:
       tags:
-        - Folders
+        - Knowledge Base
       summary: Delete folder
       description: |
         Delete a folder and all its contents.
@@ -20934,7 +20928,7 @@ paths:
   /knowledgeBase/{kbId}/upload:
     post:
       tags:
-        - Upload
+        - Knowledge Base
       summary: Upload files to knowledge base or folder
       description: |
         Upload one or more files to a knowledge base root or to a specific folder.
@@ -20971,6 +20965,7 @@ paths:
         `done` summary, then closes. See the
         `UploadStreamSSEEvent` schema for the event/payload contract.
       operationId: uploadRecords
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:upload]
@@ -21043,8 +21038,8 @@ paths:
   /knowledgeBase/limits:
     get:
       tags:
-        - Upload
-      summary: Get upload limits
+        - Knowledge Base
+      summary: Get knowledge base upload limits
       description: |
         Retrieve current upload constraints for the organization.
 
@@ -21126,7 +21121,7 @@ paths:
   /knowledgeBase/reindex/record/{recordId}:
     post:
       tags:
-        - Connector
+        - Knowledge Base
       summary: Reindex single record
       description: |
         Trigger reindexing for a specific record.
@@ -21214,7 +21209,7 @@ paths:
   /knowledgeBase/reindex/record-group/{recordGroupId}:
     post:
       tags:
-        - Connector
+        - Knowledge Base
       summary: Reindex record group
       description: |
         Trigger reindexing for all records in a folder or knowledge base.
@@ -21297,7 +21292,7 @@ paths:
   /knowledgeBase/{kbId}/record/{recordId}/move:
     put:
       tags:
-        - Knowledge Bases
+        - Knowledge Base
       summary: Move record to another location
       description: |
         Move a file or folder record to a different location within the same knowledge base.
@@ -21401,7 +21396,6 @@ paths:
 
         Provide arrays of userIds and/or teamIds to grant the same role to multiple entities.
       operationId: createKBPermission
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -21502,7 +21496,6 @@ paths:
 
         Returns every user and team permission on the KB. Team entries have `type: TEAM` and `role: null` (teams are not assigned roles).
       operationId: listKBPermissions
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -21584,7 +21577,6 @@ paths:
 
         Users without an existing permission on the KB are skipped. If none of the supplied users have a permission to update, the request returns **404**.
       operationId: updateKBPermissions
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -21700,7 +21692,6 @@ paths:
 
         **Owner restriction:** Cannot remove the last OWNER from the knowledge base — at least one owner must remain.
       operationId: deleteKBPermissions
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:delete]
@@ -21793,7 +21784,7 @@ paths:
   /knowledgeBase/knowledge-hub/nodes:
     get:
       tags:
-        - Knowledge Hub
+        - Knowledge Base
       summary: Get knowledge hub root nodes
       description: |
         Returns root-level nodes (connector apps and Collection apps) or, when
@@ -22266,7 +22257,7 @@ paths:
   /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}:
     get:
       tags:
-        - Knowledge Hub
+        - Knowledge Base
       summary: Get knowledge hub child nodes
       description: |
         Returns the children of a specific node in the knowledge hub tree.
